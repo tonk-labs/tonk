@@ -1,15 +1,124 @@
-# Access Service: Metering, Rate Limiting, and Quota Enforcement
+# Access Service: Metering, Rate Limiting, and Billing
 
 Status: draft for implementation
 Scope: changes to the existing Cloudflare Worker access service, plus new supporting components
 
 ## 1. System today
 
-A stateless Worker receives a permit request naming an R2 path `/space/<did:key>/<block>`, verifies a UCAN delegation chain against the DID in that path, and returns a presigned URL for a single GET or PUT.
+A stateless Worker receives an invocation naming a consumer space, verifies a UCAN delegation chain, and returns a presigned R2 URL for a single GET or PUT against `/space/<did:key>/<block>`.
 
-Authorization is per block: one permit, one R2 operation. Presigning stays; proxying block traffic through the Worker is out of scope.
+Authorization is per block: one permit, one R2 operation. Presigning stays. Proxying block traffic through the Worker is out of scope.
 
-## 2. What is measurable
+## 2. Model
+
+**Customer** is a billable party. It has an email address, a plan, and Stripe billing once payment is set up. It is identified by a DID derived from a passkey via the WebAuthn PRF extension.
+
+**Consumer** is a space that this service replicates. A customer's own account space is a consumer like any other, identified by the same DID as the customer.
+
+**Provider** is the customer responsible for a consumer. Exactly one, required: a consumer without a provider is not servable. The provider draws on their own remaining credit limit and pays whatever sponsors do not cover.
+
+**Sponsor** is a customer who pledges a fixed number of credits per cycle to a consumer they do not provide. Zero or more per consumer. A pledge reserves that much of the sponsor's own limit for the cycle whether or not it is used, and the sponsor is billed for actual use in proportion to their pledge.
+
+Only paid plans may sponsor. A free plan may provide consumers and draws them all from one limit, so additional free accounts and additional free spaces add no capacity.
+
+**Plan** carries the rates and the credit limit. Plan rows are immutable: a repricing creates a new row rather than mutating one, so a ledger entry naming a plan fully determines how it was computed.
+
+Provisioning is state, not a credential. A delegation chain roots at the consumer DID, which is self-certifying, so it proves present authority over the space but nothing about whether the service agreed to serve it. The `consumer` row is that agreement, held as a looked-up row rather than a token because it must be revocable.
+
+Billing authority and access authority are separate. Who pays for a consumer is the provider and sponsor relationship; who may read, write, or delete it comes from the delegation chain.
+
+## 3. Registration
+
+Three invocations. All are verified by the access service; none bypass the chain.
+
+### 3.1 Enroll
+
+The client holds an account keypair and its account space. It issues a delegation to `did:web:tonk.network` granting `/archive` and `/memory` on `cell: /branch/account` of the account DID, then invokes:
+
+```
+{ cmd: "/customer/enroll",
+  sub: "did:web:tonk.network",
+  args: { subject: "did:key:zAlice", email: "alice@example.com" },
+  prf: [ <that delegation> ] }
+```
+
+The service verifies the chain and writes, in one batch:
+
+- `customer` row, `status = Registered`, `verified = 0`
+- `consumer` row for the same DID, `registered = now`
+- `consumer.provider` set to that same DID, so the customer provides its own account space
+
+KV gets the derived state, which denies service at this point. The service then emails a link carrying a single-use token.
+
+Writing both rows together matters. Two steps would leave a window in which a consumer exists with no provider, which is not servable.
+
+### 3.2 Activate
+
+At enroll the service signs an activation invocation and emails a link carrying it, base64url encoded in a query parameter:
+
+```
+{ cmd: "/customer/activate",
+  sub: "did:web:tonk.network",
+  args: { customer: "did:key:zAlice" },
+  exp: <enroll + EMAIL_TOKEN_TTL> }
+```
+
+The invocation is self-signed by the service, so it carries no proof chain and stays small enough for a URL. `exp` travels inside it, so an expired link fails verification without a storage lookup.
+
+Replay is harmless: activating an already-active customer is a no-op.
+
+Clicking presents the invocation. The service verifies it exactly as it verifies any other, then executes: `customer.verified` is set, `status` becomes `Active`, and KV is rewritten for every consumer this customer funds. Replication on the account space is live.
+
+The link is a bearer credential in a URL, so it reaches browser history, referrer headers, and intermediaries. Same exposure as any magic link, which argues for a short `EMAIL_TOKEN_TTL`. The prize is weak: the invocation names one customer and confers verification of an email the service already chose, so an interceptor gains an activated account whose keys they do not hold.
+
+Mail-client prefetching can fire the link without a human click. That makes the confirmation meaningless rather than dangerous. To prevent it, render a confirm button on GET and execute on POST.
+
+**Waiting client.** The click often lands on a different device than the one waiting, so the activation is authoritative in D1 and the enrolling device learns of it separately. A held HTTP request is ruled out by Cloudflare's 100 to 120 second proxy read timeout on response headers. Open decision 2.
+
+### 3.3 Add a consumer
+
+Enrolling a further space needs consent from both sides. The consumer delegates `/provider/add` to the customer, naming that customer as the provider it accepts:
+
+```
+{ cmd: "/provider/add",
+  sub: "did:key:zPhotos",
+  aud: "did:key:zAlice",
+  args: { provider: "did:key:zAlice" } }
+```
+
+The customer then invokes, carrying that delegation as consent:
+
+```
+{ cmd: "/consumer/add",
+  sub: "did:web:tonk.network",
+  args: { provider: "did:key:zAlice",
+          consumer: "did:key:zPhotos",
+          consent: { "/": "bai..." } } }
+```
+
+The invocation signature is the customer's consent. The enclosed delegation is the consumer's. Neither party is enrolled unilaterally. In practice the client already holds a powerline delegation from the space to the account, which satisfies `/provider/add` as-is.
+
+The service validates the consent by checking that its `sub` matches the consumer being added and its `provider` matches the invoking customer, so a delegation naming one customer cannot be used to enrol a different one.
+
+The service checks the customer is `Active` and has credit remaining, writes a `consumer` row with `provider` set to that customer, and writes KV. A consumer has exactly one provider, so this fails if one is already set.
+
+### 3.4 Sponsor a consumer
+
+A customer on a plan with `may_sponsor` pledges a fixed number of credits per cycle to a consumer they do not provide:
+
+```
+{ cmd: "/consumer/pledge",
+  sub: "did:web:tonk.network",
+  args: { sponsor: "did:key:zBob",
+          consumer: "did:key:zPhotos",
+          pledge: 3000 } }
+```
+
+The service checks the sponsor's plan permits sponsoring, that the pledge plus their existing pledges plus their current period usage stays within their limit, and that the consumer has a provider. It writes a `sponsorship` row with `effective` set to the next period.
+
+Withdrawal sets `ends` to the current period. Both take effect at the next boundary.
+
+## 4. What is measurable
 
 Properties of the current system. Inputs to the design, not decisions taken here.
 
@@ -18,359 +127,493 @@ Properties of the current system. Inputs to the design, not decisions taken here
 | Presigned GETs bypass the Worker and R2 publishes no read access log | Reads can be counted at authorization and nowhere else |
 | Tree references carry no block sizes | Read metering is by operation count. R2 charges by count too, so this tracks cost |
 | Declared size is bound into the URL as a signed `Content-Length` | Write bytes are exact and enforced by R2 |
-| Blocks are namespaced per space, duplicated across spaces | No shared-block attribution problem |
+| Blocks are namespaced per consumer, duplicated across consumers | No shared-block attribution problem |
+| Archiving a consumer deletes its data | Storage is not monotonic, so it must accrue per run rather than be measured once at period close |
 | Block reads are content addressed and client cached | Permits stay short lived; replay is bounded and low value |
-| The branch revision pointer is mutable and polled | Its permit must be long lived, so one authorization covers unbounded reads. Open decision 8 |
-| Delegation chains root at the space DID, which is self certifying | A valid chain proves authority over a space, not that the space was provisioned by this service. Provisioning is separate state, section 9 |
+| The branch revision pointer is mutable and polled | Its permit must be long lived, so one authorization covers unbounded reads. Open decision 5 |
+| Invocations are signed by the client and content addressed | The bill can be evidenced by artifacts the service could not have forged |
 
-## 3. Billing units
+## 5. Billing units
 
 | Unit | Source | Accuracy |
 |---|---|---|
-| Read operations | Read permits issued, per space | Exact modulo replay and unused permits |
-| Write operations | Write permits issued, per space | Exact modulo unused permits |
-| Write bytes | Signed `Content-Length` | Exact modulo unused permits |
-| Storage GB-month | R2 bucket metrics, or write bytes minus deletions | Open decision 5 |
-| Compute units | See 3.1 and open decision 7 | Exact as a count; conversion to cost is calibrated |
+| Read operations | Read permits issued, per consumer | Exact modulo replay and unused permits |
+| Write operations | Write permits issued, per consumer | Same |
+| Write bytes | Signed `Content-Length`, enforced by R2 | Exact |
+| Storage | GB-hours accrued per run from R2 prefix measurements | Bounded by sampling cadence |
+| Compute | Open decision 4 | Fitted approximation if billed at all |
 
-Read bytes are excluded: unmeasurable, and R2 egress is free, so there is no cost to recover.
+Read bytes are excluded: sizes are unknown at read time, R2 charges by operation count, and egress is free.
 
-Metering is **authorization-based, not delivery-based**. A permit is billed when issued whether or not the client uses it, because issuing it already consumed a Worker invocation. State this in customer-facing pricing terms.
+Metering is authorization-based, not delivery-based. An issued permit is billed whether or not the client uses it. This is by design and must be stated in customer-facing pricing.
 
-### 3.1 Compute
+Denied invocations are recorded with `outcome = 'denied'`, since a client retrying against a blocked consumer still costs invocations. Whether denials are billed is open decision 12; the data supports either.
 
-Compute is billed in **compute units**, a count rather than a duration. The unit
-must be deterministic, so that a disputed invoice line is reproducible, and
-readable without leaving the request.
+## 6. Architecture
 
-The runtime does not expose wall-clock CPU: as a Spectre mitigation `performance.now()`
-and `Date.now()` advance only after I/O, so timing a pure-CPU section returns zero
-in production while working under `wrangler dev`. Compute units therefore come from
-instrumentation or from out-of-band reporting rather than from a timer. Which
-mechanism, and whether compute is worth billing at all, is open decision 7.
+Two D1 databases, deliberately separate.
 
-Whatever the source, two properties hold. The conversion from compute units to
-credits is a fitted approximation, versioned as `COST_SCHEDULE_VERSION` and
-recorded per ledger entry so historical charges survive a refit. And compute is
-largely collinear with permit count, the independent component being chain depth,
-so its credit ratio stays low or customers pay twice for the same work.
+**Ingest** holds one row per invocation, with the invocation bytes inline. Bulky, write-heavy, disposable once charged and archived. Splitting it out gives it its own 10 GB ceiling and isolates schema churn from billing state.
 
-## 4. Identity and funding
+**Control** holds customers, consumers, sponsorships, plans, runs, and the ledger. Small, transactional, permanent.
 
-Three identities, easily conflated:
+KV holds one derived state value per consumer, read on the hot path. R2 holds the archived evidence. Analytics Engine carries a parallel per-invocation stream for dashboards and calibration, not for billing.
 
-- **Space**, a `did:key`. Where data lives, and the R2 path namespace.
-- **Remote**, service issued. The client-side actor a space is registered against.
-- **Account**, the billing entity. Holds credits and a Stripe customer.
+## 7. Hot path
 
-Provisioning binds a space to an account and is recorded in `space`. It is revocable, so it is state rather than something a delegation can attest: a chain proves present authority over a space, while provisioning is a fact about standing with this service that can change after any chain is issued.
+Per invocation:
 
-Funding is **m:n**: an account funds many spaces, a space has many funders. So usage cannot be attributed to an account at authorization time, because attribution requires evaluating a policy over the funder list. Metering is therefore space-keyed, which is also the only identity the permit names, and attribution to accounts is a derived stage in the rollup.
+1. Read consumer state from the isolate cache. On miss, read KV. On KV miss, read control D1, derive, write back. On KV error, default to serving and alert.
+2. Verify the delegation chain.
+3. If state permits, issue the presigned URL. Otherwise return the appropriate status.
+4. Inside `ctx.waitUntil`, insert one `invocation` row into ingest, plus `chain` and `block` rows if this chain has not been seen.
 
-### 4.1 Funding policy
+The insert is durable when it returns. D1 bills per row regardless of grouping, so batching saves nothing that a durable buffer does not cost back.
 
-Usage in a window is split across funders by **rotation**: operations are allocated round robin in `rank` order, so N funders each carry roughly 1/N. This divides integer operation counts rather than money, so no fractional charge reaches an invoice. The remainder is assigned starting from an offset derived from the window index, so it falls to a different funder each window.
+A KV miss is not an answer. KV is eventually consistent, so a freshly enrolled consumer would be rejected until propagation if a miss were treated as absence. Negative results are cached under `NEGATIVE_CACHE_TTL` so traffic against nonexistent consumers cannot become unbounded D1 reads.
 
-A funder at or below zero is skipped and its share redistributed across the rest. A funder exhausting partway through has its remainder passed to the next in rank order.
-
-A space is funded while **any** funder has credit.
-
-Policy is swappable without migration: `ledger` records an explicit `payer` per entry, and `funding` is a list even at length one. Evaluation happens in the scheduled handler, so reading every funder balance costs nothing.
-
-## 5. Architecture
-
-The hot path writes one row per permit. A scheduled handler aggregates, charges, updates state, reports to Stripe, and archives. Stripe reporting needs a periodic job regardless, so the rollup adds a query to an existing component.
-
-```mermaid
-flowchart TD
-    C[Client] -->|permit request| W[Access Worker]
-    W -->|presigned URL| C
-    KV[(KV<br/>space state)] <-->|read on isolate miss| W
-    W -->|waitUntil: INSERT 1 row| D1[(D1)]
-    W -.->|per-permit stream| AE[Analytics Engine]
-
-    CR[Scheduled handler] -->|1. roll up in SQL| D1
-    CR -->|2. charge funders| D1
-    CR -->|3. write space state| KV
-    CR -->|4. push aggregates| S[Stripe meters]
-    CR -->|5. archive + prune| R2[(R2<br/>cold archive)]
-    S -->|webhooks| CR
-
-    classDef store fill:#eef,stroke:#557
-    class D1,KV,R2 store
-```
-
-D1 takes the writes, R2 takes the archive, SQL does the aggregation. Appendix A has the reasoning.
-
-## 6. Hot path
-
-```mermaid
-flowchart TD
-    A[permit request] --> B{ratelimit<br/>issuer + space}
-    B -->|over| B1[429]
-    B -->|ok| C{verify UCAN chain<br/>enforce depth cap}
-    C -->|invalid| C1[403]
-    C -->|valid| D[resolve space state<br/>isolate cache, else KV]
-    D --> E{state}
-    E -->|BLOCKED| E1[402<br/>recorded as blocked]
-    E -->|OK / WARN| F[sign URL<br/>bind Content-Length on write]
-    F --> G[waitUntil: INSERT event row]
-    G --> H[return permit + state hint]
-```
-
-The gas counter is reset before step one and read at step F. Rate limiting and state resolution are the only additions that can reject a request, and neither performs IO on a warm isolate.
-
-**Rate limiting** uses the Workers `ratelimit` binding on two namespaces, `issuer` and `space`. It is per-location and eventually consistent, so the effective global limit is roughly the configured limit times the number of locations a client reaches. Adequate for abuse control, not used for accounting. The binding counts calls unweighted, which is valid only while authorization stays per block; batch permits would invalidate it.
-
-## 7. Schema
+## 8. Ingest schema
 
 ```sql
--- Append only. Swept to R2 and pruned once a window closes.
--- Keep free of secondary indexes: see appendix A.
-CREATE TABLE event (
-  id        INTEGER PRIMARY KEY,   -- rowid alias: no extra index, no extra write
-  ts        INTEGER NOT NULL,
-  window_id TEXT    NOT NULL,
-  space     TEXT    NOT NULL,
-  issuer    TEXT    NOT NULL,
-  op        TEXT    NOT NULL,      -- read | write | blocked
-  bytes     INTEGER NOT NULL DEFAULT 0,
-  compute   INTEGER NOT NULL DEFAULT 0
+-- No secondary indexes: each one adds a written row per insert.
+CREATE TABLE invocation (
+  id       INTEGER PRIMARY KEY,   -- cursor within this database
+  ts       INTEGER NOT NULL,
+  cid      TEXT    NOT NULL,      -- evidence key
+  consumer TEXT    NOT NULL,
+  issuer   TEXT    NOT NULL,
+  cmd      TEXT    NOT NULL,
+  outcome  TEXT    NOT NULL,      -- ok | denied
+  reason   TEXT,
+  bytes    INTEGER NOT NULL DEFAULT 0,
+  compute  INTEGER NOT NULL DEFAULT 0,
+  chain    TEXT    NOT NULL,      -- CID of the proof set
+  body     BLOB    NOT NULL       -- invocation bytes, proofs by reference
 );
 
-CREATE TABLE usage_window (
-  window_id   TEXT NOT NULL,
-  space       TEXT NOT NULL,
-  read_ops    INTEGER NOT NULL DEFAULT 0,
-  write_ops   INTEGER NOT NULL DEFAULT 0,
-  write_bytes INTEGER NOT NULL DEFAULT 0,
-  blocked_ops INTEGER NOT NULL DEFAULT 0,
-  compute     INTEGER NOT NULL DEFAULT 0,
-  charged_at  INTEGER,
-  PRIMARY KEY (window_id, space)
+CREATE TABLE chain (
+  chain TEXT NOT NULL,
+  proof TEXT NOT NULL,
+  PRIMARY KEY (chain, proof)
 );
 
--- Provisioning record. Absence means the space was never provisioned here.
-CREATE TABLE space (
-  did          TEXT PRIMARY KEY,
-  remote       TEXT NOT NULL,
-  provisioned  INTEGER NOT NULL,          -- timestamp
-  status       TEXT NOT NULL DEFAULT 'ACTIVE'  -- ACTIVE | SUSPENDED | RETIRED
+CREATE TABLE block (
+  cid  TEXT PRIMARY KEY,
+  body BLOB NOT NULL
+);
+```
+
+`chain` is the transitive proof set, flattened at write time so evidence retrieval is two queries rather than a recursive walk. It is written once per unique operator session and referenced by every invocation in it. Use `INSERT OR IGNORE` on `block` and `chain`, and verify against `meta.rows_written` whether an ignored conflict is billed.
+
+Delegations already name their own proofs internally, so the flattened set caches something derivable. It exists because writes happen every request and retrieval happens on dispute.
+
+## 9. Control schema
+
+```sql
+CREATE TABLE plan (
+  id              TEXT PRIMARY KEY,   -- 'pro@2026-08', immutable
+  name            TEXT NOT NULL,
+  credit_limit    INTEGER NOT NULL,
+  may_sponsor     INTEGER NOT NULL DEFAULT 0,
+  read_rate       INTEGER NOT NULL,   -- credits per operation
+  write_rate      INTEGER NOT NULL,
+  write_byte_rate INTEGER NOT NULL,
+  storage_rate    INTEGER NOT NULL,   -- credits per GB per cycle
+  compute_rate    INTEGER NOT NULL,
+  stripe_price    TEXT                -- null on a free plan
 );
 
-CREATE TABLE account (
-  id               TEXT PRIMARY KEY,
-  balance          INTEGER NOT NULL DEFAULT 0,
-  state            TEXT    NOT NULL DEFAULT 'OK',   -- OK | WARN | BLOCKED
-  stripe_customer  TEXT,
-  stripe_watermark TEXT
+CREATE TABLE customer (
+  did             TEXT PRIMARY KEY,   -- also the DID of its account consumer
+  email           TEXT NOT NULL,
+  verified        INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL,      -- Registered | Active | Suspended
+  plan            TEXT NOT NULL REFERENCES plan(id),
+  credit_limit    INTEGER,            -- override, null means use plan
+  cycle_anchor    INTEGER NOT NULL,   -- subscription day, periods derive from it
+  limit_code      TEXT,               -- null when under limit
+  limit_resets    INTEGER,            -- null with code set: cleared by event
+  stripe_customer TEXT                -- null until payment is set up
 );
 
--- rank fixes the rotation order of section 4.1
-CREATE TABLE funding (
-  space   TEXT    NOT NULL,
-  account TEXT    NOT NULL,
-  rank    INTEGER NOT NULL,
-  PRIMARY KEY (space, account)
+CREATE TABLE consumer (
+  did             TEXT PRIMARY KEY,
+  provider        TEXT REFERENCES customer(did),   -- null means not servable
+  registered      INTEGER NOT NULL,
+  archived_at     INTEGER,
+  suspend_code    TEXT,
+  suspend_message TEXT,
+  suspend_until   INTEGER,            -- null with code set: indefinite
+  size            INTEGER NOT NULL DEFAULT 0,   -- last measurement
+  measured_at     INTEGER NOT NULL DEFAULT 0
+);
+
+-- Fixed for the cycle. Adding or removing a sponsorship takes effect at the
+-- next cycle boundary, so the denominator does not move mid-cycle.
+CREATE TABLE sponsorship (
+  consumer  TEXT    NOT NULL REFERENCES consumer(did),
+  customer  TEXT    NOT NULL REFERENCES customer(did),
+  pledge    INTEGER NOT NULL,   -- credits per cycle
+  effective TEXT    NOT NULL,   -- first period this applies to
+  ends      TEXT,               -- last period, null while open
+  PRIMARY KEY (consumer, customer)
+);
+
+-- Storage accrues per run and converts at period close.
+CREATE TABLE accrual (
+  period   TEXT    NOT NULL,
+  consumer TEXT    NOT NULL REFERENCES consumer(did),
+  gb_hours INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (period, consumer)
+);
+
+-- Running totals per customer per period. Enforcement reads this rather than
+-- scanning ledger rows, which grow through the period.
+CREATE TABLE usage (
+  period   TEXT    NOT NULL,
+  customer TEXT    NOT NULL REFERENCES customer(did),
+  credits  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (period, customer)
+);
+
+-- Credits drawn against each sponsorship this period, so exhaustion is per
+-- pledge rather than a single consumer-wide number.
+CREATE TABLE drawn (
+  period   TEXT    NOT NULL,
+  consumer TEXT    NOT NULL,
+  customer TEXT    NOT NULL,
+  credits  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (period, consumer, customer)
+);
+
+CREATE TABLE run (
+  id            TEXT PRIMARY KEY,   -- Stripe idempotency key
+  started       INTEGER NOT NULL,
+  ingest        TEXT    NOT NULL,
+  charged_upto  INTEGER NOT NULL,   -- max invocation.id consumed
+  archived_upto INTEGER NOT NULL DEFAULT 0,
+  pushed        INTEGER
 );
 
 CREATE TABLE ledger (
-  id                    INTEGER PRIMARY KEY,
-  ts                    INTEGER NOT NULL,
-  window_id             TEXT    NOT NULL,
-  space                 TEXT    NOT NULL,
-  payer                 TEXT    NOT NULL,
-  credits               INTEGER NOT NULL,
-  credit_table_version  TEXT    NOT NULL,
-  cost_schedule_version TEXT
+  id       INTEGER PRIMARY KEY,
+  run      TEXT    NOT NULL REFERENCES run(id),
+  ts       INTEGER NOT NULL,
+  period   TEXT    NOT NULL,       -- payer's billing period at charge time
+  consumer TEXT    NOT NULL,
+  customer TEXT    NOT NULL,       -- payer
+  role     TEXT    NOT NULL,       -- provider | sponsor
+  kind     TEXT    NOT NULL,       -- usage | storage
+  reads    INTEGER NOT NULL DEFAULT 0,
+  writes   INTEGER NOT NULL DEFAULT 0,
+  bytes    INTEGER NOT NULL DEFAULT 0,
+  compute  INTEGER NOT NULL DEFAULT 0,
+  storage  INTEGER NOT NULL DEFAULT 0,
+  credits  INTEGER NOT NULL,
+  plan     TEXT    NOT NULL REFERENCES plan(id)
 );
-
-CREATE TABLE cursor (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
 ```
 
-Windows are **fixed, not rolling**. `window_id` derives from `WINDOW_LENGTH` and the current time, so rotation happens by key with no bookkeeping.
+Notes on shape.
 
-The hot path inserts one row inside `ctx.waitUntil`, durable on return. Blocked requests are recorded with `op = 'blocked'`, since a client retrying against a blocked space still costs invocations.
+`ledger` carries operation counts, not only credits, so a payer can be shown exactly which share they carried and the shares sum to the consumer's total for that run.
 
-## 8. Scheduled handler
+`ledger.plan` is the plan at charge time. Plans imply rates, so a historical row must not be reinterpreted after an upgrade or a repricing. Recording it per row also means an upgrade needs no backfill.
 
-**1. Roll up.**
+`ledger.period` is the payer's billing period, computed at charge time from their `cycle_anchor`. Runs land on a cron cadence; periods are per customer and anchored to their subscription date. They do not align, so the period travels on the row. An invoice is `SUM(credits) WHERE customer = ? AND period = ?`, and a cycle rolls by the period key advancing, so history survives.
+
+`usage` is the same sum, materialised, and must reconcile against the ledger. A cache that can drift silently from an auditable source is worse than no cache.
+
+A customer's available credit is `credit_limit` minus their outstanding pledges minus `usage.credits` for the current period. Pledges are reserved whether or not they are drawn, so a customer cannot pledge more than their limit across all sponsorships.
+
+Credits are integers. Choose the denomination so the cheapest billable operation is a comfortable whole number, and record what a credit is worth somewhere durable.
+
+## 10. Charging
+
+One cron. Each execution is a run, named before any work starts, so every derived row is answerable to whether it already happened.
+
+### 10.1 Usage
+
+Read aggregates from ingest above the cursor. This is a read, so it is idempotent and repeatable:
 
 ```sql
-INSERT INTO usage_window (window_id, space, read_ops, write_ops, write_bytes, blocked_ops, compute)
-SELECT window_id, space,
-       SUM(op = 'read'), SUM(op = 'write'), SUM(bytes),
-       SUM(op = 'blocked'), SUM(compute)
-  FROM event
- WHERE id > :cursor
- GROUP BY window_id, space
-ON CONFLICT (window_id, space) DO UPDATE SET
-  read_ops    = read_ops    + excluded.read_ops,
-  write_ops   = write_ops   + excluded.write_ops,
-  write_bytes = write_bytes + excluded.write_bytes,
-  blocked_ops = blocked_ops + excluded.blocked_ops,
-  compute     = compute     + excluded.compute;
+SELECT consumer, cmd, outcome,
+       COUNT(*) AS ops, SUM(bytes) AS bytes, SUM(compute) AS compute
+  FROM invocation
+ WHERE id > :charged_upto
+ GROUP BY consumer, cmd, outcome;
 ```
 
-Advance `cursor` in the same `db.batch()`, which is the only atomicity D1 offers. A failed batch leaves the cursor unmoved and the next run reprocesses the range, which is safe because the merge is keyed and idempotent.
+Convert each consumer's aggregate to credits, then allocate.
 
-**2. Charge.** For each closed `usage_window` row with `charged_at IS NULL`: convert to credits (section 11), read the space's funder balances, drop the exhausted, allocate by rotation (4.1), write one `ledger` row per payer, decrement balances, set `charged_at`.
+**Sponsors first.** Load the consumer's sponsorships effective for the current period. Each has a `pledge` and a `drawn` total so far. Allocate this run's credits across sponsors with remaining pledge, in proportion to pledge:
 
-**3. Recompute state.** Update `account.state` against the thresholds. For changed accounts, resolve spaces and write the derived value to KV:
-
-```sql
-SELECT DISTINCT f.space FROM funding f WHERE f.account IN (:changed)
+```
+share_i = ceil(credits × pledge_i / Σ pledge)
 ```
 
-The value is `UNPROVISIONED` when `space.status` is not `ACTIVE` or no `space` row exists, otherwise `BLOCKED` only when every funder is blocked, otherwise `WARN` or `OK`. Provisioning dominates: an unfunded space and a retired one are distinguishable to the client and only the first is worth topping up.
+capped at each sponsor's remaining pledge. Round up. Over-collection is at most one credit per sponsor per run, and a sponsor committed to more than that.
 
-Deprovisioning deletes the KV key rather than rewriting it, so the next request takes the miss path and re-derives from D1.
+**Provider last.** Whatever sponsors did not cover goes to the provider, drawn from their remaining limit.
 
-**4. Push Stripe.** Section 10.
+Write one `ledger` row per payer with `role` and `kind = 'usage'`, increment `drawn` for each sponsor, increment `usage.credits` for each payer, and write `run.charged_upto`, all in the same `db.batch()`. D1 offers no interactive transactions, so the batch is the atomicity. A failed batch leaves the cursor unmoved and the rerun recomputes from the same read.
 
-**5. Archive and prune.** Write closed windows to R2 as `events/{window_id}/{seq}.ndjson`, then delete from `event` in batched `DELETE ... WHERE window_id = ?`. R2 becomes the long-term audit record; D1 holds the live window plus `WINDOW_RETENTION` prior ones, so the table is bounded by retention rather than cumulative traffic.
+The cross-database boundary sits on the read side deliberately: aggregates come from ingest, every write lands in control, so the atomicity that matters is available.
 
-If one space exceeds D1's per-database write ceiling, move its writes to a Durable Object keyed by space DID; `idFromName` creates instances without pre-allocation or rehashing. Build this when a space approaches the ceiling, measured.
+Rates come from each payer's plan, so the same operation can cost different credits depending on who paid for it. Two payers on one consumer will see different totals for what looks like the same usage.
 
-## 9. Enforcement
+### 10.2 Storage
 
-The hot path reads a single **space-keyed** value, never a numeric balance and never an account, so no account resolution occurs on the hot path.
+Storage is a rent, accrued every run and converted at period close.
 
-| Value | Meaning | Response |
-|---|---|---|
-| `OK` | Provisioned, funded | Issue permit |
-| `WARN` | Provisioned, approaching a limit | Issue permit, return the state so the UI can surface it |
-| `BLOCKED` | Provisioned, every funder exhausted | 402 |
-| `UNPROVISIONED` | Not provisioned with this service, or retired | 404 |
+Each run measures the consumer prefix from R2 bucket metrics, adds `size × hours since measured_at` to `accrual.gb_hours`, and updates `consumer.size` and `measured_at`. Sampling cadence sets the resolution: at hourly runs the error is bounded by an hour of growth.
 
-`UNPROVISIONED` is what a valid delegation chain cannot tell you. A chain roots at the space DID, which is self certifying, so it proves present authority over the space and nothing about whether this service ever agreed to serve it. Provisioning is also revocable, so no credential issued at provisioning time can express current standing. It is a lookup by construction.
+Accruing per run is what makes archival work. Archiving a consumer deletes its data, so the next measurement reads zero. The hours before it are already accrued, so archival needs no special handling. A single end-of-period reading would bill nothing for a consumer archived on day 20 of 30, which is both wrong and an incentive to archive just before the boundary.
 
-### 9.1 Resolution order
+At period close, convert `accrual.gb_hours` to credits and allocate by the same sponsors-then-provider rule as usage, writing `kind = 'storage'` rows.
 
-1. Isolate-local cache, if present and unexpired.
+Order within a cycle-end run: charge usage, charge storage, then push to Stripe. Pushing first omits the storage line.
+
+### 10.3 Exhaustion
+
+A sponsor whose `drawn` reaches their `pledge` stops receiving allocations for that consumer and period. The remaining sponsors take their share, in proportion to pledge as before.
+
+When every pledge is drawn, the provider carries the whole cost. When the provider is also at their limit, the consumer's derived state becomes limited and subsequent invocations are denied and recorded with `outcome = 'denied'`. Attribution continues: charges still land on the provider, so overage is visible as `usage.credits` exceeding `credit_limit` rather than accumulating as an unattributed balance.
+
+Sponsorships are fixed for the cycle. Adding or removing one takes effect at the next period boundary, so the denominator is stable within a period and no usage has to be split into before-and-after segments. A sponsor who withdraws mid-cycle is billed for that cycle in proportion to their pledge.
+
+### 10.4 Archive
+
+Write `invocation`, `chain`, and `block` rows to R2 under `{consumer}/{period}/{cid}`. Invocations and proofs share one keyspace there, so a CID resolves to bytes uniformly. Content addressing makes the write idempotent, so a partial run resumes rather than restarts. Advance `run.archived_upto`.
+
+The key omits the customer deliberately. Attribution is not known at write time, since an invocation may be charged to a sponsor or to the provider depending on what remains at charge time. A customer component would also duplicate objects per payer or leak the sponsor set through the key.
+
+Evidence is written by the cron rather than by the request, so it is amortised and the hot path does not depend on R2 write availability.
+
+The point of keeping it: the invocation is signed by the customer, so a bill can be evidenced by artifacts the service could not have forged. It proves nothing was invented; it does not prove nothing was omitted, which errs in the customer's favour.
+
+Retrieval is a prefix list plus a fetch per object. Listing pages at 1,000 keys and each page is a Class A operation, so `ledger` remains the source for rendering a bill and R2 is for the evidence behind a specific line.
+
+### 10.5 Prune
+
+Delete charged and archived rows from ingest by id range. `DELETE` counts as a write in D1, so pruning costs the same per row as inserting, doubling the effective per-invocation D1 cost. At 50 million included writes a month, the effective ceiling is 25 million invocations before this costs anything.
+
+The alternative is rotating ingest databases and dropping rather than deleting, which is free if `DROP TABLE` is free. Cloudflare declines to say: the pricing page states only that DDL may contribute to a mix of read and write rows. Measure before building it.
+
+Keep the option cheap by treating the cursor as `(database, id)` from the start and never referencing row ids across periods. Then switching later is a change to the cron, not a migration.
+
+### 10.6 Stripe
+
+Push `usage.credits` for the closed period, one call per customer. Skip customers with no `stripe_customer`, which is the normal state before payment is set up. Identifier `{customer}:{period}`. Pushing the counter rather than re-summing the ledger keeps one definition of an invoice. The dedup window is rolling 24 hours only, so retries or backfill older than a day double-bill.
+
+Do not send consumer as a dimension; dimensions cap near 100 unique combinations per customer per meter. Per-consumer detail stays in `ledger`.
+
+The API path is sufficient at any plausible volume: one call per customer per run against a 1,000 per second limit. The S3 connector exists for high-throughput ingestion, requires an AWS account ID and an IAM role for Stripe to assume, and therefore cannot be pointed at R2.
+
+Failures arrive as webhook events rather than as failed calls, so a handler is needed regardless of transport: `meter_event_customer_not_found`, `timestamp_too_far_in_past`, `timestamp_in_future`, `meter_event_invalid_value`.
+
+Webhooks update `customer.limit_code` and `status`, then write affected consumer states to KV, idempotent on the Stripe event ID.
+
+## 11. Enforcement
+
+Four axes are stored, and the value KV serves is derived from them.
+
+```
+provider:   did?                           on consumer, null means unserved
+archived:   timestamp?                     on consumer
+suspension: { code, message?, until? }?    on consumer
+funding:    { code, resets? }?             on the provider's customer row
+```
+
+Precedence: unprovided, archived, suspended, limited, ok. Unregistered is absence of the consumer row.
+
+Funding is limited when the provider is at their limit and every sponsorship for the current period is fully drawn. Sponsorships are read from `sponsorship` and `drawn`; the provider's position comes from `usage.credits` against their `credit_limit`.
+
+Storing them separately is what makes unblocking free: clear the suspension, re-derive, and it lands on limited or ok according to funding, which was never touched.
+
+`until` and `resets` are absolute epoch timestamps, and null means indefinite rather than a sentinel far-future number. Null forces the branch to be written; a large number silently succeeds every comparison, and zero is worse still since it is a plausible uninitialised value that would read as permanent.
+
+Null `resets` is the out-of-credit case, cleared by the Stripe webhook rather than by a clock. If that webhook is missed nothing else lifts it, so the cron needs a reconciliation pass rather than trusting the webhook alone.
+
+Codes are stable identifiers the client switches on. Messages are optional prose. A code alone cannot be specific; a message alone cannot be localised or keyed off.
+
+### 11.1 The KV value
+
+The value is a versioned struct, not a bare string, since a stale isolate can hold a shape written by a previous deploy.
+
+Every value carries `not_after`, an absolute timestamp after which the reader must revalidate. Absolute rather than relative, because the isolate copy ages after it is read.
+
+Staleness is asymmetric: a stale permit costs a handful of operations, a stale denial costs a paying customer service and generates a support ticket. So `not_after` is set per variant, generous on ok and short on anything denying service, with jitter so expiry does not cluster.
+
+Where a limit genuinely resets on a clock, the value also carries `resets`, which becomes `Retry-After` on the response. That is client-facing information, not a cache control input.
+
+### 11.2 Writers
+
+Three writers, plus deletion.
+
+The cron writes on recompute. The hot path writes back on a miss. The Stripe webhook writes on state change. Deprovisioning deletes the key rather than writing a negative value, forcing the next request through authoritative D1.
+
+KV has no compare-and-swap, so writes are last-write-wins. A miss-path backfill that loses its scheduling slice can overwrite a fresher value written by the cron, producing a stale value with fresh-looking validity, which is worse than a stale value that admits it. So backfill writes get a deliberately short `not_after`, on the order of the cron interval. A losing race then self-corrects on the next run.
+
+Rule: only the cron may write long validity.
+
+The cron writes changed consumers, not all of them. `not_after` must therefore be set well beyond the cron interval, so stable consumers do not expire together and produce a synchronised D1 read storm on the miss path.
+
+### 11.3 Resolution order
+
+1. Isolate cache.
 2. KV.
-3. On KV **miss**, read `space` and the funder balances from D1, derive the value, and write it back to KV. A miss is not an answer, only an absent cache entry, so it must not deny on its own: KV is eventually consistent and a freshly provisioned space would otherwise be rejected until propagation completes.
-4. On KV **error**, default to `OK` and alert. A KV outage should not stop every customer's sync, and a short fail-open window is bounded and recoverable. Open decision 1.
+3. On KV miss, read `consumer`, its sponsorships, and the provider's `usage` row from control D1, derive, write back with short validity.
+4. On KV error, default to serving and alert.
 
-The distinction between miss and error is `null` versus a thrown read, so it is available at the call site.
+Miss versus error is `null` versus thrown.
 
-Negative results are cached too, with `NEGATIVE_CACHE_TTL`, so requests against spaces that do not exist cannot convert misses into unbounded D1 reads. The `space` namespace of the rate limiter bounds the same traffic ahead of the lookup.
+### 11.4 Rate limiting
 
-### 9.2 Staleness
+Workers `ratelimit` binding, free and per-colo, on `issuer` and `consumer` namespaces, plus `RATELIMIT_REGISTER` on `/customer/enroll`, `/consumer/add`, and `/consumer/pledge`. The consumer namespace also bounds nonexistent-consumer traffic ahead of the state lookup.
 
-Worst-case overdraft is the isolate cache TTL times peak burn rate for one space, plus KV propagation. Compute the sum and document it rather than assuming it small. Set the TTL after observing burn rate in phase 0.
+Counts are unweighted, which is valid only while authorization stays per block.
 
-Provisioning changes propagate the same way. Deprovisioning is not immediate, and a retired space stays servable for up to the cache lifetime. Where that matters, delete the KV key on retirement rather than waiting for expiry.
+## 12. Credit conversion
 
-## 10. Stripe
+Do not fix the rates before data exists. Anchor on marginal cost: a read permit is one Worker request plus one R2 Class B operation; a write permit is one Worker request plus one Class A, materially more expensive; storage is per GB-month.
 
-Stripe is the invoicing system of record, not an enforcement input. Enforcement reads KV, derived from `account.balance`.
+Set price per credit as the actual monthly Cloudflare bill divided by total credits charged, refit monthly. This recovers cost without maintaining a per-instruction schedule and stays correct when the traffic mix shifts, which matters because a change in polling behaviour would otherwise invalidate a fitted formula.
 
-Push aggregated rollups, one per account per window. The meter endpoint allows 1,000 calls per second per account and one concurrent call per customer per meter, so per-event reporting is not viable.
+Publish the ratios, not the cost basis.
 
-- **Identifier** `{accountId}:{windowId}:{meterName}`. Uniqueness is enforced within a **rolling 24 hours only**, so any retry or backfill older than a day double-bills and must be prevented at the source.
-- **Timestamps** must be within the past 35 days and under 5 minutes ahead. Anything later needs a manual credit adjustment.
-- **Values** are whole numbers on the v1 endpoint.
-- **Dimensions** are capped near 100 unique combinations per customer per meter, and events past the cap are rejected. Do not send space as a dimension; an account funding many spaces would silently start failing. Keep per-space detail in `usage_window` and `ledger` and render invoice detail from there.
-
-Inbound webhooks (payment failure or success, subscription change, credit grant) update `account.balance` and `state`, then write affected space states to KV via the query in section 8 step 3. Handle idempotently on Stripe event ID.
-
-## 11. Credit conversion
-
-Do not fix the formula before data exists.
-
-Anchor on marginal cost. A read permit is one Worker request plus one R2 Class B operation; a write permit is one Worker request plus one Class A, materially more expensive. Storage is per GB-month. Compute converts through the fitted schedule.
-
-1. Run phase 0 metering only.
-2. Observe distributions per space and per account. Fit the compute conversion. Measure the compute-to-permit correlation explicitly.
-3. Define one credit as a round multiple of marginal cost, sized so typical monthly usage reads sensibly on an invoice.
-4. Set integer ratios between units from observed cost proportions.
-5. Publish the ratios, not the cost basis.
-
-Set `price-per-compute-unit` as the actual monthly Cloudflare bill divided by total units, refit monthly. This recovers cost without maintaining a per-instruction schedule, and it stays correct if the traffic mix shifts.
-
-The table lives in versioned configuration, with the version on every ledger entry so historical charges survive a repricing.
-
-## 12. Configuration
+## 13. Configuration
 
 | Key | Governs |
 |---|---|
-| `ROLLUP_CRON` | Metering latency, charge latency, Stripe cadence |
-| `STATE_CACHE_TTL_MS` | Overdraft exposure, and how long a retired space stays servable |
-| `NEGATIVE_CACHE_TTL` | How long an `UNPROVISIONED` result is cached before D1 is consulted again |
-| `RATELIMIT_REGISTER` | Limit on the provisioning endpoint |
-| `WINDOW_LENGTH` | Display granularity and Stripe push cadence |
-| `WINDOW_RETENTION` | Closed windows held in D1 before archival |
-| `RATELIMIT_ISSUER` / `RATELIMIT_SPACE` | Limit and period per namespace |
-| `PERMIT_TTL_BLOCK_READ` / `_WRITE` / `_REVISION` | Replay window. Revision permits are longer lived, open decision 8 |
+| `CHARGE_CRON` | Charge latency and Stripe cadence |
+| `STATE_CACHE_TTL_MS` | Isolate cache lifetime |
+| `NOT_AFTER_OK` / `NOT_AFTER_DENY` / `NOT_AFTER_BACKFILL` | Per-variant KV validity |
+| `NEGATIVE_CACHE_TTL` | How long an unregistered result is cached |
+| `INGEST_RETENTION` | How long charged rows stay in ingest before pruning |
+| `RATELIMIT_ISSUER` / `RATELIMIT_CONSUMER` / `RATELIMIT_REGISTER` | Limit and period per namespace |
+| `PERMIT_TTL_READ` / `_WRITE` / `_REVISION` | Replay window |
 | `CHAIN_DEPTH_MAX` | CPU exposure per request |
-| `WARN_THRESHOLD` / `BLOCK_THRESHOLD` | Credit fraction at which state transitions |
-| `CREDIT_TABLE_VERSION` | Active conversion ratios |
-| `COST_SCHEDULE_VERSION` | Active compute unit conversion |
+| `EMAIL_TOKEN_TTL` | `exp` on the activation invocation, so link lifetime |
 
-## 13. Rollout
+## 14. Rollout
 
 | Phase | Contents |
 |---|---|
-| 0. Meter | Full pipeline, no enforcement, no Stripe. Generous rate limits to establish a floor. Goal is distributions |
-| 1. Calibrate | Fix credit ratios from phase 0. Build the usage display |
-| 2. Warn | Enable `WARN` and Stripe reporting. Pipeline errors surface as wrong numbers, not outages |
-| 3. Enforce | Enable `BLOCKED`. Tighten limits to observed plus headroom |
+| 0. Meter | Full pipeline, no enforcement, no Stripe. Generous limits. Goal is distributions |
+| 1. Calibrate | Fix rates from phase 0. Build the usage display |
+| 2. Warn | Enable limit warnings and Stripe reporting. Pipeline errors surface as wrong numbers, not outages |
+| 3. Enforce | Enable denial. Tighten limits to observed plus headroom |
 
-Do not compress 0 and 1. The formula is not derivable a priori, and guessing produces a repricing after launch.
+Do not compress 0 and 1. The rates are not derivable a priori, and guessing produces a repricing after launch.
 
-## 14. Acceptance criteria
+## 15. Acceptance criteria
 
 - A permit request on a warm isolate performs no blocking IO beyond chain verification.
-- An event row is durable when the insert returns.
-- A rollup failing partway leaves `cursor` unmoved, and rerunning produces identical `usage_window` totals.
-- Archived R2 events reconcile exactly against the `usage_window` rows derived from them.
-- `event` stays bounded by `WINDOW_RETENTION`.
-- A Stripe push retried within the window does not double-bill.
-- Three funders split a window into three roughly equal ledger entries, and the remainder falls to a different funder next window.
-- A funder exhausting mid-window has its share reassigned, and the space stays unblocked while any funder has credit.
-- Blocking propagates within `STATE_CACHE_TTL_MS` plus KV propagation, documented and tested.
-- A permit request naming a space with no `space` row is denied, and a valid delegation chain does not change that.
-- A space provisioned moments earlier is served on first request, before KV has propagated.
-- A KV read error is served as `OK`; a KV miss is not, and falls through to D1.
-- Repeated requests against nonexistent spaces do not produce a D1 read per request.
-- Ledger entries recompute from `usage_window` plus a credit table version to the recorded values.
-- Replaying an identical request yields an identical compute count, and no count leaks across requests sharing an isolate.
+- An `invocation` row is durable when the insert returns.
+- A charge run failing partway leaves `run.charged_upto` unmoved, and rerunning produces identical ledger rows.
+- Ledger rows for one consumer and one run sum, per unit, to that consumer's totals for the run.
+- Sponsors pledging 2000, 3000, and 3000 against 5000 credits of usage are billed in proportion to pledge, and the shares sum to at least the usage with per-sponsor rounding up.
+- A sponsor whose pledge is fully drawn receives no further allocation, and the remaining sponsors take their share.
+- With every pledge drawn, the provider carries the remainder and ledger rows still cover every operation.
+- A consumer with no provider is denied regardless of sponsorships.
+- A free plan cannot create a sponsorship.
+- A customer cannot pledge more than their limit across all sponsorships.
+- Storage shares sum exactly to the consumer's charged storage, with no rounding surplus.
+- A consumer archived mid-period is charged for the hours before archival and none after.
+- `usage.credits` reconciles against the ledger sum for the period.
+- A run crossing a cycle boundary resets the counters rather than accumulating across periods.
+- Archived R2 objects reconcile exactly against the ledger rows derived from them.
+- A Stripe push retried within 24 hours does not double-bill.
+- Enrollment, activation, and consumer addition each produce a verifiable invocation.
+- Clicking an activation link twice leaves the customer active and writes no duplicate state.
+- An activation link presented after `EMAIL_TOKEN_TTL` fails chain verification, with no storage lookup involved.
+- Enrollment writes the customer and its self-provided consumer atomically, with no intermediate state where one exists without the other.
+- A consumer with no `consumer` row is denied, and a valid delegation chain does not change that.
+- A consumer enrolled moments earlier is served on first request, before KV has propagated.
+- A KV read error is served; a KV miss is not, and falls through to D1.
+- Repeated requests against nonexistent consumers do not produce a D1 read per request.
+- Clearing a suspension returns the consumer to whatever its funding state implies.
+- A customer changing plan mid-period leaves prior ledger rows naming the old plan.
 
-## 15. Open decisions
+## 16. Open decisions
 
-1. **Fail open or closed** on state resolution failure. Section 9 fails open on KV error and closed on a D1 miss. The open half is the one to revisit.
-2. **Per-funder spend caps.** If yes, `funding` needs a per-edge limit and rotation treats a capped funder as exhausted for the window.
-3. **Rotation or delegation-based attribution.** Section 4.1 specifies rotation over a server-side funder list. The alternative is a funding delegation rooted at the funder's account DID, presented alongside the access chain, so the permit names its own payer: attribution needs no policy, and enforcement could be account-keyed. It costs propagation (a new funder means redistributing delegations to every actor), revocation (a lookup, or short-lived refreshed delegations), and lets the actor rather than the space choose who pays. The axis is whether the payer is chosen by the actor or the space. A hybrid is possible: the list is the default, an optional delegation overrides. Turns on whether m:n is near-term or speculative; if speculative, rotation over a list of length one forecloses nothing.
-4. **Funder visibility.** Can a co-funder see usage detail for a shared space? A privacy question when funders are different organisations.
-5. **Storage metering source.** R2 bucket metrics per prefix, or write bytes minus deletions. The former is exact but may not exist at prefix granularity.
-6. **Deletion and reclamation.** No path for credits returning when blocks are deleted. Needed if storage is billed.
-7. **How compute units are obtained, if at all.** Two candidate mechanisms. **Gas instrumentation**: a `wasm-instrument`-style pass injects a per-basic-block counter as an exported global, read on the hot path into the same event row as the operation counts. Deterministic and free to read, but it sees only code inside the module, so confirm Ed25519 verification is Rust in the module rather than WebCrypto, that the tool parses the built artifact, that the counter survives `wasm-opt` and `wasm-bindgen`, and that overhead is acceptable. **Out-of-band reporting**: ingest `CPUTimeMs` from the `workers_trace_events` Logpush dataset, which needs no code change but is lossy (appendix A) and arrives after the window may have closed, so it suits calibration better than billing. Either way, decision 9 may make this moot: if verification stops dominating CPU, do not bill compute separately, since permit count already tracks it and internal margin can come from GraphQL aggregates.
-8. **Branch revision poll metering.** The pointer permit is long lived, so one authorization covers unbounded reads. Options: extrapolate from TTL and an assumed poll interval (cheapest, unvalidatable); client self-report at renewal (a self-report that lowers a bill needs signing or accepted understatement); or serve the pointer from the Worker (exact by construction, one invocation per poll, and the Worker can cache the value for a second or two so N clients collapse to roughly one R2 read). Measure the poll-to-permit ratio in phase 0 first.
-9. **Verification memoization.** A delegation chain is immutable and content addressed, so its verification result is a pure function of the chain CID. Caching the decision by CID for the delegation's remaining lifetime would make repeat polls a cache lookup. If the hit rate is high, verification stops dominating CPU and decision 7 resolves to not billing compute. Measure in phase 0.
+1. **Free allowance at signup.** Is a newly activated customer with no Stripe setup servable? If yes, `limit_code` starts null and something must set it when the allowance runs out. If no, signup is broken until payment. On the critical path, not a corner case.
+2. **Activation notification transport.** The activation invocation itself is resolved (section 3.2), but the enrolling device still needs to learn that the click happened, possibly on another device. A held HTTP request is ruled out by the proxy read timeout. The remaining options are a streamed response, which is server-sent events and bills Durable Object duration for the wait; a hibernating WebSocket, which has no timeout and no duration billing but is the most machinery; or polling, which at two-second intervals over five minutes is about 150 requests and costs effectively nothing. For a once-per-signup event the cost difference rounds to zero, so polling is the smaller thing unless a branch-subscription WebSocket is built for other reasons, in which case activation should reuse that connect-delivers-current-state machinery.
+3. **Ingest retention.** `INGEST_RETENTION` is what keeps ingest under the 10 GB cap, which at roughly 400 bytes a row is about 25 million invocations. Too low and disputes have raw detail only in R2. This number is still owed.
+4. **Compute metering.** Whether to bill compute at all, and if so how. Gas instrumentation via a `wasm-instrument`-style pass gives a deterministic counter readable without leaving the request, but sees only code inside the module, so confirm Ed25519 verification is in-module rather than WebCrypto, that the tool parses the built artifact, and that the counter survives `wasm-opt` and `wasm-bindgen`. Out-of-band `CPUTimeMs` from Logpush needs no code change but is lossy and late, so it suits calibration rather than billing. Decision 6 may moot both. Wall-clock timing is unavailable: Spectre mitigation makes `performance.now()` advance only after IO, and it works under `wrangler dev`, so the failure is silent.
+5. **Branch revision poll metering.** The pointer permit is long lived, so one authorization covers unbounded reads. Options: extrapolate from TTL and an assumed poll interval, unvalidatable; client self-report at renewal, which needs signing or accepted understatement; or serve the pointer from the Worker, exact by construction, with a one to two second cache collapsing N clients to roughly one R2 read. Measure the poll-to-permit ratio in phase 0.
+6. **Verification memoization.** A delegation chain is immutable and content addressed, so its verification result is a pure function of the chain CID. Caching by CID for the delegation's remaining lifetime would make repeat polls a lookup. If the hit rate is high, verification stops dominating CPU and decision 4 resolves to not billing compute.
+7. **Sponsor visibility.** Can a sponsor see usage detail, or the sponsor set, for a consumer they do not provide? A privacy question when sponsors are different organisations, and it sharpens when evidence is handed over on dispute.
+8. **Consent lifetime.** `/provider/add` is audience-bound so it cannot be replayed by a third party, but it survives removal, so a former provider can re-add themselves once the consumer has none. Harmless if the relationship only confers payment. Not harmless if it also confers visibility, which is decision 7 arriving through a side door.
+9. **Fail open or closed.** Section 11 serves on KV error and denies on a D1 miss. The asymmetry means a total D1 outage denies everything, since the miss path cannot reach the source of truth.
+10. **Unregistered response.** Whether an unregistered consumer returns a distinct status from a limited one, or both collapse, to avoid disclosing which consumers exist.
+11. **Storage measurement source.** R2 bucket metrics per prefix is the reliable path but may not exist at prefix granularity. Accumulating write bytes overstates, because content addressing means a duplicate block adds no storage, and it cannot see archival deletions.
+12. **Whether to charge for denied invocations.** The data supports either; the pricing page has to say which.
+13. **Terms acceptance boundary.** Acceptance should gate something, and which thing changes the flow. Gating registration means enroll writes nothing and the signed invocation carries the pending signup, so an abandoned signup leaves no trace and the link is the only copy. Gating activation means enroll writes rows and acceptance promotes them, which is what section 3 currently describes. Either way the accepted terms version and timestamp must be recorded, and neither is stored today.
+14. **Period boundary within a run.** A run crossing a customer's cycle boundary holds invocations belonging to two periods. Splitting the batch by timestamp against each `cycle_anchor` is exact; letting them all land in one period is bounded by the cron interval and self-corrects across periods. Cheap either way, but it should be chosen.
 
 ## Appendix A: Rationale
 
-Recorded once so the body does not carry it.
+**Why D1 for the write path.** R2 has no append, and one object per invocation costs $4.50 per million against D1's $1.00 per million rows, with the first 50 million included. R2 only wins when many events share an object, which needs a durable buffer, which costs about what the write it defers costs. Queues are worse still at roughly $1.20 per million messages plus consumer invocation, and a queue in front of a volatile buffer does not close the durability hole because the ack happens before the flush.
 
-**Why D1 for writes.** R2 has no append, and one object per permit costs $4.50 per million against D1's $1.00 per million rows. R2 only wins when many events share an object, which needs a durable buffer, which costs about what the write it defers costs. D1 bills per row regardless of grouping, so a per-permit insert is durable on return with no buffering layer, and the first 50 million rows a month are included.
+**Why the invocation body goes in D1 rather than R2.** It rides along in a row already being written, so it is free. Writing evidence to R2 on the hot path would cost $4.50 per million and commit to that before volume is known. Content-addressed objects cannot be batched without losing point lookup, so per-object cost does not amortise.
 
-**Why R2 for the archive.** It bills per object, so a cron sweep amortises a whole window into one large object. Storage at $0.015 per GB-month with no size cap makes indefinite retention cheap, and it keeps D1 clear of its 10 GB ceiling without a shard pool.
+**Why two databases.** The 10 GB cap is per database. Isolating bulky invocation rows keeps billing state clear of it, separates schema churn, and preserves the option to rotate and drop rather than prune.
 
-**Why no secondary index on `event`.** An index adds one written row per insert touching the indexed column, doubling the expensive dimension to save reads priced a thousand times lower. It would pay only if it saved over a thousand row reads per row written. Query `usage_window` for per-space detail instead.
+**Why aggregation runs in SQL.** Rows read cost about $0.001 per million against $1.00 per million written, a thousand to one, so `GROUP BY` is near free. Pulling raw rows into a Worker incurs the identical read charge and adds serialization, CPU, and a 128 MB ceiling. Only the grouped result crosses the database boundary.
 
-**Why SQL aggregation.** Pulling raw rows into a Worker incurs the identical `rows_read` charge, then adds serialization, CPU, and a 128 MB memory ceiling.
+**Why no secondary index on `invocation`.** An index adds a written row per insert touching the indexed column, doubling the expensive dimension to save reads priced a thousand times lower.
 
-**Why Logpush is not a billing transport.** It cannot backfill; logs generated while a job fails are permanently lost, and a 2024 incident lost 55% of logs over 3.5 hours. Correlated, unrecoverable loss discovered at invoice time is a different class of failure from small uncorrelated loss. Fine for calibration.
+**Why the flattened chain table.** Storing proof-to-invocation edges would write one row per proof per invocation, so a five-link chain shared across ten thousand invocations writes fifty thousand rows. The flattened set writes once per session and adds one column per invocation. Storing parent edges instead would recover the delegation graph but require a recursive walk to reconstruct a chain.
 
-## Appendix B: Glossary
+**Why provisioning is state rather than a credential.** Provisioning is revocable, so no credential issued at provisioning time can express current standing. Short TTLs with refresh is a lookup on a slower clock; a revocation list is a lookup with extra steps.
+
+**Why Logpush is not a billing transport.** It cannot backfill, logs generated while a job fails are permanently lost, and a 2024 incident lost 55% of logs over 3.5 hours. Correlated unrecoverable loss discovered at invoice time is a different class of failure from small uncorrelated loss.
+
+**Why not Cloudflare Pipelines yet.** Ingress is free and Parquet sinks are $0.06/GB, two orders of magnitude below D1 writes, but D1 includes 50 million writes a month, so the crossover is above the included tier. Pipelines also cannot hold transactional state, so it would displace only the ingest table and leave two data stacks. Iceberg gives time predicates rather than a monotonic cursor, which is fine for dashboards and not fine for anything feeding charging. It is the right answer for the archive and for replacing Analytics Engine once volume justifies it, and billing for it is not yet enabled.
+
+**Why allocation is resolved at charge time.** A funding delegation rooted at the payer, presented alongside the access chain, would let each permit name its own payer and need no allocation policy. It costs propagation, since a new sponsor means redistributing delegations to every actor, and revocation, and it lets the actor rather than the consumer choose who pays.
+
+**Why deletion rather than revocation of superseded delegations.** Invocation chains travel to the service, but the service verifies and discards rather than storing, and operators are local and networkless. So the only durable copies are on the device. Making revocation meaningful would require the service to maintain and check a revocation list, which is a larger protocol change than issuing revocation records.
+
+## Appendix B: Cost reference
+
+Approximate 2026 rates, for sizing rather than quoting.
+
+| Service | Rate |
+|---|---|
+| D1 rows written | $1.00/M, first 50M/month included. `INSERT`, `UPDATE`, and `DELETE` all count |
+| D1 rows read | ~$0.001/M, first 25B/month included |
+| D1 storage | $0.75/GB-month after 5 GB. 10 GB per-database cap |
+| D1 DDL | Unspecified: "may contribute to a mix of read rows and write rows" |
+| D1 throughput | Roughly 500 to 2,000 writes/s, single writer. No interactive transactions |
+| D1 bindings | ~5,000 databases per Worker script; six simultaneous connections per invocation |
+| R2 Class A (writes, lists) | $4.50/M, 1M free |
+| R2 Class B (reads) | $0.36/M, 10M free |
+| R2 storage | $0.015/GB-month, 10 GB free. Objects and bytes per bucket unlimited |
+| R2 keys | 1,024 bytes max; one write per second to the same key |
+| Worker | $0.30/M requests + $0.02/M CPU-ms |
+| Queues | $0.40/M operations, roughly 3 per message |
+| Durable Objects | $0.15/M requests; duration $12.50/M GB-s at the full 128 MB, shared across concurrent requests |
+| KV | $5.00/M writes, $0.50/M reads, 1M and 10M included |
+| Pipelines | Ingress free, transforms $0.04/GB, Parquet sink $0.06/GB. Billing not yet enabled |
+| R2 SQL | $2.50/TB scanned. Billing not yet enabled |
+| Edge proxy read timeout | 100 to 120s on response headers, not adjustable below Enterprise |
+
+## Appendix C: Glossary
 
 | Term | What it is |
 |---|---|
+| **Customer** | A billable party, identified by a passkey-derived DID, holding a plan and an email |
+| **Consumer** | A space this service replicates. A customer's account space is one, sharing its DID |
+| **Provider** | The single customer responsible for a consumer. Required for service |
+| **Sponsor** | A customer pledging fixed credits per cycle to a consumer they do not provide |
+| **Run** | One execution of the charge cron, and the Stripe idempotency key |
+| **Period** | A customer's billing cycle, derived from `cycle_anchor` |
+| **Powerline** | A delegation asserting equivalence of authority between two keys |
 | **D1** | Serverless SQLite. Bills per row read and written, not per query. 10 GB per database |
 | **R2** | S3-compatible object storage. Objects immutable, no append. Bills per operation |
 | **KV** | Eventually consistent key-value store, read optimised, globally replicated |
-| **Durable Object** | Single-threaded addressable instance with its own storage, named via `idFromName`. Storage bills at D1 row rates |
-| **Analytics Engine** | High-cardinality sampled time series. Dashboards, forensics, and calibration; not durable enough to bill from |
-| **Logpush** | Best-effort log delivery. Carries `CPUTimeMs` via `workers_trace_events` |
-| **`ratelimit` binding** | Per-location, eventually consistent limiter. No IO, no extra cost |
+| **Analytics Engine** | High-cardinality sampled time series. Dashboards and calibration, not durable enough to bill from |
+| **`ratelimit` binding** | Per-colo, eventually consistent limiter. No IO, no extra cost |
