@@ -6,7 +6,7 @@
 
 use dialog_credentials::Ed25519Signer;
 use tonk_account::customer::RegistrationError;
-use worker::{Request, Response, RouteContext, console_error};
+use worker::{Env, Request, Response, RouteContext, console_error};
 
 use crate::service::{did_document, signer_from_hex};
 
@@ -17,12 +17,8 @@ const DEFAULT_EMAIL_TOKEN_TTL: u64 = 24 * 60 * 60;
 
 /// Answer a registration invocation.
 #[cfg(target_arch = "wasm32")]
-pub async fn handle(
-    body: &[u8],
-    req: &Request,
-    ctx: &RouteContext<()>,
-) -> worker::Result<Response> {
-    match handle_inner(body, req, ctx).await {
+pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Response> {
+    match handle_inner(body, req, env).await {
         Ok(receipt) => Response::from_json(&receipt),
         Err(err) => {
             let response = Response::from_json(&serde_json::json!({ "error": err }))?;
@@ -35,7 +31,7 @@ pub async fn handle(
 async fn handle_inner(
     body: &[u8],
     req: &Request,
-    ctx: &RouteContext<()>,
+    env: &Env,
 ) -> Result<crate::registration::Answer, RegistrationError> {
     use worker::Date;
 
@@ -44,16 +40,15 @@ async fn handle_inner(
     use crate::store::d1::D1Store;
 
     let store = D1Store::new(
-        ctx.env
-            .d1("CONTROL")
+        env.d1("CONTROL")
             .map_err(|err| internal(format!("control database: {err}")))?,
     );
-    let service = service_signer(ctx)?;
-    let api_key = ctx
+    let service = service_signer(env)?;
+    let api_key = env
         .secret("RESEND_API_KEY")
         .map_err(|err| internal(format!("RESEND_API_KEY: {err}")))?
         .to_string();
-    let from = ctx
+    let from = env
         .var("EMAIL_FROM")
         .map_err(|err| internal(format!("EMAIL_FROM: {err}")))?
         .to_string();
@@ -63,7 +58,7 @@ async fn handle_inner(
         .url()
         .map_err(|err| internal(format!("request url: {err}")))?;
     let origin = url.origin().ascii_serialization();
-    let activation_ttl = ctx
+    let activation_ttl = env
         .var("EMAIL_TOKEN_TTL")
         .ok()
         .and_then(|value| value.to_string().parse().ok())
@@ -87,8 +82,8 @@ fn internal(message: String) -> RegistrationError {
 }
 
 /// The service's signing identity, from the `SERVICE_SECRET_KEY` secret.
-fn service_signer(ctx: &RouteContext<()>) -> Result<Ed25519Signer, RegistrationError> {
-    let seed = ctx
+fn service_signer(env: &Env) -> Result<Ed25519Signer, RegistrationError> {
+    let seed = env
         .secret("SERVICE_SECRET_KEY")
         .map_err(|err| internal(format!("SERVICE_SECRET_KEY: {err}")))?
         .to_string();
@@ -151,7 +146,7 @@ pub async fn handle_customer(_req: Request, ctx: RouteContext<()>) -> worker::Re
 
 /// GET `/.well-known/did.json` → the service's DID document.
 pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
-    let signer = match service_signer(&ctx) {
+    let signer = match service_signer(&ctx.env) {
         Ok(signer) => signer,
         Err(err) => {
             console_error!("did document unavailable: {err}");

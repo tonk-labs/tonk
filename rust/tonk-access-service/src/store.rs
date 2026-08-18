@@ -166,6 +166,8 @@ UPDATE customer
  WHERE did = ?1 AND status = 'Registered'
 "#;
 
+pub mod ingest;
+
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod sqlite;
 

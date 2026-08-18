@@ -149,38 +149,51 @@ jobs:
       # The access worker's control database follows the same per-PR shape
       # as the account worker's, and for the same reason: divergent
       # migration histories cannot share a database.
-      - name: Prepare preview access database
+      - name: Prepare preview access databases
         if: github.event_name == 'pull_request'
         id: access-database
         run: |
           set -euo pipefail
-          database="tonk-access-control-pr-${{ github.event.pull_request.number }}"
-          config="$PWD/wrangler.preview.toml"
-          database_id="$({
-            nix --accept-flake-config develop .#ci --command wrangler d1 list --json
-          } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
-          if [ -z "$database_id" ]; then
-            nix --accept-flake-config develop .#ci --command \
-              wrangler d1 create "$database" --location weur
-            database_id="$({
+          resolve() {
+            local database="$1"
+            local id
+            id="$({
               nix --accept-flake-config develop .#ci --command wrangler d1 list --json
             } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
-          fi
-          if [ -z "$database_id" ]; then
-            echo "::error::Could not resolve the D1 database id for $database"
-            exit 1
-          fi
+            if [ -z "$id" ]; then
+              nix --accept-flake-config develop .#ci --command \
+                wrangler d1 create "$database" --location weur >&2
+              id="$({
+                nix --accept-flake-config develop .#ci --command wrangler d1 list --json
+              } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
+            fi
+            if [ -z "$id" ]; then
+              echo "::error::Could not resolve the D1 database id for $database" >&2
+              exit 1
+            fi
+            echo "$id"
+          }
+          control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
+          ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
+          config="$PWD/wrangler.preview.toml"
+          control_id="$(resolve "$control")"
+          ingest_id="$(resolve "$ingest")"
           cp wrangler.toml "$config"
           sed -i \
-            -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$database\"/" \
-            -e "s/database_id = \"REPLACED-PER-PULL-REQUEST\"/database_id = \"$database_id\"/" \
+            -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$control\"/" \
+            -e "s/database_id = \"REPLACED-PER-PULL-REQUEST\"/database_id = \"$control_id\"/" \
+            -e "s/database_name = \"tonk-access-ingest-preview\"/database_name = \"$ingest\"/" \
+            -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
             "$config"
-          if ! grep -Fq "database_name = \"$database\"" "$config" \
-            || ! grep -Fq "database_id = \"$database_id\"" "$config"; then
-            echo "::error::Could not bind the access preview config to $database"
+          if ! grep -Fq "database_name = \"$control\"" "$config" \
+            || ! grep -Fq "database_id = \"$control_id\"" "$config" \
+            || ! grep -Fq "database_name = \"$ingest\"" "$config" \
+            || ! grep -Fq "database_id = \"$ingest_id\"" "$config"; then
+            echo "::error::Could not bind the access preview config to $control/$ingest"
             exit 1
           fi
-          echo "database=$database" >> "$GITHUB_OUTPUT"
+          echo "database=$control" >> "$GITHUB_OUTPUT"
+          echo "ingest=$ingest" >> "$GITHUB_OUTPUT"
           echo "config=$config" >> "$GITHUB_OUTPUT"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -192,6 +205,10 @@ jobs:
           nix --accept-flake-config develop .#ci --command \
             wrangler d1 migrations apply \
               "${{ steps.access-database.outputs.database }}" --remote \
+              --env preview -c "${{ steps.access-database.outputs.config }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler d1 migrations apply \
+              "${{ steps.access-database.outputs.ingest }}" --remote \
               --env preview -c "${{ steps.access-database.outputs.config }}"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -264,6 +281,9 @@ jobs:
           nix --accept-flake-config develop --command \
             wrangler d1 migrations apply tonk-access-control-staging --remote \
               --env staging -c wrangler.toml
+          nix --accept-flake-config develop --command \
+            wrangler d1 migrations apply tonk-access-ingest-staging --remote \
+              --env staging -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -297,6 +317,9 @@ jobs:
         run: |
           nix --accept-flake-config develop --command \
             wrangler d1 migrations apply tonk-access-control --remote \
+              -c wrangler.toml
+          nix --accept-flake-config develop --command \
+            wrangler d1 migrations apply tonk-access-ingest --remote \
               -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -349,7 +372,8 @@ jobs:
           set -euo pipefail
           for database in \
             "tonk-accounts-pr-${{ github.event.pull_request.number }}" \
-            "tonk-access-control-pr-${{ github.event.pull_request.number }}"; do
+            "tonk-access-control-pr-${{ github.event.pull_request.number }}" \
+            "tonk-access-ingest-pr-${{ github.event.pull_request.number }}"; do
             database_id="$({
               nix --accept-flake-config develop .#ci --command wrangler d1 list --json
             } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"

@@ -48,6 +48,16 @@ database_name = "tonk-access-control"
 database_id = ""
 migrations_dir = "rust/tonk-access-service/migrations"
 
+# Ingest: one row per invocation, metering's write path. Separate from
+# control so bulky invocation rows get their own 10 GB ceiling and can
+# later rotate. The hot path logs and continues when the binding is
+# absent; the presign path never depends on it.
+[[d1_databases]]
+binding = "INGEST"
+database_name = "tonk-access-ingest"
+database_id = ""
+migrations_dir = "rust/tonk-access-service/migrations-ingest"
+
 [vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces"
@@ -73,6 +83,12 @@ binding = "CONTROL"
 database_name = "tonk-access-control-staging"
 database_id = ""
 migrations_dir = "rust/tonk-access-service/migrations"
+
+[[env.staging.d1_databases]]
+binding = "INGEST"
+database_name = "tonk-access-ingest-staging"
+database_id = ""
+migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
@@ -114,6 +130,12 @@ binding = "CONTROL"
 database_name = "tonk-access-control-preview"
 database_id = "REPLACED-PER-PULL-REQUEST"
 migrations_dir = "rust/tonk-access-service/migrations"
+
+[[env.preview.d1_databases]]
+binding = "INGEST"
+database_name = "tonk-access-ingest-preview"
+database_id = "INGEST-REPLACED-PER-PULL-REQUEST"
+migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
 [env.preview.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"

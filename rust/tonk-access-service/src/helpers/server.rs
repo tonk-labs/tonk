@@ -9,6 +9,7 @@ use crate::email::{CapturedEmail, EmailError, EmailSender};
 use crate::registration::{Registration, registration_command};
 use crate::service::did_document;
 use crate::shortcut::{Shortcut, object_key_for, requested_ttl, unavailable_invite_html};
+use crate::store::ingest::{IngestStore, SqliteIngest};
 use crate::store::sqlite::SqliteStore;
 use async_trait::async_trait;
 use dialog_common::helpers::{Provider, Service};
@@ -53,6 +54,7 @@ pub struct AccessServer {
 /// service signer.
 struct RegistrationState {
     store: SqliteStore,
+    ingest: SqliteIngest,
     emails: Arc<CapturedEmail>,
     sender: AnnouncedEmail,
     service: Ed25519Signer,
@@ -114,6 +116,7 @@ impl AccessServer {
         let service_did = service.did().to_string();
         let registration = Arc::new(RegistrationState {
             store: SqliteStore::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
+            ingest: SqliteIngest::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
             emails: emails.clone(),
             sender: AnnouncedEmail(emails.clone()),
             service,
@@ -261,6 +264,18 @@ async fn handle_request(
                 .unwrap(),
         ));
     }
+    if req.method() == Method::GET && req.uri().path() == "/_test/ingest" {
+        let count = registration.ingest.invocations().unwrap_or_default();
+        return Ok(cors_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({ "invocations": count }).to_string(),
+                )))
+                .unwrap(),
+        ));
+    }
     if req.method() == Method::GET && req.uri().path() == "/_test/service" {
         let body = serde_json::json!({ "did": registration.service.did().to_string() });
         return Ok(cors_response(
@@ -391,7 +406,32 @@ async fn handle_request(
 
     // Authorize the UCAN container using UcanAuthorizer
     let authorizer = authorizer.read().await;
-    match authorizer.authorize(&body_bytes).await {
+    let outcome = authorizer.authorize(&body_bytes).await;
+    // Metering mirrors the worker: permits and attributable denials are
+    // recorded, infra failures and unparseable containers are not.
+    let metered = match &outcome {
+        Ok(descriptor) => {
+            let bytes = descriptor
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.parse().ok())
+                .unwrap_or(0);
+            Some(("ok", None, bytes))
+        }
+        Err(dialog_remote_s3::S3Error::Authorization(reason)) => {
+            Some(("denied", Some(format!("{reason:?}")), 0))
+        }
+        Err(_) => None,
+    };
+    if let Some((label, reason, bytes)) = metered
+        && let Some(record) =
+            crate::metering::collect(&body_bytes, label, reason, bytes, unix_now())
+        && let Err(error) = registration.ingest.record(&record).await
+    {
+        eprintln!("metering write failed: {error}");
+    }
+    match outcome {
         Ok(descriptor) => {
             // Serialize the AuthorizedRequest as CBOR
             match serde_ipld_dagcbor::to_vec(&descriptor) {
