@@ -31,7 +31,7 @@ Billing authority and access authority are separate. Who pays for a consumer is 
 
 ## 3. Registration
 
-Three invocations. All are verified by the access service; none bypass the chain. Each roots at the invoking customer's DID, which is self-certifying, so the standard chain check proves the issuer holds the customer's authority and no delegation from the service is involved. Activation rides the same check from the other end: it roots at the service's own subject, delegated to the customer by email and invoked by the customer (section 3.2). Everything lands at the one `/ucan/` endpoint as an invocation, the service's own administrative acts included, which it issues to itself under its own subject.
+Three invocations. All are verified by the access service; none bypass the chain. Each roots at the invoking customer's DID, which is self-certifying, so the standard chain check proves the issuer holds the customer's authority and no delegation from the service is involved. Activation rides the same check from the other end: the service mints a complete self-signed invocation on its own subject, emails it, and presenting it is invoking it (section 3.2). Everything lands at the one `/ucan/` endpoint as an invocation, the service's own administrative acts included, which it issues to itself under its own subject.
 
 Commands are named role-first: the first segment is the role the subject exercises. On a customer DID that gives three disjoint namespaces, `/customer` for identity, `/provider` for paying for consumers, `/sponsor` for pledging credits; on a space DID the consent lives under `/consumer`, the space's own role. Prefix authorization makes the first segment the unit of delegation, so a role prefix delegates exactly one role and roles never bleed into each other through a broad grant.
 
@@ -54,7 +54,7 @@ The service verifies both and writes, in one batch:
 - `consumer` row for the same DID, `registered = now`
 - `consumer.provider` set to that same DID, so the customer provides its own account space
 
-KV gets the derived state, which denies service at this point. The service then emails a link carrying the activation delegation (section 3.2).
+KV gets the derived state, which denies service at this point. The service then emails a link carrying the activation invocation (section 3.2).
 
 Enrolling an already `Registered` customer is idempotent: the rows stand and the activation email is resent, which is also the recovery for an expired link. Enrolling an `Active` customer is refused. Changing the email on an active account is a different act with different stakes, and is not designed here.
 
@@ -62,33 +62,24 @@ Writing both rows together matters. Two steps would leave a window in which a co
 
 ### 3.2 Activate
 
-At enroll the service issues a delegation of `/customer/activate` on its own subject to the customer, and emails a link carrying it, base64url encoded in a query parameter:
-
-```
-{ iss: "did:web:tonk.network",
-  aud: "did:key:zAlice",
-  sub: "did:web:tonk.network",
-  cmd: "/customer/activate",
-  exp: <enroll + EMAIL_TOKEN_TTL> }
-```
-
-The customer finalizes by invoking what the link delegated:
+At enroll the service mints a complete, self-signed activation invocation and emails a link carrying it, base64url encoded in a query parameter:
 
 ```
 { cmd: "/customer/activate",
   sub: "did:web:tonk.network",
+  iss: "did:web:tonk.network",
   args: { customer: "did:key:zAlice",
           terms: "2026-08" },
-  prf: [ <the emailed delegation> ] }
+  exp: <enroll + EMAIL_TOKEN_TTL> }
 ```
 
-The page behind the link presents the terms, and the accept button is what fires the invocation, so acceptance gates activation and the accepted version rides in `terms`, customer-signed. The chain roots at the service's own subject and verifies like any other. `exp` travels inside the delegation, so an expired link fails chain verification without a storage lookup, and the service keeps no token state: its own signature is the proof that it issued the link. The service checks `args.customer` against the audience of its delegation in the chain, then executes: `customer.verified` is set, `terms_version` and `terms_accepted_at` are recorded, `status` becomes `Active`, the customer lands on the trial plan, and KV is rewritten for every consumer this customer funds. Replication on the account space is live.
+The invocation is the whole act. The page behind the link presents the terms, and the accept button posts the bytes as-is to the same `/ucan/` endpoint: presenting is activating, so no key is needed on the clicking device and a click on any device finalizes. The chain is issued on the service's own subject and verifies like any other, and no other issuer can mint one, since a proofless chain on this subject verifies only under the service's own signature. Who presents it does not matter; what it says cannot be changed.
+
+`exp` travels inside the invocation, so an expired link fails without a storage lookup, and the service keeps no token state: its own signature is the proof that it issued the link. The accepted terms version is baked in at mint time, so the archived invocation records which terms the page presented. Executing it sets `customer.verified`, records `terms_version` and `terms_accepted_at`, flips `status` to `Active`, lands the customer on the trial plan, and rewrites KV for every consumer this customer funds. Replication on the account space is live.
 
 Replay is harmless: activating an already-active customer is a no-op.
 
-The link is not a bearer credential. The delegation is audience-bound to the customer, so browser history, referrer headers, and intermediaries hold paper only the customer's key can spend, and proof of email ownership is the delegation round-tripping through the inbox back to that key. Mail-client prefetching is inert for the same reason: a GET fires no signed invocation.
-
-The flip side is that the click finalizes only on a device holding the customer's key. On the enrolling device, the common case, activation completes in place with nothing to notify. A click elsewhere holds a delegation it cannot invoke and must relay it to the enrolling device. Open decision 2.
+The link is a bearer credential, deliberately. An audience-bound delegation was considered and rejected: it kept intercepted links unusable, but it could finalize only on a device holding the customer's key, reintroducing a cross-device relay for exactly the flow email makes common. The prize of interception is weak, since the invocation names one customer and confers verification of an email the service already chose, so an interceptor gains an activated account whose keys they do not hold; a short `EMAIL_TOKEN_TTL` bounds the exposure. Mail-client prefetching cannot activate as long as the page executes on the accept button's POST rather than on GET.
 
 **Trial.** Activation lands the customer on the trial plan: generous limits, nothing charged, no payment set up. The plan row carries a `term`, and when a customer's activation is older than their plan's term the reconciliation cron sets `limit_code` with a null `resets`. Nothing lifts it but enrolling into a successor plan: the free tier with tighter limits, or a paid plan with Stripe. A middle tier that requires payment set up but charges nothing is one plan row away and needs no machinery. The plan-switching command arrives with the Stripe work.
 
@@ -514,7 +505,7 @@ Publish the ratios, not the cost basis.
 | `RATELIMIT_ISSUER` / `RATELIMIT_CONSUMER` / `RATELIMIT_REGISTER` | Limit and period per namespace |
 | `PERMIT_TTL_READ` / `_WRITE` / `_REVISION` | Replay window |
 | `CHAIN_DEPTH_MAX` | CPU exposure per request |
-| `EMAIL_TOKEN_TTL` | `exp` on the activation delegation, so link lifetime |
+| `EMAIL_TOKEN_TTL` | `exp` on the activation invocation, so link lifetime |
 
 ## 14. Rollout
 
@@ -549,9 +540,10 @@ Phase 3 has a prerequisite the table hides: every consumer served today predates
 - A run crossing a cycle boundary resets the counters rather than accumulating across periods.
 - Archived R2 objects reconcile exactly against the ledger rows derived from them.
 - A Stripe push retried within 24 hours does not double-bill.
-- Enrollment, activation, and consumer addition each produce a verifiable invocation; enrollment and addition root at the customer's DID, activation at the service's own subject through the emailed delegation.
+- Enrollment, activation, and consumer addition each produce a verifiable invocation; enrollment and addition root at the customer's DID, activation at the service's own subject as the self-signed invocation the email carried.
 - A consumer added while its provider is `Registered` is denied, and the provider's activation makes it served with no further invocation.
-- An intercepted activation link activates nothing: the delegation is audience-bound and only the customer's key can invoke it.
+- An activation link finalizes from any device: presenting the emailed invocation is activating, with no key on the presenting device.
+- A forged activation invocation, any issuer but the service naming the service's subject, is refused.
 - Activating twice leaves the customer active and writes no duplicate state.
 - An activation link presented after `EMAIL_TOKEN_TTL` fails chain verification, with no storage lookup involved.
 - Activation records the accepted terms version from the signed invocation, and the archived invocation evidences it.
@@ -567,7 +559,7 @@ Phase 3 has a prerequisite the table hides: every consumer served today predates
 ## 16. Open decisions
 
 1. **Free allowance at signup.** Resolved: activation lands on the trial plan (section 3.2). Generous limits, nothing charged, a `term` after which the reconciliation cron sets `limit_code`, cleared only by enrolling into a successor plan: the free tier with tighter limits, a paid plan with Stripe, or possibly a middle tier that requires payment set up without charging.
-2. **Activation notification transport.** Resolved: polling, the simple thing first. In the general case the click and the accept button happen on the enrolling device, which holds the customer's key, fires the signed invocation itself, and knows the outcome in the response, with nothing to notify. When the click lands on a device without the key, the page deposits the delegation back with the service for pickup, which is harmless since it is useless to anyone but the key holder, and the enrolling client's poll collects and invokes it. A held HTTP request stays ruled out by the proxy read timeout, and the fancier transports, server-sent events billing Durable Object duration or a hibernating WebSocket, are not worth building for once per signup; reuse a branch-subscription WebSocket only if one exists for other reasons.
+2. **Activation notification transport.** Resolved, and mostly dissolved: the link carries the complete service-signed invocation, so any device finalizes and nothing needs relaying anywhere. What remains is the enrolling client noticing the flip, which its ordinary poll does; the fancier transports, server-sent events billing Durable Object duration or a hibernating WebSocket, stay unjustified for once per signup.
 3. **Ingest retention.** `INGEST_RETENTION` is what keeps ingest under the 10 GB cap, which at roughly 400 bytes a row is about 25 million invocations. Too low and disputes have raw detail only in R2. This number is still owed.
 4. **Compute metering.** Whether to bill compute at all, and if so how. Gas instrumentation via a `wasm-instrument`-style pass gives a deterministic counter readable without leaving the request, but sees only code inside the module, so confirm Ed25519 verification is in-module rather than WebCrypto, that the tool parses the built artifact, and that the counter survives `wasm-opt` and `wasm-bindgen`. Out-of-band `CPUTimeMs` from Logpush needs no code change but is lossy and late, so it suits calibration rather than billing. Decision 6 may moot both. Wall-clock timing is unavailable: Spectre mitigation makes `performance.now()` advance only after IO, and it works under `wrangler dev`, so the failure is silent.
 5. **Branch revision poll metering.** The pointer permit is long lived, so one authorization covers unbounded reads. Options: extrapolate from TTL and an assumed poll interval, unvalidatable; client self-report at renewal, which needs signing or accepted understatement; or serve the pointer from the Worker, exact by construction, with a one to two second cache collapsing N clients to roughly one R2 read. Measure the poll-to-permit ratio in phase 0.
@@ -578,7 +570,7 @@ Phase 3 has a prerequisite the table hides: every consumer served today predates
 10. **Unregistered response.** Whether an unregistered consumer returns a distinct status from a limited one, or both collapse, to avoid disclosing which consumers exist.
 11. **Storage measurement source.** R2 bucket metrics per prefix is the reliable path but may not exist at prefix granularity. Accumulating write bytes overstates, because content addressing means a duplicate block adds no storage, and it cannot see archival deletions.
 12. **Whether to charge for denied invocations.** The data supports either; the pricing page has to say which.
-13. **Terms acceptance boundary.** Resolved: acceptance gates activation, which section 3 already describes. The accept button is what fires the activation invocation, the accepted version travels in its `terms` argument, and the service records `customer.terms_version` and `terms_accepted_at` from it. The invocation is customer-signed and archived, so the recorded acceptance is evidenced by an artifact the service could not have forged.
+13. **Terms acceptance boundary.** Resolved: acceptance gates activation, which section 3 already describes. The terms version is baked into the minted invocation, the page presents that version, and the accept button's POST is the acceptance; the service records `customer.terms_version` and `terms_accepted_at` when it executes. The archived invocation is service-signed, so it evidences which terms were presented and when they were accepted, though not a customer signature over them; the customer-signed variant went with the delegation-shaped link.
 14. **Period boundary within a run.** A run crossing a customer's cycle boundary holds invocations belonging to two periods. Splitting the batch by timestamp against each `cycle_anchor` is exact; letting them all land in one period is bounded by the cron interval and self-corrects across periods. Cheap either way, but it should be chosen.
 15. **Customer rows and account rows.** Registration lands at the access service's `/ucan/` endpoint like every other invocation, so what remains is integration: the account service's email sender should be shared rather than duplicated, and the mapping between `customer` rows and the account service's existing accounts, which the section 14 backfill needs in order to grandfather served spaces onto owning customers, has to be settled before increment one.
 
