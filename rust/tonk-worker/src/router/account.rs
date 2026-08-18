@@ -124,6 +124,29 @@ pub(crate) async fn member_did(
     super::identity::root_did(state).await
 }
 
+/// Whether this profile is linked, read from the account replica the
+/// profile repository indexes rather than a stored flag (plan/Account
+/// model.md §5). Two deliberate deviations from the pure signal:
+///
+/// - A legacy account attached before repository descriptors existed has
+///   nothing mounted to read; its descriptor-less record stands in until
+///   `establish_repository` upgrades it.
+/// - A transient index read failure falls back to the stored attachment
+///   instead of signing the profile out on a flaky read.
+async fn linked(state: &crate::worker::TonkState) -> bool {
+    match super::account_state::linked_account(state).await {
+        Ok(Some(_)) => true,
+        Ok(None) => matches!(
+            attachment(state).await,
+            Some(record) if record.descriptor().is_none()
+        ),
+        Err(error) => {
+            log!("linked-state read failed, falling back to the stored attachment: {error}");
+            attachment(state).await.is_some()
+        }
+    }
+}
+
 /// Refuse unless this device holds an account.
 ///
 /// The precondition every durable operation shares. Durable authority is only
@@ -133,16 +156,17 @@ pub(crate) async fn member_did(
 /// synchronization states of an account that exists, and refusing on them
 /// would invent a way to be stuck with no way out.
 ///
-/// [`attachment`] resolves the record against the local root and is fail-safe,
-/// so a missing root, an unreadable record and another account's descriptor
-/// all land here as "no account" rather than as an error the caller has to
-/// distinguish.
+/// [`linked`] reads the replica signal and is fail-safe through the stored
+/// attachment, so a missing root, an unreadable record and another account's
+/// descriptor all land here as "no account" rather than as an error the
+/// caller has to distinguish.
 pub(crate) async fn require_account(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {
-    match attachment(state).await {
-        Some(_) => Ok(()),
-        None => Err(TonkWorkerError::AccountRequired),
+    if linked(state).await {
+        Ok(())
+    } else {
+        Err(TonkWorkerError::AccountRequired)
     }
 }
 
@@ -208,6 +232,15 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
             root_did: root.root_did.to_string(),
             device_did,
         }),
+        // The record is provider metadata, not the linked flag: a record
+        // whose descriptor names a repository that was never mounted is a
+        // link that did not complete, and re-linking heals it.
+        Some(record) if record.descriptor().is_some() && !linked(state).await => {
+            Ok(AccountStatus::Unregistered {
+                root_did: root.root_did.to_string(),
+                device_did,
+            })
+        }
         Some(record) => {
             let account_state = if record.descriptor().is_some() {
                 super::account_state::status(state).await
@@ -382,6 +415,10 @@ pub async fn link(
 #[wasm_compat]
 pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
     let state = state.read().await;
+    // The replica retraction is the unlink: it clears the linked-state
+    // signal sync and status read. It goes first so a failure leaves the
+    // device consistently linked rather than half signed out.
+    super::account_state::retract_account_replicas(&state).await?;
     state
         .profile
         .credential()
@@ -557,6 +594,74 @@ mod tests {
             entry.root_did.is_none() && entry.provider.is_none() && entry.email.is_none(),
             "a signed-out profile renders as a local workspace"
         );
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_linked_state_from_the_replica_signal() {
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let request = {
+            let state = state.read().await;
+            matching_request(&state).await
+        };
+        let _ = link(State(state.clone()), Json(request)).await.unwrap();
+
+        let tonk = state.read().await;
+        let root = super::super::identity::local_root(&tonk).await.unwrap();
+        let linked = super::super::account_state::linked_account(&tonk)
+            .await
+            .unwrap()
+            .expect("link records the account replica");
+        assert_eq!(linked, root.root_did);
+    }
+
+    #[dialog_common::test]
+    async fn it_treats_an_unmounted_descriptor_record_as_unlinked() {
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        // Persist the attachment record directly, without the mount that
+        // link performs: the state a crash mid-link leaves behind. The
+        // record alone must not read as a linked account.
+        {
+            let tonk = state.read().await;
+            let request = matching_request(&tonk).await;
+            let root = super::super::identity::local_root(&tonk).await.unwrap();
+            let descriptor = hex::decode(&request.descriptor_hex).unwrap();
+            let record =
+                AccountProviderRecord::attach(&request.provider, &descriptor, &root.root_did, 1)
+                    .await
+                    .unwrap();
+            save_provider(&tonk, &record).await.unwrap();
+
+            assert!(matches!(
+                require_account(&tonk).await,
+                Err(TonkWorkerError::AccountRequired)
+            ));
+        }
+        let Json(status) = get(State(state)).await.unwrap();
+        assert!(matches!(status, AccountStatus::Unregistered { .. }));
+    }
+
+    #[dialog_common::test]
+    async fn it_retracts_the_replica_signal_on_unlink() {
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let request = {
+            let state = state.read().await;
+            matching_request(&state).await
+        };
+        let _ = link(State(state.clone()), Json(request)).await.unwrap();
+        let _ = unlink(State(state.clone())).await.unwrap();
+
+        let tonk = state.read().await;
+        assert!(
+            super::super::account_state::linked_account(&tonk)
+                .await
+                .unwrap()
+                .is_none(),
+            "unlink retracts the account replica"
+        );
+        assert!(matches!(
+            require_account(&tonk).await,
+            Err(TonkWorkerError::AccountRequired)
+        ));
     }
 
     #[dialog_common::test]
