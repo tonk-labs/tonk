@@ -80,88 +80,64 @@ Blob format: version, generation counter (rotation must be expressible
 later without format migration; not built now), algorithm identifiers,
 KEK-method tag, AEAD nonce.
 
-## Custody publication: the delegation is the public artifact
+## Custody publication: the custody key is a provisioned space
 
 Each remote wrapping derives a **custody keypair** from its entry
-function (PRF or KDF). What gets published publicly is not the wrapped
-secret but a **standing delegation `account → custody key`**, carried in
-a DID document the custody key's did:web identifier resolves to:
-
-- `did:web:tonk.spot:custody:{custody-key}` →
-  `https://tonk.spot/custody/{custody-key}/did.json`, containing
-  `alsoKnownAs: [account DID]` and the embedded delegation. did:web
-  resolution is a plain HTTPS GET — public by its own semantics, which
-  is exactly the property bootstrap needs. The document is uploaded at
-  enrollment (authorized, customer-attributed PUT) and served
-  statically.
-- The delegation is self-authenticating (a chain rooted in the account
-  subject); `alsoKnownAs` is a convenience the delegation's subject
-  field proves.
-- **The wrapped secret lives in the account DB** — where it always
-  wanted to live. The circularity that previously forced it outside the
-  gate is gone: authorization bootstraps from the public delegation, and
-  the secret is fetched only after the device is authorized. Whether it
-  is represented as a fact or a cell is an open implementation choice,
-  not a design point — a cell has the attractive property that a freshly
-  authorized device fetches it at a well-known path with one presigned
-  GET, before it can hydrate or query anything.
+function (PRF or KDF). The custody key becomes an ordinary **provisioned
+space** under the account's customership, and everything custody needs
+lives in that space as raw memory cells. No new service surface:
+provisioning, cell writes, presigned reads, and withdrawing providership
+are machinery that already exists.
 
 Two fixed entry-function salts, with distinct jobs:
-`"tonk/custody/key/v1"` seeds the custody keypair (its public key is
-the did:web path — the lookup *is* the DID); `"tonk/custody/kek/v1"`
-derives the KEK for the wrapped-secret fact.
+`"tonk/custody/key/v1"` seeds the custody keypair — deriving it *is*
+the lookup, since its DID names the space; `"tonk/custody/kek/v1"`
+derives the KEK for the wrapped-secret cell.
 
-### The publication capability
-
-Publishing is a customer act in the established deposit pattern,
-role-first beside `/customer/*` and `/provider/*`:
-
-The order of operations: the account mints the delegation first; the
-custody key then publishes it on its own subject.
-
-- `/custody/publish { delegation: Cid }` — invoked on the **custody
-  key's subject**; the chain roots in the custody key (at enrollment
-  the device holds the just-derived custody private key, so signing is
-  free). Consent is not a separate artifact: invoking on your own
-  subject *is* the agreement, so the binding is bidirectional with one
-  deposit — the account through the delegation, the custody key
-  through the invocation subject. The delegation rides as a container
-  token named by CID (an argument, not a proof), verified:
-  - audience = the invocation subject (the delegation names this
-    custody key);
-  - subject = a **registered customer** — that customer gets the
-    attribution and metering, so the custody DID never needs
-    provisioning: it is a subject whose one invocation is billed
-    through the account the deposit names;
-  - subject ≠ invocation subject — a key custodying itself is
-    meaningless, and rejecting it closes the degenerate case of the
-    same command invoked on an account subject.
-  The service serves the document at
-  `/custody/{invocation-subject}/did.json`. The address deriving from
-  the invocation subject is what makes squatting impossible: writing
-  key K's document requires a chain rooted in K, which is exactly K's
-  consent. Nobody can publish at an address they do not control.
-- `/custody/retract { custody: Did }` — invoked on the **account's
-  subject**, paired with revoking the delegation through the relay.
-  Deliberately needs **no consent**: retraction is the account
-  withdrawing its own claim, and it must work when the passkey is lost
-  — which is the main occasion for it. The mirror rule scopes it: the
-  stored document's delegation subject must equal the invocation
-  subject — an account retracts documents naming itself, nothing else.
-- **Resolution is deliberately not a capability.** did:web resolution is
-  an unauthenticated GET; the custody key's holder is merely the only
-  party who can derive the address (the DID comes out of the PRF inside
-  an assertion) — and the only party holding the custody private key the
-  delegation is addressed to. Resolution needing no authorization is
-  precisely what breaks the bootstrap circle.
+- **Publish** = provision + two cell writes, at enrollment. The account
+  mints the delegation first; then:
+  1. The account provisions the custody DID through `/provider/add`,
+     exactly as it provisions any space. The consent deposit that
+     contract already requires — the consumer's powerline to the
+     account — *is* the custody key's agreement to the binding. The
+     bidirectional-consent design we kept re-inventing is the existing
+     provisioning contract's ordinary shape. The device holds the
+     just-derived custody private key at enrollment, so minting the
+     consent is free.
+  2. The device writes two cells into the custody space's `/memory`
+     under well-known names:
+     - `delegation` — the standing `account → custody key` grant;
+     - `secret` — the account secret AEAD-wrapped under this
+       wrapping's KEK.
+     These are raw named-cell writes — no repository, no branches, no
+     history, **no permanent DB record anywhere**: on the server the
+     space is two cells, and locally nothing ever hydrates it as a
+     repo. (The third-database confusion must not return wearing a
+     new hat.)
+- **Resolve** = the space owner reading its own space. A fresh device
+  derives the custody keypair inside the assertion, then reads the two
+  cells with **root authority on the custody subject** — one presigned
+  GET each, before any repository exists locally. The public-resolution
+  requirement dissolves: resolution needed no authorization only
+  because the resolver had none, but the resolver holds the custody
+  key by construction. Nothing about the account ↔ passkey binding is
+  public any more.
+- **Retract** = the account withdraws its providership of the custody
+  space and revokes the delegation through the existing relay (already
+  checked on the sync path). Consent-free by nature — a provider
+  withdrawing service needs no consumer signature — which is exactly
+  what the passkey-lost case requires.
+- **Squatting is impossible** for the structural reason: writing into
+  the custody space requires a chain rooted in the custody subject,
+  which is the custody key's consent by definition.
 
 Why this shape:
 
 - **Unlock requires no custody.** A fresh device derives the custody
-  key, resolves the document, and the custody key re-delegates to the
-  fresh device key: `account → custody → device`. The account secret
-  never materializes in memory for routine linking — strictly safer
-  than an unwrap-on-link design.
+  key, reads the `delegation` cell, and the custody key re-delegates to
+  the fresh device key: `account → custody → device`. The account
+  secret never materializes in memory for routine linking — strictly
+  safer than an unwrap-on-link design.
 - **The bootstrap chain is temporary.** Once the device has pulled the
   account, it unwraps once (post-authorization) to mint a direct
   `account → device` delegation and switches its remote to it. Steady-
@@ -171,32 +147,41 @@ Why this shape:
 - The standing delegation is no escalation: the passkey can always
   reach full custody through the KEK anyway, so the delegation is a
   shortcut, not a new power.
-- **Removal is real revocation**: revoke the delegation through the
-  existing revocation relay (already checked on the sync path), retract
-  the wrapping fact, delete the document. Stronger than deleting a
-  ciphertext and hoping nobody cached it.
-- **Nothing touches the hot path.** Publication is one enrollment-time
-  invocation billed to the customer the deposit names; everything else
-  is ordinary account-subject traffic. No per-passkey consumers, no
-  provisioning choreography, no alias map consulted at presign time.
-- Privacy note: the document publicly links custody key ↔ account DID
-  to anyone who learns the custody-key DID. Presented chains reveal the
-  account DID anyway and the path is unguessable, so this is
-  observation-equivalent to the status quo.
+- **The wrapped secret lives with its only reader.** The `secret` cell
+  is fetched by the one party that can decrypt it, before the device
+  can touch anything else — no fact in the account DB, no blob
+  namespace, no record that outlives the wrapping. Retracting the
+  space retracts the ciphertext with it.
+- **Removal is real revocation**: the relay kills the delegation on
+  the sync path, withdrawn providership makes the cells unreachable.
+  Stronger than deleting a ciphertext and hoping nobody cached it.
+- **Metering is boring**: the account provides the custody space like
+  any space; a consumer row per passkey is the accepted cost of the
+  bill landing somewhere. Nothing on the presign hot path, no alias
+  map, no special attribution rule.
+- Privacy improves: the binding is readable only by the custody key's
+  holder, where the did:web variant published it.
 
 Considered and rejected along the way, recorded so the arguments are
 not relitigated:
 
-- *Wrapped-secret cell under a self-owned custody subject, no
-  delegation*: breaks the circularity but costs a provisioned consumer
-  per passkey, puts an alias-resolution map on the presign hot path if
-  that namespace is to be folded into the account's, and makes every
-  link an unwrap.
-- *Bespoke public blob namespace keyed by a PRF lookup value*: works,
-  but is a nonstandard surface delivering less than the DID document —
-  no revocation semantics, no linkage, no standard resolution.
-- *Wrapped secret in the account DB with no public artifact*: the fact
-  sits behind the authorization it exists to bootstrap.
+- *did:web document with the embedded delegation*
+  (`did:web:tonk.spot:custody:{key}` serving `did.json` with
+  `alsoKnownAs`): standard-shaped, but nothing external ever resolves
+  it — the "standard resolution" served only our own bootstrap, while
+  making the binding public and demanding a bespoke publish/retract
+  surface with hand-rolled verification rules.
+- *Bespoke `/custody/publish` invoked on the custody subject*: closer —
+  the invocation-as-consent insight survives in the provisioning shape —
+  but still a new capability whose rules (audience = invocation
+  subject, deposit subject must be a registered customer, subject
+  inequality) re-derive what `/provider/add` already encodes.
+- *Wrapped-secret cell only, no published delegation*: makes every
+  link an unwrap; carrying the delegation keeps unwrap a one-time
+  post-pull step and keeps the secret out of memory on routine links.
+- *Wrapped secret as a fact in the account DB*: sits behind the
+  authorization it exists to bootstrap, and forces a durable DB record
+  where a raw cell suffices.
 - *First passkey derives the secret directly*: see above — irrevocable
   forever, and WebAuthn returns to the account-creation critical path.
 
@@ -254,6 +239,10 @@ the account secret — identity and delegations preserved.
    matrix. The fresh-device story leans on it; support is uneven.
 4. Non-extractable Ed25519 in WebCrypto across the target matrix (the
    signing-handle refinement assumes it).
+5. Raw named-cell writes and presigned reads against a provisioned
+   space's `/memory` with root-subject authority and **no repository**
+   behind it — the storage path must not demand a repo record, and no
+   client path may hydrate the custody space as one.
 
 ## Non-goals
 
@@ -265,8 +254,13 @@ the account secret — identity and delegations preserved.
 
 ## Sequencing
 
-After the registration stack (landed, #724): this custody scheme first —
-it is self-contained beneath the ceremony bridge and it hands the
-profile-as-account-upstream restructure its cleanest precondition
-(accounts exist independent of any credential). Then the upstream
-restructure, per `Account model.md` §5 in its literal form.
+After the registration stack (landed, #724): one implementation arc,
+custody together with the account-as-remote restructure. The custody
+stack makes the account exist independent of any credential; the same
+pass rolls the account in as the **upstream remote of profile main** —
+the hidden account repository dissolves into a remote, which drops the
+third local database. The custody space carries the delegation and the
+wrapped secret, so nothing account-shaped needs a local record before
+the first pull. Restructure semantics per `Account model.md` §5 in its
+literal form; existing devices transition through the fresh-link/adopt
+path, and the old account remote keeps working as just a remote.
