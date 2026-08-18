@@ -26,6 +26,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 use dialog_artifacts::Entity;
+use dialog_query::{Output as _, Query, Term};
+use tonk_schema::meta::{AnonymousAttribute, attribute};
 
 /// The last release that can read pre-upgrade data.
 ///
@@ -238,6 +240,74 @@ pub async fn migrate_blobs(
         }
     }
     Ok(migration)
+}
+
+/// Import a rewritten branch and repair runtime attribute IDs left by an
+/// earlier, pre-fix migration attempt.
+///
+/// CSV import is additive. If a destination already contains
+/// `dialog.origin/*` values, importing their corrected `dialog.replica/*`
+/// counterparts does not retract the stale cardinality-one claims. Explicitly
+/// retracting those claims makes a corrected migration safe to rerun and lets
+/// identity-bound concepts such as `vault/tree` resolve again.
+pub async fn import_migrated_branch(
+    destination: &crate::site::TonkSite,
+    branch: &str,
+    csv: &PathBuf,
+) -> Result<usize> {
+    crate::transfer::import_branch(destination, branch, csv)
+        .await
+        .with_context(|| format!("failed to import migrated branch {branch:?}"))?;
+    repair_runtime_attribute_ids(destination, branch).await
+}
+
+async fn repair_runtime_attribute_ids(
+    destination: &crate::site::TonkSite,
+    branch: &str,
+) -> Result<usize> {
+    let session = destination
+        .named_branch(branch)
+        .await
+        .with_context(|| format!("failed to open migrated branch {branch:?}"))?;
+    let mut stale = Vec::new();
+    for &(old, new) in RUNTIME_ATTRIBUTE_RENAMES {
+        let attributes: Vec<AnonymousAttribute> = session
+            .handle()
+            .query()
+            .select(Query::<AnonymousAttribute> {
+                this: Term::var("attribute"),
+                id: Term::from(attribute::Id(old.to_owned())),
+                r#type: Term::var("type"),
+                cardinality: Term::var("cardinality"),
+                description: Term::var("description"),
+            })
+            .perform(&destination.operator)
+            .try_vec()
+            .await
+            .with_context(|| format!("failed to find stale runtime attribute {old:?}"))?;
+        stale.extend(
+            attributes
+                .into_iter()
+                .map(|attribute| (attribute.this, old, new)),
+        );
+    }
+    if stale.is_empty() {
+        return Ok(0);
+    }
+
+    let repaired = stale.len();
+    let mut transaction = session.handle().transaction();
+    for (entity, old, new) in stale {
+        transaction = transaction
+            .retract(attribute::Id::of(entity.clone()).is(old.to_owned()))
+            .assert(attribute::Id::of(entity).is(new.to_owned()));
+    }
+    transaction
+        .commit()
+        .perform(&destination.operator)
+        .await
+        .with_context(|| format!("failed to repair runtime attributes on branch {branch:?}"))?;
+    Ok(repaired)
 }
 
 fn run(command: &mut Command) -> Result<()> {

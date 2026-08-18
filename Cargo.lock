@@ -1198,6 +1198,7 @@ dependencies = [
  "dialog-repository",
  "dialog-search-tree",
  "dialog-storage",
+ "futures-util",
  "ipld-core",
  "parking_lot",
  "serde_json",
