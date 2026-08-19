@@ -37,9 +37,26 @@ use dialog_storage::provider::storage::Storage;
 use dialog_ucan::Ucan;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
+use serde::{Deserialize, Serialize};
+use tonk_common::log;
 
 use crate::TonkWorkerError;
 use crate::worker::DefaultSpace;
+
+/// Credential site on the profile holding the current session's
+/// derivation context and expiry, as JSON. Device-local — credential
+/// sites never ride a branch — so persisting a session shares nothing.
+const SESSION_SITE: &str = "tonk-session-v1";
+
+/// The persisted shape of a session: enough to re-derive the operator
+/// (derivation is a deterministic KDF over the profile seed and the
+/// context) and to know when reuse must stop.
+#[derive(Serialize, Deserialize)]
+struct PersistedSession {
+    version: u8,
+    context: Vec<u8>,
+    expires_at: u64,
+}
 
 /// How long a session delegation is good for.
 ///
@@ -79,6 +96,36 @@ where
         + Provider<dialog_effects::blob::Import>,
     S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
 {
+    // Reuse the persisted session while it is still fresh: derivation
+    // is deterministic over (seed, context), so the operator
+    // reconstitutes without minting, and the delegation saved when the
+    // session was first opened still proves. A reused session makes
+    // boot READ-ONLY on the access branch — no commit, no
+    // authorization walk — so a worker restart cannot churn the
+    // shared account root and a partial access branch cannot brick a
+    // boot (offline included). Minting resumes only near expiry, on
+    // the renewal beat that already owns it.
+    let now = Timestamp::now().to_unix();
+    if let Some(persisted) = load_persisted(profile, storage).await
+        && !needs_renewal(persisted.expires_at, now)
+    {
+        match profile
+            .derive(persisted.context.clone())
+            .build(storage.clone())
+            .await
+        {
+            Ok(operator) => {
+                return Ok(Session {
+                    operator,
+                    expires_at: persisted.expires_at,
+                });
+            }
+            Err(error) => {
+                log!("persisted session unusable, minting a fresh one: {error}");
+            }
+        }
+    }
+
     // A random derivation context is what makes the operator key
     // session-scoped: `derive` is a KDF over the profile seed and this
     // context, so a fixed context would hand every session the same
@@ -122,10 +169,74 @@ where
             TonkWorkerError::Internal(format!("failed to save the session delegation: {error}"))
         })?;
 
+    // Persist AFTER the delegation is durably saved, so a stored
+    // context always has a provable delegation behind it. Best-effort:
+    // a failed persist only costs the next boot a fresh mint.
+    persist_session(
+        profile,
+        storage,
+        &PersistedSession {
+            version: 1,
+            context: context.to_vec(),
+            expires_at: expiration.to_unix(),
+        },
+    )
+    .await;
+
     Ok(Session {
         operator,
         expires_at: expiration.to_unix(),
     })
+}
+
+/// Read the persisted session, if any. Absence and decode failure both
+/// read as "no persisted session".
+async fn load_persisted<S>(profile: &Profile, storage: &Storage<S>) -> Option<PersistedSession>
+where
+    S: SpaceProvider + Clone + 'static,
+{
+    let bytes = match profile
+        .credential()
+        .site(SESSION_SITE)
+        .load::<Vec<u8>>()
+        .perform(storage)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            if !crate::credential::is_missing(&error) {
+                log!("persisted session unreadable: {error}");
+            }
+            return None;
+        }
+    };
+    match serde_json::from_slice::<PersistedSession>(&bytes) {
+        Ok(persisted) if persisted.version == 1 => Some(persisted),
+        Ok(_) => None,
+        Err(error) => {
+            log!("persisted session malformed: {error}");
+            None
+        }
+    }
+}
+
+/// Store the session for reuse by later boots. Best-effort.
+async fn persist_session<S>(profile: &Profile, storage: &Storage<S>, session: &PersistedSession)
+where
+    S: SpaceProvider + Clone + 'static,
+{
+    let Ok(encoded) = serde_json::to_vec(session) else {
+        return;
+    };
+    if let Err(error) = profile
+        .credential()
+        .site(SESSION_SITE)
+        .save(encoded)
+        .perform(storage)
+        .await
+    {
+        log!("failed to persist the session (next boot mints fresh): {error}");
+    }
 }
 
 /// Whether a session expiring at `expires_at` is close enough to lapsing
@@ -187,10 +298,39 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keys_every_session_separately() {
+    async fn it_reuses_a_fresh_session_across_opens() {
         let (storage, profile) = scratch().await;
 
         let first = open(&profile, &storage).await.unwrap();
+        let second = open(&profile, &storage).await.unwrap();
+
+        assert_eq!(
+            first.operator.did(),
+            second.operator.did(),
+            "a still-fresh session reconstitutes: reuse is what keeps a \
+             boot read-only on the access branch"
+        );
+        assert_eq!(first.expires_at, second.expires_at);
+    }
+
+    #[dialog_common::test]
+    async fn it_keys_an_expiring_session_separately() {
+        let (storage, profile) = scratch().await;
+
+        let first = open(&profile, &storage).await.unwrap();
+        // Force the persisted session into the renewal window: an
+        // expiring session must rotate to a NEW audience, or its
+        // delegation lands in the same bucket as the lapsed one.
+        persist_session(
+            &profile,
+            &storage,
+            &PersistedSession {
+                version: 1,
+                context: vec![1; 16],
+                expires_at: now(), // inside the renewal margin
+            },
+        )
+        .await;
         let second = open(&profile, &storage).await.unwrap();
 
         assert_ne!(
