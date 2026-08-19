@@ -1776,6 +1776,11 @@ impl TonkServiceWorker {
         // Patch IDB versionchange handling before any IDB operations.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         crate::patch_idb_versionchange();
+        // And guard handler slots against events addressed to a
+        // torn-down predecessor instance (an update swap or a stop
+        // mid-transaction) — they log quietly instead of throwing.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        crate::patch_idb_dead_shims();
 
         // 1. Create storage backend
         let storage = Storage::<DefaultSpace>::default();
