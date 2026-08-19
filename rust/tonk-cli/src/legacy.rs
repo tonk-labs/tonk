@@ -30,6 +30,7 @@ use dialog_artifacts::{Entity, Value};
 use dialog_csv::CsvImporter;
 use dialog_query::{Output as _, Query, Term};
 use futures_util::StreamExt as _;
+use serde_json::Value as JsonValue;
 use tonk_schema::meta::{AnonymousAttribute, attribute};
 
 /// The last release that can read pre-upgrade data.
@@ -276,7 +277,7 @@ pub struct RuntimeRepair {
     pub transient_concepts: usize,
     /// Legacy effects installed as content-addressed native dialog rules.
     pub native_rules: usize,
-    /// Non-effect test/debris entities ignored from the legacy effect index.
+    /// Unmarked source/polarity debris ignored from the legacy effect index.
     pub ignored_effects: usize,
 }
 
@@ -368,7 +369,7 @@ async fn legacy_runtime(legacy_csv: &Path) -> Result<LegacyRuntime> {
     let mut artifacts = CsvImporter::from(Cursor::new(runtime_csv));
     let mut transient_concepts = BTreeSet::new();
     let mut effects = BTreeMap::<Entity, LegacyEffect>::new();
-    let mut ignored_effects = BTreeSet::new();
+    let mut marked_effects = BTreeSet::new();
 
     while let Some(artifact) = artifacts.next().await {
         let artifact = artifact.with_context(|| {
@@ -379,23 +380,39 @@ async fn legacy_runtime(legacy_csv: &Path) -> Result<LegacyRuntime> {
         })?;
         match artifact.the.to_string().as_str() {
             "dialog.concept/transient" => {
+                let Value::Entity(marker) = artifact.is else {
+                    bail!(
+                        "legacy command {} has a non-entity transient marker",
+                        artifact.of
+                    );
+                };
+                if marker.as_str() != "db:transient" {
+                    bail!(
+                        "legacy command {} has unexpected transient marker {marker}",
+                        artifact.of
+                    );
+                }
                 transient_concepts.insert(artifact.of);
             }
-            "dialog.effect/source" => {
-                if !artifact.of.as_str().starts_with("effect:") {
-                    ignored_effects.insert(artifact.of);
-                    continue;
+            "dialog.meta/effect" => {
+                let Value::Entity(marker) = artifact.is else {
+                    bail!("legacy effect {} has a non-entity marker", artifact.of);
+                };
+                if marker.as_str() != "db:effect" {
+                    bail!(
+                        "legacy effect {} has unexpected marker {marker}",
+                        artifact.of
+                    );
                 }
+                marked_effects.insert(artifact.of);
+            }
+            "dialog.effect/source" => {
                 let Value::String(source) = artifact.is else {
                     bail!("legacy effect {} has a non-text source", artifact.of);
                 };
                 effects.entry(artifact.of).or_default().source = Some(source);
             }
             "dialog.effect/polarity" => {
-                if !artifact.of.as_str().starts_with("effect:") {
-                    ignored_effects.insert(artifact.of);
-                    continue;
-                }
                 let Value::String(polarity) = artifact.is else {
                     bail!("legacy effect {} has a non-text polarity", artifact.of);
                 };
@@ -406,7 +423,8 @@ async fn legacy_runtime(legacy_csv: &Path) -> Result<LegacyRuntime> {
     }
 
     let mut rules = BTreeMap::new();
-    for (effect, stored) in effects {
+    for effect in marked_effects {
+        let stored = effects.remove(&effect).unwrap_or_default();
         let source = stored
             .source
             .with_context(|| format!("legacy effect {effect} has no source"))?;
@@ -425,18 +443,23 @@ async fn legacy_runtime(legacy_csv: &Path) -> Result<LegacyRuntime> {
         };
         rules.insert(rule.this(), rule);
     }
+    let ignored_effects = effects.len();
     Ok(LegacyRuntime {
         transient_concepts,
         rules,
-        ignored_effects: ignored_effects.len(),
+        ignored_effects,
     })
 }
 
 const LEGACY_RUNTIME_ATTRIBUTES: &[&str] = &[
     "dialog.concept/transient",
+    "dialog.meta/effect",
     "dialog.effect/source",
     "dialog.effect/polarity",
 ];
+
+const LEGACY_DEDUCTIVE_RULE_ATTRIBUTES: &[&str] =
+    &["dialog.meta/rule", "db.rule/source", "db.rule/conclusion"];
 
 /// Copy only runtime metadata into a current-decoder-compatible CSV stream.
 ///
@@ -444,8 +467,9 @@ const LEGACY_RUNTIME_ATTRIBUTES: &[&str] = &[
 /// application rows do not need decoding here — `migrate_export` carries
 /// those byte-for-byte — so asking the current CSV importer to parse all of
 /// them adds an unrelated failure mode. This scanner preserves complete CSV
-/// records, including multiline effect JSON, and selects only the three text
-/// and entity-shaped attributes this translation consumes.
+/// records, including multiline effect JSON, and selects only the text and
+/// entity-shaped attributes this translation consumes. Legacy deductive rules
+/// are rejected here, before the application import can mutate the destination.
 fn extract_legacy_runtime<R: BufRead, W: Write>(source: R, mut out: W) -> Result<()> {
     let mut lines = source.lines();
     let header = lines
@@ -462,9 +486,14 @@ fn extract_legacy_runtime<R: BufRead, W: Write>(source: R, mut out: W) -> Result
         let starts_row = !inside_quotes;
         inside_quotes ^= line.matches('"').count() % 2 == 1;
         if starts_row {
-            keeping = split_attribute(&line)
-                .map(|(the, _)| LEGACY_RUNTIME_ATTRIBUTES.contains(&the))
-                .unwrap_or(false);
+            let attribute = split_attribute(&line).map(|(the, _)| the);
+            if attribute.is_some_and(|the| LEGACY_DEDUCTIVE_RULE_ATTRIBUTES.contains(&the)) {
+                bail!(
+                    "legacy deductive rules are not supported by this migration; \
+                     export and recreate them before retrying"
+                );
+            }
+            keeping = attribute.is_some_and(|the| LEGACY_RUNTIME_ATTRIBUTES.contains(&the));
         }
         if keeping {
             writeln!(out, "{line}").context("failed to write a legacy runtime row")?;
@@ -475,11 +504,34 @@ fn extract_legacy_runtime<R: BufRead, W: Write>(source: R, mut out: W) -> Result
 }
 
 fn repair_runtime_attribute_names(source: &str) -> String {
-    RUNTIME_ATTRIBUTE_RENAMES
-        .iter()
-        .fold(source.to_owned(), |source, (old, new)| {
-            source.replace(old, new)
-        })
+    let Ok(mut source) = serde_json::from_str::<JsonValue>(source) else {
+        return source.to_owned();
+    };
+    repair_runtime_attributes(&mut source);
+    serde_json::to_string(&source).unwrap_or_else(|_| source.to_string())
+}
+
+fn repair_runtime_attributes(value: &mut JsonValue) {
+    match value {
+        JsonValue::Array(values) => {
+            for value in values {
+                repair_runtime_attributes(value);
+            }
+        }
+        JsonValue::Object(fields) => {
+            if let Some(JsonValue::String(the)) = fields.get_mut("the")
+                && let Some((_, replacement)) = RUNTIME_ATTRIBUTE_RENAMES
+                    .iter()
+                    .find(|(attribute, _)| *attribute == the)
+            {
+                *the = (*replacement).to_owned();
+            }
+            for value in fields.values_mut() {
+                repair_runtime_attributes(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn repair_runtime_attribute_ids(
@@ -810,11 +862,131 @@ mod tests {
 
     #[test]
     fn it_repairs_runtime_names_inside_legacy_rule_sources() {
-        let source = r#"{"the":"dialog.origin/profile","also":"dialog.origin/subject"}"#;
+        let source = r#"{
+            "the":"dialog.origin/profile",
+            "description":"dialog.origin/profile",
+            "nested":{"the":"dialog.origin/subject"}
+        }"#;
         let repaired = repair_runtime_attribute_names(source);
 
         assert!(repaired.contains("dialog.replica/profile"));
         assert!(repaired.contains("dialog.replica/subject"));
-        assert!(!repaired.contains("dialog.origin/"));
+        assert!(repaired.contains(r#""description":"dialog.origin/profile""#));
+    }
+
+    fn legacy_effect_source() -> String {
+        serde_json::json!({
+            "assert!": {
+                "with": {
+                    "tag": {
+                        "the": "migration.test/pong-tag",
+                        "as": "Text",
+                        "cardinality": "one",
+                        "description": "tag"
+                    }
+                }
+            },
+            "when": [{
+                "assert": {
+                    "with": {
+                        "tag": {
+                            "the": "migration.test/ping-tag",
+                            "as": "Text",
+                            "cardinality": "one",
+                            "description": "tag"
+                        }
+                    }
+                },
+                "where": {
+                    "this": { "?": { "name": "this" } },
+                    "tag": { "?": { "name": "tag" } }
+                }
+            }]
+        })
+        .to_string()
+        .replace('"', "\"\"")
+    }
+
+    async fn parse_legacy_runtime(csv: &str) -> Result<LegacyRuntime> {
+        let workspace = tempfile::tempdir()?;
+        let path = workspace.path().join("legacy.csv");
+        std::fs::write(&path, csv)?;
+        legacy_runtime(&path).await
+    }
+
+    #[tokio::test]
+    async fn it_uses_the_effect_marker_instead_of_the_entity_prefix() {
+        let custom = "did:key:zTESTfixture111111111111111111111111111111111";
+        let csv = format!(
+            "the,of,as,is,cause\n\
+             dialog.meta/effect,{custom},entity,db:effect,\n\
+             dialog.effect/source,{custom},text,\"{}\",\n\
+             dialog.effect/polarity,{custom},text,assert,\n",
+            legacy_effect_source()
+        );
+
+        let runtime = parse_legacy_runtime(&csv).await.unwrap();
+
+        assert_eq!(runtime.rules.len(), 1);
+        assert_eq!(runtime.ignored_effects, 0);
+    }
+
+    #[tokio::test]
+    async fn it_rejects_a_marked_malformed_effect() {
+        let custom = "did:key:zTESTfixture111111111111111111111111111111111";
+        let csv = format!(
+            "the,of,as,is,cause\n\
+             dialog.meta/effect,{custom},entity,db:effect,\n\
+             dialog.effect/source,{custom},text,not-json,\n\
+             dialog.effect/polarity,{custom},text,assert,\n"
+        );
+
+        let error = match parse_legacy_runtime(&csv).await {
+            Ok(_) => panic!("a marked malformed effect must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("could not compile"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn it_ignores_unmarked_effect_debris() {
+        let custom = "did:key:zTESTfixture111111111111111111111111111111111";
+        let csv = format!(
+            "the,of,as,is,cause\n\
+             dialog.effect/source,{custom},text,not-json,\n\
+             dialog.effect/polarity,{custom},text,assert,\n"
+        );
+
+        let runtime = parse_legacy_runtime(&csv).await.unwrap();
+
+        assert!(runtime.rules.is_empty());
+        assert_eq!(runtime.ignored_effects, 1);
+    }
+
+    #[tokio::test]
+    async fn it_rejects_legacy_deductive_rules() {
+        let csv = "the,of,as,is,cause\n\
+            db.rule/source,rule:legacy,bytes,00,\n";
+
+        let error = match parse_legacy_runtime(csv).await {
+            Ok(_) => panic!("a legacy deductive rule must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("deductive rules"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn it_rejects_an_invalid_legacy_transient_marker() {
+        let csv = "the,of,as,is,cause\n\
+            dialog.concept/transient,concept:legacy,boolean,true,\n";
+
+        let error = match parse_legacy_runtime(csv).await {
+            Ok(_) => panic!("an invalid transient marker must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("transient marker"), "{error:#}");
     }
 }

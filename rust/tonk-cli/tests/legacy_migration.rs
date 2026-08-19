@@ -158,7 +158,8 @@ concept!: &migration-pong
         })
         .collect::<String>();
     legacy.push_str(&format!(
-        "dialog.effect/source,effect:migration-ping,text,\"{effect_source}\",\n\
+        "dialog.meta/effect,effect:migration-ping,entity,db:effect,\n\
+         dialog.effect/source,effect:migration-ping,text,\"{effect_source}\",\n\
          dialog.effect/polarity,effect:migration-ping,text,assert,\n\
          dialog.effect/source,did:key:zTESTfixture111111111111111111111111111111111,text,x,\n\
          dialog.effect/polarity,did:key:zTESTfixture111111111111111111111111111111111,text,assert,\n"
@@ -319,6 +320,39 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
     // `tonk use`, not `tonk spot use`: binding a directory to a spot is a
     // top-level verb in this release.
     legacy_run(&legacy_cli, &home, &work, &["use", "legacy"])?;
+    let runtime = work.join("runtime.tonk");
+    std::fs::write(
+        &runtime,
+        r#"concept!: &migration-ping
+  transient:
+  with:
+    tag:
+      the: migration.test/ping-tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &migration-pong
+  with:
+    tag:
+      the: migration.test/pong-tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+rule!:
+  assert!: migration-pong
+  when:
+    - assert: migration-ping
+      where: { this: ?this, tag: ?tag }
+"#,
+    )?;
+    legacy_run(
+        &legacy_cli,
+        &home,
+        &work,
+        &["eval", runtime.to_str().context("non-UTF-8 path")?],
+    )?;
     legacy_run(
         &legacy_cli,
         &home,
@@ -346,7 +380,10 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
     let site = common::TestSite::new().await?;
     let path = site.tmp.path().join("migrated.csv");
     std::fs::write(&path, &migrated)?;
-    tonk_cli::transfer::import(&site.site, &path).await?;
+    let repair =
+        tonk_cli::legacy::import_upgraded_branch(&site.site, "main", &path, &export).await?;
+    assert!(repair.transient_concepts > 0);
+    assert!(repair.native_rules > 0);
 
     let rows = site
         .eval_inline("note:\n  this: ?this\n  title: ?title\n")
@@ -360,6 +397,16 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
         rows.contains("did:key:z6Mk3VY17HUDh9rW6UpiDdtF9BGmdqfsYC2ZGzk4rAJadk2H"),
         "the note must keep the entity the old build minted, or this is a \
          copy rather than an upgrade; saw:\n{rows}"
+    );
+    site.eval_inline("migration-ping!: &event\n  tag: \"from-v0.6.7\"\n")
+        .await?;
+    let pong = site
+        .eval_inline("migration-pong:\n  this: ?this\n  tag: ?tag\n")
+        .await?
+        .stdout;
+    assert!(
+        pong.contains("from-v0.6.7"),
+        "the command and rule written by v0.6.7 must still dispatch; saw:\n{pong}"
     );
     Ok(())
 }

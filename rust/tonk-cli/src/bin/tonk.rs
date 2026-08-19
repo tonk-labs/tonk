@@ -2033,7 +2033,7 @@ async fn legacy_migrate(
         println!(
             "{branch}: {} rows ({} remapped, {} dropped as dialog's own), \
              {} blobs ({} bytes), {} commands and {} rules restored \
-             ({} invalid legacy effect entities ignored)",
+             ({} unmarked legacy effect entities ignored)",
             upgraded.migration.kept,
             upgraded.migration.remapped,
             upgraded.migration.dropped,
