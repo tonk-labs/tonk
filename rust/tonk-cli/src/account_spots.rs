@@ -1,4 +1,4 @@
-//! Native account spot inventory, pull, and directory recording.
+//! Native account space inventory, pull, and directory recording.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -76,16 +76,27 @@ pub struct RecordWarning {
     pub message: String,
 }
 
-fn site_config(_profile: &Profile) -> crate::site::SiteConfig {
+fn site_config(_profile: &Profile, store: &SpotStore) -> Result<crate::site::SiteConfig> {
     #[cfg(feature = "integration-tests")]
-    if let Some(config) = account::integration_site_config(_profile) {
-        return config;
+    if let Some(mut config) = account::integration_site_config(_profile) {
+        config.account_store = store.clone();
+        return Ok(config);
     }
-    crate::site::default_config()
+    Ok(crate::site::SiteConfig {
+        profile_name: crate::account_profiles::generated_dialog_profile_name(store)
+            .unwrap_or_else(|| crate::site::PROFILE_NAME.to_owned()),
+        profile_directory: dialog_effects::storage::Directory::Profile,
+        require_account: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
+        account_store: store.clone(),
+    })
 }
 
-async fn open_site(path: &std::path::Path, profile: &Profile) -> Result<TonkSite> {
-    let site = TonkSite::open_with(path, site_config(profile)).await?;
+async fn open_site(
+    path: &std::path::Path,
+    profile: &Profile,
+    store: &SpotStore,
+) -> Result<TonkSite> {
+    let site = TonkSite::open_with(path, site_config(profile, store)?).await?;
     if site.profile.did() != profile.did() {
         bail!("registered site profile does not match the active account profile");
     }
@@ -105,7 +116,7 @@ async fn local_subjects(
     let registry = store.load()?;
     let mut subjects: HashMap<String, LocalSpot> = HashMap::new();
     for (name, entry) in registry.spots {
-        let site = match open_site(&entry.site, profile).await {
+        let site = match open_site(&entry.site, profile, store).await {
             Ok(site) => site,
             Err(error) => {
                 eprintln!("warning: local spot '{name}' could not be inspected: {error:#}");
@@ -349,7 +360,7 @@ pub async fn pull(
     };
 
     let mut fresh_target = FreshPullTarget::new(target.clone());
-    let site = crate::site::mount_delegated_at(&target, chain, site_config(profile))
+    let site = crate::site::mount_delegated_at(&target, chain, site_config(profile, store)?)
         .await
         .context("failed to mount account spot")?;
     remote::add_with_revocation(
@@ -403,28 +414,39 @@ async fn repository_name(site: &TonkSite) -> Option<String> {
         .map(|row| row.name.0)
 }
 
-/// Whether the account directory lists `site`'s repository with a
-/// mount record — the claim `tonk spot rm` leans on when it tells
-/// someone their data is recoverable with `tonk account spots pull`.
+/// Whether the account directory lists `site`'s repository with a mount
+/// record and the site's exact current content revision is known to be
+/// durable on the content remote.
 ///
-/// Answered from the account branch's local copy of the directory; an
-/// absent or unhydrated account answers `false` rather than failing
-/// the command this probe is trying to make safe.
-pub async fn directory_lists(site: &TonkSite) -> Result<bool> {
-    let store = SpotStore::open()?;
+/// Both facts are local reads. An absent or unhydrated account, or local
+/// changes made after the last confirmed push, answer `false` rather than
+/// making a destructive command claim recoverability it cannot prove.
+pub async fn has_account_backup(site: &TonkSite) -> Result<bool> {
+    let store = site.operator.store();
     let operator =
-        crate::account_state::credential_operator_for_store(&site.profile, &store).await?;
+        crate::account_state::credential_operator_for_store(&site.profile, store).await?;
     let Some(account) =
-        crate::account_state::open_account_branch_in(&site.profile, &operator, &store).await?
+        crate::account_state::open_account_branch_in(&site.profile, &operator, store).await?
     else {
         return Ok(false);
     };
-    Ok(
-        tonk_schema::directory::mount_record(&account, &site.repository.did(), &operator)
-            .await
-            .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
-            .is_some(),
-    )
+    let listed = tonk_schema::directory::mount_record(&account, &site.repository.did(), &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+        .is_some();
+    if !listed {
+        return Ok(false);
+    }
+    let Some(local_root) =
+        crate::identity::local_root_with_operator(&site.profile, site.operator.local()).await?
+    else {
+        return Ok(false);
+    };
+    let account_root = local_root
+        .root_did
+        .parse()
+        .context("stored local root DID is invalid")?;
+    crate::account_sync::current_revision_is_confirmed(site, &account_root).await
 }
 
 /// Mirror one site's name and mount configuration into the account
@@ -511,7 +533,7 @@ fn first_registry_name_for_site<'a>(
 
 /// Record the registry entry matching an already-open site.
 pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
-    let store = SpotStore::open()?;
+    let store = site.operator.store();
     let registry = store.load()?;
     let candidates: Vec<_> = registry
         .spots
@@ -531,7 +553,7 @@ pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
         &site.root,
     )
     .context("the evaluated site is not registered as a spot")?;
-    record_site(name, site).await
+    record_site_in(name, site, store).await
 }
 
 /// Best-effort directory sweep of every registered spot.
@@ -548,7 +570,7 @@ pub async fn record_registered(profile: &Profile, store: &SpotStore) -> Vec<Reco
     let mut warnings = Vec::new();
     let mut inspected_subjects = HashSet::new();
     for (name, entry) in registry.spots {
-        let site = match open_site(&entry.site, profile).await {
+        let site = match open_site(&entry.site, profile, store).await {
             Ok(site) => site,
             Err(error) => {
                 warnings.push(RecordWarning {

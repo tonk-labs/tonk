@@ -64,8 +64,19 @@ pub async fn run_eval(
         pull_before(site).await;
     }
     let outcome = eval::run_against_site(site, source, options).await?;
-    if sync && outcome.committed {
-        push_after(site).await;
+    let pushed = if sync && outcome.committed {
+        push_after(site).await
+    } else {
+        false
+    };
+    if pushed
+        && let Ok(crate::account::AccountStatus::Registered { root_did, .. }) =
+            crate::account::local_status_in(&site.profile, site.operator.store()).await
+        && let Ok(root) = root_did.parse()
+        && let Err(error) =
+            crate::account_sync::record_current_revision_confirmed(site, &root).await
+    {
+        eprintln!("warning: pushed content but could not record its confirmed revision: {error:#}");
     }
     if outcome.committed
         && let Err(error) = crate::account_spots::record_current(site).await
@@ -88,10 +99,14 @@ async fn pull_before(site: &TonkSite) {
 /// Push the local branch to its upstream after a write. A missing
 /// upstream is a silent skip; any other failure is a warning — the
 /// local write is already committed.
-async fn push_after(site: &TonkSite) {
+async fn push_after(site: &TonkSite) -> bool {
     match sync::push(site).await {
-        Ok(_) | Err(SyncError::UpstreamNotConfigured { .. }) => {}
-        Err(err) => warn("push", &err),
+        Ok(_) => true,
+        Err(SyncError::UpstreamNotConfigured { .. }) => false,
+        Err(err) => {
+            warn("push", &err);
+            false
+        }
     }
 }
 

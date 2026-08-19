@@ -258,6 +258,11 @@ impl SpotStore {
         Self { dir: dir.into() }
     }
 
+    /// Root directory containing this profile's spot and account state.
+    pub fn root(&self) -> &Path {
+        &self.dir
+    }
+
     /// Path to `spots.json` inside this store.
     pub fn registry_path(&self) -> PathBuf {
         self.dir.join(REGISTRY_FILE)

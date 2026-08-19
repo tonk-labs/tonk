@@ -38,6 +38,12 @@ pub struct ContextReport {
 /// Selected spot information.
 #[derive(Debug, Serialize)]
 pub struct SpotContext {
+    /// Owning native profile label, when resolved by the install router.
+    pub profile: Option<String>,
+    /// Immutable account root indexed by that profile.
+    pub account_root: Option<String>,
+    /// Whether the owning profile currently has an active provider session.
+    pub signed_in: Option<bool>,
     /// Registry name.
     pub name: String,
     /// Absolute site path.
@@ -109,6 +115,40 @@ impl From<FieldSummary> for FieldContext {
 
 /// Read the selected spot and derive direct workflows from its live schema.
 pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextReport> {
+    inspect_inner(resolved, site, None, None, None).await
+}
+
+/// Read a profile-qualified selected space and expose its account context.
+pub async fn inspect_profiled(
+    resolved: &crate::account_profiles::ResolvedSpace,
+    site: &TonkSite,
+) -> Result<ContextReport> {
+    let legacy = Resolved {
+        name: resolved.name.clone(),
+        site: resolved.site.clone(),
+        source: resolved.source.clone(),
+    };
+    let signed_in = matches!(
+        resolved.profile.sign_in_state(),
+        Ok(crate::account_profiles::ProfileSignIn::Active)
+    );
+    inspect_inner(
+        &legacy,
+        site,
+        Some(resolved.profile.record.label.clone()),
+        resolved.profile.record.account_root.clone(),
+        Some(signed_in),
+    )
+    .await
+}
+
+async fn inspect_inner(
+    resolved: &Resolved,
+    site: &TonkSite,
+    profile: Option<String>,
+    account_root: Option<String>,
+    signed_in: Option<bool>,
+) -> Result<ContextReport> {
     let live_concepts = schema::list_concepts(site).await?;
     let agents_declared = live_concepts
         .iter()
@@ -193,6 +233,9 @@ pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextRepo
     Ok(ContextReport {
         schema_version: SCHEMA_VERSION,
         spot: SpotContext {
+            profile,
+            account_root,
+            signed_in,
             name: resolved.name.clone(),
             site: resolved.site.display().to_string(),
             selected_via: resolved.source.to_string(),
@@ -250,6 +293,18 @@ impl ContextReport {
             self.spot.name, self.spot.branch, self.spot.selected_via
         );
         let _ = writeln!(out, "site: `{}`", self.spot.site);
+        if let Some(profile) = &self.spot.profile {
+            let account = self.spot.account_root.as_deref().unwrap_or("pending");
+            let signed_in = if self.spot.signed_in == Some(true) {
+                "yes"
+            } else {
+                "no"
+            };
+            let _ = writeln!(
+                out,
+                "profile: `{profile}` · account: `{account}` · signed in: {signed_in}"
+            );
+        }
         out.push_str("Changing cwd does not change the selected Tonk data.\n");
 
         if let Some(agents) = &self.agents {

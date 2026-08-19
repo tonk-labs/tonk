@@ -1,19 +1,19 @@
 //! Whether a spot's data survives being deleted.
 //!
 //! `tonk spot rm` destroys a site directory, and how bad that is
-//! depends entirely on where else the facts exist. A spot the account
-//! directory lists can be pulled down again; a spot that only ever
+//! depends entirely on where else the facts exist. A spot whose exact
+//! content revision is confirmed remotely and whose access metadata is saved
+//! to an account can be pulled down again; a spot that only ever
 //! pushed to a remote can be recovered from that remote if the
 //! operator still holds authority over it; a spot with no upstream at
 //! all exists nowhere else, and deleting it is final.
 //!
 //! The registry cannot answer this — [`crate::spot::SpotEntry`] is a
 //! path and nothing more — so the answer is read out of the site
-//! itself: the `main` branch's upstream, plus the account branch's
-//! local copy of the directory. Both are local reads. Deliberately no
-//! network round trip: a confirmation prompt that hangs on an
-//! unreachable remote is a worse failure than one that reports what
-//! this device knows.
+//! itself: the `main` branch's upstream, plus the local account
+//! access and revision markers. These are local reads. Deliberately no network call:
+//! a confirmation prompt that hangs on a dead account service is a
+//! worse failure than one that reports what this device knows.
 
 use std::path::Path;
 
@@ -22,8 +22,8 @@ use crate::site::{SiteConfig, TonkSite};
 /// Where a spot's data exists besides this directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recovery {
-    /// Listed in the linked account's directory, and pullable again
-    /// by subject.
+    /// Exact content confirmed remotely with account access metadata saved,
+    /// and pullable again by subject.
     Account {
         /// Repository subject DID, the argument `tonk account spots
         /// pull` takes.
@@ -63,19 +63,19 @@ impl Recovery {
     pub fn consequence(&self, name: &str) -> String {
         match self {
             Recovery::Account { subject } => format!(
-                "'{name}' is listed in your account directory ({subject}).\n\
-                 You can pull it down again after deleting it."
+                "'{name}' has confirmed remote content and saved account access ({subject}).\n\
+                 You can pull that confirmed revision down again after deleting it."
             ),
             Recovery::Remote {
                 name: remote,
                 endpoint,
             } => format!(
-                "'{name}' pushes to '{remote}' ({endpoint}) but is not listed in\n\
-                 your account directory. Deleting it here keeps whatever the remote\n\
+                "'{name}' pushes to '{remote}' ({endpoint}) but has no saved account\n\
+                 access on this device. Deleting it here keeps whatever the remote\n\
                  already holds, but this device loses its access to it."
             ),
             Recovery::LocalOnly => format!(
-                "'{name}' is local-only: it has no upstream and no account listing,\n\
+                "'{name}' is local-only: it has no upstream or confirmed remote copy,\n\
                  so this is the only copy and deleting it cannot be undone."
             ),
             Recovery::Unknown { detail } => format!(
@@ -124,9 +124,9 @@ pub async fn inspect(path: &Path, config: SiteConfig) -> Recovery {
         }
     };
 
-    // A directory mount record is only ever written for a site that
-    // has an upstream, so this is checked second and only here.
-    match crate::account_spots::directory_lists(&site).await {
+    // Account access metadata is only projected for a site that has an
+    // upstream, so this exact-revision check is second and only here.
+    match crate::account_spots::has_account_backup(&site).await {
         Ok(true) => {
             return Recovery::Account {
                 subject: site.repository.did().to_string(),

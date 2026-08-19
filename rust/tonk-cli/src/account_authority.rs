@@ -69,7 +69,7 @@ impl AccountBoundOperator {
         &self.inner
     }
 
-    #[cfg(feature = "integration-tests")]
+    /// Account/session store owned by the resolved native profile.
     pub(crate) fn store(&self) -> &SpotStore {
         &self.store
     }
@@ -164,18 +164,17 @@ impl AccountBoundOperator {
         let mut chain = if subject == root {
             grant
         } else {
-            // Resolving rather than reading: a spot predating this account,
-            // or created by a release that stored no prefix, still has to
-            // reach its own remote. Recovery is the same one every other
-            // account path uses, so the authority a spot syncs with is the
-            // authority it gets backed up with.
-            let prefix =
-                crate::site::account_root_prefix_for(&self.profile, &self.inner, &subject, &root)
-                    .await
-                    .map_err(|_| AuthorizeError::UnprovenSubject {
-                        claimed: root.clone(),
-                        authorized: subject.clone(),
-                    })?;
+            let prefix = crate::site::load_account_root_prefix_for(
+                &self.profile,
+                &self.inner,
+                &subject,
+                &root,
+            )
+            .await
+            .map_err(|_| AuthorizeError::UnprovenSubject {
+                claimed: root.clone(),
+                authorized: subject.clone(),
+            })?;
             let active_proof = grant.proofs().next().unwrap().clone();
             prefix
                 .push(active_proof)

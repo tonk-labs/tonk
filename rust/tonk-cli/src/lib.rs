@@ -34,9 +34,11 @@
 
 pub mod account;
 mod account_authority;
+pub mod account_profiles;
 mod account_session;
 pub mod account_spots;
 pub mod account_state;
+pub mod account_sync;
 pub mod agents;
 pub mod authoring;
 pub mod auto_sync;
@@ -47,6 +49,7 @@ pub mod context;
 pub mod customer;
 pub mod data;
 pub mod data_ops;
+pub mod deployment;
 pub mod eval;
 pub mod guide;
 pub mod identity;

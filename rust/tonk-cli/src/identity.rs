@@ -57,6 +57,15 @@ pub async fn local_root(profile: &Profile) -> Result<Option<LocalRoot>> {
     local_root_with_operator(profile, &operator).await
 }
 
+/// Load the local root from one explicit native profile store.
+pub async fn local_root_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<Option<LocalRoot>> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    local_root_with_operator(profile, &operator).await
+}
+
 /// Load the local root through an already-mounted site operator.
 pub(crate) async fn local_root_with_operator(
     profile: &Profile,
@@ -149,6 +158,11 @@ pub async fn open() -> Result<Profile> {
         .with_context(|| format!("failed to open profile '{PROFILE_NAME}'"))
 }
 
+/// Open the Dialog identity owned by one explicit native profile.
+pub async fn open_in(context: &crate::account_profiles::NativeProfileContext) -> Result<Profile> {
+    context.open_profile().await
+}
+
 /// Wipe the on-disk profile directory and create a fresh
 /// profile. The new profile has a brand-new DID — every site
 /// (`.tonk/`) the previous identity owned will be unreachable
@@ -162,6 +176,16 @@ pub async fn reset() -> Result<Profile> {
     open().await
 }
 
+/// Reset only the Dialog identity owned by `context`.
+pub async fn reset_in(context: &crate::account_profiles::NativeProfileContext) -> Result<Profile> {
+    let dir = profile_dir_for(&context.record.dialog_profile_name)?;
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("failed to remove profile directory {}", dir.display()))?;
+    }
+    open_in(context).await
+}
+
 /// Whether a profile already exists on disk. Telemetry uses this to
 /// avoid creating a profile as a side effect of computing a hashed
 /// distinct id for a command that never touches the profile.
@@ -169,10 +193,21 @@ pub fn exists() -> bool {
     profile_dir().map(|dir| dir.is_dir()).unwrap_or(false)
 }
 
+/// Whether one explicit native profile's Dialog identity exists.
+pub fn exists_in(context: &crate::account_profiles::NativeProfileContext) -> bool {
+    profile_dir_for(&context.record.dialog_profile_name)
+        .map(|dir| dir.is_dir())
+        .unwrap_or(false)
+}
+
 /// Filesystem path to the profile directory. `tonk identity
 /// --reset` calls `remove_dir_all` on this path; nothing else
 /// inside the crate depends on the on-disk layout.
 fn profile_dir() -> Result<PathBuf> {
+    profile_dir_for(PROFILE_NAME)
+}
+
+fn profile_dir_for(name: &str) -> Result<PathBuf> {
     let data_dir = dirs::data_dir().context("could not determine platform data directory")?;
-    Ok(data_dir.join(STORAGE_NAMESPACE).join(PROFILE_NAME))
+    Ok(data_dir.join(STORAGE_NAMESPACE).join(name))
 }

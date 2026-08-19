@@ -79,6 +79,7 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
         profile_name: format!("tonk-test-{suffix:x}"),
         profile_directory: Directory::At(profile_dir.to_string_lossy().into_owned()),
         require_account: false,
+        account_store: tonk_cli::spot::SpotStore::at(parent.join("_account")),
     })
 }
 
@@ -109,22 +110,27 @@ impl AccountFixture {
     /// A fixture whose account repository points at a REAL remote, for tests
     /// that sync the account between devices.
     pub async fn with_account_remote(remote: &str) -> Result<Self> {
-        Self::build(remote, true).await
+        Self::build(remote, [77; 32], true).await
     }
 
     /// A fixture that has linked but never hydrated: the trusted-base
     /// marker is absent, exactly like a fresh device right after
     /// `tonk account link`.
     pub async fn unhydrated_with_account_remote(remote: &str) -> Result<Self> {
-        Self::build(remote, false).await
+        Self::build(remote, [77; 32], false).await
     }
 
-    async fn build(remote: &str, hydrated: bool) -> Result<Self> {
+    /// A fixture with an explicit account-root seed, used when one test needs
+    /// two genuinely different account roots rather than two devices.
+    pub async fn with_account_remote_and_root(remote: &str, root_prf: [u8; 32]) -> Result<Self> {
+        Self::build(remote, root_prf, true).await
+    }
+
+    async fn build(remote: &str, root_prf: [u8; 32], hydrated: bool) -> Result<Self> {
         let test = TestSite::new().await?;
         let profile = test.site.profile.clone();
         let store = tonk_cli::spot::SpotStore::at(test.parent.join("state"));
         let server = tonk_account_service::helpers::AccountServer::start().await;
-        let root_prf = [77; 32];
         let root = dialog_credentials::Ed25519Signer::import(&root_prf).await?;
         let link =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did()).await?;

@@ -123,7 +123,7 @@ impl TonkSite {
     /// Errors if the directory exists but the dialog repository
     /// inside it is missing or unreadable.
     pub async fn open(root: &Path) -> Result<Self> {
-        Self::open_with(root, default_config()).await
+        Self::open_with(root, default_config()?).await
     }
 
     /// [`Self::open`] with caller-supplied [`SiteConfig`] —
@@ -179,7 +179,7 @@ impl TonkSite {
         let operator = crate::account_authority::wrap(
             operator,
             profile.clone(),
-            crate::spot::SpotStore::open().context("failed to locate account state")?,
+            config.account_store.clone(),
             config.require_account,
         )
         .await?;
@@ -243,9 +243,14 @@ impl TonkSite {
         {
             Ok(repository) => (repository, false),
             Err(_) => (
-                bootstrap_repository(&profile, &operator, config.require_account)
-                    .await
-                    .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
+                bootstrap_repository(
+                    &profile,
+                    &operator,
+                    &config.account_store,
+                    config.require_account,
+                )
+                .await
+                .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
                 true,
             ),
         };
@@ -254,7 +259,7 @@ impl TonkSite {
         let operator = crate::account_authority::wrap(
             operator,
             profile.clone(),
-            crate::spot::SpotStore::open().context("failed to locate account state")?,
+            config.account_store.clone(),
             config.require_account,
         )
         .await?;
@@ -356,6 +361,7 @@ impl TonkSite {
 async fn bootstrap_repository(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
+    account_store: &crate::spot::SpotStore,
     require_account: bool,
 ) -> Result<Repository> {
     let signer_repo = profile
@@ -367,7 +373,7 @@ async fn bootstrap_repository(
 
     let local_root = crate::identity::local_root_with_operator(profile, operator).await?;
     if require_account {
-        crate::account::require_account_with_operator(profile, operator).await?;
+        crate::account::require_account_with_operator_in(profile, operator, account_store).await?;
     }
     let durable_did: dialog_varsig::Did = local_root
         .context("local root provisioning did not produce a record")?
@@ -406,7 +412,8 @@ async fn bootstrap_repository(
     // the account rather than by fetching an artifact. Non-fatal: a space that
     // works but is not yet backed up beats no space at all.
     if let Err(error) =
-        crate::account_state::retain_space_delegation(profile, operator, &prefix).await
+        crate::account_state::retain_space_delegation_in(profile, operator, account_store, &prefix)
+            .await
     {
         eprintln!("warning: space not retained into the account space: {error:#}");
     }
@@ -414,7 +421,9 @@ async fn bootstrap_repository(
     // The billing half of the same act: provision the new space as a
     // consumer of the access service, depositing the powerline as its
     // consent. Non-fatal for the same reason retain is.
-    if let Err(error) = crate::customer::provision(profile, &signer_repo.did(), &prefix).await {
+    if let Err(error) =
+        crate::customer::provision_in(profile, account_store, &signer_repo.did(), &prefix).await
+    {
         eprintln!("warning: space not provisioned with the sync service: {error:#}");
     }
 
@@ -471,7 +480,12 @@ async fn mount_delegated_inner(
         .await?
         .context("local root provisioning did not produce a record")?;
     if config.require_account {
-        crate::account::require_account_with_operator(&profile, &operator).await?;
+        crate::account::require_account_with_operator_in(
+            &profile,
+            &operator,
+            &config.account_store,
+        )
+        .await?;
     }
     let account_root: Did = local_root
         .root_did
@@ -530,7 +544,7 @@ async fn mount_delegated_inner(
     let operator = crate::account_authority::wrap(
         operator,
         profile.clone(),
-        crate::spot::SpotStore::open().context("failed to locate account state")?,
+        config.account_store.clone(),
         config.require_account,
     )
     .await?;
@@ -543,10 +557,13 @@ async fn mount_delegated_inner(
     })
 }
 
-/// Load the exact reusable prefix for a site, recovering it from pre-feature
-/// profile authority when the dedicated credential is absent.
+/// Strictly load the exact reusable prefix for a site.
+///
+/// This ordinary-operation path never creates authority. Call
+/// [`adopt_account_root_prefix_for`] from an explicit create, join, pull, or
+/// migration boundary when adopting held legacy authority is intended.
 pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<DelegationChain> {
-    account_root_prefix_for(
+    load_account_root_prefix_for(
         &site.profile,
         site.operator.local(),
         &site.repository.did(),
@@ -580,28 +597,39 @@ async fn optional_credential(
     }
 }
 
-/// Resolve the reusable `subject → … → account_root` prefix, minting it
-/// when this profile holds the subject's authority but no chain to the
-/// account reaches it yet.
+/// Load a pre-existing `subject → … → account_root` prefix.
 ///
-/// Every path that authorizes a remote request for a spot needs this exact
-/// prefix, so all of them recover the same way. A spot created before the
-/// account existed — or by a release that stored no prefix at all — has
-/// repository authority that stops at the profile, and refusing it would
-/// strand data the device demonstrably owns. Extending that authority to
-/// the account root is local bookkeeping: it delegates to the root this
-/// profile already holds a grant from, and publishes nothing.
-pub async fn account_root_prefix_for(
+/// An already-valid legacy credential may be copied to its root-specific v2
+/// key. Missing authority is an error and is never recovered or minted here.
+pub async fn load_account_root_prefix_for(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
+    if let Some(chain) =
+        existing_account_root_prefix_for(profile, operator, subject, account_root).await?
+    {
+        return Ok(chain);
+    }
+
+    anyhow::bail!(
+        "no stored account-root prefix proves subject {subject} for account {account_root}"
+    )
+}
+
+async fn existing_account_root_prefix_for(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    subject: &Did,
+    account_root: &Did,
+) -> Result<Option<DelegationChain>> {
     let current = space_root_site(subject, account_root);
     if let Some(bytes) = optional_credential(profile, operator, current.clone()).await? {
         return validate_prefix(bytes, account_root)
             .await
-            .context("stored account-root prefix is invalid");
+            .context("stored account-root prefix is invalid")
+            .map(Some);
     }
 
     // A v1 credential is copied only when its signatures and terminal root
@@ -613,8 +641,28 @@ pub async fn account_root_prefix_for(
         save_prefix(profile, operator, &current, bytes)
             .await
             .context("failed to migrate the account-root prefix")?;
+        return Ok(Some(chain));
+    }
+    Ok(None)
+}
+
+/// Explicitly adopt held authority for `subject` into `account_root`.
+///
+/// This is the only path allowed to recover or mint a missing prefix and must
+/// therefore be called only by an explicit create, join, pull, or migration
+/// operation for the resolved native profile.
+pub async fn adopt_account_root_prefix_for(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    subject: &Did,
+    account_root: &Did,
+) -> Result<DelegationChain> {
+    if let Some(chain) =
+        existing_account_root_prefix_for(profile, operator, subject, account_root).await?
+    {
         return Ok(chain);
     }
+    let current = space_root_site(subject, account_root);
 
     let chain = match recover_prefix(profile, operator, subject, account_root).await? {
         Some(chain) => chain,
@@ -727,18 +775,22 @@ pub struct SiteConfig {
     /// and get a software-generated root instead (see
     /// [`build_profile_and_operator`]).
     pub require_account: bool,
+    /// Profile-scoped account repository and session state.
+    pub account_store: crate::spot::SpotStore,
 }
 
 impl SiteConfig {
     /// Builder shortcut: same as [`default_config`] but with the
     /// profile name overridden. Lets tests namespace their
     /// profile so parallel runs don't collide.
-    pub fn with_profile_name(name: impl Into<String>) -> Self {
-        Self {
+    pub fn with_profile_name(name: impl Into<String>) -> Result<Self> {
+        Ok(Self {
             profile_name: name.into(),
             profile_directory: Directory::Profile,
             require_account: false,
-        }
+            account_store: crate::spot::SpotStore::open()
+                .context("failed to locate account state")?,
+        })
     }
 }
 
@@ -747,12 +799,13 @@ impl SiteConfig {
 /// so the binary and other crate modules can pass it to
 /// `*_with` constructors without reaching into `dialog-effects`
 /// for [`Directory::Profile`].
-pub fn default_config() -> SiteConfig {
-    SiteConfig {
+pub fn default_config() -> Result<SiteConfig> {
+    Ok(SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
         profile_directory: Directory::Profile,
         require_account: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
-    }
+        account_store: crate::spot::SpotStore::open().context("failed to locate account state")?,
+    })
 }
 
 /// Open (or create) the shared profile and build a tonk

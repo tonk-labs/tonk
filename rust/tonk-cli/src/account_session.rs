@@ -85,6 +85,63 @@ pub struct ActiveAccount {
     pub attached_at: u64,
 }
 
+/// Provider sign-in phase visible from install metadata without opening a
+/// Dialog profile or contacting a provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalPhase {
+    /// No canonical session sidecar exists or it has no active/pending state.
+    SignedOut,
+    /// A browser handoff is durable but not active yet.
+    Pending,
+    /// One provider attachment is active.
+    Active,
+}
+
+/// Inspect a profile store without creating locks, directories, or profiles.
+pub fn inspect_local(store: &SpotStore) -> Result<LocalPhase> {
+    let account = store.account_dir();
+    let entries = match std::fs::read_dir(&account) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LocalPhase::SignedOut);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect account state at {}", account.display())
+            });
+        }
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(STATE_FILE_PREFIX) || !name.ends_with(".json") {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path()).with_context(|| {
+            format!(
+                "failed to read account session at {}",
+                entry.path().display()
+            )
+        })?;
+        let state: AccountSessionState =
+            serde_json::from_slice(&bytes).context("stored account-session state is malformed")?;
+        if state.version != VERSION {
+            anyhow::bail!(
+                "unsupported account-session state version {}",
+                state.version
+            );
+        }
+        return Ok(if state.active.is_some() {
+            LocalPhase::Active
+        } else if state.pending_login.is_some() {
+            LocalPhase::Pending
+        } else {
+            LocalPhase::SignedOut
+        });
+    }
+    Ok(LocalPhase::SignedOut)
+}
+
 /// Held shared lock covering active-state read through remote dispatch.
 pub struct AccountSessionReadGuard {
     _file: File,
@@ -327,14 +384,24 @@ pub async fn active_guarded(
 /// A provider that misses it lists the device until the account page
 /// revokes it or the device links again (activation supersedes the
 /// stale attachment server-side).
+#[allow(dead_code)]
 pub async fn logout_transition(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<Vec<ActiveAccount>> {
     let store = SpotStore::open().context("failed to locate account state")?;
-    let guard = exclusive_transition_guard(&store)?;
+    logout_transition_for_store(profile, operator, &store).await
+}
+
+/// Commit local logout in one explicit profile store.
+pub async fn logout_transition_for_store(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpotStore,
+) -> Result<Vec<ActiveAccount>> {
+    let guard = exclusive_transition_guard(store)?;
     ensure_initialized(profile, operator, &guard).await?;
-    let mut state = load_raw(profile, operator, &store)
+    let mut state = load_raw(profile, operator, store)
         .await?
         .unwrap_or_default();
     let mut detached = Vec::new();
@@ -347,7 +414,7 @@ pub async fn logout_transition(
     let existed = !detached.is_empty() || state.pending_login.is_some();
     state.pending_login = None;
     if existed {
-        save_raw(profile, operator, &store, &state).await?;
+        save_raw(profile, operator, store, &state).await?;
         // Compatibility only: canonical state is already authoritative.
         let _ = profile
             .credential()

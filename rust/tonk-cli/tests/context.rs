@@ -95,3 +95,28 @@ async fn it_exposes_claim_backed_agent_context_with_source_revision() -> Result<
     assert_eq!(value["agents"]["markdown"], expected);
     Ok(())
 }
+
+#[dialog_common::test]
+async fn it_exposes_the_resolved_profile_and_local_sign_in_state() -> Result<()> {
+    let test = TestSite::new().await?;
+    let profiles = tonk_cli::account_profiles::NativeProfileStore::at(test.parent.join("install"));
+    let profile = profiles.create_pending_with_bytes(Some("personal"), [0xc1; 16])?;
+    profiles.record_account_root(&profile.id, "did:key:account-a", None)?;
+    let resolved = tonk_cli::account_profiles::ResolvedSpace {
+        profile: profiles.context(&profile.id)?,
+        name: "garden".to_owned(),
+        site: test.site.root.clone(),
+        source: Source::Directory(test.parent.clone()),
+    };
+
+    let report = context::inspect_profiled(&resolved, &test.site).await?;
+    let value: serde_json::Value = serde_json::from_str(&report.render_json()?)?;
+    let markdown = report.render_markdown();
+
+    assert_eq!(value["spot"]["profile"], "personal");
+    assert_eq!(value["spot"]["account_root"], "did:key:account-a");
+    assert_eq!(value["spot"]["signed_in"], false);
+    assert!(markdown.contains("profile: `personal`"), "{markdown}");
+    assert!(markdown.contains("signed in: no"), "{markdown}");
+    Ok(())
+}

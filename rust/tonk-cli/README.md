@@ -60,9 +60,14 @@ tonk push
 tonk pull
 tonk status       # synced | ahead | behind | diverged | no-upstream
 
-# Link this native profile to a passkey-backed account.
+# Manage several isolated native account profiles.
 tonk account status
-tonk account link --name workstation
+tonk account add --label personal --name workstation
+tonk account add --label work
+tonk account list
+tonk account use personal
+tonk account login
+tonk account sync
 tonk account logout
 
 # Delegate access to the space.
@@ -120,21 +125,39 @@ When an upstream is configured, a committing eval is wrapped with an automatic
 pull-before / push-after. `--no-sync` (or `TONK_NO_SYNC`) skips it; manual
 `tonk push` / `tonk pull` stay available either way.
 
-### Accounts
+### Accounts and profiles
 
-The CLI has at most one active remote account. Every `tonk account link`
-requires a fresh browser/passkey handoff; switching accounts is logout followed
-by link. Historical certificates remain available for local spot writes, but
-only the latest active attachment can authorize a remote request.
+One installation can retain several native profiles. Each profile owns a
+distinct Dialog identity, account session and lock, account repository, space
+registry, canonical space directory, deployment defaults, and credential
+store. `tonk account add --label <name>` creates a profile, `account use`
+selects one locally without a network request, and `account login` signs a
+rooted profile back into its immutable account root. `account link` remains a
+compatibility spelling: it creates or resumes an unrooted profile, and logs a
+rooted selected profile back into that same account.
 
-Interrupting `tonk account link` leaves the handoff recorded so the next run
-resumes it. A link token is one-time, so a service that refuses to reissue it
-has ended that handoff and not this profile's ability to link: the next run
+Directory bindings carry both the profile and the space name. A directory
+bound to profile A's `garden` continues to open A even when B is selected;
+explicit `--spot garden`, `TONK_SPOT=garden`, new spaces, joins, pulls, and
+account commands use the selected profile. Different profiles may therefore
+both have a space named `garden` without sharing state or authority.
+
+After account login, Tonk asks that ceremony deployment for
+`/.well-known/tonk`. A matching typed response supplies that profile's default
+content access endpoint and revocation relay. Discovery failure leaves login
+successful and reports `sync defaults: pending`; it never silently substitutes
+a production service. Existing custom upstreams always win.
+
+Interrupting `tonk account add` or `link` leaves the provisional profile and
+handoff recorded so the next run resumes both. A link token is one-time, so a
+service that refuses to reissue it has ended that handoff and not this
+profile's ability to link: the next run
 takes the completed grant if the browser approved in the meantime, and
 otherwise prints a fresh URL rather than re-offering a spent token.
 
 `tonk account logout` commits locally first, so it works offline. Existing
-spots remain readable and editable, while fetch, pull, push, account sync, and
+spaces remain readable and editable through their owning profile, while
+fetch, pull, push, account sync, and
 other access-service requests are denied before HTTP. Logout queues a
 signed, generation-specific detach intent; the device list may remain stale
 until a later account operation reaches the provider and flushes that outbox.
@@ -149,11 +172,18 @@ one-active-generation rule would reject the activation. `tonk account link
 --abandon-detach` drops those undelivered intents and links anyway; the
 earlier device can stay listed until `tonk account revoke` removes it.
 
-Detach is not revocation. It hides the exact attachment and permits a later
+Account selection and logout are not revocation. Selection only changes the
+default local profile. Detach hides the exact attachment and permits a later
 fresh handoff without publishing an immutable revocation. `tonk account revoke
 <DEVICE_DID>` permanently revokes the selected grant, which can never be
 reactivated. Use `tonk identity --reset` only for destructive local identity
-rotation.
+rotation; it refuses while the selected profile still owns registered spaces.
+
+Profiles are an operational isolation boundary inside supported Tonk CLI
+paths, not encryption or an OS-user security boundary. Another process running
+as the same user may read the unencrypted local files. Remote services enforce
+the signed delegation chain; Tonk prevents accidental use of profile B's grant,
+provider, deployment, or account repository for profile A's space.
 
 | State | Local query/edit/commit | Remote sync |
 | --- | --- | --- |

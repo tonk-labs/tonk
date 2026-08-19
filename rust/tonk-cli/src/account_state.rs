@@ -109,8 +109,17 @@ async fn descriptor_in(
 
 /// Read durable native account-state status without contacting the remote.
 pub async fn status(profile: &Profile) -> Result<AccountStateStatus> {
-    let operator = credential_operator(profile).await?;
-    let Some(descriptor) = descriptor(profile, &operator).await? else {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    status_in(profile, &store).await
+}
+
+/// Read account repository status from one explicit profile store.
+pub async fn status_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<AccountStateStatus> {
+    let operator = credential_operator_for_store(profile, store).await?;
+    let Some(descriptor) = descriptor_in(profile, &operator, store).await? else {
         return Ok(AccountStateStatus::Unconfigured);
     };
     if marker_matches(marker(profile, &operator).await?.as_deref(), &descriptor) {
@@ -263,7 +272,18 @@ pub async fn retain_space_delegation(
     operator: &Operator<NativeSpace>,
     chain: &DelegationChain,
 ) -> Result<bool> {
-    let Some(branch) = open_account_branch(profile, operator).await? else {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    retain_space_delegation_in(profile, operator, &store, chain).await
+}
+
+/// Retain one space delegation in the account repository owned by `store`.
+pub async fn retain_space_delegation_in(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+    chain: &DelegationChain,
+) -> Result<bool> {
+    let Some(branch) = open_account_branch_in(profile, operator, store).await? else {
         return Ok(false);
     };
     tonk_account::delegations::retain_space_delegation(&branch, chain, operator)
@@ -395,7 +415,8 @@ pub async fn migrate_delegations(
         };
         let subject = site.repository.did();
         let Ok(chain) =
-            crate::site::account_root_prefix_for(profile, operator, &subject, &account_root).await
+            crate::site::adopt_account_root_prefix_for(profile, operator, &subject, &account_root)
+                .await
         else {
             continue;
         };
@@ -474,6 +495,9 @@ pub async fn credential_operator_for_store(
         )
         .await;
     }
+    if let Some(profile_name) = crate::account_profiles::generated_dialog_profile_name(store) {
+        return operator_with_profile(profile, &root, &profile_name, Directory::Profile).await;
+    }
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create account state at {}", root.display()))?;
     let root = root
@@ -489,6 +513,14 @@ pub async fn credential_operator_for_store(
         .build(Storage::<NativeSpace>::default())
         .await
         .context("failed to build account-state operator")
+}
+
+/// Build the account operator for one explicit native profile store.
+pub async fn operator_for_store(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<Operator<NativeSpace>> {
+    credential_operator_for_store(profile, store).await
 }
 
 pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<NativeSpace>> {

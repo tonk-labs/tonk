@@ -420,9 +420,13 @@ pub async fn claim(
     // what a later `tonk invite` delegates from. Rooting that chain in an
     // anonymous key leaves it with no owner and nothing able to revoke it.
     if config.require_account {
-        crate::account::require_account_with_operator(&profile, &operator)
-            .await
-            .map_err(|e| InviteError::Io(e.to_string()))?;
+        crate::account::require_account_with_operator_in(
+            &profile,
+            &operator,
+            &config.account_store,
+        )
+        .await
+        .map_err(|e| InviteError::Io(e.to_string()))?;
     }
     let member = local_root
         .ok_or_else(|| {

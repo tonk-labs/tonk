@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_account::prefix::space_root_site;
 use tonk_cli::site::{SiteConfig, TonkSite};
+use tonk_schema::RepositoryName;
+use tonk_schema::prelude::DidExt as _;
 
 /// Open sites the way a real install does, with the account boundary in
 /// front of every remote fork. The shared fixture config leaves it off so
@@ -23,20 +25,138 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-/// Releases before the account-root prefix existed stored no such
-/// credential, so upgrading left every spot they created with nothing under
-/// that key. Authorization has to rebuild the prefix from the certificates
-/// the profile already holds instead of reporting the spot as undelegated.
+async fn name_repository(site: &TonkSite, name: &str) -> Result<()> {
+    site.branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(RepositoryName {
+            this: site.repository.did().this(),
+            name: tonk_schema::domain::repo::Name(name.to_owned()),
+        })
+        .commit()
+        .perform(&site.operator)
+        .await?;
+    Ok(())
+}
+
 #[dialog_common::test]
-async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
+async fn it_keeps_an_offline_profiles_pending_revision_out_of_another_account(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let a = common::AccountFixture::with_account_remote_and_root(&remote, [0xa1; 32]).await?;
+    let b = common::AccountFixture::with_account_remote_and_root(&remote, [0xb2; 32]).await?;
+    assert_ne!(a.link.issuer(), b.link.issuer());
+
+    let a_path = a.tmp.path().join("a-garden");
+    let a_site = TonkSite::init_at_with(&a_path, account_config(&a)).await?;
+    configure_upstream(&a_site, &remote).await?;
+    tonk_cli::sync::push(&a_site).await?;
+    let b_site = TonkSite::init_at_with(&b.tmp.path().join("b-garden"), account_config(&b)).await?;
+    configure_upstream(&b_site, &remote).await?;
+    tonk_cli::sync::push(&b_site).await?;
+    let initial = a_site
+        .branch()
+        .await?
+        .handle()
+        .revision()
+        .expect("seeded site revision")
+        .tree;
+
+    tonk_cli::account::logout_for_integration_test(&a.profile, &a.pre_account_site.operator)
+        .await?;
+    name_repository(&a_site, "offline-a").await?;
+    let pending = a_site
+        .branch()
+        .await?
+        .handle()
+        .revision()
+        .expect("offline revision")
+        .tree;
+    assert_ne!(pending, initial, "the offline local commit must survive");
+    let error = tonk_cli::sync::push(&a_site)
+        .await
+        .expect_err("A cannot publish through B while A is logged out");
+    assert!(
+        format!("{error:#}").contains("log in") || format!("{error:#}").contains("active account"),
+        "{error:#}"
+    );
+    tonk_cli::sync::push(&b_site)
+        .await
+        .context("B must remain independently authorized after A logs out")?;
+
+    // The same OS user may read and mount local bytes. The enforced boundary
+    // is remote authority: B has no explicit A-space -> B-root prefix, and an
+    // ordinary push must neither mint one nor reach the remote.
+    let forced = TonkSite::open_with(&a_path, account_config(&b)).await?;
+    let forced_error = tonk_cli::sync::push(&forced)
+        .await
+        .expect_err("B must not publish A's repository");
+    assert!(
+        format!("{forced_error:#}").contains("not proven")
+            || format!("{forced_error:#}").contains("unproven")
+            || format!("{forced_error:#}").contains("No delegation chain proves"),
+        "{forced_error:#}"
+    );
+    assert!(
+        tonk_cli::site::load_account_root_prefix_for(
+            &forced.profile,
+            forced.operator.inner(),
+            &forced.repository.did(),
+            b.link.issuer(),
+        )
+        .await
+        .is_err(),
+        "the denied push must not mint B-rooted authority for A's subject"
+    );
+    let reopened = TonkSite::open_with(&a_path, account_config(&a)).await?;
+    assert_eq!(
+        reopened
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("reopened revision")
+            .tree,
+        pending,
+        "failed cross-profile access must not mutate A's branch"
+    );
+
+    tonk_cli::account::attach_for_integration_test(
+        &a.profile,
+        &a.pre_account_site.operator,
+        a.config.clone(),
+        &a.server.endpoint,
+        "fixture-credential",
+        a.link.clone(),
+        &a.descriptor,
+    )
+    .await?;
+    tonk_cli::sync::push(&reopened).await?;
+    assert!(
+        tonk_cli::account_sync::record_current_revision_confirmed(&reopened, a.link.issuer())
+            .await?
+    );
+    assert!(
+        tonk_cli::account_sync::current_revision_is_confirmed(&reopened, a.link.issuer()).await?
+    );
+    tonk_cli::sync::push(&b_site)
+        .await
+        .context("A's relogin must not disturb B's active authority")?;
+    Ok(())
+}
+
+/// Ordinary remote authorization must never turn held local authority into a
+/// delegation for whichever account happens to be active. Adoption is an
+/// explicit lifecycle operation.
+#[dialog_common::test]
+async fn it_refuses_remote_authorization_without_an_explicit_account_prefix(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
-    let site = TonkSite::init_at_with(
-        &fixture.tmp.path().join("upgraded"),
-        account_config(&fixture),
-    )
-    .await?;
+    let site =
+        TonkSite::open_with(&fixture.pre_account_site.root, account_config(&fixture)).await?;
     let prefix_site = space_root_site(&site.repository.did(), fixture.link.issuer());
     fixture
         .profile
@@ -47,7 +167,16 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
         .await?;
     configure_upstream(&site, &env.access_service_url).await?;
 
-    tonk_cli::sync::push(&site).await?;
+    let error = tonk_cli::sync::push(&site)
+        .await
+        .expect_err("a missing prefix must fail before the request is sent");
+    assert!(
+        error.to_string().contains("not proven")
+            || error.to_string().contains("unproven")
+            || format!("{error:#}").contains("No delegation chain proves")
+            || format!("{error:#}").contains("UnprovenSubject"),
+        "the refusal must preserve the authorization cause: {error:#}"
+    );
 
     let restored = fixture
         .profile
@@ -56,10 +185,7 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
         .load::<Vec<u8>>()
         .perform(&site.operator)
         .await?;
-    assert!(
-        !restored.is_empty(),
-        "authorizing a remote must leave the recovered prefix stored"
-    );
+    assert!(restored.is_empty(), "authorization must not mint a prefix");
     Ok(())
 }
 
@@ -268,7 +394,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     .await?;
     configure_upstream(&site, &env.access_service_url).await?;
     let subject = site.repository.did();
-    let prefix = tonk_cli::site::account_root_prefix_for(
+    let prefix = tonk_cli::site::adopt_account_root_prefix_for(
         &owner.profile,
         owner_operator,
         &subject,
@@ -342,6 +468,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
             store: Some(tonk_cli::spot::SpotStore::at(
                 joiner.parent.join("account-state"),
             )),
+            expected_root: None,
         },
     )
     .await?;
@@ -466,9 +593,13 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
         .expect("device one has a hydrated account");
     // The space -> account-root prefix: the authority device two needs and
     // cannot mint for itself. `tonk space create` retains exactly this.
-    let chain =
-        tonk_cli::site::account_root_prefix_for(&first.profile, operator, &subject, &account_root)
-            .await?;
+    let chain = tonk_cli::site::adopt_account_root_prefix_for(
+        &first.profile,
+        operator,
+        &subject,
+        &account_root,
+    )
+    .await?;
     assert!(
         !tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
         "creation already retained device one's space authority into the account"
@@ -596,7 +727,7 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
 /// profile held at the time and reaches no account root at all. Linking an
 /// account must adopt it rather than strand it offline.
 #[dialog_common::test]
-async fn it_pushes_a_spot_created_before_the_account_existed(
+async fn it_explicitly_adopts_then_pushes_a_spot_created_before_the_account_existed(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
@@ -604,9 +735,18 @@ async fn it_pushes_a_spot_created_before_the_account_existed(
     let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
     configure_upstream(&site, &env.access_service_url).await?;
 
+    let adopted = tonk_cli::site::adopt_account_root_prefix_for(
+        &site.profile,
+        site.operator.inner(),
+        &site.repository.did(),
+        fixture.link.issuer(),
+    )
+    .await?;
+
     tonk_cli::sync::push(&site).await?;
 
     let prefix = tonk_cli::site::account_root_prefix(&site, fixture.link.issuer()).await?;
+    assert_eq!(adopted.to_bytes()?, prefix.to_bytes()?);
     assert_eq!(prefix.subject(), Some(&site.repository.did()));
     assert_eq!(prefix.audience(), fixture.link.issuer());
     Ok(())

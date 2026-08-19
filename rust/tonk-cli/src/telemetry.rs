@@ -100,14 +100,11 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
     if !settings.enabled {
         return None;
     }
-    let distinct = if crate::identity::exists() {
-        match crate::identity::open().await {
-            Ok(profile) => tonk_analytics::distinct_id(profile.did().as_ref()),
-            Err(_) => "tonk:anonymous".to_owned(),
-        }
-    } else {
-        "tonk:anonymous".to_owned()
-    };
+    let distinct = crate::account_profiles::NativeProfileStore::open()
+        .ok()
+        .and_then(|profiles| profiles.selected().ok().flatten())
+        .map(|context| tonk_analytics::distinct_id(context.id.as_str()))
+        .unwrap_or_else(|| "tonk:anonymous".to_owned());
     let client = tonk_analytics::native::Client::from_env(distinct, true);
     if !client.is_enabled() {
         return None;

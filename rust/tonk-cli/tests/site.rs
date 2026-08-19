@@ -679,9 +679,10 @@ mod when_minting_and_claiming_an_invite {
     /// pub(crate) re-export, so a quick smoke check belongs
     /// here.
     #[dialog_common::test]
-    fn default_config_uses_the_canonical_profile_name() {
-        let config = site::default_config();
+    fn default_config_uses_the_canonical_profile_name() -> Result<()> {
+        let config = site::default_config()?;
         assert_eq!(config.profile_name, site::PROFILE_NAME);
+        Ok(())
     }
 }
 
@@ -1357,7 +1358,7 @@ mod when_mounting_account_authority {
     }
 
     #[dialog_common::test]
-    async fn it_recovers_a_pre_feature_prefix_from_profile_authority() -> Result<()> {
+    async fn it_adopts_legacy_authority_only_when_requested() -> Result<()> {
         let test = common::TestSite::new().await?;
         let root = local_root(&test.site).await?;
         let key = space_root_site(&test.site.repository.did(), &root);
@@ -1369,7 +1370,13 @@ mod when_mounting_account_authority {
             .perform(&test.site.operator)
             .await?;
 
-        let recovered = site::account_root_prefix(&test.site, &root).await?;
+        let recovered = site::adopt_account_root_prefix_for(
+            &test.site.profile,
+            test.site.operator.inner(),
+            &test.site.repository.did(),
+            &root,
+        )
+        .await?;
         assert_eq!(recovered.subject(), Some(&test.site.repository.did()));
         assert_eq!(recovered.audience(), &root);
         let persisted = test
@@ -1394,7 +1401,13 @@ mod when_mounting_account_authority {
         let account_root = Ed25519Signer::import(&[73; 32]).await?.did();
         assert_ne!(local_root(&test.site).await?, account_root);
 
-        let adopted = site::account_root_prefix(&test.site, &account_root).await?;
+        let adopted = site::adopt_account_root_prefix_for(
+            &test.site.profile,
+            test.site.operator.inner(),
+            &test.site.repository.did(),
+            &account_root,
+        )
+        .await?;
 
         assert_eq!(adopted.subject(), Some(&test.site.repository.did()));
         assert_eq!(adopted.audience(), &account_root);
@@ -1417,7 +1430,13 @@ mod when_mounting_account_authority {
         let test = common::TestSite::new().await?;
         let account_root = Ed25519Signer::import(&[74; 32]).await?.did();
 
-        let first = site::account_root_prefix(&test.site, &account_root).await?;
+        let first = site::adopt_account_root_prefix_for(
+            &test.site.profile,
+            test.site.operator.inner(),
+            &test.site.repository.did(),
+            &account_root,
+        )
+        .await?;
         let second = site::account_root_prefix(&test.site, &account_root).await?;
 
         assert_eq!(first.to_bytes()?, second.to_bytes()?);

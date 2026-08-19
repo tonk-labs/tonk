@@ -4838,6 +4838,7 @@ dependencies = [
  "tonk-notation",
  "tonk-render",
  "tonk-schema",
+ "tonk-worker-api",
  "url",
  "urlencoding",
  "wasm-bindgen-test",

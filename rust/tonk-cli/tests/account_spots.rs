@@ -47,6 +47,7 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
     )
     .await?;
     configure_upstream(&site, "http://127.0.0.1:9/ucan/").await?;
+    mark_content_confirmed(&site, fixture.link.issuer(), "alpha").await?;
     let canonical = site.root.canonicalize()?;
     let mut registry = fixture.store.load()?;
     for name in ["zeta", "alpha"] {
@@ -359,6 +360,21 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
     Ok(())
 }
 
+async fn mark_content_confirmed(
+    site: &TonkSite,
+    account_root: &dialog_varsig::Did,
+    name: &str,
+) -> Result<()> {
+    if !tonk_cli::account_sync::record_current_revision_confirmed(site, account_root).await? {
+        name_repository(site, name).await?;
+        assert!(
+            tonk_cli::account_sync::record_current_revision_confirmed(site, account_root).await?,
+            "the seeded fixture site must have a local revision"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     use tonk_cli::account_spots::RecordOutcome;
@@ -373,6 +389,7 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     .await?;
     name_repository(&owned, "synced-owned").await?;
     configure_upstream(&owned, dead_remote).await?;
+    mark_content_confirmed(&owned, fixture.link.issuer(), "synced-owned").await?;
     tonk_cli::spot::register_existing_unbound(&fixture.store, "owned-alias", &owned.root)?;
     assert_eq!(
         account_spots::record_site_in("owned-alias", &owned, &fixture.store).await?,
@@ -392,6 +409,7 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     )
     .await?;
     configure_upstream(&joined, dead_remote).await?;
+    mark_content_confirmed(&joined, fixture.link.issuer(), "joined-alias").await?;
     tonk_cli::spot::register_existing_unbound(&fixture.store, "joined-alias", &joined.root)?;
     assert_eq!(
         account_spots::record_site_in("joined-alias", &joined, &fixture.store).await?,
@@ -461,6 +479,7 @@ async fn record_sweep_uses_the_first_alias_once() -> Result<()> {
     )
     .await?;
     configure_upstream(&site, "http://127.0.0.1:9/ucan/").await?;
+    mark_content_confirmed(&site, fixture.link.issuer(), "alpha").await?;
     let canonical = site.root.canonicalize()?;
     let mut registry = fixture.store.load()?;
     for name in ["zeta", "alpha"] {

@@ -437,6 +437,7 @@ async fn it_migrates_credentials_before_repositories(
         .context("the migration steps join")?
 }
 
+#[allow(dead_code)]
 fn migrate_and_publish(endpoint: &str) -> Result<()> {
     let workspace = tempfile::tempdir()?;
 
@@ -658,6 +659,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
 }
 
 /// Number of regular files beneath a directory, recursively.
+#[allow(dead_code)]
 fn count_files(root: &Path) -> Result<usize> {
     let mut total = 0;
     let mut pending = vec![root.to_path_buf()];
