@@ -1,6 +1,9 @@
 #![warn(missing_docs)]
 //! Service worker implementation for Tonk.
 //!
+//! Storage rides dialog's IndexedDB adapters; their transaction settling
+//! is race-armed and watchdogged (see dialog-storage's `settle`).
+//!
 //! This crate provides a Wasm-based service worker that runs in the browser and
 //! handles API requests using Axum.
 //!
