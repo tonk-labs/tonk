@@ -77,6 +77,136 @@ async fn migrated_runtime_fields_bind_the_current_replica() -> Result<()> {
     Ok(())
 }
 
+/// Legacy command behavior was stored outside the application schema: the
+/// transient marker selected dispatch semantics, while `dialog.effect/*`
+/// carried the rule that handled the command. A migration that imports the
+/// concepts but drops those runtime facts leaves the UI visible and inert.
+#[tokio::test]
+async fn migrated_transient_command_still_fires_its_rule() -> Result<()> {
+    let source = common::TestSite::new().await?;
+    source
+        .eval_inline(
+            r#"concept!: &migration-ping
+  transient:
+  with:
+    tag:
+      the: migration.test/ping-tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &migration-pong
+  with:
+    tag:
+      the: migration.test/pong-tag
+      as: text
+      cardinality: one
+      description: "tag"
+"#,
+        )
+        .await?;
+
+    let legacy_path = source.tmp.path().join("legacy-command.csv");
+    tonk_cli::transfer::export(
+        &source.site,
+        tonk_cli::transfer::Destination::File(legacy_path.clone()),
+    )
+    .await?;
+
+    // This is the pre-native-rule storage form. Its source is the same
+    // asserted-notation rule descriptor, but polarity lived beside it and
+    // the entity was an `effect:*` rather than a `rule:*` content address.
+    let effect_source = serde_json::json!({
+        "assert!": {
+            "with": {
+                "tag": {
+                    "the": "migration.test/pong-tag",
+                    "as": "Text",
+                    "cardinality": "one",
+                    "description": "tag"
+                }
+            }
+        },
+        "when": [{
+            "assert": {
+                "with": {
+                    "tag": {
+                        "the": "migration.test/ping-tag",
+                        "as": "Text",
+                        "cardinality": "one",
+                        "description": "tag"
+                    }
+                }
+            },
+            "where": {
+                "this": { "?": { "name": "this" } },
+                "tag": { "?": { "name": "tag" } }
+            }
+        }]
+    })
+    .to_string()
+    .replace('"', "\"\"");
+    let legacy = std::fs::read_to_string(&legacy_path)?;
+    let mut legacy = legacy
+        .split_inclusive('\n')
+        .map(|line| {
+            if line.starts_with("dialog.concept/transient,") {
+                line.replace(",boolean,true,", ",entity,db:transient,")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<String>();
+    legacy.push_str(&format!(
+        "dialog.meta/effect,effect:migration-ping,entity,db:effect,\n\
+         dialog.effect/source,effect:migration-ping,text,\"{effect_source}\",\n\
+         dialog.effect/polarity,effect:migration-ping,text,assert,\n\
+         dialog.effect/source,did:key:zTESTfixture111111111111111111111111111111111,text,x,\n\
+         dialog.effect/polarity,did:key:zTESTfixture111111111111111111111111111111111,text,assert,\n"
+    ));
+    std::fs::write(&legacy_path, legacy)?;
+
+    let migrated_path = source.tmp.path().join("migrated-command.csv");
+    let input = std::fs::File::open(&legacy_path)?;
+    let mut migrated = Vec::new();
+    tonk_cli::legacy::migrate_export(BufReader::new(input), &mut migrated)?;
+    std::fs::write(&migrated_path, migrated)?;
+
+    let destination = common::TestSite::new().await?;
+    let repair = tonk_cli::legacy::import_upgraded_branch(
+        &destination.site,
+        "main",
+        &migrated_path,
+        &legacy_path,
+    )
+    .await?;
+    assert!(
+        repair.transient_concepts > 0,
+        "the command marker must return"
+    );
+    assert_eq!(
+        repair.native_rules, 1,
+        "the legacy effect must become a rule"
+    );
+    assert_eq!(
+        repair.ignored_effects, 1,
+        "non-effect test debris must not block real handlers"
+    );
+
+    destination
+        .eval_inline("migration-ping!: &event\n  tag: \"migrated\"\n")
+        .await?;
+    let pong = destination
+        .eval_inline("migration-pong:\n  this: ?this\n  tag: ?tag\n")
+        .await?
+        .stdout;
+    assert!(
+        pong.contains("migrated"),
+        "the migrated command must still run its handler; saw:\n{pong}"
+    );
+    Ok(())
+}
+
 /// Download and unpack the published legacy CLI, returning its path.
 ///
 /// The real published artifact rather than a local build of the old ref:
@@ -190,6 +320,39 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
     // `tonk use`, not `tonk spot use`: binding a directory to a spot is a
     // top-level verb in this release.
     legacy_run(&legacy_cli, &home, &work, &["use", "legacy"])?;
+    let runtime = work.join("runtime.tonk");
+    std::fs::write(
+        &runtime,
+        r#"concept!: &migration-ping
+  transient:
+  with:
+    tag:
+      the: migration.test/ping-tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &migration-pong
+  with:
+    tag:
+      the: migration.test/pong-tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+rule!:
+  assert!: migration-pong
+  when:
+    - assert: migration-ping
+      where: { this: ?this, tag: ?tag }
+"#,
+    )?;
+    legacy_run(
+        &legacy_cli,
+        &home,
+        &work,
+        &["eval", runtime.to_str().context("non-UTF-8 path")?],
+    )?;
     legacy_run(
         &legacy_cli,
         &home,
@@ -217,7 +380,10 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
     let site = common::TestSite::new().await?;
     let path = site.tmp.path().join("migrated.csv");
     std::fs::write(&path, &migrated)?;
-    tonk_cli::transfer::import(&site.site, &path).await?;
+    let repair =
+        tonk_cli::legacy::import_upgraded_branch(&site.site, "main", &path, &export).await?;
+    assert!(repair.transient_concepts > 0);
+    assert!(repair.native_rules > 0);
 
     let rows = site
         .eval_inline("note:\n  this: ?this\n  title: ?title\n")
@@ -231,6 +397,16 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
         rows.contains("did:key:z6Mk3VY17HUDh9rW6UpiDdtF9BGmdqfsYC2ZGzk4rAJadk2H"),
         "the note must keep the entity the old build minted, or this is a \
          copy rather than an upgrade; saw:\n{rows}"
+    );
+    site.eval_inline("migration-ping!: &event\n  tag: \"from-v0.6.7\"\n")
+        .await?;
+    let pong = site
+        .eval_inline("migration-pong:\n  this: ?this\n  tag: ?tag\n")
+        .await?
+        .stdout;
+    assert!(
+        pong.contains("from-v0.6.7"),
+        "the command and rule written by v0.6.7 must still dispatch; saw:\n{pong}"
     );
     Ok(())
 }

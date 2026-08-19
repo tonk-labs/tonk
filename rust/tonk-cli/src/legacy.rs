@@ -10,23 +10,27 @@
 //! carries. Runtime-injected replica attributes also changed from
 //! `dialog.origin/*` to `dialog.replica/*`; those names live inside schema
 //! rows and are rewritten explicitly. What did *not* survive is dialog's own
-//! bookkeeping: the old rules system (`dialog.effect/*`), and the handful of
-//! markers the new build regenerates for itself. Those are dropped rather
-//! than translated, because the new build writes its own.
+//! bookkeeping: the old rules system (`dialog.effect/*`) and command markers.
+//! Those reserved rows cannot travel through ordinary CSV import. They are
+//! excluded from the application CSV, then translated after import into
+//! native `dialog.rule/*` facts and current boolean transient markers.
 //!
 //! Remapping is preferred over re-deriving the schema from
 //! `tonk schema` output. Both work, but this carries the data the spot
 //! actually had — a schema that drifted from the standard library keeps its
 //! drift — and a table cannot fail halfway through a re-evaluation.
 
-use std::collections::BTreeSet;
-use std::io::{BufRead, Write};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
-use dialog_artifacts::Entity;
+use dialog_artifacts::{Entity, Value};
+use dialog_csv::CsvImporter;
 use dialog_query::{Output as _, Query, Term};
+use futures_util::StreamExt as _;
+use serde_json::Value as JsonValue;
 use tonk_schema::meta::{AnonymousAttribute, attribute};
 
 /// The last release that can read pre-upgrade data.
@@ -112,6 +116,8 @@ pub struct Upgraded {
     pub migration: Migration,
     /// The migrated CSV, ready to import.
     pub csv: PathBuf,
+    /// The original export, retained to translate legacy runtime metadata.
+    pub legacy_csv: PathBuf,
     /// Content-addressed blobs referenced by the migrated facts.
     pub blobs: Vec<Entity>,
 }
@@ -176,6 +182,7 @@ pub fn upgrade_branch(cli: &Path, spot: &str, branch: &str, workspace: &Path) ->
         branch: branch.to_owned(),
         migration,
         csv: migrated,
+        legacy_csv: exported,
         blobs,
     })
 }
@@ -259,6 +266,272 @@ pub async fn import_migrated_branch(
         .await
         .with_context(|| format!("failed to import migrated branch {branch:?}"))?;
     repair_runtime_attribute_ids(destination, branch).await
+}
+
+/// Runtime-owned behavior restored after importing a legacy application tree.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeRepair {
+    /// Schema attribute IDs repaired from `dialog.origin/*` to `dialog.replica/*`.
+    pub runtime_attributes: usize,
+    /// Legacy command concepts marked transient in the current representation.
+    pub transient_concepts: usize,
+    /// Legacy effects installed as content-addressed native dialog rules.
+    pub native_rules: usize,
+    /// Unmarked source/polarity debris ignored from the legacy effect index.
+    pub ignored_effects: usize,
+}
+
+/// Import a rewritten branch and translate the runtime metadata that cannot
+/// travel through CSV under the current reserved `dialog.*` namespace.
+///
+/// A legacy export stores command semantics in two runtime-owned families:
+/// `dialog.concept/transient` marks a concept as dispatch-only, and
+/// `dialog.effect/*` stores the rule fired by that command. Dropping those
+/// rows imports the visible application data but leaves event handlers inert.
+pub async fn import_upgraded_branch(
+    destination: &crate::site::TonkSite,
+    branch: &str,
+    csv: &PathBuf,
+    legacy_csv: &Path,
+) -> Result<RuntimeRepair> {
+    // Decode first: an incompatible real effect should fail before any
+    // application rows are committed, leaving the destination untouched.
+    eprintln!("runtime: decoding legacy commands and effects …");
+    let runtime = legacy_runtime(legacy_csv).await?;
+    eprintln!("runtime: importing migrated application rows …");
+    crate::transfer::import_branch(destination, branch, csv)
+        .await
+        .with_context(|| format!("failed to import migrated branch {branch:?}"))?;
+    eprintln!("runtime: repairing replica attribute bindings …");
+    let runtime_attributes = repair_runtime_attribute_ids(destination, branch).await?;
+
+    if runtime.transient_concepts.is_empty() && runtime.rules.is_empty() {
+        return Ok(RuntimeRepair {
+            runtime_attributes,
+            ignored_effects: runtime.ignored_effects,
+            ..RuntimeRepair::default()
+        });
+    }
+
+    let session = destination
+        .named_branch(branch)
+        .await
+        .with_context(|| format!("failed to open migrated branch {branch:?}"))?;
+    let transient_count = runtime.transient_concepts.len();
+    let rule_count = runtime.rules.len();
+    eprintln!("runtime: installing {transient_count} commands and {rule_count} native rules …");
+    let mut transaction = session.handle().transaction();
+    for concept in runtime.transient_concepts {
+        transaction = transaction.assert(dialog_repository::Transient(concept));
+    }
+    for rule in runtime.rules.into_values() {
+        transaction = transaction.assert(rule);
+    }
+    transaction
+        .commit()
+        .perform(&destination.operator)
+        .await
+        .with_context(|| format!("failed to restore legacy runtime behavior on {branch:?}"))?;
+    eprintln!("runtime: legacy command behavior restored");
+
+    Ok(RuntimeRepair {
+        runtime_attributes,
+        transient_concepts: transient_count,
+        native_rules: rule_count,
+        ignored_effects: runtime.ignored_effects,
+    })
+}
+
+#[derive(Default)]
+struct LegacyEffect {
+    source: Option<String>,
+    polarity: Option<String>,
+}
+
+#[derive(Default)]
+struct LegacyRuntime {
+    transient_concepts: BTreeSet<Entity>,
+    rules: BTreeMap<Entity, dialog_query::InductiveRule>,
+    ignored_effects: usize,
+}
+
+async fn legacy_runtime(legacy_csv: &Path) -> Result<LegacyRuntime> {
+    let path = legacy_csv.to_owned();
+    let runtime_csv = tokio::task::spawn_blocking(move || {
+        let source = std::fs::File::open(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let mut runtime = Vec::new();
+        extract_legacy_runtime(std::io::BufReader::new(source), &mut runtime)?;
+        Ok::<_, anyhow::Error>(runtime)
+    })
+    .await
+    .context("legacy runtime scan task failed")??;
+    let mut artifacts = CsvImporter::from(Cursor::new(runtime_csv));
+    let mut transient_concepts = BTreeSet::new();
+    let mut effects = BTreeMap::<Entity, LegacyEffect>::new();
+    let mut marked_effects = BTreeSet::new();
+
+    while let Some(artifact) = artifacts.next().await {
+        let artifact = artifact.with_context(|| {
+            format!(
+                "failed to decode legacy runtime metadata from {}",
+                legacy_csv.display()
+            )
+        })?;
+        match artifact.the.to_string().as_str() {
+            "dialog.concept/transient" => {
+                let Value::Entity(marker) = artifact.is else {
+                    bail!(
+                        "legacy command {} has a non-entity transient marker",
+                        artifact.of
+                    );
+                };
+                if marker.as_str() != "db:transient" {
+                    bail!(
+                        "legacy command {} has unexpected transient marker {marker}",
+                        artifact.of
+                    );
+                }
+                transient_concepts.insert(artifact.of);
+            }
+            "dialog.meta/effect" => {
+                let Value::Entity(marker) = artifact.is else {
+                    bail!("legacy effect {} has a non-entity marker", artifact.of);
+                };
+                if marker.as_str() != "db:effect" {
+                    bail!(
+                        "legacy effect {} has unexpected marker {marker}",
+                        artifact.of
+                    );
+                }
+                marked_effects.insert(artifact.of);
+            }
+            "dialog.effect/source" => {
+                let Value::String(source) = artifact.is else {
+                    bail!("legacy effect {} has a non-text source", artifact.of);
+                };
+                effects.entry(artifact.of).or_default().source = Some(source);
+            }
+            "dialog.effect/polarity" => {
+                let Value::String(polarity) = artifact.is else {
+                    bail!("legacy effect {} has a non-text polarity", artifact.of);
+                };
+                effects.entry(artifact.of).or_default().polarity = Some(polarity);
+            }
+            _ => {}
+        }
+    }
+
+    let mut rules = BTreeMap::new();
+    for effect in marked_effects {
+        let stored = effects.remove(&effect).unwrap_or_default();
+        let source = stored
+            .source
+            .with_context(|| format!("legacy effect {effect} has no source"))?;
+        let polarity = stored
+            .polarity
+            .with_context(|| format!("legacy effect {effect} has no polarity"))?;
+        let source = repair_runtime_attribute_names(&source);
+        let mut rule: dialog_query::InductiveRule =
+            serde_json::from_str(&source).with_context(|| {
+                format!("legacy effect {effect} could not compile as a native rule")
+            })?;
+        rule = match polarity.as_str() {
+            "assert" => rule,
+            "retract" => rule.with_polarity(dialog_query::rule::inductive::Polarity::Retract),
+            unknown => bail!("legacy effect {effect} has unknown polarity {unknown:?}"),
+        };
+        rules.insert(rule.this(), rule);
+    }
+    let ignored_effects = effects.len();
+    Ok(LegacyRuntime {
+        transient_concepts,
+        rules,
+        ignored_effects,
+    })
+}
+
+const LEGACY_RUNTIME_ATTRIBUTES: &[&str] = &[
+    "dialog.concept/transient",
+    "dialog.meta/effect",
+    "dialog.effect/source",
+    "dialog.effect/polarity",
+];
+
+const LEGACY_DEDUCTIVE_RULE_ATTRIBUTES: &[&str] =
+    &["dialog.meta/rule", "db.rule/source", "db.rule/conclusion"];
+
+/// Copy only runtime metadata into a current-decoder-compatible CSV stream.
+///
+/// A complete old export can contain value encodings retired by dialog. The
+/// application rows do not need decoding here — `migrate_export` carries
+/// those byte-for-byte — so asking the current CSV importer to parse all of
+/// them adds an unrelated failure mode. This scanner preserves complete CSV
+/// records, including multiline effect JSON, and selects only the text and
+/// entity-shaped attributes this translation consumes. Legacy deductive rules
+/// are rejected here, before the application import can mutate the destination.
+fn extract_legacy_runtime<R: BufRead, W: Write>(source: R, mut out: W) -> Result<()> {
+    let mut lines = source.lines();
+    let header = lines
+        .next()
+        .transpose()
+        .context("failed to read the legacy export")?
+        .context("legacy export has no header row")?;
+    writeln!(out, "{header}").context("failed to write the runtime header")?;
+
+    let mut inside_quotes = false;
+    let mut keeping = false;
+    for line in lines {
+        let line = line.context("failed to read a legacy runtime row")?;
+        let starts_row = !inside_quotes;
+        inside_quotes ^= line.matches('"').count() % 2 == 1;
+        if starts_row {
+            let attribute = split_attribute(&line).map(|(the, _)| the);
+            if attribute.is_some_and(|the| LEGACY_DEDUCTIVE_RULE_ATTRIBUTES.contains(&the)) {
+                bail!(
+                    "legacy deductive rules are not supported by this migration; \
+                     export and recreate them before retrying"
+                );
+            }
+            keeping = attribute.is_some_and(|the| LEGACY_RUNTIME_ATTRIBUTES.contains(&the));
+        }
+        if keeping {
+            writeln!(out, "{line}").context("failed to write a legacy runtime row")?;
+        }
+    }
+    out.flush().context("failed to flush legacy runtime rows")?;
+    Ok(())
+}
+
+fn repair_runtime_attribute_names(source: &str) -> String {
+    let Ok(mut source) = serde_json::from_str::<JsonValue>(source) else {
+        return source.to_owned();
+    };
+    repair_runtime_attributes(&mut source);
+    serde_json::to_string(&source).unwrap_or_else(|_| source.to_string())
+}
+
+fn repair_runtime_attributes(value: &mut JsonValue) {
+    match value {
+        JsonValue::Array(values) => {
+            for value in values {
+                repair_runtime_attributes(value);
+            }
+        }
+        JsonValue::Object(fields) => {
+            if let Some(JsonValue::String(the)) = fields.get_mut("the")
+                && let Some((_, replacement)) = RUNTIME_ATTRIBUTE_RENAMES
+                    .iter()
+                    .find(|(attribute, _)| *attribute == the)
+            {
+                *the = (*replacement).to_owned();
+            }
+            for value in fields.values_mut() {
+                repair_runtime_attributes(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn repair_runtime_attribute_ids(
@@ -347,9 +620,9 @@ fn rename_runtime_attribute_id(the: &str, rest: &str) -> Option<String> {
     })
 }
 
-/// Attribute families the new build owns and regenerates. Importing them is
-/// what trips the reserved-namespace refusal, and translating them would be
-/// worse: they would then disagree with what the new build wrote itself.
+/// Attribute families the new build owns. Importing them is what trips the
+/// reserved-namespace refusal. Legacy effects are translated separately into
+/// native rules; already-native rule rows belong to the destination runtime.
 const DROP_PREFIXES: &[&str] = &[
     // The old rules system, superseded by dialog's native induction.
     "dialog.effect/",
@@ -357,7 +630,8 @@ const DROP_PREFIXES: &[&str] = &[
     "dialog.rule/",
 ];
 
-/// Individual attributes with the same story as [`DROP_PREFIXES`].
+/// Individual reserved attributes excluded from ordinary CSV import.
+/// Transient markers are translated separately into the current boolean form.
 const DROP_EXACT: &[&str] = &[
     "dialog.concept/transient",
     "dialog.db/revision",
@@ -544,8 +818,9 @@ mod tests {
         assert_eq!(migration.kept, 1);
     }
 
-    /// Dialog's own bookkeeping is dropped, not translated: the new build
-    /// writes its own, and a translated copy would contradict it.
+    /// Dialog's own bookkeeping is excluded from the application CSV. The
+    /// migration translates the legacy effect source separately; native rule
+    /// rows are regenerated from that source rather than copied verbatim.
     #[test]
     fn it_drops_what_the_new_build_owns() {
         let legacy = "the,of,as,is,cause\n\
@@ -564,5 +839,154 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("db.attribute/id"));
         assert!(!text.contains("dialog."));
+    }
+
+    #[test]
+    fn it_extracts_only_legacy_runtime_rows_with_multiline_sources() {
+        let legacy = "the,of,as,is,cause\n\
+            dialog.concept/transient,concept:A,entity,db:transient,\n\
+            app/binary,id:data,bytes,not-valid-current-base58,\n\
+            dialog.effect/source,effect:A,text,\"first line\n\
+            second line\",\n\
+            dialog.effect/polarity,effect:A,text,assert,\n";
+        let mut runtime = Vec::new();
+
+        extract_legacy_runtime(legacy.as_bytes(), &mut runtime).unwrap();
+        let text = String::from_utf8(runtime).unwrap();
+
+        assert!(text.contains("dialog.concept/transient"));
+        assert!(text.contains("first line\nsecond line"));
+        assert!(text.contains("dialog.effect/polarity"));
+        assert!(!text.contains("app/binary"));
+    }
+
+    #[test]
+    fn it_repairs_runtime_names_inside_legacy_rule_sources() {
+        let source = r#"{
+            "the":"dialog.origin/profile",
+            "description":"dialog.origin/profile",
+            "nested":{"the":"dialog.origin/subject"}
+        }"#;
+        let repaired = repair_runtime_attribute_names(source);
+
+        assert!(repaired.contains("dialog.replica/profile"));
+        assert!(repaired.contains("dialog.replica/subject"));
+        assert!(repaired.contains(r#""description":"dialog.origin/profile""#));
+    }
+
+    fn legacy_effect_source() -> String {
+        serde_json::json!({
+            "assert!": {
+                "with": {
+                    "tag": {
+                        "the": "migration.test/pong-tag",
+                        "as": "Text",
+                        "cardinality": "one",
+                        "description": "tag"
+                    }
+                }
+            },
+            "when": [{
+                "assert": {
+                    "with": {
+                        "tag": {
+                            "the": "migration.test/ping-tag",
+                            "as": "Text",
+                            "cardinality": "one",
+                            "description": "tag"
+                        }
+                    }
+                },
+                "where": {
+                    "this": { "?": { "name": "this" } },
+                    "tag": { "?": { "name": "tag" } }
+                }
+            }]
+        })
+        .to_string()
+        .replace('"', "\"\"")
+    }
+
+    async fn parse_legacy_runtime(csv: &str) -> Result<LegacyRuntime> {
+        let workspace = tempfile::tempdir()?;
+        let path = workspace.path().join("legacy.csv");
+        std::fs::write(&path, csv)?;
+        legacy_runtime(&path).await
+    }
+
+    #[tokio::test]
+    async fn it_uses_the_effect_marker_instead_of_the_entity_prefix() {
+        let custom = "did:key:zTESTfixture111111111111111111111111111111111";
+        let csv = format!(
+            "the,of,as,is,cause\n\
+             dialog.meta/effect,{custom},entity,db:effect,\n\
+             dialog.effect/source,{custom},text,\"{}\",\n\
+             dialog.effect/polarity,{custom},text,assert,\n",
+            legacy_effect_source()
+        );
+
+        let runtime = parse_legacy_runtime(&csv).await.unwrap();
+
+        assert_eq!(runtime.rules.len(), 1);
+        assert_eq!(runtime.ignored_effects, 0);
+    }
+
+    #[tokio::test]
+    async fn it_rejects_a_marked_malformed_effect() {
+        let custom = "did:key:zTESTfixture111111111111111111111111111111111";
+        let csv = format!(
+            "the,of,as,is,cause\n\
+             dialog.meta/effect,{custom},entity,db:effect,\n\
+             dialog.effect/source,{custom},text,not-json,\n\
+             dialog.effect/polarity,{custom},text,assert,\n"
+        );
+
+        let error = match parse_legacy_runtime(&csv).await {
+            Ok(_) => panic!("a marked malformed effect must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("could not compile"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn it_ignores_unmarked_effect_debris() {
+        let custom = "did:key:zTESTfixture111111111111111111111111111111111";
+        let csv = format!(
+            "the,of,as,is,cause\n\
+             dialog.effect/source,{custom},text,not-json,\n\
+             dialog.effect/polarity,{custom},text,assert,\n"
+        );
+
+        let runtime = parse_legacy_runtime(&csv).await.unwrap();
+
+        assert!(runtime.rules.is_empty());
+        assert_eq!(runtime.ignored_effects, 1);
+    }
+
+    #[tokio::test]
+    async fn it_rejects_legacy_deductive_rules() {
+        let csv = "the,of,as,is,cause\n\
+            db.rule/source,rule:legacy,bytes,00,\n";
+
+        let error = match parse_legacy_runtime(csv).await {
+            Ok(_) => panic!("a legacy deductive rule must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("deductive rules"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn it_rejects_an_invalid_legacy_transient_marker() {
+        let csv = "the,of,as,is,cause\n\
+            dialog.concept/transient,concept:legacy,boolean,true,\n";
+
+        let error = match parse_legacy_runtime(csv).await {
+            Ok(_) => panic!("an invalid transient marker must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("transient marker"), "{error:#}");
     }
 }
