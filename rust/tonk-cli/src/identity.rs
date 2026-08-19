@@ -114,7 +114,7 @@ pub async fn save_local_root_with_operator(
         .next()
         .context("local-root delegation is missing its proof")?;
     proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .verify_signature(&dialog_credentials::DidKeyResolver)
         .await
         .context("local-root delegation signature is invalid")?;
     let record = LocalRoot {

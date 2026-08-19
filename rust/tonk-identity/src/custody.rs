@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result};
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::timestamp::Timestamp;
@@ -39,7 +39,7 @@ async fn build_self_invocation(
 ) -> Result<Vec<u8>> {
     let did = custody.did();
     let invocation = InvocationBuilder::new()
-        .issuer(custody)
+        .issuer(Signer::from(custody))
         .audience(&did)
         .subject(&did)
         .command(command)
@@ -114,7 +114,7 @@ pub async fn mint_custody_consent(
 ) -> Result<DelegationChain> {
     let subject = custody.did();
     let delegation = DelegationBuilder::new()
-        .issuer(custody)
+        .issuer(Signer::from(custody))
         .audience(account)
         .subject(UcanSubject::Specific(subject))
         .command(vec![])
@@ -127,7 +127,7 @@ pub async fn mint_custody_consent(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web {
     use anyhow::{Context, Result, anyhow};
-    use dialog_credentials::Ed25519Signer;
+    use dialog_credentials::{Ed25519Signer, Signer};
     use js_sys::Uint8Array;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -264,7 +264,7 @@ mod tests {
 
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await
             .unwrap();
         assert_eq!(chain.issuer(), &did);
@@ -308,7 +308,7 @@ mod tests {
         let bytes = build_resolve_invocation(custody).await.unwrap();
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await
             .unwrap();
         assert_eq!(chain.issuer(), &did);

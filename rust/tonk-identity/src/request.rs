@@ -11,14 +11,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{
     Container, Delegation, DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain,
 };
+use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 use ipld_core::cid::Cid;
 use tonk_account::customer::deposit_scopes;
 
@@ -28,7 +28,7 @@ use tonk_account::customer::deposit_scopes;
 /// account root (the invocation subject and audience), and its single
 /// proof is attached so the service can bind the device to the account.
 pub async fn build_device_invocation(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
@@ -46,7 +46,7 @@ pub async fn build_device_invocation(
     let cid = delegation.to_cid();
 
     let invocation = InvocationBuilder::new()
-        .issuer(device)
+        .issuer(device.into())
         .audience(&root_did)
         .subject(&root_did)
         .command(command)
@@ -77,11 +77,12 @@ pub async fn build_device_invocation(
 /// [`build_enroll_invocation_with_deposits`] with account-signed
 /// deposits when a ceremony produced them.
 pub async fn build_enroll_invocation(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     service: &Did,
     email: &str,
 ) -> Result<Vec<u8>> {
+    let device: Signer = device.into();
     let root_did = link.issuer().clone();
     let mut deposits = Vec::new();
     for scope in deposit_scopes(&root_did, service) {
@@ -108,7 +109,7 @@ pub async fn build_enroll_invocation(
 /// are issued by the customer directly, so they survive revocation of
 /// the device presenting them.
 pub async fn build_enroll_invocation_with_deposits(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     email: &str,
     deposits: &[Vec<u8>],
@@ -116,7 +117,7 @@ pub async fn build_enroll_invocation_with_deposits(
     let named = deposits
         .iter()
         .map(|bytes| {
-            let delegation: Delegation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(bytes)
+            let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(bytes)
                 .context("a ceremony deposit does not decode as a delegation")?;
             Ok((delegation.to_cid(), bytes.clone()))
         })
@@ -126,7 +127,7 @@ pub async fn build_enroll_invocation_with_deposits(
 
 /// Assemble the enroll invocation and append the named deposit tokens.
 async fn assemble_enroll_container(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     email: &str,
     deposits: Vec<(Cid, Vec<u8>)>,
@@ -168,7 +169,7 @@ async fn assemble_enroll_container(
 /// alongside, named by the CID of its head. The server walks the consent
 /// from the consumer to the invoking customer.
 pub async fn build_provider_add_invocation(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     consumer: &Did,
     consent: &DelegationChain,
@@ -238,7 +239,7 @@ mod tests {
 
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await
             .unwrap();
         assert!(
@@ -284,8 +285,7 @@ mod tests {
         // Invocation, the root → device link, and the two deposits.
         assert_eq!(tokens.len(), 4);
         for token in &tokens[2..] {
-            let deposit: Delegation<Ed25519Signature> =
-                serde_ipld_dagcbor::from_slice(token).unwrap();
+            let deposit: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(token).unwrap();
             assert_eq!(
                 deposit.issuer(),
                 &root_did,

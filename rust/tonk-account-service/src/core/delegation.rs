@@ -1,7 +1,7 @@
 //! Checking a `root → device` delegation chain presented at account
 //! creation or device linking.
 
-use dialog_credentials::Ed25519KeyResolver;
+use dialog_credentials::DidKeyResolver;
 use dialog_ucan_core::DelegationChain;
 
 use crate::core::CeremonyError;
@@ -47,7 +47,7 @@ pub async fn check_device_delegation(
         .next()
         .expect("a chain with one proof cid has one proof");
     proof
-        .verify_signature(&Ed25519KeyResolver)
+        .verify_signature(&DidKeyResolver)
         .await
         .map_err(|err| CeremonyError::Unauthorized(format!("bad delegation signature: {err}")))?;
 

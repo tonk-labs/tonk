@@ -156,7 +156,7 @@ impl AccountSpotBackup {
                 return Err(AccountSpotBackupError::AccountRootIntermediate);
             }
             delegation
-                .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+                .verify_signature(&dialog_credentials::DidKeyResolver)
                 .await
                 .map_err(|error| AccountSpotBackupError::InvalidSignature(error.to_string()))?;
             dialog_ucan_core::time::TimeRange::new(
@@ -242,7 +242,7 @@ mod tests {
         use dialog_ucan_core::subject::Subject;
 
         let delegation = DelegationBuilder::new()
-            .issuer(issuer)
+            .issuer(dialog_credentials::Signer::from(issuer))
             .audience(audience)
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])
@@ -266,12 +266,12 @@ mod tests {
         audience: &dialog_varsig::Did,
         subject: &dialog_varsig::Did,
         expiration: Option<dialog_ucan_core::time::Timestamp>,
-    ) -> dialog_ucan_core::Delegation<dialog_varsig::eddsa::Ed25519Signature> {
+    ) -> dialog_ucan_core::Delegation<dialog_varsig::AnySignature> {
         use dialog_ucan_core::DelegationBuilder;
         use dialog_ucan_core::subject::Subject;
 
         let builder = DelegationBuilder::new()
-            .issuer(issuer)
+            .issuer(dialog_credentials::Signer::from(issuer))
             .audience(audience)
             .subject(Subject::Specific(subject.clone()))
             .command(vec![]);
@@ -301,7 +301,7 @@ mod tests {
         assert!(malformed.validate_for(&account).await.is_err());
 
         let powerline = dialog_ucan_core::DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(&account)
             .subject(dialog_ucan_core::subject::Subject::Any)
             .command(vec![])

@@ -13,7 +13,7 @@
 //! the thing that lapses on its own.
 
 use anyhow::Result;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
@@ -48,7 +48,7 @@ pub async fn mint_session_delegation(
         .map_err(|err| anyhow::anyhow!("session expiration out of range: {err}"))?;
 
     let delegation = DelegationBuilder::new()
-        .issuer(device)
+        .issuer(Signer::from(device))
         .audience(session)
         .subject(UcanSubject::Any)
         .command(vec![])

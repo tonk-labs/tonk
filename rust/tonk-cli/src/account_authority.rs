@@ -155,7 +155,7 @@ impl AccountBoundOperator {
             .proofs()
             .next()
             .unwrap()
-            .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+            .verify_signature(&dialog_credentials::DidKeyResolver)
             .await
             .map_err(|_| AuthorizeError::InvalidSignature {
                 issuer: root.clone(),
@@ -469,7 +469,7 @@ mod tests {
             .expect("operator signer should import");
         let session = |expiration| {
             DelegationBuilder::new()
-                .issuer(resource.clone())
+                .issuer(dialog_credentials::Signer::from(resource.clone()))
                 .audience(&operator.did())
                 .subject(UcanSubject::Specific(resource.did()))
                 .command(vec![])

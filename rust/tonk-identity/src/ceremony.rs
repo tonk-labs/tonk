@@ -118,7 +118,7 @@ async fn build(
 ) -> Result<AccountCeremony> {
     let root_did = root.did();
     let invocation = InvocationBuilder::new()
-        .issuer(root)
+        .issuer(dialog_credentials::Signer::from(root))
         .audience(&root_did)
         .subject(&root_did)
         .command(command)
@@ -469,7 +469,7 @@ pub async fn mint_service_deposits(
     let mut deposits = Vec::new();
     for scope in deposit_scopes(&root.did(), service) {
         let deposit = DelegationBuilder::new()
-            .issuer(root.clone())
+            .issuer(dialog_credentials::Signer::from(root.clone()))
             .audience(service)
             .subject(scope.subject.clone())
             .command(scope.command.segments().clone())
@@ -629,7 +629,7 @@ mod tests {
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
 
         chain
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await
             .unwrap();
         assert_eq!(chain.issuer(), &expected_root);
@@ -699,7 +699,7 @@ mod tests {
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
 
         chain
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await
             .unwrap();
         assert_eq!(chain.issuer(), &expected_root);
@@ -728,7 +728,7 @@ mod tests {
         let bytes = hex::decode(output.invocation_hex).unwrap();
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await
             .unwrap();
         assert_eq!(

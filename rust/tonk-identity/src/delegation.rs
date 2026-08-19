@@ -1,7 +1,7 @@
 //! The `root → device` delegation.
 
 use anyhow::Result;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
@@ -9,9 +9,12 @@ use dialog_varsig::Did;
 /// Mint the `root → device` delegation: subject-open, audience-specific —
 /// "this device may act as me, for anything". Deliberately the opposite
 /// shape from space invites, which are subject-specific and must stay so.
-pub async fn mint_device_delegation(root: Ed25519Signer, device: &Did) -> Result<DelegationChain> {
+pub async fn mint_device_delegation(
+    root: impl Into<Signer>,
+    device: &Did,
+) -> Result<DelegationChain> {
     let delegation = DelegationBuilder::new()
-        .issuer(root)
+        .issuer(root.into())
         .audience(device)
         .subject(UcanSubject::Any)
         .command(vec![])
@@ -46,7 +49,7 @@ mod tests {
     /// of a space delegating to a root identity.
     async fn space_chain(issuer: Ed25519Signer, audience: &Did, subject: &Did) -> DelegationChain {
         let delegation = DelegationBuilder::new()
-            .issuer(issuer)
+            .issuer(dialog_credentials::Signer::from(issuer))
             .audience(audience)
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])

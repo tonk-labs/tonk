@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use dialog_credentials::{Ed25519KeyResolver, Ed25519Signer};
+use dialog_credentials::{DidKeyResolver, Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use ipld_core::cid::Cid;
 
@@ -109,7 +109,7 @@ fn subject(path: &DelegationChain) -> Did {
 }
 
 async fn mint(
-    issuer: Ed25519Signer,
+    issuer: impl Into<Signer>,
     path: &DelegationChain,
     target: &Cid,
     proofs: Option<&DelegationChain>,
@@ -120,7 +120,7 @@ async fn mint(
         .map(|chain| chain.proof_cids().to_vec())
         .unwrap_or_default();
     let invocation = InvocationBuilder::new()
-        .issuer(issuer)
+        .issuer(issuer.into())
         .audience(&subject)
         .subject(&subject)
         .command(command())
@@ -140,10 +140,11 @@ async fn mint(
 
 /// Mint a proofless revocation signed by an issuer in the witnessed path.
 pub async fn mint_root_revocation(
-    root: Ed25519Signer,
+    root: impl Into<Signer>,
     path: &DelegationChain,
     target: &Cid,
 ) -> Result<Vec<u8>> {
+    let root: Signer = root.into();
     let index = target_index(path, target)?;
     if !is_path_issuer(path, index, &root.did()) {
         anyhow::bail!("revocation signer is not an issuer in the target path");
@@ -153,7 +154,7 @@ pub async fn mint_root_revocation(
 
 /// Mint a device-signed revocation of the device's own grant.
 pub async fn mint_self_revocation(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     grant: &DelegationChain,
     target: &Cid,
 ) -> Result<Vec<u8>> {
@@ -162,7 +163,7 @@ pub async fn mint_self_revocation(
 
 /// Mint a revocation signed under an attached delegation proof chain.
 pub async fn mint_delegated_revocation(
-    issuer: Ed25519Signer,
+    issuer: impl Into<Signer>,
     path: &DelegationChain,
     target: &Cid,
     proofs: &DelegationChain,
@@ -171,7 +172,7 @@ pub async fn mint_delegated_revocation(
 }
 
 fn string_argument<'a>(
-    chain: &'a InvocationChain<Ed25519Signature>,
+    chain: &'a InvocationChain<AnySignature>,
     name: &str,
 ) -> std::result::Result<&'a str, VerifyError> {
     match chain.arguments().get(name) {
@@ -184,7 +185,7 @@ fn string_argument<'a>(
 
 /// Parse and verify a self-contained revocation artifact.
 pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, VerifyError> {
-    let chain = InvocationChain::<Ed25519Signature>::try_from(bytes)
+    let chain = InvocationChain::<AnySignature>::try_from(bytes)
         .map_err(|err| VerifyError::Malformed(format!("bad invocation container: {err}")))?;
 
     let actual_command: Vec<&str> = chain.command().0.iter().map(String::as_str).collect();
@@ -212,7 +213,7 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
 
     for delegation in path.proofs() {
         delegation
-            .verify_signature(&Ed25519KeyResolver)
+            .verify_signature(&DidKeyResolver)
             .await
             .map_err(|err| {
                 VerifyError::Unauthorized(format!("path signature failed to verify: {err}"))
@@ -235,7 +236,7 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
 
     chain
         .invocation
-        .verify_signature(&Ed25519KeyResolver)
+        .verify_signature(&DidKeyResolver)
         .await
         .map_err(|err| {
             VerifyError::Unauthorized(format!("invocation signature failed to verify: {err}"))
@@ -245,7 +246,7 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
     let authority = if is_path_issuer(&path, target_index, &issuer) {
         RevocationAuthority::PathIssuer
     } else {
-        chain.verify(&Ed25519KeyResolver).await.map_err(|err| {
+        chain.verify(&DidKeyResolver).await.map_err(|err| {
             VerifyError::Unauthorized(format!("delegated authority failed to verify: {err}"))
         })?;
         if !chain.proofs().contains(&target) {
@@ -285,6 +286,7 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::subject::Subject;
     use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
     use dialog_ucan_core::{DelegationBuilder, InvocationBuilder};
@@ -312,7 +314,7 @@ mod tests {
         let member = signer(4).await;
         let invite = signer(5).await;
         let first = DelegationBuilder::new()
-            .issuer(space.clone())
+            .issuer(dialog_credentials::Signer::from(space.clone()))
             .audience(&member.did())
             .subject(Subject::Specific(space.did()))
             .command(vec![])
@@ -320,7 +322,7 @@ mod tests {
             .await
             .unwrap();
         let second = DelegationBuilder::new()
-            .issuer(member.clone())
+            .issuer(dialog_credentials::Signer::from(member.clone()))
             .audience(&invite.did())
             .subject(Subject::Specific(space.did()))
             .command(vec![])
@@ -332,7 +334,7 @@ mod tests {
     }
 
     async fn raw_revocation(
-        issuer: Ed25519Signer,
+        issuer: impl Into<Signer>,
         path: &DelegationChain,
         named: String,
         proofs: Option<&DelegationChain>,
@@ -345,7 +347,7 @@ mod tests {
         );
         let subject = subject(path);
         let invocation = InvocationBuilder::new()
-            .issuer(issuer)
+            .issuer(issuer.into())
             .audience(&subject)
             .subject(&subject)
             .command(command())
@@ -447,7 +449,7 @@ mod tests {
         let (space, member, _, original) = invite_path().await;
         let other_invite = signer(6).await;
         let replacement_leaf = DelegationBuilder::new()
-            .issuer(member)
+            .issuer(dialog_credentials::Signer::from(member))
             .audience(&other_invite.did())
             .subject(Subject::Specific(space.did()))
             .command(vec![])
@@ -511,7 +513,7 @@ mod tests {
         let device = signer(2).await;
         let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(300)).unwrap();
         let delegation = DelegationBuilder::new()
-            .issuer(root.clone())
+            .issuer(dialog_credentials::Signer::from(root.clone()))
             .audience(&device.did())
             .subject(Subject::Any)
             .command(vec![])

@@ -2584,7 +2584,7 @@ mod tests {
         let subject = subject_signer.did();
         let key = subject.repo_key().to_owned();
         let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
+            .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(audience)
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])

@@ -8,7 +8,7 @@
 //! still costs invocations.
 
 use dialog_ucan_core::{Container, Delegation, Invocation};
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 
 use crate::store::ingest::InvocationRecord;
 
@@ -25,12 +25,11 @@ pub fn collect(
     let tokens = Container::from_bytes(container_bytes).ok()?.into_tokens();
     let mut tokens = tokens.into_iter();
     let body = tokens.next()?;
-    let invocation: Invocation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(&body).ok()?;
+    let invocation: Invocation<AnySignature> = serde_ipld_dagcbor::from_slice(&body).ok()?;
 
     let mut proofs = Vec::new();
     for token in tokens {
-        let delegation: Delegation<Ed25519Signature> =
-            serde_ipld_dagcbor::from_slice(&token).ok()?;
+        let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(&token).ok()?;
         proofs.push((delegation.to_cid().to_string(), token));
     }
     // The flattened set's identity: a hash over its sorted members, so
@@ -75,7 +74,7 @@ mod tests {
         let root = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
         let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
         let delegation = DelegationBuilder::new()
-            .issuer(root.clone())
+            .issuer(dialog_credentials::Signer::from(root.clone()))
             .audience(&device.did())
             .subject(dialog_ucan_core::subject::Subject::Specific(root.did()))
             .command(vec![])
@@ -84,7 +83,7 @@ mod tests {
             .unwrap();
         let cid = delegation.to_cid();
         let invocation = InvocationBuilder::new()
-            .issuer(device)
+            .issuer(dialog_credentials::Signer::from(device))
             .audience(&root.did())
             .subject(&root.did())
             .command(vec!["memory".into(), "resolve".into()])

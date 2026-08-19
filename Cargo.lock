@@ -986,7 +986,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1025,7 +1025,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1048,7 +1048,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1076,7 +1076,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1097,7 +1097,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1110,9 +1110,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-did-web"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
+dependencies = [
+ "async-trait",
+ "base58",
+ "base64",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-credentials",
+ "dialog-varsig",
+ "getrandom 0.2.17",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "signature",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "web-time",
+]
+
+[[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1127,7 +1150,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1144,7 +1167,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1156,7 +1179,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1171,7 +1194,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1209,7 +1232,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1269,7 +1292,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1286,7 +1309,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1325,7 +1348,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1335,6 +1358,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
  "dialog-remote-s3",
  "dialog-ucan",
@@ -1361,7 +1385,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1400,7 +1424,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1430,7 +1454,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1477,7 +1501,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1498,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1524,7 +1548,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-15#f0449ce280d875ddb177d54a197e57065319f34b"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=bug%2Fpush-diff-unfetched-base#387a82a8d8a157599c56ac8b66df5005dc7e947f"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",

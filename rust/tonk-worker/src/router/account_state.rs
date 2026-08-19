@@ -1628,7 +1628,7 @@ mod tests {
         let subject = space.did();
         let root = super::super::identity::local_root(&state).await.unwrap();
         let delegation = DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(&root.root_did)
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])

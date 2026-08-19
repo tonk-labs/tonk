@@ -28,7 +28,7 @@ async fn spot_backup(root: &Did, name: Option<&str>, remote: &str) -> Vec<u8> {
     let space = Ed25519Signer::import(&[42; 32]).await.unwrap();
     let subject = space.did();
     let delegation = DelegationBuilder::new()
-        .issuer(space)
+        .issuer(dialog_credentials::Signer::from(space))
         .audience(root)
         .subject(Subject::Specific(subject))
         .command(vec![])
@@ -90,7 +90,7 @@ async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) 
     let delegation = chain.proofs().last().unwrap().clone();
     let cid = delegation.to_cid();
     let invocation = InvocationBuilder::new()
-        .issuer(device)
+        .issuer(dialog_credentials::Signer::from(device))
         .audience(&root_did)
         .subject(&root_did)
         .command(command)
@@ -572,7 +572,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_ne!(candidate_hex, expected_descriptor);
     let root_did = root.did();
     let invocation = InvocationBuilder::new()
-        .issuer(root)
+        .issuer(dialog_credentials::Signer::from(root))
         .audience(&root_did)
         .subject(&root_did)
         .command(vec![

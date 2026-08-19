@@ -1276,7 +1276,7 @@ pub mod tests {
         let ephemeral_seed = [ephemeral_tag; 32];
         let ephemeral = Ed25519Signer::import(&ephemeral_seed).await.unwrap();
         let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
+            .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(&ephemeral.did())
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])
@@ -1814,7 +1814,7 @@ pub mod tests {
         let ephemeral_did = ephemeral.did();
 
         let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
+            .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(&ephemeral_did)
             .subject(UcanSubject::Specific(subject_did.clone()))
             .command(vec![])

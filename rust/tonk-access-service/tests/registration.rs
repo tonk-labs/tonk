@@ -20,7 +20,7 @@ use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
 use dialog_ucan_core::{
     Container, Delegation, DelegationBuilder, InvocationBuilder, InvocationChain,
 };
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use tonk_access_service::email::CapturedEmail;
 use tonk_access_service::helpers::AccessServiceAddress;
@@ -102,12 +102,12 @@ async fn scoped_deposits(
     customer: &Ed25519Signer,
     service: &Did,
     audience: &Did,
-) -> Vec<Delegation<Ed25519Signature>> {
+) -> Vec<Delegation<AnySignature>> {
     let mut deposits = Vec::new();
     for scope in deposit_scopes(&customer.did(), service) {
         deposits.push(
             DelegationBuilder::new()
-                .issuer(customer.clone())
+                .issuer(dialog_credentials::Signer::from(customer.clone()))
                 .audience(audience)
                 .subject(scope.subject.clone())
                 .command(scope.command.segments().clone())
@@ -132,11 +132,11 @@ async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) 
 async fn enroll_container_with_deposits(
     customer: &Ed25519Signer,
     email: &str,
-    deposits: &[Delegation<Ed25519Signature>],
+    deposits: &[Delegation<AnySignature>],
     carry_deposits: bool,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
         .subject(&customer.did())
         .command(vec!["customer".to_string(), "enroll".to_string()])
@@ -188,7 +188,7 @@ async fn activation_invocation(
     expiration: Timestamp,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
-        .issuer(issuer.clone())
+        .issuer(dialog_credentials::Signer::from(issuer.clone()))
         .audience(subject)
         .subject(subject)
         .command(vec!["customer".to_string(), "activate".to_string()])
@@ -381,7 +381,7 @@ async fn it_refuses_a_deposit_broader_than_the_scopes() -> anyhow::Result<()> {
     // The old shape of the deposit: an unscoped grant of `/` over the
     // whole account space. Enrollment must refuse it rather than hold it.
     let unscoped = DelegationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&service)
         .subject(DelegatedSubject::Specific(customer.did()))
         .command(vec![])
@@ -458,7 +458,7 @@ async fn add_container(
     consent_to: &Did,
 ) -> Vec<u8> {
     let consent = DelegationBuilder::new()
-        .issuer(space.clone())
+        .issuer(dialog_credentials::Signer::from(space.clone()))
         .audience(consent_to)
         .subject(DelegatedSubject::Specific(space.did()))
         .command(vec![])
@@ -466,7 +466,7 @@ async fn add_container(
         .await
         .expect("consent delegation");
     let invocation = InvocationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
         .subject(&customer.did())
         .command(vec!["provider".to_string(), "add".to_string()])

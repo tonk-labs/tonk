@@ -18,7 +18,7 @@
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::blob::Write as BlobWrite;
@@ -142,6 +142,7 @@ pub enum AdoptError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_credentials::Ed25519Signer;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -158,7 +159,12 @@ mod tests {
 
         let profile = Ed25519Signer::generate().await.unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
-        let union = mint_account_union(&profile, &account.did()).await.unwrap();
+        let union = mint_account_union(
+            &dialog_credentials::Signer::from(profile.clone()),
+            &account.did(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(union.issuer(), &profile.did());
         assert_eq!(union.audience(), &account.did());
@@ -195,7 +201,7 @@ mod tests {
 /// return edge would silently make the union asymmetric, and the asymmetry
 /// would only surface later as a proof that inexplicably fails.
 pub async fn mint_account_union(
-    profile: &Ed25519Signer,
+    profile: &Signer,
     account: &Did,
 ) -> Result<DelegationChain, UnionError> {
     let delegation = DelegationBuilder::new()

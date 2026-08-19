@@ -1261,7 +1261,7 @@ mod when_mounting_account_authority {
         let space = Ed25519Signer::import(&[91; 32]).await?;
         let subject = space.did();
         let delegation = DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(account_root)
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])

@@ -69,7 +69,7 @@ pub(crate) async fn validate_grant(
         ));
     }
     proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .verify_signature(&dialog_credentials::DidKeyResolver)
         .await
         .map_err(|error| {
             TonkWorkerError::Forbidden(format!("invalid root delegation signature: {error}"))

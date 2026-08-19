@@ -16,7 +16,7 @@
 
 use dialog_capability::access::AuthorizeError;
 use dialog_ucan_core::{Container, Invocation};
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 use tonk_account::customer::CustomerStatus;
 
 use crate::store::{Store, StoreError};
@@ -38,7 +38,7 @@ fn denial(cause: &str) -> AuthorizeError {
 pub fn container_subject(container_bytes: &[u8]) -> Option<String> {
     let tokens = Container::from_bytes(container_bytes).ok()?.into_tokens();
     let body = tokens.into_iter().next()?;
-    let invocation: Invocation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(&body).ok()?;
+    let invocation: Invocation<AnySignature> = serde_ipld_dagcbor::from_slice(&body).ok()?;
     Some(invocation.subject().to_string())
 }
 

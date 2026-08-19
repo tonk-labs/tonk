@@ -214,7 +214,7 @@ mod tests {
 
         let space = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
-            .issuer(space.clone())
+            .issuer(dialog_credentials::Signer::from(space.clone()))
             .audience(&profile.did())
             .subject(UcanSubject::Specific(space.did()))
             .command(vec![])

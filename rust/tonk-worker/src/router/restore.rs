@@ -52,7 +52,7 @@ async fn try_restore_spaces(tonk: &TonkState) -> Result<(), crate::TonkWorkerErr
 
 async fn restore_one(
     tonk: &TonkState,
-    device: &dialog_credentials::Ed25519Signer,
+    device: &dialog_credentials::Signer,
     link: &DelegationChain,
     service: &str,
     spot: &AccountSpotSummary,
@@ -140,7 +140,7 @@ mod tests {
         let space = Ed25519Signer::import(&[seed; 32]).await.unwrap();
         let subject = space.did();
         let delegation = DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(root)
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])

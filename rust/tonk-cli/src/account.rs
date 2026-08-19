@@ -315,7 +315,7 @@ pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<D
         .proofs()
         .next()
         .context("authorization is missing its proof")?
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .verify_signature(&dialog_credentials::DidKeyResolver)
         .await
         .context("authorization signature is invalid")?;
     Ok(chain)
@@ -1306,7 +1306,7 @@ mod tests {
         let account = Ed25519Signer::generate().await.unwrap();
         let elsewhere = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
-            .issuer(account)
+            .issuer(dialog_credentials::Signer::from(account))
             .audience(&elsewhere.did())
             .subject(UcanSubject::Any)
             .command(vec![])
@@ -1342,7 +1342,7 @@ mod tests {
         let account = Ed25519Signer::generate().await.unwrap();
         let space = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
-            .issuer(account)
+            .issuer(dialog_credentials::Signer::from(account))
             .audience(&profile.did())
             .subject(UcanSubject::Specific(space.did()))
             .command(vec![])

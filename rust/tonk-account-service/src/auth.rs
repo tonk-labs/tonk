@@ -9,11 +9,11 @@
 
 use std::collections::BTreeMap;
 
-use dialog_credentials::Ed25519KeyResolver;
+use dialog_credentials::DidKeyResolver;
 use dialog_ucan_core::InvocationChain;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 
 use crate::core::CeremonyError;
 use crate::store::{Account, Device, PasskeyMetadata, Store};
@@ -52,11 +52,11 @@ pub struct ActivationCaller {
 async fn verified_chain(
     body: &[u8],
     expected_command: &[&str],
-) -> Result<InvocationChain<Ed25519Signature>, CeremonyError> {
+) -> Result<InvocationChain<AnySignature>, CeremonyError> {
     let chain = InvocationChain::try_from(body)
         .map_err(|err| CeremonyError::Invalid(format!("bad invocation container: {err}")))?;
 
-    chain.verify(&Ed25519KeyResolver).await.map_err(|err| {
+    chain.verify(&DidKeyResolver).await.map_err(|err| {
         CeremonyError::Unauthorized(format!("invocation failed to verify: {err}"))
     })?;
 
@@ -93,9 +93,7 @@ const CEREMONY_SKEW_ALLOWANCE: Duration = Duration::from_secs(60);
 /// five-minute ceremony window every account-service request uses,
 /// plus a one-minute allowance for clock skew on the upper bound. The
 /// lower bound (already expired) carries no such allowance.
-fn require_ceremony_expiration(
-    chain: &InvocationChain<Ed25519Signature>,
-) -> Result<(), CeremonyError> {
+fn require_ceremony_expiration(chain: &InvocationChain<AnySignature>) -> Result<(), CeremonyError> {
     let expiration = chain.invocation.expiration().ok_or_else(|| {
         CeremonyError::Unauthorized("invocation must carry an expiration".to_string())
     })?;
@@ -338,7 +336,7 @@ mod tests {
         let delegation = chain.proofs().last().unwrap().clone();
         let cid = delegation.to_cid();
         let mut builder = InvocationBuilder::new()
-            .issuer(device.clone())
+            .issuer(dialog_credentials::Signer::from(device.clone()))
             .audience(&root_did)
             .subject(&root_did)
             .command(command)
@@ -420,7 +418,7 @@ mod tests {
     }
 
     fn invocation_proof_cid(bytes: &[u8]) -> String {
-        InvocationChain::<Ed25519Signature>::try_from(bytes)
+        InvocationChain::<AnySignature>::try_from(bytes)
             .unwrap()
             .proofs()[0]
             .to_string()
@@ -546,7 +544,7 @@ mod tests {
         let delegation = chain.proofs().last().unwrap().clone();
         let cid = delegation.to_cid();
         let invocation = InvocationBuilder::new()
-            .issuer(device_b.clone())
+            .issuer(dialog_credentials::Signer::from(device_b.clone()))
             .audience(&root_a_did)
             .subject(&root_a_did)
             .command(vec!["account".into(), "device".into(), "list".into()])
@@ -601,7 +599,7 @@ mod tests {
         let delegation = chain.proofs().last().unwrap().clone();
         let cid = delegation.to_cid();
         let invocation = InvocationBuilder::new()
-            .issuer(device)
+            .issuer(dialog_credentials::Signer::from(device))
             .audience(&root_b_did)
             .subject(&root_b_did)
             .command(vec!["account".into(), "device".into(), "list".into()])
@@ -742,7 +740,7 @@ mod tests {
         let root_did = root.did();
         let expiration = Timestamp::new(UNIX_EPOCH + Duration::from_secs(1)).unwrap();
         let invocation = InvocationBuilder::new()
-            .issuer(root)
+            .issuer(dialog_credentials::Signer::from(root))
             .audience(&root_did)
             .subject(&root_did)
             .command(vec!["account".into(), "device".into(), "link".into()])

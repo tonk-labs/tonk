@@ -309,7 +309,7 @@ mod tests {
         let space = signer(seed).await;
         let subject = space.did();
         let delegation = DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(root)
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])
@@ -351,7 +351,7 @@ mod tests {
         let wrong_root = signer(44).await.did();
 
         let first = DelegationBuilder::new()
-            .issuer(space.clone())
+            .issuer(dialog_credentials::Signer::from(space.clone()))
             .audience(&root_did)
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])
@@ -361,7 +361,7 @@ mod tests {
         let root_suffix = DelegationChain::new(first.clone())
             .push(
                 DelegationBuilder::new()
-                    .issuer(root)
+                    .issuer(dialog_credentials::Signer::from(root))
                     .audience(&device.did())
                     .subject(Subject::Specific(subject.clone()))
                     .command(vec![])
@@ -372,7 +372,7 @@ mod tests {
             .unwrap()
             .push(
                 DelegationBuilder::new()
-                    .issuer(device.clone())
+                    .issuer(dialog_credentials::Signer::from(device.clone()))
                     .audience(&root_did)
                     .subject(Subject::Specific(subject.clone()))
                     .command(vec![])
@@ -383,7 +383,7 @@ mod tests {
             .unwrap();
         let changed_subject = DelegationChain::new(
             DelegationBuilder::new()
-                .issuer(space.clone())
+                .issuer(dialog_credentials::Signer::from(space.clone()))
                 .audience(&device.did())
                 .subject(Subject::Specific(subject.clone()))
                 .command(vec![])
@@ -393,7 +393,7 @@ mod tests {
         )
         .push(
             DelegationBuilder::new()
-                .issuer(device)
+                .issuer(dialog_credentials::Signer::from(device))
                 .audience(&root_did)
                 .subject(Subject::Specific(other_subject))
                 .command(vec![])
@@ -404,7 +404,7 @@ mod tests {
         .unwrap();
         let expired = DelegationChain::new(
             DelegationBuilder::new()
-                .issuer(space.clone())
+                .issuer(dialog_credentials::Signer::from(space.clone()))
                 .audience(&root_did)
                 .subject(Subject::Specific(subject.clone()))
                 .command(vec![])
@@ -415,7 +415,7 @@ mod tests {
         );
         let wrong_root = DelegationChain::new(
             DelegationBuilder::new()
-                .issuer(space)
+                .issuer(dialog_credentials::Signer::from(space))
                 .audience(&wrong_root)
                 .subject(Subject::Specific(subject))
                 .command(vec![])

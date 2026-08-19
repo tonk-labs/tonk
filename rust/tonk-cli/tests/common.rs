@@ -191,7 +191,7 @@ impl AccountFixture {
         let space = dialog_credentials::Ed25519Signer::import(&[space_seed; 32]).await?;
         let subject = space.did();
         let delegation = DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(&root.did())
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])

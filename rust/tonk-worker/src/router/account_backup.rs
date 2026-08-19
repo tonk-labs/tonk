@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_ucan_core::DelegationChain;
@@ -50,7 +50,7 @@ fn endpoint(value: String) -> Result<url::Url, TonkWorkerError> {
 }
 
 async fn invocation(
-    device: &Ed25519Signer,
+    device: &Signer,
     link: &DelegationChain,
     command: &str,
     arguments: BTreeMap<String, Promised>,
@@ -71,7 +71,7 @@ struct BackedUpChains {
 }
 
 async fn list_backed_up_chains(
-    device: &Ed25519Signer,
+    device: &Signer,
     link: &DelegationChain,
     service: &str,
 ) -> Result<BackedUpChains, TonkWorkerError> {
@@ -88,7 +88,7 @@ async fn list_backed_up_chains(
 }
 
 async fn get_backed_up_bytes(
-    device: &Ed25519Signer,
+    device: &Signer,
     link: &DelegationChain,
     service: &str,
     key: &str,
@@ -102,7 +102,7 @@ async fn get_backed_up_bytes(
 }
 
 async fn legacy_inventory(
-    device: &Ed25519Signer,
+    device: &Signer,
     link: &DelegationChain,
     service: &str,
     keys: Vec<String>,
@@ -160,7 +160,7 @@ async fn legacy_inventory(
 
 /// List one semantic row per spot backed up by this account.
 pub(crate) async fn list_backed_up_spots(
-    device: &Ed25519Signer,
+    device: &Signer,
     link: &DelegationChain,
     service: &str,
 ) -> Result<Vec<AccountSpotSummary>, TonkWorkerError> {
@@ -178,7 +178,7 @@ pub(crate) async fn list_backed_up_spots(
 
 /// Fetch and deserialize one selected account spot artifact.
 pub(crate) async fn get_backed_up_spot(
-    device: &Ed25519Signer,
+    device: &Signer,
     link: &DelegationChain,
     service: &str,
     key: &str,
@@ -190,7 +190,7 @@ pub(crate) async fn get_backed_up_spot(
 
 /// Build, sign, and upload one immutable backup artifact.
 async fn run_backup(
-    device: Ed25519Signer,
+    device: Signer,
     link: DelegationChain,
     service: String,
     chain: DelegationChain,

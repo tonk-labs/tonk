@@ -150,7 +150,7 @@ mod tests {
         let invocation = hex::decode(ceremony["invocationHex"].as_str().unwrap())?;
         let invocation = InvocationChain::try_from(invocation.as_slice())?;
         invocation
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await?;
         assert_eq!(
             invocation.command().0,
@@ -311,7 +311,7 @@ mod tests {
         let invocation = hex::decode(ceremony.invocation_hex)?;
         let invocation = InvocationChain::try_from(invocation.as_slice())?;
         invocation
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await?;
         assert_eq!(
             invocation.command().0,
