@@ -359,9 +359,6 @@ pub async fn link(
     // so what gets backed up is the account-rooted authority.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     super::repository::adopt_profile_spaces(&state).await;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::router::account_backup::back_up_existing_spaces(&state).await;
-    crate::router::restore::restore_spaces(&state).await;
 
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it

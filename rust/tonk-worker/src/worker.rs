@@ -1830,12 +1830,6 @@ impl TonkServiceWorker {
                 // already have — the grandfathering path.
                 crate::router::profiles::upsert_active_entry(&tonk, None).await;
                 crate::router::account_state::ensure_account_state(&tonk).await;
-                // Directory-driven adoption from the account DB — the
-                // retired escrow restore's replacement. The backstop
-                // first, so a pre-record space's mount record exists
-                // before anything reads the directory.
-                crate::router::adopt::record_missing_space_remotes(&tonk).await;
-                crate::router::adopt::adopt_directory_spaces(&tonk).await;
             });
         }
 

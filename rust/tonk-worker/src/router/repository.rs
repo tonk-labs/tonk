@@ -22,6 +22,7 @@ use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
@@ -43,7 +44,7 @@ use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::T
 /// alongside its content branch. It stores local bookkeeping — the
 /// local [`Replica`] record, remotes config, and branch enumeration —
 /// that must never replicate (see [`tonk_schema`]).
-const META_BRANCH: &str = "meta";
+pub(crate) const META_BRANCH: &str = "meta";
 
 /// The single branch the *profile* repository lives on. The profile
 /// has no content/meta split (its whole state is device-local hub
@@ -1660,10 +1661,20 @@ async fn run_rename_repository(
         .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    // Mirror the new name into the account directory so devices that
+    // have not replicated this space still label it correctly.
     if let Ok(subject) = repo.parse::<Did>()
-        && let Err(error) = crate::router::account_backup::back_up_subject(&tonk, &subject).await
+        && let Err(error) = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .transaction()
+            .assert(tonk_schema::SpaceName::new(&subject, name))
+            .commit()
+            .perform(&tonk.operator)
+            .await
     {
-        log!("RenameRepository backup skipped: {error}");
+        log!("RenameRepository directory mirror skipped: {error}");
     }
     Ok(())
 }
@@ -2343,15 +2354,9 @@ async fn enable_sync_inner(
 
     ensure_remote_config(&tonk, &repository, key, &configuration).await?;
 
-    // Escrow this owned space's delegation so the account's other devices
-    // can restore it. Resolve the address back through the configuration:
-    // `ensure_remote_config` deliberately preserves an existing upstream,
-    // which may differ from the form-supplied repair URL.
-    if let Err(error) =
-        crate::router::account_backup::back_up_subject(&tonk, &repository.did()).await
-    {
-        log!("enable sync '{}': account backup skipped ({})", key, error);
-    }
+    // Mirror the (possibly repaired) mount configuration into the
+    // account directory so other devices can adopt this space.
+    record_space_mount(&tonk, &repository.did(), &configuration, None).await;
 
     Ok(())
 }
@@ -2804,6 +2809,7 @@ pub async fn create_repository(
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -3174,48 +3180,75 @@ where
         Replica::blank_status(),
     )
     .await?;
-    record_space_mount(tonk, repository, configuration).await;
+    record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
     Ok(())
 }
 
-/// Record the account-level mount data for a synced space on its
-/// directory entity: the [`SpaceRemote`] pair adoption mounts from, and
-/// the full [`SpaceConfiguration`] so a non-default setup restores
-/// identically. Best-effort — a local-only space (no ready remote)
-/// records nothing, and a failure only defers to the sweep's backstop
-/// (`adopt::record_missing_space_remotes`).
-pub(crate) async fn record_space_mount<C>(
+/// Anchor wrapper so branch/remote concepts can hang off the space's
+/// directory entity (`subject.this()`), giving every device the same
+/// derived entities — the account-level mirror of the per-replica meta
+/// records.
+struct DirectoryAnchor(dialog_artifacts::Entity);
+
+impl AsRef<dialog_artifacts::Entity> for DirectoryAnchor {
+    fn as_ref(&self) -> &dialog_artifacts::Entity {
+        &self.0
+    }
+}
+
+/// Mirror a space's remote/branch configuration — and optionally its
+/// display name — into the account directory as plain facts on
+/// directory-anchored entities, so any device can rebuild the full
+/// [`RepositoryConfiguration`] from the account DB and mount the space
+/// identically, non-default setups included. Individually updatable
+/// like all facts; no serialized blob.
+pub(crate) async fn record_space_mount(
     tonk: &TonkState,
-    repository: &Repository<C>,
+    subject: &Did,
     configuration: &RepositoryConfiguration,
-) where
-    C: Principal + Clone,
-{
-    let subject = repository.did();
-    let urls = match super::create_invite::resolve_remote_url_with(repository, &tonk.operator).await
-    {
-        Ok(super::create_invite::RemoteRequirement::Ready(urls)) => urls,
-        Ok(_) => return, // local-only: nothing another device could mount
-        Err(error) => {
-            log!("record space mount: resolve remote for '{subject}': {error}");
-            return;
-        }
-    };
+    display_name: Option<&str>,
+) {
+    use tonk_schema::domain::remote::Address as RemoteAddress;
+
+    let anchor_entity = subject.this();
+    let anchor = DirectoryAnchor(anchor_entity.clone());
     let mut transaction = tonk
         .reactor
         .profile_repository()
         .branch(PROFILE_BRANCH)
-        .transaction()
-        .assert(tonk_schema::SpaceRemote::new(
-            &subject,
-            urls.access_url.to_string(),
-            urls.revocation_url.to_string(),
-        ));
-    match serde_json::to_vec(configuration) {
-        Ok(bytes) => {
-            transaction = transaction.assert(tonk_schema::SpaceConfiguration::new(&subject, bytes));
+        .transaction();
+    if let Some(name) = display_name {
+        transaction = transaction.assert(tonk_schema::SpaceName::new(subject, name));
+    }
+    let mut remote_concepts: HashMap<String, Remote> = HashMap::new();
+    for (name, remote_config) in &configuration.remote {
+        let target = remote_config
+            .subject
+            .clone()
+            .unwrap_or_else(|| subject.clone());
+        let concept = Remote::at(
+            &anchor_entity,
+            target,
+            RemoteAddress::encode(&remote_config.address),
+            name.as_str(),
+        );
+        transaction = transaction.assert(concept.clone());
+        if let Some(relay) = &remote_config.revocation_url {
+            transaction = transaction.assert(RemoteExecution::new(&concept, relay.as_str()));
         }
-        Err(error) => log!("record space mount: serialize configuration: {error}"),
+        remote_concepts.insert(name.clone(), concept);
+    }
+    for (branch_name, settings) in &configuration.branch {
+        let local = MetaBranch::new(&anchor, branch_name.as_str());
+        transaction = transaction.assert(local.clone());
+        if let Some(upstream) = &settings.upstream
+            && let Some(remote_concept) = remote_concepts.get(&upstream.remote)
+        {
+            let remote_branch = MetaBranch::new(remote_concept, upstream.branch.as_str());
+            transaction = transaction
+                .assert(remote_branch.clone())
+                .assert(TrackingBranch::new(&local, &remote_branch));
+        }
     }
     if let Err(error) = transaction.commit().perform(&tonk.operator).await {
         log!("record space mount for '{subject}': {error}");
@@ -4884,70 +4917,62 @@ mod tests {
     /// out is how a device reaches it while still holding spaces — creating
     /// them without an account is what the account gate refuses.
     #[dialog_common::test]
-    async fn rename_refreshes_the_named_root_ending_account_artifact() {
-        use wasm_bindgen::JsValue;
+    async fn rename_mirrors_the_name_into_the_account_directory() {
+        use dialog_query::{Output as _, Query, Term};
 
-        let (app, state, key) = fresh_repo("rename-backup-artifact").await;
+        let (app, state, key) = fresh_repo("rename-directory-mirror").await;
         attach(
             &app,
             &key,
             &origin_config("https://sync.example.test/ucan/"),
         )
         .await;
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
 
         let env = crate::router::CommandEnv::new(state.clone(), Default::default());
         super::run_rename_repository(&env, &key, "renamed-garden")
             .await
             .unwrap();
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("renamed backup artifact was produced");
-        assert_eq!(artifact.name.as_deref(), Some("renamed-garden"));
-        let root = {
-            let tonk = state.read().await;
-            crate::router::identity::root_did(&tonk).await.unwrap()
-        };
-        let validated = artifact.validate_for(&root).await.unwrap();
-        assert_eq!(validated.subject.to_string(), key);
-        assert_eq!(validated.chain.audience(), &root);
+
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let names: Vec<tonk_schema::SpaceName> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceName> {
+                this: Term::from(tonk_schema::prelude::DidExt::this(&subject)),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            names.first().map(|row| row.name.0.as_str()),
+            Some("renamed-garden"),
+            "the rename lands in the account directory so unreplicated \
+             devices can label the space"
+        );
     }
 
     #[dialog_common::test]
-    async fn enable_sync_backup_uses_the_preserved_configured_upstream() {
-        use wasm_bindgen::JsValue;
+    async fn enable_sync_records_the_preserved_upstream_in_the_directory() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::domain::remote::Origin as RemoteOrigin;
 
-        let (app, state, key) = fresh_repo("preserved-backup-upstream").await;
+        let (app, state, key) = fresh_repo("preserved-directory-upstream").await;
         attach(
             &app,
             &key,
             &origin_config("https://actual-sync.example.test/ucan/"),
         )
         .await;
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
 
         super::enable_sync_inner(
             &state,
@@ -4958,23 +4983,45 @@ mod tests {
         .await
         .unwrap();
 
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("enable-sync backup artifact was produced");
-        assert_eq!(
-            artifact.remote_url.as_deref(),
-            Some("https://actual-sync.example.test/ucan/")
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let remotes: Vec<super::Remote> = main
+            .handle()
+            .query()
+            .select(Query::<super::Remote> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(RemoteOrigin::from(tonk_schema::prelude::DidExt::this(
+                    &subject,
+                ))),
+                subject: Term::var("subject"),
+                address: Term::var("address"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let addresses: Vec<String> = remotes
+            .iter()
+            .filter_map(|row| {
+                tonk_schema::domain::remote::Address::decode(&row.address)
+                    .ok()
+                    .map(|address| format!("{address:?}"))
+            })
+            .collect();
+        assert!(
+            addresses
+                .iter()
+                .any(|address| address.contains("actual-sync.example.test")),
+            "the directory records the PRESERVED configured upstream, not \
+             the form-supplied repair URL: {addresses:?}"
         );
     }
 

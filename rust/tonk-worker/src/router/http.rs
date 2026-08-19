@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use thiserror::Error;
-use tonk_account::backup::ACCOUNT_SPOTS_CAPABILITY_HEADER;
 use url::Url;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -16,8 +15,6 @@ pub(crate) struct HttpResponse {
     #[allow(dead_code)]
     pub status: u16,
     pub body: Vec<u8>,
-    /// Account-spot capability advertised by a successful legacy list route.
-    pub account_spots_capability: Option<String>,
 }
 
 /// Structured non-success response from an upstream service.
@@ -126,11 +123,6 @@ async fn request_with_timeout(
         }
     })?;
     let status = response.status().as_u16();
-    let account_spots_capability = response
-        .headers()
-        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
     let bytes = response
         .bytes()
         .await
@@ -142,7 +134,6 @@ async fn request_with_timeout(
     Ok(HttpResponse {
         status,
         body: bytes,
-        account_spots_capability,
     })
 }
 
@@ -245,11 +236,6 @@ async fn request_with_timeout(
         }
     })?;
     let status = response.status();
-    let account_spots_capability = response
-        .headers()
-        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
-        .ok()
-        .flatten();
     let buffer = JsFuture::from(
         response
             .array_buffer()
@@ -264,7 +250,6 @@ async fn request_with_timeout(
     Ok(HttpResponse {
         status,
         body: bytes,
-        account_spots_capability,
     })
 }
 
@@ -364,7 +349,6 @@ mod tests {
         let response = post_json(&endpoint, br#"{"ok":true}"#).await.unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{}");
-        assert_eq!(response.account_spots_capability.as_deref(), Some("v1"));
         let request = request.recv().unwrap();
         let request = String::from_utf8_lossy(&request);
         assert!(
@@ -442,7 +426,6 @@ mod tests {
             let response = post_cbor(&endpoint, &[0xd9, 0xd9, 0xf7]).await.unwrap();
             assert_eq!(response.status, 201);
             assert_eq!(response.body, [7, 8, 9]);
-            assert_eq!(response.account_spots_capability.as_deref(), Some("v1"));
 
             let capture = js_sys::Reflect::get(&global, &"__tonkHttpCapture".into()).unwrap();
             assert_eq!(

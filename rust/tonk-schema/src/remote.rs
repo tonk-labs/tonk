@@ -95,13 +95,23 @@ impl Remote {
     /// convertible into [`Name`] — e.g. a `&str` — so callers
     /// don't have to wrap string literals.
     pub fn new(replica: &Replica, subject: Did, address: Address, name: impl Into<Name>) -> Self {
+        Self::at(replica.this(), subject, address, name)
+    }
+
+    /// Build a remote concept anchored on an arbitrary owning entity.
+    ///
+    /// The account-level mount records use this with the space's
+    /// directory entity (`subject.this()`) as the origin, so every
+    /// device derives the same remote entity and the records converge —
+    /// the same reasoning as the directory rows themselves.
+    pub fn at(origin: &Entity, subject: Did, address: Address, name: impl Into<Name>) -> Self {
         let name = name.into();
         Self {
             this: Entity::of(&This::Remote {
-                origin: replica.this(),
+                origin,
                 name: &name.0,
             }),
-            origin: Origin::from(replica.this().clone()),
+            origin: Origin::from(origin.clone()),
             subject: Subject::from(subject.this()),
             address,
             name,

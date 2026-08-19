@@ -257,15 +257,15 @@ async fn finish_swap(
 
     // Catch up on whatever account the swapped-in profile is attached
     // to, exactly as a boot would. Fire-and-forget: account-service
-    // latency must not delay the switch, and `restore_spaces` no-ops
-    // when the profile is unlinked.
+    // latency must not delay the switch. Spaces themselves need no
+    // catch-up pass — the Hub renders from the account directory and
+    // the data-plane routes mount directory spaces on first use.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let state = state.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let tonk = state.read().await;
             super::account_state::ensure_account_state(&tonk).await;
-            super::restore::restore_spaces(&tonk).await;
         });
     }
 

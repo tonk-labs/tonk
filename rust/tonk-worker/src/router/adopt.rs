@@ -1,220 +1,217 @@
-//! Directory-driven space adoption — the account DB replacing the
-//! account-service spot-backup escrow.
+//! Lazy, directory-driven space adoption — the account DB as the sole
+//! source of truth for which spaces exist and how to mount them.
 //!
-//! The account DB (the account repository, reached through profile
-//! main) is the source of truth for which spaces exist: a [`Space`]
-//! directory row per space, a [`SpaceRemote`] mount record for each
-//! synced one, and the retained delegation carrying the authority.
-//! Adoption reads exactly that: every directory row with a mount
-//! record and no local replica is mounted from the account DB alone.
+//! The account DB carries, per space, plain facts on directory-anchored
+//! entities (see `repository::record_space_mount`): the [`Space`] row,
+//! a [`SpaceName`] mirror, and the full remote/branch configuration as
+//! [`Remote`] / [`RemoteExecution`] / [`Branch`] / [`TrackingBranch`]
+//! concepts. Nothing mounts eagerly: the Hub renders straight from the
+//! directory, and [`ensure_space_mounted`] replicates a space on first
+//! use — the data-plane routes call it when a request names a repo this
+//! device has not mounted.
 //!
-//! Deletion needs no special machinery here: a removed space's rows
-//! are retracted, retraction replicates like any fact, and adoption
-//! only ever sees asserted rows — so a deleted space cannot resurrect
-//! the way the escrow restore resurrected it (the escrow was
-//! append-only and out-of-band, so "not installed locally" and
-//! "deliberately removed" were indistinguishable).
+//! Deletion is a retraction: adoption reads asserted rows only, so a
+//! removed space is simply absent — no escrow, no backfill, nothing to
+//! resurrect it.
 //!
-//! [`record_missing_space_remotes`] is the self-healing writer: any
-//! locally mounted space whose directory entity lacks a mount record
-//! gets one, resolved from its configured remote. That migrates
-//! existing spaces (created before [`SpaceRemote`] existed) without a
-//! dedicated migration, and heals any create path that failed to
-//! record.
+//! [`Space`]: tonk_schema::Space
+//! [`SpaceName`]: tonk_schema::SpaceName
+//! [`Remote`]: tonk_schema::Remote
+//! [`RemoteExecution`]: tonk_schema::RemoteExecution
+//! [`Branch`]: tonk_schema::Branch
+//! [`TrackingBranch`]: tonk_schema::TrackingBranch
+
+use std::collections::HashMap;
 
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::RepositoryExt as _;
 use tonk_common::log;
-use tonk_schema::{SpaceRemote, prelude::DidExt as _};
+use tonk_schema::domain::remote::{Address as RemoteAddress, Origin as RemoteOrigin};
+use tonk_schema::{
+    Branch as BranchConcept, Remote, RemoteExecution, TrackingBranch, prelude::DidExt as _,
+};
 
+use super::repository::{
+    BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, UpstreamConfiguration,
+};
 use crate::worker::TonkState;
 
-/// Mount every space the account DB lists that this device lacks.
-///
-/// Runs at worker boot and after account pulls. Errors are per-space
-/// and logged — one unmountable space must not block the rest.
-pub(crate) async fn adopt_directory_spaces(tonk: &TonkState) {
-    let main = match tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-    {
-        Ok(main) => main,
-        Err(error) => {
-            log!("space adoption: open profile main: {error}");
-            return;
-        }
+/// Mount `key`'s space from the account directory if this device lacks
+/// it and the directory records how. Returns whether the space is
+/// mounted (already or just now); `Ok(false)` means the directory has
+/// no mountable record for it — the caller proceeds and fails with its
+/// ordinary not-found.
+pub(crate) async fn ensure_space_mounted(
+    tonk: &TonkState,
+    key: &str,
+) -> Result<bool, crate::TonkWorkerError> {
+    // Routing keys are the DID's method-specific suffix.
+    let subject: dialog_varsig::Did = match format!("did:key:{key}").parse() {
+        Ok(did) => did,
+        Err(_) => return Ok(false), // not a space key (e.g. a named repo)
     };
-    let rows: Vec<SpaceRemote> = match main
-        .handle()
-        .query()
-        .select(Query::<SpaceRemote> {
-            this: Term::var("this"),
-            remote: Term::var("remote"),
-            revocation: Term::var("revocation"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows,
-        Err(error) => {
-            log!("space adoption: mount-record query: {error:?}");
-            return;
-        }
-    };
-
-    for row in rows {
-        let subject: dialog_varsig::Did = match row.this.to_string().parse() {
-            Ok(did) => did,
-            Err(error) => {
-                log!(
-                    "space adoption: directory entity '{}' is not a DID: {error:?}",
-                    row.this
-                );
-                continue;
-            }
-        };
-        match super::join::find_replica_for_subject(tonk, &subject).await {
-            Ok(true) => continue,
-            Ok(false) => {}
-            Err(error) => {
-                log!("space adoption: replica probe for '{subject}': {error}");
-                continue;
-            }
-        }
-        log!("space adoption: mounting '{subject}' from the account directory");
-        if let Err(error) = super::join::mount_replica(
-            tonk,
-            &subject,
-            Some(row.remote.0.as_str()),
-            Some(row.revocation.0.as_str()),
-        )
-        .await
-        {
-            log!("space adoption: mount '{subject}' failed: {error}");
-            continue;
-        }
-        if let Err(error) =
-            super::repository::record_initialized_replica_in_profile(tonk, &subject).await
-        {
-            log!("space adoption: record '{subject}' failed: {error}");
-        }
+    if super::account_state::is_account_key(tonk, key).await {
+        return Ok(false);
     }
+    if super::join::find_replica_for_subject(tonk, &subject).await? {
+        return Ok(true);
+    }
+    let Some(configuration) = directory_configuration(tonk, &subject).await else {
+        return Ok(false);
+    };
+    log!("space adoption: mounting '{subject}' from the account directory");
+    super::join::mount_replica_with_configuration(tonk, &subject, configuration).await?;
+    super::repository::record_initialized_replica_in_profile(tonk, &subject)
+        .await
+        .map_err(|error| {
+            crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
+        })?;
+    Ok(true)
 }
 
-/// Assert the [`SpaceRemote`] mount record for every locally mounted,
-/// remote-configured space whose directory entity lacks one.
-///
-/// The self-healing writer behind adoption: covers spaces created
-/// before the record existed and any create path that failed to write
-/// it, so no dedicated migration is needed.
-pub(crate) async fn record_missing_space_remotes(tonk: &TonkState) {
-    use tonk_schema::Space;
+/// Rebuild a space's [`RepositoryConfiguration`] from remote/branch
+/// facts anchored on `anchor`, read through `branch`. `None` when no
+/// remotes are recorded there.
+async fn configuration_from_facts(
+    tonk: &TonkState,
+    branch: &crate::reactor::BranchSession,
+    anchor: &dialog_artifacts::Entity,
+    default_subject: &dialog_varsig::Did,
+    skip_branch: Option<&str>,
+) -> Option<RepositoryConfiguration> {
+    let remotes: Vec<Remote> = branch
+        .handle()
+        .query()
+        .select(Query::<Remote> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(RemoteOrigin::from(anchor.clone())),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    if remotes.is_empty() {
+        return None;
+    }
 
-    let main = match tonk
+    let mut configuration = RepositoryConfiguration::default();
+    // Remote entity → local name, to resolve tracking upstreams below.
+    let mut remote_names: HashMap<String, String> = HashMap::new();
+    for row in &remotes {
+        let address = RemoteAddress::decode(&row.address).ok()?;
+        let target: dialog_varsig::Did = row
+            .subject
+            .0
+            .to_string()
+            .parse()
+            .unwrap_or_else(|_| default_subject.clone());
+        let mut remote = RemoteConfiguration::new(address).subject(target);
+        let executions: Vec<RemoteExecution> = branch
+            .handle()
+            .query()
+            .select(Query::<RemoteExecution> {
+                this: Term::from(row.this.clone()),
+                revocation_url: Term::var("revocation_url"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap_or_default();
+        if let Some(execution) = executions.into_iter().next()
+            && let Ok(url) = url::Url::parse(&execution.revocation_url.0)
+        {
+            remote = remote.revocation_url(url);
+        }
+        configuration = configuration.remote(row.name.0.clone(), remote);
+        remote_names.insert(row.this.to_string(), row.name.0.clone());
+    }
+
+    // Local branches anchored on `anchor`, and their tracking links.
+    // An upstream branch entity is anchored on its remote concept, so
+    // mapping it back to (remote name, branch name) goes through the
+    // remote-side branch rows.
+    let locals: Vec<BranchConcept> = branch
+        .handle()
+        .query()
+        .select(Query::<BranchConcept> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(tonk_schema::domain::branch::Origin::from(anchor.clone())),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+    let mut remote_branches: HashMap<String, (String, String)> = HashMap::new();
+    for (remote_entity, remote_name) in &remote_names {
+        let origin: dialog_artifacts::Entity = match remote_entity.parse() {
+            Ok(entity) => entity,
+            Err(_) => continue,
+        };
+        let rows: Vec<BranchConcept> = branch
+            .handle()
+            .query()
+            .select(Query::<BranchConcept> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(tonk_schema::domain::branch::Origin::from(origin)),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap_or_default();
+        for row in rows {
+            remote_branches.insert(
+                row.this.to_string(),
+                (remote_name.clone(), row.name.0.clone()),
+            );
+        }
+    }
+    for local in locals {
+        if Some(local.name.0.as_str()) == skip_branch {
+            continue;
+        }
+        let tracking: Vec<TrackingBranch> = branch
+            .handle()
+            .query()
+            .select(Query::<TrackingBranch> {
+                this: Term::from(local.this.clone()),
+                upstream: Term::var("upstream"),
+                origin: Term::var("origin"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap_or_default();
+        let upstream = tracking.into_iter().next().and_then(|link| {
+            remote_branches
+                .get(&link.upstream.0.to_string())
+                .map(|(remote, branch)| UpstreamConfiguration::new(remote.clone(), branch.clone()))
+        });
+        configuration = configuration.branch(
+            local.name.0.clone(),
+            BranchConfiguration {
+                upstream,
+                revision: None,
+            },
+        );
+    }
+    Some(configuration)
+}
+
+/// Rebuild a space's configuration from the account directory.
+async fn directory_configuration(
+    tonk: &TonkState,
+    subject: &dialog_varsig::Did,
+) -> Option<RepositoryConfiguration> {
+    let main = tonk
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
-    {
-        Ok(main) => main,
-        Err(error) => {
-            log!("mount-record backstop: open profile main: {error}");
-            return;
-        }
-    };
-    let directory: Vec<Space> = match main
-        .handle()
-        .query()
-        .select(Query::<Space> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            status: Term::var("status"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows,
-        Err(error) => {
-            log!("mount-record backstop: directory query: {error:?}");
-            return;
-        }
-    };
-    let recorded: std::collections::HashSet<String> = match main
-        .handle()
-        .query()
-        .select(Query::<SpaceRemote> {
-            this: Term::var("this"),
-            remote: Term::var("remote"),
-            revocation: Term::var("revocation"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows.into_iter().map(|r| r.this.to_string()).collect(),
-        Err(error) => {
-            log!("mount-record backstop: mount-record query: {error:?}");
-            return;
-        }
-    };
-
-    for entry in directory {
-        if recorded.contains(&entry.this.to_string()) {
-            continue;
-        }
-        let subject: dialog_varsig::Did = match entry.subject.0.to_string().parse() {
-            Ok(did) => did,
-            Err(_) => continue,
-        };
-        // Only a locally mounted space can tell us its remote.
-        match super::join::find_replica_for_subject(tonk, &subject).await {
-            Ok(true) => {}
-            _ => continue,
-        }
-        let repository = match tonk
-            .profile
-            .repository(subject.repo_key())
-            .load()
-            .perform(&tonk.operator)
-            .await
-        {
-            Ok(repository) => repository,
-            Err(error) => {
-                log!("mount-record backstop: load '{subject}': {error}");
-                continue;
-            }
-        };
-        let urls = match super::create_invite::resolve_remote_url_with(&repository, &tonk.operator)
-            .await
-        {
-            Ok(super::create_invite::RemoteRequirement::Ready(urls)) => urls,
-            Ok(_) => continue, // local-only or misconfigured: nothing to record
-            Err(error) => {
-                log!("mount-record backstop: resolve remote for '{subject}': {error}");
-                continue;
-            }
-        };
-        let record = SpaceRemote::new(
-            &subject,
-            urls.access_url.to_string(),
-            urls.revocation_url.to_string(),
-        );
-        match main
-            .handle()
-            .transaction()
-            .assert(record)
-            .commit()
-            .perform(&tonk.operator)
-            .await
-        {
-            Ok(_) => log!("mount-record backstop: recorded remote for '{subject}'"),
-            Err(error) => log!("mount-record backstop: record '{subject}': {error}"),
-        }
-    }
+        .ok()?;
+    configuration_from_facts(tonk, &main, &subject.this(), subject, None).await
 }

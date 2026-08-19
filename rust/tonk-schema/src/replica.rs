@@ -121,54 +121,24 @@ impl Space {
     }
 }
 
-/// The account-level mount record for a synced space — the sync remote
-/// and its revocation relay, on the same directory entity as [`Space`].
-///
-/// This is what lets any device on the account mount the space from the
-/// account DB alone: directory row (which spaces exist) + this record
-/// (where to sync them) + the retained delegation (the authority to).
-/// A separate concept rather than fields on [`Space`] so existing
-/// directory rows keep matching, and because local-only spaces have no
-/// remote to record.
+/// The account-directory copy of a space's display name, on the
+/// directory entity. The space's own content branch remains the
+/// editable source of truth (`tonk/repository`); this mirror exists so
+/// a device that has not replicated the space can still label it.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SpaceRemote {
+pub struct SpaceName {
     /// The repository's own entity — the directory entity.
     pub this: Entity,
-    /// The sync remote's access URL.
-    pub remote: crate::domain::space::Remote,
-    /// The revocation relay URL.
-    pub revocation: crate::domain::space::Revocation,
+    /// The mirrored display name.
+    pub name: crate::domain::space::Name,
 }
 
-impl SpaceRemote {
-    /// A mount record for `subject`.
-    pub fn new(subject: &Did, remote: impl Into<String>, revocation: impl Into<String>) -> Self {
+impl SpaceName {
+    /// A name mirror for `subject`.
+    pub fn new(subject: &Did, name: impl Into<String>) -> Self {
         Self {
             this: subject.this(),
-            remote: crate::domain::space::Remote(remote.into()),
-            revocation: crate::domain::space::Revocation(revocation.into()),
-        }
-    }
-}
-
-/// The space's captured repository configuration, on the directory
-/// entity. Written at configure time; adoption may apply it verbatim to
-/// reproduce a non-default setup. Kept apart from [`SpaceRemote`] so
-/// the mount pair stays queryable without decoding the full config.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SpaceConfiguration {
-    /// The repository's own entity — the directory entity.
-    pub this: Entity,
-    /// Serialized configuration JSON.
-    pub configuration: crate::domain::space::Configuration,
-}
-
-impl SpaceConfiguration {
-    /// A configuration record for `subject`.
-    pub fn new(subject: &Did, configuration: Vec<u8>) -> Self {
-        Self {
-            this: subject.this(),
-            configuration: crate::domain::space::Configuration(configuration),
+            name: crate::domain::space::Name(name.into()),
         }
     }
 }

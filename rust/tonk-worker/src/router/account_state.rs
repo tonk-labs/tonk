@@ -546,12 +546,6 @@ pub(crate) async fn ensure_account_state_swept(
     match trusted_marker(tonk).await {
         Ok(marker) if marker_matches(marker.as_deref(), &descriptor) => {
             let swept = sync_ready(tonk, &key).await;
-            // Directory-driven adoption from the account DB. Replaces
-            // the replica→directory backfill (the directory is the
-            // source of truth now, and backfilling FROM replica rows is
-            // what resurrected deleted spaces) and the escrow restore.
-            super::adopt::record_missing_space_remotes(tonk).await;
-            super::adopt::adopt_directory_spaces(tonk).await;
             (AccountStateStatus::Ready, swept)
         }
         Ok(_) => match hydrate_untrusted(tonk).await {
