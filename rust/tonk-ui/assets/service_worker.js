@@ -269,7 +269,7 @@ self.registration.addEventListener?.("updatefound", async () => {
     // update replaces this instance), but the data plane must never
     // go dark without a replacement.
     const successor = await (async () => {
-        for (let waited = 0; waited < 15_000; waited += 250) {
+        for (let waited = 0; waited < 6_000; waited += 250) {
             const active = self.registration.active;
             if (active && active !== self.serviceWorker && active.state === "activated") {
                 return true;
@@ -524,8 +524,12 @@ self.onfetch = event => {
         // code, at any of its call sites. If the takeover is slower the
         // hop repeats; the browser's redirect cap (~20) bounds the
         // pathological case at roughly the same budget as a timeout.
+        // Short hold: each held response is an in-flight event that
+        // extends THIS worker's lifetime, and the successor's
+        // activation needs a quiet gap in that queue. 400ms paces the
+        // redirect loop without ever fully occupying the queue.
         event.respondWith((async () => {
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            await new Promise(resolve => setTimeout(resolve, 400));
             return Response.redirect(event.request.url, 307);
         })());
         return;
