@@ -203,15 +203,34 @@ pub(crate) async fn persist_root(
         // and never overwrites the root this profile's spaces hang off.
         // An unreadable stored delegation refuses too — the roots can't
         // be proven equal.
+        //
+        // "Signed in" means the profile COMPLETED an account attachment
+        // with the stored root, not merely that a record exists. A
+        // creation ceremony binds the root before registration can
+        // still fail (an email already taken, a service outage), and a
+        // record left behind by such a half-created account must not
+        // wedge the profile: without an attachment there is nothing the
+        // stored root anchors, so a retry may replace it. With an
+        // attachment, the conflict stands — that root is what this
+        // profile's spaces and delegations hang off.
         let stored_root = DelegationChain::try_from(existing.delegation.as_slice())
             .ok()
             .map(|stored| stored.issuer().clone());
         if stored_root.as_ref() != Some(chain.issuer()) {
-            return Err(TonkWorkerError::Conflict(
-                "a different account is already signed in on this profile; \
-                 use \"Add account\" to sign in with another account"
-                    .to_string(),
-            ));
+            if super::account::descriptor(state).await.is_some() {
+                return Err(TonkWorkerError::Conflict(
+                    "a different account is already signed in on this profile; \
+                     use \"Add account\" to sign in with another account"
+                        .to_string(),
+                ));
+            }
+            tonk_common::log!(
+                "replacing a dangling account root (no completed attachment): {} -> {}",
+                stored_root
+                    .map(|did| did.to_string())
+                    .unwrap_or_else(|| "unreadable".to_string()),
+                chain.issuer()
+            );
         }
     }
 
