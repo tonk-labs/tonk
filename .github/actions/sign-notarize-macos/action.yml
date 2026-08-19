@@ -67,8 +67,14 @@ runs:
         notarization_archive="$signing_dir/tonk.zip"
         notarization_response="$signing_dir/notarization.json"
         keychain_password="$(openssl rand -base64 32)"
+        original_keychains=()
 
         cleanup() {
+          if ((${#original_keychains[@]} > 0)); then
+            security list-keychains \
+              -d user \
+              -s "${original_keychains[@]}" >/dev/null 2>&1 || true
+          fi
           security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
           rm -f \
             "$certificate_path" \
@@ -79,6 +85,13 @@ runs:
           rmdir "$signing_dir" >/dev/null 2>&1 || true
         }
         trap cleanup EXIT
+
+        while IFS= read -r keychain; do
+          [[ -n "$keychain" ]] && original_keychains+=("$keychain")
+        done < <(
+          security list-keychains -d user \
+            | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'
+        )
 
         printf '%s' "$CERTIFICATE_P12" \
           | base64 --decode > "$certificate_path"
@@ -97,6 +110,9 @@ runs:
           -s \
           -k "$keychain_password" \
           "$keychain_path"
+        security list-keychains \
+          -d user \
+          -s "$keychain_path" "${original_keychains[@]}"
 
         signing_identity="$(
           security find-identity -v -p codesigning "$keychain_path" \
