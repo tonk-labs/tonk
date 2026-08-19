@@ -494,10 +494,23 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let remote = string_property(&input, "remote")?;
-    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
-    let root = crate::derive::derive_root_signer(&prf)
-        .await
-        .map_err(js_error)?;
+    // A browser holding local custody of the named account signs from
+    // it directly — no assertion; the click is the gesture. Everything
+    // else falls back to the legacy passkey-derived root.
+    let account_did = optional_string_property(&input, "accountDid");
+    let local = match &account_did {
+        Some(did) => crate::local::unlock(did).await.map_err(js_error)?,
+        None => None,
+    };
+    let root = match local {
+        Some(secret) => secret.signer().await.map_err(js_error)?,
+        None => {
+            let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+            crate::derive::derive_root_signer(&prf)
+                .await
+                .map_err(js_error)?
+        }
+    };
     let authorized = crate::ceremony::authorize_device(root, device_did, &remote)
         .await
         .map_err(js_error)?;

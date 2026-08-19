@@ -25,20 +25,14 @@ pub(crate) struct CreateRootInput {
     pub created_on: Option<String>,
 }
 
-/// Input for creating an account and its first device registration.
+/// Input for a secret-rooted account: no passkey, no WebAuthn — the
+/// account moment is email submission.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CreateAccountInput {
+pub(crate) struct CreateSecretAccountInput {
     pub email: String,
     pub device_did: String,
     pub device_name: String,
-    pub root_did: String,
-    pub credential_id: String,
-    pub delegation_hex: String,
-    /// Creation facts retained with the local root, when this browser made it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
-    /// Account repository remote this browser proposes for the new account.
     pub remote: String,
     /// Access-service DID the ceremony mints account-signed deposits
     /// for, when the deployment names one.
@@ -46,15 +40,50 @@ pub(crate) struct CreateAccountInput {
     pub service_did: Option<String>,
 }
 
-/// Input for a fresh account whose passkey root does not exist yet.
+/// Secret-rooted account output: the fresh-account shape without any
+/// passkey — `credential_id` is empty until a custody passkey enrolls.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SecretAccountOutput {
+    pub root_did: String,
+    #[serde(default)]
+    pub credential_id: String,
+    pub delegation_hex: String,
+    pub invocation_hex: String,
+    #[serde(default)]
+    pub deposits_hex: Vec<String>,
+}
+
+/// Input for enrolling a custody passkey for a locally held account.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CreateFreshAccountInput {
-    pub email: String,
+pub(crate) struct EnrollCustodyInput {
+    pub account_did: String,
+    /// What the passkey manager should call the credential — the
+    /// account address, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The access service's `/ucan/` endpoint the cell publishes through.
+    pub endpoint: String,
+}
+
+/// A custody enrollment's outcome.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnrollCustodyOutput {
+    pub custody_did: String,
+    pub credential_id: String,
+    pub consent_hex: String,
+}
+
+/// Input for unlocking an account with a custody passkey on this browser.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UnlockWithPasskeyInput {
     pub device_did: String,
     pub device_name: String,
-    pub remote: String,
-    pub created_on: String,
+    /// The access service's `/ucan/` endpoint the cell resolves through.
+    pub endpoint: String,
     /// Access-service DID the ceremony mints account-signed deposits
     /// for, when the deployment names one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,18 +107,6 @@ pub(crate) struct EstablishRepositoryInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EstablishCeremonyOutput {
     pub invocation_hex: String,
-}
-
-/// Input for linking the current browser as another account device.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LinkDeviceInput {
-    pub device_did: String,
-    pub device_name: String,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
 }
 
 /// Input for signing a device-grant revocation.
@@ -120,23 +137,6 @@ pub(crate) struct CeremonyOutput {
     pub root_did: String,
     pub credential_id: String,
     pub delegation_hex: String,
-    pub invocation_hex: String,
-    /// Hex-encoded account-signed access-service deposits, when the
-    /// input named the service.
-    #[serde(default)]
-    pub deposits_hex: Vec<String>,
-}
-
-/// Fresh-root account output, carrying both local persistence and remote
-/// submission material from one passkey ceremony.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct FreshAccountOutput {
-    pub root_did: String,
-    pub device_did: String,
-    pub credential_id: String,
-    pub delegation_hex: String,
-    pub passkey: tonk_worker_api::PasskeyMetadata,
     pub invocation_hex: String,
     /// Hex-encoded account-signed access-service deposits, when the
     /// input named the service.
@@ -236,28 +236,28 @@ pub(crate) async fn create_root(input: CreateRootInput) -> Result<RootOutput, Id
     call("createRoot", input).await
 }
 
-pub(crate) async fn create_account(
-    input: CreateAccountInput,
-) -> Result<CeremonyOutput, IdentityBridgeError> {
-    call("createAccount", input).await
+pub(crate) async fn create_secret_account(
+    input: CreateSecretAccountInput,
+) -> Result<SecretAccountOutput, IdentityBridgeError> {
+    call("createSecretAccount", input).await
 }
 
-pub(crate) async fn create_fresh_account(
-    input: CreateFreshAccountInput,
-) -> Result<FreshAccountOutput, IdentityBridgeError> {
-    call("createFreshAccount", input).await
+pub(crate) async fn enroll_custody_passkey(
+    input: EnrollCustodyInput,
+) -> Result<EnrollCustodyOutput, IdentityBridgeError> {
+    call("enrollCustodyPasskey", input).await
+}
+
+pub(crate) async fn unlock_with_passkey(
+    input: UnlockWithPasskeyInput,
+) -> Result<CeremonyOutput, IdentityBridgeError> {
+    call("unlockWithPasskey", input).await
 }
 
 pub(crate) async fn establish_account_repository(
     input: EstablishRepositoryInput,
 ) -> Result<EstablishCeremonyOutput, IdentityBridgeError> {
     call("establishAccountRepository", input).await
-}
-
-pub(crate) async fn link_device(
-    input: LinkDeviceInput,
-) -> Result<CeremonyOutput, IdentityBridgeError> {
-    call("linkDevice", input).await
 }
 
 pub(crate) async fn complete_link(
@@ -274,6 +274,10 @@ pub(crate) struct AuthorizeDeviceInput {
     pub device_did: String,
     /// The account repository's remote, so the descriptor names it.
     pub remote: String,
+    /// The account, so a browser holding local custody signs from it
+    /// without an assertion. Absent falls back to the passkey root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_did: Option<String>,
 }
 
 /// What the ceremony hands back for delivery to a waiting device.
@@ -391,79 +395,65 @@ mod tests {
         "#;
 
         install_method(
-            "createFreshAccount",
+            "createSecretAccount",
             &format!(
                 r#"{plain_object_guard}
                 if (input.email !== "fresh@example.test"
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
-                    || input.createdOn !== "Chrome on macOS"
                     || input.remote !== "https://tonk.spot/ucan/")
                     return Promise.reject(new Error("property"));
                 return Promise.resolve({{
-                    rootDid: "did:key:root", deviceDid: input.deviceDid,
-                    credentialId: "credential", delegationHex: "delegation",
-                    passkey: {{ createdAt: 1754380800, createdOn: input.createdOn }},
+                    rootDid: "did:key:root",
+                    credentialId: "", delegationHex: "delegation",
                     invocationHex: "invocation"
                 }});"#
             ),
         );
-        let fresh = create_fresh_account(CreateFreshAccountInput {
+        let fresh = create_secret_account(CreateSecretAccountInput {
             email: "fresh@example.test".into(),
             device_did: "did:key:device".into(),
             device_name: "Browser".into(),
             remote: "https://tonk.spot/ucan/".into(),
-            created_on: "Chrome on macOS".into(),
             service_did: None,
         })
         .await
         .unwrap();
         assert_eq!(fresh.invocation_hex, "invocation");
-        assert_eq!(fresh.passkey.created_at, 1_754_380_800);
+        assert!(
+            fresh.credential_id.is_empty(),
+            "no passkey exists at creation"
+        );
 
         install_method(
-            "createAccount",
+            "enrollCustodyPasskey",
             &format!(
                 r#"{plain_object_guard}
-                if (input.email !== "person@example.test"
-                    || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
-                    || input.rootDid !== "did:key:root" || input.credentialId !== "credential"
-                    || input.delegationHex !== "delegation"
-                    || input.passkey.createdAt !== 1754380800
-                    || input.passkey.createdOn !== "Chrome on macOS"
-                    || input.remote !== "https://tonk.spot/ucan/")
+                if (input.accountDid !== "did:key:root"
+                    || input.label !== "person@example.test"
+                    || input.endpoint !== "https://tonk.spot/ucan/")
                     return Promise.reject(new Error("property"));
                 return Promise.resolve({{
-                    rootDid: input.rootDid, credentialId: input.credentialId,
-                    delegationHex: input.delegationHex, invocationHex: "invocation"
+                    custodyDid: "did:key:custody", credentialId: "credential",
+                    consentHex: "consent"
                 }});"#
             ),
         );
-        assert_eq!(
-            create_account(CreateAccountInput {
-                email: "person@example.test".into(),
-                device_did: "did:key:device".into(),
-                device_name: "Browser".into(),
-                root_did: "did:key:root".into(),
-                credential_id: "credential".into(),
-                delegation_hex: "delegation".into(),
-                service_did: None,
-                passkey: Some(tonk_worker_api::PasskeyMetadata {
-                    created_at: 1_754_380_800,
-                    created_on: "Chrome on macOS".into(),
-                }),
-                remote: "https://tonk.spot/ucan/".into(),
-            })
-            .await
-            .unwrap()
-            .invocation_hex,
-            "invocation"
-        );
+        let enrolled = enroll_custody_passkey(EnrollCustodyInput {
+            account_did: "did:key:root".into(),
+            label: Some("person@example.test".into()),
+            endpoint: "https://tonk.spot/ucan/".into(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(enrolled.custody_did, "did:key:custody");
+        assert_eq!(enrolled.consent_hex, "consent");
 
         install_method(
-            "linkDevice",
+            "unlockWithPasskey",
             &format!(
                 r#"{plain_object_guard}
-                if (input.deviceDid !== "did:key:device" || input.deviceName !== "Browser")
+                if (input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
+                    || input.endpoint !== "https://tonk.spot/ucan/")
                     return Promise.reject(new Error("property"));
                 return Promise.resolve({{
                     rootDid: "did:key:root", credentialId: "credential",
@@ -471,9 +461,10 @@ mod tests {
                 }});"#
             ),
         );
-        link_device(LinkDeviceInput {
+        unlock_with_passkey(UnlockWithPasskeyInput {
             device_did: "did:key:device".into(),
             device_name: "Browser".into(),
+            endpoint: "https://tonk.spot/ucan/".into(),
             service_did: None,
         })
         .await

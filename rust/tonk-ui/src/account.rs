@@ -11,9 +11,10 @@ use tonk_account::{AccountStateStatus, handoff::ResolvedLink};
 use tonk_worker_api::{AccountStatus, RevocationProjection, RevokeDeviceAcknowledgement};
 
 use crate::identity_bridge::{
-    CeremonyOutput, CreateAccountInput, CreateFreshAccountInput, EstablishRepositoryInput,
-    LinkDeviceInput, RevocationOutput, SignRevocationInput, complete_link, create_account,
-    create_fresh_account, establish_account_repository, link_device, sign_revocation,
+    CeremonyOutput, CreateSecretAccountInput, EnrollCustodyInput, EstablishRepositoryInput,
+    RevocationOutput, SignRevocationInput, UnlockWithPasskeyInput, complete_link,
+    create_secret_account, enroll_custody_passkey, establish_account_repository, sign_revocation,
+    unlock_with_passkey,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -191,6 +192,30 @@ fn show_success(host: &HtmlElement) {
     load_activation_notice(host.clone());
 }
 
+/// Show the add-a-passkey action when the account has no custody
+/// passkey yet — a secret-rooted account whose only custody is this
+/// browser's local wrapping. The empty credential id is the tell.
+async fn offer_passkey_enrollment(host: &HtmlElement) {
+    let no_passkey = matches!(
+        crate::api::root_status().await,
+        Ok(tonk_worker_api::RootStatus::Ready { credential_id, .. }) if credential_id.is_empty()
+    );
+    if !no_passkey {
+        return;
+    }
+    if let Ok(Some(button)) = host.query_selector("#account-add-passkey") {
+        let _ = button.remove_attribute("hidden");
+    }
+    set_text(host, "#account-passkey-created-value", "Not yet");
+    set_text(host, "#account-passkey-device-value", "Not yet");
+    set_text(
+        host,
+        "#account-passkey-detail",
+        "This account has no passkey yet: it lives only in this browser. Add one to sign in \
+         anywhere else and to survive this browser's storage being cleared.",
+    );
+}
+
 /// Surface a pending customer activation on the dashboard. Quiet on
 /// every other answer: an active customer needs no notice, and a
 /// deployment without registration should not decorate the panel with
@@ -313,6 +338,8 @@ fn load_summary(host: HtmlElement) {
                 web_sys::console::warn_1(&format!("account summary unavailable: {error}").into());
             }
         }
+        // After the summary painted, so the no-passkey text wins the row.
+        offer_passkey_enrollment(&host).await;
     });
 }
 
@@ -1327,68 +1354,112 @@ fn bind(host: &HtmlElement) {
             Err(error) => return show_error(&host, error),
         };
         let device_name = crate::device_name::current();
-        set_busy(&host, true, "Waiting for your passkey…");
+        set_busy(&host, true, "Creating your account…");
         spawn_local(async move {
             let result = async {
-                let status = crate::api::root_status()
+                // The account is secret-rooted: no passkey, no WebAuthn
+                // — the account moment is this email submission. A
+                // passkey is enrolled later as backup custody. Any
+                // legacy passkey-derived root this browser holds is
+                // simply superseded.
+                let device_did = crate::api::identify()
                     .await
-                    .map_err(|error| error.to_string())?;
-                let service_did = deployment_service_did().await;
-                let ceremony = match status {
-                    tonk_worker_api::RootStatus::Ready {
-                        root_did,
-                        device_did,
-                        credential_id,
-                        delegation_hex,
-                        passkey,
-                        ..
-                    } => create_account(CreateAccountInput {
-                        email: email.clone(),
-                        device_did,
-                        device_name,
-                        root_did,
-                        credential_id,
-                        delegation_hex,
-                        passkey,
-                        remote: proposed_remote()?,
-                        service_did,
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?,
-                    tonk_worker_api::RootStatus::Missing { device_did } => {
-                        let created = create_fresh_account(CreateFreshAccountInput {
-                            email: email.clone(),
-                            device_did,
-                            device_name,
-                            remote: proposed_remote()?,
-                            created_on: crate::device_name::current(),
-                            service_did,
-                        })
-                        .await
-                        .map_err(|error| error.to_string())?;
-                        crate::api::save_root(
-                            created.credential_id.clone(),
-                            created.delegation_hex.clone(),
-                            Some(created.passkey.clone()),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                        CeremonyOutput {
-                            root_did: created.root_did,
-                            credential_id: created.credential_id,
-                            delegation_hex: created.delegation_hex,
-                            invocation_hex: created.invocation_hex,
-                            deposits_hex: created.deposits_hex,
-                        }
-                    }
+                    .map_err(|error| error.to_string())?
+                    .did;
+                let created = create_secret_account(CreateSecretAccountInput {
+                    email: email.clone(),
+                    device_did,
+                    device_name,
+                    remote: proposed_remote()?,
+                    service_did: deployment_service_did().await,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                crate::api::save_root(
+                    created.credential_id.clone(),
+                    created.delegation_hex.clone(),
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                let ceremony = CeremonyOutput {
+                    root_did: created.root_did,
+                    credential_id: created.credential_id,
+                    delegation_hex: created.delegation_hex,
+                    invocation_hex: created.invocation_hex,
+                    deposits_hex: created.deposits_hex,
                 };
-                set_busy(&host, true, "Creating your account…");
                 complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await
             }
             .await;
             if let Err(error) = result {
                 set_busy(&host, false, "");
                 show_error(&host, error);
+            }
+        });
+    });
+
+    on_click(host, "#account-add-passkey", |host| {
+        clear_error(&host);
+        set_busy(&host, true, "Waiting for your passkey…");
+        spawn_local(async move {
+            let result = async {
+                let (root_did, delegation_hex) = match crate::api::root_status()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    tonk_worker_api::RootStatus::Ready {
+                        root_did,
+                        delegation_hex,
+                        ..
+                    } => (root_did, delegation_hex),
+                    tonk_worker_api::RootStatus::Missing { .. } => {
+                        return Err("no account on this browser to enroll a passkey for".into());
+                    }
+                };
+                let label = crate::api::account_summary()
+                    .await
+                    .ok()
+                    .and_then(|summary| summary.email);
+                let enrolled = enroll_custody_passkey(EnrollCustodyInput {
+                    account_did: root_did,
+                    label,
+                    endpoint: proposed_remote()?,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                // Provisioning is retryable; the published cell is the
+                // account's durability, so a refusal here only warns.
+                if let Err(error) =
+                    crate::api::provision_custody(&enrolled.custody_did, &enrolled.consent_hex)
+                        .await
+                {
+                    web_sys::console::warn_1(
+                        &format!("custody provisioning deferred: {error}").into(),
+                    );
+                }
+                crate::api::save_root(
+                    enrolled.credential_id,
+                    delegation_hex,
+                    Some(tonk_worker_api::PasskeyMetadata {
+                        created_at: (js_sys::Date::now() / 1000.0) as u64,
+                        created_on: crate::device_name::current(),
+                    }),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                Ok::<(), String>(())
+            }
+            .await;
+            set_busy(&host, false, "");
+            match result {
+                Ok(()) => {
+                    if let Ok(Some(button)) = host.query_selector("#account-add-passkey") {
+                        let _ = button.set_attribute("hidden", "");
+                    }
+                    load_summary(host.clone());
+                }
+                Err(error) => show_error(&host, error),
             }
         });
     });
@@ -1415,9 +1486,13 @@ fn bind(host: &HtmlElement) {
                     .await
                     .map_err(|error| error.to_string())?
                     .did;
-                let ceremony = link_device(LinkDeviceInput {
+                // One assertion derives the custody keypair, one
+                // presigned GET fetches the sealed envelope, and the
+                // unwrapped secret self-issues this device's delegation.
+                let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
                     device_did,
                     device_name,
+                    endpoint: proposed_remote()?,
                     service_did: deployment_service_did().await,
                 })
                 .await
@@ -1472,10 +1547,18 @@ fn bind(host: &HtmlElement) {
                     // The descriptor must name the same sync remote signup
                     // established — the page's own `/ucan/` endpoint — or the
                     // linked device mounts an account it can never reach.
+                    let account_did = match crate::api::account_status().await {
+                        Ok(tonk_worker_api::AccountStatus::Registered { root_did, .. })
+                        | Ok(tonk_worker_api::AccountStatus::Unregistered { root_did, .. }) => {
+                            Some(root_did)
+                        }
+                        _ => None,
+                    };
                     let authorized = crate::identity_bridge::authorize_device(
                         crate::identity_bridge::AuthorizeDeviceInput {
                             device_did: audience.clone(),
                             remote: proposed_remote()?,
+                            account_did,
                         },
                     )
                     .await

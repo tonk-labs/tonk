@@ -193,6 +193,40 @@ pub async fn get_state(
     }))
 }
 
+/// `POST /api/custody/provision` request body: the custody DID a
+/// passkey enrollment derived, and the consent chain the custody key
+/// minted for `/provider/add`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionCustodyRequest {
+    /// The custody space's subject.
+    pub custody: String,
+    /// Hex-encoded consent delegation chain.
+    pub consent_hex: String,
+}
+
+/// POST `/api/custody/provision` → provision a custody space under
+/// this profile's account. The page runs the enrollment ceremony and
+/// hands the consent here; the call is idempotent, and retryable — the
+/// published cell, not this row, is the account's durability.
+#[wasm_compat]
+pub async fn provision_custody(
+    State(state): State<AppState>,
+    Json(request): Json<ProvisionCustodyRequest>,
+) -> Result<Json<()>, TonkWorkerError> {
+    let state = state.read().await;
+    let custody: dialog_varsig::Did = request
+        .custody
+        .parse()
+        .map_err(|error| TonkWorkerError::Router(format!("invalid custody DID: {error:?}")))?;
+    let bytes = hex::decode(&request.consent_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("consent is not hex: {error}")))?;
+    let consent = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
+        .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))?;
+    provision_consumer(&state, &custody, &consent).await?;
+    Ok(Json(()))
+}
+
 /// Provision `consumer` with the same-origin access service under this
 /// profile's account, depositing `consent` — the space's powerline to
 /// the account. A consumer another customer already provides is not an
