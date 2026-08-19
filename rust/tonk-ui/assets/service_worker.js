@@ -250,6 +250,15 @@ self.registration.addEventListener?.("updatefound", async () => {
     }
     log("Update found — retiring: refusing new data-plane work");
     retiring = true;
+    if (workerHealth.state === "failed") {
+        // A failed worker has nothing worth draining and nothing worth
+        // resuming: hand the lock over immediately so the successor can
+        // initialize the moment it activates. The glue keeps answering
+        // (error page / 503) until the successor claims the pages.
+        releaseActiveWorkerLock();
+        log("Failed worker: lock released to the incoming worker immediately");
+        return;
+    }
     try {
       const worker = await activateWorker();
       // let worker know there is an update
