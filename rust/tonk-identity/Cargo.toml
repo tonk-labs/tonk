@@ -7,10 +7,12 @@ license.workspace = true
 description = "Root identity derived from a passkey: PRF-derived root key and the root-to-device delegation."
 
 [dependencies]
+aes-gcm = { workspace = true }
 anyhow = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+getrandom = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true }
 ipld-core = { workspace = true }

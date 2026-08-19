@@ -9,6 +9,7 @@
 pub mod ceremony;
 pub mod delegation;
 pub mod derive;
+pub mod envelope;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod install;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

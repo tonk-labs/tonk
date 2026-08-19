@@ -81,6 +81,7 @@ tonk-worker = { path = "./rust/tonk-worker" }
 tonk-worker-api = { path = "./rust/tonk-worker-api" }
 tonk-workspace = { path = "./rust/tonk-workspace" }
 
+aes-gcm = "0.10"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
