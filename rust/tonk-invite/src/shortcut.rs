@@ -130,46 +130,46 @@ mod tests {
     #[dialog_common::test]
     fn it_splits_a_long_url_into_shortcut_parts() {
         let request =
-            ShortcutRequest::new("https://hub.tonk.xyz/join?access=abc&remote=r#seed123").unwrap();
-        assert_eq!(request.endpoint.as_str(), "https://hub.tonk.xyz/@");
+            ShortcutRequest::new("https://tonk.network/join?access=abc&remote=r#seed123").unwrap();
+        assert_eq!(request.endpoint.as_str(), "https://tonk.network/@");
         assert_eq!(request.target, "/join?access=abc&remote=r");
 
         let short = request.short_url(HASH).unwrap();
-        assert_eq!(short, format!("https://hub.tonk.xyz/@/{HASH}#seed123"));
+        assert_eq!(short, format!("https://tonk.network/@/{HASH}#seed123"));
     }
 
     #[dialog_common::test]
     fn it_keeps_fragmentless_urls_fragmentless() {
-        let request = ShortcutRequest::new("https://hub.tonk.xyz/join?access=abc").unwrap();
+        let request = ShortcutRequest::new("https://tonk.network/join?access=abc").unwrap();
         let short = request.short_url(HASH).unwrap();
         assert!(!short.contains('#'), "{short}");
     }
 
     #[dialog_common::test]
     fn it_rejects_hashes_that_are_not_base58_of_32_bytes() {
-        let request = ShortcutRequest::new("https://hub.tonk.xyz/join?access=abc").unwrap();
+        let request = ShortcutRequest::new("https://tonk.network/join?access=abc").unwrap();
         assert!(request.short_url("!!!").is_err());
         assert!(request.short_url("3vQB7B6MdGQZcSvtzcXAyC").is_err());
     }
 
     #[dialog_common::test]
     fn it_recognizes_shortcut_links() {
-        assert!(is_shortcut(&format!("https://hub.tonk.xyz/@/{HASH}#s")));
-        assert!(!is_shortcut("https://hub.tonk.xyz/join?access=abc#s"));
+        assert!(is_shortcut(&format!("https://tonk.network/@/{HASH}#s")));
+        assert!(!is_shortcut("https://tonk.network/join?access=abc#s"));
         assert!(!is_shortcut("not a url"));
     }
 
     #[dialog_common::test]
     fn it_resolves_locations_with_fragment_inheritance() {
-        let short = format!("https://hub.tonk.xyz/@/{HASH}#seed123");
+        let short = format!("https://tonk.network/@/{HASH}#seed123");
         let resolved = resolve_location(&short, "/join?access=abc&remote=r").unwrap();
         assert_eq!(
             resolved,
-            "https://hub.tonk.xyz/join?access=abc&remote=r#seed123"
+            "https://tonk.network/join?access=abc&remote=r#seed123"
         );
 
         // An explicit fragment in Location wins, mirroring browsers.
         let resolved = resolve_location(&short, "/join?access=abc#other").unwrap();
-        assert_eq!(resolved, "https://hub.tonk.xyz/join?access=abc#other");
+        assert_eq!(resolved, "https://tonk.network/join?access=abc#other");
     }
 }

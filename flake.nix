@@ -535,7 +535,7 @@
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
 
-              echo "Test server live at https://tonk.spot:$PORT"
+              echo "Test server live at https://tonk.network:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
               # the process owned by the test helper. Killing its `Child` then
               # cannot orphan a grandchild. Stdin avoids leaking a temp config.
@@ -547,7 +547,7 @@
                       protocols h1 h2
                   }
               }
-              https://tonk.spot:$PORT {
+              https://tonk.network:$PORT {
                   tls internal
                   handle /.well-known/tonk {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT

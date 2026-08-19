@@ -108,8 +108,8 @@ consequence `resolve`'s doc left implicit: a repo with two registered
 remotes where one fails to decode resolves the other implicitly.
 
 **Analytics classified CLI invitees as `dev`.**
-`rust/tonk-analytics/src/web.rs` knew only `hub.tonk.xyz` and
-`staging.tonk.xyz`. It now maps the production alias `tonk.spot` too.
+`rust/tonk-analytics/src/web.rs` knew only the old production host and
+`staging.tonk.xyz`. It now maps the production origin `tonk.network` too.
 
 **Stale command names.** `tonk concepts` → `tonk concept ls` in
 `.claude/skills/tonk-bug/SKILL.md` (agent-facing, so a live footgun)
@@ -121,14 +121,13 @@ they record what past runs actually did.
 
 ## Resolved without action
 
-**Production serves the shortcut service.** `PUT /@` returned 404 on
-`tonk.spot` when this was written, because the deployed worker predated
-`run_worker_first = ["/@", "/@/*", ...]` in `wrangler.toml`. Prod has
-since been redeployed. All four hosts now answer 200 and redirect
-correctly:
+**Production serves the shortcut service.** The checked-in Worker configuration
+routes `PUT /@` through the Worker via
+`run_worker_first = ["/@", "/@/*", ...]` in `wrangler.toml`. After moving the
+production route, verify the new origin directly:
 
 ```bash
-curl -s -X PUT https://tonk.spot/@ --data-binary "/join?access=probe" -w " [%{http_code}]\n"
+curl -s -X PUT https://tonk.network/@ --data-binary "/join?access=probe" -w " [%{http_code}]\n"
 ```
 
 ## Test-harness traps worth knowing

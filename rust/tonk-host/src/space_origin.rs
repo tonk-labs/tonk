@@ -1,7 +1,7 @@
 //! The per-space fake origin a sealed guest believes it lives at.
 //!
 //! A space rendered in a sealed portal iframe is given its own synthetic
-//! origin — `https://{label}.tonk.spot/` — so that navigation inside the
+//! origin — `https://{label}.tonk.network/` — so that navigation inside the
 //! guest resolves like an ordinary web page: in-space routes are plain
 //! absolute paths (`/`, `/activity`, `/activity/{id}`) under that origin,
 //! and any href that escapes the origin is, by definition, external. The
@@ -26,11 +26,11 @@ use multibase::Base;
 /// The host suffix every space origin lives under. Purely internal (never
 /// resolved by real DNS), so the literal value only has to be stable and
 /// distinct from the real host origin.
-const SPACE_ORIGIN_SUFFIX: &str = "tonk.spot";
+const SPACE_ORIGIN_SUFFIX: &str = "tonk.network";
 
 /// The synthetic origin a guest rendering `space` (a `did:key` string)
 /// believes it lives at, WITH a trailing slash so it is a directory base
-/// (`https://{label}.tonk.spot/`). Relative in-space hrefs resolve under
+/// (`https://{label}.tonk.network/`). Relative in-space hrefs resolve under
 /// it; the browser's own URL resolution does the rest.
 ///
 /// Returns `None` for anything that is not a `did:key` space (e.g. the
@@ -95,7 +95,7 @@ mod tests {
     fn origin_has_trailing_slash_directory_base() {
         let origin = space_origin_for("did:key:z6MkTest").expect("origin");
         assert!(origin.starts_with("https://"));
-        assert!(origin.ends_with(".tonk.spot/"));
+        assert!(origin.ends_with(".tonk.network/"));
     }
 
     #[test]
