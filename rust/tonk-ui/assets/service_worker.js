@@ -95,19 +95,44 @@ const INIT_RETRY_HOLDOFF_MS = 5000;
 let activeWorkerLock = null;
 function holdActiveWorkerLock() {
     if (activeWorkerLock == null) {
-        activeWorkerLock = new Promise(acquired => {
-            const slow = setTimeout(() => {
-                log("waiting for the outgoing worker to release storage…");
-            }, 1000);
-            navigator.locks.request("tonk-active-worker", () => {
-                clearTimeout(slow);
-                log("active-worker lock acquired");
-                acquired();
-                // Held for this worker's whole life; the browser
-                // releases it when the worker is terminated.
-                return new Promise(() => {});
-            });
-        });
+        activeWorkerLock = (async () => {
+            // Acquire by polling with `ifAvailable` rather than parking
+            // an indefinite request: a request left pending while its
+            // holder is terminated and its own context churns (worker
+            // updates, incognito teardown) walks LockManager's least
+            // traveled lifecycle paths in the BROWSER process — observed
+            // as a CrBrowserMain CHECK crash. Polling touches only the
+            // boring grant-or-decline path. The hold itself is the
+            // designed pattern: released by the browser at termination.
+            let waited = 0;
+            for (;;) {
+                const acquired = await new Promise(resolve => {
+                    navigator.locks.request(
+                        "tonk-active-worker",
+                        { ifAvailable: true },
+                        lock => {
+                            if (lock === null) {
+                                resolve(false);
+                                return;
+                            }
+                            resolve(true);
+                            // Held for this worker's whole life; the
+                            // browser releases it on termination.
+                            return new Promise(() => {});
+                        },
+                    );
+                });
+                if (acquired) {
+                    log("active-worker lock acquired");
+                    return;
+                }
+                if (waited === 1000) {
+                    log("waiting for the outgoing worker to release storage…");
+                }
+                await new Promise(r => setTimeout(r, 250));
+                waited += 250;
+            }
+        })();
     }
     return activeWorkerLock;
 }
