@@ -26,6 +26,7 @@ mod account_backup;
 
 mod http;
 
+pub(crate) mod adopt;
 pub(crate) mod restore;
 
 mod join;

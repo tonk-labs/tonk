@@ -3173,7 +3173,53 @@ where
         &repository.did(),
         Replica::blank_status(),
     )
-    .await
+    .await?;
+    record_space_mount(tonk, repository, configuration).await;
+    Ok(())
+}
+
+/// Record the account-level mount data for a synced space on its
+/// directory entity: the [`SpaceRemote`] pair adoption mounts from, and
+/// the full [`SpaceConfiguration`] so a non-default setup restores
+/// identically. Best-effort — a local-only space (no ready remote)
+/// records nothing, and a failure only defers to the sweep's backstop
+/// (`adopt::record_missing_space_remotes`).
+pub(crate) async fn record_space_mount<C>(
+    tonk: &TonkState,
+    repository: &Repository<C>,
+    configuration: &RepositoryConfiguration,
+) where
+    C: Principal + Clone,
+{
+    let subject = repository.did();
+    let urls = match super::create_invite::resolve_remote_url_with(repository, &tonk.operator).await
+    {
+        Ok(super::create_invite::RemoteRequirement::Ready(urls)) => urls,
+        Ok(_) => return, // local-only: nothing another device could mount
+        Err(error) => {
+            log!("record space mount: resolve remote for '{subject}': {error}");
+            return;
+        }
+    };
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .assert(tonk_schema::SpaceRemote::new(
+            &subject,
+            urls.access_url.to_string(),
+            urls.revocation_url.to_string(),
+        ));
+    match serde_json::to_vec(configuration) {
+        Ok(bytes) => {
+            transaction = transaction.assert(tonk_schema::SpaceConfiguration::new(&subject, bytes));
+        }
+        Err(error) => log!("record space mount: serialize configuration: {error}"),
+    }
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("record space mount for '{subject}': {error}");
+    }
 }
 
 /// Expose a fully prepared replica and its initialized status in one profile

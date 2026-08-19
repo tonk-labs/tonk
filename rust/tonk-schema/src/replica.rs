@@ -121,6 +121,58 @@ impl Space {
     }
 }
 
+/// The account-level mount record for a synced space — the sync remote
+/// and its revocation relay, on the same directory entity as [`Space`].
+///
+/// This is what lets any device on the account mount the space from the
+/// account DB alone: directory row (which spaces exist) + this record
+/// (where to sync them) + the retained delegation (the authority to).
+/// A separate concept rather than fields on [`Space`] so existing
+/// directory rows keep matching, and because local-only spaces have no
+/// remote to record.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceRemote {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// The sync remote's access URL.
+    pub remote: crate::domain::space::Remote,
+    /// The revocation relay URL.
+    pub revocation: crate::domain::space::Revocation,
+}
+
+impl SpaceRemote {
+    /// A mount record for `subject`.
+    pub fn new(subject: &Did, remote: impl Into<String>, revocation: impl Into<String>) -> Self {
+        Self {
+            this: subject.this(),
+            remote: crate::domain::space::Remote(remote.into()),
+            revocation: crate::domain::space::Revocation(revocation.into()),
+        }
+    }
+}
+
+/// The space's captured repository configuration, on the directory
+/// entity. Written at configure time; adoption may apply it verbatim to
+/// reproduce a non-default setup. Kept apart from [`SpaceRemote`] so
+/// the mount pair stays queryable without decoding the full config.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceConfiguration {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// Serialized configuration JSON.
+    pub configuration: crate::domain::space::Configuration,
+}
+
+impl SpaceConfiguration {
+    /// A configuration record for `subject`.
+    pub fn new(subject: &Did, configuration: Vec<u8>) -> Self {
+        Self {
+            this: subject.this(),
+            configuration: crate::domain::space::Configuration(configuration),
+        }
+    }
+}
+
 /// A [`Replica`] as it was written before the [`Kind`] field
 /// existed: `name` + `subject` + `profile`, no `kind`.
 ///

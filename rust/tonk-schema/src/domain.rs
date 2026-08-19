@@ -72,6 +72,31 @@ pub mod space {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
     pub struct Status(pub Entity);
+
+    /// The space's sync remote (access URL), recorded on the directory
+    /// entity so any device on the account can mount the space from the
+    /// account DB alone — no out-of-band escrow. Written only for
+    /// synced spaces; a local-only space has no [`Remote`] and is
+    /// simply not adoptable elsewhere.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Remote(pub String);
+
+    /// The revocation relay for [`Remote`]. A synced remote always
+    /// carries one (`resolve_remote_url` refuses otherwise), so the
+    /// pair is written together.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Revocation(pub String);
+
+    /// The space's full repository configuration (the same JSON `PUT
+    /// /api/repository/{repo}` takes), captured at configure time so a
+    /// non-default setup — extra remotes, branch topology — restores
+    /// identically on another device, not just the default mount the
+    /// [`Remote`]/[`Revocation`] pair reconstructs.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Configuration(pub Vec<u8>);
 }
 
 /// Attributes for the `tonk/sync` concept — a replica's sync state.

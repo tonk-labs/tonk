@@ -182,93 +182,6 @@ async fn account_replicas(tonk: &TonkState) -> Result<Vec<Replica>, TonkWorkerEr
         })
 }
 
-/// Backfill account-level directory entries for spaces that only have
-/// per-device replica rows — rows written before the directory existed,
-/// or synced from a device that predates it. Best-effort and
-/// idempotent: entries key on the repository's own entity, so
-/// re-asserting one is a no-op, and a failed pass retries on the next
-/// sweep.
-async fn backfill_directory(tonk: &TonkState) {
-    use tonk_schema::Space;
-
-    let main = match tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-    {
-        Ok(main) => main,
-        Err(error) => {
-            log!("directory backfill: open profile main: {error}");
-            return;
-        }
-    };
-    let rows: Vec<Replica> = match main
-        .handle()
-        .query()
-        .select(Query::<Replica> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            profile: Term::var("profile"),
-            kind: Term::from(Replica::repository_kind()),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows,
-        Err(error) => {
-            log!("directory backfill: replica query: {error:?}");
-            return;
-        }
-    };
-    let entries: Vec<Space> = match main
-        .handle()
-        .query()
-        .select(Query::<Space> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            status: Term::var("status"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(entries) => entries,
-        Err(error) => {
-            log!("directory backfill: directory query: {error:?}");
-            return;
-        }
-    };
-    let listed: HashSet<String> = entries
-        .into_iter()
-        .map(|entry| entry.subject.0.to_string())
-        .collect();
-    let missing: Vec<Space> = rows
-        .into_iter()
-        .filter(|row| !listed.contains(&row.subject.0.to_string()))
-        .filter_map(|row| {
-            // A pre-directory row belongs to a space whose seed long
-            // finished, so backfilled entries start initialized.
-            let subject: dialog_varsig::Did = row.subject.0.to_string().parse().ok()?;
-            Some(Space::new(&subject, Replica::initialized_status()))
-        })
-        .collect();
-    if missing.is_empty() {
-        return;
-    }
-    let count = missing.len();
-    let mut transaction = main.handle().transaction();
-    for entry in missing {
-        transaction = transaction.assert(entry);
-    }
-    match transaction.commit().perform(&tonk.operator).await {
-        Ok(_) => log!("directory backfill: added {count} space entr(y/ies)"),
-        Err(error) => log!("directory backfill: commit failed: {error}"),
-    }
-}
-
 /// The linked account's subject, read from the account replica the
 /// profile repository indexes — the same remote registration sync draws
 /// its pull population from (plan/Account model.md §5). Mounting the
@@ -633,7 +546,12 @@ pub(crate) async fn ensure_account_state_swept(
     match trusted_marker(tonk).await {
         Ok(marker) if marker_matches(marker.as_deref(), &descriptor) => {
             let swept = sync_ready(tonk, &key).await;
-            backfill_directory(tonk).await;
+            // Directory-driven adoption from the account DB. Replaces
+            // the replica→directory backfill (the directory is the
+            // source of truth now, and backfilling FROM replica rows is
+            // what resurrected deleted spaces) and the escrow restore.
+            super::adopt::record_missing_space_remotes(tonk).await;
+            super::adopt::adopt_directory_spaces(tonk).await;
             (AccountStateStatus::Ready, swept)
         }
         Ok(_) => match hydrate_untrusted(tonk).await {
