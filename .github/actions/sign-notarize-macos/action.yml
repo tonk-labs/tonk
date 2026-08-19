@@ -172,4 +172,8 @@ runs:
         fi
 
         codesign --verify --strict --verbose=2 "$BINARY_PATH"
-        spctl --assess --type execute --verbose=2 "$BINARY_PATH"
+        codesign \
+          -vvvv \
+          -R="notarized" \
+          --check-notarization \
+          "$BINARY_PATH"

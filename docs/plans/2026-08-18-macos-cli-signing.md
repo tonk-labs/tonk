@@ -14,6 +14,7 @@
 ## File map
 
 - `.github/actions/sign-notarize-macos/action.yml`: Import credentials, sign one staged CLI binary, notarize it, verify it, and clean up credentials.
+- `.github/actions/sign-notarize-macos/test.sh`: Exercise the macOS command boundary with mocked signing and notarization tools.
 - `.github/workflows/cli.yml`: Stage build outputs and sign/notarize release-capable macOS builds.
 - `.github/workflows/cli-pin.yml`: Sign/notarize historical macOS builds with the current local action.
 - `.github/workflows/cli-npm.yml`: Sign/notarize the macOS binary before npm packaging.
@@ -35,7 +36,7 @@
 - [x] Import the base64 PKCS#12 certificate into a randomly passworded temporary keychain and select a `Developer ID Application` identity.
 - [x] Sign with `codesign --force --options runtime --timestamp`, then require `codesign --verify --strict` to succeed.
 - [x] Submit a ZIP containing the signed binary with `xcrun notarytool submit --wait --output-format json`; require status `Accepted` and print Apple's log on rejection.
-- [x] Require `spctl --assess --type execute` to accept the signed binary.
+- [x] Require `codesign -R="notarized" --check-notarization` to validate Apple's online ticket for the raw CLI binary; do not use the app-only `spctl --type execute` assessment.
 - [x] Delete the temporary keychain, certificate, API key, archive, and notarization response on every exit.
 - [x] Parse the action as YAML and syntax-check its shell body.
 
