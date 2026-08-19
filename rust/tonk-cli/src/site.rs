@@ -661,7 +661,7 @@ async fn save_prefix(
 }
 
 /// Rebuild the prefix from certificates this profile already holds.
-async fn recover_prefix(
+pub(crate) async fn recover_prefix(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     subject: &Did,

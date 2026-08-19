@@ -1,18 +1,16 @@
 //! Native account spot inventory, pull, and best-effort backup reconciliation.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use dialog_operator::Profile;
 use dialog_query::{Output as _, Query, Term};
+use dialog_repository::SiteAddress;
 use dialog_ucan_core::promise::Promised;
 use dialog_varsig::Did;
-use tonk_account::backup::{
-    ACCOUNT_SPOT_BACKUP_MARKER_PREFIX, ACCOUNT_SPOTS_CAPABILITY_HEADER,
-    ACCOUNT_SPOTS_CAPABILITY_V1, AccountSpotBackup, AccountSpotSummary,
-};
+use tonk_account::backup::{ACCOUNT_SPOT_BACKUP_MARKER_PREFIX, AccountSpotBackup};
 use tonk_schema::RepositoryName;
 use tonk_schema::prelude::DidExt as _;
 
@@ -104,134 +102,6 @@ async fn response_bytes(response: reqwest::Response, path: &str) -> Result<Vec<u
         bail!("account service rejected {path} ({status}): {detail}");
     }
     Ok(bytes)
-}
-
-async fn get_artifact_bytes(
-    profile: &Profile,
-    connection: &AccountConnection,
-    key: &str,
-) -> Result<Vec<u8>> {
-    let arguments = [("key".to_string(), Promised::String(key.to_string()))]
-        .into_iter()
-        .collect();
-    let response = connection
-        .signed_post(
-            profile,
-            "chains/get",
-            vec!["account".into(), "chain".into(), "get".into()],
-            arguments,
-        )
-        .await?;
-    response_bytes(response, "chains/get").await
-}
-
-async fn get_artifact(
-    profile: &Profile,
-    connection: &AccountConnection,
-    key: &str,
-) -> Result<AccountSpotBackup> {
-    let bytes = get_artifact_bytes(profile, connection, key).await?;
-    serde_json::from_slice(&bytes).context("account service returned an invalid spot backup")
-}
-
-fn legacy_rows(artifacts: Vec<(String, AccountSpotBackup, Did)>) -> Vec<AccountSpotSummary> {
-    let mut groups: BTreeMap<String, Vec<(String, AccountSpotBackup, Did)>> = BTreeMap::new();
-    for (key, backup, subject) in artifacts {
-        groups
-            .entry(subject.to_string())
-            .or_default()
-            .push((key, backup, subject));
-    }
-    groups
-        .into_values()
-        .map(|candidates| {
-            let (first_key, first, subject) = &candidates[0];
-            if candidates
-                .iter()
-                .skip(1)
-                .any(|(_, candidate, _)| candidate != first)
-            {
-                AccountSpotSummary {
-                    subject: subject.to_string(),
-                    key: None,
-                    name: None,
-                    remote_url: None,
-                    revocation_url: None,
-                    ambiguous: true,
-                }
-            } else {
-                AccountSpotSummary {
-                    subject: subject.to_string(),
-                    key: Some(first_key.clone()),
-                    name: first.name.clone(),
-                    remote_url: first.remote_url.clone(),
-                    revocation_url: first.revocation_url.clone(),
-                    ambiguous: false,
-                }
-            }
-        })
-        .collect()
-}
-
-async fn legacy_inventory(
-    profile: &Profile,
-    connection: &AccountConnection,
-    keys: Vec<String>,
-) -> Result<Vec<AccountSpotSummary>> {
-    let mut artifacts = Vec::new();
-    for key in keys {
-        // Fetch/status failures mean the inventory is incomplete and must be
-        // surfaced. Successfully fetched generic or malformed legacy blobs
-        // are compatibility noise and remain isolated from valid spots.
-        let bytes = get_artifact_bytes(profile, connection, &key).await?;
-        let Ok(backup) = serde_json::from_slice::<AccountSpotBackup>(&bytes) else {
-            continue;
-        };
-        let Ok(validated) = backup.validate_for(&connection.root_did).await else {
-            continue;
-        };
-        artifacts.push((key, backup, validated.subject));
-    }
-    Ok(legacy_rows(artifacts))
-}
-
-async fn remote_inventory(
-    profile: &Profile,
-    connection: &AccountConnection,
-) -> Result<Vec<AccountSpotSummary>> {
-    let response = connection
-        .signed_post(
-            profile,
-            "chains/list",
-            vec!["account".into(), "chain".into(), "list".into()],
-            BTreeMap::new(),
-        )
-        .await?;
-    let supports_spots = response
-        .headers()
-        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
-        .and_then(|value| value.to_str().ok())
-        == Some(ACCOUNT_SPOTS_CAPABILITY_V1);
-    let bytes = response_bytes(response, "chains/list").await?;
-    let keys: Vec<String> =
-        serde_json::from_slice(&bytes).context("account service returned invalid chain keys")?;
-    if !supports_spots {
-        return legacy_inventory(profile, connection, keys).await;
-    }
-
-    let response = connection
-        .signed_post(
-            profile,
-            "chains/spots",
-            vec!["account".into(), "chain".into(), "spots".into()],
-            BTreeMap::new(),
-        )
-        .await?;
-    let bytes = response_bytes(response, "chains/spots").await?;
-    let mut spots: Vec<AccountSpotSummary> =
-        serde_json::from_slice(&bytes).context("account service returned invalid account spots")?;
-    spots.sort_by(|left, right| left.subject.cmp(&right.subject));
-    Ok(spots)
 }
 
 #[derive(Debug, Clone)]
@@ -352,19 +222,31 @@ pub async fn pull(
     let requested: Did = subject
         .parse()
         .map_err(|error| anyhow::anyhow!("invalid account spot subject '{subject}': {error:?}"))?;
-    let connection = account::connection_for_store(profile, store).await?;
-    let summaries = remote_inventory(profile, &connection).await?;
-    let summary = summaries
-        .into_iter()
-        .find(|summary| summary.subject == requested.to_string())
-        .with_context(|| format!("no account spot is backed up for {requested}"))?;
-    if summary.ambiguous {
-        bail!("account spot {requested} has conflicting legacy backups and cannot be pulled");
+    let operator = crate::account_state::credential_operator(profile).await?;
+    let account = crate::account_state::open_account_branch_in(profile, &operator, store)
+        .await?
+        .context("no account is configured on this profile")?;
+    if let Err(error) = account.pull().download().perform(&operator).await {
+        eprintln!("warning: account sync failed; pulling from the local copy: {error:#}");
     }
-    let key = summary
-        .key
-        .as_deref()
-        .context("account spot has no selected backup artifact")?;
+    // Bring retained certificates into the profile's provable reach so
+    // the space→root chain can be assembled below.
+    crate::account_state::adopt_account_access_in(profile, &operator, store).await?;
+
+    let record = tonk_schema::directory::mount_record(&account, &requested, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+        .with_context(|| {
+            format!(
+                "the account directory has no mount record for {requested} — the spot                  is local-only on its home device or predates directory records"
+            )
+        })?;
+    let directory_name = tonk_schema::directory::spaces(&account, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+        .into_iter()
+        .find(|space| space.subject == requested)
+        .and_then(|space| space.name);
 
     let local = local_subjects(profile, store).await?;
     if let Some(local) = local.get(requested.as_ref()) {
@@ -379,8 +261,8 @@ pub async fn pull(
 
     let name = requested_name
         .map(str::to_string)
-        .or_else(|| summary.name.clone())
-        .ok_or_else(|| name_error(None, "the backup has no stored name"))?;
+        .or(directory_name)
+        .ok_or_else(|| name_error(None, "the directory has no stored name"))?;
     spot::validate_name(&name).map_err(|error| name_error(Some(&name), error))?;
     let registry = store.load()?;
     if registry.spots.contains_key(&name) {
@@ -406,29 +288,43 @@ pub async fn pull(
         ));
     }
 
-    let artifact = get_artifact(profile, &connection, key).await?;
-    let validated = artifact
-        .validate_for(&connection.root_did)
-        .await
-        .context("account spot backup is invalid")?;
-    if validated.subject != requested {
-        bail!("account spot backup subject does not match {requested}");
-    }
-    let remote_url = artifact
-        .remote_url
-        .as_deref()
-        .context("account spot backup has no usable sync remote")?;
+    // The space→root chain assembles from certificates the profile now
+    // holds (the account pull above brought the retained delegations
+    // down) — the prover walks them; no escrow artifact involved.
+    let account_root: Did = account
+        .subject()
+        .did()
+        .to_string()
+        .parse()
+        .context("account branch subject is not a DID")?;
+    let chain = crate::site::recover_prefix(profile, &operator, &requested, &account_root)
+        .await?
+        .with_context(|| {
+            format!(
+                "no delegation chain from {requested} to the account root is                  provable here — sync the account and retry"
+            )
+        })?;
+    let primary = record
+        .remotes
+        .iter()
+        .find(|remote| remote.name == DEFAULT_REMOTE)
+        .or_else(|| record.remotes.first())
+        .context("the mount record lists no remotes")?;
+    let endpoint = match &primary.address {
+        SiteAddress::Ucan(ucan) => ucan.endpoint().to_owned(),
+        other => bail!("the mount record's remote is not a UCAN site: {other:?}"),
+    };
 
     let mut fresh_target = FreshPullTarget::new(target.clone());
-    let site = crate::site::mount_delegated_at(&target, validated.chain, site_config(profile))
+    let site = crate::site::mount_delegated_at(&target, chain, site_config(profile))
         .await
         .context("failed to mount account spot")?;
     remote::add_with_revocation(
         &site,
         DEFAULT_REMOTE,
-        remote_url,
+        &endpoint,
         Some(requested.clone()),
-        artifact.revocation_url.as_deref(),
+        primary.revocation.as_deref(),
     )
     .await
     .context("failed to configure the account spot remote")?;
@@ -682,29 +578,5 @@ mod tests {
             first_registry_name_for_site(candidates, &root),
             Some("alpha")
         );
-    }
-
-    #[test]
-    fn it_marks_materially_different_legacy_backups_ambiguous() {
-        let subject: Did = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL"
-            .parse()
-            .unwrap();
-        let first = AccountSpotBackup {
-            chain_hex: "aa".to_string(),
-            remote_url: Some("https://one.example/".to_string()),
-            revocation_url: None,
-            name: None,
-        };
-        let second = AccountSpotBackup {
-            remote_url: Some("https://two.example/".to_string()),
-            ..first.clone()
-        };
-        let rows = legacy_rows(vec![
-            ("a".to_string(), first, subject.clone()),
-            ("b".to_string(), second, subject),
-        ]);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].ambiguous);
-        assert!(rows[0].key.is_none());
     }
 }
