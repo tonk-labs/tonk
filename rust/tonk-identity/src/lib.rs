@@ -7,6 +7,7 @@
 //! delegation; day-to-day operation never touches the root key.
 
 pub mod ceremony;
+pub mod custody;
 pub mod delegation;
 pub mod derive;
 pub mod envelope;

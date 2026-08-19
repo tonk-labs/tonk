@@ -17,6 +17,7 @@ getrandom = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true }
 ipld-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_ipld_dagcbor = { workspace = true }
 sha2_0_10 = { workspace = true }
 thiserror = { workspace = true }
@@ -32,6 +33,10 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "AuthenticationExtensionsClientInputs",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "Response",
     "AuthenticationExtensionsClientOutputs",
     "AuthenticationExtensionsPrfInputs",
     "AuthenticationExtensionsPrfOutputs",
