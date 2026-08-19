@@ -1424,6 +1424,15 @@ fn render_account_status(status: account::AccountStatus) -> String {
     }
 }
 
+fn render_account_link(label: &str, outcome: &account::LinkOutcome) -> String {
+    format!(
+        "linked\nroot: {}\ndevice: {}\naccount state: {}\nprofile: {label}",
+        outcome.root_did,
+        outcome.device_did,
+        account_state_label(outcome.account_state)
+    )
+}
+
 /// Best-effort registration line, quiet about being offline: status must
 /// answer without depending on the sync service.
 async fn print_customer_line(
@@ -1539,13 +1548,7 @@ async fn link_native_profile(
     {
         return print_failure(error);
     }
-    println!(
-        "linked\nprofile: {}\nroot: {}\ndevice: {}\naccount state: {}",
-        context.record.label,
-        outcome.root_did,
-        outcome.device_did,
-        account_state_label(outcome.account_state)
-    );
+    println!("{}", render_account_link(&context.record.label, &outcome));
     if let Some(label) = duplicate {
         eprintln!(
             "warning: account root is already present in profile '{label}'; keeping both device profiles"
@@ -3801,6 +3804,24 @@ mod account_spots_parser_tests {
             panic!("expected account delete");
         };
         assert!(no_open);
+    }
+
+    #[test]
+    fn account_link_preserves_the_legacy_receipt_prefix() {
+        let receipt = render_account_link(
+            "personal",
+            &account::LinkOutcome {
+                url: "https://tonk.spot/account/link".to_string(),
+                root_did: "did:key:root".to_string(),
+                device_did: "did:key:device".to_string(),
+                account_state: tonk_account::AccountStateStatus::Ready,
+                warning: None,
+            },
+        );
+        assert_eq!(
+            receipt,
+            "linked\nroot: did:key:root\ndevice: did:key:device\naccount state: synced\nprofile: personal"
+        );
     }
 
     #[test]
