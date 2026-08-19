@@ -127,7 +127,7 @@ pub async fn mint_custody_consent(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web {
     use anyhow::{Context, Result, anyhow};
-    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_credentials::Ed25519Signer;
     use js_sys::Uint8Array;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;

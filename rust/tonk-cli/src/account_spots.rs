@@ -273,22 +273,35 @@ async fn local_subjects(
     Ok(subjects)
 }
 
-/// List remote account spots and identify subjects already registered locally.
+/// List the account directory's spots and identify subjects already
+/// registered locally. Reads the account DB — the same directory facts
+/// the Hub renders — not the retired spot-backup escrow.
 pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpotRow>> {
-    let connection = account::connection_for_store(profile, store).await?;
-    let local = local_subjects(profile, store).await?;
-    let mut rows: Vec<_> = remote_inventory(profile, &connection)
+    let operator = crate::account_state::credential_operator(profile).await?;
+    let branch = crate::account_state::open_account_branch_in(profile, &operator, store)
         .await?
+        .context("no account is configured on this profile")?;
+    // Freshen best-effort: an offline listing still renders the local
+    // copy of the directory.
+    if let Err(error) = branch.pull().download().perform(&operator).await {
+        eprintln!("warning: account sync failed; listing the local copy: {error:#}");
+    }
+    let local = local_subjects(profile, store).await?;
+    let rows = tonk_schema::directory::spaces(&branch, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
         .into_iter()
-        .map(|summary| AccountSpotRow {
-            local_name: local.get(&summary.subject).map(|spot| spot.name.clone()),
-            pullable: !summary.ambiguous && summary.key.is_some() && summary.remote_url.is_some(),
-            subject: summary.subject,
-            remote_name: summary.name,
-            ambiguous: summary.ambiguous,
+        .map(|space| {
+            let subject = space.subject.to_string();
+            AccountSpotRow {
+                local_name: local.get(&subject).map(|spot| spot.name.clone()),
+                pullable: space.mountable,
+                remote_name: space.name,
+                ambiguous: false,
+                subject,
+            }
         })
         .collect();
-    rows.sort_by(|left, right| left.subject.cmp(&right.subject));
     Ok(rows)
 }
 

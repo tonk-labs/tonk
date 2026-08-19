@@ -83,7 +83,8 @@ pub use invitation_execution::*;
 
 pub mod command;
 
-pub mod branch;
+mod branch;
+pub mod directory;
 pub use branch::*;
 
 pub mod remote;
