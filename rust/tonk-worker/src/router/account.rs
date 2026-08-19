@@ -8,8 +8,7 @@ use tokio::sync::oneshot;
 use tonk_account::{AccountProviderRecord, AccountRepositoryDescriptorV1, AccountStateStatus};
 use tonk_common::log;
 use tonk_worker_api::{
-    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest,
-    AccountRepositoryEstablishRequest, AccountStatus,
+    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest, AccountStatus,
 };
 
 use super::AppState;
@@ -285,53 +284,6 @@ pub async fn set_display_name(
             convergence: Default::default(),
         })),
     }
-}
-
-/// Persist the service-selected descriptor winner for a legacy account.
-///
-/// An account created before repository descriptors existed is attached to a
-/// provider but names no repository. The service picks one winner among the
-/// devices racing to establish it; this stores exactly the bytes it returned,
-/// never the caller's own losing candidate.
-#[wasm_compat]
-pub async fn establish_repository(
-    State(state): State<AppState>,
-    Json(request): Json<AccountRepositoryEstablishRequest>,
-) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    let tonk = state.read().await;
-    let root = super::identity::local_root(&tonk).await?;
-    let attached = load_provider(&tonk, &root.root_did)
-        .await?
-        .ok_or_else(|| TonkWorkerError::Conflict("no account provider is attached".to_string()))?;
-    let descriptor = hex::decode(&request.descriptor_hex)
-        .map_err(|error| TonkWorkerError::Router(format!("invalid descriptor hex: {error}")))?;
-    let record = attached
-        .establish(&descriptor, &root.root_did)
-        .await
-        .map_err(provider_error)?;
-    save_provider(&tonk, &record).await?;
-    // This profile now has an account routing key to hide where a moment ago
-    // it had none.
-    tonk.account_keys.invalidate();
-
-    if request.created {
-        if let Err(error) = super::account_state::initialize_display_name(&tonk).await {
-            log!("initial account display-name seed did not complete: {error}");
-        }
-    } else {
-        super::account_state::ensure_account_state(&tonk).await;
-    }
-
-    // Roster upkeep: this profile just became an account row. The email
-    // comes best-effort from the provider; a failed fetch leaves it
-    // blank until a later refresh.
-    let email = super::account_devices::account_summary(&tonk)
-        .await
-        .ok()
-        .and_then(|summary| summary.email);
-    super::profiles::upsert_active_entry(&tonk, email).await;
-
-    Ok(Json(status(&tonk).await?))
 }
 
 /// Validate that provider ceremony metadata exactly matches the local root,

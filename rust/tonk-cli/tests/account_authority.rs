@@ -122,7 +122,7 @@ async fn it_installs_authority_from_a_callback_authorization(
 
     // Exactly what the page mints: the account's powerline to this profile,
     // plus the descriptor that says where the account repository lives.
-    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let root = dialog_credentials::Ed25519Signer::import(&[77; 32]).await?;
     let authorized =
         tonk_identity::ceremony::authorize_device(root.clone(), fixture.profile.did(), &remote)
             .await?;
@@ -310,7 +310,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     // does — mint the grant, post it to the callback. Everything after that
     // is the command's own dance: install, persist, mount, adopt, pull,
     // retain both union halves, push.
-    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let root = dialog_credentials::Ed25519Signer::import(&[77; 32]).await?;
     let page = common::authorizing_page(root.clone(), remote.clone()).await?;
     // Nothing opens a browser in a test, so take the approval URL off the
     // announce channel and visit it — the URL carries the callback address

@@ -37,16 +37,6 @@ pub struct AccountLinkRequest {
     pub initialize_name: bool,
 }
 
-/// Persist the service-selected descriptor for a legacy account link.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountRepositoryEstablishRequest {
-    /// Exact descriptor winner returned by the account service.
-    pub descriptor_hex: String,
-    /// Whether this ceremony created the service-side descriptor winner.
-    pub created: bool,
-}
-
 /// Local identity and provider attachment state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -218,14 +208,6 @@ mod tests {
         assert_eq!(link["delegationHex"], "aa");
         assert_eq!(link["descriptorHex"], "bb");
         assert_eq!(link["initializeName"], true);
-
-        let establish = serde_json::to_value(AccountRepositoryEstablishRequest {
-            descriptor_hex: "cc".into(),
-            created: false,
-        })
-        .unwrap();
-        assert_eq!(establish["descriptorHex"], "cc");
-        assert_eq!(establish["created"], false);
     }
 
     #[dialog_common::test]

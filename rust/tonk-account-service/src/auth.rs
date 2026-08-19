@@ -327,7 +327,7 @@ mod tests {
         args: BTreeMap<String, Promised>,
         expiration: Option<Timestamp>,
     ) -> (String, String, Vec<u8>) {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -372,7 +372,7 @@ mod tests {
             .create_account("a@x.com", root_did, "cred", 0)
             .await
             .unwrap();
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -402,7 +402,7 @@ mod tests {
         device_did: &str,
         status: DeviceStatus,
     ) -> i64 {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -502,10 +502,10 @@ mod tests {
     async fn it_rejects_a_device_of_a_different_account() {
         let store = SqliteStore::in_memory().unwrap();
 
-        let root_a = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root_a = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
-        let root_b = tonk_identity::derive::derive_root_signer(&[9u8; 32])
+        let root_b = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
             .await
             .unwrap();
         let device_b = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -570,7 +570,7 @@ mod tests {
         let store = SqliteStore::in_memory().unwrap();
 
         // The device is registered under account A…
-        let root_a = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root_a = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let root_a_did = root_a.did();
@@ -586,7 +586,7 @@ mod tests {
 
         // …but invokes as a delegate of account B, with a chain that
         // verifies: root B really did delegate to this device key.
-        let root_b = tonk_identity::derive::derive_root_signer(&[9u8; 32])
+        let root_b = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
             .await
             .unwrap();
         let root_b_did = root_b.did();
@@ -695,7 +695,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_authorizes_a_request_signed_directly_by_the_root() {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let expected_root = root.did().to_string();
@@ -717,7 +717,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_a_root_command_mismatch() {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -736,7 +736,7 @@ mod tests {
     async fn it_rejects_an_expired_root_invocation() {
         use std::time::{Duration, UNIX_EPOCH};
 
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let root_did = root.did();

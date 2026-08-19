@@ -72,13 +72,6 @@ impl AccountSecret {
         expand(&self.0, SIGNING_CONTEXT)
     }
 
-    /// The raw secret, for sealing into an envelope. Crate-private on
-    /// purpose: only custody code may touch it.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
     /// The account signer. On the web target the key imports into
     /// WebCrypto non-extractably; the intermediate seed zeroizes
     /// before this returns.
@@ -117,8 +110,9 @@ pub fn custody_kek(entry_output: &[u8; 32]) -> Kek {
 /// which entry function to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KekMethod {
-    /// Non-extractable WebCrypto AES key held in this browser's
-    /// IndexedDB. This-device-only custody.
+    /// Reserved: a this-browser wrapping under a stored KEK. No longer
+    /// produced — no KEK is ever stored — but the wire code stays
+    /// reserved so old blobs parse.
     Local,
     /// WebAuthn PRF evaluated at the two custody salts.
     Passkey,
@@ -204,42 +198,6 @@ impl Envelope {
         bytes.extend_from_slice(&self.nonce);
         bytes.extend_from_slice(&self.ciphertext);
         bytes
-    }
-
-    /// Assemble an envelope from parts an external sealing (WebCrypto)
-    /// produced. The ciphertext must carry the AEAD tag appended, the
-    /// same layout the in-crate sealing writes.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn from_parts(
-        generation: u32,
-        method: KekMethod,
-        nonce: [u8; NONCE_LEN],
-        ciphertext: Vec<u8>,
-    ) -> Self {
-        Self {
-            generation,
-            method,
-            nonce,
-            ciphertext,
-        }
-    }
-
-    /// The AEAD nonce this envelope was sealed with.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn nonce_bytes(&self) -> [u8; NONCE_LEN] {
-        self.nonce
-    }
-
-    /// The ciphertext, AEAD tag appended.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn ciphertext_bytes(&self) -> &[u8] {
-        &self.ciphertext
-    }
-
-    /// The header bytes that ride as AEAD associated data.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn associated_data(&self) -> [u8; HEADER_LEN] {
-        Self::header(self.generation, self.method)
     }
 
     /// Parse an envelope, rejecting anything this build cannot open.

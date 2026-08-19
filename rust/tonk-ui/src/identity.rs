@@ -228,7 +228,7 @@ mod tests {
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::CREATED);
 
-        let root = tonk_identity::derive::derive_root_signer(&[10u8; 32]).await?;
+        let root = dialog_credentials::Ed25519Signer::import(&[10u8; 32]).await?;
         let competing_device = Ed25519Signer::import(&[12u8; 32]).await?;
         let delegation = tonk_identity::delegation::mint_device_delegation(
             root.clone(),

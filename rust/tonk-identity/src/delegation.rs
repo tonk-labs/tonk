@@ -58,7 +58,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_mints_a_subject_open_delegation_to_the_device() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let chain = mint_device_delegation(root, &device.did()).await.unwrap();
         assert_eq!(*chain.audience(), device.did());
@@ -73,7 +73,7 @@ mod tests {
     async fn it_extends_a_space_chain_through_the_root_to_the_device() {
         let space = signer(&SPACE_SEED).await;
         let space_did = space.did();
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let root_did = root.did();
         let device = signer(&DEVICE_SEED).await;
 

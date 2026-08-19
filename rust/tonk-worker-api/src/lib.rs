@@ -30,8 +30,8 @@ mod sync;
 
 pub use account::{
     AccountConvergenceReport, AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse,
-    AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus, AccountSummary,
-    RevocationProjection, RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+    AccountLinkRequest, AccountStatus, AccountSummary, RevocationProjection,
+    RevokeDeviceAcknowledgement, RevokeDeviceRequest,
 };
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};

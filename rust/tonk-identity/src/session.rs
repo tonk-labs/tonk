@@ -139,7 +139,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_extends_a_device_grant_with_a_session_hop() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let session = signer(&SESSION_SEED).await;
         let grant = crate::delegation::mint_device_delegation(root, &device.did())
@@ -161,7 +161,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_narrows_an_unexpiring_grant() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let session = signer(&SESSION_SEED).await;
         let grant = crate::delegation::mint_device_delegation(root, &device.did())

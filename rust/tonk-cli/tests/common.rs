@@ -114,7 +114,7 @@ impl AccountFixture {
         let store = tonk_cli::spot::SpotStore::at(test.parent.join("state"));
         let server = tonk_account_service::helpers::AccountServer::start().await;
         let root_prf = [77; 32];
-        let root = tonk_identity::derive::derive_root_signer(&root_prf).await?;
+        let root = dialog_credentials::Ed25519Signer::import(&root_prf).await?;
         let link =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did()).await?;
         let email = "person@example.com".to_string();
@@ -187,7 +187,7 @@ impl AccountFixture {
         use dialog_ucan_core::{DelegationBuilder, DelegationChain};
         use dialog_varsig::Principal as _;
 
-        let root = tonk_identity::derive::derive_root_signer(&self.root_prf).await?;
+        let root = dialog_credentials::Ed25519Signer::import(&self.root_prf).await?;
         let space = dialog_credentials::Ed25519Signer::import(&[space_seed; 32]).await?;
         let subject = space.did();
         let delegation = DelegationBuilder::new()

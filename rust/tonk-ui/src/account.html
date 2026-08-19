@@ -24,7 +24,7 @@
 
   <section id="account-create" class="account__panel" hidden>
     <h2>Create your account</h2>
-    <p class="account__message">You will get an activation link by email; your passkey replaces a password.</p>
+    <p class="account__message">You will get an activation link by email; a passkey replaces your password and lets you sign in anywhere.</p>
     <form class="account__form">
       <label>Email
         <input id="account-email" name="Email" type="email" autocomplete="email" required>
@@ -61,13 +61,6 @@
     </div>
   </section>
 
-  <section id="account-setup" class="account__panel" hidden>
-    <h2>Finish account setup</h2>
-    <p class="account__message">This account predates synchronized account state. Confirm once with your passkey to establish its shared repository.</p>
-    <button id="account-setup-submit" class="account__button" type="button">Finish account setup</button>
-    <p class="account__hint">The first accepted setup chooses one repository location for every device. Retries always recover that same choice.</p>
-  </section>
-
   <div id="account-success" class="account__panel account__dashboard" hidden>
     <p id="account-success-message" class="account__status">Signed in on this device.</p>
     <p id="account-activation-notice" class="account__hint" role="status" hidden></p>
@@ -97,7 +90,7 @@
       </dl>
       <p id="account-passkey-detail" class="account__hint">“Created on” identifies the browser and operating system used to make this passkey. Browsers do not tell Tonk which passkey manager currently stores it.</p>
       <p class="account__hint">Before using Tonk on another device or browser, check that the passkey is available there.</p>
-      <button id="account-add-passkey" class="account__button account__button--secondary account__button--compact" type="button" hidden>Add a passkey</button>
+      <button id="account-add-passkey" class="account__button account__button--secondary account__button--compact" type="button">Add another passkey</button>
     </section>
 
     <section class="account__section account__device-section" aria-labelledby="account-devices-title">

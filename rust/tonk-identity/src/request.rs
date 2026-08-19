@@ -216,7 +216,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_builds_a_device_signed_invocation_the_service_verifies() {
-        let root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let root = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
         let root_did = root.did();
         let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
         let device_did = device.did();
@@ -259,7 +259,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_carries_ceremony_minted_deposits_issued_by_the_account() {
-        let root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let root = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
         let root_did = root.did();
         let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
         let service = Ed25519Signer::import(&[9u8; 32]).await.unwrap();

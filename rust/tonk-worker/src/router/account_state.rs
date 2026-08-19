@@ -1,9 +1,11 @@
-//! Hidden root-owned account repository mounting and trusted hydration.
+//! Account state on profile main: upstream configuration and trusted
+//! hydration.
 //!
-//! Mounting is deliberately separate from readiness. The local verifier-only
-//! repository may exist while the remote is unavailable, but no account-state
-//! mutation API receives its routing key until the trusted-base marker matches
-//! the signed descriptor.
+//! The account is the upstream remote of the profile repository's main
+//! branch — no separate repository exists. Configuration is
+//! deliberately separate from readiness: the upstream may be set while
+//! the remote is unavailable, and no account-state mutation API runs
+//! until the trusted-base marker matches the signed descriptor.
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -93,19 +95,14 @@ pub(crate) async fn status(tonk: &TonkState) -> AccountStateStatus {
     }
 }
 
-/// The account routing keys this profile must keep hidden, resolved once.
+/// The account routing keys, resolved once. Nothing is hidden behind
+/// them any more — no repository exists — but the sync layer still
+/// routes the account sweep by its key, and resolving the descriptor
+/// costs a credential load plus a signature verification, so the
+/// answer is cached between the few writes that change it.
 ///
-/// [`is_account_key`] runs in middleware ahead of *every* repository-addressed
-/// request, and resolving it from scratch is not cheap: reading the link record
-/// costs a credential load plus a delegation and a descriptor signature
-/// verification, and on a profile whose link is absent — every profile that has
-/// never signed in — that lookup misses and the index fallback below pays a
-/// profile-meta acquire and a `Replica` query instead. None of that changes
-/// between the few writes that install a link or index a replica, so the answer
-/// is resolved once and held here.
-///
-/// The inner `None` means "not resolved yet". An empty set is a real answer:
-/// this profile has no account repository to hide.
+/// The inner `None` means "not resolved yet". An empty set is a real
+/// answer: this profile has no linked account.
 #[derive(Default)]
 pub struct AccountKeys(Mutex<Option<HashSet<String>>>);
 
@@ -131,74 +128,31 @@ impl AccountKeys {
     }
 }
 
-/// Whether `key` names the configured or already-indexed account repository.
-///
-/// The profile-index fallback keeps a previously mounted account hidden even
-/// when the local link record later becomes unreadable.
+/// Whether `key` names this profile's account: the sync layer routes
+/// the account sweep by its key, and the join path refuses to mount
+/// the account subject as a user space.
 pub(crate) async fn is_account_key(tonk: &TonkState, key: &str) -> bool {
     if let Some(keys) = tonk.account_keys.get() {
         return keys.contains(key);
     }
-    let (keys, complete) = resolve_account_keys(tonk).await;
-    let hidden = keys.contains(key);
-    // A failed index read yields a partial answer. Serve this request from it,
-    // exactly as the uncached path did, but do not freeze it: caching a
-    // transient miss would un-hide the account until the next write.
-    if complete {
-        tonk.account_keys.set(keys);
-    }
-    hidden
+    let keys = resolve_account_keys(tonk).await;
+    let matched = keys.contains(key);
+    tonk.account_keys.set(keys);
+    matched
 }
 
-/// Every routing key that names this profile's account repository, plus whether
-/// the answer is complete enough to cache.
-async fn resolve_account_keys(tonk: &TonkState) -> (HashSet<String>, bool) {
+/// Every routing key that names this profile's account: the configured
+/// descriptor's subject, plus the local root itself — the account
+/// subject is the root, so its key is derivable without an attachment.
+async fn resolve_account_keys(tonk: &TonkState) -> HashSet<String> {
     let mut keys = HashSet::new();
     if let Some(descriptor) = configured_descriptor(tonk).await {
         keys.insert(descriptor.account_subject().repo_key().to_owned());
     }
-    // The account subject is the local root, so its repository key is
-    // derivable without any attachment record. Hiding it this way keeps
-    // an unlinked device's account replica hidden too: unlink retracts
-    // the replica index row, but the repository itself stays on disk.
     if let Ok(root) = super::identity::local_root(tonk).await {
         keys.insert(root.root_did.repo_key().to_owned());
     }
-
-    let Ok(meta) = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-    else {
-        return (keys, false);
-    };
-    let rows: Result<Vec<Replica>, _> = meta
-        .handle()
-        .query()
-        .select(Query::<Replica> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            profile: Term::var("profile"),
-            kind: Term::from(Replica::account_kind()),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await;
-    let Ok(rows) = rows else {
-        return (keys, false);
-    };
-    keys.extend(rows.into_iter().filter_map(|replica| {
-        replica
-            .subject
-            .0
-            .to_string()
-            .parse::<dialog_varsig::Did>()
-            .ok()
-            .map(|subject| subject.repo_key().to_owned())
-    }));
-    (keys, true)
+    keys
 }
 
 /// The account replica rows the profile repository indexes.

@@ -4999,7 +4999,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hkdf",
- "idb",
  "ipld-core",
  "js-sys",
  "rand 0.9.5",

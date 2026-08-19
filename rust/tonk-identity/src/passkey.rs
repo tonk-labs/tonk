@@ -4,7 +4,6 @@
 //! workers, so these run from the page main thread, inside a user
 //! gesture.
 
-use crate::derive::ROOT_KEY_CONTEXT;
 use crate::envelope::{CUSTODY_KEK_CONTEXT, CUSTODY_KEY_CONTEXT};
 use anyhow::{Context, Result, anyhow};
 use js_sys::{Array, Reflect, Uint8Array};
@@ -24,16 +23,6 @@ use zeroize::Zeroizing;
 /// credential's own key is never used directly — only its PRF — so this
 /// list is purely for authenticator compatibility.
 const COSE_ALGORITHMS: [i32; 3] = [-8, -7, -257];
-
-/// A created passkey: the raw credential id, plus the PRF output when
-/// the platform evaluated PRF during creation (some only do so on a
-/// follow-up assertion).
-pub struct PasskeyCredential {
-    /// Raw credential id, as registered with the authenticator.
-    pub id: Vec<u8>,
-    /// PRF output, when the platform returned one at creation.
-    pub prf_output: Option<Zeroizing<[u8; 32]>>,
-}
 
 /// Both custody PRF outputs from one assertion.
 pub struct CustodyEvaluation {
@@ -79,18 +68,6 @@ fn credentials() -> Result<CredentialsContainer> {
         .context("no window: passkey ceremonies are window-only")?
         .navigator()
         .credentials())
-}
-
-/// Extension inputs requesting a PRF evaluation over the versioned
-/// derivation context.
-fn prf_extensions() -> AuthenticationExtensionsClientInputs {
-    let values =
-        AuthenticationExtensionsPrfValues::new_with_u8_array(&Uint8Array::from(ROOT_KEY_CONTEXT));
-    let prf = AuthenticationExtensionsPrfInputs::new();
-    prf.set_eval(&values);
-    let extensions = AuthenticationExtensionsClientInputs::new();
-    extensions.set_prf(&prf);
-    extensions
 }
 
 /// Extension inputs requesting PRF evaluation at both custody salts:
@@ -141,26 +118,6 @@ fn current_rp_id() -> Option<&'static str> {
     apex_rp_id(&host)
 }
 
-/// Registration options: a discoverable, user-verified credential on
-/// this origin, with PRF requested up front.
-///
-/// `label` names the credential in the user's passkey manager. It carries
-/// the account address when an account ceremony is what creates this
-/// passkey, and is `None` for a root created before any account exists —
-/// which must not imply one. Both `name` and `displayName` take it:
-/// Chrome's passkey list and macOS Keychain surface `name`, so labelling
-/// only `displayName` would leave the list unreadable.
-///
-/// The user handle stays random regardless. It is not a display field —
-/// it rides every assertion — and deriving it from an address would make
-/// two accounts on one authenticator collide.
-fn creation_options(label: Option<&str>) -> Result<PublicKeyCredentialCreationOptions> {
-    let mut user_id = rand::random::<[u8; 32]>();
-    let options = creation_options_shell(label, &mut user_id)?;
-    options.set_extensions(&prf_extensions());
-    Ok(options)
-}
-
 /// Registration options for a custody passkey: the same discoverable,
 /// user-verified credential, with both custody salts requested and the
 /// stable account-derived user handle — see [`custody_user_id`].
@@ -209,21 +166,6 @@ fn creation_options_shell(
     Ok(options)
 }
 
-/// Read the PRF output out of a ceremony's extension results.
-fn extract_prf(credential: &PublicKeyCredential) -> Option<Zeroizing<[u8; 32]>> {
-    let results = credential
-        .get_client_extension_results()
-        .get_prf()?
-        .get_results()?;
-    let first = Uint8Array::new(&results.get_first().into());
-    if first.length() != 32 {
-        return None;
-    }
-    let mut output = Zeroizing::new([0u8; 32]);
-    first.copy_to(output.as_mut());
-    Some(output)
-}
-
 /// Read both custody PRF outputs out of a ceremony's extension results.
 fn extract_custody(credential: &PublicKeyCredential) -> Option<CustodyEvaluation> {
     let results = credential
@@ -240,56 +182,6 @@ fn extract_custody(credential: &PublicKeyCredential) -> Option<CustodyEvaluation
     let mut kek = Zeroizing::new([0u8; 32]);
     second.copy_to(kek.as_mut());
     Some(CustodyEvaluation { key, kek })
-}
-
-/// Create the account passkey on this origin. One biometric prompt;
-/// must be called during a user gesture.
-///
-/// `label` is the name the passkey manager shows — see [`creation_options`].
-pub async fn create_passkey(label: Option<&str>) -> Result<PasskeyCredential> {
-    let creation = CredentialCreationOptions::new();
-    creation.set_public_key(&creation_options(label)?);
-    let promise = credentials()?
-        .create_with_options(&creation)
-        .map_err(|e| ceremony_error("credentials.create was rejected", e))?;
-    let credential: PublicKeyCredential = JsFuture::from(promise)
-        .await
-        .map_err(|e| ceremony_error("passkey creation failed", e))?
-        .dyn_into()
-        .map_err(|_| anyhow!("credentials.create returned a non-public-key credential"))?;
-    let id = Uint8Array::new(&credential.raw_id()).to_vec();
-    let prf_output = extract_prf(&credential);
-    Ok(PasskeyCredential { id, prf_output })
-}
-
-/// Evaluate the passkey's PRF via a discoverable-credential assertion.
-/// One biometric prompt; must be called during a user gesture.
-pub async fn evaluate_passkey() -> Result<PasskeyCredential> {
-    let mut challenge = rand::random::<[u8; 32]>();
-    let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
-    options.set_user_verification(UserVerificationRequirement::Required);
-    options.set_extensions(&prf_extensions());
-    if let Some(id) = current_rp_id() {
-        options.set_rp_id(id);
-    }
-    let request = CredentialRequestOptions::new();
-    request.set_public_key(&options);
-    let promise = credentials()?
-        .get_with_options(&request)
-        .map_err(|e| ceremony_error("credentials.get was rejected", e))?;
-    let credential: PublicKeyCredential = JsFuture::from(promise)
-        .await
-        .map_err(|e| ceremony_error("passkey assertion failed", e))?
-        .dyn_into()
-        .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
-    let id = Uint8Array::new(&credential.raw_id()).to_vec();
-    let prf_output = extract_prf(&credential).ok_or_else(|| {
-        anyhow!("the authenticator returned no PRF output; this platform cannot derive a root key")
-    })?;
-    Ok(PasskeyCredential {
-        id,
-        prf_output: Some(prf_output),
-    })
 }
 
 /// Create a custody passkey for an existing account. One biometric
@@ -345,30 +237,12 @@ pub async fn evaluate_custody_passkey() -> Result<CustodyCredential> {
     })
 }
 
-/// Evaluate and return only the PRF output.
-pub async fn prf_output() -> Result<Zeroizing<[u8; 32]>> {
-    evaluate_passkey()
-        .await?
-        .prf_output
-        .ok_or_else(|| anyhow!("the authenticator returned no PRF output"))
-}
-
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
-    use crate::derive::ROOT_KEY_CONTEXT;
     use js_sys::{Reflect, Uint8Array};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_browser);
-
-    #[dialog_common::test]
-    fn it_requests_prf_evaluation_with_the_versioned_context() {
-        let extensions = prf_extensions();
-        let prf = Reflect::get(&extensions, &"prf".into()).unwrap();
-        let eval = Reflect::get(&prf, &"eval".into()).unwrap();
-        let first = Reflect::get(&eval, &"first".into()).unwrap();
-        assert_eq!(Uint8Array::new(&first).to_vec(), ROOT_KEY_CONTEXT);
-    }
 
     #[dialog_common::test]
     fn it_requests_both_custody_salts() {
@@ -412,9 +286,11 @@ mod tests {
         );
     }
 
+    const DID: &str = "did:key:z6MkExample";
+
     #[dialog_common::test]
     fn it_requires_a_discoverable_user_verified_credential() {
-        let options = creation_options(None).unwrap();
+        let options = custody_creation_options(None, DID).unwrap();
         let selection = Reflect::get(&options, &"authenticatorSelection".into()).unwrap();
         let resident = Reflect::get(&selection, &"residentKey".into()).unwrap();
         assert_eq!(resident.as_string().as_deref(), Some("required"));
@@ -437,48 +313,19 @@ mod tests {
         Uint8Array::new(&Reflect::get(&user_entity(options), &"id".into()).unwrap()).to_vec()
     }
 
-    /// With no label the entity stays opaque: a passkey created before any
-    /// account exists must not imply one.
-    #[dialog_common::test]
-    fn it_uses_an_opaque_user_entity_when_unlabelled() {
-        let first = creation_options(None).unwrap();
-        let second = creation_options(None).unwrap();
-
-        assert_ne!(user_field(&first, "name"), user_field(&second, "name"));
-        assert!(!user_field(&first, "name").contains('@'));
-        assert_eq!(user_field(&first, "displayName"), "Tonk identity");
-    }
-
-    /// Labelled, the entity carries the address, so a passkey manager lists
-    /// something a person can tell apart from their other keys. Both fields:
-    /// Chrome's list and macOS Keychain surface `name`, not `displayName`.
+    /// With no label the entity stays opaque; labelled, it carries the
+    /// address so a passkey manager lists something a person can tell
+    /// apart. Both fields: Chrome's list and macOS Keychain surface
+    /// `name`, not `displayName`.
     #[dialog_common::test]
     fn it_labels_the_user_entity_with_the_account_address() {
-        let options = creation_options(Some("someone@example.com")).unwrap();
+        let unlabelled = custody_creation_options(None, DID).unwrap();
+        assert!(!user_field(&unlabelled, "name").contains('@'));
+        assert_eq!(user_field(&unlabelled, "displayName"), "Tonk identity");
 
+        let options = custody_creation_options(Some("someone@example.com"), DID).unwrap();
         assert_eq!(user_field(&options, "name"), "someone@example.com");
         assert_eq!(user_field(&options, "displayName"), "someone@example.com");
-    }
-
-    /// The handle stays random either way. It is the credential's user id,
-    /// and deriving it from an address would make two accounts on one
-    /// authenticator collide — and leak the address into a field that is sent
-    /// on every assertion, not just shown in a manager.
-    /// Each handle is read the moment its options are built, not after all
-    /// three exist: `new_with_u8_slice` gives JS a view into wasm linear
-    /// memory rather than a copy, so a later call reusing that slot changes
-    /// what an earlier entity's `id` reads back. Production never holds two
-    /// option objects at once — each goes straight to `credentials.create` —
-    /// but a test that compares them has to read as it goes.
-    #[dialog_common::test]
-    fn it_keeps_the_user_handle_random_whether_labelled_or_not() {
-        let labelled = user_handle(&creation_options(Some("someone@example.com")).unwrap());
-        let again = user_handle(&creation_options(Some("someone@example.com")).unwrap());
-        let unlabelled = user_handle(&creation_options(None).unwrap());
-
-        assert_eq!(labelled.len(), 32, "a full 32-byte handle");
-        assert_ne!(labelled, again, "same address, different handle");
-        assert_ne!(labelled, unlabelled);
     }
 
     #[dialog_common::test]
@@ -499,7 +346,7 @@ mod tests {
     fn it_leaves_the_rp_id_unset_off_apex() {
         // wasm tests run on a localhost origin, which is off-apex, so the
         // creation options must carry no id and requests no rpId.
-        let options = creation_options(None).unwrap();
+        let options = custody_creation_options(None, DID).unwrap();
         let rp = Reflect::get(&options, &"rp".into()).unwrap();
         assert!(
             Reflect::get(&rp, &"id".into()).unwrap().is_undefined(),

@@ -317,7 +317,7 @@ mod tests {
 
     async fn fixture() -> (SqliteStore, String, String, String, String) {
         let store = SqliteStore::in_memory().unwrap();
-        let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+        let root = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
             .await
             .unwrap();
         let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])
@@ -383,10 +383,10 @@ mod tests {
     #[dialog_common::test]
     async fn it_links_a_device_that_is_registered_to_another_account() {
         let store = SqliteStore::in_memory().unwrap();
-        let old_root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+        let old_root = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
             .await
             .unwrap();
-        let new_root = tonk_identity::derive::derive_root_signer(&[9u8; 32])
+        let new_root = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
             .await
             .unwrap();
         let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])
@@ -545,7 +545,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_refuses_to_link_an_unestablished_account() {
         let store = SqliteStore::in_memory().unwrap();
-        let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+        let root = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
             .await
             .unwrap();
         let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])

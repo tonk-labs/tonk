@@ -3,7 +3,7 @@
 //! surface, JSON shapes, and status codes as the Cloudflare Worker.
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
@@ -51,7 +51,7 @@ async fn container_for(
     command: Vec<String>,
     args: BTreeMap<String, Promised>,
 ) -> Vec<u8> {
-    let root = tonk_identity::derive::derive_root_signer(&root_prf)
+    let root = dialog_credentials::Ed25519Signer::import(&root_prf)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&device_seed).await.unwrap();
@@ -79,7 +79,7 @@ async fn container_with_link(
 }
 
 async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) -> Vec<u8> {
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -107,7 +107,7 @@ async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) 
 }
 
 async fn account_creation(email: &str) -> Vec<u8> {
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -439,7 +439,7 @@ async fn it_explains_an_already_registered_email_over_http() {
     let email = "person@example.com";
 
     let create = async |client: &reqwest::Client, prf: [u8; 32], seed: [u8; 32]| {
-        let root = tonk_identity::derive::derive_root_signer(&prf)
+        let root = dialog_credentials::Ed25519Signer::import(&prf)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&seed).await.unwrap();
@@ -497,7 +497,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     // POST /accounts -> create the account from a root-signed ceremony.
     // No code ceremony: address control is proven by customer activation
     // at the access service.
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -558,19 +558,44 @@ async fn it_drives_the_full_ceremony_over_http() {
 
     // Establishment is set-if-absent: a later valid candidate receives
     // the stored creation winner, never its own bytes.
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
-    let establishment = tonk_identity::ceremony::establish_account_repository(
-        root,
-        "https://other.example/ucan/".into(),
-    )
-    .await
-    .unwrap();
-    assert_ne!(establishment.descriptor_hex, expected_descriptor);
+    // Built inline: the browser no longer carries an establish ceremony
+    // (legacy pre-descriptor accounts reset), but the server keeps the
+    // set-if-absent arbitration, so the test speaks the wire form.
+    let descriptor =
+        tonk_account::AccountRepositoryDescriptorV1::sign(&root, "https://other.example/ucan/")
+            .await
+            .unwrap();
+    let candidate_hex = hex::encode(descriptor.bytes());
+    assert_ne!(candidate_hex, expected_descriptor);
+    let root_did = root.did();
+    let invocation = InvocationBuilder::new()
+        .issuer(root)
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(vec![
+            "account".into(),
+            "repository".into(),
+            "establish".into(),
+        ])
+        .arguments(BTreeMap::from([(
+            "repositoryDescriptor".to_string(),
+            Promised::String(candidate_hex),
+        )]))
+        .proofs(vec![])
+        .issue_now()
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .unwrap();
+    let body = InvocationChain::new(invocation, HashMap::new())
+        .to_bytes()
+        .unwrap();
     let response = client
         .post(format!("{base}/account/repository/establish"))
-        .body(hex::decode(establishment.invocation_hex).unwrap())
+        .body(body)
         .send()
         .await
         .unwrap();
@@ -583,7 +608,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     // ceremony; it does not need an already registered device to sign.
     let second = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
     let second_did = second.did().to_string();
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let ceremony = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
@@ -652,7 +677,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     // artifact only ever names its own grant.
     let second_grant_cid = second_row["delegationCid"].as_str().unwrap().to_string();
     assert_eq!(second_grant_cid, second_grant.proof_cids()[0].to_string());
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let revocation = tonk_identity::revocation::mint_root_revocation(
@@ -768,7 +793,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(pending.device_did, cli_did);
     assert_eq!(pending.device_name, "terminal");
 
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let ceremony = tonk_identity::ceremony::complete_link(
@@ -853,7 +878,7 @@ async fn it_drives_the_full_ceremony_over_http() {
 
     // Logout detaches the exact generation without presenting the reusable
     // account grant, and replay is idempotent.
-    let root_did = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root_did = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap()
         .did();
@@ -973,7 +998,7 @@ async fn it_drives_the_full_ceremony_over_http() {
 
     // Semantic account-spot inventory advances one subject head while the
     // generic list/get routes remain unchanged.
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let named = spot_backup(&root.did(), Some("garden"), "https://one.example/ucan/").await;
@@ -1066,7 +1091,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     let other_email = "other@example.com";
     let other_prf = [21; 32];
     let other_seed = [22; 32];
-    let other_root = tonk_identity::derive::derive_root_signer(&other_prf)
+    let other_root = dialog_credentials::Ed25519Signer::import(&other_prf)
         .await
         .unwrap();
     let other_device = Ed25519Signer::import(&other_seed).await.unwrap();

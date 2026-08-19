@@ -189,45 +189,24 @@ mod tests {
         Ok(())
     }
 
-    /// Enroll a custody passkey from the dashboard: the add-passkey
-    /// action creates the credential, publishes the sealed envelope,
-    /// and records the creation facts.
-    pub(crate) async fn enroll_passkey(driver: &WebDriver) -> Result<()> {
-        element(driver, "#account-add-passkey")
-            .await?
-            .click()
-            .await?;
-        wait_for_text_containing(driver, "#account-passkey-device-value", "Chrome on ").await?;
-        Ok(())
-    }
-
     #[dialog_common::test]
     async fn it_signs_up_through_the_account_panels(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
         wait_for_text_containing(&driver, "#account-email-value", EMAIL).await?;
-        // The account is secret-rooted: creation ran with zero WebAuthn,
-        // so the dashboard offers enrolling a passkey instead of
-        // describing one.
-        wait_for_text_containing(&driver, "#account-passkey-created-value", "Not yet").await?;
+        // Creation mints the first custody passkey in the same ceremony
+        // that generates and seals the secret, so the dashboard
+        // describes it immediately.
+        wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
-        let first = get_json(&driver, "/api/account/summary").await?;
-        assert!(
-            successful_body("account summary", &first)["passkey"].is_null(),
-            "no passkey exists at creation: {first}"
-        );
-
-        // Enrolling seals the secret under the passkey's KEK, publishes
-        // the custody cell, and records the creation facts.
-        enroll_passkey(&driver).await?;
         let first = get_json(&driver, "/api/account/summary").await?;
         let again = get_json(&driver, "/api/account/summary").await?;
         let first = successful_body("account summary", &first);
         let again = successful_body("account summary", &again);
         assert!(
             !first["passkey"].is_null(),
-            "enrollment records passkey facts: {first}"
+            "creation records passkey facts: {first}"
         );
         assert_eq!(
             first["passkey"], again["passkey"],
@@ -657,10 +636,6 @@ mod tests {
 
         let claimer = driver_with_prf(&env).await?;
         sign_up(&claimer, &env, "claimer@example.com").await?;
-        // The storage clear below destroys the local wrapping — the only
-        // custody a fresh account has. Enrolling the passkey first is what
-        // makes the account recoverable, which is the point of this test.
-        enroll_passkey(&claimer).await?;
         let visited = post_json(
             &claimer,
             "/api/profile/visit",
