@@ -259,14 +259,32 @@ self.registration.addEventListener?.("updatefound", async () => {
     }
     // Drain what was already in flight (each request is bounded by the
     // storage settle watchdog; the cap here is the upgrade-latency
-    // budget, not a correctness bound), THEN hand the active-worker
-    // lock to the incoming instance instead of taking it to the grave.
-    // Without the handover, a hung in-flight fetch keeps this worker
-    // alive, the lock never frees, and the incoming worker can never
-    // initialize.
+    // budget, not a correctness bound).
     await drainDataRequests(10_000);
-    releaseActiveWorkerLock();
-    log("Active-worker lock released to the incoming worker");
+    // Hand over ONLY once the successor is observably active.
+    // Retirement without a successor would strand every page in the
+    // hold-and-redirect loop — a failed or flapping install must roll
+    // this worker back to serving instead. Background sync stays
+    // parked either way (the wasm side latched off; the next real
+    // update replaces this instance), but the data plane must never
+    // go dark without a replacement.
+    const successor = await (async () => {
+        for (let waited = 0; waited < 15_000; waited += 250) {
+            const active = self.registration.active;
+            if (active && active !== self.serviceWorker && active.state === "activated") {
+                return true;
+            }
+            await new Promise(r => setTimeout(r, 250));
+        }
+        return false;
+    })();
+    if (successor) {
+        releaseActiveWorkerLock();
+        log("Active-worker lock released to the incoming worker");
+    } else {
+        retiring = false;
+        log("No successor activated — resuming service; background sync stays parked until the next update");
+    }
 });
 
 // Connectivity transitions. The Rust side reads `navigator.onLine` itself
