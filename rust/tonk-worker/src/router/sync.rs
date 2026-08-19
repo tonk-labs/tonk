@@ -1175,6 +1175,17 @@ impl SyncQueue {
 /// Branches are synced per-repo; repos run sequentially here (the reactor
 /// serializes branch state anyway), priority-ordered by activity.
 pub async fn drain_sync(state: &AppState) {
+    // One drain at a time, and concurrent triggers coalesce instead of
+    // queueing: a keepalive beat arriving while a transact-triggered
+    // drain runs would only repeat the same sweep, and letting them
+    // interleave is how branch commits tear (session rotation and the
+    // account ensure both write without a per-branch lock in dialog).
+    // Whatever this beat would have pushed, the next one covers.
+    static DRAIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let Ok(_serialized) = DRAIN.try_lock() else {
+        return;
+    };
+
     // Before anything presigns: the operator's delegation expires, and a
     // drain is the regular beat this worker has to notice that on.
     // Best-effort here — a failed rotation must not take the drain down.

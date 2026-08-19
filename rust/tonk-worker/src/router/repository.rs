@@ -1924,14 +1924,31 @@ async fn remove_replica_from_profile(
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
-    let stream = meta
+
+    // Removal is account-wide: profile main is shared account state, so
+    // EVERY device's replica row for this subject is swept, not just
+    // this device's — a surviving foreign row would resurrect the
+    // directory entry through the next sweep's backfill. This device's
+    // derived entity rides along in case its row is gone but stray
+    // stamps remain.
+    let rows: Vec<Replica> = meta
         .handle()
-        .claims()
-        .select(ArtifactSelector::new().of(entity.clone()))
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::replica::Subject(subject.this())),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
         .perform(&tonk.operator)
+        .try_vec()
         .await
-        .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
-    tokio::pin!(stream);
+        .map_err(|e| RepositoryError::Internal(format!("replica rows query: {e:?}")))?;
+    let mut entities: Vec<dialog_artifacts::Entity> =
+        rows.into_iter().map(|row| row.this).collect();
+    if !entities.contains(&entity) {
+        entities.push(entity);
+    }
 
     let mut transaction = tonk
         .reactor
@@ -1939,11 +1956,51 @@ async fn remove_replica_from_profile(
         .branch(PROFILE_BRANCH)
         .transaction();
     let mut found = false;
-    while let Some(artifact) = stream.next().await {
+    for row_entity in entities {
+        let stream = meta
+            .handle()
+            .claims()
+            .select(ArtifactSelector::new().of(row_entity))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
+        tokio::pin!(stream);
+        while let Some(artifact) = stream.next().await {
+            let artifact = artifact
+                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
+                .to_owned()
+                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+            found = true;
+            transaction = transaction.retract(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: false,
+            });
+        }
+    }
+
+    // The account-level directory entry hangs on the repository's own
+    // entity, so it needs its own sweep — filtered to the space
+    // namespace, because other facts may key on that entity too.
+    // Removing it is what makes "delete spot" account-wide: every
+    // device's Hub lists the directory, not this device's replica row.
+    let directory = meta
+        .handle()
+        .claims()
+        .select(ArtifactSelector::new().of(subject.this()))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("select directory claims: {e}")))?;
+    tokio::pin!(directory);
+    while let Some(artifact) = directory.next().await {
         let artifact = artifact
-            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
+            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?
             .to_owned()
-            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?;
+        if !artifact.the.to_string().starts_with("xyz.tonk.space/") {
+            continue;
+        }
         found = true;
         transaction = transaction.retract(super::claim::RawClaim {
             the: artifact.the,
@@ -1955,7 +2012,7 @@ async fn remove_replica_from_profile(
     if !found {
         // Nothing recorded — a stale row or a repeated submit. Not an
         // error: the desired end state (no record) already holds.
-        log!("remove replica: no facts for {} in profile meta", entity);
+        log!("remove replica: no facts for {} in profile meta", subject);
         return Ok(());
     }
 
@@ -3241,6 +3298,10 @@ async fn record_replica_visibility(
     status: tonk_schema::domain::replica::Status,
 ) -> Result<(), RepositoryError> {
     let replica = Replica::new(tonk.profile.did(), subject.clone());
+    // The account-level directory entry rides the same commit: the
+    // replica row is this device's mount, the `Space` entry is the one
+    // row per space every device's Hub lists.
+    let directory = tonk_schema::Space::new(subject, status.clone());
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
@@ -3258,6 +3319,7 @@ async fn record_replica_visibility(
         .transaction()
         .assert(replica)
         .assert(status)
+        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -3302,6 +3364,7 @@ async fn set_replica_status(
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
         .clone();
+    let directory = tonk_schema::Space::new(subject, status.clone());
     let stamp = SpaceStatus::new(entity, status);
 
     let revision = tonk
@@ -3310,6 +3373,7 @@ async fn set_replica_status(
         .branch(PROFILE_BRANCH)
         .transaction()
         .assert(stamp)
+        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await

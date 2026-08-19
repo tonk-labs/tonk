@@ -21,22 +21,21 @@
 # which space to open.
 concept!: &space
   this: tonk:space
-  description: A repository this profile can open.
+  description: A space on this account.
   with:
     subject:
       description: >
         The repository's subject DID (its stable identity). The Hub card
         links to `/space/{subject}`; the route reads the routing key as
         the suffix after the last `:`.
-      the: xyz.tonk.replica/subject
-      cardinality: one
-      as: entity
-    kind:
-      description: >
-        tonk:repository for a real space, tonk:profile for the
-        profile's own self-replica. The Hub view hides the latter
-        in CSS via [data-kind].
-      the: xyz.tonk.replica/kind
+
+        These `xyz.tonk.space/*` attributes hang on the repository's own
+        entity — NOT on a per-device replica row. Replica rows key on
+        (device profile, subject), and profile main now syncs through
+        the account, so listing them would show one card per device per
+        space. The directory entry is asserted once per space and every
+        device converges on it.
+      the: xyz.tonk.space/subject
       cardinality: one
       as: entity
     status:
@@ -44,19 +43,9 @@ concept!: &space
         tonk:blank while the space's content branch is still
         seeding, tonk:initialized once seeded. The Hub card
         reflects it via [data-status] (an installing animation).
-      the: xyz.tonk.replica/status
+      the: xyz.tonk.space/status
       cardinality: one
       as: entity
-  maybe:
-    name:
-      description: |
-        Local name of the space. Optional: a space recorded before
-        names were stored, or one created/joined without a local name,
-        simply omits it. A required field here would empty the whole
-        Hub (the directory join drops every nameless replica).
-      the: xyz.tonk.replica/name
-      cardinality: one
-      as: text
 
 # The Add Space command. Submitting the Hub's form asserts this
 # transient command; the worker's `create_space` handler decodes it and
@@ -285,7 +274,6 @@ view/directory!:
           padding-right: 44px; }
         .srow-wrap:hover .srow { background: var(--wa-color-neutral-fill-quiet); }
         /* hide the profile's self-replica row */
-        .srow-wrap[data-kind="tonk:profile"] { display: none; }
         /* dim the row while the content branch is still seeding */
         .srow-wrap[data-status="tonk:blank"] .srow-name { opacity: .6; }
         .spot-untitled { color: var(--wa-color-text-quiet); }
@@ -293,7 +281,7 @@ view/directory!:
            moment any real row exists. "Real" excludes the self-replica
            row, which is present but hidden on some profiles. */
         .spot-empty { padding: 18px 0; font-size: 15px; color: var(--wa-color-text-quiet); }
-        .spot-list:has(.srow-wrap:not([data-kind="tonk:profile"])) .spot-empty { display: none; }
+        .spot-list:has(.srow-wrap) .spot-empty { display: none; }
 
         /* ── Remove-spot affordance ─────────────────────────────────────
            A hover-revealed x per row opens a per-row confirm overlay,
@@ -522,7 +510,7 @@ view/directory!:
              row, a derived entity that names no repository). A bare repo
              means its main branch; honored because the profile site is
              `allow="*"`. -->
-        <div class="srow-wrap" data-kind={kind} data-status={status} data-id={this}>
+        <div class="srow-wrap" data-status={status} data-id={this}>
           <input class="spot-wiz" type="radio" name="__rm" id="rm-{subject}" tabindex="-1">
           <a class="srow" href="/space/{subject}">
             <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
@@ -549,7 +537,7 @@ view/directory!:
                   <span slot="loading" class="spot-untitled" hidden>Untitled</span>
                 </tonk-display>
               </div>
-              <p class="onb-lede">Removes this spot and its local data from this device.
+              <p class="onb-lede">Removes this spot from your account, on every device.
                 A synced spot can be rejoined with an invite link; a local-only spot is gone for good.</p>
               <div class="srm-actions">
                 <label class="srm-cancel" for="rm-closed">

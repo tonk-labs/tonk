@@ -52,6 +52,28 @@ pub mod replica {
     pub struct Status(pub Entity);
 }
 
+/// Attributes for the account-level space directory — one entry per
+/// space, shared by every device on the account.
+///
+/// Distinct from the `xyz.tonk.replica` namespace on purpose: replica
+/// rows are per-device (their entity hashes the device profile in),
+/// and now that profile main syncs through the account every device's
+/// rows land everywhere. A directory that queried replica attributes
+/// would list one row per device per space. These attributes hang on
+/// the repository's own entity instead, so all devices converge on
+/// one entry.
+pub mod space {
+    use super::{Attribute, Entity};
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Subject(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Status(pub Entity);
+}
+
 /// Attributes for the `tonk/sync` concept — a replica's sync state.
 ///
 /// Two orthogonal entity-valued fields, both keyed on the replica entity

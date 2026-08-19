@@ -15,6 +15,7 @@ use crate::Branch;
 use crate::Remote;
 use crate::domain::remote::Address;
 use crate::domain::replica::{Kind, Name, Profile, Status, Subject};
+use crate::domain::space::{Status as SpaceDirStatus, Subject as SpaceDirSubject};
 use crate::domain::sync::{Enabled, Status as SyncStatusAttr};
 use crate::prelude::*;
 
@@ -82,6 +83,42 @@ pub struct Replica {
     /// Hub picker) without re-deriving the self-replica from the
     /// profile entity.
     pub kind: Kind,
+}
+
+/// The account-level directory entry for a space — what the Hub lists.
+///
+/// Keyed on the repository's OWN entity (`subject.this()`), not a
+/// `(profile, subject)` hash, so every device on the account asserts
+/// the same entry and they converge to one row per space. The
+/// per-device [`Replica`] records keep existing alongside — they
+/// carry this device's mount, its sync stamps, and dialog's own
+/// replica facts — but the directory is account state: removing an
+/// entry removes the space from the whole account's Hub.
+///
+/// `status` mirrors the replica's seeding status so the Hub's install
+/// animation works; a later assert supersedes (cardinality one). The
+/// display name is deliberately absent — the card renders it live
+/// from the space's own branch.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Space {
+    /// The repository's own entity.
+    pub this: Entity,
+    /// The repository's DID as an entity, for URL binding in views.
+    pub subject: SpaceDirSubject,
+    /// Seeding status — the same `tonk:blank` / `tonk:initialized`
+    /// markers [`Replica`] uses.
+    pub status: SpaceDirStatus,
+}
+
+impl Space {
+    /// A directory entry for `subject` with the given seeding status.
+    pub fn new(subject: &Did, status: Status) -> Self {
+        Self {
+            this: subject.this(),
+            subject: SpaceDirSubject(subject.this()),
+            status: SpaceDirStatus(status.0),
+        }
+    }
 }
 
 /// A [`Replica`] as it was written before the [`Kind`] field
