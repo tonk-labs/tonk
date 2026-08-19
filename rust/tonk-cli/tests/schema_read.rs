@@ -19,7 +19,7 @@ mod when_reading_a_concepts_schema {
         let info = tonk_cli::schema::find_concept(&test.site, "task")
             .await?
             .expect("task concept should be found");
-        assert_eq!(info.name, "task");
+        assert_eq!(info.name.as_deref(), Some("task"));
         let fields: Vec<&str> = info.descriptor.with().iter().map(|(f, _)| f).collect();
         assert!(
             fields.contains(&"title"),

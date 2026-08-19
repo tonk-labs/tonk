@@ -109,16 +109,35 @@ enum Command {
     ///
     /// Every named attribute and concept, or just one concept's
     /// subset when `<CONCEPT>` is given. The human field/type view
-    /// lives in `tonk assert <concept> --help`.
+    /// lives in `tonk assert <concept> --help`. Selector flags
+    /// widen or narrow the document: `--rules` and `--views` add
+    /// (or, without `--concepts`, select only) those sections;
+    /// `--all` emits everything the branch's behavior comprises.
     #[command(
-        after_help = "Examples:\n  tonk schema\n  tonk schema task\n  tonk schema > schema.notation"
+        after_help = "Examples:\n  tonk schema\n  tonk schema task\n  tonk schema --rules\n  tonk schema --all > behavior.notation"
     )]
     Schema {
         /// Optional concept name — emit only that concept's
         /// `concept!:` block plus the `attribute!:` declarations
         /// it references.
-        #[arg(value_name = "CONCEPT")]
+        #[arg(value_name = "CONCEPT", conflicts_with_all = ["concepts", "rules", "views", "all"])]
         concept: Option<String>,
+        /// Emit attribute and concept declarations (the default
+        /// section; state explicitly when combining with other
+        /// selectors).
+        #[arg(long)]
+        concepts: bool,
+        /// Emit installed rules — inductive and deductive — as
+        /// `rule!:` blocks.
+        #[arg(long)]
+        rules: bool,
+        /// Emit view instances as `view!:` blocks.
+        #[arg(long)]
+        views: bool,
+        /// Emit everything: attributes + concepts, rules, and
+        /// views, in an order that re-evaluates cleanly.
+        #[arg(long, conflicts_with_all = ["concepts", "rules", "views"])]
+        all: bool,
     },
 
     /// Report how local main relates to its upstream and its current hash
@@ -1046,7 +1065,24 @@ async fn main() {
         Command::Account { command } => account_op(command).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
-        Command::Schema { concept } => print_schema(concept, spot.as_deref()).await,
+        Command::Schema {
+            concept,
+            concepts,
+            rules,
+            views,
+            all,
+        } => {
+            // No selector means the classic document (attributes +
+            // concepts); any selector narrows to exactly the named
+            // sections; `--all` is every section.
+            let selected = concepts || rules || views;
+            let sections = SchemaSections {
+                concepts: all || concepts || !selected,
+                rules: all || rules,
+                views: all || views,
+            };
+            print_schema(concept, sections, spot.as_deref()).await
+        }
         Command::Query {
             concept,
             entity,
@@ -2942,7 +2978,18 @@ fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::
     writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
 }
 
-async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {
+/// Section selectors for `tonk schema`, resolved from the flags.
+struct SchemaSections {
+    concepts: bool,
+    rules: bool,
+    views: bool,
+}
+
+async fn print_schema(
+    concept: Option<String>,
+    sections: SchemaSections,
+    spot: Option<&str>,
+) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
@@ -2955,10 +3002,32 @@ async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {
                 return err.exit_code();
             }
         },
-        None => match schema::render(&site).await {
-            Ok(text) => text,
-            Err(err) => return print_failure(err),
-        },
+        None => {
+            // Section order matters: rules reference concepts and
+            // views reference both, so a document with every
+            // section re-evaluates top to bottom on a fresh
+            // branch.
+            let mut rendered = String::new();
+            if sections.concepts {
+                match schema::render(&site).await {
+                    Ok(text) => rendered.push_str(&text),
+                    Err(err) => return print_failure(err),
+                }
+            }
+            if sections.rules {
+                match schema::render_rules(&site).await {
+                    Ok(text) => rendered.push_str(&text),
+                    Err(err) => return print_failure(err),
+                }
+            }
+            if sections.views {
+                match schema::render_views(&site).await {
+                    Ok(text) => rendered.push_str(&text),
+                    Err(err) => return print_failure(err),
+                }
+            }
+            rendered
+        }
     };
     let mut stdout = std::io::stdout().lock();
     if let Err(e) = stdout.write_all(rendered.as_bytes()) {

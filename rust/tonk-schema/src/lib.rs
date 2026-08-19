@@ -54,6 +54,8 @@ pub mod rule_query;
 
 pub mod rule;
 
+pub mod rule_notation;
+
 pub mod builtin;
 
 pub mod query;
