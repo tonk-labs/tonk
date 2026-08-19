@@ -191,31 +191,37 @@ pub(crate) async fn get_backed_up_spot(
 }
 
 /// Build, sign, and upload one immutable backup artifact.
-async fn run_backup(
-    device: Ed25519Signer,
-    link: DelegationChain,
-    service: String,
+struct BackupArtifactInput {
     chain: DelegationChain,
     deletion_grant: Option<DelegationChain>,
     remote_url: Option<String>,
     revocation_url: Option<String>,
     name: Option<String>,
+}
+
+async fn run_backup(
+    device: Ed25519Signer,
+    link: DelegationChain,
+    service: String,
+    input: BackupArtifactInput,
 ) -> Result<(), TonkWorkerError> {
-    let chain_bytes = chain
+    let chain_bytes = input
+        .chain
         .to_bytes()
         .map_err(|error| TonkWorkerError::Internal(format!("serialize claimed chain: {error}")))?;
     let artifact = AccountSpotBackup {
         chain_hex: hex::encode(chain_bytes),
-        deletion_grant_hex: deletion_grant
+        deletion_grant_hex: input
+            .deletion_grant
             .map(|grant| grant.to_bytes())
             .transpose()
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("serialize deletion grant: {error}"))
             })?
             .map(hex::encode),
-        remote_url,
-        revocation_url,
-        name,
+        remote_url: input.remote_url,
+        revocation_url: input.revocation_url,
+        name: input.name,
     };
     artifact
         .validate_for(link.issuer())
@@ -272,11 +278,13 @@ async fn dispatch_backup(
         device,
         link,
         service,
-        chain,
-        deletion_grant,
-        remote_url,
-        revocation_url,
-        name,
+        BackupArtifactInput {
+            chain,
+            deletion_grant,
+            remote_url,
+            revocation_url,
+            name,
+        },
     )
     .await
     .map_err(|error| TonkWorkerError::Internal(format!("{context} backup failed: {error}")))
