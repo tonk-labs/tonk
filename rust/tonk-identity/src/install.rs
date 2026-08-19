@@ -312,6 +312,102 @@ async fn create_fresh_account(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result)
 }
 
+/// `createSecretAccount({ email, deviceDid, deviceName, remote,
+/// serviceDid? })` → the `createFreshAccount` shape with an empty
+/// `credentialId`: the account is secret-rooted, no passkey exists yet.
+async fn create_secret_account(input: JsValue) -> Result<JsValue, JsValue> {
+    let email = string_property(&input, "email")?;
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let device_name = string_property(&input, "deviceName")?;
+    let remote = string_property(&input, "remote")?;
+    let service = service_did_property(&input)?;
+    let ceremony = crate::ceremony::create_secret_account(
+        email,
+        device_did,
+        device_name,
+        remote,
+        service.as_ref(),
+    )
+    .await
+    .map_err(js_error)?;
+    let result = root_result(ceremony.root)?;
+    Reflect::set(
+        &result,
+        &"invocationHex".into(),
+        &ceremony.account.invocation_hex.into(),
+    )?;
+    if let Some(descriptor_hex) = ceremony.account.descriptor_hex {
+        Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
+    }
+    set_deposits(&result, &ceremony.deposits_hex)?;
+    Ok(result)
+}
+
+/// `enrollCustodyPasskey({ accountDid, label?, endpoint })` →
+/// `{ custodyDid, credentialId, consentHex }`. Creates the custody
+/// passkey, seals the secret under its KEK, and publishes the cell;
+/// the caller provisions the custody DID with the consent afterwards.
+async fn enroll_custody_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let account_did = string_property(&input, "accountDid")?;
+    let label = optional_string_property(&input, "label");
+    let endpoint = string_property(&input, "endpoint")?;
+    let enrollment = crate::ceremony::enroll_custody(&account_did, label.as_deref(), &endpoint)
+        .await
+        .map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(
+        &result,
+        &"custodyDid".into(),
+        &enrollment.custody_did.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"credentialId".into(),
+        &enrollment.credential_id.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"consentHex".into(),
+        &enrollment.consent_hex.into(),
+    )?;
+    Ok(result.into())
+}
+
+/// `unlockWithPasskey({ deviceDid, deviceName, endpoint, serviceDid? })`
+/// → the `linkDevice` result shape. One assertion, one presigned GET,
+/// and the unwrapped secret self-issues the device delegation.
+async fn unlock_with_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let device_name = string_property(&input, "deviceName")?;
+    let endpoint = string_property(&input, "endpoint")?;
+    let service = service_did_property(&input)?;
+    let unlock =
+        crate::ceremony::unlock_account(device_did, device_name, &endpoint, service.as_ref())
+            .await
+            .map_err(js_error)?;
+    let result = ceremony_result(unlock.account)?;
+    Reflect::set(
+        &result,
+        &"credentialId".into(),
+        &unlock.credential_id.into(),
+    )?;
+    set_deposits(&result, &unlock.deposits_hex)?;
+    Ok(result)
+}
+
+/// `hasLocalCustody({ accountDid })` → `{ exists }`.
+async fn has_local_custody(input: JsValue) -> Result<JsValue, JsValue> {
+    let account_did = string_property(&input, "accountDid")?;
+    let exists = crate::local::exists(&account_did).await.map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(&result, &"exists".into(), &exists.into())?;
+    Ok(result.into())
+}
+
 async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
     let device_did = string_property(&input, "deviceDid")?
         .parse()
@@ -502,6 +598,46 @@ pub fn install() {
     );
     create_fresh_account.forget();
 
+    let create_secret_account = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(create_secret_account(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"createSecretAccount".into(),
+        create_secret_account.as_ref().unchecked_ref(),
+    );
+    create_secret_account.forget();
+
+    let enroll_custody_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(enroll_custody_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"enrollCustodyPasskey".into(),
+        enroll_custody_passkey.as_ref().unchecked_ref(),
+    );
+    enroll_custody_passkey.forget();
+
+    let unlock_with_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(unlock_with_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"unlockWithPasskey".into(),
+        unlock_with_passkey.as_ref().unchecked_ref(),
+    );
+    unlock_with_passkey.forget();
+
+    let has_local_custody = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(has_local_custody(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"hasLocalCustody".into(),
+        has_local_custody.as_ref().unchecked_ref(),
+    );
+    has_local_custody.forget();
+
     let link_device = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(link_device(input))
     });
@@ -647,9 +783,16 @@ mod tests {
             "evaluateRoot",
             "deriveRootDid",
             "createAccount",
+            "createFreshAccount",
+            "createSecretAccount",
+            "enrollCustodyPasskey",
+            "unlockWithPasskey",
+            "hasLocalCustody",
             "linkDevice",
             "establishAccountRepository",
             "completeLink",
+            "authorizeDevice",
+            "signRevocation",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

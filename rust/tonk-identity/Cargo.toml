@@ -26,13 +26,18 @@ zeroize = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom_0_3 = { workspace = true }
+idb = { workspace = true }
 js-sys = { workspace = true }
 rand = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
+    "AesGcmParams",
+    "AesKeyGenParams",
     "AuthenticationExtensionsClientInputs",
+    "Crypto",
+    "CryptoKey",
     "Headers",
     "Request",
     "RequestInit",
@@ -53,6 +58,8 @@ web-sys = { workspace = true, features = [
     "PublicKeyCredentialRpEntity",
     "PublicKeyCredentialType",
     "PublicKeyCredentialUserEntity",
+    "StorageManager",
+    "SubtleCrypto",
     "UserVerificationRequirement",
     "Window",
 ] }
