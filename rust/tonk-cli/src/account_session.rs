@@ -219,6 +219,53 @@ async fn save_raw(
     Ok(())
 }
 
+/// Project the persisted root and provider record into an active
+/// session, when both are present. This is what the legacy migration in
+/// [`ensure_initialized`] reads, and what a completed callback link
+/// activates from.
+async fn projected_active(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+) -> Result<Option<ActiveAccount>> {
+    let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
+        return Ok(None);
+    };
+    let root_did: Did = root
+        .root_did
+        .parse()
+        .context("stored root DID is invalid")?;
+    let bytes = profile
+        .credential()
+        .site(crate::account::ACCOUNT_LINK_SITE)
+        .load::<Vec<u8>>()
+        .perform(operator)
+        .await;
+    let Ok(bytes) = bytes else {
+        return Ok(None);
+    };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let Some(provider) = tonk_account::AccountProviderRecord::decode(&bytes, &root_did)
+        .await
+        .context("stored provider record is unusable")?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ActiveAccount {
+        provider: provider.provider().to_string(),
+        credential_id: root.credential_id,
+        root_did: root.root_did,
+        delegation_cid: root.delegation_cid.clone(),
+        delegation_hex: root.delegation_hex,
+        descriptor_hex: provider
+            .descriptor()
+            .map(|value| hex::encode(value.bytes())),
+        attachment_id: root.delegation_cid,
+        attached_at: provider.attached_at().unwrap_or_default(),
+    }))
+}
+
 /// Initialize canonical state once, migrating the legacy root/provider
 /// projection while the caller holds the exclusive lock.
 pub async fn ensure_initialized(
@@ -229,39 +276,36 @@ pub async fn ensure_initialized(
     if load_raw(profile, operator, &guard.store).await?.is_some() {
         return Ok(());
     }
-    let mut state = AccountSessionState::default();
-    if let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? {
-        let root_did: Did = root
-            .root_did
-            .parse()
-            .context("stored root DID is invalid")?;
-        let bytes = profile
-            .credential()
-            .site(crate::account::ACCOUNT_LINK_SITE)
-            .load::<Vec<u8>>()
-            .perform(operator)
-            .await;
-        if let Ok(bytes) = bytes
-            && !bytes.is_empty()
-            && let Some(provider) = tonk_account::AccountProviderRecord::decode(&bytes, &root_did)
-                .await
-                .context("stored legacy provider is unusable")?
-        {
-            state.active = Some(ActiveAccount {
-                provider: provider.provider().to_string(),
-                credential_id: root.credential_id,
-                root_did: root.root_did,
-                delegation_cid: root.delegation_cid.clone(),
-                delegation_hex: root.delegation_hex,
-                descriptor_hex: provider
-                    .descriptor()
-                    .map(|value| hex::encode(value.bytes())),
-                attachment_id: root.delegation_cid,
-                attached_at: provider.attached_at().unwrap_or_default(),
-            });
-        }
-    }
+    let state = AccountSessionState {
+        active: projected_active(profile, operator).await?,
+        ..Default::default()
+    };
     save_raw(profile, operator, &guard.store, &state).await
+}
+
+/// Activate the session for a link that just persisted its root and
+/// provider record: the callback flow's counterpart to the legacy
+/// migration above, which only runs when no canonical state exists yet.
+pub async fn activate_link(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpotStore,
+    attachment_id: Option<String>,
+) -> Result<()> {
+    let guard = exclusive_transition_guard(store)?;
+    ensure_initialized(profile, operator, &guard).await?;
+    let mut active = projected_active(profile, operator)
+        .await?
+        .context("link completed but its root and provider record did not persist")?;
+    if let Some(attachment_id) = attachment_id {
+        active.attachment_id = attachment_id;
+    }
+    let mut state = load_raw(profile, operator, store)
+        .await?
+        .unwrap_or_default();
+    state.active = Some(active);
+    state.pending_login = None;
+    save_raw(profile, operator, store, &state).await
 }
 
 /// Strictly read canonical state while the caller retains a shared lock.
@@ -282,94 +326,6 @@ pub async fn active_guarded(
     guard: &AccountSessionReadGuard,
 ) -> Result<Option<ActiveAccount>> {
     Ok(load_guarded(profile, operator, guard).await?.active)
-}
-
-/// Save a waiting or activating handoff under an exclusive transition.
-pub async fn begin_login(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
-    pending: PendingLogin,
-) -> Result<()> {
-    let store = SpotStore::open().context("failed to locate account state")?;
-    let guard = exclusive_transition_guard(&store)?;
-    ensure_initialized(profile, operator, &guard).await?;
-    let mut state = load_raw(profile, operator, &store)
-        .await?
-        .unwrap_or_default();
-    if state.active.is_some() {
-        anyhow::bail!("an account is already active; log out before linking another account");
-    }
-    let allowed = match (&state.pending_login, &pending) {
-        (None, PendingLogin::Waiting { .. }) => true,
-        (Some(existing), candidate) if existing == candidate => true,
-        // Replacing one waiting handoff with another at the same provider
-        // strands nothing: a waiting handoff holds no grant material, only a
-        // one-time secret the service may already have retired.
-        (
-            Some(PendingLogin::Waiting {
-                provider: old_provider,
-                ..
-            }),
-            PendingLogin::Waiting { provider, .. },
-        ) => old_provider == provider,
-        (
-            Some(PendingLogin::Waiting {
-                provider: old_provider,
-                secret: old_secret,
-                ..
-            }),
-            PendingLogin::Activating {
-                provider, secret, ..
-            },
-        ) => old_provider == provider && old_secret == secret,
-        _ => false,
-    };
-    if !allowed {
-        anyhow::bail!("account handoff state changed; refusing a stale transition");
-    }
-    state.pending_login = Some(pending);
-    save_raw(profile, operator, &store, &state).await
-}
-
-/// Require that the caller still owns the exact pending activation while it
-/// holds the supplied exclusive transition guard.
-pub async fn require_pending_activation(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
-    expected: &ActiveAccount,
-    guard: &AccountSessionWriteGuard,
-) -> Result<()> {
-    let state = load_raw(profile, operator, &guard.store)
-        .await?
-        .unwrap_or_default();
-    match state.pending_login {
-        Some(PendingLogin::Activating { account, .. }) if &account == expected => Ok(()),
-        _ => anyhow::bail!("account handoff was cancelled or replaced"),
-    }
-}
-
-/// Atomically promote a confirmed activating handoff to active.
-pub async fn finish_activation(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
-    expected: &ActiveAccount,
-) -> Result<()> {
-    let store = SpotStore::open().context("failed to locate account state")?;
-    let guard = exclusive_transition_guard(&store)?;
-    ensure_initialized(profile, operator, &guard).await?;
-    let mut state = load_raw(profile, operator, &store)
-        .await?
-        .unwrap_or_default();
-    let account = match state.pending_login.as_ref() {
-        Some(PendingLogin::Activating { account, .. }) if account == expected => account.clone(),
-        Some(PendingLogin::Activating { .. }) => {
-            anyhow::bail!("another account handoff replaced this activation")
-        }
-        _ => anyhow::bail!("no completed account handoff is awaiting activation"),
-    };
-    state.pending_login = None;
-    state.active = Some(account);
-    save_raw(profile, operator, &store, &state).await
 }
 
 async fn queue_detach(

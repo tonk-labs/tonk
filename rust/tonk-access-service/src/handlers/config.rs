@@ -1,8 +1,11 @@
 //! Same-origin browser deployment configuration.
 
+use dialog_varsig::Principal;
 use tonk_worker_api::DeploymentConfig;
 use url::Url;
 use worker::*;
+
+use crate::service::signer_from_hex;
 
 fn configured_url(ctx: &RouteContext<()>, name: &str) -> Result<Url> {
     let value = ctx.env.var(name).map_err(|error| {
@@ -24,10 +27,19 @@ fn configured_url(ctx: &RouteContext<()>, name: &str) -> Result<Url> {
 
 /// Return the service endpoints belonging to this page deployment.
 pub async fn handle(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    // Enrollment addresses the service by DID, so discovery carries it
+    // when the identity is configured. Its absence is not an error: the
+    // rest of the config still serves deployments without one.
+    let service_did = ctx
+        .secret("SERVICE_SECRET_KEY")
+        .ok()
+        .and_then(|seed| signer_from_hex(&seed.to_string()).ok())
+        .map(|signer| signer.did().to_string());
     let config = (|| {
         Ok::<_, Error>(DeploymentConfig {
             account_service_url: configured_url(&ctx, "ACCOUNT_SERVICE_URL")?,
             revocation_relay_url: configured_url(&ctx, "REVOCATION_RELAY_URL")?,
+            service_did,
         })
     })();
     match config {

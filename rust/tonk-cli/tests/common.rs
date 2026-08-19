@@ -118,24 +118,9 @@ impl AccountFixture {
         let link =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did()).await?;
         let email = "person@example.com".to_string();
-        reqwest::Client::new()
-            .post(format!("{}/codes", server.endpoint))
-            .json(&serde_json::json!({ "email": email }))
-            .send()
-            .await?
-            .error_for_status()?;
-        let code = {
-            let emails = server.emails.0.lock().unwrap();
-            emails
-                .iter()
-                .find(|(recipient, _)| recipient == &email)
-                .map(|(_, code)| code.clone())
-                .expect("fixture verification code")
-        };
         let ceremony = tonk_identity::ceremony::create_account(
             root,
             email,
-            code,
             "fixture-credential".to_string(),
             profile.did(),
             "fixture-device".to_string(),

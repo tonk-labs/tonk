@@ -4,8 +4,16 @@
 //! 1. Reading the CBOR-encoded UCAN container from the request body
 //! 2. Passing it to UcanAuthorizer for verification and authorization
 //! 3. Returning the serialized AuthorizedRequest as CBOR
+//!
+//! Served outside the Router, straight from the fetch event: recording
+//! an invocation must outlive the response, and only the event's
+//! [`Context`] can extend the isolate's life for it.
 
 use crate::error::Refusal;
+#[cfg(target_arch = "wasm32")]
+use crate::handlers::registration::handle as handle_registration;
+#[cfg(target_arch = "wasm32")]
+use crate::registration::registration_command;
 use dialog_capability::access::AuthorizeError;
 use dialog_remote_s3::{Address, S3Error, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
@@ -31,59 +39,120 @@ pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Res
     Ok(response.with_headers(headers))
 }
 
-/// POST /ucan/ → Authorize UCAN invocation and return presigned S3 request
-pub async fn handle(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let response = match handle_inner(&mut req, &ctx).await {
-        Ok(response) => response,
-        Err(err) => err.to_response()?,
+/// POST /ucan/ → Authorize UCAN invocation and return presigned S3
+/// request, recording the invocation in ingest under `ctx.wait_until`.
+pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+    let body_bytes = match req.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let refusal: Refusal = AuthorizeError::Malformed {
+                detail: format!("failed to read request body: {e}"),
+            }
+            .into();
+            return Ok(with_cors_headers(refusal.to_response()?));
+        }
     };
+
+    // Registration commands ride the same endpoint; anything else falls
+    // through to the presign path untouched. Registration is not
+    // metered: those invocations are once-per-account ceremonies, not
+    // billable operations.
+    #[cfg(target_arch = "wasm32")]
+    if registration_command(&body_bytes).is_some() {
+        return handle_registration(&body_bytes, &req, &env)
+            .await
+            .map(with_cors_headers);
+    }
+
+    let (response, metered) = match presign(&body_bytes, &env).await {
+        Ok((response, bytes)) => (response, Some(("ok", None, bytes))),
+        Err(refusal) => {
+            // Denials are recorded — a client retrying against a blocked
+            // consumer still costs invocations — but only attributable
+            // ones: infra failures and malformed containers are the
+            // service's cost, not the consumer's.
+            let metered =
+                matches!(refusal.status(), 401 | 403).then(|| ("denied", Some(refusal.kind()), 0));
+            (refusal.to_response()?, metered)
+        }
+    };
+
+    #[cfg(target_arch = "wasm32")]
+    if let Some((outcome, reason, bytes)) = metered {
+        record_invocation(&body_bytes, outcome, reason, bytes, &env, &ctx);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (metered, ctx);
+
     Ok(with_cors_headers(response))
 }
 
-async fn handle_inner(
-    req: &mut Request,
-    ctx: &RouteContext<()>,
-) -> std::result::Result<Response, Refusal> {
-    // 1. Read the request body as bytes
-    let body_bytes = req.bytes().await.map_err(|e| AuthorizeError::Malformed {
-        detail: format!("failed to read request body: {e}"),
-    })?;
+/// Queue the invocation record behind the response. Failures are logged,
+/// never surfaced: metering loss errs in the customer's favour and must
+/// not cost them the permit they already hold.
+#[cfg(target_arch = "wasm32")]
+fn record_invocation(
+    body_bytes: &[u8],
+    outcome: &'static str,
+    reason: Option<String>,
+    bytes: u64,
+    env: &Env,
+    ctx: &Context,
+) {
+    use crate::store::ingest::{D1Ingest, IngestStore};
 
-    // 2. Create the UcanAuthorizer from environment config
-    let authorizer = create_authorizer(ctx)?;
+    let now = Date::now().as_millis() / 1_000;
+    let Some(record) = crate::metering::collect(body_bytes, outcome, reason, bytes, now) else {
+        return;
+    };
+    match env.d1("INGEST") {
+        Ok(database) => ctx.wait_until(async move {
+            if let Err(err) = D1Ingest::new(database).record(&record).await {
+                console_error!("metering write failed: {err}");
+            }
+        }),
+        Err(err) => console_error!("metering skipped, no INGEST binding: {err}"),
+    }
+}
 
-    // 3. Authorize the UCAN container
+/// Authorize the container and answer the presigned request, together
+/// with the declared write bytes when the permit carries them.
+async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response, u64), Refusal> {
+    let authorizer = create_authorizer(env)?;
     let authorized_request = authorizer
-        .authorize(&body_bytes)
+        .authorize(body_bytes)
         .await
         .map_err(map_access_error)?;
 
-    // 3b. Screen the presented credentials: the window they claim, and
+    // Screen the presented credentials: the window they claim, and
     // whether any of them belongs to a revoked device. Runs only after
     // cryptographic authorization succeeded, and fails closed: a
     // presign the screen cannot clear is refused.
     #[cfg(target_arch = "wasm32")]
-    screen_credentials(&body_bytes, ctx).await?;
+    screen_credentials(body_bytes, env).await?;
 
-    // 4. Serialize the response as CBOR
+    // Write permits carry the declared size as a signed Content-Length,
+    // which is the exact byte figure metering records.
+    let bytes = authorized_request
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.parse().ok())
+        .unwrap_or(0);
+
     let cbor_bytes = serde_ipld_dagcbor::to_vec(&authorized_request)
         .map_err(|e| Refusal::unclassified(format!("failed to serialize response: {e}")))?;
-
-    // 5. Return CBOR response
     Response::from_bytes(cbor_bytes)
         .map(|r| {
             let headers = Headers::new();
             let _ = headers.set("Content-Type", "application/cbor");
-            r.with_headers(headers)
+            (r.with_headers(headers), bytes)
         })
         .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn screen_credentials(
-    body_bytes: &[u8],
-    ctx: &RouteContext<()>,
-) -> std::result::Result<(), Refusal> {
+async fn screen_credentials(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
     use crate::expiry::{WindowVerdict, check_window};
     use crate::revocation::{self, SetVerdict, r2::R2RevocationSource};
 
@@ -122,7 +191,7 @@ async fn screen_credentials(
         }
     }
 
-    let registry = match ctx.bucket("REVOCATIONS") {
+    let registry = match env.bucket("REVOCATIONS") {
         Ok(bucket) => R2RevocationSource::new(bucket),
         Err(err) => {
             console_error!("revocation screen unavailable, no REVOCATIONS binding: {err}");
@@ -172,36 +241,36 @@ thread_local! {
 /// an isolate cannot see change — so reading the bindings once and
 /// reusing the result costs nothing in freshness. A failed build is
 /// not cached: the next request tries again.
-fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, Refusal> {
+fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
     AUTHORIZER.with(|cached| {
         if let Some(authorizer) = cached.get() {
             return Ok(authorizer.clone());
         }
-        let authorizer = build_authorizer(ctx)?;
+        let authorizer = build_authorizer(env)?;
         let _ = cached.set(authorizer.clone());
         Ok(authorizer)
     })
 }
 
 /// Create UcanAuthorizer from environment configuration.
-fn build_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, Refusal> {
+fn build_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
     // Get R2 configuration from environment
-    let account_id = ctx
+    let account_id = env
         .var("R2_ACCOUNT_ID")
         .map_err(|e| Refusal::unclassified(format!("Missing R2_ACCOUNT_ID: {e}")))?
         .to_string();
 
-    let access_key_id = ctx
+    let access_key_id = env
         .secret("R2_ACCESS_KEY_ID")
         .map_err(|e| Refusal::unclassified(format!("Missing R2_ACCESS_KEY_ID: {e}")))?
         .to_string();
 
-    let secret_access_key = ctx
+    let secret_access_key = env
         .secret("R2_SECRET_ACCESS_KEY")
         .map_err(|e| Refusal::unclassified(format!("Missing R2_SECRET_ACCESS_KEY: {e}")))?
         .to_string();
 
-    let bucket = ctx
+    let bucket = env
         .var("R2_BUCKET_NAME")
         .map_err(|e| Refusal::unclassified(format!("Missing R2_BUCKET_NAME: {e}")))?
         .to_string();

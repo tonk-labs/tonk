@@ -162,6 +162,13 @@ async fn resolve_account_keys(tonk: &TonkState) -> (HashSet<String>, bool) {
     if let Some(descriptor) = configured_descriptor(tonk).await {
         keys.insert(descriptor.account_subject().repo_key().to_owned());
     }
+    // The account subject is the local root, so its repository key is
+    // derivable without any attachment record. Hiding it this way keeps
+    // an unlinked device's account replica hidden too: unlink retracts
+    // the replica index row, but the repository itself stays on disk.
+    if let Ok(root) = super::identity::local_root(tonk).await {
+        keys.insert(root.root_did.repo_key().to_owned());
+    }
 
     let Ok(meta) = tonk
         .reactor
@@ -197,6 +204,81 @@ async fn resolve_account_keys(tonk: &TonkState) -> (HashSet<String>, bool) {
             .map(|subject| subject.repo_key().to_owned())
     }));
     (keys, true)
+}
+
+/// The account replica rows the profile repository indexes.
+async fn account_replicas(tonk: &TonkState) -> Result<Vec<Replica>, TonkWorkerError> {
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to open the profile index: {error}"))
+        })?;
+    meta.handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::from(Replica::account_kind()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to query account replicas: {error}"))
+        })
+}
+
+/// The linked account's subject, read from the account replica the
+/// profile repository indexes — the same remote registration sync draws
+/// its pull population from (plan/Account model.md §5). Mounting the
+/// account repository records it; unlink retracts it. There is no
+/// separate linked flag: an attachment record without this replica is a
+/// link that never completed, not a linked account.
+///
+/// `Err` is a transient index read failure, distinct from a readable
+/// "no replica"; callers with a stored attachment may fall back to it
+/// rather than signing the profile out on a flaky read.
+pub(crate) async fn linked_account(
+    tonk: &TonkState,
+) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
+    Ok(account_replicas(tonk)
+        .await?
+        .into_iter()
+        .find_map(|row| row.subject.0.to_string().parse::<dialog_varsig::Did>().ok()))
+}
+
+/// Retract every account replica row from the profile index: the unlink
+/// half of the linked-state signal. The mounted repository and its
+/// remote configuration stay on disk — dialog remotes are create-only —
+/// but nothing tracks them any more, so neither sync nor the linked
+/// signal sees them, and re-linking re-records the same replica.
+pub(crate) async fn retract_account_replicas(tonk: &TonkState) -> Result<(), TonkWorkerError> {
+    let rows = account_replicas(tonk).await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction();
+    for row in rows {
+        transaction = transaction.retract(row);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to retract account replicas: {error}"))
+        })?;
+    tonk.account_keys.invalidate();
+    Ok(())
 }
 
 async fn mount_account_repository(

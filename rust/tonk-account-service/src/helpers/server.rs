@@ -326,7 +326,10 @@ async fn accounts_route(
     let passkey = optional_passkey_metadata(&caller.arguments, now).map_err(ceremony_error)?;
     let request = CreateAccount {
         email: required_string(&caller.arguments, "email").map_err(ceremony_error)?,
-        code: required_string(&caller.arguments, "code").map_err(ceremony_error)?,
+        code: match caller.arguments.get("code") {
+            None => None,
+            Some(_) => Some(required_string(&caller.arguments, "code").map_err(ceremony_error)?),
+        },
         credential_id: required_string(&caller.arguments, "credentialId")
             .map_err(ceremony_error)?,
         device_did: required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,

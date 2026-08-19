@@ -1,0 +1,14 @@
+[package]
+name = "tonk-email"
+description = "Shared email transport for tonk worker services"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { workspace = true }

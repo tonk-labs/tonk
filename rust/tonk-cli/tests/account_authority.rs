@@ -145,7 +145,7 @@ async fn it_installs_authority_from_a_callback_authorization(
             .await
             .unwrap();
     });
-    let authorization = callback.receive().await?;
+    let authorization = callback.receive(None).await?;
     posting.await?;
 
     let bytes = match authorization {
@@ -326,7 +326,6 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         joiner_operator,
         &tonk_cli::account::LinkOptions {
             service_url: remote.clone(),
-            account_url: page.url.clone(),
             device_name: "test-device".to_owned(),
             open_browser: false,
             abandon_detach: false,

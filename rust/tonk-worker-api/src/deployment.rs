@@ -11,6 +11,11 @@ pub struct DeploymentConfig {
     pub account_service_url: Url,
     /// Relay accepting immutable invitation and device revocation artifacts.
     pub revocation_relay_url: Url,
+    /// The access service's signing DID, which customer enrollment
+    /// addresses. Absent on a deployment whose service identity is not
+    /// configured, and on configs written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 #[cfg(test)]
@@ -22,6 +27,7 @@ mod tests {
         let config = DeploymentConfig {
             account_service_url: "https://accounts.example/".parse().unwrap(),
             revocation_relay_url: "https://relay.example/revocations".parse().unwrap(),
+            service_did: None,
         };
         let value = serde_json::to_value(config).unwrap();
         assert_eq!(value["accountServiceUrl"], "https://accounts.example/");
@@ -29,6 +35,9 @@ mod tests {
             value["revocationRelayUrl"],
             "https://relay.example/revocations"
         );
+        // Absent identity serializes to nothing, so configs written by a
+        // deployment without one keep parsing in strict old clients.
+        assert!(value.get("serviceDid").is_none());
     }
 
     #[test]
