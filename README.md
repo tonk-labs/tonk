@@ -67,7 +67,7 @@ To install the pre-release channel instead, set `TONK_CHANNEL=staging`:
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
 ```
 
-You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. The macOS binary is not yet Apple-signed, so a hand-downloaded copy needs `xattr -c tonk && codesign --force --sign - tonk` before it will run (the install script does this for you).
+You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. Newly published macOS binaries are Developer ID signed and notarized by Apple.
 
 ### Update
 
@@ -79,8 +79,8 @@ This upgrades an install made by the install script: it downloads the
 newest staging release, matching npm's default `latest` deployment,
 verifies it against the release checksums, checks the new binary runs,
 and only then replaces the old one — so a failed update leaves your
-working `tonk` untouched. On macOS it re-runs the de-quarantine and
-ad-hoc re-sign for you.
+working `tonk` untouched. On macOS it preserves the published Developer
+ID signature while replacing the executable.
 
 `tonk` checks for new releases once a day and prints a one-line notice
 on stderr when one exists. Turn that off with `tonk update
