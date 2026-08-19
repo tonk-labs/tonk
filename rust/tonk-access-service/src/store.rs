@@ -66,8 +66,75 @@ pub struct Consumer {
     pub did: String,
     /// The customer paying for this consumer; null means not servable.
     pub provider: Option<String>,
+    /// Original account provider, retained after hosted deletion for inventory.
+    pub owner: Option<String>,
     /// Registration time as a unix timestamp in seconds.
     pub registered: u64,
+    /// CID of the direct proof registered for destructive authority.
+    pub deletion_grant_cid: Option<String>,
+    /// Whether the CID names a purpose-built grant or a legacy owner proof.
+    pub deletion_grant_kind: Option<DeletionGrantKind>,
+    /// Denial-first hosted deletion lifecycle.
+    pub deletion_state: ConsumerDeletionState,
+    /// Completed deletion time, when any.
+    pub deleted_at: Option<u64>,
+}
+
+/// Verification rule attached to a registered deletion proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeletionGrantKind {
+    /// Exact direct `/space/delete` grant minted at creation.
+    Exact,
+    /// One-time upgrade from an original direct broad owner delegation.
+    LegacyDirect,
+}
+
+impl DeletionGrantKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::LegacyDirect => "legacy-direct",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "exact" => Ok(Self::Exact),
+            "legacy-direct" => Ok(Self::LegacyDirect),
+            other => Err(StoreError::Internal(format!(
+                "unknown deletion grant kind: {other}"
+            ))),
+        }
+    }
+}
+
+/// Whether a consumer still accepts storage operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumerDeletionState {
+    Active,
+    Deleting,
+    Deleted,
+}
+
+impl ConsumerDeletionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Deleting => "deleting",
+            Self::Deleted => "deleted",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "active" => Ok(Self::Active),
+            "deleting" => Ok(Self::Deleting),
+            "deleted" => Ok(Self::Deleted),
+            other => Err(StoreError::Internal(format!(
+                "unknown consumer deletion state: {other}"
+            ))),
+        }
+    }
 }
 
 /// Storage operations registration needs. Declared through the dual
@@ -82,6 +149,10 @@ pub trait Store {
 
     /// Look up a consumer by DID.
     async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError>;
+
+    /// List every consumer originally provided by one account, including
+    /// deleted rows whose live provider has been cleared.
+    async fn consumers_by_owner(&self, owner: &str) -> Result<Vec<Consumer>, StoreError>;
 
     /// Atomically write a new customer row together with its self-provided
     /// account consumer. Two steps would leave a window in which a
@@ -102,7 +173,31 @@ pub trait Store {
     /// Provision `did` as a consumer under `provider`. Idempotent for the
     /// same provider; answers false when a different customer already
     /// provides it, which the caller reports as a conflict.
-    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError>;
+    async fn add_consumer(
+        &self,
+        did: &str,
+        provider: &str,
+        now: u64,
+        deletion_grant_cid: Option<&str>,
+        deletion_grant_kind: Option<DeletionGrantKind>,
+    ) -> Result<bool, StoreError>;
+
+    /// Atomically deny future storage operations before object removal.
+    async fn mark_consumer_deleting(
+        &self,
+        did: &str,
+        deletion_grant_cid: &str,
+    ) -> Result<bool, StoreError>;
+
+    /// Finalize a denied consumer after its entire object prefix is empty.
+    async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError>;
+
+    /// Deny the customer's own account-space consumer after root authorization.
+    async fn mark_self_consumer_deleting(&self, did: &str) -> Result<bool, StoreError>;
+
+    /// Remove the self consumer and customer row only when all other owned
+    /// consumers are already deleted. Returns whether the customer was removed.
+    async fn delete_customer(&self, did: &str) -> Result<bool, StoreError>;
 
     /// Promote a `Registered` customer to `Active`, recording the
     /// activation time, terms acceptance, and cycle anchor. Returns false
@@ -125,7 +220,15 @@ SELECT did, email, status, plan, verified, terms_version
 "#;
 
 pub const SELECT_CONSUMER: &str = r#"
-SELECT did, provider, registered FROM consumer WHERE did = ?1
+SELECT did, provider, owner, registered, deletion_grant_cid, deletion_grant_kind,
+       deletion_state, deleted_at
+  FROM consumer WHERE did = ?1
+"#;
+
+pub const SELECT_CONSUMERS_BY_OWNER: &str = r#"
+SELECT did, provider, owner, registered, deletion_grant_cid, deletion_grant_kind,
+       deletion_state, deleted_at
+  FROM consumer WHERE owner = ?1 ORDER BY registered, did
 "#;
 
 pub const INSERT_CUSTOMER: &str = r#"
@@ -137,8 +240,8 @@ VALUES (?1, ?2, 'Registered', ?3, ?4, ?5)
 /// customer provides it. `ON CONFLICT DO NOTHING` keeps re-enrollment
 /// idempotent when the consumer row survived an earlier attempt.
 pub const INSERT_SELF_CONSUMER: &str = r#"
-INSERT INTO consumer (did, provider, registered)
-VALUES (?1, ?1, ?2)
+INSERT INTO consumer (did, provider, owner, registered)
+VALUES (?1, ?1, ?1, ?2)
 ON CONFLICT (did) DO NOTHING
 "#;
 
@@ -146,10 +249,22 @@ ON CONFLICT (did) DO NOTHING
 /// customer re-runs the update, while a consumer someone else provides
 /// matches no row and changes nothing.
 pub const ADD_CONSUMER: &str = r#"
-INSERT INTO consumer (did, provider, registered)
-VALUES (?1, ?2, ?3)
-ON CONFLICT (did) DO UPDATE SET provider = excluded.provider
-WHERE consumer.provider IS NULL OR consumer.provider = excluded.provider
+INSERT INTO consumer (did, provider, owner, registered, deletion_grant_cid, deletion_grant_kind)
+VALUES (?1, ?2, ?2, ?3, ?4, ?5)
+ON CONFLICT (did) DO UPDATE SET
+  provider = excluded.provider,
+  deletion_grant_cid = CASE
+    WHEN excluded.deletion_grant_kind = 'exact' THEN excluded.deletion_grant_cid
+    WHEN consumer.deletion_grant_cid IS NULL THEN excluded.deletion_grant_cid
+    ELSE consumer.deletion_grant_cid
+  END,
+  deletion_grant_kind = CASE
+    WHEN excluded.deletion_grant_kind = 'exact' THEN excluded.deletion_grant_kind
+    WHEN consumer.deletion_grant_kind IS NULL THEN excluded.deletion_grant_kind
+    ELSE consumer.deletion_grant_kind
+  END
+WHERE (consumer.provider IS NULL OR consumer.provider = excluded.provider)
+  AND consumer.deletion_state = 'active'
 "#;
 
 pub const UPDATE_REGISTERED_EMAIL: &str = r#"
@@ -164,6 +279,51 @@ UPDATE customer
        terms_accepted_at = ?2,
        cycle_anchor = ?2
  WHERE did = ?1 AND status = 'Registered'
+"#;
+
+pub const MARK_CONSUMER_DELETING: &str = r#"
+UPDATE consumer SET deletion_state = 'deleting'
+ WHERE did = ?1
+   AND deletion_grant_cid = ?2
+   AND deletion_state = 'active'
+"#;
+
+pub const FINISH_CONSUMER_DELETION: &str = r#"
+UPDATE consumer
+   SET deletion_state = 'deleted', deleted_at = ?2, provider = NULL
+ WHERE did = ?1 AND deletion_state = 'deleting'
+"#;
+
+pub const MARK_SELF_CONSUMER_DELETING: &str = r#"
+UPDATE consumer SET deletion_state = 'deleting'
+ WHERE did = ?1 AND owner = ?1 AND deletion_state = 'active'
+"#;
+
+/// Detach completed denial markers from the deleted customer while retaining
+/// the minimum state that prevents a stale replica from provisioning the same
+/// space again.
+pub const ANONYMIZE_DELETED_CONSUMERS: &str = r#"
+UPDATE consumer
+   SET provider = NULL,
+       owner = NULL,
+       deletion_grant_cid = NULL,
+       deletion_grant_kind = NULL
+ WHERE owner = ?1
+   AND did <> ?1
+   AND deletion_state = 'deleted'
+"#;
+
+pub const DELETE_SELF_CONSUMER: &str = r#"
+DELETE FROM consumer
+ WHERE did = ?1
+   AND owner = ?1
+   AND deletion_state IN ('deleting', 'deleted')
+"#;
+
+pub const DELETE_CUSTOMER: &str = r#"
+DELETE FROM customer
+ WHERE did = ?1
+   AND NOT EXISTS (SELECT 1 FROM consumer WHERE owner = ?1)
 "#;
 
 pub mod ingest;

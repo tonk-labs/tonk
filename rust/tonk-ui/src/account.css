@@ -484,6 +484,58 @@ tonk-account {
     border-top: 1px solid var(--account-divider);
 }
 
+.account__danger {
+    border: 1px solid color-mix(in oklab, var(--wa-color-danger-fill-loud, #d9363e) 48%, transparent);
+}
+
+.account__button--danger {
+    margin-top: 18px;
+    background: var(--wa-color-danger-fill-loud, #c92f38);
+    color: white;
+}
+
+.account__delete-review {
+    display: grid;
+    gap: 14px;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--account-divider);
+}
+
+.account__delete-spaces {
+    margin: 0;
+    padding-left: 22px;
+    color: var(--account-ink);
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.account__delete-confirm {
+    display: grid;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.account__delete-confirm input {
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid var(--account-divider);
+    background: var(--account-field);
+    color: var(--account-ink);
+    font: inherit;
+}
+
+.account__delete-check {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+    color: var(--account-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
 @media (prefers-color-scheme: dark) {
     tonk-account {
         --account-shadow: 0 0 0 1px rgb(255 255 255 / 8%);

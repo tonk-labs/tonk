@@ -13,12 +13,13 @@ use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
-    Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
-    DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
-    INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK,
-    LinkCompletion, LinkRequest, NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL,
-    SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE,
-    SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
+    Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_ACCOUNT,
+    DELETE_ACCOUNT_DEVICES, DELETE_ACCOUNT_LINKS, DELETE_CODE, DetachStoreOutcome, Device,
+    DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR,
+    INSERT_DEVICE, INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkCompletion, LinkRequest,
+    NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
+    SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
     SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
     UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
@@ -331,6 +332,41 @@ impl Store for D1Store {
             .await
             .map_err(map_err)?;
         Ok(row.map(Account::from))
+    }
+
+    async fn delete_account(&self, account_id: i64, email: &str) -> Result<bool, StoreError> {
+        let id = JsValue::from_f64(account_id as f64);
+        let links = self
+            .0
+            .prepare(DELETE_ACCOUNT_LINKS)
+            .bind(&[id.clone()])
+            .map_err(map_err)?;
+        let devices = self
+            .0
+            .prepare(DELETE_ACCOUNT_DEVICES)
+            .bind(&[id.clone()])
+            .map_err(map_err)?;
+        let code = self
+            .0
+            .prepare(DELETE_CODE)
+            .bind(&[JsValue::from(email)])
+            .map_err(map_err)?;
+        let account = self
+            .0
+            .prepare(DELETE_ACCOUNT)
+            .bind(&[id, JsValue::from(email)])
+            .map_err(map_err)?;
+        let results = self
+            .0
+            .batch(vec![links, devices, code, account])
+            .await
+            .map_err(map_err)?;
+        Ok(results
+            .last()
+            .and_then(|result| result.meta().ok().flatten())
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0)
+            == 1)
     }
 
     async fn establish_repository_descriptor(

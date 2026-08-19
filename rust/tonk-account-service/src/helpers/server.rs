@@ -32,6 +32,7 @@ use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account, preflight_account};
 use crate::core::backup::{get_chain, list_account_spots, list_chains, put_chain_and_index_spot};
 use crate::core::codes::{generate_code, request_code};
+use crate::core::deletion::delete_account;
 use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
     DeviceView, detach_device, list_devices, register_device, revoke_device,
@@ -145,6 +146,7 @@ async fn handle_request(
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/accounts/preflight") => accounts_preflight_route(req, &backends).await,
         (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
+        (Method::POST, "/account/delete") => account_delete_route(req, &backends).await,
         (Method::POST, "/revocations") => revocations_route(req, &backends).await,
         (Method::POST, "/account/repository/establish") => {
             repository_establish_route(req, &backends).await
@@ -173,6 +175,28 @@ async fn handle_request(
         Ok(response) => response,
         Err(err) => error_response(err),
     }))
+}
+
+/// `POST /account/delete` → root-authorized permanent account removal.
+async fn account_delete_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize_root(&body, &["account", "delete"])
+        .await
+        .map_err(ceremony_error)?;
+    let confirmed_email =
+        required_string(&caller.arguments, "confirmedEmail").map_err(ceremony_error)?;
+    let receipt = delete_account(
+        &backends.store,
+        &backends.chains,
+        &caller.root_did,
+        &confirmed_email,
+    )
+    .await
+    .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::OK, &receipt))
 }
 
 /// `POST /account/summary` → verified account facts for an active device.

@@ -7,14 +7,14 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
-    DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
-    INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_LINK, LinkCompletion, LinkRequest,
-    NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
-    SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
-    SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
-    UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_ACCOUNT,
+    DELETE_ACCOUNT_DEVICES, DELETE_ACCOUNT_LINKS, DELETE_CODE, DetachStoreOutcome, Device,
+    DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR,
+    INSERT_DEVICE, INSERT_LINK, LinkCompletion, LinkRequest, NewAccount, NewDevice,
+    SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID,
+    SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT,
+    SELECT_LINK, SELECT_LINK_BY_ATTACHMENT, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
+    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -283,6 +283,21 @@ impl Store for SqliteStore {
         })
         .optional()
         .map_err(map_err)
+    }
+
+    async fn delete_account(&self, account_id: i64, email: &str) -> Result<bool, StoreError> {
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        tx.execute(DELETE_ACCOUNT_LINKS, params![account_id])
+            .map_err(map_err)?;
+        tx.execute(DELETE_ACCOUNT_DEVICES, params![account_id])
+            .map_err(map_err)?;
+        tx.execute(DELETE_CODE, params![email]).map_err(map_err)?;
+        let changed = tx
+            .execute(DELETE_ACCOUNT, params![account_id, email])
+            .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
+        Ok(changed == 1)
     }
 
     async fn establish_repository_descriptor(

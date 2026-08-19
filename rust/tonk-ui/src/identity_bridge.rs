@@ -151,6 +151,42 @@ pub(crate) struct RevocationOutput {
     pub revocation_hex: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeletionProofInput {
+    pub kind: String,
+    pub proof_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrepareAccountDeletionInput {
+    pub expected_root: String,
+    pub confirmed_email: String,
+    pub proofs: Vec<DeletionProofInput>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreparedAccountDeletion {
+    pub space_invocations_hex: Vec<String>,
+    pub customer_invocation_hex: String,
+    pub account_invocation_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrepareSpaceDeletionInput {
+    pub expected_root: String,
+    pub proof: DeletionProofInput,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreparedSpaceDeletion {
+    pub invocation_hex: String,
+}
+
 /// Stable failures produced at the JavaScript identity boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum IdentityBridgeError {
@@ -298,6 +334,18 @@ pub(crate) async fn sign_revocation(
     input: SignRevocationInput,
 ) -> Result<RevocationOutput, IdentityBridgeError> {
     call("signRevocation", input).await
+}
+
+pub(crate) async fn prepare_account_deletion(
+    input: PrepareAccountDeletionInput,
+) -> Result<PreparedAccountDeletion, IdentityBridgeError> {
+    call("prepareAccountDeletion", input).await
+}
+
+pub(crate) async fn prepare_space_deletion(
+    input: PrepareSpaceDeletionInput,
+) -> Result<PreparedSpaceDeletion, IdentityBridgeError> {
+    call("prepareSpaceDeletion", input).await
 }
 
 #[cfg(test)]

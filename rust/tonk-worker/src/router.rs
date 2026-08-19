@@ -21,6 +21,7 @@ mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 mod account;
+mod account_deletion;
 mod customer;
 
 pub(crate) mod account_state;
@@ -235,6 +236,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(identity::get).post(identity::save),
         )
         .route("/api/account", get(account::get).delete(account::unlink))
+        .route("/api/account/deletion/plan", get(account_deletion::plan))
+        .route("/api/account/delete", post(account_deletion::delete))
+        .route(
+            "/api/account/spaces/delete",
+            post(account_deletion::delete_space),
+        )
         .route("/api/account/attach", post(account::link))
         .route("/api/account/display-name", post(account::set_display_name))
         .route(

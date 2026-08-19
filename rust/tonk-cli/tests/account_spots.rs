@@ -350,6 +350,7 @@ async fn pull_requires_a_backed_inventory_row_and_returns_an_adopted_site() -> R
     fixture
         .put(&tonk_account::backup::AccountSpotBackup {
             chain_hex: hex::encode(adopted_prefix.to_bytes()?),
+            deletion_grant_hex: None,
             remote_url: Some("http://127.0.0.1:9/ucan/".to_string()),
             revocation_url: None,
             name: Some("adopted".to_string()),
@@ -441,6 +442,7 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
     fixture
         .put(&tonk_account::backup::AccountSpotBackup {
             chain_hex: hex::encode(prefix.to_bytes()?),
+            deletion_grant_hex: None,
             remote_url: Some(env.access_service_url.clone()),
             revocation_url: None,
             name: Some("garden".to_string()),
@@ -622,6 +624,13 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
         Some("synced-owned"),
         "synced RepositoryName takes precedence over the registry alias"
     );
+    assert!(
+        rows.iter()
+            .find(|row| row.subject == owned.repository.did().to_string())
+            .unwrap()
+            .deletion_ready,
+        "a newly owned space backup carries its exact deletion grant"
+    );
     assert_eq!(
         rows.iter()
             .find(|row| row.subject == joined_subject.to_string())
@@ -630,6 +639,14 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
             .as_deref(),
         Some("joined-alias"),
         "an unnamed repository falls back to its registry name"
+    );
+    assert!(
+        !rows
+            .iter()
+            .find(|row| row.subject == joined_subject.to_string())
+            .unwrap()
+            .deletion_ready,
+        "a joined space must not acquire deletion authority"
     );
     assert_eq!(
         rows.iter()

@@ -5,6 +5,8 @@
 pub const SPACE_ROOT_SITE_PREFIX: &str = "tonk-space-root-v1/";
 /// Credential prefix for account-root-specific reusable space authority.
 pub const SPACE_ROOT_SITE_V2_PREFIX: &str = "tonk-space-root-v2/";
+/// Credential prefix for exact hosted-space deletion grants.
+pub const SPACE_DELETE_SITE_V1_PREFIX: &str = "tonk-space-delete-v1/";
 
 /// Credential key for one repository's prefix ending at one exact account root.
 pub fn space_root_site(
@@ -12,6 +14,14 @@ pub fn space_root_site(
     account_root: &dialog_varsig::Did,
 ) -> String {
     format!("{SPACE_ROOT_SITE_V2_PREFIX}{repository_did}/{account_root}")
+}
+
+/// Credential key for one space's deletion grant to one exact account root.
+pub fn space_delete_site(
+    repository_did: &dialog_varsig::Did,
+    account_root: &dialog_varsig::Did,
+) -> String {
+    format!("{SPACE_DELETE_SITE_V1_PREFIX}{repository_did}/{account_root}")
 }
 /// Credential site holding the content key of the last account backup a
 /// native client successfully uploaded for a repository subject.
@@ -26,6 +36,9 @@ pub const ACCOUNT_SPOTS_CAPABILITY_V1: &str = "v1";
 pub struct AccountSpotBackup {
     /// Hex-encoded [`dialog_ucan_core::DelegationChain`] bytes.
     pub chain_hex: String,
+    /// Exact direct `space -> account-root /space/delete` grant, when ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_grant_hex: Option<String>,
     /// Access-service URL used to synchronize the spot.
     pub remote_url: Option<String>,
     /// Immutable invitation-revocation relay URL.
@@ -52,6 +65,9 @@ pub struct AccountSpotSummary {
     pub revocation_url: Option<String>,
     /// Whether conflicting unindexed artifacts prevent safe selection.
     pub ambiguous: bool,
+    /// Whether exact hosted-space deletion authority is retained.
+    #[serde(default)]
+    pub deletion_ready: bool,
 }
 
 /// A decoded and verified reusable account spot backup.
@@ -61,6 +77,8 @@ pub struct ValidatedAccountSpot {
     pub subject: dialog_varsig::Did,
     /// Exact verified root-ending delegation chain.
     pub chain: dialog_ucan_core::DelegationChain,
+    /// Exact hosted-space deletion grant, when the backup carries one.
+    pub deletion_grant: Option<dialog_ucan_core::DelegationChain>,
 }
 
 /// Stable validation failures for account spot artifacts.
@@ -102,6 +120,10 @@ pub enum AccountSpotBackupError {
     /// The revocation relay metadata was malformed.
     #[error("backup revocation URL is invalid: {0}")]
     InvalidRevocationUrl(String),
+    /// The optional deletion grant was malformed or did not belong to this
+    /// space and account root.
+    #[error("backup deletion grant is invalid: {0}")]
+    InvalidDeletionGrant(String),
 }
 
 impl AccountSpotBackup {
@@ -182,7 +204,28 @@ impl AccountSpotBackup {
                 .map_err(|error| AccountSpotBackupError::InvalidRevocationUrl(error.to_string()))?;
         }
 
-        Ok(ValidatedAccountSpot { subject, chain })
+        let deletion_grant = match &self.deletion_grant_hex {
+            Some(encoded) => {
+                let bytes = hex::decode(encoded).map_err(|error| {
+                    AccountSpotBackupError::InvalidDeletionGrant(error.to_string())
+                })?;
+                Some(
+                    crate::deletion::validate_deletion_grant(&bytes, &subject, account_root)
+                        .await
+                        .map_err(|error| {
+                            AccountSpotBackupError::InvalidDeletionGrant(error.to_string())
+                        })?
+                        .chain,
+                )
+            }
+            None => None,
+        };
+
+        Ok(ValidatedAccountSpot {
+            subject,
+            chain,
+            deletion_grant,
+        })
     }
 }
 
@@ -199,17 +242,25 @@ mod tests {
         }"#;
         let decoded: AccountSpotBackup = serde_json::from_str(legacy).unwrap();
         assert_eq!(decoded.name, None);
+        assert_eq!(decoded.deletion_grant_hex, None);
 
         let named = AccountSpotBackup {
             chain_hex: "00ff".to_string(),
+            deletion_grant_hex: Some("aabb".to_string()),
             remote_url: Some("https://access.example/ucan/".to_string()),
             revocation_url: Some("https://artifacts.example/revocations/".to_string()),
             name: Some("garden".to_string()),
         };
         let value = serde_json::to_value(&named).unwrap();
         let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 4);
-        for key in ["chain_hex", "remote_url", "revocation_url", "name"] {
+        assert_eq!(object.len(), 5);
+        for key in [
+            "chain_hex",
+            "deletion_grant_hex",
+            "remote_url",
+            "revocation_url",
+            "name",
+        ] {
             assert!(object.contains_key(key), "missing {key}: {object:?}");
         }
 
@@ -220,11 +271,13 @@ mod tests {
             remote_url: named.remote_url,
             revocation_url: named.revocation_url,
             ambiguous: false,
+            deletion_ready: true,
         };
         let summary = serde_json::to_value(summary).unwrap();
         assert!(summary.get("remoteUrl").is_some());
         assert!(summary.get("revocationUrl").is_some());
         assert!(summary.get("remote_url").is_none());
+        assert_eq!(summary["deletionReady"], true);
     }
 
     async fn signer(seed: u8) -> dialog_credentials::Ed25519Signer {
@@ -255,6 +308,7 @@ mod tests {
     fn artifact(chain: &dialog_ucan_core::DelegationChain) -> AccountSpotBackup {
         AccountSpotBackup {
             chain_hex: hex::encode(chain.to_bytes().unwrap()),
+            deletion_grant_hex: None,
             remote_url: Some("https://access.example/ucan/".to_string()),
             revocation_url: Some("https://artifacts.example/revocations/".to_string()),
             name: Some("garden".to_string()),
@@ -355,6 +409,31 @@ mod tests {
         ] {
             assert!(invalid.validate_for(&account).await.is_err());
         }
+    }
+
+    #[dialog_common::test]
+    async fn it_validates_an_optional_exact_deletion_grant() {
+        use dialog_varsig::Principal as _;
+
+        let space = signer(7).await;
+        let account = signer(8).await.did();
+        let chain = space_chain(space.clone(), &account, &space.did()).await;
+        let deletion = crate::deletion::mint_deletion_grant(&space, &account)
+            .await
+            .unwrap();
+        let mut backup = artifact(&chain);
+        backup.deletion_grant_hex = Some(hex::encode(deletion.to_bytes().unwrap()));
+
+        let validated = backup.validate_for(&account).await.unwrap();
+
+        assert_eq!(validated.deletion_grant.unwrap(), deletion);
+
+        let broad = space_chain(space, &account, &validated.subject).await;
+        backup.deletion_grant_hex = Some(hex::encode(broad.to_bytes().unwrap()));
+        assert!(matches!(
+            backup.validate_for(&account).await,
+            Err(AccountSpotBackupError::InvalidDeletionGrant(_))
+        ));
     }
 
     #[dialog_common::test]

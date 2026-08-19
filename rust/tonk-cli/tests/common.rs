@@ -200,6 +200,7 @@ impl AccountFixture {
         let chain = DelegationChain::new(delegation);
         let backup = tonk_account::backup::AccountSpotBackup {
             chain_hex: hex::encode(chain.to_bytes()?),
+            deletion_grant_hex: None,
             remote_url: remote_url.map(str::to_string),
             revocation_url: None,
             name: name.map(str::to_string),

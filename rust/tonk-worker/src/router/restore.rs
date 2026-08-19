@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
-use tonk_account::backup::{AccountSpotSummary, SPACE_ROOT_SITE_PREFIX};
+use tonk_account::backup::{AccountSpotSummary, SPACE_ROOT_SITE_PREFIX, space_delete_site};
 use tonk_common::log;
 
 use crate::router::account_backup::{
@@ -88,6 +88,14 @@ async fn restore_one(
     let prefix_bytes = validated.chain.to_bytes().map_err(|error| {
         crate::TonkWorkerError::Internal(format!("serialize restored delegation: {error}"))
     })?;
+    let deletion_grant_bytes = validated
+        .deletion_grant
+        .as_ref()
+        .map(DelegationChain::to_bytes)
+        .transpose()
+        .map_err(|error| {
+            crate::TonkWorkerError::Internal(format!("serialize restored deletion grant: {error}"))
+        })?;
     tonk.profile
         .access()
         .save(UcanDelegation(validated.chain))
@@ -105,6 +113,19 @@ async fn restore_one(
         .map_err(|error| {
             crate::TonkWorkerError::Internal(format!("persist restored delegation: {error}"))
         })?;
+    if let Some(bytes) = deletion_grant_bytes {
+        tonk.profile
+            .credential()
+            .site(space_delete_site(&expected, link.issuer()))
+            .save(bytes)
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                crate::TonkWorkerError::Internal(format!(
+                    "persist restored deletion grant: {error}"
+                ))
+            })?;
+    }
 
     // The synced content branch remains authoritative for membership,
     // roles, names, invitations, and provenance.
@@ -149,6 +170,7 @@ mod tests {
             .unwrap();
         let backup = AccountSpotBackup {
             chain_hex: hex::encode(DelegationChain::new(delegation).to_bytes().unwrap()),
+            deletion_grant_hex: None,
             remote_url: Some("https://sync.example.test/ucan/".to_string()),
             revocation_url: Some("https://relay.example.test/revocations/".to_string()),
             name: name.map(str::to_string),
@@ -220,6 +242,7 @@ mod tests {
                 remote_url: None,
                 revocation_url: None,
                 ambiguous: true,
+                deletion_ready: false,
             },
             AccountSpotSummary {
                 subject: bad_subject.to_string(),
@@ -228,6 +251,7 @@ mod tests {
                 remote_url: Some("https://sync.example.test/ucan/".to_string()),
                 revocation_url: None,
                 ambiguous: false,
+                deletion_ready: false,
             },
             AccountSpotSummary {
                 subject: legacy_subject.to_string(),
@@ -236,6 +260,7 @@ mod tests {
                 remote_url: Some("https://sync.example.test/ucan/".to_string()),
                 revocation_url: None,
                 ambiguous: false,
+                deletion_ready: false,
             },
             AccountSpotSummary {
                 subject: good_subject.to_string(),
@@ -244,6 +269,7 @@ mod tests {
                 remote_url: Some("https://sync.example.test/ucan/".to_string()),
                 revocation_url: None,
                 ambiguous: false,
+                deletion_ready: false,
             },
         ];
         let _inventory = install_inventory(&rows, &[b"bad artifact".to_vec(), legacy, good]);

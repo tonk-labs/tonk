@@ -63,6 +63,7 @@ pub async fn provision(
     profile: &Profile,
     consumer: &Did,
     consent: &dialog_ucan_core::DelegationChain,
+    deletion_grant: Option<&dialog_ucan_core::DelegationChain>,
 ) -> Result<()> {
     let connection = crate::account::optional_connection(profile)
         .await?
@@ -70,11 +71,12 @@ pub async fn provision(
     let origin = access_origin(profile)
         .await?
         .context("the account has no repository descriptor to locate its service by")?;
-    let body = tonk_identity::request::build_provider_add_invocation(
+    let body = tonk_identity::request::build_provider_add_invocation_with_deletion(
         profile.signer().signer().clone(),
         &connection.link,
         consumer,
         consent,
+        deletion_grant,
     )
     .await?;
     let response = reqwest::Client::new()

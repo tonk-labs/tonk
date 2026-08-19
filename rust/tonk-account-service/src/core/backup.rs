@@ -111,6 +111,7 @@ fn summary(
         remote_url: backup.remote_url.clone(),
         revocation_url: backup.revocation_url.clone(),
         ambiguous,
+        deletion_ready: backup.deletion_grant_hex.is_some(),
     }
 }
 
@@ -204,6 +205,7 @@ pub async fn list_account_spots<C: ChainStore>(
                 remote_url: None,
                 revocation_url: None,
                 ambiguous: true,
+                deletion_ready: false,
             });
         } else {
             rows.push(summary(first, subject, Some(first_key.clone()), false));
@@ -286,6 +288,10 @@ mod tests {
         ) -> Result<Vec<(String, String)>, ChainError> {
             self.inner.list_spot_heads(root_did, slot).await
         }
+
+        async fn delete_namespace(&self, root_did: &str) -> Result<(), ChainError> {
+            self.inner.delete_namespace(root_did).await
+        }
     }
 
     fn account(id: i64, root_did: &str) -> Account {
@@ -319,6 +325,7 @@ mod tests {
         let chain = DelegationChain::new(delegation);
         let artifact = AccountSpotBackup {
             chain_hex: hex::encode(chain.to_bytes().unwrap()),
+            deletion_grant_hex: None,
             remote_url: Some(remote.to_string()),
             revocation_url: None,
             name: name.map(str::to_string),
@@ -329,6 +336,7 @@ mod tests {
     fn artifact(chain: &DelegationChain) -> Vec<u8> {
         serde_json::to_vec(&AccountSpotBackup {
             chain_hex: hex::encode(chain.to_bytes().unwrap()),
+            deletion_grant_hex: None,
             remote_url: Some("https://access.example/".to_string()),
             revocation_url: None,
             name: Some("garden".to_string()),
@@ -433,6 +441,7 @@ mod tests {
                     .to_bytes()
                     .unwrap(),
             ),
+            deletion_grant_hex: None,
             remote_url: Some("https://access.example/".to_string()),
             revocation_url: None,
             name: Some("garden".to_string()),

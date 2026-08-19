@@ -112,6 +112,11 @@ pub struct Add {
     /// container. It must root at the consumer and be issued to the
     /// invoking customer, granting `/consumer/provision` or broader.
     pub consent: Cid,
+    /// Exact direct `/space/delete` grant, when the creator minted one.
+    /// Legacy clients omit this and may be upgraded from their direct broad
+    /// owner proof by the service.
+    #[serde(default)]
+    pub deletion: Option<Cid>,
 }
 
 impl Effect for Add {
@@ -146,6 +151,9 @@ pub struct ConsumerReceipt {
     pub consumer: Did,
     /// The customer now providing it.
     pub provider: Did,
+    /// Whether the service registered cryptographic deletion authority.
+    #[serde(default)]
+    pub deletion_ready: bool,
 }
 
 /// Customer lifecycle state, as stored and as answered on the wire.
@@ -276,6 +284,7 @@ mod tests {
         let add: Capability<Add> = subject().attenuate(Provider).invoke(Add {
             consumer: did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
             consent: Cid::default(),
+            deletion: None,
         });
         assert_eq!(add.ability(), "/provider/add");
 

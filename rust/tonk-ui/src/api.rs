@@ -2,9 +2,10 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
-    AccountDevice, AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus,
-    AccountSummary, ActivateProfileRequest, EvaluateResponse, IdentifyResponse, JoinRequest,
-    JoinResponse, MembershipResponse, ProfilesResponse, QueryResponse, RepositoryInfo,
+    AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDevice,
+    AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus, AccountSummary,
+    ActivateProfileRequest, EvaluateResponse, HostedSpaceDeletionResult, IdentifyResponse,
+    JoinRequest, JoinResponse, MembershipResponse, ProfilesResponse, QueryResponse, RepositoryInfo,
     RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse,
     SyncStatusResponse,
 };
@@ -802,6 +803,69 @@ pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "DELETE /api/account returned {status}: {text}"
+        )))
+    }
+}
+
+/// Load the exact, service-authoritative destructive scope for review.
+pub async fn account_deletion_plan() -> Result<AccountDeletionPlan, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/account/deletion/plan", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/account/deletion/plan returned {status}: {text}"
+        )))
+    }
+}
+
+/// Execute the root-signed destructive plan in service-safe order.
+pub async fn delete_account(
+    request: &AccountDeletionRequest,
+) -> Result<AccountDeletionResult, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/delete", origin()))
+        .json(request)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/delete returned {status}: {text}"
+        )))
+    }
+}
+
+/// Permanently delete one owned hosted space without deleting the account.
+pub async fn delete_owned_space(
+    request: &tonk_worker_api::AccountSpaceDeletionRequest,
+) -> Result<HostedSpaceDeletionResult, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/spaces/delete", origin()))
+        .json(request)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/spaces/delete returned {status}: {text}"
         )))
     }
 }
