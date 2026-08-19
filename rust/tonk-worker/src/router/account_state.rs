@@ -464,6 +464,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
             session
                 .handle()
                 .pull()
+                .download()
                 .perform(&tonk.operator)
                 .await
                 .map_err(|error| {
@@ -498,6 +499,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                     session
                         .handle()
                         .pull()
+                        .download()
                         .perform(&tonk.operator)
                         .await
                         .map(|_| ())
@@ -534,9 +536,15 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
+    // Pull-and-materialize: profile main is also the access branch, and
+    // the authorization walk over it must read entirely locally at the
+    // next session open (see `adopt_account_upstream`). Downloading here,
+    // while this session can still authorize remote reads, is what keeps
+    // a bare adoption from bricking the next boot.
     session
         .handle()
         .pull()
+        .download()
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;

@@ -2,6 +2,66 @@ import init, { activate } from "./worker.js";
 
 const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 
+// ---- Introspection -------------------------------------------------
+//
+// Everything the worker logs is captured into a bounded ring, and
+// `GET /api/health` answers from this glue WITHOUT the wasm worker —
+// so a worker that fails to initialize is still diagnosable with one
+// fetch from any page, instead of spelunking serviceworker-internals.
+const LOG_RING_CAPACITY = 400;
+const logRing = [];
+const ringify = level => {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+        const message = args
+            .map(arg => {
+                if (typeof arg === "string") return arg;
+                try {
+                    return arg instanceof Error ? (arg.stack || String(arg)) : JSON.stringify(arg);
+                } catch {
+                    return String(arg);
+                }
+            })
+            .join(" ");
+        logRing.push({ t: Date.now(), level, message: message.slice(0, 2000) });
+        if (logRing.length > LOG_RING_CAPACITY) logRing.shift();
+        original(...args);
+    };
+};
+["log", "warn", "error"].forEach(ringify);
+self.addEventListener("unhandledrejection", event => {
+    logRing.push({
+        t: Date.now(),
+        level: "error",
+        message: `unhandledrejection: ${event.reason?.stack || event.reason}`.slice(0, 2000),
+    });
+    if (logRing.length > LOG_RING_CAPACITY) logRing.shift();
+});
+
+// Worker-init observability: state, the last failure, and how many
+// times initialization has been attempted.
+const workerHealth = {
+    state: "idle", // idle | initializing | ok | failed
+    error: null,
+    attempts: 0,
+    lastAttemptAt: null,
+    startedAt: Date.now(),
+};
+
+function healthResponse() {
+    return new Response(
+        JSON.stringify({
+            worker: workerHealth.state,
+            error: workerHealth.error,
+            attempts: workerHealth.attempts,
+            lastAttemptAt: workerHealth.lastAttemptAt,
+            startedAt: workerHealth.startedAt,
+            log: logRing.slice(-200),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+    );
+}
+
 // Shell cache name. Kept in step with `cache.rs`'s `SHELL_CACHE`.
 // Declared up here (not beside `serveNavigation`) because
 // `oninstall` precaches the shell into it.
@@ -14,9 +74,42 @@ let tonkServiceWorkerResolves;
 // spec, and `importScripts()` is incompatible with module SWs.
 // So the worker bundle costs ~1 s of `workerStart` time on cold
 // navigations until we find a better way to defer it.
+// How long a failed initialization parks further attempts. A failed
+// init used to be memoized forever (the rejected promise was cached),
+// so one transient failure — storage still settling, a race at boot —
+// bricked the worker until the browser discarded it. Now a failure is
+// recorded for `/api/health`, and the next fetch after the hold-off
+// retries from scratch.
+const INIT_RETRY_HOLDOFF_MS = 5000;
+
 async function activateWorker() {
     if (tonkServiceWorkerResolves == null) {
-        tonkServiceWorkerResolves = init().then(() => activate());
+        const now = Date.now();
+        if (
+            workerHealth.state === "failed" &&
+            now - workerHealth.lastAttemptAt < INIT_RETRY_HOLDOFF_MS
+        ) {
+            throw new Error(`worker initialization failed: ${workerHealth.error}`);
+        }
+        workerHealth.state = "initializing";
+        workerHealth.attempts += 1;
+        workerHealth.lastAttemptAt = now;
+        tonkServiceWorkerResolves = init()
+            .then(() => activate())
+            .then(worker => {
+                workerHealth.state = "ok";
+                workerHealth.error = null;
+                return worker;
+            })
+            .catch(error => {
+                workerHealth.state = "failed";
+                workerHealth.error = String(error?.message || error).slice(0, 2000);
+                // Un-memoize so a later fetch retries instead of
+                // replaying this rejection for the worker's lifetime.
+                tonkServiceWorkerResolves = null;
+                log("Worker initialization failed:", error);
+                throw error;
+            });
         log("Worker initialized");
     }
 
@@ -275,6 +368,12 @@ async function serveAsset(event) {
 // which owns the guest rewrite and the resource cache.
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    // Answered from this glue, never the wasm worker: health must be
+    // readable precisely when the worker cannot answer for itself.
+    if (path === "/api/health") {
+        event.respondWith(healthResponse());
+        return;
+    }
     // Shortcut-service routes (`PUT /@`, `GET /@/{hash}`) belong to
     // the edge worker, not this one. Not intercepting at all is the
     // point: the edge answers `GET /@/{hash}` with a relative 301

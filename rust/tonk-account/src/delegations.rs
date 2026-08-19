@@ -21,7 +21,7 @@ use dialog_common::ConditionalSync;
 use dialog_credentials::Signer;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
-use dialog_effects::blob::Write as BlobWrite;
+use dialog_effects::blob::{Import as BlobImport, Read as BlobRead, Write as BlobWrite};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_repository::{
     Branch, CommitError, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
@@ -111,8 +111,11 @@ where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
+        + Provider<BlobRead>
+        + Provider<BlobImport>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
+        + Provider<Fork<RemoteSite, BlobRead>>
         + ConditionalSync
         + 'static,
 {
@@ -121,7 +124,14 @@ where
         Some(Upstream::Remote { .. }) => {}
         Some(_) => return Err(AdoptError::ForeignUpstream),
     }
-    Ok(access.pull().perform(env).await?)
+    // Pull-and-materialize, not a bare pull: a bare pull adopts the head
+    // by root, leaving the access branch partially replicated — and the
+    // access branch is what authorization walks. A scan that hits a
+    // by-reference node at session open cannot hydrate it (the session
+    // being opened is what would authorize the fetch), which bricks the
+    // worker at boot. Downloading while a live session holds authority
+    // keeps the store complete for the next boot.
+    Ok(access.pull().download().perform(env).await?)
 }
 
 /// Why adopting the account as an access-branch upstream failed.
