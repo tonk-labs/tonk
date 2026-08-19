@@ -35,16 +35,16 @@ several interchangeable custody methods for it.
   - `HKDF(secret, "tonk/enc/v1")` → reserved for the X25519 encryption
     root when E2EE lands. Not implemented now; the reason the *secret*
     is wrapped rather than the derived signing key.
-- **Non-extractable signing handle.** At first run, derive the signing
-  key once and import it as a non-extractable WebCrypto Ed25519 key;
-  routine signing (delegations, deposits) uses the handle. Without
-  this, a silent local unwrap
-  would let compromised page code sign as the account; with it, the
-  scheme is strictly safer than today's ceremony-gated derivation. The
-  plaintext secret surfaces only for custody operations: enrolling a
-  wrapping, unlocking a fresh device (unwrap → self-issue the direct
-  `account → device` delegation → zeroize), and later the E2EE
-  derivation.
+- **Nothing is ever stored.** No KEK, no wrapping, no handle persists
+  anywhere on a device. The secret materializes only inside a ceremony
+  — account creation, unlocking a browser, enrolling another wrapping,
+  approving a device, signing a revocation — always behind a fresh
+  user-verified assertion, and is zeroized when the ceremony ends.
+  Non-extractability of a stored KEK would protect the KEK, not the
+  secret: compromised page code needs no extraction to `decrypt()` in
+  place and exfiltrate the plaintext silently. With derive-on-assert,
+  the worst compromised code can do is trigger a prompt someone can
+  decline.
 - **Device keys unchanged**: non-extractable per-device Ed25519,
   authorized by a delegation the account key signs.
 
@@ -64,20 +64,23 @@ A wrapping is the secret AEAD-encrypted under a KEK. Multiple coexist;
 any one unlocks; wrappings never reference each other — each is an
 independent way to open the same box.
 
-1. **Local wrapping** (first run, mandatory): KEK is a non-extractable
-   WebCrypto AES key; wrapped blob and key handle persist in IndexedDB
-   (`navigator.storage.persist()` requested, treated as advisory). Until
-   a durable wrapping exists the account is this-device-only, and the UI
-   says so — the meaningful state distinction is durable custody vs
-   local-only, not "has account".
-2. **Passkey wrapping** (the backup path): `create()` with PRF, then
-   evaluate the PRF at two fixed application salts —
-   `"tonk/custody/key/v1"` seeds the custody keypair,
-   `"tonk/custody/kek/v1"` feeds HKDF for the KEK. Deterministic per
-   credential, 256-bit unguessable, computable only inside an assertion.
-3. **Recovery phrase wrapping** (optional): identical shape with
-   Argon2id in place of PRF — the KDF output splits into the custody
-   keypair seed and the KEK. One custody mechanism, two entry functions.
+1. **Passkey wrapping** (mandatory; the first is created inside the
+   account-creation ceremony): `create()` with PRF, then evaluate the
+   PRF at two fixed application salts — `"tonk/custody/key/v1"` seeds
+   the custody keypair, `"tonk/custody/kek/v1"` feeds HKDF for the KEK.
+   Deterministic per credential, 256-bit unguessable, computable only
+   inside an assertion. Creation is atomic: secret, credential, and
+   published cell exist together or the ceremony fails — there is no
+   window in which an account exists that no wrapping can recover.
+2. **Recovery phrase wrapping** (later, not a blocker): identical shape
+   with Argon2id in place of PRF — the KDF output splits into the
+   custody keypair seed and the KEK. One custody mechanism, two entry
+   functions. Besides passkey-loss recovery it is the escape from
+   passkey-platform lock-in, and the coverage fallback for platforms
+   without PRF — the one real cost of requiring a passkey at creation.
+   Phrases must be generated high-entropy (word-list style), never
+   user-chosen: the custody-space address derives from the phrase, so a
+   guessable phrase is a fetchable, offline-grindable ciphertext.
 
 Blob format: version, generation counter (rotation must be expressible
 later without format migration; not built now), algorithm identifiers,
@@ -178,21 +181,32 @@ not relitigated:
   authorization it exists to bootstrap, and forces a durable DB record
   where a raw cell suffices.
 - *First passkey derives the secret directly*: see above — irrevocable
-  forever, and WebAuthn returns to the account-creation critical path.
+  forever.
+- *A stored local wrapping (non-extractable WebCrypto KEK + envelope in
+  IndexedDB) bridging a zero-WebAuthn creation to a later passkey*:
+  built, then removed. Non-extractability protects the KEK, not the
+  secret — the record is a standing capability for compromised page
+  code to unwrap and exfiltrate silently — and the bridge window is a
+  trap: evict the record before a passkey enrolls (iOS does evict) and
+  the account is permanently unexpandable while still registered.
+  Passkey-at-creation closes both, at the cost of one `create()` prompt
+  and a hard PRF dependency the phrase wrapping later relaxes.
 
 ## Flows
 
 - **First run**: nothing. No account, no secret, no ceremony —
   pre-account spaces delegate to the device key as shipped.
 - **The account moment is email submission.** Unknown email → create:
-  generate the secret, local wrapping, derive the signing handle,
-  register through the current flow — still zero WebAuthn; the passkey
-  is nudged later at a moment of demonstrated value. Known email →
-  login: "Continue with passkey" (or phrase), the unlock flow above.
-  The create-vs-login fork becomes implicit and un-mistakable, which
-  also enforces the no-fork rule below. Email lookup is a router, never
-  a key: it must not address any blob (enumeration, offline attack on
-  phrase wrappings).
+  one ceremony generates the secret, creates the first custody passkey
+  (one `create()` prompt — acceptable now that the envelope makes every
+  passkey removable; what made passkey-at-creation wrong before was
+  the *derived* root's irrevocability), seals the secret under its KEK,
+  publishes the custody cell, and signs the creation request. Known
+  email → login: "Continue with passkey" (or phrase), the unlock flow
+  above. The create-vs-login fork stays implicit and un-mistakable,
+  which also enforces the no-fork rule below. Email lookup is a
+  router, never a key: it must not address any blob (enumeration,
+  offline attack on phrase wrappings).
 - **Local content created before the account moment** is adopted by the
   link-time sweep exactly as shipped (redelegate, retain, provision).
   A local-only root that never registered is disposable by construction;
@@ -212,9 +226,9 @@ not relitigated:
   wrong identity, call `PublicKeyCredential.signalUnknownCredential()`
   so providers prune stale entries (progressive; availability varies).
 - Registration with the access service keys on what it already keys on
-  (email provided, activation clicked) — never on custody. A
-  local-custody-only account may register; backup enrollment is a UX
-  nudge, not an enforcement input.
+  (email provided, activation clicked) — never on custody beyond what
+  creation already guarantees (a published cell exists before the
+  creation request signs).
 
 ## Migration
 
@@ -228,12 +242,12 @@ the account secret — identity and delegations preserved.
 1. ~~Seed comes from PRF, not the assertion signature~~ — verified in
    `tonk-identity/src/derive.rs`: PRF output through HKDF.
 2. Whether target browsers return PRF at `create()` or need a follow-up
-   `get()` — our create flow already handles the follow-up, so backup
-   enrollment is one ceremony where supported, two elsewhere.
+   `get()` — the create flow handles the follow-up, so creation is one
+   ceremony where supported, two prompts elsewhere.
 3. PRF over hybrid transport (QR to phone) across the real platform
-   matrix. The fresh-device story leans on it; support is uneven.
-4. Non-extractable Ed25519 in WebCrypto across the target matrix (the
-   signing-handle refinement assumes it).
+   matrix. The fresh-device story leans on it; support is uneven — and
+   with a passkey now REQUIRED at creation, PRF coverage is a hard
+   dependency until the phrase wrapping ships. This is the watch item.
 5. ~~Raw named-cell writes and presigned reads against a provisioned
    space's `/memory` with root-subject authority and no repository
    behind it~~ — verified: the presign path never consults repository,
