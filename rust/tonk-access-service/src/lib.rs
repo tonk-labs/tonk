@@ -48,6 +48,7 @@ mod error;
 mod expiry;
 mod handlers;
 pub mod metering;
+pub mod provisioning;
 pub mod registration;
 #[cfg(any(target_arch = "wasm32", test))]
 mod revocation;

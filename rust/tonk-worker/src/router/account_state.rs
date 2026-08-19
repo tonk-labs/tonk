@@ -501,6 +501,15 @@ pub(crate) async fn ensure_account_state(tonk: &TonkState) -> AccountStateStatus
 pub(crate) async fn ensure_account_state_swept(
     tonk: &TonkState,
 ) -> (AccountStateStatus, Result<(), String>) {
+    // One ensure at a time. The drain heartbeat, the link path, and the
+    // save path can all arrive here concurrently, and their futures
+    // interleave at await points; dialog's commit takes no per-branch
+    // lock, so two interleaved ensures committing profile main or the
+    // access branch can tear an artifact — a branch head referencing a
+    // blob that never landed, which wedges the worker at the next boot.
+    static ENSURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _serialized = ENSURE.lock().await;
+
     let Some(descriptor) = configured_descriptor(tonk).await else {
         return (AccountStateStatus::Unconfigured, Ok(()));
     };

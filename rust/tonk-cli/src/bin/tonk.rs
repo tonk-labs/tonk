@@ -1323,7 +1323,37 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     };
     match command {
         AccountCommand::Status => match account::status(&profile).await {
-            Ok(status) => {
+            Ok(mut status) => {
+                // An unhydrated account retries its first sync right
+                // here, bounded: the status read is the natural moment
+                // someone notices "waiting for first sync", and leaving
+                // it sticky until the next link would report a state
+                // nothing is working to leave.
+                if matches!(
+                    &status,
+                    account::AccountStatus::Registered {
+                        account_state: tonk_account::AccountStateStatus::Unhydrated,
+                        ..
+                    }
+                ) {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        tonk_cli::account_state::ensure(&profile),
+                    )
+                    .await
+                    {
+                        Ok(Ok(outcome)) => {
+                            if let Some(warning) = outcome.warning {
+                                eprintln!("warning: account sync attempt: {warning}");
+                            }
+                            if let Ok(fresh) = account::status(&profile).await {
+                                status = fresh;
+                            }
+                        }
+                        Ok(Err(error)) => eprintln!("warning: account sync attempt: {error:#}"),
+                        Err(_) => eprintln!("warning: account sync attempt timed out"),
+                    }
+                }
                 let linked = matches!(status, account::AccountStatus::Registered { .. });
                 println!("{}", render_account_status(status));
                 if linked {

@@ -1209,12 +1209,38 @@ pub async fn drain_sync(state: &AppState) {
         .filter(|repo| seen.insert(repo.clone()))
         .collect();
 
-    for repo in order {
-        if let Err(e) = sync_repository(state, &repo).await {
+    for repo in &order {
+        if let Err(e) = sync_repository(state, repo).await {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
             let tonk = state.read().await;
-            tonk.sync_queue.requeue(&repo, now);
+            tonk.sync_queue.requeue(repo, now);
+        }
+    }
+
+    // The account rides profile main, which no repository — and so no
+    // reactor entry — represents in the pull population above. Sweep it
+    // explicitly each drain, unless a dirty mark already routed it
+    // through `sync_repository` — sweeping twice per heartbeat is the
+    // exact duplication the dedicated path exists to avoid.
+    let account_already_swept = {
+        let tonk = state.read().await;
+        let mut swept = false;
+        for repo in &order {
+            if super::account_state::is_account_key(&tonk, repo).await {
+                swept = true;
+                break;
+            }
+        }
+        swept
+    };
+    if !account_already_swept {
+        let tonk = state.read().await;
+        let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
+        if status != tonk_account::AccountStateStatus::Unconfigured
+            && let Err(error) = swept
+        {
+            log!("drain_sync: account state did not fully reconcile: {error}");
         }
     }
 }
