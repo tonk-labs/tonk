@@ -82,6 +82,36 @@ let tonkServiceWorkerResolves;
 // retries from scratch.
 const INIT_RETRY_HOLDOFF_MS = 5000;
 
+// At most one live wasm worker per origin, ever. During a service-worker
+// update (routine — and every reload, with DevTools' "Update on reload")
+// the outgoing instance is still finishing in-flight work while the
+// incoming one starts serving: two wasm workers over the same IndexedDB,
+// interleaving commits that no in-process lock can serialize. That
+// overlap is where mid-write futures get dropped ("closure invoked ...
+// after being dropped") and branch locks wedge behind writes that never
+// complete. A Web Lock is origin-wide and auto-released when the
+// holder's context is destroyed, so the incoming worker simply waits
+// out the outgoing one's death before touching storage.
+let activeWorkerLock = null;
+function holdActiveWorkerLock() {
+    if (activeWorkerLock == null) {
+        activeWorkerLock = new Promise(acquired => {
+            const slow = setTimeout(() => {
+                log("waiting for the outgoing worker to release storage…");
+            }, 1000);
+            navigator.locks.request("tonk-active-worker", () => {
+                clearTimeout(slow);
+                log("active-worker lock acquired");
+                acquired();
+                // Held for this worker's whole life; the browser
+                // releases it when the worker is terminated.
+                return new Promise(() => {});
+            });
+        });
+    }
+    return activeWorkerLock;
+}
+
 async function activateWorker() {
     if (tonkServiceWorkerResolves == null) {
         const now = Date.now();
@@ -94,7 +124,8 @@ async function activateWorker() {
         workerHealth.state = "initializing";
         workerHealth.attempts += 1;
         workerHealth.lastAttemptAt = now;
-        tonkServiceWorkerResolves = init()
+        tonkServiceWorkerResolves = holdActiveWorkerLock()
+            .then(() => init())
             .then(() => activate())
             .then(worker => {
                 workerHealth.state = "ok";
