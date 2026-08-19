@@ -4907,6 +4907,7 @@ dependencies = [
  "ipld-core",
  "js-sys",
  "rand 0.9.5",
+ "serde",
  "serde-wasm-bindgen",
  "serde_ipld_dagcbor",
  "sha2 0.10.9",

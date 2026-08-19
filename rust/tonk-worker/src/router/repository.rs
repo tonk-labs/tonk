@@ -27,7 +27,7 @@ use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+use tonk_account::backup::{SPACE_ROOT_SITE_PREFIX, space_delete_site};
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
@@ -1794,7 +1794,10 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 /// chrome in the Hub, and deleting the profile's own storage would take
 /// every space with it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), RepositoryError> {
+pub(crate) async fn remove_space_inner(
+    state: &AppState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
     {
         let tonk = state.write().await;
         if let Err(error) = require_real_space(&tonk, subject).await
@@ -2676,7 +2679,7 @@ pub async fn create_repository(
     let delegation = repository
         .access()
         .claim(&repository)
-        .delegate(owner)
+        .delegate(owner.clone())
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -2684,6 +2687,14 @@ pub async fn create_repository(
         })?;
 
     let prefix = delegation.into_chain();
+
+    let deletion_grant = mint_and_persist_space_deletion_grant(
+        tonk,
+        repository.credential().signer(),
+        &repository.did(),
+        &owner,
+    )
+    .await?;
     tonk.profile
         .access()
         .save(UcanDelegation(prefix.clone()))
@@ -2700,7 +2711,9 @@ pub async fn create_repository(
     // consumer of the access service, depositing the powerline as its
     // consent. Best effort for the same reason retain is — a space is
     // usable the moment its delegations exist locally.
-    if let Err(error) = super::customer::provision_consumer(tonk, &repository.did(), &prefix).await
+    if let Err(error) =
+        super::customer::provision_consumer(tonk, &repository.did(), &prefix, Some(&deletion_grant))
+            .await
     {
         log!("consumer provisioning skipped: {error}");
     }
@@ -2736,6 +2749,63 @@ pub async fn create_repository(
     .await?;
 
     Ok(repository)
+}
+
+async fn mint_and_persist_space_deletion_grant(
+    tonk: &TonkState,
+    signer: &Ed25519Signer,
+    subject: &Did,
+    owner: &Did,
+) -> Result<DelegationChain, RepositoryError> {
+    let grant = tonk_account::deletion::mint_deletion_grant(signer, owner)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("Failed to mint space deletion grant: {error}"))
+        })?;
+    let bytes = grant.to_bytes().map_err(|error| {
+        RepositoryError::Internal(format!("Failed to serialize space deletion grant: {error}"))
+    })?;
+    tonk.profile
+        .credential()
+        .site(space_delete_site(subject, owner))
+        .save(bytes)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("Failed to persist space deletion grant: {error}"))
+        })?;
+    Ok(grant)
+}
+
+/// Load and validate the exact deletion grant retained for one account root.
+pub(crate) async fn space_deletion_grant(
+    tonk: &TonkState,
+    subject: &Did,
+    owner: &Did,
+) -> Result<Option<DelegationChain>, TonkWorkerError> {
+    let bytes = match tonk
+        .profile
+        .credential()
+        .site(space_delete_site(subject, owner))
+        .load::<Vec<u8>>()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(bytes) if bytes.is_empty() => return Ok(None),
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load space deletion grant: {error}"
+            )));
+        }
+    };
+    tonk_account::deletion::validate_deletion_grant(&bytes, subject, owner)
+        .await
+        .map(|validated| Some(validated.chain))
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("stored space deletion grant is invalid: {error}"))
+        })
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
@@ -2853,8 +2923,32 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
         } else {
             continue;
         };
+        let mut deletion_grant = space_deletion_grant(tonk, &subject, &root.root_did)
+            .await
+            .ok()
+            .flatten();
+        if deletion_grant.is_none()
+            && let Some(access) = repository.try_access()
+        {
+            match mint_and_persist_space_deletion_grant(
+                tonk,
+                access.signer().signer(),
+                &subject,
+                &root.root_did,
+            )
+            .await
+            {
+                Ok(grant) => deletion_grant = Some(grant),
+                Err(error) => {
+                    log!("adopted space '{subject}' deletion grant did not persist: {error}")
+                }
+            }
+        }
         super::account_state::retain_space_delegation(tonk, &chain).await;
-        if let Err(error) = super::customer::provision_consumer(tonk, &subject, &chain).await {
+        if let Err(error) =
+            super::customer::provision_consumer(tonk, &subject, &chain, deletion_grant.as_ref())
+                .await
+        {
             log!("adopted space '{subject}' provisioning skipped: {error}");
         }
     }

@@ -70,6 +70,10 @@ pub trait ChainStore {
         root_did: &str,
         slot: SpotHeadSlot,
     ) -> Result<Vec<(String, String)>, ChainError>;
+
+    /// Permanently remove every immutable chain and mutable spot head in an
+    /// account root's namespace.
+    async fn delete_namespace(&self, root_did: &str) -> Result<(), ChainError>;
 }
 
 #[cfg(any(test, feature = "helpers"))]
@@ -181,6 +185,20 @@ mod memory {
                 .collect();
             heads.sort();
             Ok(heads)
+        }
+
+        async fn delete_namespace(&self, root_did: &str) -> Result<(), ChainError> {
+            let mut store = self
+                .0
+                .lock()
+                .map_err(|_| ChainError::Internal("chain store lock poisoned".to_string()))?;
+            let blob_prefix = format!("{root_did}/");
+            store.blobs.retain(|key, _| !key.starts_with(&blob_prefix));
+            for slot in [SpotHeadSlot::Named, SpotHeadSlot::Unnamed] {
+                let head_prefix = format!("{}/{root_did}/", slot.as_str());
+                store.heads.retain(|key, _| !key.starts_with(&head_prefix));
+            }
+            Ok(())
         }
     }
 }

@@ -59,6 +59,7 @@ struct RegistrationState {
     sender: AnnouncedEmail,
     service: Ed25519Signer,
     origin: String,
+    purger: crate::deletion::NativeSpacePurger,
 }
 
 /// Captures activation emails and announces them on stdout, so a human
@@ -102,6 +103,7 @@ impl AccessServer {
         let credential = S3Credential::new(access_key, secret_key);
 
         // Create UcanAuthorizer - the core of our service
+        let purger = crate::deletion::NativeSpacePurger::new(address.clone(), credential.clone());
         let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(address, Some(credential))));
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -142,6 +144,7 @@ impl AccessServer {
             // Activation links open on the page origin, which behind a
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
+            purger,
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -393,6 +396,69 @@ async fn handle_request(
 
     // Registration commands ride the same endpoint; anything else falls
     // through to the presign path untouched. Mirrors the Worker handler.
+    if crate::deletion::is_deletion(&body_bytes) {
+        let response = match crate::deletion::delete(
+            &registration.store,
+            &registration.purger,
+            &body_bytes,
+            unix_now(),
+        )
+        .await
+        {
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("deletion receipt serializes"),
+                )))
+                .unwrap(),
+            Err(error) => Response::builder()
+                .status(error.status())
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({ "error": error }))
+                        .expect("deletion refusal serializes"),
+                )))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
+    if crate::deletion::is_customer_deletion(&body_bytes) {
+        let response = if crate::deletion::command_for_native_handler(&body_bytes)
+            == crate::deletion::CUSTOMER_PLAN_COMMAND.map(str::to_string)
+        {
+            match crate::deletion::customer_plan(&registration.store, &body_bytes, unix_now()).await
+            {
+                Ok(plan) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&plan).expect("deletion plan serializes"),
+                    )))
+                    .unwrap(),
+                Err(error) => deletion_error_response(error),
+            }
+        } else {
+            match crate::deletion::delete_customer(
+                &registration.store,
+                &registration.purger,
+                &body_bytes,
+                unix_now(),
+            )
+            .await
+            {
+                Ok(receipt) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&receipt).expect("deletion receipt serializes"),
+                    )))
+                    .unwrap(),
+                Err(error) => deletion_error_response(error),
+            }
+        };
+        return Ok(cors_response(response));
+    }
     if registration_command(&body_bytes).is_some() {
         let env = Registration {
             store: &registration.store,
@@ -426,6 +492,34 @@ async fn handle_request(
     // Authorize the UCAN container using UcanAuthorizer
     let authorizer = authorizer.read().await;
     let outcome = authorizer.authorize(&body_bytes).await;
+    if outcome.is_ok()
+        && let Some(subject) = crate::deletion::subject(&body_bytes)
+    {
+        use crate::store::{ConsumerDeletionState, Store};
+        match registration.store.consumer(subject.as_str()).await {
+            Ok(Some(consumer)) if consumer.deletion_state != ConsumerDeletionState::Active => {
+                return Ok(cors_response(
+                    Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Full::new(Bytes::from(
+                            "Authorization failed: hosted space is deleting or deleted",
+                        )))
+                        .unwrap(),
+                ));
+            }
+            Err(error) => {
+                return Ok(cors_response(
+                    Response::builder()
+                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                        .body(Full::new(Bytes::from(format!(
+                            "consumer deletion state unavailable: {error}"
+                        ))))
+                        .unwrap(),
+                ));
+            }
+            _ => {}
+        }
+    }
     // Metering mirrors the worker: permits and attributable denials are
     // recorded, infra failures and unparseable containers are not.
     let metered = match &outcome {
@@ -490,6 +584,19 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock is past the epoch")
         .as_secs()
+}
+
+fn deletion_error_response(
+    error: crate::deletion::Error,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    Response::builder()
+        .status(error.status())
+        .header(CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            serde_json::to_vec(&serde_json::json!({ "error": error }))
+                .expect("deletion refusal serializes"),
+        )))
+        .unwrap()
 }
 
 /// PUT /@ → validate and store a shortcut target, mirroring the

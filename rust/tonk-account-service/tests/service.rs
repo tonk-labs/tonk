@@ -38,6 +38,7 @@ async fn spot_backup(root: &Did, name: Option<&str>, remote: &str) -> Vec<u8> {
     let chain = DelegationChain::new(delegation);
     serde_json::to_vec(&AccountSpotBackup {
         chain_hex: hex::encode(chain.to_bytes().unwrap()),
+        deletion_grant_hex: None,
         remote_url: Some(remote.to_string()),
         revocation_url: None,
         name: name.map(str::to_string),
@@ -127,6 +128,51 @@ async fn account_creation(email: &str) -> Vec<u8> {
     .await
     .unwrap();
     hex::decode(ceremony.invocation_hex).unwrap()
+}
+
+async fn account_deletion(email: &str) -> Vec<u8> {
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let ceremony = tonk_identity::ceremony::delete_account(root, email.to_string())
+        .await
+        .unwrap();
+    hex::decode(ceremony.invocation_hex).unwrap()
+}
+
+#[dialog_common::test]
+async fn it_deletes_account_state_and_releases_the_email_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let email = "delete-me@example.com";
+
+    client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(account_creation(email).await)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let deleted = client
+        .post(format!("{}/account/delete", server.endpoint))
+        .body(account_deletion(email).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 200);
+    let receipt: serde_json::Value = deleted.json().await.unwrap();
+    assert_eq!(receipt["email"], email);
+
+    let recreated = client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(account_creation(email).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recreated.status(), 201);
+
+    server.stop().await;
 }
 
 #[dialog_common::test]

@@ -199,6 +199,36 @@ async fn build(
     })
 }
 
+/// Sign the permanent account-service deletion request with the passkey root.
+/// The verified email is repeated as a signed, human-readable confirmation.
+pub async fn delete_account(
+    root: Ed25519Signer,
+    confirmed_email: String,
+) -> Result<AccountCeremony> {
+    build(
+        root,
+        vec!["account".into(), "delete".into()],
+        strings([("confirmedEmail", confirmed_email)]),
+        String::new(),
+        String::new(),
+        None,
+    )
+    .await
+}
+
+/// Sign access-service customer finalization with the passkey root.
+pub async fn delete_access_customer(root: Ed25519Signer) -> Result<AccountCeremony> {
+    build(
+        root,
+        vec!["customer".into(), "delete".into()],
+        BTreeMap::new(),
+        String::new(),
+        String::new(),
+        None,
+    )
+    .await
+}
+
 /// Sign a witnessed revocation with the passkey-derived root.
 ///
 /// The root must be an issuer in the path prefix through the target. The

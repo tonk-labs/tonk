@@ -58,6 +58,18 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
     // metered: those invocations are once-per-account ceremonies, not
     // billable operations.
     #[cfg(target_arch = "wasm32")]
+    if crate::deletion::is_deletion(&body_bytes) {
+        return crate::handlers::deletion::handle(&body_bytes, &env)
+            .await
+            .map(with_cors_headers);
+    }
+    #[cfg(target_arch = "wasm32")]
+    if crate::deletion::is_customer_deletion(&body_bytes) {
+        return crate::handlers::deletion::handle_customer(&body_bytes, &env)
+            .await
+            .map(with_cors_headers);
+    }
+    #[cfg(target_arch = "wasm32")]
     if registration_command(&body_bytes).is_some() {
         return handle_registration(&body_bytes, &req, &env)
             .await
@@ -130,6 +142,8 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
     // presign the screen cannot clear is refused.
     #[cfg(target_arch = "wasm32")]
     screen_credentials(body_bytes, env).await?;
+    #[cfg(target_arch = "wasm32")]
+    screen_consumer_state(body_bytes, env).await?;
 
     // Write permits carry the declared size as a signed Content-Length,
     // which is the exact byte figure metering records.
@@ -149,6 +163,26 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
             (r.with_headers(headers), bytes)
         })
         .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn screen_consumer_state(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
+    use crate::store::{ConsumerDeletionState, Store, d1::D1Store};
+
+    let Some(subject) = crate::deletion::subject(body_bytes) else {
+        return Ok(());
+    };
+    let store = D1Store::new(env.d1("CONTROL").map_err(|_| unavailable())?);
+    match store
+        .consumer(subject.as_str())
+        .await
+        .map_err(|_| unavailable())?
+    {
+        Some(consumer) if consumer.deletion_state != ConsumerDeletionState::Active => {
+            Err(AuthorizeError::Revoked { subject }.into())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

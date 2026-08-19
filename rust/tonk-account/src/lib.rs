@@ -10,6 +10,8 @@ pub mod backup;
 pub mod customer;
 /// Retaining space authority into the account repository.
 pub mod delegations;
+/// Capability contracts for irreversible hosted-space deletion.
+pub mod deletion;
 mod descriptor;
 /// Canonical device-signed account attachment detach intents.
 pub mod detach;

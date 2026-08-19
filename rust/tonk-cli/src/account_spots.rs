@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use dialog_operator::Profile;
 use dialog_query::{Output as _, Query, Term};
+use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::promise::Promised;
 use dialog_varsig::Did;
 use tonk_account::backup::{
     ACCOUNT_SPOT_BACKUP_MARKER_PREFIX, ACCOUNT_SPOTS_CAPABILITY_HEADER,
-    ACCOUNT_SPOTS_CAPABILITY_V1, AccountSpotBackup, AccountSpotSummary,
+    ACCOUNT_SPOTS_CAPABILITY_V1, AccountSpotBackup, AccountSpotSummary, space_delete_site,
 };
 use tonk_schema::RepositoryName;
 use tonk_schema::prelude::DidExt as _;
@@ -34,6 +35,8 @@ pub struct AccountSpotRow {
     pub ambiguous: bool,
     /// Whether the selected artifact carries a usable sync remote.
     pub pullable: bool,
+    /// Whether the account holds exact hosted deletion authority.
+    pub deletion_ready: bool,
 }
 
 /// Result of pulling one account spot.
@@ -158,6 +161,7 @@ fn legacy_rows(artifacts: Vec<(String, AccountSpotBackup, Did)>) -> Vec<AccountS
                     remote_url: None,
                     revocation_url: None,
                     ambiguous: true,
+                    deletion_ready: false,
                 }
             } else {
                 AccountSpotSummary {
@@ -167,6 +171,7 @@ fn legacy_rows(artifacts: Vec<(String, AccountSpotBackup, Did)>) -> Vec<AccountS
                     remote_url: first.remote_url.clone(),
                     revocation_url: first.revocation_url.clone(),
                     ambiguous: false,
+                    deletion_ready: first.deletion_grant_hex.is_some(),
                 }
             }
         })
@@ -286,6 +291,7 @@ pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpo
             subject: summary.subject,
             remote_name: summary.name,
             ambiguous: summary.ambiguous,
+            deletion_ready: summary.deletion_ready,
         })
         .collect();
     rows.sort_by(|left, right| left.subject.cmp(&right.subject));
@@ -405,11 +411,26 @@ pub async fn pull(
         .remote_url
         .as_deref()
         .context("account spot backup has no usable sync remote")?;
+    let deletion_grant_bytes = validated
+        .deletion_grant
+        .as_ref()
+        .map(DelegationChain::to_bytes)
+        .transpose()
+        .context("failed to serialize restored deletion grant")?;
 
     let mut fresh_target = FreshPullTarget::new(target.clone());
     let site = crate::site::mount_delegated_at(&target, validated.chain, site_config(profile))
         .await
         .context("failed to mount account spot")?;
+    if let Some(bytes) = deletion_grant_bytes {
+        site.profile
+            .credential()
+            .site(space_delete_site(&requested, &connection.root_did))
+            .save(bytes)
+            .perform(site.operator.local())
+            .await
+            .context("failed to retain the restored deletion grant")?;
+    }
     remote::add_with_revocation(
         &site,
         DEFAULT_REMOTE,
@@ -508,13 +529,28 @@ async fn back_up_site_with_connection(
         .subject()
         .cloned()
         .context("account-root prefix has no repository subject")?;
+    let deletion_grant = crate::site::deletion_grant(site, &connection.root_did).await?;
     let artifact = AccountSpotBackup {
         chain_hex: hex::encode(chain.to_bytes()?),
+        deletion_grant_hex: deletion_grant
+            .as_ref()
+            .map(|grant| grant.to_bytes())
+            .transpose()?
+            .map(hex::encode),
         remote_url: Some(remote.endpoint),
         revocation_url: remote.revocation_url,
         name: Some(name),
     };
     artifact.validate_for(&connection.root_did).await?;
+    // Re-provision even when the immutable backup itself is unchanged. This
+    // installs exact grants for new spaces and narrowly tags an original
+    // direct broad owner proof as `legacy-direct`; indirect joined chains are
+    // refused and remain non-destructive.
+    if let Err(error) =
+        crate::customer::provision(&site.profile, &subject, &chain, deletion_grant.as_ref()).await
+    {
+        eprintln!("warning: deletion-authority upgrade skipped: {error:#}");
+    }
     let bytes = serde_json::to_vec(&artifact)?;
     let content_key = blake3::hash(&bytes).to_hex().to_string();
     if marker(site, &subject).await?.as_deref() == Some(content_key.as_bytes()) {
@@ -678,6 +714,7 @@ mod tests {
             .unwrap();
         let first = AccountSpotBackup {
             chain_hex: "aa".to_string(),
+            deletion_grant_hex: None,
             remote_url: Some("https://one.example/".to_string()),
             revocation_url: None,
             name: None,

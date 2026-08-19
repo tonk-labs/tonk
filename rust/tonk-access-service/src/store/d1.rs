@@ -13,8 +13,11 @@ use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
-    ACTIVATE_CUSTOMER, ADD_CONSUMER, Consumer, Customer, INSERT_CUSTOMER, INSERT_SELF_CONSUMER,
-    SELECT_CONSUMER, SELECT_CUSTOMER, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
+    Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, DeletionGrantKind, FINISH_CONSUMER_DELETION,
+    INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
+    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError,
+    UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -71,16 +74,32 @@ impl TryFrom<CustomerRowD1> for Customer {
 struct ConsumerRowD1 {
     did: String,
     provider: Option<String>,
+    owner: Option<String>,
     registered: f64,
+    deletion_grant_cid: Option<String>,
+    deletion_grant_kind: Option<String>,
+    deletion_state: String,
+    deleted_at: Option<f64>,
 }
 
-impl From<ConsumerRowD1> for Consumer {
-    fn from(row: ConsumerRowD1) -> Self {
-        Consumer {
+impl TryFrom<ConsumerRowD1> for Consumer {
+    type Error = StoreError;
+
+    fn try_from(row: ConsumerRowD1) -> Result<Self, Self::Error> {
+        Ok(Consumer {
             did: row.did,
             provider: row.provider,
+            owner: row.owner,
             registered: row.registered as u64,
-        }
+            deletion_grant_cid: row.deletion_grant_cid,
+            deletion_grant_kind: row
+                .deletion_grant_kind
+                .as_deref()
+                .map(DeletionGrantKind::parse)
+                .transpose()?,
+            deletion_state: ConsumerDeletionState::parse(&row.deletion_state)?,
+            deleted_at: row.deleted_at.map(|value| value as u64),
+        })
     }
 }
 
@@ -107,7 +126,24 @@ impl Store for D1Store {
             .first(None)
             .await
             .map_err(map_err)?;
-        Ok(row.map(Consumer::from))
+        row.map(Consumer::try_from).transpose()
+    }
+
+    async fn consumers_by_owner(&self, owner: &str) -> Result<Vec<Consumer>, StoreError> {
+        let result = self
+            .0
+            .prepare(SELECT_CONSUMERS_BY_OWNER)
+            .bind(&[JsValue::from(owner)])
+            .map_err(map_err)?
+            .all()
+            .await
+            .map_err(map_err)?;
+        result
+            .results::<ConsumerRowD1>()
+            .map_err(map_err)?
+            .into_iter()
+            .map(Consumer::try_from)
+            .collect()
     }
 
     async fn enroll_customer(
@@ -156,7 +192,14 @@ impl Store for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 
-    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError> {
+    async fn add_consumer(
+        &self,
+        did: &str,
+        provider: &str,
+        now: u64,
+        deletion_grant_cid: Option<&str>,
+        deletion_grant_kind: Option<DeletionGrantKind>,
+    ) -> Result<bool, StoreError> {
         let result = self
             .0
             .prepare(ADD_CONSUMER)
@@ -164,12 +207,80 @@ impl Store for D1Store {
                 JsValue::from(did),
                 JsValue::from(provider),
                 JsValue::from_f64(now as f64),
+                deletion_grant_cid.map_or(JsValue::NULL, JsValue::from),
+                deletion_grant_kind
+                    .map(DeletionGrantKind::as_str)
+                    .map_or(JsValue::NULL, JsValue::from),
             ])
             .map_err(map_err)?
             .run()
             .await
             .map_err(map_err)?;
         Ok(changed_rows(&result) > 0)
+    }
+
+    async fn mark_consumer_deleting(
+        &self,
+        did: &str,
+        deletion_grant_cid: &str,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(MARK_CONSUMER_DELETING)
+            .bind(&[JsValue::from(did), JsValue::from(deletion_grant_cid)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+
+    async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(FINISH_CONSUMER_DELETION)
+            .bind(&[JsValue::from(did), JsValue::from_f64(now as f64)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+
+    async fn mark_self_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(MARK_SELF_CONSUMER_DELETING)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+
+    async fn delete_customer(&self, did: &str) -> Result<bool, StoreError> {
+        let anonymize = self
+            .0
+            .prepare(ANONYMIZE_DELETED_CONSUMERS)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?;
+        let self_consumer = self
+            .0
+            .prepare(DELETE_SELF_CONSUMER)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?;
+        let customer = self
+            .0
+            .prepare(DELETE_CUSTOMER)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?;
+        let results = self
+            .0
+            .batch(vec![anonymize, self_consumer, customer])
+            .await
+            .map_err(map_err)?;
+        Ok(results.last().map(changed_rows).unwrap_or_default() == 1)
     }
 
     async fn activate_customer(

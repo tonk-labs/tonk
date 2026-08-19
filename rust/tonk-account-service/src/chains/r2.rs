@@ -156,4 +156,36 @@ impl ChainStore for R2ChainStore {
         }
         Ok(heads)
     }
+
+    async fn delete_namespace(&self, root_did: &str) -> Result<(), ChainError> {
+        for prefix in [
+            format!("chains/{root_did}/"),
+            format!("spot-heads/named/{root_did}/"),
+            format!("spot-heads/unnamed/{root_did}/"),
+        ] {
+            loop {
+                let listed = self
+                    .0
+                    .list()
+                    .prefix(prefix.clone())
+                    .limit(1000)
+                    .execute()
+                    .await
+                    .map_err(|error| ChainError::Internal(error.to_string()))?;
+                let keys: Vec<_> = listed
+                    .objects()
+                    .into_iter()
+                    .map(|object| object.key())
+                    .collect();
+                if keys.is_empty() {
+                    break;
+                }
+                self.0
+                    .delete_multiple(keys)
+                    .await
+                    .map_err(|error| ChainError::Internal(error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
 }

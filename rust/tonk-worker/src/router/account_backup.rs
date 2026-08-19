@@ -143,6 +143,7 @@ async fn legacy_inventory(
                 remote_url: None,
                 revocation_url: None,
                 ambiguous: true,
+                deletion_ready: false,
             });
         } else {
             rows.push(AccountSpotSummary {
@@ -152,6 +153,7 @@ async fn legacy_inventory(
                 remote_url: first.remote_url.clone(),
                 revocation_url: first.revocation_url.clone(),
                 ambiguous: false,
+                deletion_ready: first.deletion_grant_hex.is_some(),
             });
         }
     }
@@ -194,6 +196,7 @@ async fn run_backup(
     link: DelegationChain,
     service: String,
     chain: DelegationChain,
+    deletion_grant: Option<DelegationChain>,
     remote_url: Option<String>,
     revocation_url: Option<String>,
     name: Option<String>,
@@ -203,6 +206,13 @@ async fn run_backup(
         .map_err(|error| TonkWorkerError::Internal(format!("serialize claimed chain: {error}")))?;
     let artifact = AccountSpotBackup {
         chain_hex: hex::encode(chain_bytes),
+        deletion_grant_hex: deletion_grant
+            .map(|grant| grant.to_bytes())
+            .transpose()
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("serialize deletion grant: {error}"))
+            })?
+            .map(hex::encode),
         remote_url,
         revocation_url,
         name,
@@ -242,12 +252,28 @@ async fn dispatch_backup(
     let Some(service) = account_service_url(tonk).await else {
         return Ok(());
     };
+    let subject = chain.subject().ok_or_else(|| {
+        TonkWorkerError::Internal("backup chain has no repository subject".to_string())
+    })?;
+    let deletion_grant =
+        crate::router::repository::space_deletion_grant(tonk, subject, link.issuer()).await?;
+    // Re-provision during every backup sweep. This upgrades an original
+    // direct legacy owner proof to the access service's narrowly tagged
+    // `legacy-direct` deletion mode, or installs the exact creation grant.
+    // Indirect joined-space chains are refused by the service and remain
+    // ordinary backups; discovery never grants destructive authority.
+    if let Err(error) =
+        super::customer::provision_consumer(tonk, subject, &chain, deletion_grant.as_ref()).await
+    {
+        log!("{context} deletion-authority upgrade skipped: {error}");
+    }
     let device = tonk.profile.signer().signer().clone();
     run_backup(
         device,
         link,
         service,
         chain,
+        deletion_grant,
         remote_url,
         revocation_url,
         name,
@@ -521,7 +547,12 @@ mod tests {
             let tonk = state.read().await;
             crate::router::identity::root_did(&tonk).await.unwrap()
         };
-        assert_eq!(artifact.validate_for(&root).await.unwrap().subject, subject);
+        let validated = artifact.validate_for(&root).await.unwrap();
+        assert_eq!(validated.subject, subject);
+        assert!(
+            validated.deletion_grant.is_some(),
+            "a worker-created owned space backup carries its exact deletion grant"
+        );
     }
 
     #[dialog_common::test]
