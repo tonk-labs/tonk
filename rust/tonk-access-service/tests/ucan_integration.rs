@@ -87,6 +87,20 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
 
     assert_eq!(results.len(), 1);
 
+    // Metering rides the same path: every permit the push and pull drew
+    // landed one invocation row in ingest.
+    let ingest: serde_json::Value = reqwest::get(format!(
+        "{}/_test/ingest",
+        env.access_service_url.trim_end_matches('/')
+    ))
+    .await?
+    .json()
+    .await?;
+    assert!(
+        ingest["invocations"].as_u64().unwrap_or(0) > 0,
+        "presigned operations must be recorded: {ingest}"
+    );
+
     Ok(())
 }
 

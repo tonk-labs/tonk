@@ -41,6 +41,7 @@ async fn main() {
     tonk_identity::install();
     tonk_ui::account_gate::install();
     tonk_ui::account::register();
+    tonk_ui::activate::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
     // (debug profile) and off for release, so this never loads in production.
@@ -77,6 +78,7 @@ fn render_root(shell: &web_sys::Element) {
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_owned());
     let account_route = path == "/account" || path.starts_with("/account/");
+    let activate_route = path == "/activate" || path.starts_with("/activate/");
     let current = shell.first_element_child();
 
     if account_route {
@@ -86,6 +88,21 @@ fn render_root(shell: &web_sys::Element) {
                 && let Ok(account) = document.create_element("tonk-account")
             {
                 let _ = shell.append_child(&account);
+            }
+        }
+        return;
+    }
+
+    // The activation email lands here on any device, signed in or not,
+    // so the page bypasses sealed guests exactly as the account page
+    // does.
+    if activate_route {
+        if current.as_ref().map(web_sys::Element::tag_name).as_deref() != Some("TONK-ACTIVATE") {
+            shell.set_inner_html("");
+            if let Some(document) = shell.owner_document()
+                && let Ok(activate) = document.create_element("tonk-activate")
+            {
+                let _ = shell.append_child(&activate);
             }
         }
         return;

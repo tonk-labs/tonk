@@ -42,13 +42,18 @@ use worker::*;
 /// mid-load, roughly doubling the requests a cold load pays for.
 pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 
+pub mod email;
 mod error;
 #[cfg(any(target_arch = "wasm32", test))]
 mod expiry;
 mod handlers;
+pub mod metering;
+pub mod registration;
 #[cfg(any(target_arch = "wasm32", test))]
 mod revocation;
+pub mod service;
 pub mod shortcut;
+pub mod store;
 
 /// Test helpers for integration testing.
 #[cfg(feature = "helpers")]
@@ -56,19 +61,32 @@ pub mod helpers;
 
 /// Worker entrypoint
 #[event(fetch)]
-async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
+    // POST /ucan/ is served outside the Router: recording an invocation
+    // must outlive the response, and only the fetch event's `Context`
+    // can extend the isolate's life for that write.
+    if matches!(req.method(), Method::Post) && req.path() == "/ucan/" {
+        return handlers::ucan::serve(req, env, ctx).await;
+    }
     let router = Router::new();
 
     router
         // Browser deployment configuration must run before static assets.
         .get_async("/.well-known/tonk", handlers::config::handle)
+        // The service's DID document: its ed25519 key under the host's
+        // did:web name.
+        .get_async(
+            "/.well-known/did.json",
+            handlers::registration::handle_did_document,
+        )
+        // Registration state probe, polled by enrolling clients.
+        .get_async("/customer/:did", handlers::registration::handle_customer)
         // Service info endpoint
         .get_async("/", handlers::info::handle)
         // Health check
         .get_async("/health", handlers::health::handle)
-        // UCAN authorization endpoint (with CORS preflight support)
+        // UCAN authorization CORS preflight; POST is served above.
         .options_async("/ucan/", handlers::ucan::handle_options)
-        .post_async("/ucan/", handlers::ucan::handle)
         // Shortcut service: permissionless same-origin link shortening
         .options_async("/@", handlers::shortcut::handle_options)
         .put_async("/@", handlers::shortcut::handle_put)

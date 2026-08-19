@@ -41,8 +41,11 @@ pub async fn preflight_account<S: Store>(
 pub struct CreateAccount {
     /// The account's verified email address.
     pub email: String,
-    /// The verification code sent to `email`.
-    pub code: String,
+    /// The verification code sent to `email`, when the caller went
+    /// through the code ceremony. New clients omit it: control of the
+    /// address is proven by customer activation at the access service
+    /// instead.
+    pub code: Option<String>,
     /// The account's root DID.
     pub root_did: String,
     /// Opaque identifier for the passkey credential backing the root.
@@ -83,7 +86,9 @@ pub async fn create_account<S: Store>(
         &request.device_did,
     )
     .await?;
-    check_code(store, &request.email, &request.code, now).await?;
+    if let Some(code) = &request.code {
+        check_code(store, &request.email, code, now).await?;
+    }
 
     let email = request.email.to_lowercase();
     let account = NewAccount {
@@ -205,7 +210,7 @@ mod tests {
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
-            code: "123456".into(),
+            code: Some("123456".into()),
             root_did: root_did.clone(),
             credential_id: "cred".into(),
             device_did,
@@ -284,7 +289,7 @@ mod tests {
         };
         let request = CreateAccount {
             email: "a@x.com".into(),
-            code: "123456".into(),
+            code: Some("123456".into()),
             root_did: other_root,
             credential_id: "cred".into(),
             device_did,
@@ -305,7 +310,7 @@ mod tests {
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
-            code: "000000".into(),
+            code: Some("000000".into()),
             root_did: root_did.clone(),
             credential_id: "cred".into(),
             device_did,
@@ -333,7 +338,7 @@ mod tests {
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let mut request = CreateAccount {
             email: "a@x.com".into(),
-            code: "123456".into(),
+            code: Some("123456".into()),
             root_did: root_did.clone(),
             credential_id: "cred".into(),
             device_did,
@@ -366,7 +371,7 @@ mod tests {
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let mut request = CreateAccount {
             email: "a@x.com".into(),
-            code: "123456".into(),
+            code: Some("123456".into()),
             root_did: root_did.clone(),
             credential_id: "cred".into(),
             device_did: device_did.clone(),
@@ -403,7 +408,7 @@ mod tests {
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let first = CreateAccount {
             email: "a@x.com".into(),
-            code: "123456".into(),
+            code: Some("123456".into()),
             root_did,
             credential_id: "cred".into(),
             device_did,
@@ -444,7 +449,7 @@ mod tests {
             .unwrap();
         let second = CreateAccount {
             email: "a@x.com".into(),
-            code: "654321".into(),
+            code: Some("654321".into()),
             root_did: root2_did,
             credential_id: "cred2".into(),
             device_did: device2_did,
@@ -474,7 +479,7 @@ mod tests {
             &store,
             &CreateAccount {
                 email: "a@x.com".into(),
-                code: "123456".into(),
+                code: Some("123456".into()),
                 root_did: root_did.clone(),
                 credential_id: "cred".into(),
                 device_did: device_did.clone(),
@@ -493,7 +498,7 @@ mod tests {
             .unwrap();
         let again = CreateAccount {
             email: "b@x.com".into(),
-            code: "654321".into(),
+            code: Some("654321".into()),
             root_did,
             credential_id: "cred".into(),
             device_did,
@@ -523,7 +528,7 @@ mod tests {
         let (root_did, device_did, delegation_hex, descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
-            code: "123456".into(),
+            code: Some("123456".into()),
             root_did,
             credential_id: "cred".into(),
             device_did,
@@ -538,7 +543,7 @@ mod tests {
             .await
             .unwrap();
         let request = CreateAccount {
-            code: "654321".into(),
+            code: Some("654321".into()),
             ..request
         };
         let Err(CeremonyError::Conflict(message)) = create_account(&store, &request, 500).await
@@ -592,7 +597,7 @@ mod tests {
             &store,
             &CreateAccount {
                 email: "a@x.com".into(),
-                code: "123456".into(),
+                code: Some("123456".into()),
                 root_did,
                 credential_id: "cred".into(),
                 device_did,

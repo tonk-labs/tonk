@@ -30,7 +30,6 @@ pub(crate) struct CreateRootInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateAccountInput {
     pub email: String,
-    pub code: String,
     pub device_did: String,
     pub device_name: String,
     pub root_did: String,
@@ -41,6 +40,10 @@ pub(crate) struct CreateAccountInput {
     pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
     /// Account repository remote this browser proposes for the new account.
     pub remote: String,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 /// Input for a fresh account whose passkey root does not exist yet.
@@ -48,11 +51,14 @@ pub(crate) struct CreateAccountInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateFreshAccountInput {
     pub email: String,
-    pub code: String,
     pub device_did: String,
     pub device_name: String,
     pub remote: String,
     pub created_on: String,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 /// Input for the one-time account repository establishment ceremony.
@@ -80,6 +86,10 @@ pub(crate) struct EstablishCeremonyOutput {
 pub(crate) struct LinkDeviceInput {
     pub device_did: String,
     pub device_name: String,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 /// Input for signing a device-grant revocation.
@@ -111,6 +121,10 @@ pub(crate) struct CeremonyOutput {
     pub credential_id: String,
     pub delegation_hex: String,
     pub invocation_hex: String,
+    /// Hex-encoded account-signed access-service deposits, when the
+    /// input named the service.
+    #[serde(default)]
+    pub deposits_hex: Vec<String>,
 }
 
 /// Fresh-root account output, carrying both local persistence and remote
@@ -124,6 +138,10 @@ pub(crate) struct FreshAccountOutput {
     pub delegation_hex: String,
     pub passkey: tonk_worker_api::PasskeyMetadata,
     pub invocation_hex: String,
+    /// Hex-encoded account-signed access-service deposits, when the
+    /// input named the service.
+    #[serde(default)]
+    pub deposits_hex: Vec<String>,
 }
 
 /// Root-signed revocation returned by the ceremony API.
@@ -376,7 +394,7 @@ mod tests {
             "createFreshAccount",
             &format!(
                 r#"{plain_object_guard}
-                if (input.email !== "fresh@example.test" || input.code !== "123456"
+                if (input.email !== "fresh@example.test"
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
                     || input.createdOn !== "Chrome on macOS"
                     || input.remote !== "https://tonk.spot/ucan/")
@@ -391,11 +409,11 @@ mod tests {
         );
         let fresh = create_fresh_account(CreateFreshAccountInput {
             email: "fresh@example.test".into(),
-            code: "123456".into(),
             device_did: "did:key:device".into(),
             device_name: "Browser".into(),
             remote: "https://tonk.spot/ucan/".into(),
             created_on: "Chrome on macOS".into(),
+            service_did: None,
         })
         .await
         .unwrap();
@@ -406,7 +424,7 @@ mod tests {
             "createAccount",
             &format!(
                 r#"{plain_object_guard}
-                if (input.email !== "person@example.test" || input.code !== "123456"
+                if (input.email !== "person@example.test"
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
                     || input.rootDid !== "did:key:root" || input.credentialId !== "credential"
                     || input.delegationHex !== "delegation"
@@ -423,12 +441,12 @@ mod tests {
         assert_eq!(
             create_account(CreateAccountInput {
                 email: "person@example.test".into(),
-                code: "123456".into(),
                 device_did: "did:key:device".into(),
                 device_name: "Browser".into(),
                 root_did: "did:key:root".into(),
                 credential_id: "credential".into(),
                 delegation_hex: "delegation".into(),
+                service_did: None,
                 passkey: Some(tonk_worker_api::PasskeyMetadata {
                     created_at: 1_754_380_800,
                     created_on: "Chrome on macOS".into(),
@@ -456,6 +474,7 @@ mod tests {
         link_device(LinkDeviceInput {
             device_did: "did:key:device".into(),
             device_name: "Browser".into(),
+            service_did: None,
         })
         .await
         .unwrap();

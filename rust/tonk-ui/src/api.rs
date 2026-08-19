@@ -520,6 +520,44 @@ pub async fn save_root(
     }
 }
 
+/// Enroll this profile's account as a customer of the access service,
+/// sending the activation link to `email`, or to the account's recorded
+/// address when none is given. Idempotent: re-enrolling while registered
+/// resends the link, and an already-active customer answers as active.
+pub async fn enroll_customer(
+    email: Option<&str>,
+    deposits: &[String],
+) -> Result<serde_json::Value, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/customer/enroll", origin()))
+        .json(&serde_json::json!({ "email": email, "deposits": deposits }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/customer/enroll returned {status}: {text}"
+        )))
+    }
+}
+
+/// The account's customer registration state: the access service's live
+/// answer joined with the locally recorded enrollment.
+pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/customer", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    response.json().await.map_err(into_api_error)
+}
+
 /// Return the current profile's persisted account-link state.
 pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -625,6 +663,36 @@ pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "GET /api/account/summary returned {status}: {text}"
+        )))
+    }
+}
+
+/// Register a freshly authorized device in the account service's
+/// registry, through this browser's own membership. Answers the service's
+/// JSON, which carries the issued `attachmentId`.
+pub async fn register_account_device(
+    did: &str,
+    name: &str,
+    delegation_hex: &str,
+) -> Result<serde_json::Value, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/devices/register", origin()))
+        .json(&serde_json::json!({
+            "did": did,
+            "name": name,
+            "delegationHex": delegation_hex,
+        }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/devices/register returned {status}: {text}"
         )))
     }
 }

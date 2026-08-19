@@ -1,0 +1,668 @@
+//! Customer registration tests: `/customer/enroll` and
+//! `/customer/activate` driven both directly against the registration
+//! environment and over HTTP against the local access server.
+//!
+//! Run with:
+//! ```bash
+//! cargo test -p tonk-access-service --features integration-tests --test registration
+//! ```
+
+#![cfg(feature = "integration-tests")]
+
+use std::collections::{BTreeMap, HashMap};
+
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use dialog_credentials::Ed25519Signer;
+use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::subject::Subject as DelegatedSubject;
+use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
+use dialog_ucan_core::{
+    Container, Delegation, DelegationBuilder, InvocationBuilder, InvocationChain,
+};
+use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::{Did, Principal};
+use tonk_access_service::email::CapturedEmail;
+use tonk_access_service::helpers::AccessServiceAddress;
+use tonk_access_service::registration::{Answer, Registration, SIGNUP_TERMS};
+use tonk_access_service::store::Store;
+use tonk_access_service::store::sqlite::SqliteStore;
+use tonk_account::customer::{Receipt, RegistrationError, deposit_scopes};
+
+/// Current time as unix seconds.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is past the epoch")
+        .as_secs()
+}
+
+/// Timestamp from unix seconds.
+fn at(seconds: u64) -> Timestamp {
+    Timestamp::new(UNIX_EPOCH + Duration::from_secs(seconds)).expect("timestamp in range")
+}
+
+/// A native registration fixture: sqlite store, captured email, and a
+/// service signer, playing the part the worker environment plays in
+/// production.
+struct Fixture {
+    store: SqliteStore,
+    emails: CapturedEmail,
+    service: Ed25519Signer,
+    origin: String,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        Fixture {
+            store: SqliteStore::in_memory().expect("in-memory control store"),
+            emails: CapturedEmail::default(),
+            service: Ed25519Signer::generate().await.expect("service signer"),
+            origin: "https://hub.test".to_string(),
+        }
+    }
+
+    fn registration<'a>(
+        &'a self,
+        container: &'a [u8],
+    ) -> Registration<'a, SqliteStore, CapturedEmail> {
+        Registration {
+            store: &self.store,
+            email: &self.emails,
+            service: &self.service,
+            origin: &self.origin,
+            activation_ttl: 60 * 60,
+            now: unix_now(),
+            container,
+        }
+    }
+
+    fn last_email(&self) -> (String, String) {
+        self.emails
+            .0
+            .lock()
+            .expect("captured email mutex poisoned")
+            .last()
+            .cloned()
+            .expect("an activation email was captured")
+    }
+}
+
+/// Unwrap a customer receipt, refusing the consumer-shaped answer.
+fn as_customer(answer: Answer) -> Receipt {
+    match answer {
+        Answer::Customer(receipt) => receipt,
+        Answer::Consumer(receipt) => panic!("expected a customer receipt, got {receipt:?}"),
+    }
+}
+
+/// Mint the scoped deposits enrollment requires, issued directly by the
+/// customer to `audience` (the service, except in refusal tests).
+async fn scoped_deposits(
+    customer: &Ed25519Signer,
+    service: &Did,
+    audience: &Did,
+) -> Vec<Delegation<Ed25519Signature>> {
+    let mut deposits = Vec::new();
+    for scope in deposit_scopes(&customer.did(), service) {
+        deposits.push(
+            DelegationBuilder::new()
+                .issuer(customer.clone())
+                .audience(audience)
+                .subject(scope.subject.clone())
+                .command(scope.command.segments().clone())
+                .policy(scope.policy())
+                .try_build()
+                .await
+                .expect("deposit delegation"),
+        );
+    }
+    deposits
+}
+
+/// Build an enroll container: a self-signed `/customer/enroll` invocation
+/// carrying the deposited access delegations as extra container tokens.
+async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) -> Vec<u8> {
+    let deposits = scoped_deposits(customer, service, service).await;
+    enroll_container_with_deposits(customer, email, &deposits, true).await
+}
+
+/// Build an enroll container with explicit deposits, optionally leaving
+/// their bytes out of the container.
+async fn enroll_container_with_deposits(
+    customer: &Ed25519Signer,
+    email: &str,
+    deposits: &[Delegation<Ed25519Signature>],
+    carry_deposits: bool,
+) -> Vec<u8> {
+    let invocation = InvocationBuilder::new()
+        .issuer(customer.clone())
+        .audience(&customer.did())
+        .subject(&customer.did())
+        .command(vec!["customer".to_string(), "enroll".to_string()])
+        .arguments(BTreeMap::from([
+            ("email".to_string(), Promised::String(email.to_string())),
+            (
+                "access".to_string(),
+                Promised::List(
+                    deposits
+                        .iter()
+                        .map(|deposit| Promised::Link(deposit.to_cid()))
+                        .collect(),
+                ),
+            ),
+        ]))
+        .proofs(vec![])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .expect("enroll invocation");
+    let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes")];
+    if carry_deposits {
+        for deposit in deposits {
+            tokens.push(deposit.encoded().to_vec());
+        }
+    }
+    Container::new(tokens)
+        .to_bytes()
+        .expect("container encodes")
+}
+
+/// Decode the invocation container carried by an activation link. It is
+/// complete and service-signed, so activating is presenting these bytes;
+/// no key is needed on the presenting device.
+fn link_container(link: &str) -> Vec<u8> {
+    let encoded = link
+        .split("ucan=")
+        .nth(1)
+        .expect("link carries the invocation");
+    URL_SAFE_NO_PAD.decode(encoded).expect("valid base64url")
+}
+
+/// Mint an activation-shaped invocation with an arbitrary issuer,
+/// subject, and expiration, for the refusal tests.
+async fn activation_invocation(
+    issuer: &Ed25519Signer,
+    subject: &Did,
+    customer: &Did,
+    expiration: Timestamp,
+) -> Vec<u8> {
+    let invocation = InvocationBuilder::new()
+        .issuer(issuer.clone())
+        .audience(subject)
+        .subject(subject)
+        .command(vec!["customer".to_string(), "activate".to_string()])
+        .arguments(BTreeMap::from([
+            (
+                "customer".to_string(),
+                Promised::String(customer.to_string()),
+            ),
+            (
+                "terms".to_string(),
+                Promised::String(SIGNUP_TERMS.to_string()),
+            ),
+        ]))
+        .proofs(vec![])
+        .expiration(expiration)
+        .try_build()
+        .await
+        .expect("activation invocation");
+    InvocationChain::new(invocation, HashMap::new())
+        .to_bytes()
+        .expect("container encodes")
+}
+
+#[dialog_common::test]
+async fn it_enrolls_a_customer_and_emails_an_activation_link() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(receipt.customer, customer.did());
+    assert_eq!(serde_json::to_value(receipt.status)?, "Registered");
+
+    let (address, link) = fixture.last_email();
+    assert_eq!(address, "alice@example.com");
+    assert!(link.starts_with("https://hub.test/activate?ucan="));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_activates_by_presenting_the_emailed_invocation_from_any_device() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    // The link carries a complete service-signed invocation: presenting
+    // it is activating, no customer key involved, so a click on any
+    // device finalizes.
+    let container = link_container(&fixture.last_email().1);
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(receipt.customer, customer.did());
+    assert_eq!(serde_json::to_value(receipt.status)?, "Active");
+
+    let stored = fixture
+        .store
+        .customer(customer.did().as_str())
+        .await
+        .unwrap()
+        .expect("customer row exists");
+    assert_eq!(stored.terms_version.as_deref(), Some(SIGNUP_TERMS));
+    assert!(stored.verified > 0);
+
+    // Clicking twice leaves the customer active and writes no duplicate
+    // state.
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(serde_json::to_value(receipt.status)?, "Active");
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_enrolling_an_active_customer_and_resends_while_registered() -> anyhow::Result<()>
+{
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+
+    let container = enroll_container(&customer, &service, "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+    // Re-enrolling while registered is idempotent and resends the link.
+    let container = enroll_container(&customer, &service, "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+    assert_eq!(
+        fixture
+            .emails
+            .0
+            .lock()
+            .expect("captured email mutex poisoned")
+            .len(),
+        2
+    );
+
+    let container = link_container(&fixture.last_email().1);
+    fixture.registration(&container).handle().await.unwrap();
+
+    let container = enroll_container(&customer, &service, "alice@example.com").await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::CustomerActive));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_a_forged_activation_invocation() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let attacker = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    let container = enroll_container(&customer, &service, "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    // An attacker naming the service as subject cannot prove the chain.
+    let forged = activation_invocation(
+        &attacker,
+        &service,
+        &customer.did(),
+        Timestamp::five_minutes_from_now(),
+    )
+    .await;
+    let refusal = fixture.registration(&forged).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Unauthorized { .. }));
+
+    // A self-signed invocation on the attacker's own subject verifies,
+    // but it is not an invocation this service minted.
+    let forged = activation_invocation(
+        &attacker,
+        &attacker.did(),
+        &customer.did(),
+        Timestamp::five_minutes_from_now(),
+    )
+    .await;
+    let refusal = fixture.registration(&forged).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_an_expired_activation_link_without_a_storage_lookup() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+
+    // A genuinely service-signed link, already expired. No enrollment
+    // exists, so a storage lookup would answer UnknownCustomer; the
+    // expired window must refuse before any lookup happens.
+    let expired = activation_invocation(
+        &fixture.service,
+        &service,
+        &customer.did(),
+        at(unix_now() - 60),
+    )
+    .await;
+    let refusal = fixture.registration(&expired).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Unauthorized { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_requires_the_deposited_delegations_to_travel_in_the_container() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    let deposits = scoped_deposits(&customer, &service, &service).await;
+    let container =
+        enroll_container_with_deposits(&customer, "alice@example.com", &deposits, false).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Invalid { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_a_deposit_issued_to_someone_else() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let stranger = Ed25519Signer::generate().await?;
+    // The deposits must be issued to this service, not a third party.
+    let service = fixture.service.did();
+    let deposits = scoped_deposits(&customer, &service, &stranger.did()).await;
+    let container =
+        enroll_container_with_deposits(&customer, "alice@example.com", &deposits, true).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_a_deposit_broader_than_the_scopes() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    // The old shape of the deposit: an unscoped grant of `/` over the
+    // whole account space. Enrollment must refuse it rather than hold it.
+    let unscoped = DelegationBuilder::new()
+        .issuer(customer.clone())
+        .audience(&service)
+        .subject(DelegatedSubject::Specific(customer.did()))
+        .command(vec![])
+        .try_build()
+        .await?;
+    let container =
+        enroll_container_with_deposits(&customer, "alice@example.com", &[unscoped], true).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_walks_a_device_issued_deposit_back_to_the_customer() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    // The fallback shape a device without ceremony-minted deposits
+    // presents: deposits issued by the device, chained to the customer
+    // through the `root → device` grant riding in the same container.
+    let root = Ed25519Signer::generate().await?;
+    let device = Ed25519Signer::generate().await?;
+    let link =
+        tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did()).await?;
+    let container = tonk_identity::request::build_enroll_invocation(
+        device,
+        &link,
+        &fixture.service.did(),
+        "alice@example.com",
+    )
+    .await?;
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(receipt.customer, root.did());
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_requires_the_deposits_to_cover_both_scopes() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    // Only the memory grant, no index catalog: the service could publish
+    // a branch pointer but never ship its nodes, so enrollment refuses
+    // the incomplete set.
+    let mut deposits = scoped_deposits(&customer, &service, &service).await;
+    deposits.truncate(1);
+    let container =
+        enroll_container_with_deposits(&customer, "alice@example.com", &deposits, true).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_registers_the_account_consumer_atomically_with_the_customer() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    let consumer = fixture
+        .store
+        .consumer(customer.did().as_str())
+        .await
+        .unwrap()
+        .expect("the account space is a consumer");
+    assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
+    Ok(())
+}
+
+/// Build a `/provider/add` container: a customer-signed invocation
+/// depositing the space's consent delegation.
+async fn add_container(
+    customer: &Ed25519Signer,
+    space: &Ed25519Signer,
+    consent_to: &Did,
+) -> Vec<u8> {
+    let consent = DelegationBuilder::new()
+        .issuer(space.clone())
+        .audience(consent_to)
+        .subject(DelegatedSubject::Specific(space.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("consent delegation");
+    let invocation = InvocationBuilder::new()
+        .issuer(customer.clone())
+        .audience(&customer.did())
+        .subject(&customer.did())
+        .command(vec!["provider".to_string(), "add".to_string()])
+        .arguments(BTreeMap::from([
+            (
+                "consumer".to_string(),
+                Promised::String(space.did().to_string()),
+            ),
+            ("consent".to_string(), Promised::Link(consent.to_cid())),
+        ]))
+        .proofs(vec![])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .expect("add invocation");
+    let tokens = vec![
+        serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes"),
+        consent.encoded().to_vec(),
+    ];
+    Container::new(tokens)
+        .to_bytes()
+        .expect("container encodes")
+}
+
+#[dialog_common::test]
+async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    // Activation is not required to add, only to serve: the customer is
+    // still Registered here.
+    let container = add_container(&customer, &space, &customer.did()).await;
+    let Answer::Consumer(receipt) = fixture.registration(&container).handle().await.unwrap() else {
+        panic!("expected a consumer receipt");
+    };
+    assert_eq!(receipt.consumer, space.did());
+    assert_eq!(receipt.provider, customer.did());
+
+    let consumer = fixture
+        .store
+        .consumer(space.did().as_str())
+        .await
+        .unwrap()
+        .expect("the consumer row exists");
+    assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
+
+    // Re-provisioning under the same customer is a no-op success.
+    let container = add_container(&customer, &space, &customer.did()).await;
+    assert!(fixture.registration(&container).handle().await.is_ok());
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_provisioning_someone_elses_consumer() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let alice = Ed25519Signer::generate().await?;
+    let mallory = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    for (customer, email) in [
+        (&alice, "alice@example.com"),
+        (&mallory, "mallory@example.com"),
+    ] {
+        let container = enroll_container(customer, &service, email).await;
+        fixture.registration(&container).handle().await.unwrap();
+    }
+
+    let container = add_container(&alice, &space, &alice.did()).await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    let container = add_container(&mallory, &space, &mallory.did()).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::ConsumerProvided));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_a_consent_issued_to_another_customer() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let alice = Ed25519Signer::generate().await?;
+    let mallory = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    let container = enroll_container(&mallory, &service, "mallory@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    // The space consented to Alice; Mallory presenting that consent must
+    // not become its provider.
+    let container = add_container(&mallory, &space, &alice.did()).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
+    Ok(())
+}
+
+/// A state-dir service survives its own restart: same signing identity,
+/// same customers, and the blob snapshot refills the fresh store. This
+/// is the dev-durability contract — a restarted local service must not
+/// orphan the clients holding credentials against it.
+#[dialog_common::test]
+async fn it_keeps_state_across_restarts_with_a_state_dir() -> anyhow::Result<()> {
+    use tonk_access_service::helpers::{AccessServiceSettings, access_service};
+
+    let state = tempfile::tempdir()?;
+    let settings = AccessServiceSettings {
+        state_dir: Some(state.path().to_path_buf()),
+        ..Default::default()
+    };
+
+    let service = access_service(settings.clone()).await?;
+    let first_did = service.address.service_did.clone();
+    let base = service
+        .address
+        .access_service_url
+        .trim_end_matches('/')
+        .to_string();
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &first_did.parse()?, "alice@example.com").await;
+    let response = reqwest::Client::new()
+        .post(format!("{base}/ucan/"))
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    service.stop().await?;
+
+    let service = access_service(settings).await?;
+    assert_eq!(
+        service.address.service_did, first_did,
+        "the signing identity survives a restart"
+    );
+    let base = service
+        .address
+        .access_service_url
+        .trim_end_matches('/')
+        .to_string();
+    let probe = reqwest::get(format!("{base}/customer/{}", customer.did())).await?;
+    assert_eq!(
+        probe.status(),
+        200,
+        "an enrolled customer survives a restart"
+    );
+    service.stop().await?;
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+
+    let service_did: Did = env.service_did.parse()?;
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &service_did, "alice@example.com").await;
+    let response = client
+        .post(format!("{base}/ucan/"))
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    let receipt: serde_json::Value = response.json().await?;
+    assert_eq!(receipt["status"], "Registered");
+
+    let emails: Vec<(String, String)> = client
+        .get(format!("{base}/_test/emails"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let (address, link) = emails.last().cloned().expect("an activation email");
+    assert_eq!(address, "alice@example.com");
+
+    let response = client
+        .post(format!("{base}/ucan/"))
+        .header("Content-Type", "application/cbor")
+        .body(link_container(&link))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    let receipt: serde_json::Value = response.json().await?;
+    assert_eq!(receipt["status"], "Active");
+
+    // The DID document names the same key the service signs with.
+    let document: serde_json::Value = client
+        .get(format!("{base}/.well-known/did.json"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let multibase = document["verificationMethod"][0]["publicKeyMultibase"]
+        .as_str()
+        .expect("a multikey verification method");
+    assert_eq!(format!("did:key:{multibase}"), service_did.to_string());
+    Ok(())
+}

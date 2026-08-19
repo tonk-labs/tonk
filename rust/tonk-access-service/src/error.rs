@@ -37,6 +37,18 @@ impl From<Rejection> for Refusal {
 impl Refusal {
     /// A refusal for a failure of our own machinery that is not worth
     /// retrying as-is.
+    /// The refusal's stable kind tag, as it appears on the wire.
+    pub fn kind(&self) -> String {
+        let value = match self {
+            Refusal::Authorization(reason) => serde_json::to_value(reason),
+            Refusal::Rejection(rejection) => serde_json::to_value(rejection),
+        };
+        value
+            .ok()
+            .and_then(|value| value["kind"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "Unclassified".to_string())
+    }
+
     pub fn unclassified(detail: impl Into<String>) -> Self {
         Self::Rejection(Rejection::Unclassified {
             detail: detail.into(),
