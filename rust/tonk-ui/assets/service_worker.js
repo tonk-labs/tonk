@@ -248,7 +248,7 @@ self.registration.addEventListener?.("updatefound", async () => {
         log("Update found — that is us installing; staying live");
         return;
     }
-    log("Update found — forwarding to wasm worker");
+    log("Update found — retiring: refusing new data-plane work");
     retiring = true;
     try {
       const worker = await activateWorker();
@@ -257,13 +257,14 @@ self.registration.addEventListener?.("updatefound", async () => {
     } catch (err) {
         log("Failed to forward updatefound:", err);
     }
-    // Hand the active-worker lock to the incoming instance instead of
-    // taking it to the grave: this worker's sync loop is stopped and it
-    // refuses new data-plane fetches from here on, so its storage
-    // footprint is only whatever was already in flight (bounded by the
-    // settle watchdog). Without the handover, a hung in-flight fetch
-    // keeps this worker alive, the lock never frees, and the incoming
-    // worker can never initialize.
+    // Drain what was already in flight (each request is bounded by the
+    // storage settle watchdog; the cap here is the upgrade-latency
+    // budget, not a correctness bound), THEN hand the active-worker
+    // lock to the incoming instance instead of taking it to the grave.
+    // Without the handover, a hung in-flight fetch keeps this worker
+    // alive, the lock never frees, and the incoming worker can never
+    // initialize.
+    await drainDataRequests(10_000);
     releaseActiveWorkerLock();
     log("Active-worker lock released to the incoming worker");
 });
@@ -442,9 +443,52 @@ async function serveAsset(event) {
 // Cache API directly (also bypassing the boot); everything else —
 // `/api/*` and cache-missed assets — goes through the Rust worker,
 // which owns the guest rewrite and the resource cache.
-// Set when a newer worker is installing: this instance stops taking
-// new data-plane work so the storage handover stays clean.
+// ---- Graceful upgrade -----------------------------------------------
+//
+// A deploy must never brick a page. The handover contract:
+//
+// 1. The moment an update is found, the OUTGOING worker stops all
+//    background work (the wasm side parks its sync loop and releases
+//    its streams) and refuses NEW data-plane requests with a retryable
+//    503 — it does no further storage writes it wasn't already doing.
+// 2. It then drains its in-flight data-plane work, bounded (each
+//    in-flight request is itself bounded by the storage settle
+//    watchdog), and only after the drain hands the active-worker lock
+//    to the incoming instance.
+// 3. The INCOMING worker activates immediately (activation never gates
+//    on the lock) and claims clients; its data-plane requests WAIT on
+//    lock+init rather than erroring, so pages see a brief added
+//    latency, never a failure.
 let retiring = false;
+let inflightDataRequests = 0;
+let inflightDrained = null;
+let signalInflightDrained = () => {};
+
+function trackDataRequest(promise) {
+    inflightDataRequests += 1;
+    const settle = () => {
+        inflightDataRequests -= 1;
+        if (retiring && inflightDataRequests === 0) {
+            signalInflightDrained();
+        }
+    };
+    promise.then(settle, settle);
+    return promise;
+}
+
+/// Resolves when no data-plane request is in flight, or after `capMs`.
+function drainDataRequests(capMs) {
+    if (inflightDataRequests === 0) return Promise.resolve();
+    if (inflightDrained == null) {
+        inflightDrained = new Promise(resolve => {
+            signalInflightDrained = resolve;
+        });
+    }
+    return Promise.race([
+        inflightDrained,
+        new Promise(resolve => setTimeout(resolve, capMs)),
+    ]);
+}
 
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
@@ -455,12 +499,17 @@ self.onfetch = event => {
         return;
     }
     if (retiring && path.startsWith("/api/")) {
-        // The incoming worker takes over momentarily; a quick retryable
-        // refusal beats writing to storage this instance already ceded.
-        event.respondWith(new Response(
-            JSON.stringify({ error: { kind: "retiring", message: "worker updating; retry" } }),
-            { status: 503, headers: { "content-type": "application/json", "retry-after": "1" } },
-        ));
+        // The incoming worker takes over momentarily. Hold the request
+        // for a beat and 307 it back to itself: the browser re-issues
+        // transparently (method and body preserved), and by then the
+        // new worker controls the page — no error ever reaches app
+        // code, at any of its call sites. If the takeover is slower the
+        // hop repeats; the browser's redirect cap (~20) bounds the
+        // pathological case at roughly the same budget as a timeout.
+        event.respondWith((async () => {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            return Response.redirect(event.request.url, 307);
+        })());
         return;
     }
     // Shortcut-service routes (`PUT /@`, `GET /@/{hash}`) belong to
@@ -492,9 +541,9 @@ self.onfetch = event => {
         event.respondWith(serveAsset(event));
         return;
     }
-    event.respondWith(
+    event.respondWith(trackDataRequest(
         (async () => (await activateWorker()).onfetch(event))(),
-    );
+    ));
 };
 
 // Iframe-side bridge messages. The iframe sends `{v:1,type:"hello"}`
