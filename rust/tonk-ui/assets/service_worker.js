@@ -82,65 +82,6 @@ let tonkServiceWorkerResolves;
 // retries from scratch.
 const INIT_RETRY_HOLDOFF_MS = 5000;
 
-// At most one live wasm worker per origin, ever. During a service-worker
-// update (routine — and every reload, with DevTools' "Update on reload")
-// the outgoing instance is still finishing in-flight work while the
-// incoming one starts serving: two wasm workers over the same IndexedDB,
-// interleaving commits that no in-process lock can serialize. That
-// overlap is where mid-write futures get dropped ("closure invoked ...
-// after being dropped") and branch locks wedge behind writes that never
-// complete. A Web Lock is origin-wide and auto-released when the
-// holder's context is destroyed, so the incoming worker simply waits
-// out the outgoing one's death before touching storage.
-let activeWorkerLock = null;
-let releaseActiveWorkerLock = () => {};
-function holdActiveWorkerLock() {
-    if (activeWorkerLock == null) {
-        activeWorkerLock = (async () => {
-            // Acquire by polling with `ifAvailable` rather than parking
-            // an indefinite request: a request left pending while its
-            // holder is terminated and its own context churns (worker
-            // updates, incognito teardown) walks LockManager's least
-            // traveled lifecycle paths in the BROWSER process — observed
-            // as a CrBrowserMain CHECK crash. Polling touches only the
-            // boring grant-or-decline path. The hold itself is the
-            // designed pattern: released by the browser at termination.
-            let waited = 0;
-            for (;;) {
-                const acquired = await new Promise(resolve => {
-                    navigator.locks.request(
-                        "tonk-active-worker",
-                        { ifAvailable: true },
-                        lock => {
-                            if (lock === null) {
-                                resolve(false);
-                                return;
-                            }
-                            resolve(true);
-                            // Held until this worker is terminated OR
-                            // retires (an update replaced it) — the
-                            // handover the incoming worker polls for.
-                            return new Promise(release => {
-                                releaseActiveWorkerLock = release;
-                            });
-                        },
-                    );
-                });
-                if (acquired) {
-                    log("active-worker lock acquired");
-                    return;
-                }
-                if (waited === 1000) {
-                    log("waiting for the outgoing worker to release storage…");
-                }
-                await new Promise(r => setTimeout(r, 250));
-                waited += 250;
-            }
-        })();
-    }
-    return activeWorkerLock;
-}
-
 async function activateWorker() {
     if (tonkServiceWorkerResolves == null) {
         const now = Date.now();
@@ -153,8 +94,7 @@ async function activateWorker() {
         workerHealth.state = "initializing";
         workerHealth.attempts += 1;
         workerHealth.lastAttemptAt = now;
-        tonkServiceWorkerResolves = holdActiveWorkerLock()
-            .then(() => init())
+        tonkServiceWorkerResolves = init()
             .then(() => activate())
             .then(worker => {
                 workerHealth.state = "ok";
@@ -248,51 +188,19 @@ self.registration.addEventListener?.("updatefound", async () => {
         log("Update found — that is us installing; staying live");
         return;
     }
-    log("Update found — retiring: refusing new data-plane work");
-    retiring = true;
-    if (workerHealth.state === "failed") {
-        // A failed worker has nothing worth draining and nothing worth
-        // resuming: hand the lock over immediately so the successor can
-        // initialize the moment it activates. The glue keeps answering
-        // (error page / 503) until the successor claims the pages.
-        releaseActiveWorkerLock();
-        log("Failed worker: lock released to the incoming worker immediately");
-        return;
-    }
+    log("Update found — stopping background work; the successor runs independently");
     try {
       const worker = await activateWorker();
-      // let worker know there is an update
+      // Stop the sync loop and release long-lived streams so this
+      // instance winds down. Serving continues until the successor
+      // claims the pages — the two may overlap briefly, which storage
+      // is designed to tolerate (CAS commits over content-addressed
+      // blocks; transaction settling is race-armed). Nothing here may
+      // couple the successor's startup to this worker's death: worker
+      // lifecycles belong to the browser.
       await worker.onupdatefound?.();
     } catch (err) {
         log("Failed to forward updatefound:", err);
-    }
-    // Drain what was already in flight (each request is bounded by the
-    // storage settle watchdog; the cap here is the upgrade-latency
-    // budget, not a correctness bound).
-    await drainDataRequests(10_000);
-    // Hand over ONLY once the successor is observably active.
-    // Retirement without a successor would strand every page in the
-    // hold-and-redirect loop — a failed or flapping install must roll
-    // this worker back to serving instead. Background sync stays
-    // parked either way (the wasm side latched off; the next real
-    // update replaces this instance), but the data plane must never
-    // go dark without a replacement.
-    const successor = await (async () => {
-        for (let waited = 0; waited < 6_000; waited += 250) {
-            const active = self.registration.active;
-            if (active && active !== self.serviceWorker && active.state === "activated") {
-                return true;
-            }
-            await new Promise(r => setTimeout(r, 250));
-        }
-        return false;
-    })();
-    if (successor) {
-        releaseActiveWorkerLock();
-        log("Active-worker lock released to the incoming worker");
-    } else {
-        retiring = false;
-        log("No successor activated — resuming service; background sync stays parked until the next update");
     }
 });
 
@@ -472,50 +380,16 @@ async function serveAsset(event) {
 // which owns the guest rewrite and the resource cache.
 // ---- Graceful upgrade -----------------------------------------------
 //
-// A deploy must never brick a page. The handover contract:
-//
-// 1. The moment an update is found, the OUTGOING worker stops all
-//    background work (the wasm side parks its sync loop and releases
-//    its streams) and refuses NEW data-plane requests with a retryable
-//    503 — it does no further storage writes it wasn't already doing.
-// 2. It then drains its in-flight data-plane work, bounded (each
-//    in-flight request is itself bounded by the storage settle
-//    watchdog), and only after the drain hands the active-worker lock
-//    to the incoming instance.
-// 3. The INCOMING worker activates immediately (activation never gates
-//    on the lock) and claims clients; its data-plane requests WAIT on
-//    lock+init rather than erroring, so pages see a brief added
-//    latency, never a failure.
-let retiring = false;
-let inflightDataRequests = 0;
-let inflightDrained = null;
-let signalInflightDrained = () => {};
-
-function trackDataRequest(promise) {
-    inflightDataRequests += 1;
-    const settle = () => {
-        inflightDataRequests -= 1;
-        if (retiring && inflightDataRequests === 0) {
-            signalInflightDrained();
-        }
-    };
-    promise.then(settle, settle);
-    return promise;
-}
-
-/// Resolves when no data-plane request is in flight, or after `capMs`.
-function drainDataRequests(capMs) {
-    if (inflightDataRequests === 0) return Promise.resolve();
-    if (inflightDrained == null) {
-        inflightDrained = new Promise(resolve => {
-            signalInflightDrained = resolve;
-        });
-    }
-    return Promise.race([
-        inflightDrained,
-        new Promise(resolve => setTimeout(resolve, capMs)),
-    ]);
-}
+// A deploy must never brick a page, and worker lifecycles belong to
+// the browser: nothing here may couple the successor's startup to the
+// outgoing worker's death. On updatefound the outgoing worker stops
+// background work and releases streams; it keeps serving until the
+// successor activates and claims the pages (a brief overlap storage
+// tolerates by design: CAS commits over content-addressed blocks,
+// race-armed transaction settling). Teardown is then the browser's
+// default path — it works because every response is fast or bounded
+// by the storage settle watchdog, so activation always finds a quiet
+// gap and the reaped worker never has a reason to linger.
 
 /// A real error page for a worker that cannot start: the actual error,
 /// a retry, and a pointer at /api/health — never an endless spinner.
@@ -583,24 +457,6 @@ self.onfetch = event => {
             return;
         }
     }
-    if (retiring && path.startsWith("/api/")) {
-        // The incoming worker takes over momentarily. Hold the request
-        // for a beat and 307 it back to itself: the browser re-issues
-        // transparently (method and body preserved), and by then the
-        // new worker controls the page — no error ever reaches app
-        // code, at any of its call sites. If the takeover is slower the
-        // hop repeats; the browser's redirect cap (~20) bounds the
-        // pathological case at roughly the same budget as a timeout.
-        // Short hold: each held response is an in-flight event that
-        // extends THIS worker's lifetime, and the successor's
-        // activation needs a quiet gap in that queue. 400ms paces the
-        // redirect loop without ever fully occupying the queue.
-        event.respondWith((async () => {
-            await new Promise(resolve => setTimeout(resolve, 400));
-            return Response.redirect(event.request.url, 307);
-        })());
-        return;
-    }
     // Shortcut-service routes (`PUT /@`, `GET /@/{hash}`) belong to
     // the edge worker, not this one. Not intercepting at all is the
     // point: the edge answers `GET /@/{hash}` with a relative 301
@@ -630,9 +486,9 @@ self.onfetch = event => {
         event.respondWith(serveAsset(event));
         return;
     }
-    event.respondWith(trackDataRequest(
+    event.respondWith(
         (async () => (await activateWorker()).onfetch(event))(),
-    ));
+    );
 };
 
 // Iframe-side bridge messages. The iframe sends `{v:1,type:"hello"}`
