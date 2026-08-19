@@ -44,12 +44,18 @@ pub(crate) async fn ensure_space_mounted(
     tonk: &TonkState,
     key: &str,
 ) -> Result<bool, crate::TonkWorkerError> {
-    // Routing keys are the DID's method-specific suffix.
-    let subject: dialog_varsig::Did = match format!("did:key:{key}").parse() {
+    // Routes address a space by either spelling: the bare routing key
+    // (the DID's method-specific suffix) or the full did:key URI —
+    // pages query with the full form. Normalize before parsing, or the
+    // full form silently fails the parse and adoption never fires.
+    let suffix = key.strip_prefix("did:key:").unwrap_or(key);
+    let subject: dialog_varsig::Did = match format!("did:key:{suffix}").parse() {
         Ok(did) => did,
         Err(_) => return Ok(false), // not a space key (e.g. a named repo)
     };
-    if super::account_state::is_account_key(tonk, key).await {
+    if super::account_state::is_account_key(tonk, key).await
+        || super::account_state::is_account_key(tonk, suffix).await
+    {
         return Ok(false);
     }
     if super::join::find_replica_for_subject(tonk, &subject).await? {
@@ -66,7 +72,83 @@ pub(crate) async fn ensure_space_mounted(
             crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
         })?;
     stamp_space_locality(tonk, &subject).await;
+    // The mount wires the upstream but the content arrives over a pull;
+    // mark the repo dirty so the next drain (the page's own follow-up
+    // requests trigger one) fills the space in promptly instead of
+    // waiting for an idle beat.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
     Ok(true)
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use super::*;
+
+    /// The cross-device flow's device-B half, pinned: another device
+    /// recorded a space's directory facts (mount records included);
+    /// this device — which has never seen the space — must mount it on
+    /// first use, by either key spelling the routes produce.
+    #[dialog_common::test]
+    async fn it_mounts_a_directory_space_on_first_use() {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_repository::SiteAddress;
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state().await;
+
+        // A space that exists only as directory facts — as if another
+        // device on the account created it and the rows synced in.
+        let foreign = Ed25519Signer::generate().await.unwrap();
+        let subject: dialog_varsig::Did = foreign.did();
+        let address = SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+            "https://sync.example.test/ucan/",
+        ));
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(address)
+                    .subject(subject.clone())
+                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        super::super::repository::record_space_mount(
+            &tonk,
+            &subject,
+            &configuration,
+            Some("Foreign Spot"),
+        )
+        .await;
+        assert!(
+            !super::super::join::find_replica_for_subject(&tonk, &subject)
+                .await
+                .unwrap(),
+            "the space must start unmounted for the pin to mean anything"
+        );
+
+        // Pages address repos by the FULL did:key URI — the spelling
+        // that regressed. Both spellings must mount.
+        let full = subject.to_string();
+        assert!(
+            ensure_space_mounted(&tonk, &full).await.unwrap(),
+            "first use mounts the directory space (full-DID spelling)"
+        );
+        assert!(
+            super::super::join::find_replica_for_subject(&tonk, &subject)
+                .await
+                .unwrap(),
+            "the mount records a local replica"
+        );
+        // Idempotent — and the bare-suffix spelling resolves too.
+        let suffix = full.strip_prefix("did:key:").unwrap();
+        assert!(ensure_space_mounted(&tonk, suffix).await.unwrap());
+    }
 }
 
 /// Rebuild a space's [`RepositoryConfiguration`] from remote/branch

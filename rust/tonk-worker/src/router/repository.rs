@@ -692,6 +692,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             //    the identity just created. A failure here just leaves it
             //    local-only — retryable from the topbar's Enable sync.
             //    (`remote_from_facts` already dropped empty/blank URLs.)
+            // A blank remote used to mean local-only, which the account
+            // directory now advertises account-wide as a space no other
+            // device can ever replicate. With an account attached, the
+            // account's own sync remote is the natural default — the
+            // same access service the account DB syncs through; the
+            // relay resolves from the remote's origin as usual.
+            let remote = match remote {
+                Some(remote) => Some(remote),
+                None => {
+                    let tonk = env.state().read().await;
+                    super::account::descriptor(&tonk)
+                        .await
+                        .map(|descriptor| descriptor.remote().to_string())
+                }
+            };
             if let Some(remote) = remote
                 && let Err(error) =
                     enable_sync_inner(env.state(), &key, &remote, revocation_url.as_deref()).await
