@@ -3181,6 +3181,7 @@ where
     )
     .await?;
     record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
+    super::adopt::stamp_space_locality(tonk, &repository.did()).await;
     Ok(())
 }
 

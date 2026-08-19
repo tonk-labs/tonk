@@ -65,6 +65,7 @@ pub(crate) async fn ensure_space_mounted(
         .map_err(|error| {
             crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
         })?;
+    stamp_space_locality(tonk, &subject).await;
     Ok(true)
 }
 
@@ -199,6 +200,41 @@ async fn configuration_from_facts(
         );
     }
     Some(configuration)
+}
+
+/// Stamp a space's device-locality into the profile-main OVERLAY so
+/// the Hub can style directory rows this device has not replicated.
+/// Overlay facts are device-local and die with the worker, so callers
+/// stamp at boot and again whenever locality changes.
+pub(crate) async fn stamp_space_locality(tonk: &TonkState, subject: &dialog_varsig::Did) {
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("locality stamp: open profile main: {error}");
+            return;
+        }
+    };
+    main.state
+        .assert_overlay(tonk_schema::SpaceLocal::new(subject, true));
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// Boot pass: stamp locality for every replica this device holds.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn stamp_local_spaces(tonk: &TonkState) {
+    for key in super::profile_name::real_space_keys(tonk).await {
+        if let Ok(subject) = format!("did:key:{key}").parse::<dialog_varsig::Did>() {
+            stamp_space_locality(tonk, &subject).await;
+        }
+    }
 }
 
 /// Rebuild a space's configuration from the account directory.

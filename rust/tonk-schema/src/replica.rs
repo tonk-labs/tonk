@@ -121,6 +121,28 @@ impl Space {
     }
 }
 
+/// The device-local "replicated here" marker for a directory row —
+/// overlay-only (see [`domain::space::Local`]).
+///
+/// [`domain::space::Local`]: crate::domain::space::Local
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceLocal {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// Whether a local replica exists on this device.
+    pub local: crate::domain::space::Local,
+}
+
+impl SpaceLocal {
+    /// A locality stamp for `subject`.
+    pub fn new(subject: &Did, local: bool) -> Self {
+        Self {
+            this: subject.this(),
+            local: crate::domain::space::Local(local),
+        }
+    }
+}
+
 /// The account-directory copy of a space's display name, on the
 /// directory entity. The space's own content branch remains the
 /// editable source of truth (`tonk/repository`); this mirror exists so

@@ -46,6 +46,24 @@ concept!: &space
       the: xyz.tonk.space/status
       cardinality: one
       as: entity
+  maybe:
+    name:
+      description: >
+        The directory mirror of the space's display name — written at
+        create and kept current by the rename command — so a device
+        that has not replicated the space can still label its card.
+      the: xyz.tonk.space/name
+      cardinality: one
+      as: text
+    local:
+      description: >
+        Whether THIS device holds a replica. Overlay-only (the worker
+        stamps it at boot and on mount), so it never replicates; a row
+        without it renders as a hollow spot that replicates on first
+        visit.
+      the: xyz.tonk.space/local
+      cardinality: one
+      as: boolean
 
 # The Add Space command. Submitting the Hub's form asserts this
 # transient command; the worker's `create_space` handler decodes it and
@@ -276,6 +294,13 @@ view/directory!:
         /* hide the profile's self-replica row */
         /* dim the row while the content branch is still seeding */
         .srow-wrap[data-status="tonk:blank"] .srow-name { opacity: .6; }
+        /* A directory row this device has not replicated: hollow dot,
+           quieter name. Clicking it replicates on demand. */
+        .srow-wrap:not([data-local="true"]) .srow-dot {
+          opacity: .55;
+          filter: grayscale(1);
+        }
+        .srow-wrap:not([data-local="true"]) .srow-name { color: var(--wa-color-text-quiet); }
         .spot-untitled { color: var(--wa-color-text-quiet); }
         /* empty-directory placeholder: visible by default, hidden the
            moment any real row exists. "Real" excludes the self-replica
@@ -510,18 +535,11 @@ view/directory!:
              row, a derived entity that names no repository). A bare repo
              means its main branch; honored because the profile site is
              `allow="*"`. -->
-        <div class="srow-wrap" data-status={status} data-id={this}>
+        <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
           <input class="spot-wiz" type="radio" name="__rm" id="rm-{subject}" tabindex="-1">
           <a class="srow" href="/space/{subject}">
             <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
-            <span class="srow-name">
-              <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
-                <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
-                <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
-                <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
-                <span slot="loading" class="spot-untitled" hidden>Untitled</span>
-              </tonk-display>
-            </span>
+            <span class="srow-name">{name}</span>
           </a>
           <label class="srm-open" for="rm-{subject}" aria-label="Remove spot">
             <wa-icon name="xmark"></wa-icon>
@@ -529,14 +547,7 @@ view/directory!:
           <div class="srm-overlay">
             <form class="srm-card" onsubmit=space/remove data-remove={subject} data-close-radio="rm-closed">
               <h3 class="srm-title">Delete this spot?</h3>
-              <div class="srm-name">
-                <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
-                  <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
-                  <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
-                  <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
-                  <span slot="loading" class="spot-untitled" hidden>Untitled</span>
-                </tonk-display>
-              </div>
+              <div class="srm-name">{name}</div>
               <p class="onb-lede">Removes this spot from your account, on every device.
                 A synced spot can be rejoined with an invite link; a local-only spot is gone for good.</p>
               <div class="srm-actions">

@@ -1830,6 +1830,9 @@ impl TonkServiceWorker {
                 // already have — the grandfathering path.
                 crate::router::profiles::upsert_active_entry(&tonk, None).await;
                 crate::router::account_state::ensure_account_state(&tonk).await;
+                // Overlay locality stamps for the Hub's hollow-spot
+                // styling — device-local, re-stamped every boot.
+                crate::router::adopt::stamp_local_spaces(&tonk).await;
             });
         }
 

@@ -73,6 +73,15 @@ pub mod space {
     #[domain("xyz.tonk.space")]
     pub struct Status(pub Entity);
 
+    /// Whether this device holds a local replica of the space. Written
+    /// to the profile-main OVERLAY only — device-local, never
+    /// replicated — so the Hub can style a directory row it cannot
+    /// open locally (the hollow, replicate-on-first-visit spot).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct Local(pub bool);
+
     /// The space's display name, mirrored into the account directory
     /// (the content-branch copy stays the editable source of truth) so
     /// every device can label a space it has not replicated yet.
