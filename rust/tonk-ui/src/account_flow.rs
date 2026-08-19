@@ -189,34 +189,49 @@ mod tests {
         Ok(())
     }
 
+    /// Enroll a custody passkey from the dashboard: the add-passkey
+    /// action creates the credential, publishes the sealed envelope,
+    /// and records the creation facts.
+    pub(crate) async fn enroll_passkey(driver: &WebDriver) -> Result<()> {
+        element(driver, "#account-add-passkey")
+            .await?
+            .click()
+            .await?;
+        wait_for_text_containing(driver, "#account-passkey-device-value", "Chrome on ").await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_signs_up_through_the_account_panels(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
         wait_for_text_containing(&driver, "#account-email-value", EMAIL).await?;
-        let created = element(&driver, "#account-passkey-created-value")
-            .await?
-            .text()
-            .await?;
-        assert!(!created.is_empty() && created != "Loading…" && created != "Unavailable");
-        wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
+        // The account is secret-rooted: creation ran with zero WebAuthn,
+        // so the dashboard offers enrolling a passkey instead of
+        // describing one.
+        wait_for_text_containing(&driver, "#account-passkey-created-value", "Not yet").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
+        let first = get_json(&driver, "/api/account/summary").await?;
+        assert!(
+            successful_body("account summary", &first)["passkey"].is_null(),
+            "no passkey exists at creation: {first}"
+        );
 
-        // These facts are served from the account repository, seeded on every
-        // sweep of a ready account. Reading twice proves the seed recognizes
-        // its own fact rather than restamping it with each pass.
+        // Enrolling seals the secret under the passkey's KEK, publishes
+        // the custody cell, and records the creation facts.
+        enroll_passkey(&driver).await?;
         let first = get_json(&driver, "/api/account/summary").await?;
         let again = get_json(&driver, "/api/account/summary").await?;
         let first = successful_body("account summary", &first);
         let again = successful_body("account summary", &again);
         assert!(
             !first["passkey"].is_null(),
-            "signup records passkey facts: {first}"
+            "enrollment records passkey facts: {first}"
         );
         assert_eq!(
             first["passkey"], again["passkey"],
-            "a second sweep must not rewrite the recorded creation facts"
+            "a second read must not rewrite the recorded creation facts"
         );
 
         // Signup enrolled the account as a customer: the dashboard names
@@ -279,16 +294,16 @@ mod tests {
             .click()
             .await?;
 
-        // Without the code preflight, the conflict surfaces at account
-        // creation, after the passkey ceremony ran: the passkey exists
-        // and the retry below reuses it rather than minting another.
+        // The conflict surfaces at account creation, and creation is
+        // secret-rooted: no credential is minted on the failed attempt
+        // or on the successful retry.
         wait_for_text(
             &driver,
             "#account-error",
             "an account already exists for this email address",
         )
         .await?;
-        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
+        assert_eq!(credential_count(&driver, &authenticator_id).await?, 0);
 
         let email = element(&driver, "#account-email").await?;
         email.clear().await?;
@@ -300,8 +315,8 @@ mod tests {
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
-            1,
-            "the retry must reuse the persisted passkey rather than mint another"
+            0,
+            "secret-rooted creation must mint no credentials at all"
         );
 
         driver.quit().await?;
@@ -642,6 +657,10 @@ mod tests {
 
         let claimer = driver_with_prf(&env).await?;
         sign_up(&claimer, &env, "claimer@example.com").await?;
+        // The storage clear below destroys the local wrapping — the only
+        // custody a fresh account has. Enrolling the passkey first is what
+        // makes the account recoverable, which is the point of this test.
+        enroll_passkey(&claimer).await?;
         let visited = post_json(
             &claimer,
             "/api/profile/visit",

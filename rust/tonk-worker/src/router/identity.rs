@@ -257,7 +257,15 @@ pub async fn save(
     Json(request): Json<SaveRootRequest>,
 ) -> Result<Json<RootStatus>, TonkWorkerError> {
     let state = state.read().await;
-    Ok(Json(persist_root(&state, request).await?))
+    let status = persist_root(&state, request).await?;
+    // A save that carries creation metadata is a passkey arriving — at
+    // signup or at a later custody enrollment. Seed the account facts
+    // now rather than on the next sweep, so the dashboard reflects the
+    // enrollment immediately. Idempotent and best-effort.
+    if super::account_state::seed_passkey_facts(&state).await {
+        tonk_common::log!("recorded this device's passkey creation facts in the account space");
+    }
+    Ok(Json(status))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
