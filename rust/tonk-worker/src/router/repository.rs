@@ -2015,6 +2015,14 @@ extern "C" {
     fn delete_space_storage(name: &str) -> js_sys::Promise;
 }
 
+/// Delete the storage a legacy hidden account repository left behind.
+/// Its content synced with the same remote profile main now follows, so
+/// everything it held is recoverable by pulling.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn delete_legacy_storage(key: &str) {
+    let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(key)).await;
+}
+
 /// Toggle the durable `enabled` preference on the replica and publish the
 /// matching live status to the chip's overlay.
 ///

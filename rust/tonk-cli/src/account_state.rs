@@ -8,13 +8,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
-use dialog_credentials::{Credential, Ed25519Verifier};
 use dialog_effects::credential::CredentialError;
-use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
 use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Repository, RepositoryExt as _, SiteAddress, Upstream};
+use dialog_repository::{Repository, SiteAddress, Upstream};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan_core::DelegationChain;
 use tonk_account::{
@@ -31,8 +29,6 @@ use tonk_schema::{Replica, prelude::DidExt as _};
 const ACCOUNT_OPERATOR_CONTEXT: &[u8] = b"tonk/account-state/v1";
 /// Remote name for the account's access branch in the profile repository.
 const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
-
-const META_BRANCH: &str = "meta";
 
 /// Result of an ensure attempt. Remote failures are a durable Unhydrated
 /// status plus diagnostics, not a failure of the already-persisted account
@@ -481,30 +477,16 @@ pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<Na
     .await
 }
 
+/// Point profile main at the account: the account is the upstream
+/// remote of the profile repository's main branch, exactly as the
+/// worker configures it — no separate repository, no extra storage.
 async fn mount(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     descriptor: &AccountRepositoryDescriptorV1,
-) -> Result<Repository> {
+) -> Result<Repository<dialog_credentials::SignerCredential>> {
     let subject = descriptor.account_subject().clone();
-    let key = subject.repo_key();
-    let repository = match profile.repository(key).load().perform(operator).await {
-        Ok(repository) => repository,
-        Err(_) => {
-            let verifier: Ed25519Verifier = subject
-                .to_string()
-                .parse()
-                .context("account subject is not an Ed25519 did:key")?;
-            let local = Subject::from(profile.did()).attenuate(Space::new(key));
-            Repository::from(
-                local
-                    .create(Credential::from(verifier))
-                    .perform(operator)
-                    .await
-                    .context("failed to mount local account repository")?,
-            )
-        }
-    };
+    let repository = Repository::from(profile);
 
     let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
     let remote = match repository
@@ -515,7 +497,7 @@ async fn mount(
     {
         Ok(remote) => {
             if remote.address().site() != &address || remote.did() != subject {
-                bail!("mounted account repository has different immutable remote configuration");
+                bail!("profile main already follows a different account remote");
             }
             remote
         }
@@ -533,7 +515,7 @@ async fn mount(
         .open()
         .perform(operator)
         .await
-        .context("failed to open account main branch")?;
+        .context("failed to open profile main branch")?;
     let remote_branch = remote
         .branch(tonk_account::MAIN_BRANCH)
         .open()
@@ -543,7 +525,7 @@ async fn mount(
     match branch.upstream() {
         Some(Upstream::Remote { remote, branch, .. })
             if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
-        Some(_) => bail!("mounted account main tracks a different upstream"),
+        Some(_) => bail!("profile main tracks a different upstream"),
         None => branch
             .set_upstream(&remote_branch)
             .perform(operator)
@@ -552,15 +534,9 @@ async fn mount(
     }
 
     let replica = Replica::account(profile.did(), subject);
-    repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(operator)
-        .await
-        .context("failed to open account meta")?
+    branch
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
         .assert(replica.branch(tonk_account::MAIN_BRANCH))
         .commit()
         .perform(operator)
@@ -571,7 +547,7 @@ async fn mount(
 }
 
 async fn hydrate(
-    repository: &Repository,
+    repository: &Repository<dialog_credentials::SignerCredential>,
     operator: &crate::account_authority::AccountBoundOperator,
 ) -> Result<()> {
     let branch = repository

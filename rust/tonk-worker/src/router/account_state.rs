@@ -8,12 +8,9 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use dialog_capability::Subject;
-use dialog_credentials::{Credential, Ed25519Verifier};
-use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Repository, RepositoryExt as _, SiteAddress, Upstream};
+use dialog_repository::{Repository, SiteAddress, Upstream};
 use dialog_ucan_core::DelegationChain;
 use tonk_account::{
     AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
@@ -27,8 +24,6 @@ use crate::worker::TonkState;
 
 /// Remote name for the account's access branch in the profile repository.
 const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
-
-const META_BRANCH: &str = "meta";
 
 /// Identity returned only after the trusted-base gate has passed.
 #[allow(dead_code)]
@@ -281,40 +276,22 @@ pub(crate) async fn retract_account_replicas(tonk: &TonkState) -> Result<(), Ton
     Ok(())
 }
 
-async fn mount_account_repository(
+/// Point profile main at the account: the account is the upstream
+/// remote of the profile repository's main branch (`Account model.md`
+/// §5 in its literal form), not a separate repository. The subject-
+/// different remote resolves against the account's DID — the same
+/// shape [`adopt_account_access`] gives the access branch.
+///
+/// The returned key is the account's *routing* key: it still names the
+/// account in the sync drain and dirty-marking, but no repository —
+/// and no database — exists behind it any more.
+async fn configure_account_upstream(
     tonk: &TonkState,
     descriptor: &AccountRepositoryDescriptorV1,
-) -> Result<(String, Repository), TonkWorkerError> {
+) -> Result<String, TonkWorkerError> {
     let subject = descriptor.account_subject().clone();
     let key = subject.repo_key().to_owned();
-
-    let repository = match tonk
-        .profile
-        .repository(&key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
-        Ok(repository) => repository,
-        Err(_) => {
-            let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "account subject is not an Ed25519 did:key: {error:?}"
-                ))
-            })?;
-            let local = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
-            let credential = local
-                .create(Credential::from(verifier))
-                .perform(&tonk.operator)
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!(
-                        "failed to mount local account repository: {error}"
-                    ))
-                })?;
-            Repository::from(credential)
-        }
-    };
+    let repository = Repository::from(&tonk.profile);
 
     let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
     let remote = match repository
@@ -326,8 +303,7 @@ async fn mount_account_repository(
         Ok(remote) => {
             if remote.address().site() != &address || remote.did() != subject {
                 return Err(TonkWorkerError::Conflict(
-                    "mounted account repository has different immutable remote configuration"
-                        .to_string(),
+                    "profile main already follows a different account remote".to_string(),
                 ));
             }
             remote
@@ -340,7 +316,7 @@ async fn mount_account_repository(
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!(
-                    "failed to configure account repository remote: {error}"
+                    "failed to configure the account remote: {error}"
                 ))
             })?,
     };
@@ -351,7 +327,7 @@ async fn mount_account_repository(
         .perform(&tonk.operator)
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to open account main branch: {error}"))
+            TonkWorkerError::Internal(format!("failed to open profile main branch: {error}"))
         })?;
     let remote_branch = remote
         .branch(tonk_account::MAIN_BRANCH)
@@ -367,7 +343,7 @@ async fn mount_account_repository(
             if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
         Some(_) => {
             return Err(TonkWorkerError::Conflict(
-                "mounted account main branch tracks a different upstream".to_string(),
+                "profile main tracks a different upstream".to_string(),
             ));
         }
         None => branch
@@ -375,47 +351,31 @@ async fn mount_account_repository(
             .perform(&tonk.operator)
             .await
             .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to set account main upstream: {error}"))
+                TonkWorkerError::Internal(format!("failed to set profile main upstream: {error}"))
             })?,
     }
 
-    record_account_meta(tonk, &repository, &address).await?;
-
-    // Open the configured branch through the reactor. This is what puts the
-    // hidden repository in the background drain's pull population.
-    tonk.reactor
-        .repository(&key)
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to open account branch in reactor: {error}"))
-        })?;
-
-    Ok((key, repository))
+    record_account_replica(tonk, &subject, &address).await?;
+    Ok(key)
 }
 
-async fn record_account_meta(
+/// Index the account replica on profile main. The row keeps the sync
+/// drain's routing contract — the account key still schedules the
+/// account sweep — and the linked-state signal reads it.
+async fn record_account_replica(
     tonk: &TonkState,
-    repository: &Repository,
+    subject: &dialog_varsig::Did,
     address: &SiteAddress,
 ) -> Result<(), TonkWorkerError> {
-    let subject = repository.did();
     let replica = Replica::account(tonk.profile.did(), subject.clone());
-    let remote = replica.remote(tonk_account::ORIGIN_REMOTE, subject, address);
+    let remote = replica.remote(tonk_account::ORIGIN_REMOTE, subject.clone(), address);
     let tracked = remote.branch(tonk_account::MAIN_BRANCH);
 
-    let meta = repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to open account meta branch: {error}"))
-        })?;
-    meta.transaction()
+    tonk.reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
         .assert(replica.branch(tonk_account::MAIN_BRANCH))
         .assert(remote)
         .assert(tracked.clone())
@@ -428,46 +388,25 @@ async fn record_account_meta(
         .perform(&tonk.operator)
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to record account repository meta: {error}"))
+            TonkWorkerError::Internal(format!("failed to index the account replica: {error}"))
         })?;
-
-    // The profile index receives only the explicit account replica. No user
-    // status, roster, pause preference, template, invite, or backup facts.
-    tonk.reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .transaction()
-        .assert(replica)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to index account repository: {error}"))
-        })?;
-    // The index the routing-key fallback reads just gained a row. Mounting
-    // implies the link record was readable, so a resolve *now* would find the
-    // same key from the descriptor — but a resolve that ran during an earlier
-    // transient read failure cached an empty set, and only this clears it. The
-    // cost is one re-resolve per heartbeat, against leaving the repository
-    // visible until the next write.
+    // The index the routing-key fallback reads just gained a row; a resolve
+    // that ran during an earlier transient read failure cached an empty set,
+    // and only this clears it.
     tonk.account_keys.invalidate();
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     Ok(())
 }
 
-async fn hydrate_untrusted(
-    tonk: &TonkState,
-    key: &str,
-    repository: &Repository,
-) -> Result<(), TonkWorkerError> {
+async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     let session = tonk
         .reactor
-        .repository(key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-    let remote = repository
+    let remote = Repository::from(&tonk.profile)
         .remote(tonk_account::ORIGIN_REMOTE)
         .load()
         .perform(&tonk.operator)
@@ -488,13 +427,13 @@ async fn hydrate_untrusted(
                 .await
                 .map_err(|error| {
                     TonkWorkerError::Internal(format!(
-                        "failed to hydrate account repository: {error}"
+                        "failed to hydrate the account into profile main: {error}"
                     ))
                 })?;
         }
         Ok(RemotePresence::Absent) => {
             tonk.reactor
-                .repository(key)
+                .profile_repository()
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
                 .commit()
@@ -502,7 +441,7 @@ async fn hydrate_untrusted(
                 .await
                 .map_err(|error| {
                     TonkWorkerError::Internal(format!(
-                        "failed to create local account genesis: {error}"
+                        "failed to commit the account genesis base: {error}"
                     ))
                 })?;
             match publish_genesis_if_absent(session.handle(), &remote, &tonk.operator).await {
@@ -535,20 +474,21 @@ async fn hydrate_untrusted(
     Ok(())
 }
 
-/// Reconcile the ready account branch: pull, project, push.
+/// Reconcile profile main against the account upstream: pull, project,
+/// push.
 ///
-/// This is the account repository's whole sweep. It is deliberately not the
-/// generic per-branch [`sync`](crate::router::sync) route: a hidden system
-/// replica has no pause preference to honor and no status chip to stamp, and
+/// This is the account's whole sweep. It is deliberately not the
+/// generic per-branch [`sync`](crate::router::sync) route: the account
+/// has no pause preference to honor and no status chip to stamp, and
 /// routing it through both would pull and push it twice per heartbeat.
 ///
 /// `Err` names the step that did not land, so the caller can report a sweep
 /// worth retrying. Convergence failing is not one of those: it is per-space and
 /// keeps its own retry list, so it is logged and the sweep still counts.
-async fn sync_ready(tonk: &TonkState, key: &str) -> Result<(), String> {
+async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     let session = tonk
         .reactor
-        .repository(key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
@@ -611,20 +551,33 @@ pub(crate) async fn ensure_account_state_swept(
         return (AccountStateStatus::Unconfigured, Ok(()));
     };
 
-    let (key, repository) = match mount_account_repository(tonk, &descriptor).await {
-        Ok(mounted) => mounted,
+    let key = match configure_account_upstream(tonk, &descriptor).await {
+        Ok(key) => key,
         Err(error) => {
-            log!("account repository mount failed: {error}");
+            log!("account upstream configuration failed: {error}");
             return (AccountStateStatus::Unhydrated, Ok(()));
         }
     };
+
+    // An install that mounted the account as a hidden repository keeps
+    // that database around until this runs. Once per worker life; the
+    // deletion shim never rejects, and everything the repository held
+    // is recoverable from the same remote profile main now follows.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LEGACY_DISCARDED: AtomicBool = AtomicBool::new(false);
+        if !LEGACY_DISCARDED.swap(true, Ordering::Relaxed) {
+            super::repository::delete_legacy_storage(&key).await;
+        }
+    }
 
     match trusted_marker(tonk).await {
         Ok(marker) if marker_matches(marker.as_deref(), &descriptor) => {
             let swept = sync_ready(tonk, &key).await;
             (AccountStateStatus::Ready, swept)
         }
-        Ok(_) => match hydrate_untrusted(tonk, &key, &repository).await {
+        Ok(_) => match hydrate_untrusted(tonk).await {
             Ok(()) => match mark_trusted(tonk, &descriptor).await {
                 Ok(()) => {
                     // The path a freshly created account takes, where the
@@ -671,7 +624,7 @@ pub(crate) async fn require_ready_account_state(
     let subject = descriptor.account_subject().clone();
     let key = subject.repo_key().to_owned();
     tonk.reactor
-        .repository(&key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
@@ -686,7 +639,7 @@ async fn read_passkey_facts(
 ) -> Result<Option<tonk_worker_api::PasskeyMetadata>, TonkWorkerError> {
     let branch = tonk
         .reactor
-        .repository(&ready.key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
@@ -830,7 +783,7 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
     };
     let branch = match tonk
         .reactor
-        .repository(&ready.key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
@@ -849,6 +802,9 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
             if wrote {
                 tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
             }
+            // The routing key only feeds the wasm dirty-marking above.
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            let _ = &ready;
             wrote
         }
         Err(error) => {
@@ -888,7 +844,7 @@ pub(crate) async fn seed_passkey_facts(tonk: &TonkState) -> bool {
     };
     if let Err(error) = tonk
         .reactor
-        .repository(&ready.key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
         .assert(AccountPasskeyCreated::new(
@@ -920,7 +876,7 @@ pub(crate) async fn converge_account_state(
     let ready = require_ready_account_state(tonk).await?;
     let account = tonk
         .reactor
-        .repository(&ready.key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
@@ -1106,7 +1062,7 @@ async fn adopt_account_display_name(
         .await
         .map_err(|_| account_state_unavailable())?;
     tonk.reactor
-        .repository(&ready.key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
         .assert(AccountDisplayName::new(
@@ -1143,7 +1099,7 @@ pub(crate) async fn initialize_display_name(
         .map_err(|_| account_state_unavailable())?;
     let branch = tonk
         .reactor
-        .repository(&ready.key)
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
@@ -1271,6 +1227,8 @@ mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
     async fn it_projects_each_space_independently_and_retries_only_failures() {
+        use dialog_capability::Subject;
+        use dialog_credentials::{Credential, Ed25519Verifier};
         use dialog_effects::space::{Space, SpaceExt as _};
         use dialog_varsig::Principal as _;
         use tonk_schema::prelude::DidExt as _;
@@ -1530,7 +1488,7 @@ mod tests {
     ) -> Vec<tonk_schema::AccountPasskeyCreated> {
         state
             .reactor
-            .repository(&ready.key)
+            .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
             .acquire(&state.operator)
             .await
@@ -1633,7 +1591,7 @@ mod tests {
             "a ready account must retain the delegation"
         );
         assert!(
-            proves_space_access(&state, &ready, &subject).await,
+            proves_space_access(&state, &subject).await,
             "the retained delegation must prove access to the space it delegates"
         );
 
@@ -1655,11 +1613,7 @@ mod tests {
     /// passing proof is the claim that matters, and it cannot pass on facts
     /// whose envelope does not back them.
     #[cfg(not(target_arch = "wasm32"))]
-    async fn proves_space_access(
-        state: &TonkState,
-        ready: &ReadyAccountBranch,
-        subject: &dialog_varsig::Did,
-    ) -> bool {
+    async fn proves_space_access(state: &TonkState, subject: &dialog_varsig::Did) -> bool {
         use dialog_ucan::{Parameters, Scope};
         use dialog_ucan_core::command::Command;
         use dialog_ucan_core::subject::Subject as UcanSubject;
@@ -1667,7 +1621,7 @@ mod tests {
         let root = super::super::identity::local_root(state).await.unwrap();
         let branch = state
             .reactor
-            .repository(&ready.key)
+            .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
             .acquire(&state.operator)
             .await
@@ -1729,7 +1683,11 @@ mod tests {
         );
         let ready = require_ready_account_state(&state).await.unwrap();
         assert_eq!(ready.subject, descriptor.account_subject().clone());
-        assert!(state.reactor.repos().read().contains_key(&ready.key));
+        assert!(
+            !state.reactor.repos().read().contains_key(&ready.key),
+            "the account key routes the sweep; no repository — and no \
+             database — exists behind it",
+        );
 
         let initialized = initialize_display_name(&state).await.unwrap();
         assert_eq!(initialized.name, before);
@@ -1745,7 +1703,7 @@ mod tests {
         );
         let account = state
             .reactor
-            .repository(&ready.key)
+            .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
             .acquire(&state.operator)
             .await
