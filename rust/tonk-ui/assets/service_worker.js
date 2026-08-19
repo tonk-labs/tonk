@@ -93,6 +93,7 @@ const INIT_RETRY_HOLDOFF_MS = 5000;
 // holder's context is destroyed, so the incoming worker simply waits
 // out the outgoing one's death before touching storage.
 let activeWorkerLock = null;
+let releaseActiveWorkerLock = () => {};
 function holdActiveWorkerLock() {
     if (activeWorkerLock == null) {
         activeWorkerLock = (async () => {
@@ -116,9 +117,12 @@ function holdActiveWorkerLock() {
                                 return;
                             }
                             resolve(true);
-                            // Held for this worker's whole life; the
-                            // browser releases it on termination.
-                            return new Promise(() => {});
+                            // Held until this worker is terminated OR
+                            // retires (an update replaced it) — the
+                            // handover the incoming worker polls for.
+                            return new Promise(release => {
+                                releaseActiveWorkerLock = release;
+                            });
                         },
                     );
                 });
@@ -199,15 +203,21 @@ self.oninstall = event => {
 };
 
 self.onactivate = event => {
-    event.waitUntil((async () => {
-        await self.clients.claim();
+    // Claim clients and finish activating. The wasm worker is poked
+    // outside the waitUntil: activateWorker() waits for the
+    // active-worker lock, and gating ACTIVATION on that lock deadlocks
+    // the swap — the outgoing worker cannot die while its in-flight
+    // fetches hang, the lock never frees, and this worker pins in
+    // `activating` while every page waits on it.
+    event.waitUntil(self.clients.claim());
+    (async () => {
         try {
             const worker = await activateWorker();
             await worker.onactivate?.();
         } catch (err) {
             log("onactivate dispatch failed:", err);
         }
-    })());
+    })();
     log("Activated");
 };
 
@@ -239,6 +249,7 @@ self.registration.addEventListener?.("updatefound", async () => {
         return;
     }
     log("Update found — forwarding to wasm worker");
+    retiring = true;
     try {
       const worker = await activateWorker();
       // let worker know there is an update
@@ -246,6 +257,15 @@ self.registration.addEventListener?.("updatefound", async () => {
     } catch (err) {
         log("Failed to forward updatefound:", err);
     }
+    // Hand the active-worker lock to the incoming instance instead of
+    // taking it to the grave: this worker's sync loop is stopped and it
+    // refuses new data-plane fetches from here on, so its storage
+    // footprint is only whatever was already in flight (bounded by the
+    // settle watchdog). Without the handover, a hung in-flight fetch
+    // keeps this worker alive, the lock never frees, and the incoming
+    // worker can never initialize.
+    releaseActiveWorkerLock();
+    log("Active-worker lock released to the incoming worker");
 });
 
 // Connectivity transitions. The Rust side reads `navigator.onLine` itself
@@ -422,12 +442,25 @@ async function serveAsset(event) {
 // Cache API directly (also bypassing the boot); everything else —
 // `/api/*` and cache-missed assets — goes through the Rust worker,
 // which owns the guest rewrite and the resource cache.
+// Set when a newer worker is installing: this instance stops taking
+// new data-plane work so the storage handover stays clean.
+let retiring = false;
+
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
     // Answered from this glue, never the wasm worker: health must be
     // readable precisely when the worker cannot answer for itself.
     if (path === "/api/health") {
         event.respondWith(healthResponse());
+        return;
+    }
+    if (retiring && path.startsWith("/api/")) {
+        // The incoming worker takes over momentarily; a quick retryable
+        // refusal beats writing to storage this instance already ceded.
+        event.respondWith(new Response(
+            JSON.stringify({ error: { kind: "retiring", message: "worker updating; retry" } }),
+            { status: 503, headers: { "content-type": "application/json", "retry-after": "1" } },
+        ));
         return;
     }
     // Shortcut-service routes (`PUT /@`, `GET /@/{hash}`) belong to
