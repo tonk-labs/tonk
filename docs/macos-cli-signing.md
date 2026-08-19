@@ -9,8 +9,9 @@ The release boundary is `.github/actions/sign-notarize-macos/action.yml`. It
 copies no credentials into the repository: it imports the certificate into an
 ephemeral keychain, signs the already-staged binary with hardened runtime and a
 secure timestamp, waits for Apple to accept a ZIP containing that binary, and
-then requires both `codesign` and `spctl` verification to pass. Any missing
-credential, rejected submission, or failed verification stops artifact upload.
+then requires `codesign` to validate both its signature and Apple's online
+notarization ticket. Any missing credential, rejected submission, or failed
+verification stops artifact upload.
 
 ## Required credentials
 
@@ -58,8 +59,10 @@ artifact.
 
 The submitted ZIP is only the notarization transport. Release archives and npm
 packages contain the exact signed executable that Apple accepted. Apple's
-ticket is published online for Gatekeeper; `spctl` verifies that ticket on the
-runner before CI uploads the binary.
+ticket is published online for Gatekeeper; `codesign --check-notarization` with
+a `notarized` requirement verifies that ticket on the runner before CI uploads
+the binary. The action does not use `spctl --type execute`: that assessment is
+for apps and rejects a valid raw CLI executable as “not an app.”
 
 The first push to `staging` after provisioning the secrets is the end-to-end
 credential check. After it publishes, download and inspect the artifact on a
@@ -69,7 +72,7 @@ Mac:
 tar -xzf tonk-macos-arm64.tar.gz
 codesign --verify --strict --verbose=2 tonk
 codesign --display --verbose=4 tonk
-spctl --assess --type execute --verbose=2 tonk
+codesign -vvvv -R="notarized" --check-notarization tonk
 ```
 
 ## Rotation
@@ -77,4 +80,4 @@ spctl --assess --type execute --verbose=2 tonk
 Replace all five repository secrets before the certificate or API key expires
 or is revoked, then validate with a staging release. Revoke the old App Store
 Connect key and remove the old certificate from the team's secrets manager only
-after the new staging artifact passes `codesign` and `spctl` assessment.
+after the new staging artifact passes signature and notarization checks.

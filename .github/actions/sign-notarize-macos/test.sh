@@ -60,10 +60,26 @@ cat > "$mock_dir/codesign" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+check_notarization=false
+notarized_requirement=false
 for argument in "$@"; do
-  if [[ "$argument" == "--verify" ]]; then
-    exit 0
+  case "$argument" in
+    --check-notarization) check_notarization=true ;;
+    -R=notarized) notarized_requirement=true ;;
+  esac
+done
+
+if [[ "$check_notarization" == true ]]; then
+  if [[ "$notarized_requirement" != true ]]; then
+    printf 'notarization check did not require a notarized ticket\n' >&2
+    exit 1
   fi
+  touch "$TEST_STATE_DIR/notarization-checked"
+  exit 0
+fi
+
+for argument in "$@"; do
+  [[ "$argument" == "--verify" ]] && exit 0
 done
 
 keychain_path="$(cat "$TEST_STATE_DIR/current-keychain")"
@@ -91,7 +107,9 @@ EOF
 
 cat > "$mock_dir/spctl" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+printf '%s\n' \
+  'artifacts/tonk: rejected (the code is valid but does not seem to be an app)' >&2
+exit 3
 EOF
 
 chmod +x "$mock_dir/security" "$mock_dir/codesign" "$mock_dir/ditto" \
@@ -114,6 +132,11 @@ export APP_STORE_CONNECT_KEY_ID=TESTKEY123
 export APP_STORE_CONNECT_ISSUER_ID=00000000-0000-0000-0000-000000000000
 
 bash "$test_dir/action.sh"
+
+if [[ ! -f "$state_dir/notarization-checked" ]]; then
+  printf 'notarization ticket was not verified for the CLI binary\n' >&2
+  exit 1
+fi
 
 expected_keychain="/Users/runner/Library/Keychains/login.keychain-db"
 actual_keychains="$(cat "$state_dir/search-list")"
