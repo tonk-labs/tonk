@@ -35,7 +35,7 @@ audience-scoped ([`InviteAudience::Scoped`]): only the chain's recorded
 audience DID can claim. The *subject* axis (which repo) is always scoped and is
 orthogonal to this.
 
-[`DEFAULT_BASE_URL`] (`https://tonk.spot/join`) is the canonical base for
+[`DEFAULT_BASE_URL`] (`https://tonk.network/join`) is the canonical base for
 generic non-browser callers. Browser mint routes use `/join` on the exact
 request origin when `baseUrl` is omitted.
 

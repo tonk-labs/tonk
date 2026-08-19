@@ -316,7 +316,7 @@ mod tests {
     #[dialog_common::test]
     fn it_discards_a_parked_intent() {
         park(&PendingIntent::DurableJoin {
-            url: "https://tonk.spot/join#seed".into(),
+            url: "https://tonk.network/join#seed".into(),
         });
         discard_pending();
         assert!(take_pending().is_none());

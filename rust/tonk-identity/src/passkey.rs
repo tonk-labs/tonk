@@ -78,10 +78,10 @@ fn prf_extensions() -> AuthenticationExtensionsClientInputs {
 /// boundary — any origin allowed to use it can silently derive a visiting
 /// user's root key with one discoverable-credential assertion — so it is
 /// pinned to this exact origin and nothing else. Every other host under
-/// `tonk.spot`, including any wildcard hostname, is its own relying party
+/// `tonk.network`, including any wildcard hostname, is its own relying party
 /// with its own disjoint credentials. Widening later is
 /// possible via Related Origin Requests; narrowing never is.
-const RP_APEX: &str = "tonk.spot";
+const RP_APEX: &str = "tonk.network";
 
 /// The pinned RP ID on the apex origin itself; `None` (WebAuthn's
 /// per-host default) everywhere else, which gives localhost tests,
@@ -318,16 +318,16 @@ mod tests {
 
     #[dialog_common::test]
     fn it_pins_the_rp_id_to_the_apex_origin_only() {
-        assert_eq!(apex_rp_id("tonk.spot"), Some("tonk.spot"));
+        assert_eq!(apex_rp_id("tonk.network"), Some("tonk.network"));
         // Every other host under the apex is its own relying party, so it
         // cannot derive an apex root key from a visiting user's passkey.
-        assert_eq!(apex_rp_id("www.tonk.spot"), None);
-        assert_eq!(apex_rp_id("hub.tonk.spot"), None);
-        assert_eq!(apex_rp_id("a.b.tonk.spot"), None);
+        assert_eq!(apex_rp_id("www.tonk.network"), None);
+        assert_eq!(apex_rp_id("hub.tonk.network"), None);
+        assert_eq!(apex_rp_id("a.b.tonk.network"), None);
         assert_eq!(apex_rp_id("staging.tonk.xyz"), None);
         assert_eq!(apex_rp_id("localhost"), None);
         // A suffix match must not treat a sibling registrable domain as ours.
-        assert_eq!(apex_rp_id("evil-tonk.spot"), None);
+        assert_eq!(apex_rp_id("evil-tonk.network"), None);
     }
 
     #[dialog_common::test]
@@ -338,7 +338,7 @@ mod tests {
         let rp = Reflect::get(&options, &"rp".into()).unwrap();
         assert!(
             Reflect::get(&rp, &"id".into()).unwrap().is_undefined(),
-            "rp.id must stay unset off the tonk.spot apex"
+            "rp.id must stay unset off the tonk.network apex"
         );
     }
 }

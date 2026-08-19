@@ -27,7 +27,7 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Staging. Disjoint from production in every dimension that holds state:
 # its own worker, route, database, and bucket. The route stays off the
-# tonk.spot apex so staging mints its own passkey credentials rather than
+# tonk.network apex so staging mints its own passkey credentials rather than
 # production ones (see the RP ID invariants in the crate README).
 [env.staging]
 routes = [{ pattern = "accounts-staging.tonk.xyz", custom_domain = true }]

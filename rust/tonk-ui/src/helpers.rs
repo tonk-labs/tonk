@@ -79,7 +79,7 @@ mod native {
                 caps.set_headless()?;
             }
 
-            caps.add_arg("--host-resolver-rules=MAP tonk.spot 127.0.0.1")?;
+            caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
             caps.accept_insecure_certs(true)?;
             let secure_origin = format!(
                 "--unsafely-treat-insecure-origin-as-secure={}",
@@ -182,7 +182,7 @@ mod native {
                     // Filled in by the server with its own generated identity.
                     service_did: None,
                 }),
-                public_origin: Some(format!("https://tonk.spot:{web_port}")),
+                public_origin: Some(format!("https://tonk.network:{web_port}")),
                 ..Default::default()
             };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
@@ -274,7 +274,7 @@ mod native {
                     account_service: Some(account_service),
                 },
                 TestEnvironment {
-                    tonk_web: Url::parse(&format!("https://tonk.spot:{web_port}"))?,
+                    tonk_web: Url::parse(&format!("https://tonk.network:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                     account_service: account_service_url,
                     access_service: Url::parse(&access_service_address.access_service_url)?,

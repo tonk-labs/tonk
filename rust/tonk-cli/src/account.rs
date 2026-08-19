@@ -16,10 +16,10 @@ use url::Url;
 /// Production account API used unless explicitly overridden.
 pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
 /// Production account page, where the revoke ceremony runs.
-pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
+pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/account";
 /// Production link ceremony page: it reads `?audience=` and `?callback=`
 /// and posts the grant back to the waiting CLI.
-pub const DEFAULT_LINK_PAGE: &str = "https://tonk.spot/account/link";
+pub const DEFAULT_LINK_PAGE: &str = "https://tonk.network/account/link";
 /// Credential-store key for optional provider attachment metadata.
 pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
@@ -1282,7 +1282,7 @@ mod tests {
         );
         assert_eq!(
             url,
-            "https://tonk.spot/account/link\
+            "https://tonk.network/account/link\
              ?audience=did%3Akey%3AzProfile\
              &callback=http%3A%2F%2F127.0.0.1%3A54321\
              &name=Kitchen%20laptop"
@@ -1364,7 +1364,7 @@ mod tests {
     fn it_points_the_revoke_ceremony_at_the_named_device() {
         assert_eq!(
             revoke_url(DEFAULT_ACCOUNT_PAGE, "did:key:zDevice"),
-            "https://tonk.spot/account?revoke=did:key:zDevice"
+            "https://tonk.network/account?revoke=did:key:zDevice"
         );
     }
 

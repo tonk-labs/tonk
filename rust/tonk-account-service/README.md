@@ -32,16 +32,16 @@ handoff requires its 256-bit bearer secret.
 
 The passkey RP ID is the root-key custody boundary: any origin allowed to use
 it can derive any visiting user's root key from the PRF output. This service
-relies on `rp.id` being pinned to exactly one origin, `tonk.spot` (see
-`tonk-identity`'s `apex_rp_id`). Every other host — `www.tonk.spot`, staging,
+relies on `rp.id` being pinned to exactly one origin, `tonk.network` (see
+`tonk-identity`'s `apex_rp_id`). Every other host — `www.tonk.network`, staging,
 and any wildcard hostname under the apex — is its own relying party with its
 own disjoint credentials, so none of them can derive an apex root key.
 
-Two things follow. Production account ceremonies run only on `tonk.spot`;
-`hub.tonk.xyz` serves the same build but is a different relying party, so
-`tonk-ui` refuses ceremonies there rather than writing a second, disjoint
-identity for the same person into this registry. And staging runs off-apex on
-`staging.tonk.xyz` against its own registry, minting staging-only credentials.
+Two things follow. Production account ceremonies run only on `tonk.network`;
+`tonk-ui` refuses ceremonies on every other production-facing host rather than
+writing a second, disjoint identity for the same person into this registry.
+And staging runs off-apex on `staging.tonk.xyz` against its own registry,
+minting staging-only credentials.
 
 Widening the RP ID later is possible via Related Origin Requests. Narrowing it
 is not: it orphans every credential minted under the wider boundary.
@@ -165,8 +165,8 @@ First deploy, in order:
 3. `wrangler r2 bucket create tonk-account-chains`.
 4. `wrangler r2 bucket create tonk-revocations`.
 5. `wrangler secret put RESEND_API_KEY -c wrangler.account.toml`.
-6. Add the DKIM records Resend requires for sending from `tonk.spot` in the
-   Cloudflare dashboard (DNS for the zone), so `accounts@tonk.spot` mail is
+6. Add the DKIM records Resend requires for sending from `tonk.xyz` in the
+   Cloudflare dashboard (DNS for the zone), so `accounts@tonk.xyz` mail is
    authenticated.
 7. Add a WAF rate limiting rule for unauthenticated request creation (zone `tonk.xyz`,
    Security > WAF > Rate limiting rules): expression

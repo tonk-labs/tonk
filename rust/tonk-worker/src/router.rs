@@ -1380,7 +1380,7 @@ pub mod tests {
         .with_revocation_url(
             remote.map(|_| "https://relay.example.test/revocations/".parse().unwrap()),
         );
-        (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
+        (invite.to_url("https://tonk.network/join").unwrap(), key)
     }
 
     /// `POST /api/profile/visit` — an accountless guest visit.

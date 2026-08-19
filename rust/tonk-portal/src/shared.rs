@@ -122,7 +122,7 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
     }
 }
 
-/// The per-space synthetic origin (`https://{label}.tonk.spot/`) for this
+/// The per-space synthetic origin (`https://{label}.tonk.network/`) for this
 /// portal's routing context, or empty when the portal targets no space (the
 /// profile/Hub) — where in-guest links are genuinely top-level.
 fn space_base(state: &bridge::PortalState) -> String {

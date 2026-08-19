@@ -166,7 +166,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_omits_invite_urls_from_debug_output() {
-        let secret = "https://tonk.spot/join#authority";
+        let secret = "https://tonk.network/join#authority";
         let debug = format!("{:?}", PendingIntent::DurableJoin { url: secret.into() });
         assert!(!debug.contains(secret));
         assert!(debug.contains("<redacted>"));
@@ -179,7 +179,7 @@ mod tests {
         let message = AccountRequired {
             message_type: ACCOUNT_REQUIRED.to_string(),
             intent: PendingIntent::DurableJoin {
-                url: "https://tonk.spot/join#authority".into(),
+                url: "https://tonk.network/join#authority".into(),
             },
         };
         let value = serde_json::to_value(&message).expect("serializes");
