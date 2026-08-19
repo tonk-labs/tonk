@@ -35,7 +35,7 @@ before a profile exists report as `tonk:anonymous`.
 | `panic` | `message` (first line of the panic message) |
 
 Every web event additionally carries an `environment` super property
-derived from the hostname: `production` (hub.tonk.xyz), `staging`
+derived from the hostname: `production` (tonk.network), `staging`
 (staging.tonk.xyz), or `dev` (anything else). The marketing site's
 own snippet registers `environment = "website"` in its repo, so all
 surfaces share one filterable dimension within the PostHog project.

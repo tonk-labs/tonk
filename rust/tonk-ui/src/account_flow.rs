@@ -335,7 +335,7 @@ mod tests {
             .env("TONK_UPDATE_STATE", profile.path().join("update"))
             .env("TONK_NO_UPDATE_CHECK", "1")
             .env("DO_NOT_TRACK", "1")
-            .env("NO_PROXY", "127.0.0.1,localhost,tonk.spot")
+            .env("NO_PROXY", "127.0.0.1,localhost,tonk.network")
             .env_remove("TONK_TELEMETRY")
             .env_remove("TONK_SPOT")
             .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");

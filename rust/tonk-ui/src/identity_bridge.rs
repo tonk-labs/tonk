@@ -397,7 +397,7 @@ mod tests {
                 if (input.email !== "fresh@example.test"
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
                     || input.createdOn !== "Chrome on macOS"
-                    || input.remote !== "https://tonk.spot/ucan/")
+                    || input.remote !== "https://tonk.network/ucan/")
                     return Promise.reject(new Error("property"));
                 return Promise.resolve({{
                     rootDid: "did:key:root", deviceDid: input.deviceDid,
@@ -411,7 +411,7 @@ mod tests {
             email: "fresh@example.test".into(),
             device_did: "did:key:device".into(),
             device_name: "Browser".into(),
-            remote: "https://tonk.spot/ucan/".into(),
+            remote: "https://tonk.network/ucan/".into(),
             created_on: "Chrome on macOS".into(),
             service_did: None,
         })
@@ -430,7 +430,7 @@ mod tests {
                     || input.delegationHex !== "delegation"
                     || input.passkey.createdAt !== 1754380800
                     || input.passkey.createdOn !== "Chrome on macOS"
-                    || input.remote !== "https://tonk.spot/ucan/")
+                    || input.remote !== "https://tonk.network/ucan/")
                     return Promise.reject(new Error("property"));
                 return Promise.resolve({{
                     rootDid: input.rootDid, credentialId: input.credentialId,
@@ -451,7 +451,7 @@ mod tests {
                     created_at: 1_754_380_800,
                     created_on: "Chrome on macOS".into(),
                 }),
-                remote: "https://tonk.spot/ucan/".into(),
+                remote: "https://tonk.network/ucan/".into(),
             })
             .await
             .unwrap()

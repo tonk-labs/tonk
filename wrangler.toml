@@ -3,7 +3,7 @@ main = "./result/tonk-access-service/worker/shim.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-routes = [{ pattern = "hub.tonk.xyz", custom_domain = true }]
+routes = [{ pattern = "tonk.network", custom_domain = true }]
 
 [build]
 command = "nix build .#tonk-cloudflare-artifacts"
@@ -101,7 +101,7 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # `--preview-alias` and is reached at its own workers.dev URL, so the
 # environment holds no route of its own. `routes = []` is load-bearing: a named
 # environment inherits the top-level `routes`, and deploying it with that
-# inherited entry would reassign the `hub.tonk.xyz` custom domain away from
+# inherited entry would reassign the `tonk.network` custom domain away from
 # production.
 #
 # Its state is disjoint from staging as well as production. A pull request

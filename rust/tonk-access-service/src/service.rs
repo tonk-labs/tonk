@@ -73,8 +73,8 @@ mod tests {
     #[dialog_common::test]
     fn it_documents_the_key_under_the_web_did() {
         let signer = signer_from_hex(&"11".repeat(32)).unwrap();
-        let document = did_document("hub.tonk.xyz", &signer);
-        assert_eq!(document["id"], "did:web:hub.tonk.xyz");
+        let document = did_document("tonk.network", &signer);
+        assert_eq!(document["id"], "did:web:tonk.network");
         let multibase = document["verificationMethod"][0]["publicKeyMultibase"]
             .as_str()
             .unwrap();

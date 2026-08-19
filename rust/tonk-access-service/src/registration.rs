@@ -113,7 +113,7 @@ pub struct Registration<'a, S, E> {
     pub email: &'a E,
     /// The service's signing identity, issuer of activation delegations.
     pub service: &'a Ed25519Signer,
-    /// Origin the activation link points at, e.g. `https://hub.tonk.xyz`.
+    /// Origin the activation link points at, e.g. `https://tonk.network`.
     pub origin: &'a str,
     /// Lifetime of the emailed activation delegation, in seconds.
     pub activation_ttl: u64,

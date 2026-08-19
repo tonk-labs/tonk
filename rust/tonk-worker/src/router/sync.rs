@@ -1585,7 +1585,7 @@ mod tests {
     async fn lease(audience: Option<&Did>, expires_at: Option<u64>) -> GuestLease {
         GuestLease {
             subject: signer(&[3u8; 32]).await,
-            url: "https://hub.tonk.xyz/join?access=x#seed".to_string(),
+            url: "https://tonk.network/join?access=x#seed".to_string(),
             audience: audience.cloned(),
             expires_at,
         }
