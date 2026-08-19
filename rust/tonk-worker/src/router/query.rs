@@ -230,6 +230,7 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         ReactorError::QueryFailed(_)
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
+        | ReactorError::Download(_)
         | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
     }
 }

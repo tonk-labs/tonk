@@ -12,12 +12,27 @@ use super::error::ReactorError;
 pub struct Pull<'a> {
     /// The branch to pull into.
     pub branch: BranchReference<'a>,
+    /// Materialize the adopted revision locally after the pull.
+    download: bool,
 }
 
 impl<'a> Pull<'a> {
     /// Build a new `Pull` effect.
     pub fn new(branch: BranchReference<'a>) -> Self {
-        Self { branch }
+        Self {
+            branch,
+            download: false,
+        }
+    }
+
+    /// Materialize every block and blob the adopted revision references
+    /// after the pull. Required for authorization-bearing branches (the
+    /// access branch, the account): their walks read entirely locally at
+    /// session open, so a head adopted by reference with blocks still
+    /// remote bricks the next boot.
+    pub fn download(mut self) -> Self {
+        self.download = true;
+        self
     }
 
     /// Execute the pull. Subscriptions are re-evaluated **only when the pull
@@ -65,6 +80,10 @@ impl<'a> Pull<'a> {
         };
         if changed {
             cached.poll(env).await;
+        }
+
+        if self.download {
+            cached.handle().download().perform(env).await?;
         }
 
         Ok(revision)

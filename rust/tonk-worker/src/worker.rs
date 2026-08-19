@@ -1646,13 +1646,62 @@ pub(crate) async fn boot_state(
     profile: Profile,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
-    let session = crate::session::open(&profile, &storage)
-        .await
-        .map_err(|e| {
-            crate::TonkWorkerError::Internal(format!("failed to open a signing session: {e}"))
-        })?;
-
     let reactor = crate::Reactor::new(profile.clone());
+    let session = match crate::session::open(&profile, &storage).await {
+        Ok(session) => session,
+        Err(error) => {
+            // A partial access branch bricks session open: a remote
+            // profile update adopted by reference leaves the head ahead
+            // of the local blocks, and the authorization walk reads
+            // entirely locally by design (its recursion-bounding env has
+            // no network reach — hydration inside it would be circular).
+            // Hydrate the access branch with a network-capable operator
+            // and retry once; offline or truly broken states surface the
+            // original error.
+            tonk_common::log!(
+                "session open failed ({error}); hydrating the access branch and retrying"
+            );
+            use dialog_operator::DeriveOperator as _;
+            let context: [u8; 16] = rand::random();
+            let operator = profile
+                .derive(context.to_vec())
+                .build(storage.clone())
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to derive a hydration operator: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            let access = reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .acquire(&operator)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to open the access branch for hydration: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            access
+                .handle()
+                .download()
+                .perform(&operator)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to hydrate the access branch: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            crate::session::open(&profile, &storage)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to open a signing session after hydrating the access branch: {e}"
+                    ))
+                })?
+        }
+    };
+
     let state = TonkState {
         profile,
         operator: session.operator,

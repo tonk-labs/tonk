@@ -629,17 +629,34 @@ pub async fn pull(
         }));
     }
 
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .pull()
-        .perform(&tonk_state.operator)
-        .await
-    {
+    // Authorization-bearing branches (the account, and through it the
+    // profile's access branch) must never be left partial: the session
+    // open at the next boot walks them with no network reach, and a
+    // head adopted by reference with blocks still remote bricks that
+    // boot with "Blob not found". Content spaces stay lazy.
+    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
+    let pulled = if hydrate {
+        tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .download()
+            .perform(&tonk_state.operator)
+            .await
+    } else {
+        tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .perform(&tonk_state.operator)
+            .await
+    };
+    match pulled {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
-            if super::account_state::is_account_key(&tonk_state, &params.repo).await
+            if hydrate
                 && let Err(error) = super::account_state::converge_account_state(&tonk_state).await
             {
                 log!("account-state convergence after pull failed: {error}");
@@ -955,18 +972,31 @@ pub async fn sync(
     // Pull with bounded refresh-and-retry on a head that moved under us.
     let mut after_pull = None;
     let mut pull_error: Option<TonkWorkerError> = None;
+    // See the pull handler: authorization-bearing branches hydrate.
+    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
     for attempt in 0..SYNC_RETRY_LIMIT {
-        match tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .pull()
-            .perform(&tonk_state.operator)
-            .await
-        {
+        let pulled = if hydrate {
+            tonk_state
+                .reactor
+                .repository(&params.repo)
+                .branch(&params.branch)
+                .pull()
+                .download()
+                .perform(&tonk_state.operator)
+                .await
+        } else {
+            tonk_state
+                .reactor
+                .repository(&params.repo)
+                .branch(&params.branch)
+                .pull()
+                .perform(&tonk_state.operator)
+                .await
+        };
+        match pulled {
             Ok(after) => {
                 log!("Pull succeeded: {}@{}", params.branch, params.repo);
-                if super::account_state::is_account_key(&tonk_state, &params.repo).await
+                if hydrate
                     && let Err(error) =
                         super::account_state::converge_account_state(&tonk_state).await
                 {

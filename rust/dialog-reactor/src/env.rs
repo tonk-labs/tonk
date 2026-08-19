@@ -99,6 +99,9 @@ pub trait PullProvider:
     + Provider<Attest>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
+    + Provider<dialog_effects::blob::Read>
+    + Provider<dialog_effects::blob::Import>
+    + Provider<Fork<RemoteSite, dialog_effects::blob::Read>>
     + ConditionalSync
     + 'static
 {
@@ -110,6 +113,9 @@ impl<T> PullProvider for T where
         + Provider<Resolve>
         + Provider<Publish>
         + Provider<Identify>
+        + Provider<dialog_effects::blob::Read>
+        + Provider<dialog_effects::blob::Import>
+        + Provider<Fork<RemoteSite, dialog_effects::blob::Read>>
         + Provider<Attest>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>

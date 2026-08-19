@@ -27,6 +27,9 @@ pub enum ReactorError {
     /// A pull from upstream failed.
     #[error("pull failed: {0}")]
     Pull(#[from] PullError),
+    /// Materializing a pulled revision locally failed.
+    #[error("download failed: {0}")]
+    Download(#[from] dialog_repository::DownloadError),
     /// A push to upstream failed.
     #[error("push failed: {0}")]
     Push(#[from] PushError),
