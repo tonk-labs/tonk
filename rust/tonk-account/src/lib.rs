@@ -147,6 +147,7 @@ where
         + Provider<Fork<RemoteSite, Resolve>>
         + Provider<Fork<RemoteSite, MemoryPublish>>
         + Provider<Fork<RemoteSite, BlobImport>>
+        + Provider<Fork<RemoteSite, BlobRead>>
         + ConditionalSync
         + 'static,
 {

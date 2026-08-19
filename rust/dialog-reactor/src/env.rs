@@ -130,6 +130,7 @@ pub trait PushProvider:
     + Provider<Fork<RemoteSite, Resolve>>
     + Provider<Fork<RemoteSite, Publish>>
     + Provider<Fork<RemoteSite, BlobImport>>
+    + Provider<Fork<RemoteSite, BlobRead>>
     + ConditionalSync
     + 'static
 {
@@ -145,6 +146,7 @@ impl<T> PushProvider for T where
         + Provider<Fork<RemoteSite, Resolve>>
         + Provider<Fork<RemoteSite, Publish>>
         + Provider<Fork<RemoteSite, BlobImport>>
+        + Provider<Fork<RemoteSite, BlobRead>>
         + ConditionalSync
         + 'static
 {
