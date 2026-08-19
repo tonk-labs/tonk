@@ -37,11 +37,14 @@ several interchangeable custody methods for it.
     is wrapped rather than the derived signing key.
 - **Non-extractable signing handle.** At first run, derive the signing
   key once and import it as a non-extractable WebCrypto Ed25519 key;
-  routine signing (delegations, deposits) uses the handle. The plaintext
-  secret is unwrapped only for custody operations: enrolling a wrapping,
-  and later the E2EE derivation. Without this, a silent local unwrap
+  routine signing (delegations, deposits) uses the handle. Without
+  this, a silent local unwrap
   would let compromised page code sign as the account; with it, the
-  scheme is strictly safer than today's ceremony-gated derivation.
+  scheme is strictly safer than today's ceremony-gated derivation. The
+  plaintext secret surfaces only for custody operations: enrolling a
+  wrapping, unlocking a fresh device (unwrap → self-issue the direct
+  `account → device` delegation → zeroize), and later the E2EE
+  derivation.
 - **Device keys unchanged**: non-extractable per-device Ed25519,
   authorized by a delegation the account key signs.
 
@@ -84,18 +87,17 @@ KEK-method tag, AEAD nonce.
 
 Each remote wrapping derives a **custody keypair** from its entry
 function (PRF or KDF). The custody key becomes an ordinary **provisioned
-space** under the account's customership, and everything custody needs
-lives in that space as raw memory cells. No new service surface:
-provisioning, cell writes, presigned reads, and withdrawing providership
-are machinery that already exists.
+space** under the account's customership, and it holds exactly one
+thing: the wrapped secret, as a raw memory cell. No new service
+surface: provisioning, a cell write, a presigned read, and withdrawing
+providership are machinery that already exists.
 
 Two fixed entry-function salts, with distinct jobs:
 `"tonk/custody/key/v1"` seeds the custody keypair — deriving it *is*
 the lookup, since its DID names the space; `"tonk/custody/kek/v1"`
 derives the KEK for the wrapped-secret cell.
 
-- **Publish** = provision + two cell writes, at enrollment. The account
-  mints the delegation first; then:
+- **Publish** = provision + one cell write, at enrollment:
   1. The account provisions the custody DID through `/provider/add`,
      exactly as it provisions any space. The consent deposit that
      contract already requires — the consumer's powerline to the
@@ -104,57 +106,45 @@ derives the KEK for the wrapped-secret cell.
      provisioning contract's ordinary shape. The device holds the
      just-derived custody private key at enrollment, so minting the
      consent is free.
-  2. The device writes two cells into the custody space's `/memory`
-     under well-known names:
-     - `delegation` — the standing `account → custody key` grant;
-     - `secret` — the account secret AEAD-wrapped under this
-       wrapping's KEK.
-     These are raw named-cell writes — no repository, no branches, no
+  2. The device writes the `secret` cell into the custody space's
+     `/memory`: the account secret AEAD-wrapped under this wrapping's
+     KEK. A raw named-cell write — no repository, no branches, no
      history, **no permanent DB record anywhere**: on the server the
-     space is two cells, and locally nothing ever hydrates it as a
+     space is one cell, and locally nothing ever hydrates it as a
      repo. (The third-database confusion must not return wearing a
      new hat.)
 - **Resolve** = the space owner reading its own space. A fresh device
-  derives the custody keypair inside the assertion, then reads the two
-  cells with **root authority on the custody subject** — one presigned
-  GET each, before any repository exists locally. The public-resolution
-  requirement dissolves: resolution needed no authorization only
-  because the resolver had none, but the resolver holds the custody
-  key by construction. Nothing about the account ↔ passkey binding is
-  public any more.
+  derives the custody keypair and KEK inside the assertion, reads the
+  cell with **root authority on the custody subject** — one presigned
+  GET, before any repository exists locally — unwraps, derives the
+  account signer, and **self-issues** a direct `account → device`
+  delegation. No published delegation is needed: whoever can unwrap
+  holds the account, so any grant it would carry can be minted on the
+  spot. The secret is zeroized immediately after; this is exactly
+  today's shape, a root signer transient under a biometric gesture,
+  sourced from the envelope instead of the PRF derivation.
 - **Retract** = the account withdraws its providership of the custody
-  space and revokes the delegation through the existing relay (already
-  checked on the sync path). Consent-free by nature — a provider
-  withdrawing service needs no consumer signature — which is exactly
-  what the passkey-lost case requires.
+  space, deleting the cell with it. Consent-free by nature — a
+  provider withdrawing service needs no consumer signature — which is
+  exactly what the passkey-lost case requires. And it is complete by
+  construction: no standing grant to the custody key ever exists, so
+  there is nothing to chase through the revocation relay. Devices the
+  wrapping bootstrapped keep their own direct delegations, unaffected —
+  removing a passkey removes an unlock method, not devices.
 - **Squatting is impossible** for the structural reason: writing into
   the custody space requires a chain rooted in the custody subject,
   which is the custody key's consent by definition.
 
 Why this shape:
 
-- **Unlock requires no custody.** A fresh device derives the custody
-  key, reads the `delegation` cell, and the custody key re-delegates to
-  the fresh device key: `account → custody → device`. The account
-  secret never materializes in memory for routine linking — strictly
-  safer than an unwrap-on-link design.
-- **The bootstrap chain is temporary.** Once the device has pulled the
-  account, it unwraps once (post-authorization) to mint a direct
-  `account → device` delegation and switches its remote to it. Steady-
-  state chains are exactly today's shape — no custody hop, shorter
-  proofs — and later revoking the passkey does not cascade onto devices
-  it bootstrapped.
-- The standing delegation is no escalation: the passkey can always
-  reach full custody through the KEK anyway, so the delegation is a
-  shortcut, not a new power.
-- **The wrapped secret lives with its only reader.** The `secret` cell
-  is fetched by the one party that can decrypt it, before the device
-  can touch anything else — no fact in the account DB, no blob
-  namespace, no record that outlives the wrapping. Retracting the
-  space retracts the ciphertext with it.
-- **Removal is real revocation**: the relay kills the delegation on
-  the sync path, withdrawn providership makes the cells unreachable.
-  Stronger than deleting a ciphertext and hoping nobody cached it.
+- **One artifact.** The wrapped secret is the entire published state of
+  a wrapping. It lives with its only reader — fetched by the one party
+  that can decrypt it, before the device can touch anything else — and
+  it is the root of everything: delegations are minted from it, not
+  stored beside it.
+- **No standing grants.** The custody key holds no delegation, so
+  compromise-of-ciphertext is the only attack surface, and retraction
+  cannot leave a live grant behind.
 - **Metering is boring**: the account provides the custody space like
   any space; a consumer row per passkey is the accepted cost of the
   bill landing somewhere. Nothing on the presign hot path, no alias
@@ -176,9 +166,14 @@ not relitigated:
   but still a new capability whose rules (audience = invocation
   subject, deposit subject must be a registered customer, subject
   inequality) re-derive what `/provider/add` already encodes.
-- *Wrapped-secret cell only, no published delegation*: makes every
-  link an unwrap; carrying the delegation keeps unwrap a one-time
-  post-pull step and keeps the secret out of memory on routine links.
+- *A published `account → custody` delegation beside the secret* (the
+  payload the did:web and bespoke-capability variants existed to
+  carry): claimed to keep the secret out of memory on routine links,
+  but its own chain-upgrade step unwrapped once per fresh device
+  anyway — both designs unwrap exactly once per link, so the
+  delegation was a second artifact carrying no property, and a
+  standing grant retraction had to chase through the revocation relay.
+  Self-issuing from the unwrapped secret needs neither.
 - *Wrapped secret as a fact in the account DB*: sits behind the
   authorization it exists to bootstrap, and forces a durable DB record
   where a raw cell suffices.
@@ -239,10 +234,16 @@ the account secret — identity and delegations preserved.
    matrix. The fresh-device story leans on it; support is uneven.
 4. Non-extractable Ed25519 in WebCrypto across the target matrix (the
    signing-handle refinement assumes it).
-5. Raw named-cell writes and presigned reads against a provisioned
-   space's `/memory` with root-subject authority and **no repository**
-   behind it — the storage path must not demand a repo record, and no
-   client path may hydrate the custody space as one.
+5. ~~Raw named-cell writes and presigned reads against a provisioned
+   space's `/memory` with root-subject authority and no repository
+   behind it~~ — verified: the presign path never consults repository,
+   consumer, or customer records (`handlers/ucan.rs`, dialog's
+   `authorizer.rs`); the storage key is `{subject}/{space}/{cell}`,
+   created on first PUT; dialog-remote-fs tests exercise repo-less
+   cells end to end. Two implementation notes: `publish(content,
+   None)` is first-write-only (`If-None-Match`) — overwrites need the
+   resolved version or `Cell::checkpoint()`; and provisioning is not
+   yet enforced at presign but is intended to be, so provision anyway.
 
 ## Non-goals
 
