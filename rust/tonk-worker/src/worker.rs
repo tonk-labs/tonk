@@ -1810,11 +1810,9 @@ impl TonkServiceWorker {
         let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
-        // Catch up on spaces claimed/created on other devices since last
-        // boot. Fire-and-forget: account-service latency must not delay
-        // startup. `restore_spaces` itself no-ops when unlinked, so an
-        // unconditional call here is fine whether or not this profile
-        // turns out to be linked.
+        // Fire-and-forget boot chores: remote latency must not delay
+        // startup, and each step no-ops when this profile turns out to
+        // be unlinked.
         //
         // Placed here rather than right after `bootstrap_profile` above
         // because the cloneable `AppState` handle a detached task needs to

@@ -1237,7 +1237,7 @@ mod when_mounting_account_authority {
     use dialog_ucan_core::subject::Subject;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal as _;
-    use tonk_account::backup::space_root_site;
+    use tonk_account::prefix::space_root_site;
     use tonk_cli::site::{self, TonkSite};
     use tonk_schema::{Invitation, InvitedVia, MemberName, MemberRole, Membership};
 

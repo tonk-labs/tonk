@@ -524,10 +524,6 @@ enum AccountCommand {
         /// Print the approval URL without asking the OS to open it.
         #[arg(long)]
         no_open: bool,
-        /// Link even though an earlier logout's detach never reached the
-        /// account service. Those devices may stay listed until revoked.
-        #[arg(long)]
-        abandon_detach: bool,
         /// Authorize through a page that posts the grant back directly,
         /// instead of registering a handoff with the account service.
         #[arg(long, value_name = "URL")]
@@ -540,7 +536,7 @@ enum AccountCommand {
     /// device. Use `tonk account revoke <DID>` to revoke a device instead.
     Logout,
 
-    /// List or pull the spots backed up under this account
+    /// List or pull the spots your account directory lists
     Spots {
         #[command(subcommand)]
         command: Option<AccountSpotsCommand>,
@@ -678,7 +674,7 @@ enum SpotCommand {
     ///
     /// This destroys the spot's facts, not just its registration.
     /// It asks for confirmation first, and says whether the data is
-    /// backed up to your account (so you can pull it again) or
+    /// listed in your account directory (so you can pull it again) or
     /// local-only (so it is gone for good).
     ///
     /// To stop a directory from resolving to a spot without touching
@@ -1392,7 +1388,6 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             name,
             service_url,
             no_open,
-            abandon_detach,
             via,
         } => match account::link(
             &profile,
@@ -1400,7 +1395,6 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 service_url,
                 device_name: name.unwrap_or_else(account::default_device_name),
                 open_browser: !no_open,
-                abandon_detach,
                 via,
                 announce: None,
                 store: None,
@@ -1419,7 +1413,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     eprintln!("warning: account repository is not synchronized: {warning}");
                 }
                 print_customer_line(&profile).await;
-                back_up_all_best_effort(&profile).await;
+                record_all_spots_best_effort(&profile).await;
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
@@ -1440,7 +1434,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 AccountSpotsCommand::List => match account_spots::list(&profile, &store).await {
                     Ok(rows) => {
                         if rows.is_empty() {
-                            println!("(no account spots backed up)");
+                            println!("(no spots listed in the account directory)");
                         } else {
                             for row in rows {
                                 let state = if row.ambiguous {
@@ -1520,25 +1514,25 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     }
 }
 
-async fn back_up_all_best_effort(profile: &dialog_operator::Profile) {
+async fn record_all_spots_best_effort(profile: &dialog_operator::Profile) {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("warning: account spot backup skipped: {error}");
+            eprintln!("warning: account directory update skipped: {error}");
             return;
         }
     };
-    for warning in account_spots::back_up_registered(profile, &store).await {
+    for warning in account_spots::record_registered(profile, &store).await {
         eprintln!(
-            "warning: account spot backup for '{}' failed: {}",
+            "warning: account directory update for '{}' failed: {}",
             warning.name, warning.message
         );
     }
 }
 
-async fn back_up_site_best_effort(name: &str, site: &site::TonkSite) {
-    if let Err(error) = account_spots::back_up_site(name, site).await {
-        eprintln!("warning: account spot backup failed: {error:#}");
+async fn record_spot_best_effort(name: &str, site: &site::TonkSite) {
+    if let Err(error) = account_spots::record_site(name, site).await {
+        eprintln!("warning: account directory update failed: {error:#}");
     }
 }
 
@@ -1636,9 +1630,9 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     println!("binding: {}", cwd.display());
                     print_active_resolution(&store, flag, Some(&cwd));
                     match site::TonkSite::open(&outcome.site).await {
-                        Ok(site) => back_up_site_best_effort(&outcome.name, &site).await,
+                        Ok(site) => record_spot_best_effort(&outcome.name, &site).await,
                         Err(error) => {
-                            eprintln!("warning: account spot backup skipped: {error:#}")
+                            eprintln!("warning: account directory update skipped: {error:#}")
                         }
                     }
                     ExitCode::Success
@@ -1958,7 +1952,7 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
     match result {
         Ok(outcome) => {
             print_sync_outcome(op, &outcome);
-            back_up_site_best_effort(&resolved.name, &site).await;
+            record_spot_best_effort(&resolved.name, &site).await;
             ExitCode::Success
         }
         Err(err) => {
@@ -2249,13 +2243,13 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
                     // An existing upstream is never touched.
                     match remote::upstream_configured(&site).await {
                         Ok(true) => {
-                            back_up_site_best_effort(&resolved.name, &site).await;
+                            record_spot_best_effort(&resolved.name, &site).await;
                             ExitCode::Success
                         }
                         Ok(false) => match remote::set_upstream(&site, &name).await {
                             Ok(upstream) => {
                                 print_set_upstream_outcome(&upstream);
-                                back_up_site_best_effort(&resolved.name, &site).await;
+                                record_spot_best_effort(&resolved.name, &site).await;
                                 ExitCode::Success
                             }
                             Err(err) => {
@@ -2295,7 +2289,7 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
             match remote::set_upstream(&site, &name).await {
                 Ok(outcome) => {
                     print_set_upstream_outcome(&outcome);
-                    back_up_site_best_effort(&resolved.name, &site).await;
+                    record_spot_best_effort(&resolved.name, &site).await;
                     ExitCode::Success
                 }
                 Err(err) => {
@@ -2620,8 +2614,8 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
             print_claim_outcome(&name, &root, &cwd, &outcome);
             print_active_resolution(&store, flag, Some(&cwd));
             match site::TonkSite::open(&root).await {
-                Ok(site) => back_up_site_best_effort(&name, &site).await,
-                Err(error) => eprintln!("warning: account spot backup skipped: {error:#}"),
+                Ok(site) => record_spot_best_effort(&name, &site).await,
+                Err(error) => eprintln!("warning: account directory update skipped: {error:#}"),
             }
             ExitCode::Success
         }

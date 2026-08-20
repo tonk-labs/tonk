@@ -22,8 +22,6 @@ mod customer;
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
 
-mod account_backup;
-
 mod http;
 
 pub(crate) mod adopt;

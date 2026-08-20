@@ -7,7 +7,7 @@ use url::Url;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentConfig {
-    /// Account backup, restore, linking, and device-management service.
+    /// Account linking, custody, and device-management service.
     pub account_service_url: Url,
     /// Relay accepting immutable invitation and device revocation artifacts.
     pub revocation_relay_url: Url,

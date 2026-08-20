@@ -4,8 +4,6 @@
 //! lifecycle outcomes, and remote initialization primitive. Higher-level
 //! mounting and projection policy remains with the worker and CLI adapters.
 
-/// Provider-neutral account spot backup artifacts.
-pub mod backup;
 /// Customer registration contracts for the access service.
 pub mod customer;
 /// Retaining space authority into the account repository.
@@ -15,6 +13,8 @@ mod descriptor;
 pub mod detach;
 /// Shared wire and browser-ceremony contracts for native account handoffs.
 pub mod handoff;
+/// Provider-neutral account spot backup artifacts.
+pub mod prefix;
 mod provider;
 
 pub use descriptor::{AccountRepositoryDescriptorV1, DescriptorError};

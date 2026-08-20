@@ -200,10 +200,10 @@ pub struct LinkCompletion<'a> {
 /// Result of idempotently activating a completed handoff.
 #[derive(Debug, Clone)]
 pub enum ActivateOutcome {
-    /// The attachment is active (newly inserted or replayed).
+    /// The attachment is active (newly inserted or replayed). A prior
+    /// still-active attachment of the same device DID is superseded —
+    /// detached — by the new generation.
     Active(Device),
-    /// Another active attachment owns this device DID.
-    ActiveDeviceConflict,
     /// This delegation CID was previously revoked.
     RevokedDelegation,
     /// The completed attachment was cancelled by detach.

@@ -94,8 +94,6 @@ pub struct LinkOptions {
     pub device_name: String,
     /// Whether to ask the OS to open the handoff URL.
     pub open_browser: bool,
-    /// Whether to drop undeliverable detach intents and link anyway.
-    pub abandon_detach: bool,
     /// Where account state lives. Defaults to the install's own store when
     /// absent; a caller running outside an install supplies its own.
     pub store: Option<crate::spot::SpotStore>,
@@ -218,11 +216,6 @@ pub(crate) async fn stored_provider(profile: &Profile) -> Result<Option<AccountP
     stored_provider_with_operator(profile, &operator).await
 }
 
-async fn retry_pending_detaches(profile: &Profile) -> Result<crate::account_session::FlushOutcome> {
-    let operator = crate::account_state::credential_operator(profile).await?;
-    crate::account_session::flush_pending(profile, &operator).await
-}
-
 /// Disconnect provider services while preserving this profile's root,
 /// delegations, account repository, and spots.
 pub async fn logout(profile: &Profile) -> Result<()> {
@@ -238,11 +231,12 @@ async fn logout_with_operator(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    crate::account_session::logout_transition(profile, operator, now).await?;
-    if let Ok(outcome) = crate::account_session::flush_pending(profile, operator).await
-        && let Some(warning) = outcome.warning
-    {
-        eprintln!("warning: logged out locally; {warning}");
+    for account in crate::account_session::logout_transition(profile, operator).await? {
+        if let Err(error) = crate::account_session::deliver_detach(profile, &account, now).await {
+            eprintln!(
+                "warning: logged out locally; the provider was not notified                  and may list this device until it is revoked: {error:#}"
+            );
+        }
     }
     Ok(())
 }
@@ -259,11 +253,6 @@ fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
 /// command. Hydration is [`crate::account_state::ensure`]'s job, and the
 /// paths that need it call it directly.
 pub async fn status(profile: &Profile) -> Result<AccountStatus> {
-    if let Ok(outcome) = retry_pending_detaches(profile).await
-        && let Some(warning) = outcome.warning
-    {
-        eprintln!("warning: {warning}");
-    }
     let device_did = profile.did().to_string();
     let Some(root) = crate::identity::local_root(profile).await? else {
         return Ok(AccountStatus::MissingRoot { device_did });
@@ -319,44 +308,6 @@ pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<D
         .await
         .context("authorization signature is invalid")?;
     Ok(chain)
-}
-
-/// Deliver queued detach intents before a handoff opens on `provider`.
-///
-/// Only an undelivered detach at the same provider can block a handoff:
-/// the service's one-active-generation rule rejects activation while an
-/// earlier generation of this device is still active there. A detach
-/// queued for a different provider says nothing about this one, and one
-/// the provider can never accept is dropped by the flush itself.
-async fn clear_detach_for(
-    profile: &Profile,
-    operator: &dialog_operator::Operator<NativeSpace>,
-    provider: &str,
-    abandon: bool,
-) -> Result<()> {
-    let flushed = crate::account_session::flush_pending(profile, operator).await?;
-    if !flushed.retains(provider) {
-        if let Some(warning) = flushed.warning {
-            eprintln!("warning: {warning}");
-        }
-        return Ok(());
-    }
-    if abandon {
-        let abandoned = crate::account_session::abandon_pending(profile, operator).await?;
-        eprintln!(
-            "warning: abandoned {abandoned} undelivered detach intent(s); \
-             earlier devices may still be listed on the account page"
-        );
-        return Ok(());
-    }
-    bail!(
-        "cannot link while a detach for {provider} is undelivered: {}\n\
-         retry once the account service is reachable, or run \
-         `tonk account link --abandon-detach` to link anyway",
-        flushed
-            .warning
-            .unwrap_or_else(|| "provider retry required".to_string())
-    );
 }
 
 /// Authorize this device through a loopback callback.
@@ -590,13 +541,6 @@ pub async fn link_with_operator(
     if state.active.is_some() {
         bail!("an account is already active; run `tonk account logout` before linking another");
     }
-    clear_detach_for(
-        profile,
-        operator,
-        options.service_url.trim_end_matches('/'),
-        options.abandon_detach,
-    )
-    .await?;
     let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
     link_via_callback(profile, operator, options, page).await
 }
@@ -644,46 +588,6 @@ async fn connection_from_provider(
         root_did,
         link,
         store: crate::spot::SpotStore::open().context("failed to locate account state")?,
-    })
-}
-
-/// Load an attachment through the account directory owned by an explicit
-/// spot store. Account-spots tests and isolated consumers use this without
-/// changing process-global profile paths.
-pub(crate) async fn connection_for_store(
-    profile: &Profile,
-    store: &crate::spot::SpotStore,
-) -> Result<AccountConnection> {
-    #[cfg(feature = "integration-tests")]
-    if let Some((service_url, link, _)) = integration_connections()
-        .lock()
-        .expect("integration connection registry")
-        .get(profile.did().as_ref())
-        .cloned()
-    {
-        return Ok(AccountConnection {
-            service_url,
-            root_did: link.issuer().clone(),
-            link,
-            store: store.clone(),
-        });
-    }
-    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    let _ = crate::account_session::flush_pending_for_store(profile, &operator, store).await;
-    let provider = stored_provider_for_store(profile, &operator, store)
-        .await?
-        .context("no account provider is attached; run `tonk account link`")?;
-    let root = crate::identity::local_root_with_operator(profile, &operator)
-        .await?
-        .context("the provider attachment has no local root")?;
-    let bytes = hex::decode(root.delegation_hex).context("stored local-root hex is invalid")?;
-    let link = DelegationChain::try_from(bytes.as_slice())
-        .context("stored local-root delegation is invalid")?;
-    Ok(AccountConnection {
-        service_url: provider.provider().to_string(),
-        root_did: link.issuer().clone(),
-        link,
-        store: store.clone(),
     })
 }
 
@@ -794,7 +698,6 @@ pub async fn attach_for_integration_test(
                 .as_secs(),
         }),
         pending_login: None,
-        pending_detaches: Vec::new(),
     };
     crate::account_session::install_for_integration_test(profile, operator, &session).await?;
     integration_connections()
@@ -836,8 +739,6 @@ impl AccountConnection {
 
         let operator =
             crate::account_state::credential_operator_for_store(profile, &self.store).await?;
-        let _ =
-            crate::account_session::flush_pending_for_store(profile, &operator, &self.store).await;
         let store = self.store.clone();
         {
             let guard = crate::account_session::exclusive_transition_guard(&store)?;
@@ -897,7 +798,6 @@ async fn post_invocation_raw(
 /// recorded provider is authoritative; a `service_url` names one only
 /// to cross-check it against the active account.
 pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
-    let _ = retry_pending_detaches(profile).await;
     let connection = optional_connection(profile)
         .await?
         .context("no active account; run `tonk account link`")?;

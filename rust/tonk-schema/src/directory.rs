@@ -12,14 +12,17 @@
 use crate::domain::branch::Origin as BranchOrigin;
 use crate::domain::remote::{Address as RemoteAddress, Origin as RemoteOrigin};
 use crate::prelude::DidExt as _;
-use crate::{Branch as BranchConcept, Remote, RemoteExecution, Space, SpaceName, TrackingBranch};
+use crate::{
+    Branch as BranchConcept, Remote, RemoteExecution, Replica, Space, SpaceName, TrackingBranch,
+};
+use dialog_artifacts::Entity;
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
-use dialog_effects::archive::{Get, Put};
-use dialog_effects::authority::Identify;
-use dialog_effects::memory::Resolve;
+use dialog_effects::archive::{Get, Import, Put};
+use dialog_effects::authority::{Attest, Identify};
+use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::{EvaluationError, Output as _, Query, Term};
-use dialog_repository::{Branch, RemoteSite, SiteAddress};
+use dialog_repository::{Branch, CommitError, RemoteSite, SiteAddress};
 use dialog_varsig::Did;
 
 /// One directory row, as the Hub and the CLI list it.
@@ -38,7 +41,7 @@ pub struct DirectorySpace {
 }
 
 /// One remote in a space's mount record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MountRemote {
     /// The remote's local name (`origin` by convention).
     pub name: String,
@@ -51,7 +54,7 @@ pub struct MountRemote {
 }
 
 /// One branch in a space's mount record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MountBranch {
     /// The branch name.
     pub name: String,
@@ -60,12 +63,92 @@ pub struct MountBranch {
 }
 
 /// Everything needed to mount a space exactly as it was configured.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MountRecord {
     /// The space's remotes.
     pub remotes: Vec<MountRemote>,
     /// The space's branches and their tracking links.
     pub branches: Vec<MountBranch>,
+}
+
+/// Anchor wrapper so branch concepts can hang off the space's
+/// directory entity (`subject.this()`), giving every device the same
+/// derived entities.
+struct DirectoryAnchor(Entity);
+
+impl AsRef<Entity> for DirectoryAnchor {
+    fn as_ref(&self) -> &Entity {
+        &self.0
+    }
+}
+
+/// Write one space's directory entry — the write side of [`spaces`] /
+/// [`mount_record`]: the `tonk:space` row (recorded as initialized —
+/// the writer holds a real, seeded replica), the optional [`SpaceName`]
+/// mirror, and the full mount record. Every fact re-derives the same
+/// entities from `(subject, name)`, so devices converge on one record
+/// per space and re-recording an unchanged configuration is
+/// idempotent.
+///
+/// The worker's `record_space_mount` writes the same facts through its
+/// reactor-cached branch handle; keep the two shapes in lockstep.
+pub async fn record<Env>(
+    account: &Branch,
+    subject: &Did,
+    name: Option<&str>,
+    record: &MountRecord,
+    env: &Env,
+) -> Result<(), CommitError>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Import>
+        + Provider<Resolve>
+        + Provider<Publish>
+        + Provider<Identify>
+        + Provider<Attest>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static,
+{
+    let anchor_entity = subject.this();
+    let anchor = DirectoryAnchor(anchor_entity.clone());
+    let mut transaction = account
+        .transaction()
+        .assert(Space::new(subject, Replica::initialized_status()));
+    if let Some(name) = name {
+        transaction = transaction.assert(SpaceName::new(subject, name));
+    }
+    let mut remote_concepts: std::collections::HashMap<String, Remote> =
+        std::collections::HashMap::new();
+    for remote in &record.remotes {
+        let concept = Remote::at(
+            &anchor_entity,
+            remote.subject.clone(),
+            RemoteAddress::encode(&remote.address),
+            remote.name.as_str(),
+        );
+        transaction = transaction.assert(concept.clone());
+        if let Some(revocation) = &remote.revocation {
+            transaction = transaction.assert(RemoteExecution::new(&concept, revocation.as_str()));
+        }
+        remote_concepts.insert(remote.name.clone(), concept);
+    }
+    for branch in &record.branches {
+        let local = BranchConcept::new(&anchor, branch.name.as_str());
+        transaction = transaction.assert(local.clone());
+        if let Some((remote_name, upstream_branch)) = &branch.upstream
+            && let Some(remote_concept) = remote_concepts.get(remote_name)
+        {
+            let upstream = BranchConcept::new(remote_concept, upstream_branch.as_str());
+            transaction = transaction
+                .assert(upstream.clone())
+                .assert(TrackingBranch::new(&local, &upstream));
+        }
+    }
+    transaction.commit().perform(env).await?;
+    Ok(())
 }
 
 /// Every space the directory lists, with names and mountability.

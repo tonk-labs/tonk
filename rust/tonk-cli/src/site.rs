@@ -28,7 +28,9 @@ use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 use dialog_varsig::{Did, Principal};
-use tonk_account::backup::{AccountSpotBackup, SPACE_ROOT_SITE_PREFIX, space_root_site};
+use tonk_account::prefix::{
+    SPACE_ROOT_SITE_PREFIX, space_root_site, validate_prefix as verify_prefix,
+};
 
 /// The standard-library notation document seeded into a freshly
 /// created repository: the built-in concepts, views, commands, and
@@ -482,14 +484,7 @@ async fn mount_delegated_inner(
     let chain_bytes = chain
         .to_bytes()
         .context("failed to serialize delegated authority")?;
-    let reusable = AccountSpotBackup {
-        chain_hex: hex::encode(&chain_bytes),
-        remote_url: None,
-        revocation_url: None,
-        name: None,
-    }
-    .validate_for(&account_root)
-    .await;
+    let reusable = verify_prefix(&chain_bytes, &account_root).await;
     if require_reusable && let Err(error) = &reusable {
         anyhow::bail!("delegated prefix is not reusable account-root authority: {error}");
     }
@@ -560,17 +555,9 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
     .await
 }
 
-/// Decode a stored prefix artifact for `account_root`.
+/// Decode a stored prefix for `account_root`.
 async fn validate_prefix(bytes: Vec<u8>, account_root: &Did) -> Result<DelegationChain> {
-    Ok(AccountSpotBackup {
-        chain_hex: hex::encode(bytes),
-        remote_url: None,
-        revocation_url: None,
-        name: None,
-    }
-    .validate_for(account_root)
-    .await?
-    .chain)
+    Ok(verify_prefix(&bytes, account_root).await?.chain)
 }
 
 /// Read one credential site, treating absence and emptiness alike.
@@ -673,18 +660,37 @@ pub(crate) async fn recover_prefix(
         .perform(operator)
         .await
         .context("failed to recover repository authority")?;
-    let mut delegations = Vec::new();
-    for certificate in proof.proofs {
-        let delegation = certificate.0;
-        let reached_root = delegation.audience() == account_root;
-        delegations.push(delegation);
-        if reached_root {
-            return DelegationChain::try_from(delegations)
-                .context("recovered repository authority is not a valid chain")
-                .map(Some);
+    let delegations: Vec<_> = proof
+        .proofs
+        .into_iter()
+        .map(|certificate| certificate.0)
+        .collect();
+    // Assemble `subject → … → account_root` by issuer/audience links:
+    // the prover's proof ordering is not guaranteed to start at the
+    // subject, and a chain sliced by position can drag device/session
+    // proofs past the root into what must stay a reusable prefix.
+    let mut chain = Vec::new();
+    let mut cursor = subject.clone();
+    while &cursor != account_root {
+        let Some(next) = delegations
+            .iter()
+            .find(|delegation| delegation.issuer() == &cursor)
+        else {
+            return Ok(None);
+        };
+        chain.push(next.clone());
+        cursor = next.audience().clone();
+        if chain.len() > delegations.len() {
+            // A cycle cannot reach the root.
+            return Ok(None);
         }
     }
-    Ok(None)
+    if chain.is_empty() {
+        return Ok(None);
+    }
+    DelegationChain::try_from(chain)
+        .context("recovered repository authority is not a valid chain")
+        .map(Some)
 }
 
 /// Extend held authority over `subject` to the account root.

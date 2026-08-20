@@ -4,7 +4,7 @@ mod common;
 
 use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
-use tonk_account::backup::space_root_site;
+use tonk_account::prefix::space_root_site;
 use tonk_cli::site::{SiteConfig, TonkSite};
 
 /// Open sites the way a real install does, with the account boundary in
@@ -328,7 +328,6 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
             service_url: remote.clone(),
             device_name: "test-device".to_owned(),
             open_browser: false,
-            abandon_detach: false,
             via: Some(page.url.clone()),
             announce: Some(announce),
             store: Some(tonk_cli::spot::SpotStore::at(

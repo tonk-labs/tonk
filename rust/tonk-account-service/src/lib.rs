@@ -1,6 +1,6 @@
 #![warn(missing_docs)]
 //! Account service: verified email → root DID, device registry, and
-//! chain backup for tonk accounts.
+//! revocations for tonk accounts.
 //!
 //! Authentication is UCAN invocation containers signed by a device key
 //! with the `root → device` chain attached; the invocation subject is
@@ -11,7 +11,6 @@
 use worker::*;
 
 pub mod auth;
-pub mod chains;
 pub mod core;
 pub mod email;
 pub mod error;
@@ -67,21 +66,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/links/activate", handlers::links::handle_options)
         .post_async("/links/consume", handlers::links::handle_consume)
         .options_async("/links/consume", handlers::links::handle_options)
-        .post_async("/chains/put", handlers::chains::handle_put)
-        .options_async("/chains/put", handlers::chains::handle_options)
-        .post_async("/chains/list", handlers::chains::handle_list)
-        .options_async("/chains/list", handlers::chains::handle_options)
-        .post_async("/chains/spots", handlers::chains::handle_spots)
-        .options_async("/chains/spots", handlers::chains::handle_options)
-        .post_async("/chains/get", handlers::chains::handle_get)
-        .options_async("/chains/get", handlers::chains::handle_options)
         .run(req, env)
         .await
 }
 
 /// Worker entrypoint (native stub): the D1/R2/Resend-backed routes are
 /// wasm-only adapters (see `src/handlers/`, `src/store/d1.rs`,
-/// `src/chains/r2.rs`, `src/email/resend.rs`), so only the
 /// binding-free routes are registered when this crate is checked
 /// natively.
 #[cfg(not(target_arch = "wasm32"))]

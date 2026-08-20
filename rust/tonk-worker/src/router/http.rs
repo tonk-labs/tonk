@@ -416,7 +416,7 @@ mod tests {
                     }
                     return new Response(new Uint8Array([7, 8, 9]), {
                         status: 201,
-                        headers: { "X-Tonk-Account-Spots": "v1" }
+                        headers: { "X-Test-Echo": "v1" }
                     });
                 });
                 "#,
