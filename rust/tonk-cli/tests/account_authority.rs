@@ -270,9 +270,9 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         .await?
         .expect("the owner's account is hydrated");
     assert!(
-        tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
+        !tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
             .await?,
-        "the space authority must reach the account"
+        "creation already retained the space authority into the account"
     );
     account.push().perform(owner_operator).await?;
 
@@ -461,8 +461,8 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
         tonk_cli::site::account_root_prefix_for(&first.profile, operator, &subject, &account_root)
             .await?;
     assert!(
-        tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
-        "device one retains its space authority into the account"
+        !tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
+        "creation already retained device one's space authority into the account"
     );
     account.push().perform(operator).await?;
 
