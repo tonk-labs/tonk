@@ -139,7 +139,25 @@ mod tests {
             .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))
     }
 
+    /// Create an account and confirm its email, leaving it able to host
+    /// spaces. Most callers want this.
     pub(crate) async fn sign_up(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        email: &str,
+    ) -> Result<()> {
+        enroll_only(driver, env, email).await?;
+        // The access service provisions nothing and serves nothing for a
+        // customer that has not confirmed its email, so a signed-up
+        // account cannot host a space until this happens.
+        activate(driver, env, email).await?;
+        Ok(())
+    }
+
+    /// Create an account and stop, leaving the customer `Registered`
+    /// with its activation email unopened — the window in which the
+    /// service refuses everything and the client queues it.
+    pub(crate) async fn enroll_only(
         driver: &WebDriver,
         env: &TestEnvironment,
         email: &str,
@@ -186,13 +204,6 @@ mod tests {
                 "account creation stopped in mode {mode:?}; error={error:?}; status={working:?}"
             ));
         }
-
-        // Confirm the email: the access service provisions nothing and
-        // serves nothing for a customer that has not, so a signed-up
-        // account cannot host a space until this happens. Callers that
-        // push data need the account past this point, and callers that
-        // do not are unaffected by it.
-        activate(driver, env, email).await?;
         Ok(())
     }
 
@@ -495,6 +506,12 @@ mod tests {
                 .await?
                 .click()
                 .await?;
+            // Approving unlocks the account, which reads the custody
+            // cell — and that cell cannot be published until the
+            // customer confirms its email. Do it here, then return to
+            // the approval the signup interrupted.
+            activate(driver, env, EMAIL).await?;
+            driver.goto(approval_url.as_str()).await?;
         }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
@@ -621,6 +638,94 @@ mod tests {
             (fields.len() == 3 && fields[1] == name)
                 .then(|| fields[2].trim_end_matches(" (this device)"))
         })
+    }
+
+    /// The pending-work queue, end to end: a space created before the
+    /// activation email is opened cannot be hosted, and becomes hosted
+    /// once it is — with no second attempt from the user.
+    ///
+    /// This is the whole point of the queue. The service refuses both
+    /// provisioning and presign for a `Registered` customer, so a space
+    /// created in that window works locally and syncs nothing; the
+    /// client records the provisioning and replays it when the customer
+    /// activates.
+    #[dialog_common::test]
+    async fn it_hosts_a_space_created_before_activation_once_the_email_is_confirmed(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "queued@example.com";
+        // Stop at Registered: the activation email is sent but unopened.
+        enroll_only(&driver, &env, email).await?;
+        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
+            .await?;
+
+        // The space is created locally and works; only its hosting is
+        // withheld. Creation must not fail on the refused provisioning.
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Made While Waiting",
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create space before activation", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+
+        // Pushing it now must fail: nobody is paying for this subject.
+        let refused = post_json(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        assert!(
+            refused.get("error").is_none(),
+            "the push request itself must reach the worker: {refused}"
+        );
+        assert!(
+            !refused["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status)),
+            "an unactivated account must not be able to host a space: {refused}"
+        );
+
+        // Confirm the email. Nothing else is asked of the user: the
+        // queued provisioning replays off the status probe.
+        activate(&driver, &env, email).await?;
+        wait_for_text(&driver, "#account-registration-value", "Active").await?;
+
+        // The same push now succeeds, with no further provisioning call
+        // from the test — the queue did it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let pushed = post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let ok = pushed["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status));
+            if ok {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the queued provisioning never replayed after activation: {pushed}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
     }
 
     #[dialog_common::test]

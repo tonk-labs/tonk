@@ -1676,6 +1676,9 @@ fn bind(host: &HtmlElement) {
                 // One assertion derives the custody keypair, one
                 // presigned GET fetches the sealed envelope, and the
                 // unwrapped secret self-issues this device's delegation.
+                // Unlocking reads the custody cell, which stays queued
+                // while the customer is unactivated.
+                publish_queued_custody().await;
                 let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
                     device_did,
                     device_name,
@@ -1730,6 +1733,12 @@ fn bind(host: &HtmlElement) {
                                 })?;
                         }
                     }
+                    // Unlocking the account reads the custody cell, which
+                    // stays queued while the customer is unactivated. A
+                    // browser that activated without returning to the
+                    // dashboard still has it waiting, so drain before
+                    // asking the ceremony to resolve it.
+                    publish_queued_custody().await;
                     set_busy(&host, true, "Waiting for your passkey…");
                     // The descriptor must name the same sync remote signup
                     // established — the page's own `/ucan/` endpoint — or the
@@ -1801,6 +1810,9 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
+                // Unlocking reads the custody cell, which stays queued
+                // while the customer is unactivated.
+                publish_queued_custody().await;
                 let ceremony = complete_link(CompleteLinkInput {
                     token_hash: handoff.token_hash,
                     device_did: handoff.device_did,
@@ -2204,6 +2216,9 @@ fn begin_revoke(
                     return;
                 }
             };
+            // Signing a revocation unlocks the root, which reads the
+            // custody cell.
+            publish_queued_custody().await;
             let signed: Result<RevocationOutput, String> = sign_revocation(SignRevocationInput {
                 delegation_cid,
                 path_hex: delegation_hex,
