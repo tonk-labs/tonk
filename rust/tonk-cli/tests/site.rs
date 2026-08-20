@@ -473,7 +473,7 @@ mod when_recording_roster_facts {
     use tonk_cli::site::TonkSite;
     use tonk_invite::Invite;
     use tonk_schema::prelude::DidExt as _;
-    use tonk_schema::{Invitation, InvitedVia, Membership};
+    use tonk_schema::{Invitation, InvitedVia, MemberRole, Membership};
 
     use crate::common;
 
@@ -538,6 +538,18 @@ mod when_recording_roster_facts {
             .try_vec()
             .await?;
         assert_eq!(memberships.len(), 1);
+        let roles: Vec<MemberRole> = claimer_meta
+            .query()
+            .select(Query::<MemberRole> {
+                this: Term::var("this"),
+                role: Term::var("role"),
+            })
+            .perform(&joined.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].this, memberships[0].this);
+        assert_eq!(roles[0].role.0.to_string(), MemberRole::MEMBER);
         let root_bytes = joined
             .profile
             .credential()
@@ -678,7 +690,7 @@ mod when_minting_and_claiming_an_invite {
     /// here.
     #[dialog_common::test]
     fn default_config_uses_the_canonical_profile_name() {
-        let config = site::default_config();
+        let config = site::default_config().expect("default config");
         assert_eq!(config.profile_name, site::PROFILE_NAME);
     }
 }

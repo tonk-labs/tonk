@@ -32,9 +32,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_schema::{RepositoryName, prelude::DidExt as _};
 
-/// Environment variable naming the spot to use, beaten only by the
-/// `--spot` flag. Automation (agents, bench, CI) should always set
-/// this (or pass `--spot`) to override a directory binding.
+/// Canonical environment variable naming the space to use.
+pub const SPACE_ENV: &str = "TONK_SPACE";
+
+/// Compatibility environment variable naming the space to use.
 pub const SPOT_ENV: &str = "TONK_SPOT";
 
 /// Environment variable overriding the directory that holds
@@ -70,6 +71,9 @@ pub struct Registry {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub bindings: BTreeMap<PathBuf, String>,
+    /// The account this installation is currently signed into, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountRecord>,
     /// Fields this binary does not recognise. `spots.json` is a public
     /// format other applications read and rewrite directly, and this
     /// binary is not necessarily the newest one touching it — an
@@ -81,10 +85,63 @@ pub struct Registry {
 }
 
 /// One registered spot.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SpotEntry {
     /// Absolute path to the site directory backing this spot.
     pub site: PathBuf,
+    /// Root DID of the account this space belongs to, absent while the
+    /// space is local-only. Set by `tonk space link`, by creation under a
+    /// signed-in account, and by `tonk account spaces pull`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+impl SpotEntry {
+    /// A local-only entry for `site`.
+    pub fn at(site: impl Into<PathBuf>) -> Self {
+        Self {
+            site: site.into(),
+            account: None,
+        }
+    }
+}
+
+/// The one account this installation is signed into.
+///
+/// Tonk is signed into at most one account at a time: linking replaces this
+/// record, logout clears it. Spaces keep their own [`SpotEntry::account`], so
+/// a replica pulled under an earlier account survives the switch and becomes
+/// usable again when that account signs back in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRecord {
+    /// Immutable account-root DID.
+    pub root: String,
+    /// Origin that hosted the most recent successful ceremony.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceremony_origin: Option<String>,
+    /// Provider-matched default content endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_remote: Option<String>,
+    /// Provider-matched invitation-revocation relay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_relay: Option<String>,
+    /// Unknown forward-compatible fields.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl AccountRecord {
+    /// A record for a freshly linked account root.
+    pub fn new(root: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            ceremony_origin: None,
+            access_remote: None,
+            revocation_relay: None,
+            extra: serde_json::Map::new(),
+        }
+    }
 }
 
 /// Where a resolution's spot name came from. Surfaced in status
@@ -186,6 +243,20 @@ pub enum SpotError {
     /// directory names, so the alphabet is conservative.
     #[error("invalid spot name '{0}': use [a-z0-9][a-z0-9-_]*")]
     InvalidName(String),
+    /// The signed-in account is not the account this space belongs to.
+    #[error(
+        "this account doesn't have access to '{name}'\n\
+         '{name}' belongs to another account ({owner}); ask its owner for an \
+         invite and claim it with `tonk join <URL>`"
+    )]
+    ForeignAccount {
+        /// The space that was selected.
+        name: String,
+        /// Root DID of the account that owns it.
+        owner: String,
+        /// Root DID of the account currently signed in.
+        active: String,
+    },
     /// The platform reports no data directory (no home).
     #[error("could not determine the platform data directory")]
     NoDataDir,
@@ -256,6 +327,11 @@ impl SpotStore {
     /// A store rooted at an explicit directory (tests).
     pub fn at(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
+    }
+
+    /// Root directory containing this profile's space and account state.
+    pub fn root(&self) -> &Path {
+        &self.dir
     }
 
     /// Path to `spots.json` inside this store.
@@ -356,6 +432,34 @@ impl SpotStore {
             .map_err(|e| SpotError::Io(format!("could not move {} into place: {e}", tmp.display())))
     }
 
+    /// The account this installation is signed into, if any.
+    pub fn account(&self) -> Result<Option<AccountRecord>, SpotError> {
+        Ok(self.load()?.account)
+    }
+
+    /// Record (or clear) the signed-in account.
+    pub fn set_account(&self, account: Option<AccountRecord>) -> Result<(), SpotError> {
+        let mut registry = self.load()?;
+        registry.account = account;
+        self.save(&registry)
+    }
+
+    /// Record (or clear) the account one registered space belongs to.
+    pub fn set_space_account(&self, name: &str, account: Option<&str>) -> Result<(), SpotError> {
+        let mut registry = self.load()?;
+        let available: Vec<String> = registry.spots.keys().cloned().collect();
+        let entry = registry
+            .spots
+            .get_mut(name)
+            .ok_or_else(|| SpotError::Unknown {
+                name: name.to_owned(),
+                available,
+                binding: None,
+            })?;
+        entry.account = account.map(str::to_owned);
+        self.save(&registry)
+    }
+
     /// Resolve the spot a command should operate on.
     ///
     /// Strict precedence: `flag` (`--spot`) > `env` ([`SPOT_ENV`],
@@ -390,11 +494,14 @@ impl SpotStore {
             return Err(SpotError::NoSelection);
         };
         match registry.spots.get(&name) {
-            Some(entry) => Ok(Resolved {
-                name,
-                site: entry.site.clone(),
-                source,
-            }),
+            Some(entry) => {
+                access(&registry, &name, entry)?;
+                Ok(Resolved {
+                    name,
+                    site: entry.site.clone(),
+                    source,
+                })
+            }
             None => {
                 // Name the bound directory in the error too, when
                 // that is where the name came from — otherwise an
@@ -414,6 +521,27 @@ impl SpotStore {
             }
         }
     }
+}
+
+/// Refuse a space that belongs to an account other than the signed-in one.
+///
+/// Signing out does not revoke what this device already holds, so a
+/// signed-out installation keeps working offline on every replica it has;
+/// only a *different* signed-in account is a mismatch, and that is the case
+/// worth naming before a command reaches the site and fails on authority it
+/// was never going to have.
+pub fn access(registry: &Registry, name: &str, entry: &SpotEntry) -> Result<(), SpotError> {
+    let (Some(active), Some(owner)) = (registry.account.as_ref(), entry.account.as_deref()) else {
+        return Ok(());
+    };
+    if active.root == owner {
+        return Ok(());
+    }
+    Err(SpotError::ForeignAccount {
+        name: name.to_owned(),
+        owner: owner.to_owned(),
+        active: active.root.clone(),
+    })
 }
 
 /// Validate a spot name against the canonical slug:
@@ -571,7 +699,7 @@ pub fn register_existing_unbound(
     if registry.spots.contains_key(name) {
         return Err(SpotError::Exists(name.to_owned()));
     }
-    registry.spots.insert(name.to_owned(), SpotEntry { site });
+    registry.spots.insert(name.to_owned(), SpotEntry::at(site));
     store.save(&registry)
 }
 
@@ -630,12 +758,9 @@ pub async fn create(
         did: site.repository.did().to_string(),
         adopted,
     };
-    registry.spots.insert(
-        name.to_owned(),
-        SpotEntry {
-            site: outcome.site.clone(),
-        },
-    );
+    registry
+        .spots
+        .insert(name.to_owned(), SpotEntry::at(outcome.site.clone()));
     if let Some(directory) = binding_directory {
         registry
             .bindings
@@ -814,16 +939,10 @@ mod tests {
             legacy_current: current.map(str::to_owned),
             spots: names
                 .iter()
-                .map(|(name, site)| {
-                    (
-                        (*name).to_owned(),
-                        SpotEntry {
-                            site: PathBuf::from(site),
-                        },
-                    )
-                })
+                .map(|(name, site)| ((*name).to_owned(), SpotEntry::at(PathBuf::from(site))))
                 .collect(),
             bindings: BTreeMap::new(),
+            account: None,
             extra: serde_json::Map::new(),
         }
     }

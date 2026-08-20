@@ -169,13 +169,17 @@ impl AccountBoundOperator {
             // reach its own remote. Recovery is the same one every other
             // account path uses, so the authority a spot syncs with is the
             // authority it gets backed up with.
-            let prefix =
-                crate::site::account_root_prefix_for(&self.profile, &self.inner, &subject, &root)
-                    .await
-                    .map_err(|_| AuthorizeError::UnprovenSubject {
-                        claimed: root.clone(),
-                        authorized: subject.clone(),
-                    })?;
+            let prefix = crate::site::load_account_root_prefix_for(
+                &self.profile,
+                &self.inner,
+                &subject,
+                &root,
+            )
+            .await
+            .map_err(|_| AuthorizeError::UnprovenSubject {
+                claimed: root.clone(),
+                authorized: subject.clone(),
+            })?;
             let active_proof = grant.proofs().next().unwrap().clone();
             prefix
                 .push(active_proof)
@@ -381,11 +385,12 @@ pub async fn wrap(
     store: SpotStore,
     require_account: bool,
 ) -> Result<AccountBoundOperator> {
-    let guard = crate::account_session::exclusive_transition_guard(&store)?;
-    crate::account_session::ensure_initialized(&profile, &inner, &guard)
-        .await
-        .context("failed to initialize account-session state")?;
-    drop(guard);
+    if require_account {
+        let guard = crate::account_session::exclusive_transition_guard(&store)?;
+        crate::account_session::ensure_initialized(&profile, &inner, &guard)
+            .await
+            .context("failed to initialize account-session state")?;
+    }
     Ok(AccountBoundOperator::new(
         inner,
         profile,

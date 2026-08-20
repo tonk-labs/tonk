@@ -105,6 +105,19 @@ name = "account_authority"
 path = "tests/account_authority.rs"
 required-features = ["integration-tests"]
 
+[[test]]
+name = "space_access"
+path = "tests/space_access.rs"
+
+[[test]]
+name = "space_inventory"
+path = "tests/space_inventory.rs"
+
+[[test]]
+name = "space_link"
+path = "tests/space_link.rs"
+required-features = ["integration-tests"]
+
 [features]
 integration-tests = []
 # Downloads a published release archive to exercise the pre-dialog-upgrade
@@ -166,7 +179,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-axum = { workspace = true, features = ["form", "http1", "query", "tokio"] }
+axum = { workspace = true, features = ["form", "http1", "json", "query", "tokio"] }
 base64 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util", "signal", "time"] }
 tokio-util = { workspace = true }
@@ -178,6 +191,7 @@ tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-worker-api = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 webbrowser = { workspace = true }

@@ -95,6 +95,19 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .perform(&site.operator)
         .await
         .map_err(map_push_error)?;
+    let meta = site
+        .repository
+        .branch(crate::remote::META_BRANCH)
+        .open()
+        .perform(&site.operator)
+        .await
+        .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
+    if meta.upstream().is_some() {
+        meta.push()
+            .perform(&site.operator)
+            .await
+            .map_err(map_push_error)?;
+    }
     Ok(SyncOutcome {
         before: before.clone(),
         after: before,
@@ -115,6 +128,19 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .perform(&site.operator)
         .await
         .map_err(map_pull_error)?;
+    let meta = site
+        .repository
+        .branch(crate::remote::META_BRANCH)
+        .open()
+        .perform(&site.operator)
+        .await
+        .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
+    if meta.upstream().is_some() {
+        meta.pull()
+            .perform(&site.operator)
+            .await
+            .map_err(map_pull_error)?;
+    }
     let after = branch.revision();
     Ok(SyncOutcome {
         before,

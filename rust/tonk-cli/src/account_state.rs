@@ -109,8 +109,17 @@ async fn descriptor_in(
 
 /// Read durable native account-state status without contacting the remote.
 pub async fn status(profile: &Profile) -> Result<AccountStateStatus> {
-    let operator = credential_operator(profile).await?;
-    let Some(descriptor) = descriptor(profile, &operator).await? else {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    status_in(profile, &store).await
+}
+
+/// Read account repository status from one explicit profile store.
+pub async fn status_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<AccountStateStatus> {
+    let operator = credential_operator_for_store(profile, store).await?;
+    let Some(descriptor) = descriptor_in(profile, &operator, store).await? else {
         return Ok(AccountStateStatus::Unconfigured);
     };
     if marker_matches(marker(profile, &operator).await?.as_deref(), &descriptor) {
@@ -263,7 +272,18 @@ pub async fn retain_space_delegation(
     operator: &Operator<NativeSpace>,
     chain: &DelegationChain,
 ) -> Result<bool> {
-    let Some(branch) = open_account_branch(profile, operator).await? else {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    retain_space_delegation_in(profile, operator, &store, chain).await
+}
+
+/// Retain one space delegation in the account repository owned by `store`.
+pub async fn retain_space_delegation_in(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+    chain: &DelegationChain,
+) -> Result<bool> {
+    let Some(branch) = open_account_branch_in(profile, operator, store).await? else {
         return Ok(false);
     };
     tonk_account::delegations::retain_space_delegation(&branch, chain, operator)
@@ -500,6 +520,14 @@ pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<Na
         Directory::Profile,
     )
     .await
+}
+
+/// Build the account operator for one explicit native profile store.
+pub async fn operator_for_store(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<Operator<NativeSpace>> {
+    credential_operator_for_store(profile, store).await
 }
 
 /// Republish a stored remote's address cell so it matches the current

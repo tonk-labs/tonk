@@ -40,6 +40,7 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         // Production omits this explicit unsafe compatibility override.
         .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
         .env_remove("TONK_SPOT");
+    cmd.env_remove("TONK_SPACE");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -75,6 +76,226 @@ fn stdout_of(output: &Output) -> String {
 /// the wire fails fast instead of touching the network.
 const DEAD_REMOTE: &str = "http://127.0.0.1:9/ucan/";
 const OTHER_DEAD_REMOTE: &str = "http://127.0.0.1:9/other/";
+
+mod when_one_account_is_signed_in {
+    use super::*;
+
+    /// A registry with one space owned by `owner` and one signed-in
+    /// account, written directly so these stay offline: the refusal under
+    /// test happens during resolution, before any site is opened.
+    fn registry_with_accounts(state: &Path, space_account: Option<&str>, signed_in: Option<&str>) {
+        let site = state.join("site-garden");
+        std::fs::create_dir_all(&site).expect("mkdir site");
+        let account = match space_account {
+            Some(root) => format!(",\"account\":\"{root}\""),
+            None => String::new(),
+        };
+        let signed_in = match signed_in {
+            Some(root) => format!(",\"account\":{{\"root\":\"{root}\"}}"),
+            None => String::new(),
+        };
+        let json = format!(
+            "{{\"spots\":{{\"garden\":{{\"site\":{site:?}{account}}}}}{signed_in}}}",
+            site = site.display().to_string(),
+        );
+        std::fs::write(state.join("spots.json"), json).expect("write spots.json");
+    }
+
+    const ACCOUNT_A: &str = "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const ACCOUNT_B: &str = "did:key:z6MkAccountBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+    #[dialog_common::test]
+    fn another_accounts_space_is_refused_with_an_invite_hint() {
+        let state = tempfile::tempdir().expect("tempdir");
+        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_B));
+
+        let output = run(state.path(), &["--space", "garden", "status"], &[]);
+
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(
+            stderr.contains("this account doesn't have access to 'garden'"),
+            "{stderr}"
+        );
+        assert!(stderr.contains(ACCOUNT_A), "{stderr}");
+        assert!(stderr.contains("ask its owner for an invite"), "{stderr}");
+        assert!(stderr.contains("tonk join"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn a_mutating_command_is_refused_before_it_reaches_the_space() {
+        let state = tempfile::tempdir().expect("tempdir");
+        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_B));
+        let before = std::fs::read(state.path().join("spots.json")).expect("registry");
+
+        let output = run(
+            state.path(),
+            &["--space", "garden", "assert", "task", "--title", "x"],
+            &[],
+        );
+
+        assert!(!output.status.success());
+        assert!(
+            stderr_of(&output).contains("this account doesn't have access to 'garden'"),
+            "{}",
+            stderr_of(&output)
+        );
+        assert_eq!(
+            std::fs::read(state.path().join("spots.json")).expect("registry"),
+            before,
+            "a refused command must not rewrite the registry"
+        );
+    }
+
+    #[dialog_common::test]
+    fn the_owning_account_reaches_its_own_space() {
+        let state = tempfile::tempdir().expect("tempdir");
+        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_A));
+
+        let output = run(state.path(), &["--space", "garden", "status"], &[]);
+
+        // The empty site directory still fails to open — but on its own
+        // terms, not on account access.
+        let stderr = stderr_of(&output);
+        assert!(!stderr.contains("doesn't have access"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn signing_out_leaves_every_local_replica_reachable() {
+        let state = tempfile::tempdir().expect("tempdir");
+        registry_with_accounts(state.path(), Some(ACCOUNT_A), None);
+
+        let output = run(state.path(), &["--space", "garden", "status"], &[]);
+
+        let stderr = stderr_of(&output);
+        assert!(!stderr.contains("doesn't have access"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn linking_a_space_that_already_belongs_to_an_account_explains_why_not() {
+        let state = tempfile::tempdir().expect("tempdir");
+        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_B));
+        let before = std::fs::read(state.path().join("spots.json")).expect("registry");
+
+        let output = run(state.path(), &["space", "link", "garden"], &[]);
+
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(
+            stderr.contains("\"garden\" already belongs to an account"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("tonk invite"), "{stderr}");
+        assert_eq!(
+            std::fs::read(state.path().join("spots.json")).expect("registry"),
+            before
+        );
+    }
+
+    #[dialog_common::test]
+    fn linking_without_an_account_says_to_sign_in_first() {
+        let state = tempfile::tempdir().expect("tempdir");
+        registry_with_accounts(state.path(), None, None);
+
+        let output = run(state.path(), &["space", "link", "garden"], &[]);
+
+        assert!(!output.status.success());
+        assert!(
+            stderr_of(&output).contains("no account is signed in"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+
+    /// Patch an existing registry so its one space belongs to `owner` while
+    /// `signed_in` is the account signed in here.
+    fn tag_registry(state: &Path, space: &str, owner: &str, signed_in: &str) {
+        let path = state.join("spots.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("registry"))
+                .expect("registry JSON");
+        registry["spots"][space]["account"] = serde_json::json!(owner);
+        registry["account"] = serde_json::json!({ "root": signed_in });
+        std::fs::write(&path, serde_json::to_vec_pretty(&registry).expect("encode"))
+            .expect("write registry");
+    }
+
+    #[dialog_common::test]
+    fn the_space_listing_marks_what_this_account_cannot_reach() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let site = state.path().join("garden-site");
+        let created = run(
+            state.path(),
+            &[
+                "space",
+                "new",
+                "garden",
+                "--site",
+                site.to_str().expect("utf-8 site"),
+            ],
+            &[],
+        );
+        assert!(created.status.success(), "{}", stderr_of(&created));
+        tag_registry(state.path(), "garden", ACCOUNT_A, ACCOUNT_B);
+
+        let output = run(state.path(), &["space", "list"], &[]);
+
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(
+            stdout.contains("NAME\tSUBJECT\tACCOUNT\tROLE\tACCESS"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("belong to another account"), "{stdout}");
+    }
+}
+
+mod when_no_account_is_signed_in {
+    use super::*;
+
+    #[dialog_common::test]
+    fn read_only_listing_writes_no_state() {
+        let state = tempfile::tempdir().expect("tempdir");
+
+        let spaces = run(state.path(), &["space", "list"], &[]);
+        assert!(spaces.status.success(), "{}", stderr_of(&spaces));
+        assert!(stdout_of(&spaces).contains("no spaces registered"));
+
+        assert!(!state.path().join("spots.json").exists());
+    }
+
+    #[dialog_common::test]
+    fn a_new_space_is_local_only_until_it_is_linked() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let site = state.path().join("scratch-site");
+        let output = run(
+            state.path(),
+            &[
+                "space",
+                "new",
+                "scratch",
+                "--site",
+                site.to_str().expect("utf-8 site"),
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+
+        let spots: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(state.path().join("spots.json")).expect("space registry"),
+        )
+        .expect("spots JSON");
+        assert!(spots["spots"]["scratch"].is_object());
+        assert!(
+            spots["spots"]["scratch"]["account"].is_null(),
+            "a space created signed out belongs to no account: {spots}"
+        );
+        assert!(
+            spots["account"].is_null(),
+            "no account is signed in: {spots}"
+        );
+    }
+}
 
 /// A revocation relay for remotes that need one. Also on the discard port:
 /// a mint parses this URL and embeds it in the link, and never calls it.
@@ -247,6 +468,35 @@ mod when_resolving_with_precedence {
     }
 
     #[dialog_common::test]
+    fn it_accepts_canonical_space_flag_and_environment_names() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_spot_registry(state.path());
+
+        let output = run(state.path(), &["--space", "a", "status"], &[]);
+        assert!(!output.status.success());
+        assert!(stderr_of(&output).contains("active spot: a (flag)"));
+
+        let output = run(state.path(), &["status"], &[("TONK_SPACE", "a")]);
+        assert!(!output.status.success());
+        assert!(stderr_of(&output).contains("active spot: a (env)"));
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_conflicting_space_environment_aliases() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_spot_registry(state.path());
+
+        let output = run(
+            state.path(),
+            &["status"],
+            &[("TONK_SPACE", "a"), ("TONK_SPOT", "b")],
+        );
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("TONK_SPACE and TONK_SPOT"), "{stderr}");
+    }
+
+    #[dialog_common::test]
     fn it_does_not_fall_back_to_the_legacy_global_selection() {
         let state = tempfile::tempdir().expect("tempdir");
         two_spot_registry(state.path());
@@ -268,7 +518,7 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["use"], &[("TONK_SPOT", "a")]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("current spot: a"), "{stdout}");
+        assert!(stdout.contains("current space: a"), "{stdout}");
         assert!(stdout.contains("selected via: env"), "{stdout}");
         assert!(stdout.contains("next: tonk context"), "{stdout}");
     }
@@ -868,7 +1118,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: a"), "{stdout}");
-        assert!(stdout.contains("active spot: b (env)"), "{stdout}");
+        assert!(stdout.contains("active space: b (env)"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -928,7 +1178,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
-        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
+        assert!(stdout.contains("active space: b (directory"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -942,7 +1192,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
-        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
+        assert!(stdout.contains("active space: b (directory"), "{stdout}");
 
         let status = run_in(state.path(), &work, &["status"], &[]);
         let stderr = stderr_of(&status);
@@ -976,7 +1226,7 @@ mod when_a_directory_is_bound {
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("active spot: c (directory"), "{stdout}");
+        assert!(stdout.contains("active space: c (directory"), "{stdout}");
 
         let status = run_in(state.path(), &work, &["status"], &[]);
         assert!(status.status.success(), "{}", stderr_of(&status));
@@ -1082,7 +1332,7 @@ mod when_deleting_a_spot {
         assert!(!site.exists(), "data deleted");
 
         let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
-        assert!(listed.contains("no spots registered"), "{listed}");
+        assert!(listed.contains("no spaces registered"), "{listed}");
         assert!(!listed.contains("unregistered site data"), "{listed}");
     }
 

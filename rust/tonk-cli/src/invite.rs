@@ -20,7 +20,7 @@ use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
-use tonk_schema::{Invitation, InvitationExecution, InvitedVia, Membership};
+use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership};
 use url::Url;
 
 use crate::ExitCode;
@@ -462,7 +462,8 @@ pub async fn claim(
     let mut transaction = meta
         .transaction()
         .assert(invitation)
-        .assert(membership.clone());
+        .assert(membership.clone())
+        .assert(MemberRole::member(membership.this().clone()));
     transaction = transaction.assert(invitation_execution);
     if !self_invite {
         transaction = transaction.assert(InvitedVia::new(

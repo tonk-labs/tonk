@@ -3,7 +3,7 @@
 A local-only CLI for reading and writing tonk facts via asserted-notation.
 
 `tonk` is the headless companion to tonk-ui, without a browser: it operates on
-the selected **spot** — a named fact store resolved through a central
+the selected **space** — a named fact store resolved through a central
 registry, so the CLI works from any directory. The mutating verb is `eval`,
 which runs a notation document through the analyze → query → plan → commit
 pipeline. The other subcommands are read-only introspection, one-shot setup,
@@ -14,10 +14,27 @@ drive the same code paths as the binary.
 ## Usage
 
 ```sh
-# Create a spot (stored canonically, e.g. ~/Library/Application Support/tonk/spots/garden).
-tonk spot new garden
-# Use an existing spot in another project directory:
+# Create a local space and bind this directory to it.
+tonk space new garden
+# Use an existing space in another project directory:
 tonk use garden
+
+# Every local replica, with the account it belongs to.
+tonk space list
+
+# Sign in. Tonk holds one account at a time.
+tonk account link
+tonk account logout
+
+# A local space can move into your account. Once it belongs to one, it stays.
+tonk space link garden
+
+# What your account's directory lists, and pulling one of those spaces here.
+tonk account spaces list
+tonk account spaces pull did:key:...
+
+# Sharing never changes ownership: the invitee joins as a member.
+tonk invite
 
 # Evaluate a notation document: inline, from a file, or piped.
 tonk eval -c 'person:'
@@ -60,7 +77,7 @@ tonk push
 tonk pull
 tonk status       # synced | ahead | behind | diverged | no-upstream
 
-# Link this native profile to a passkey-backed account.
+# Sign in to a passkey-backed account.
 tonk account status
 tonk account link --name workstation
 tonk account logout
@@ -83,25 +100,43 @@ nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
 
 ## How it works
 
-### Spots and sites
+### Spaces and sites
 
-A **spot** is a named entry in `spots.json`, a registry kept under the
-platform data dir (`~/Library/Application Support/tonk/` on macOS). Each
-entry points at a **site**: the working directory holding the actual dialog
+A **space** is a named entry in `spots.json`, a registry kept under the
+platform data dir (`~/Library/Application Support/tonk/` on macOS). Each entry
+points at a **site**: the working directory holding the actual dialog
 repository (`main`, opened on the `main` branch — multi-branch and multi-repo
 workflows are intentionally not exposed). Sites live canonically under
-`spots/<name>/`, or anywhere you like via `tonk spot new --site <path>`.
-Commands resolve which spot to use as `--spot` > `TONK_SPOT` > the nearest
-directory bound by `tonk use <name>`, then open its central site. There is no
-machine-global fallback. Parallel sessions in separate directories therefore
-hold their own spot without repeating a flag. The directory is only a key into
-the registry — no site data or pointer file is stored there. `tonk spot unbind`
-removes an exact binding. `spots.json` is plain JSON, so any application can
-read the registry without going through the CLI.
+`spots/<name>/`, or anywhere you like via `tonk space new --site <path>`.
+
+A space either belongs to no account, or to exactly one. `tonk space list`
+shows which, alongside the role its signed membership proves and whether the
+account signed in here can reach it:
+
+```text
+NAME      SUBJECT         ACCOUNT      ROLE     ACCESS
+scratch   did:key:...     -            local    yes
+garden    did:key:...     did:key:aa   owner    yes
+roadmap   did:key:...     did:key:bb   owner    no
+```
+
+`local` means account-independent, `owner` means the account created or
+adopted the space, and `member` means it joined through a share. The two
+ownership rules are: a local space can move into your account; once a space
+belongs to an account it stays there, and reaches other people through
+`tonk invite`.
+
+Commands resolve `--space` > `TONK_SPACE` > the visible `--spot` / `TONK_SPOT`
+compatibility aliases > the nearest directory bound by `tonk use <name>`.
+There is no machine-global fallback, so parallel sessions in separate
+directories hold their own space without repeating a flag. The directory is
+only a key into the registry — no site data or pointer file is stored there.
+`tonk space unbind` removes an exact binding. `spots.json` is plain JSON, so
+any application can read the registry without going through the CLI.
 
 To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
-somewhere you keep data outside the canonical store) as a spot, point
-`--site` at it: `tonk spot new proj --site ~/proj/.tonk`. The local identity
+somewhere you keep data outside the canonical store) as a space, point
+`--site` at it: `tonk space new proj --site ~/proj/.tonk`. The local identity
 is a shared profile (`tonk identity` prints its DID; `--reset` mints a fresh
 one).
 
@@ -122,10 +157,32 @@ pull-before / push-after. `--no-sync` (or `TONK_NO_SYNC`) skips it; manual
 
 ### Accounts
 
-The CLI has at most one active remote account. Every `tonk account link`
-requires a fresh browser/passkey handoff; switching accounts is logout followed
-by link. Historical certificates remain available for local spot writes, but
-only the latest active attachment can authorize a remote request.
+The CLI holds at most one account at a time. `tonk account link` (also spelled
+`login`) runs a browser/passkey handoff and records that account; signing in as
+someone else is `tonk account logout` followed by `tonk account link`. Linking
+an account never enrolls the spaces already on this device.
+
+Creating a space while signed out stays offline. Creating while signed in
+provisions and publishes only that new space. `tonk space link <space>` moves
+one local-only space into your account: it keeps its name, site, and binding,
+and gains hosting, retained authority, and a row in the account directory your
+other devices pull from. Nothing is deleted along the way, so an interrupted
+link leaves a working local space and can simply be re-run.
+
+Spaces that belong to another account stay on disk when you switch accounts.
+They are listed with `ACCESS no`, and a command that would open one is refused,
+naming the account that owns it — sign that account back in, or ask its owner
+for an invite. Signed out entirely, every replica on this device stays
+readable and writable; only account services stop.
+
+`tonk account spaces list` reads the signed remote directory of the account you
+are signed in to, and `tonk account spaces pull <subject>` mounts one of those
+spaces here as an owner or member replica.
+
+`tonk space rm` removes only the local replica (and, unless `--keep-data` is
+used, its local bytes). It does not remove signed account directory facts,
+revoke memberships or invitations, deprovision hosting, delete remote objects,
+or erase a peer's replica.
 
 Interrupting `tonk account link` leaves the handoff recorded so the next run
 resumes it. A link token is one-time, so a service that refuses to reissue it
@@ -134,7 +191,7 @@ takes the completed grant if the browser approved in the meantime, and
 otherwise prints a fresh URL rather than re-offering a spent token.
 
 `tonk account logout` commits locally first, so it works offline. Existing
-spots remain readable and editable, while fetch, pull, push, account sync, and
+spaces remain readable and editable, while fetch, pull, push, account sync, and
 other access-service requests are denied before HTTP. Logout queues a
 signed, generation-specific detach intent; the device list may remain stale
 until a later account operation reaches the provider and flushes that outbox.
@@ -158,8 +215,8 @@ rotation.
 | State | Local query/edit/commit | Remote sync |
 | --- | --- | --- |
 | Logged out | allowed | denied before HTTP |
-| Active account, spot delegated to it | allowed | allowed with only that account's grant |
-| Active account, spot delegated only to another account | allowed | denied before HTTP |
+| Signed in, space owned by or shared with that account | allowed | allowed with only that account's grant |
+| Signed in, space belonging to another account | refused with an invite hint | denied before HTTP |
 
 ### Sync and sharing
 
