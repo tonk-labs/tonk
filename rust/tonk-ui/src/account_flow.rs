@@ -791,33 +791,44 @@ mod tests {
         // spot back out of the synced account DB — the real
         // cross-device path, not a service-side artifact store.
         let second_device = link_cli_with(&claimer, &env, false).await?;
-        // The browser pushes the directory facts on its next sync
-        // drain, so a freshly linked device may pull before they land.
-        // `spots` pulls best-effort on every run; poll until the
-        // recording arrives — the assertion is that promotion recorded
-        // the spot, not that it won a push race.
-        let mut spots = run_cli(
-            &second_device.profile,
-            &["account".to_string(), "spots".to_string()],
-        )
-        .await?;
-        assert!(spots.status.success(), "spots failed: {}", spots.stderr);
-        for _ in 0..30 {
-            if spots.stdout.contains(&key) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            spots = run_cli(
+        // Two things have to land before this reads: the freshly linked
+        // device's first account sync (until then `spots` exits non-zero
+        // with "not yet hydrated"), and the browser's push of the
+        // directory facts, which happens on its next sync drain. Both
+        // are timing, not behaviour, so poll on the outcome under test —
+        // that promotion recorded the spot — rather than asserting on
+        // whichever intermediate state the first run happened to catch.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last_seen = String::from("<spots never completed a run>");
+        let recorded = loop {
+            let run = run_cli(
                 &second_device.profile,
                 &["account".to_string(), "spots".to_string()],
             )
             .await?;
-            assert!(spots.status.success(), "spots failed: {}", spots.stderr);
-        }
+            if run.status.success() {
+                if run.stdout.contains(&key) {
+                    break true;
+                }
+                last_seen = run.stdout;
+            } else if run.stderr.contains("first sync has not succeeded yet") {
+                // Not a failure: hydration is retried on the next
+                // invocation, and this device linked moments ago.
+                last_seen = format!("not hydrated yet: {}", run.stderr.trim());
+            } else {
+                // Any other non-zero exit is a real error; failing here
+                // beats burning the deadline on it.
+                return Err(anyhow!("spots failed: {}", run.stderr));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break false;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
         assert!(
-            spots.stdout.contains(&key),
-            "promotion completed without recording the claimed spot in the account directory: {}",
-            spots.stdout
+            recorded,
+            "promotion completed without recording the claimed spot in the account \
+             directory; last `spots` output was: {last_seen}"
         );
 
         let devtools = ChromeDevTools::new(claimer.handle.clone());
