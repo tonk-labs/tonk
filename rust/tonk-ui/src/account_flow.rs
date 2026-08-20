@@ -273,16 +273,18 @@ mod tests {
             .click()
             .await?;
 
-        // The conflict surfaces at account creation, and creation is
-        // secret-rooted: no credential is minted on the failed attempt
-        // or on the successful retry.
+        // The conflict surfaces at signed account creation — after the
+        // custody passkey exists. That ordering is deliberate: an
+        // availability probe without a verified code would let anyone
+        // enumerate registered emails, so the failed attempt's cost is
+        // one orphaned passkey in the authenticator.
         wait_for_text(
             &driver,
             "#account-error",
             "an account already exists for this email address",
         )
         .await?;
-        assert_eq!(credential_count(&driver, &authenticator_id).await?, 0);
+        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
 
         let email = element(&driver, "#account-email").await?;
         email.clear().await?;
@@ -294,8 +296,8 @@ mod tests {
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
-            0,
-            "secret-rooted creation must mint no credentials at all"
+            2,
+            "each creation attempt mints exactly one custody passkey"
         );
 
         driver.quit().await?;
@@ -649,21 +651,21 @@ mod tests {
         .await?;
         successful_body("promote guest membership", &promoted);
 
-        let account = get_json(&claimer, "/api/account").await?;
-        let root = successful_body("read claiming account", &account)["rootDid"]
-            .as_str()
-            .context("claiming account status omitted its root DID")?;
-        let snapshot: Vec<serde_json::Value> = reqwest::Client::new()
-            .get(env.account_service.join("_test/spots")?)
-            .header("X-Test-Root", root)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        // The account directory is the backup now: link a CLI as a
+        // second device of the claimer's account and read the claimed
+        // spot back out of the synced account DB — the real
+        // cross-device path, not a service-side artifact store.
+        let second_device = link_cli_with(&claimer, &env, false).await?;
+        let spots = run_cli(
+            &second_device.profile,
+            &["account".to_string(), "spots".to_string()],
+        )
+        .await?;
+        assert!(spots.status.success(), "spots failed: {}", spots.stderr);
         assert!(
-            snapshot.iter().any(|spot| spot["subject"] == key),
-            "promotion completed without uploading the claimed spot: {snapshot:?}"
+            spots.stdout.contains(&key),
+            "promotion completed without recording the claimed spot in the account directory: {}",
+            spots.stdout
         );
 
         let devtools = ChromeDevTools::new(claimer.handle.clone());
@@ -828,8 +830,8 @@ mod tests {
         let provider = status
             .stdout
             .lines()
-            .find_map(|line| line.strip_prefix("provider: "))
-            .context("status output omitted the provider")?;
+            .find_map(|line| line.strip_prefix("account service: "))
+            .context("status output omitted the account service")?;
         assert_eq!(url::Url::parse(provider)?, env.account_service);
         assert!(linked.link.stdout.contains("linked"));
 
@@ -870,7 +872,7 @@ mod tests {
         assert!(status.status.success(), "status failed: {}", status.stderr);
         assert!(status.stdout.contains("signed in: yes"));
         assert!(
-            linked.link.stdout.contains("sync service:"),
+            linked.link.stdout.contains("access service:"),
             "the link reports the registration the signup performed: {}",
             linked.link.stdout
         );

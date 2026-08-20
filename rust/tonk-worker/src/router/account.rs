@@ -195,6 +195,29 @@ pub(crate) async fn attach_test_account(
     save_provider(state, &record).await
 }
 
+/// Whether this profile carries ANY account-attachment history: a
+/// stored provider record (configured or not) or the sign-out
+/// tombstone. Only a profile with no history at all — a creation
+/// ceremony whose registration never completed — may have its root
+/// replaced by a retry; a signed-out profile keeps refusing a
+/// different root, because its spaces still hang off the stored one.
+pub(crate) async fn has_attachment_history(state: &crate::worker::TonkState) -> bool {
+    match state
+        .profile
+        .credential()
+        .site(ACCOUNT_PROVIDER_SITE)
+        .load::<Vec<u8>>()
+        .perform(&state.operator)
+        .await
+    {
+        Ok(_) => true,
+        Err(error) if crate::credential::is_missing(&error) => false,
+        // An unreadable record still counts as history: refusing a
+        // replacement is recoverable, silently rebinding is not.
+        Err(_) => true,
+    }
+}
+
 /// The provider both test fixtures name. See [`attach_test_account`].
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) const TEST_ACCOUNT_PROVIDER: &str = "https://accounts.tonk.xyz";
