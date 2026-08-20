@@ -874,7 +874,7 @@ mod blob_snapshot {
             if let Some(token) = &token {
                 params.push(("continuation-token".to_string(), token.clone()));
             }
-            let permit = permit(credential, address, "GET", "/", Some(params)).await?;
+            let permit = permit(credential, address, "GET", "", Some(params)).await?;
             let body = perform(permit, None).await?.text().await?;
             let (page, next) = parse_listing(&body);
             objects.extend(page);
@@ -897,7 +897,7 @@ mod blob_snapshot {
             let path = entry?.path();
             let Some(key) = key_for(&path) else { continue };
             let body = std::fs::read(&path)?;
-            let permit = permit(credential, address, "PUT", &format!("/{key}"), None).await?;
+            let permit = permit(credential, address, "PUT", &key, None).await?;
             perform(permit, Some(body)).await?;
             restored += 1;
         }
@@ -924,8 +924,7 @@ mod blob_snapshot {
                     continue;
                 }
                 let fetched = async {
-                    let permit =
-                        permit(&credential, &address, "GET", &format!("/{key}"), None).await?;
+                    let permit = permit(&credential, &address, "GET", key, None).await?;
                     let body = perform(permit, None).await?.bytes().await?;
                     let target = file_for(&dir, key);
                     let staged = target.with_extension("tmp");

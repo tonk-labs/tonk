@@ -738,6 +738,92 @@ mod tests {
         Ok(())
     }
 
+    /// The full deletion stack under the button: plan review, email
+    /// confirmation, device-signed deprovisioning of every owned
+    /// hosted space, and both account-level finalizations. Only the
+    /// passkey user-verification gesture is UI-side and out of scope;
+    /// everything destructive runs here exactly as in production.
+    #[dialog_common::test]
+    async fn it_deletes_the_account_and_its_hosted_spaces(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "goner@example.com";
+        sign_up(&driver, &env, email).await?;
+
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Doomed Garden",
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create synced spot", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+        let pushed = post_json(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push synced spot", &pushed);
+
+        let plan = get_json(&driver, "/api/account/deletion/plan").await?;
+        let plan = successful_body("review the deletion plan", &plan);
+        assert_eq!(plan["email"], email, "plan reveals the verified email");
+        let spaces = plan["spaces"]
+            .as_array()
+            .context("plan omitted the owned spaces")?;
+        assert_eq!(spaces.len(), 1, "one owned hosted space: {plan}");
+        let subject = spaces[0]["subject"]
+            .as_str()
+            .context("plan space omitted its subject")?
+            .to_string();
+
+        // A mistyped confirmation email refuses before anything burns.
+        let refused = post_json(
+            &driver,
+            "/api/account/delete",
+            serde_json::json!({
+                "spaces": [{ "subject": subject }],
+                "confirmedEmail": "someone-else@example.com",
+            }),
+        )
+        .await?;
+        assert_eq!(
+            refused["status"], 403,
+            "wrong confirmation email must refuse: {refused}"
+        );
+
+        let deleted = post_json(
+            &driver,
+            "/api/account/delete",
+            serde_json::json!({
+                "spaces": [{ "subject": subject }],
+                "confirmedEmail": email,
+            }),
+        )
+        .await?;
+        let receipt = successful_body("delete the account", &deleted);
+        assert_eq!(receipt["deletedSpaces"], 1, "one hosted space purged");
+        assert_eq!(receipt["retainedJoinedSpaces"], 0);
+
+        // The profile is unlinked: the deletion plan is no longer
+        // reviewable because there is no account to review.
+        let after = get_json(&driver, "/api/account/deletion/plan").await?;
+        assert_eq!(
+            after["status"], 404,
+            "a deleted account leaves nothing to plan against: {after}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_adds_a_second_account_and_switches_between_disjoint_space_lists(
         env: TestEnvironment,

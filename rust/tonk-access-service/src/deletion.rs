@@ -535,10 +535,13 @@ impl NativeSpacePurger {
 impl SpacePurger for NativeSpacePurger {
     async fn purge(&self, prefix: &str) -> Result<(), String> {
         loop {
+            // Path-style resolution appends this to "{bucket}/", so the
+            // bucket listing is the empty path — "/" would produce
+            // "{bucket}//", which S3 reads as an object named "/".
             let response = self
                 .send(dialog_remote_s3::request::S3Request {
                     method: "GET".to_string(),
-                    path: "/".to_string(),
+                    path: String::new(),
                     params: Some(vec![
                         ("list-type".to_string(), "2".to_string()),
                         ("prefix".to_string(), prefix.to_string()),
