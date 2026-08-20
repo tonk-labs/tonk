@@ -312,6 +312,9 @@ fn load_activation_notice(host: HtmlElement) {
             publish_queued_custody().await;
         }
         if state["status"].as_str() != Some("Registered") {
+            if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
+                let _ = resend.set_attribute("hidden", "");
+            }
             return;
         }
         let Ok(Some(notice)) = host.query_selector("#account-activation-notice") else {
@@ -325,6 +328,12 @@ fn load_activation_notice(host: HtmlElement) {
         };
         notice.set_text_content(Some(&message));
         let _ = notice.remove_attribute("hidden");
+        // The way out of a stuck Registered: enrollment is idempotent
+        // while Registered and resends the link, which is also the
+        // recovery for one that expired.
+        if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
+            let _ = resend.remove_attribute("hidden");
+        }
     });
 }
 
@@ -1553,6 +1562,26 @@ fn bind(host: &HtmlElement) {
             if let Err(error) = result {
                 set_busy(&host, false, "");
                 show_error(&host, error);
+            }
+        });
+    });
+
+    on_click(host, "#account-resend-activation", |host| {
+        clear_error(&host);
+        set_busy(&host, true, "Sending another activation email…");
+        spawn_local(async move {
+            // Enrollment is idempotent while Registered: the rows stand
+            // and the link is sent again. No ceremony is at hand here,
+            // so the deposits are the device-chained fallback.
+            let result = crate::api::enroll_customer(None, &[]).await;
+            set_busy(&host, false, "");
+            match result {
+                Ok(_) => set_text(
+                    &host,
+                    "#account-activation-notice",
+                    "Sent. Open the link in your activation email.",
+                ),
+                Err(error) => show_error(&host, format!("could not resend: {error}")),
             }
         });
     });

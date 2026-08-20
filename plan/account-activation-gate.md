@@ -132,13 +132,21 @@ The presign gate answers `AuthorizeError::PolicyViolation` whose predicate disti
 
 The way out of a stuck `Registered` is always available: `/customer/enroll` is idempotent while `Registered` — the rows stand and the activation email is resent (§3.1 names this the recovery for an expired link, and the link carries its own `exp`, so an expired one fails without any stored state). Enroll is a registration command, so it never touches the presign gate and cannot be locked out by it. The dashboard's activation notice gets a resend control wired to the `enroll_customer` call it already makes, so a user whose link expired or never arrived is one click from another. Nothing else in this plan may refuse while a customer is `Registered` without leaving that path open.
 
-## 7. Tests
+## 8. Tests
 
 - `provisioning.rs` unit tests already cover the predicate. They stay.
-- Service: a presign against an unprovisioned subject, against a consumer of a `Registered` customer, and against a consumer of an `Active` customer — the first two 403, the third serves. Driven through the native server so the HTTP path is covered, not just `screen`.
-- Service: activation flips a previously denied consumer to servable without any further provisioning call, which is the §3.2 rewrite guarantee.
-- Worker: a recorded pending publish is retried and cleared once the customer activates.
-- Browser: `it_signs_up_through_the_account_panels` already creates an account and follows the activation link. It gains an assertion that the custody cell is absent while `Registered` and present after activation.
+- Service: `it_denies_presign_until_the_customer_confirms_their_email` drives the real HTTP endpoints — an unprovisioned subject 403s naming "not provisioned", an enrolled-but-unactivated customer's own account subject 403s naming "awaits email activation", and following the emailed link lifts it with no further provisioning call. That last step is also the §3.2 rewrite guarantee, and the proof that enrollment's atomic self-consumer row is what makes the account space servable.
+- Service: `it_refuses_provisioning_until_the_customer_confirms_their_email` asserts `CustomerInactive`, that no consumer row is written, and that the same add replays successfully after activation — the contract the client queue depends on.
+- Service: provisioning idempotence, both directions. Re-adding under the same customer succeeds and leaves the row untouched (clients retry freely); a different customer holding the space's consent is refused and the original provider keeps paying.
+- Service: the custody protocol test now activates before provisioning, so it exercises the gate end to end rather than around it.
+- Queue: `tonk_account::pending` unit tests cover recorded order, duplicate suppression, partial clearing after a drain that stopped early, and round-tripping.
+- Fixtures: `AccessServiceAddress::activate_customer` for suites holding a root signer, `provision_subject` for subjects that are repository DIDs no test holds a signer for.
+- Browser: `sign_up` follows the emailed activation link, so every caller gets an account that can host a space; `it_signs_up_through_the_account_panels` asserts the registration row reads `Active` and the pending banner is gone.
+
+## 9. Still to do
+
+- A browser test that pushes a space *before* clicking the link, then activates and asserts the space becomes hosted — end-to-end proof of the queue, which today is covered only at the unit and service layers.
+- The resend control on the activation notice (§6): `enroll_customer` already resends, and the notice already names the address, but there is no button wired to it yet.
 
 ## 7. Consequences for existing deployments
 
