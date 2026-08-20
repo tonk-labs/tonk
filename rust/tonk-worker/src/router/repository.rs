@@ -2792,7 +2792,8 @@ pub async fn create_repository(
     // consumer of the access service, depositing the powerline as its
     // consent. Best effort for the same reason retain is — a space is
     // usable the moment its delegations exist locally.
-    if let Err(error) = super::customer::provision_consumer(tonk, &repository.did(), &prefix).await
+    if let Err(error) =
+        super::customer::provision_consumer(tonk, &repository.did(), &prefix, None).await
     {
         log!("consumer provisioning skipped: {error}");
     }
@@ -2947,7 +2948,8 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
             continue;
         };
         super::account_state::retain_space_delegation(tonk, &chain).await;
-        if let Err(error) = super::customer::provision_consumer(tonk, &subject, &chain).await {
+        if let Err(error) = super::customer::provision_consumer(tonk, &subject, &chain, None).await
+        {
             log!("adopted space '{subject}' provisioning skipped: {error}");
         }
     }

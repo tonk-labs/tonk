@@ -16,7 +16,7 @@ use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{ConsumerDeletionState, Store};
+use crate::store::{ConsumerDeletionState, ConsumerKind, Store};
 
 /// The deprovisioning command: the reverse of `/provider/add`.
 pub const COMMAND: [&str; 2] = ["provider", "remove"];
@@ -60,8 +60,13 @@ pub struct CustomerDeletionReceipt {
 }
 
 /// Stable deletion refusal returned by Worker and native helper routes.
-#[derive(Debug, thiserror::Error, Serialize)]
-#[serde(tag = "code")]
+///
+/// Serialized as `{"code": …, "message": …}` via a manual impl:
+/// an internally-tagged serde enum cannot represent newtype variants
+/// over strings — it panics at serialization time — which turned every
+/// refusal on the native helper into a dropped connection instead of
+/// an error body.
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("deletion invocation is malformed: {0}")]
     Malformed(String),
@@ -81,7 +86,31 @@ pub enum Error {
     Internal(String),
 }
 
+impl serde::Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        let mut record = serializer.serialize_struct("Error", 2)?;
+        record.serialize_field("code", self.code())?;
+        record.serialize_field("message", &self.to_string())?;
+        record.end()
+    }
+}
+
 impl Error {
+    /// Stable machine-readable refusal code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Malformed(_) => "Malformed",
+            Self::Unauthorized(_) => "Unauthorized",
+            Self::NotRegistered => "NotRegistered",
+            Self::WrongGrant => "WrongGrant",
+            Self::Forbidden => "Forbidden",
+            Self::Incomplete(_) => "Incomplete",
+            Self::OwnedSpacesRemain(_) => "OwnedSpacesRemain",
+            Self::Internal(_) => "Internal",
+        }
+    }
+
     pub fn status(&self) -> u16 {
         match self {
             Self::Malformed(_) => 400,
@@ -174,6 +203,13 @@ pub async fn delete<S: Store, P: SpacePurger>(
     if consumer.owner.as_deref() != Some(customer.as_str()) {
         return Err(Error::Forbidden);
     }
+    if consumer.kind == ConsumerKind::Custody {
+        // Custody namespaces hold the account's own sealed key
+        // material. They are purged by customer finalization, last —
+        // deprovisioning one earlier would destroy the account's
+        // ability to retry anything that still needs a passkey.
+        return Err(Error::Forbidden);
+    }
 
     if consumer.deletion_state == ConsumerDeletionState::Deleted {
         return Ok(receipt(&space, consumer.deleted_at.unwrap_or_default()));
@@ -248,7 +284,7 @@ pub async fn customer_plan<S: Store>(
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .into_iter()
-        .filter(|consumer| consumer.did != customer)
+        .filter(|consumer| consumer.did != customer && consumer.kind == ConsumerKind::Space)
         .map(|consumer| HostedSpace {
             space: consumer.did,
             deletion_state: consumer.deletion_state.as_str().to_string(),
@@ -266,19 +302,48 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     now: u64,
 ) -> Result<CustomerDeletionReceipt, Error> {
     let customer =
-        verify_customer_command(store, container, &CUSTOMER_DELETE_COMMAND, now, false).await?;
-    let remaining: Vec<_> = store
+        verify_customer_command(store, container, &CUSTOMER_DELETE_COMMAND, now, true).await?;
+    let consumers = store
         .consumers_by_owner(&customer)
         .await
-        .map_err(|error| Error::Internal(error.to_string()))?
-        .into_iter()
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    let remaining: Vec<_> = consumers
+        .iter()
         .filter(|consumer| {
-            consumer.did != customer && consumer.deletion_state != ConsumerDeletionState::Deleted
+            consumer.did != customer
+                && consumer.kind == ConsumerKind::Space
+                && consumer.deletion_state != ConsumerDeletionState::Deleted
         })
-        .map(|consumer| consumer.did)
+        .map(|consumer| consumer.did.clone())
         .collect();
     if !remaining.is_empty() {
         return Err(Error::OwnedSpacesRemain(remaining));
+    }
+
+    // Custody namespaces are purged here — after every data space is
+    // gone and the finalization is already authorized, so nothing that
+    // could still need the account's key material can be left waiting
+    // on it. Denial-first like any other purge, and idempotent.
+    for consumer in &consumers {
+        if consumer.kind != ConsumerKind::Custody
+            || consumer.deletion_state == ConsumerDeletionState::Deleted
+        {
+            continue;
+        }
+        if consumer.deletion_state == ConsumerDeletionState::Active {
+            let _ = store
+                .mark_consumer_deleting(&consumer.did)
+                .await
+                .map_err(|error| Error::Internal(error.to_string()))?;
+        }
+        purger
+            .purge(&format!("{}/", consumer.did))
+            .await
+            .map_err(Error::Incomplete)?;
+        let _ = store
+            .finish_consumer_deletion(&consumer.did, now)
+            .await
+            .map_err(|error| Error::Internal(error.to_string()))?;
     }
 
     let self_consumer = store
@@ -309,7 +374,6 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
             "could not remove access-service customer state".into(),
         ));
     }
-    let _ = now;
     Ok(CustomerDeletionReceipt {
         customer,
         state: "deleted".into(),
@@ -517,6 +581,37 @@ fn xml_values(xml: &str, element: &str) -> Vec<String> {
     values
 }
 
+#[cfg(test)]
+mod serialization_tests {
+    use super::Error;
+
+    /// Every refusal must serialize — the internally-tagged derive this
+    /// replaced panicked on newtype-over-string variants, which turned
+    /// every native-helper refusal into a dropped connection (a bare
+    /// 500 through the dev proxy) instead of an error body.
+    #[test]
+    fn every_refusal_serializes_with_code_and_message() {
+        let refusals = [
+            Error::Malformed("bad container".into()),
+            Error::Unauthorized("bad signature".into()),
+            Error::NotRegistered,
+            Error::WrongGrant,
+            Error::Forbidden,
+            Error::Incomplete("purge failed".into()),
+            Error::OwnedSpacesRemain(vec!["did:key:z6MkSpace".into()]),
+            Error::Internal("boom".into()),
+        ];
+        for refusal in refusals {
+            let value = serde_json::to_value(&refusal).expect("refusal serializes");
+            assert_eq!(value["code"], refusal.code(), "{refusal:?}");
+            assert!(
+                value["message"].as_str().is_some_and(|m| !m.is_empty()),
+                "{refusal:?}"
+            );
+        }
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "helpers"))]
 mod tests {
     use std::sync::Mutex;
@@ -632,7 +727,12 @@ mod tests {
             .await
             .unwrap();
         store
-            .add_consumer(space.did().as_str(), root.did().as_str(), at)
+            .add_consumer(
+                space.did().as_str(),
+                root.did().as_str(),
+                at,
+                ConsumerKind::Space,
+            )
             .await
             .unwrap();
         let invocation = remove_container(&root, &device, &space.did()).await;
@@ -663,6 +763,103 @@ mod tests {
         );
     }
 
+    /// The bug this pins: the deletion machinery treated the account's
+    /// custody namespaces (the passkey-sealed key material) as ordinary
+    /// owned spaces, deprovisioned one mid-flight, and thereby
+    /// destroyed the account's own ability to retry — a permanent
+    /// half-deleted lockout. Custody consumers must be invisible to the
+    /// review plan, must refuse /provider/remove, and must be purged
+    /// only by customer finalization, last.
+    #[dialog_common::test]
+    async fn custody_namespaces_are_finalization_scope_not_review_scope() {
+        let store = SqliteStore::in_memory().unwrap();
+        let root = Ed25519Signer::import(&[91; 32]).await.unwrap();
+        let device = Ed25519Signer::import(&[92; 32]).await.unwrap();
+        let space = Ed25519Signer::import(&[93; 32]).await.unwrap();
+        let custody = Ed25519Signer::import(&[94; 32]).await.unwrap();
+        let at = now();
+        store
+            .enroll_customer(
+                root.did().as_str(),
+                "custody@example.com",
+                b"access",
+                SIGNUP_PLAN,
+                at,
+            )
+            .await
+            .unwrap();
+        store
+            .add_consumer(
+                space.did().as_str(),
+                root.did().as_str(),
+                at,
+                ConsumerKind::Space,
+            )
+            .await
+            .unwrap();
+        store
+            .add_consumer(
+                custody.did().as_str(),
+                root.did().as_str(),
+                at,
+                ConsumerKind::Custody,
+            )
+            .await
+            .unwrap();
+        let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
+
+        // The review plan shows only the data space.
+        let plan_invocation = tonk_identity::request::build_device_invocation(
+            device.clone(),
+            &link,
+            CUSTOMER_PLAN_COMMAND.map(str::to_string).to_vec(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let plan = customer_plan(&store, &plan_invocation, at).await.unwrap();
+        assert_eq!(plan.spaces.len(), 1);
+        assert_eq!(plan.spaces[0].space, space.did().to_string());
+
+        // Deprovisioning the custody namespace is refused outright.
+        let purger = RecordingPurger(Mutex::new(Vec::new()));
+        let remove_custody = remove_container(&root, &device, &custody.did()).await;
+        assert!(matches!(
+            delete(&store, &purger, &remove_custody, at + 1).await,
+            Err(Error::Forbidden)
+        ));
+        assert!(purger.0.lock().unwrap().is_empty());
+
+        // Data space deleted; a still-active custody namespace does NOT
+        // block finalization — finalization is what purges it, last.
+        let remove_space = remove_container(&root, &device, &space.did()).await;
+        delete(&store, &purger, &remove_space, at + 2)
+            .await
+            .unwrap();
+        let customer_invocation = root_container(root.clone(), &CUSTOMER_DELETE_COMMAND).await;
+        let receipt = delete_customer(&store, &purger, &customer_invocation, at + 3)
+            .await
+            .unwrap();
+        assert_eq!(receipt.customer, root.did().to_string());
+        let purged = store
+            .consumer(custody.did().as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(purged.deletion_state, ConsumerDeletionState::Deleted);
+        assert_eq!(
+            purger.0.lock().unwrap().as_slice(),
+            &[
+                format!("{}/", space.did()),
+                format!("{}/", custody.did()),
+                format!("{}/", root.did()),
+            ],
+            "custody purges inside finalization, after every data space and before the account space"
+        );
+    }
+
     #[dialog_common::test]
     async fn customer_finalization_requires_every_owned_space_then_removes_email_state() {
         let store = SqliteStore::in_memory().unwrap();
@@ -680,7 +877,12 @@ mod tests {
             .await
             .unwrap();
         store
-            .add_consumer(space.did().as_str(), root.did().as_str(), at)
+            .add_consumer(
+                space.did().as_str(),
+                root.did().as_str(),
+                at,
+                ConsumerKind::Space,
+            )
             .await
             .unwrap();
         let device = Ed25519Signer::import(&[83; 32]).await.unwrap();
@@ -699,7 +901,17 @@ mod tests {
         assert_eq!(plan.spaces.len(), 1);
         assert_eq!(plan.spaces[0].space, space.did().to_string());
 
-        let customer_invocation = root_container(root.clone(), &CUSTOMER_DELETE_COMMAND).await;
+        // Finalization arrives device-signed, exactly as the worker
+        // builds it: the account's chain to this device is the
+        // deletion authority, no root-key signature involved.
+        let customer_invocation = tonk_identity::request::build_device_invocation(
+            device.clone(),
+            &link,
+            CUSTOMER_DELETE_COMMAND.map(str::to_string).to_vec(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
         let purger = RecordingPurger(Mutex::new(Vec::new()));
         assert!(matches!(
             delete_customer(&store, &purger, &customer_invocation, at + 1).await,
@@ -729,7 +941,12 @@ mod tests {
         assert!(denial.owner.is_none());
         assert!(
             !store
-                .add_consumer(space.did().as_str(), root.did().as_str(), at + 4)
+                .add_consumer(
+                    space.did().as_str(),
+                    root.did().as_str(),
+                    at + 4,
+                    ConsumerKind::Space,
+                )
                 .await
                 .unwrap()
         );

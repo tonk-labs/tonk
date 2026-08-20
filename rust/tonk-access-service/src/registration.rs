@@ -328,9 +328,18 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         let consent = self.deposited_delegation(&effect.consent.to_string())?;
         self.verify_consent(&consent.delegation, &effect.consumer, &provider)
             .await?;
+        let kind = match effect.kind.as_deref() {
+            None | Some("space") => crate::store::ConsumerKind::Space,
+            Some("custody") => crate::store::ConsumerKind::Custody,
+            Some(other) => {
+                return Err(RegistrationError::Forbidden {
+                    message: format!("unknown consumer kind: {other}"),
+                });
+            }
+        };
         if !self
             .store
-            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now)
+            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now, kind)
             .await
             .map_err(internal)?
         {

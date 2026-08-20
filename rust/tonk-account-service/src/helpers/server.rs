@@ -173,12 +173,12 @@ async fn account_delete_route(
     backends: &Backends,
 ) -> Result<Response<Full<Bytes>>, ServiceError> {
     let body = body_bytes(req).await?;
-    let caller = authorize_root(&body, &["account", "delete"])
+    let caller = authorize(&backends.store, &body, &["account", "delete"])
         .await
         .map_err(ceremony_error)?;
     let confirmed_email =
         required_string(&caller.arguments, "confirmedEmail").map_err(ceremony_error)?;
-    let receipt = delete_account(&backends.store, &caller.root_did, &confirmed_email)
+    let receipt = delete_account(&backends.store, &caller.account.root_did, &confirmed_email)
         .await
         .map_err(ceremony_error)?;
     Ok(json_response(StatusCode::OK, &receipt))

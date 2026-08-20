@@ -55,17 +55,16 @@ pub struct AccountSpaceDeletionRequest {
     pub subject: String,
 }
 
-/// The reviewed scope plus the two root-signed finalizations one
-/// passkey ceremony returns.
+/// The reviewed destructive scope. The worker signs every deletion
+/// invocation itself with the device's delegated authority; the UI's
+/// passkey assertion is a user-verification gate, not a signing key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDeletionRequest {
     /// Every reviewed owned hosted space, deprovisioned by the worker.
     pub spaces: Vec<AccountSpaceDeletionRequest>,
-    /// Root-signed access-customer finalization invocation.
-    pub customer_invocation_hex: String,
-    /// Root-signed account-service deletion invocation.
-    pub account_invocation_hex: String,
+    /// The account email the person retyped to confirm the deletion.
+    pub confirmed_email: String,
 }
 
 /// Completed service-account deletion result.

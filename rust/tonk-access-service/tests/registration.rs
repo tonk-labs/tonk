@@ -714,6 +714,7 @@ async fn it_publishes_and_resolves_the_custody_cell(
         &link,
         &custody_key.did(),
         &consent,
+        Some("custody"),
     )
     .await?;
     let response = client

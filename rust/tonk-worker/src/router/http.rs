@@ -58,11 +58,26 @@ fn failure(status: u16, body: &[u8]) -> UpstreamFailure {
                 .filter(|message| !message.is_empty())
                 .unwrap_or_else(|| "upstream service rejected the request".to_string()),
         },
-        Err(_) => UpstreamFailure {
-            status,
-            code: None,
-            message: "upstream service rejected the request".to_string(),
-        },
+        // Not the structured envelope: surface what the service actually
+        // said (a plain-text rejection, a proxy page) rather than a
+        // generic phrase that hides the cause.
+        Err(_) => {
+            let text = String::from_utf8_lossy(bounded);
+            let text = text.trim();
+            UpstreamFailure {
+                status,
+                code: None,
+                message: if text.is_empty() {
+                    "upstream service rejected the request".to_string()
+                } else {
+                    let mut snippet: String = text.chars().take(512).collect();
+                    if snippet.len() < text.len() {
+                        snippet.push('…');
+                    }
+                    snippet
+                },
+            }
+        }
     }
 }
 
@@ -266,10 +281,10 @@ impl From<HttpError> for crate::TonkWorkerError {
                 code: Some("UPSTREAM_TIMEOUT".to_string()),
                 message: "upstream service timed out".to_string(),
             },
-            HttpError::Transport(_) => crate::TonkWorkerError::Upstream {
+            HttpError::Transport(detail) => crate::TonkWorkerError::Upstream {
                 status: 503,
                 code: Some("UPSTREAM_UNAVAILABLE".to_string()),
-                message: "upstream service is unavailable".to_string(),
+                message: format!("upstream service is unavailable: {detail}"),
             },
         }
     }
@@ -291,10 +306,24 @@ mod tests {
         assert_eq!(parsed.code.as_deref(), Some("CREDENTIAL_REVOKED"));
         assert_eq!(parsed.message, "revoked");
 
+        let plain = failure(
+            401,
+            b"Authorization failed: hosted space is deleting or deleted",
+        );
+        assert_eq!(plain.code, None);
+        assert_eq!(
+            plain.message,
+            "Authorization failed: hosted space is deleting or deleted"
+        );
+
         let malformed = failure(502, &vec![b'x'; MAX_ERROR_BODY + 1]);
         assert_eq!(malformed.status, 502);
         assert_eq!(malformed.code, None);
-        assert_eq!(malformed.message, "upstream service rejected the request");
+        assert_eq!(malformed.message.chars().count(), 513);
+        assert!(malformed.message.ends_with('…'));
+
+        let empty = failure(502, b"");
+        assert_eq!(empty.message, "upstream service rejected the request");
     }
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]

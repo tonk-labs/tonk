@@ -115,21 +115,13 @@ pub(crate) struct RevocationOutput {
     pub revocation_hex: String,
 }
 
+/// Verification-only assertion input: the account passkey to assert
+/// against, hex-encoded exactly as [`tonk_worker_api::RootStatus`]
+/// stores it.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct PrepareAccountDeletionInput {
-    pub expected_root: String,
-    pub confirmed_email: String,
-    /// The access service's `/ucan/` endpoint the custody unlock
-    /// resolves through.
-    pub endpoint: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PreparedAccountDeletion {
-    pub customer_invocation_hex: String,
-    pub account_invocation_hex: String,
+pub(crate) struct VerifyPasskeyInput {
+    pub credential_id: String,
 }
 
 /// Stable failures produced at the JavaScript identity boundary.
@@ -284,10 +276,10 @@ pub(crate) async fn sign_revocation(
     call("signRevocation", input).await
 }
 
-pub(crate) async fn prepare_account_deletion(
-    input: PrepareAccountDeletionInput,
-) -> Result<PreparedAccountDeletion, IdentityBridgeError> {
-    call("prepareAccountDeletion", input).await
+/// Ask the human to verify with the account's own passkey. Nothing is
+/// signed or derived; success means user presence and verification.
+pub(crate) async fn verify_passkey(input: VerifyPasskeyInput) -> Result<(), IdentityBridgeError> {
+    call("verifyPasskey", input).await
 }
 
 #[cfg(test)]
@@ -331,6 +323,19 @@ mod tests {
         .expect("the real completeLink response is a valid bridge output");
 
         assert_eq!(output.invocation_hex, "invocation");
+    }
+
+    /// `verifyPasskey` succeeds with no payload: the ceremony resolves
+    /// `undefined` and the bridge decodes it into `()`. An object (or any
+    /// other value) would fail the decode, so this pins the empty shape.
+    #[dialog_common::test]
+    async fn it_accepts_the_empty_verify_passkey_output() {
+        install_method("verifyPasskey", "return Promise.resolve(undefined);");
+        verify_passkey(VerifyPasskeyInput {
+            credential_id: "abcd".into(),
+        })
+        .await
+        .expect("an undefined resolution is the valid verifyPasskey output");
     }
 
     #[dialog_common::test]

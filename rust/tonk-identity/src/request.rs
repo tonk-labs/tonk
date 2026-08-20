@@ -173,18 +173,22 @@ pub async fn build_provider_add_invocation(
     link: &DelegationChain,
     consumer: &Did,
     consent: &DelegationChain,
+    kind: Option<&str>,
 ) -> Result<Vec<u8>> {
     let head = consent
         .proofs()
         .next()
         .context("the consent chain carries no delegation")?;
-    let arguments = BTreeMap::from([
+    let mut arguments = BTreeMap::from([
         (
             "consumer".to_string(),
             Promised::String(consumer.to_string()),
         ),
         ("consent".to_string(), Promised::Link(head.to_cid())),
     ]);
+    if let Some(kind) = kind {
+        arguments.insert("kind".to_string(), Promised::String(kind.to_string()));
+    }
     let invocation = build_device_invocation(
         device,
         link,

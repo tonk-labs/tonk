@@ -86,47 +86,24 @@ async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PrepareAccountDeletionInput {
-    expected_root: String,
-    confirmed_email: String,
-    endpoint: String,
+struct VerifyPasskeyInput {
+    credential_id: String,
 }
 
-/// One user-verifying passkey ceremony signs the two account-level
-/// finalizations: access-customer removal and account-service deletion.
-/// Hosted spaces are deprovisioned by the worker's own device-signed
-/// `/provider/remove` invocations — no per-space proof exists.
-async fn prepare_account_deletion(input: JsValue) -> Result<JsValue, JsValue> {
-    use dialog_varsig::Principal as _;
-
-    let input: PrepareAccountDeletionInput = serde_wasm_bindgen::from_value(input)
-        .map_err(|_| JsValue::from_str("malformed account deletion input"))?;
-    let root = crate::ceremony::unlock_root(&input.endpoint)
+/// A user-verification assertion against the account's own passkey,
+/// with nothing derived and nothing signed: destructive account
+/// invocations sign with the device's delegated authority, and this
+/// ceremony only proves a human holding the passkey is present.
+async fn verify_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let input: VerifyPasskeyInput = serde_wasm_bindgen::from_value(input)
+        .map_err(|_| JsValue::from_str("malformed passkey verification input"))?;
+    let credential_id = hex::decode(&input.credential_id)
+        .map_err(|_| JsValue::from_str("malformed passkey credential id"))?;
+    crate::passkey::verify_custody_passkey(&credential_id)
         .await
         .map_err(js_error)?;
-    if root.did().to_string() != input.expected_root {
-        return Err(JsValue::from_str(
-            "the evaluated passkey does not match the account being deleted",
-        ));
-    }
-    let customer = crate::ceremony::delete_access_customer(root.clone())
-        .await
-        .map_err(js_error)?;
-    let account = crate::ceremony::delete_account(root, input.confirmed_email)
-        .await
-        .map_err(js_error)?;
-    let result = Object::new();
-    Reflect::set(
-        &result,
-        &"customerInvocationHex".into(),
-        &customer.invocation_hex.into(),
-    )?;
-    Reflect::set(
-        &result,
-        &"accountInvocationHex".into(),
-        &account.invocation_hex.into(),
-    )?;
-    Ok(result.into())
+    // The bridge decodes this into `()`, which maps to `undefined`.
+    Ok(JsValue::UNDEFINED)
 }
 
 fn root_result(ceremony: crate::ceremony::RootCeremony) -> Result<JsValue, JsValue> {
@@ -438,15 +415,15 @@ pub fn install() {
     );
     sign_revocation.forget();
 
-    let prepare_deletion = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(prepare_account_deletion(input))
+    let verify_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(verify_passkey(input))
     });
     let _ = Reflect::set(
         &identity,
-        &"prepareAccountDeletion".into(),
-        prepare_deletion.as_ref().unchecked_ref(),
+        &"verifyPasskey".into(),
+        verify_passkey.as_ref().unchecked_ref(),
     );
-    prepare_deletion.forget();
+    verify_passkey.forget();
 
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
@@ -544,7 +521,7 @@ mod tests {
             "completeLink",
             "authorizeDevice",
             "signRevocation",
-            "prepareAccountDeletion",
+            "verifyPasskey",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

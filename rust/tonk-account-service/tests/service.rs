@@ -80,7 +80,7 @@ async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) 
     InvocationChain::new(invocation, proofs).to_bytes().unwrap()
 }
 
-async fn account_creation(email: &str) -> Vec<u8> {
+async fn account_registration(email: &str) -> (Vec<u8>, Ed25519Signer, DelegationChain) {
     let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
@@ -100,17 +100,27 @@ async fn account_creation(email: &str) -> Vec<u8> {
     )
     .await
     .unwrap();
-    hex::decode(ceremony.invocation_hex).unwrap()
+    (hex::decode(ceremony.invocation_hex).unwrap(), device, grant)
 }
 
-async fn account_deletion(email: &str) -> Vec<u8> {
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
-    let ceremony = tonk_identity::ceremony::delete_account(root, email.to_string())
-        .await
-        .unwrap();
-    hex::decode(ceremony.invocation_hex).unwrap()
+async fn account_creation(email: &str) -> Vec<u8> {
+    account_registration(email).await.0
+}
+
+/// Deletion finalizes with the device's delegated authority — the
+/// exact `root → device` grant registered at creation — not a
+/// root-signed passkey ceremony.
+async fn account_deletion(device: &Ed25519Signer, link: &DelegationChain, email: &str) -> Vec<u8> {
+    container_with_link(
+        device,
+        link,
+        vec!["account".into(), "delete".into()],
+        BTreeMap::from([(
+            "confirmedEmail".to_string(),
+            Promised::String(email.to_string()),
+        )]),
+    )
+    .await
 }
 
 #[dialog_common::test]
@@ -119,9 +129,10 @@ async fn it_deletes_account_state_and_releases_the_email_over_http() {
     let client = reqwest::Client::new();
     let email = "delete-me@example.com";
 
+    let (creation, device, link) = account_registration(email).await;
     client
         .post(format!("{}/accounts", server.endpoint))
-        .body(account_creation(email).await)
+        .body(creation)
         .send()
         .await
         .unwrap()
@@ -129,7 +140,7 @@ async fn it_deletes_account_state_and_releases_the_email_over_http() {
         .unwrap();
     let deleted = client
         .post(format!("{}/account/delete", server.endpoint))
-        .body(account_deletion(email).await)
+        .body(account_deletion(&device, &link, email).await)
         .send()
         .await
         .unwrap();

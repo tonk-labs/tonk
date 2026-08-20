@@ -70,10 +70,44 @@ pub struct Consumer {
     pub owner: Option<String>,
     /// Registration time as a unix timestamp in seconds.
     pub registered: u64,
+    /// What this consumer is: a user's data space, or a custody
+    /// namespace the account provisions for its own key material.
+    pub kind: ConsumerKind,
     /// Denial-first hosted deletion lifecycle.
     pub deletion_state: ConsumerDeletionState,
     /// Completed deletion time, when any.
     pub deleted_at: Option<u64>,
+}
+
+/// What a consumer namespace holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumerKind {
+    /// A user's data space — reviewable, individually deletable.
+    Space,
+    /// A passkey's custody namespace — account plumbing. Never shown in
+    /// a deletion review; purged by customer finalization, last, so the
+    /// deletion machinery cannot destroy the account's own key custody
+    /// while anything might still need it.
+    Custody,
+}
+
+impl ConsumerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Space => "space",
+            Self::Custody => "custody",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "space" => Ok(Self::Space),
+            "custody" => Ok(Self::Custody),
+            other => Err(StoreError::Internal(format!(
+                "unknown consumer kind: {other}"
+            ))),
+        }
+    }
 }
 
 /// Whether a consumer still accepts storage operations.
@@ -141,7 +175,13 @@ pub trait Store {
     /// Provision `did` as a consumer under `provider`. Idempotent for the
     /// same provider; answers false when a different customer already
     /// provides it, which the caller reports as a conflict.
-    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError>;
+    async fn add_consumer(
+        &self,
+        did: &str,
+        provider: &str,
+        now: u64,
+        kind: ConsumerKind,
+    ) -> Result<bool, StoreError>;
 
     /// Atomically deny future storage operations before object removal.
     async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError>;
@@ -177,12 +217,12 @@ SELECT did, email, status, plan, verified, terms_version
 "#;
 
 pub const SELECT_CONSUMER: &str = r#"
-SELECT did, provider, owner, registered, deletion_state, deleted_at
+SELECT did, provider, owner, registered, kind, deletion_state, deleted_at
   FROM consumer WHERE did = ?1
 "#;
 
 pub const SELECT_CONSUMERS_BY_OWNER: &str = r#"
-SELECT did, provider, owner, registered, deletion_state, deleted_at
+SELECT did, provider, owner, registered, kind, deletion_state, deleted_at
   FROM consumer WHERE owner = ?1 ORDER BY registered, did
 "#;
 
@@ -204,10 +244,11 @@ ON CONFLICT (did) DO NOTHING
 /// customer re-runs the update, while a consumer someone else provides
 /// matches no row and changes nothing.
 pub const ADD_CONSUMER: &str = r#"
-INSERT INTO consumer (did, provider, owner, registered)
-VALUES (?1, ?2, ?2, ?3)
+INSERT INTO consumer (did, provider, owner, registered, kind)
+VALUES (?1, ?2, ?2, ?3, ?4)
 ON CONFLICT (did) DO UPDATE SET
-  provider = excluded.provider
+  provider = excluded.provider,
+  kind = excluded.kind
 WHERE (consumer.provider IS NULL OR consumer.provider = excluded.provider)
   AND consumer.deletion_state = 'active'
 "#;

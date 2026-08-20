@@ -83,12 +83,8 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
     );
 
     let operator = fixture.pre_account_site.operator.inner();
-    assert!(
-        tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fixture.link)
-            .await?,
-        "a hydrated account must retain the grant"
-    );
-    // Content-addressed, so a second retain of the same chain writes nothing.
+    // The fixture already put the root → device link into provable
+    // reach, so retaining it reports already-present.
     assert!(
         !tonk_cli::account_state::retain_space_delegation(
             &fixture.profile,
@@ -96,6 +92,19 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
             &fixture.link
         )
         .await?,
+        "the fixture's link is already retained"
+    );
+    // A chain the account has never seen retains once, and the
+    // content-addressed store dedupes the replay.
+    let (_, fresh) = fixture.space_chain(77).await?;
+    assert!(
+        tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fresh)
+            .await?,
+        "a hydrated account must retain a novel grant"
+    );
+    assert!(
+        !tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fresh)
+            .await?,
         "re-retaining an identical chain must not write again"
     );
     Ok(())

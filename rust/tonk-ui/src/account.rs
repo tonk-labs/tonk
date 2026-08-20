@@ -14,10 +14,9 @@ use tonk_worker_api::{
 };
 
 use crate::identity_bridge::{
-    CeremonyOutput, CompleteLinkInput, CreateAccountInput, EnrollCustodyInput,
-    PrepareAccountDeletionInput, RevocationOutput, SignRevocationInput, UnlockWithPasskeyInput,
-    complete_link, create_account, enroll_custody_passkey, prepare_account_deletion,
-    sign_revocation, unlock_with_passkey,
+    CeremonyOutput, CompleteLinkInput, CreateAccountInput, EnrollCustodyInput, RevocationOutput,
+    SignRevocationInput, UnlockWithPasskeyInput, VerifyPasskeyInput, complete_link, create_account,
+    enroll_custody_passkey, sign_revocation, unlock_with_passkey, verify_passkey,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -1876,16 +1875,35 @@ fn bind(host: &HtmlElement) {
                     .map_err(|error| error.to_string())?;
                     return Ok::<_, String>((Some(deleted.subject), None));
                 }
-                // Account deletion still takes the passkey ceremony for
-                // its two root-signed finalizations; the worker
-                // deprovisions the reviewed spaces itself.
-                let prepared = prepare_account_deletion(PrepareAccountDeletionInput {
-                    expected_root: plan.root_did.clone(),
-                    confirmed_email,
-                    endpoint: proposed_remote()?,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
+                // Account deletion asks the human to verify with the
+                // account's passkey, then the worker signs every
+                // destructive invocation with this device's delegated
+                // authority.
+                let credential_id = match crate::api::root_status()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    tonk_worker_api::RootStatus::Ready {
+                        root_did,
+                        credential_id,
+                        ..
+                    } => {
+                        if root_did != plan.root_did {
+                            return Err(
+                                "this device's passkey belongs to a different account".into()
+                            );
+                        }
+                        credential_id
+                    }
+                    tonk_worker_api::RootStatus::Missing { .. } => {
+                        return Err(
+                            "no account passkey is registered on this device to verify with".into(),
+                        );
+                    }
+                };
+                verify_passkey(VerifyPasskeyInput { credential_id })
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let spaces = destructive
                     .iter()
                     .map(|space| AccountSpaceDeletionRequest {
@@ -1894,8 +1912,7 @@ fn bind(host: &HtmlElement) {
                     .collect();
                 let deleted = crate::api::delete_account(&AccountDeletionRequest {
                     spaces,
-                    customer_invocation_hex: prepared.customer_invocation_hex,
-                    account_invocation_hex: prepared.account_invocation_hex,
+                    confirmed_email,
                 })
                 .await
                 .map_err(|error| error.to_string())?;

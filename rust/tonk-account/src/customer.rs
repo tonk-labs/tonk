@@ -112,6 +112,14 @@ pub struct Add {
     /// container. It must root at the consumer and be issued to the
     /// invoking customer, granting `/consumer/provision` or broader.
     pub consent: Cid,
+    /// What the consumer is: `"space"` (the default) for a user's data
+    /// space, `"custody"` for a passkey's custody namespace — plumbing
+    /// the account provisions for itself. The service keeps the kind so
+    /// deletion can tell a user's spaces from the account's own key
+    /// custody: custody namespaces never appear in a deletion review
+    /// and are purged by customer finalization, last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl Effect for Add {
@@ -293,6 +301,7 @@ mod tests {
         let add: Capability<Add> = subject().attenuate(Provider).invoke(Add {
             consumer: did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
             consent: Cid::default(),
+            kind: None,
         });
         assert_eq!(add.ability(), "/provider/add");
 

@@ -30,13 +30,18 @@ async fn handle_delete_inner(
     ctx: &RouteContext<()>,
 ) -> std::result::Result<Response, ServiceError> {
     let body = read_body(req).await?;
-    let caller = authorize_root(&body, &["account", "delete"])
+    // Device-authorized: the account's chain delegated to this device
+    // IS the deletion authority (possession is policy). The typed
+    // email confirmation and the passkey user-verification gesture are
+    // client-side safeguards; the argument check here is what binds
+    // the reviewed email to the signed request.
+    let store = build_store(ctx)?;
+    let caller = authorize(&store, &body, &["account", "delete"])
         .await
         .map_err(ceremony_error)?;
     let confirmed_email =
         required_string(&caller.arguments, "confirmedEmail").map_err(ceremony_error)?;
-    let store = build_store(ctx)?;
-    let receipt = delete_account(&store, &caller.root_did, &confirmed_email)
+    let receipt = delete_account(&store, &caller.account.root_did, &confirmed_email)
         .await
         .map_err(ceremony_error)?;
     Response::from_json(&receipt).map_err(|error| {

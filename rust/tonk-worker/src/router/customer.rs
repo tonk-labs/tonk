@@ -223,7 +223,7 @@ pub async fn provision_custody(
         .map_err(|error| TonkWorkerError::Router(format!("consent is not hex: {error}")))?;
     let consent = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
         .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))?;
-    provision_consumer(&state, &custody, &consent).await?;
+    provision_consumer(&state, &custody, &consent, Some("custody")).await?;
     Ok(Json(()))
 }
 
@@ -236,6 +236,7 @@ pub(crate) async fn provision_consumer(
     state: &crate::worker::TonkState,
     consumer: &dialog_varsig::Did,
     consent: &dialog_ucan_core::DelegationChain,
+    kind: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
     use tonk_identity::request::build_provider_add_invocation;
 
@@ -243,7 +244,7 @@ pub(crate) async fn provision_consumer(
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
     let device = state.profile.signer().signer().clone();
-    let body = build_provider_add_invocation(device, &link, consumer, consent)
+    let body = build_provider_add_invocation(device, &link, consumer, consent, kind)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))

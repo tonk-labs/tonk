@@ -53,6 +53,7 @@ web-sys = { workspace = true, features = [
     "Navigator",
     "PublicKeyCredential",
     "PublicKeyCredentialCreationOptions",
+    "PublicKeyCredentialDescriptor",
     "PublicKeyCredentialParameters",
     "PublicKeyCredentialRequestOptions",
     "PublicKeyCredentialRpEntity",

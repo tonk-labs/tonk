@@ -14,10 +14,10 @@ use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
     ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
-    Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION, INSERT_CUSTOMER,
-    INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING, SELECT_CONSUMER,
-    SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError, UPDATE_REGISTERED_EMAIL,
-    parse_status,
+    ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
+    INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
+    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError,
+    UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -76,6 +76,7 @@ struct ConsumerRowD1 {
     provider: Option<String>,
     owner: Option<String>,
     registered: f64,
+    kind: String,
     deletion_state: String,
     deleted_at: Option<f64>,
 }
@@ -89,6 +90,7 @@ impl TryFrom<ConsumerRowD1> for Consumer {
             provider: row.provider,
             owner: row.owner,
             registered: row.registered as u64,
+            kind: ConsumerKind::parse(&row.kind)?,
             deletion_state: ConsumerDeletionState::parse(&row.deletion_state)?,
             deleted_at: row.deleted_at.map(|value| value as u64),
         })
@@ -184,7 +186,13 @@ impl Store for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 
-    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError> {
+    async fn add_consumer(
+        &self,
+        did: &str,
+        provider: &str,
+        now: u64,
+        kind: ConsumerKind,
+    ) -> Result<bool, StoreError> {
         let result = self
             .0
             .prepare(ADD_CONSUMER)
@@ -192,6 +200,7 @@ impl Store for D1Store {
                 JsValue::from(did),
                 JsValue::from(provider),
                 JsValue::from_f64(now as f64),
+                JsValue::from(kind.as_str()),
             ])
             .map_err(map_err)?
             .run()

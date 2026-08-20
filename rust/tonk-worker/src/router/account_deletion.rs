@@ -204,9 +204,17 @@ pub async fn delete(
         ));
     }
 
-    // Deprovision every reviewed space with this device's own
-    // authority, then finalize with the root-signed invocations the
-    // ceremony returned.
+    if request.confirmed_email != current.email {
+        return Err(TonkWorkerError::Forbidden(
+            "the confirmed email does not match the account's verified email".into(),
+        ));
+    }
+
+    // Deprovision every reviewed space, then finalize both services.
+    // All of it signs with this device's delegated authority: the
+    // account's chain reaches this device, and possession of that
+    // chain is the deletion policy. The passkey assertion the UI
+    // performed is a user-verification gate, not a signing ceremony.
     for space in &request.spaces {
         let subject: dialog_varsig::Did = space.subject.parse().map_err(|error| {
             TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
@@ -214,13 +222,25 @@ pub async fn delete(
         let state = state.read().await;
         super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
     }
+    let (link, device) = {
+        let state = state.read().await;
+        let link = super::account::account_link(&state).await.ok_or_else(|| {
+            TonkWorkerError::NotFound("this profile is not linked to an account".into())
+        })?;
+        (link, state.profile.signer().signer().clone())
+    };
     let ucan = origin
         .url()
         .join("ucan/")
         .map_err(|error| TonkWorkerError::Internal(format!("access endpoint: {error}")))?;
-    let customer = hex::decode(&request.customer_invocation_hex).map_err(|error| {
-        TonkWorkerError::Router(format!("invalid customer deletion invocation: {error}"))
-    })?;
+    let customer = tonk_identity::request::build_device_invocation(
+        device.clone(),
+        &link,
+        vec!["customer".into(), "delete".into()],
+        BTreeMap::new(),
+    )
+    .await
+    .map_err(|error| TonkWorkerError::Internal(format!("build customer deletion: {error}")))?;
     match super::http::post_cbor(&ucan, &customer).await {
         Ok(_) => {}
         Err(super::http::HttpError::Upstream(failure)) if failure.status == 404 => {
@@ -241,9 +261,17 @@ pub async fn delete(
         account_service.trim_end_matches('/')
     ))
     .map_err(|error| TonkWorkerError::Internal(format!("account deletion endpoint: {error}")))?;
-    let account = hex::decode(&request.account_invocation_hex).map_err(|error| {
-        TonkWorkerError::Router(format!("invalid account deletion invocation: {error}"))
-    })?;
+    let account = tonk_identity::request::build_device_invocation(
+        device,
+        &link,
+        vec!["account".into(), "delete".into()],
+        BTreeMap::from([(
+            "confirmedEmail".to_string(),
+            dialog_ucan_core::promise::Promised::String(request.confirmed_email.clone()),
+        )]),
+    )
+    .await
+    .map_err(|error| TonkWorkerError::Internal(format!("build account deletion: {error}")))?;
     super::http::post_cbor(&account_endpoint, &account).await?;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

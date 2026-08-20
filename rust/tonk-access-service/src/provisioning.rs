@@ -99,7 +99,7 @@ mod tests {
         }
         for (consumer, provider) in consumers {
             store
-                .add_consumer(consumer, provider, 0)
+                .add_consumer(consumer, provider, 0, crate::store::ConsumerKind::Space)
                 .await
                 .expect("consumer");
         }
