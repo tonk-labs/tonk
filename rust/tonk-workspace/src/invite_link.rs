@@ -38,6 +38,10 @@ type SubmitClosure = Rc<RefCell<Option<Closure<dyn FnMut(Event)>>>>;
 /// The form-control `name` read when the element sets no `field`.
 const DEFAULT_FIELD: &str = "url";
 
+/// The query parameter naming an invite's delegation chain. Its presence
+/// is what makes a pasted link self-contained.
+const ACCESS_PARAM: &str = "access";
+
 /// Attribute the element stamps with the outcome of the last submit —
 /// `invalid` when the pasted text isn't an invite URL — so the template
 /// can style an error state without any script of its own.
@@ -126,41 +130,39 @@ async fn local_join_href(pasted: &str) -> Option<String> {
     // The seed rides the fragment and is never sent to any server; carry
     // it across from the pasted link whichever form the link took.
     let fragment = url.hash();
-    let query = match shortcut_hash(&url) {
-        Some(_) => expand_shortcut(&url).await?,
-        None => url.search(),
+    let query = if carries_access(&url) {
+        url.search()
+    } else {
+        resolve_invite(&url).await?
     };
-    // No query means no delegation chain, so there is no invite to
-    // redeem; refusing here keeps the error at the form instead of
-    // bouncing through /join to its failure screen.
-    if query.is_empty() {
-        return None;
-    }
     Some(format!("/join{query}{fragment}"))
 }
 
-/// The hash of a `{origin}/@/{hash}` shortcut link, if the path is one.
-fn shortcut_hash(url: &web_sys::Url) -> Option<String> {
-    let hash = url.pathname().strip_prefix("/@/")?.to_string();
-    (!hash.is_empty() && !hash.contains('/')).then_some(hash)
+/// Whether the link already carries its delegation chain, and so needs
+/// no round-trip to the origin that minted it.
+fn carries_access(url: &web_sys::Url) -> bool {
+    url.search_params().has(ACCESS_PARAM)
 }
 
-/// Expand a short invite on the origin that minted it: `GET /@/{hash}`
-/// answers a permanent redirect whose `Location` is the stored path +
-/// query, relative and verbatim.
+/// Resolve a link that carries no chain by following it on the origin
+/// that minted it. The shortcut service answers a permanent redirect
+/// whose `Location` is the stored path + query, relative and verbatim,
+/// so the URL the fetch lands on carries the invite.
 ///
 /// `redirect: "manual"` would give an opaque response no script can read,
 /// so the redirect is followed normally and the landing URL's query is
 /// what the shortcut stored. The join route answers the app shell for any
 /// path, so following costs one document fetch and reveals the query.
-async fn expand_shortcut(url: &web_sys::Url) -> Option<String> {
+async fn resolve_invite(url: &web_sys::Url) -> Option<String> {
     let response = reqwest::Client::new().get(url.href()).send().await.ok()?;
     if !response.status().is_success() {
         return None;
     }
     let landed = web_sys::Url::new(response.url().as_str()).ok()?;
-    let query = landed.search();
-    (!query.is_empty()).then_some(query)
+    // Only an answer that actually carries a chain is an invite: a
+    // deployment that served its app shell for an unknown link lands
+    // here with nothing, and that is a refusal, not an invite.
+    carries_access(&landed).then(|| landed.search())
 }
 
 /// Navigate through the guest's bridge when sealed (`window.tonk.navigate`),
@@ -214,28 +216,30 @@ mod tests {
             None,
             "a bare origin carries no invite"
         );
-        assert_eq!(
-            local_join_href("https://staging.tonk.xyz/join#onlyfragment").await,
-            None,
-            "a fragment alone carries no delegation chain"
-        );
         assert_eq!(local_join_href("not a url").await, None);
     }
 
-    /// A short link is recognized by its `/@/{hash}` path — the form that
-    /// must be expanded on the minting origin, because the chain and the
-    /// remote live behind that origin's shortcut service and a local one
-    /// has never seen the hash.
+    /// What decides whether a link needs resolving is the chain it
+    /// carries, never the shape of its path: the shortener's URL form is
+    /// the minting deployment's business, and a link that already holds
+    /// `access` is complete no matter what path it sits on.
     #[dialog_common::test]
-    async fn it_recognizes_short_links_by_their_shortcut_path() {
-        let short = web_sys::Url::new("https://staging.tonk.xyz/@/abc123#seed").unwrap();
-        assert_eq!(shortcut_hash(&short).as_deref(), Some("abc123"));
+    async fn it_resolves_links_that_carry_no_delegation_chain() {
+        let complete =
+            web_sys::Url::new("https://staging.tonk.xyz/join?access=abc&remote=x#seed").unwrap();
+        assert!(carries_access(&complete));
 
-        let long = web_sys::Url::new("https://staging.tonk.xyz/join?access=abc#seed").unwrap();
-        assert_eq!(shortcut_hash(&long), None);
+        let shortened = web_sys::Url::new("https://staging.tonk.xyz/@/abc123#seed").unwrap();
+        assert!(!carries_access(&shortened), "a short link must be resolved");
 
-        let nested = web_sys::Url::new("https://staging.tonk.xyz/@/a/b").unwrap();
-        assert_eq!(shortcut_hash(&nested), None, "a hash carries no slash");
+        // Any other link shape a deployment might mint resolves the same
+        // way — nothing here knows what its paths look like.
+        let other = web_sys::Url::new("https://tonk.network/i/xyz?utm=mail#seed").unwrap();
+        assert!(!carries_access(&other));
+
+        // An invite on an unexpected path is still complete.
+        let odd = web_sys::Url::new("https://tonk.network/anything?access=abc").unwrap();
+        assert!(carries_access(&odd));
     }
 
     /// Submitting the form navigates nowhere on an invalid paste and
