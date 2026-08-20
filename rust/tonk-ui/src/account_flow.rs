@@ -656,12 +656,29 @@ mod tests {
         // spot back out of the synced account DB — the real
         // cross-device path, not a service-side artifact store.
         let second_device = link_cli_with(&claimer, &env, false).await?;
-        let spots = run_cli(
+        // The browser pushes the directory facts on its next sync
+        // drain, so a freshly linked device may pull before they land.
+        // `spots` pulls best-effort on every run; poll until the
+        // recording arrives — the assertion is that promotion recorded
+        // the spot, not that it won a push race.
+        let mut spots = run_cli(
             &second_device.profile,
             &["account".to_string(), "spots".to_string()],
         )
         .await?;
         assert!(spots.status.success(), "spots failed: {}", spots.stderr);
+        for _ in 0..30 {
+            if spots.stdout.contains(&key) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            spots = run_cli(
+                &second_device.profile,
+                &["account".to_string(), "spots".to_string()],
+            )
+            .await?;
+            assert!(spots.status.success(), "spots failed: {}", spots.stderr);
+        }
         assert!(
             spots.stdout.contains(&key),
             "promotion completed without recording the claimed spot in the account directory: {}",
