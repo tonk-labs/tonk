@@ -7,20 +7,19 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
-use tonk_account::{AccountStateStatus, handoff::ResolvedLink};
+use tonk_account::AccountStateStatus;
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountSpaceDeletionRequest, AccountStatus,
     RevocationProjection, RevokeDeviceAcknowledgement,
 };
 
 use crate::identity_bridge::{
-    CeremonyOutput, CompleteLinkInput, CreateAccountInput, EnrollCustodyInput, RevocationOutput,
-    SignRevocationInput, UnlockWithPasskeyInput, VerifyPasskeyInput, complete_link, create_account,
-    enroll_custody_passkey, sign_revocation, unlock_with_passkey, verify_passkey,
+    CeremonyOutput, CreateAccountInput, EnrollCustodyInput, RevocationOutput, SignRevocationInput,
+    UnlockWithPasskeyInput, VerifyPasskeyInput, create_account, enroll_custody_passkey,
+    sign_revocation, unlock_with_passkey, verify_passkey,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
-const HANDOFF: &str = "__tonkCliHandoff";
 /// Where a pending callback authorization's `(audience, callback)` is parked.
 const CALLBACK: &str = "__tonkCliCallback";
 const DELETION_PLAN: &str = "__tonkAccountDeletionPlan";
@@ -574,13 +573,6 @@ fn settle_with(
     });
 }
 
-fn show_handoff_success(host: &HtmlElement) {
-    if let Ok(Some(message)) = host.query_selector("#account-success-message") {
-        message.set_text_content(Some("The command-line profile is connected."));
-    }
-    show_success(host);
-}
-
 fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]) {
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
@@ -872,10 +864,8 @@ fn revoke_attachment_from_url() -> Option<String> {
     query_value("attachment")
 }
 
-/// Strip the query once the deep link has been acted on, mirroring what
-/// [`load_handoff`] does with the fragment secret. Without this a
-/// cancelled confirm re-fires on every later dashboard visit
-/// in this tab.
+/// Strip the query once the deep link has been acted on. Without this a
+/// cancelled confirm re-fires on every later dashboard visit in this tab.
 fn consume_revoke_target() {
     let Some(window) = window() else { return };
     if let Ok(path) = window.location().pathname() {
@@ -993,7 +983,16 @@ fn load_status(host: HtmlElement) {
                     }
                 });
             }
-            None => load_handoff(host),
+            // Without callback parameters there is nothing to approve:
+            // `tonk account link` always carries them.
+            None => {
+                set_busy(&host, false, "");
+                set_mode(&host, "handoff");
+                show_error(
+                    &host,
+                    "This approval link is incomplete. Start again from the terminal.",
+                );
+            }
         }
         return;
     }
@@ -1082,12 +1081,8 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
 
 /// The loopback URL a `tonk account link` run is waiting on, if any.
 ///
-/// Its presence is what distinguishes a callback authorization from the
-/// service handoff: the handoff carries a fragment secret and resolves
-/// against the account service, while this carries the waiting process's
-/// audience and callback in the query and never touches a service.
-/// The callback request parked in this page's URL, when this is the
-/// link route carrying one.
+/// The waiting process's audience and callback ride the query, so the
+/// approval never touches the account service.
 fn pending_callback_request() -> Option<(String, String, String)> {
     let on_link_route = window()
         .and_then(|window| window.location().pathname().ok())
@@ -1124,8 +1119,7 @@ fn load_callback_request(host: HtmlElement, audience: String, callback: String, 
     if let Ok(Some(did)) = host.query_selector("#account-handoff-did") {
         did.set_text_content(Some(&audience));
     }
-    // Park the request where the approve handler can find it, the same way
-    // the service handoff parks its resolved link.
+    // Park the request where the approve handler can find it.
     if let Ok(value) = serde_wasm_bindgen::to_value(&(audience, callback, name)) {
         let _ = Reflect::set(host.as_ref(), &CALLBACK.into(), &value);
     }
@@ -1179,63 +1173,6 @@ fn post_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), Strin
     form.unchecked_ref::<web_sys::HtmlFormElement>()
         .submit()
         .map_err(|_| "could not deliver the authorization".to_owned())
-}
-
-fn load_handoff(host: HtmlElement) {
-    let Some(window) = window() else {
-        return show_error(&host, "window is unavailable");
-    };
-    let secret = window
-        .location()
-        .hash()
-        .ok()
-        .and_then(|hash| hash.strip_prefix('#').map(str::to_owned))
-        .filter(|secret| !secret.is_empty());
-    let Some(secret) = secret else {
-        set_mode(&host, "handoff");
-        return show_error(
-            &host,
-            "This link is missing its handoff secret. Start again from the terminal.",
-        );
-    };
-    if let Ok(path) = window.location().pathname() {
-        let _ = window
-            .history()
-            .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
-    }
-
-    set_busy(&host, true, "Checking the command-line request…");
-    spawn_local(async move {
-        let service_url = match service(&host).await {
-            Ok(service_url) => service_url,
-            Err(error) => {
-                set_busy(&host, false, "");
-                set_mode(&host, "handoff");
-                show_error(&host, error);
-                return;
-            }
-        };
-        match crate::api::resolve_account_link(&service_url, &secret).await {
-            Ok(handoff) => {
-                if let Ok(value) = serde_wasm_bindgen::to_value(&handoff) {
-                    let _ = Reflect::set(host.as_ref(), &HANDOFF.into(), &value);
-                }
-                if let Ok(Some(name)) = host.query_selector("#account-handoff-name") {
-                    name.set_text_content(Some(&handoff.device_name));
-                }
-                if let Ok(Some(did)) = host.query_selector("#account-handoff-did") {
-                    did.set_text_content(Some(&handoff.device_did));
-                }
-                set_busy(&host, false, "");
-                set_mode(&host, "handoff");
-            }
-            Err(error) => {
-                set_busy(&host, false, "");
-                set_mode(&host, "handoff");
-                show_error(&host, error.to_string());
-            }
-        }
-    });
 }
 
 async fn persist(
@@ -1798,46 +1735,10 @@ fn bind(host: &HtmlElement) {
             });
             return;
         }
-        let handoff = Reflect::get(host.as_ref(), &HANDOFF.into())
-            .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<ResolvedLink>(value).ok());
-        let Some(handoff) = handoff else {
-            return show_error(
-                &host,
-                "This handoff is no longer available. Start again from the terminal.",
-            );
-        };
-        set_busy(&host, true, "Waiting for your passkey…");
-        spawn_local(async move {
-            let result = async {
-                // Unlocking reads the custody cell, which stays queued
-                // while the customer is unactivated.
-                publish_queued_custody().await;
-                let ceremony = complete_link(CompleteLinkInput {
-                    token_hash: handoff.token_hash,
-                    device_did: handoff.device_did,
-                    device_name: handoff.device_name,
-                    endpoint: proposed_remote()?,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-                set_busy(&host, true, "Linking the command-line profile…");
-                let _ = crate::api::submit_account_ceremony(
-                    &service(&host).await?,
-                    "/links/complete",
-                    &ceremony.invocation_hex,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-                show_handoff_success(&host);
-                Ok::<(), String>(())
-            }
-            .await;
-            if let Err(error) = result {
-                set_busy(&host, false, "");
-                show_error(&host, error);
-            }
-        });
+        show_error(
+            &host,
+            "This approval link is incomplete. Start again from the terminal.",
+        );
     });
 
     // Cancelling a callback authorization tells the waiting process, rather
@@ -1851,9 +1752,9 @@ fn bind(host: &HtmlElement) {
                     serde_wasm_bindgen::from_value::<(String, String, String)>(value).ok()
                 })
         else {
-            // No callback parked: this is the service handoff, whose Cancel
-            // is an ordinary link back to the account page. `on_click`
-            // already suppressed the navigation, so do it explicitly.
+            // No callback parked, so Cancel is an ordinary link back to the
+            // account page. `on_click` already suppressed the navigation, so
+            // do it explicitly.
             if let Some(window) = window() {
                 let _ = window.location().set_href("/account");
             }
@@ -2396,8 +2297,7 @@ mod tests {
         );
     }
 
-    /// A callback request is recognized by its query parameters, which is
-    /// what distinguishes it from the service handoff's fragment secret.
+    /// A callback request is recognized by its query parameters.
     #[dialog_common::test]
     fn it_encodes_an_authorization_for_form_delivery() {
         use base64::Engine as _;

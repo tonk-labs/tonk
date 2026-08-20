@@ -58,16 +58,6 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/devices/detach", handlers::devices::handle_options)
         .post_async("/devices/revoke", handlers::devices::handle_revoke)
         .options_async("/devices/revoke", handlers::devices::handle_options)
-        .post_async("/links", handlers::links::handle_create)
-        .options_async("/links", handlers::links::handle_options)
-        .post_async("/links/resolve", handlers::links::handle_resolve)
-        .options_async("/links/resolve", handlers::links::handle_options)
-        .post_async("/links/complete", handlers::links::handle_complete)
-        .options_async("/links/complete", handlers::links::handle_options)
-        .post_async("/links/activate", handlers::links::handle_activate)
-        .options_async("/links/activate", handlers::links::handle_options)
-        .post_async("/links/consume", handlers::links::handle_consume)
-        .options_async("/links/consume", handlers::links::handle_options)
         .run(req, env)
         .await
 }

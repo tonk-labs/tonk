@@ -577,12 +577,10 @@ pub async fn link_device(
     .await
 }
 
-/// Build the root-signed completion for a CLI browser handoff.
 /// Authorize a CLI device directly, with no account service in the loop.
 ///
-/// The browser mints the same `account → device` powerline `complete_link`
-/// does, but returns it for delivery straight back to the waiting process
-/// instead of wrapping it in a service invocation. The descriptor rides along
+/// The browser mints the `account → device` powerline and returns it for
+/// delivery straight back to the waiting process. The descriptor rides along
 /// so the device learns where the account repository lives — a delegation
 /// says who may act, not where to sync from, and without it the device is
 /// authorized but cannot find the account.
@@ -625,37 +623,6 @@ pub struct AuthorizedDevice {
     /// Exact signed account repository descriptor, so the device knows where
     /// the account repository lives.
     pub descriptor_hex: String,
-}
-
-/// Complete a browser handoff: mint the `root → device` delegation and wrap
-/// it in the invocation the account service consumes.
-pub async fn complete_link(
-    root: Ed25519Signer,
-    token_hash: String,
-    device_did: dialog_varsig::Did,
-    device_name: String,
-) -> Result<AccountCeremony> {
-    let device_did_string = device_did.to_string();
-    let delegation = mint_device_delegation(root.clone(), &device_did).await?;
-    let delegation_hex = hex::encode(
-        delegation
-            .to_bytes()
-            .context("failed to serialize root to device delegation")?,
-    );
-    build(
-        root,
-        vec!["account".into(), "link".into(), "complete".into()],
-        strings([
-            ("tokenHash", token_hash),
-            ("deviceDid", device_did.to_string()),
-            ("deviceName", device_name),
-            ("delegation", delegation_hex.clone()),
-        ]),
-        device_did_string,
-        delegation_hex,
-        None,
-    )
-    .await
 }
 
 #[cfg(test)]
@@ -784,35 +751,5 @@ mod tests {
             Some(&Promised::String(device.to_string()))
         );
         assert!(output.descriptor_hex.is_none());
-    }
-
-    #[dialog_common::test]
-    async fn it_binds_a_cli_handoff_to_its_token_and_device() {
-        let (root, device) = fixture().await;
-        let output = complete_link(root, "hash".into(), device.clone(), "terminal".into())
-            .await
-            .unwrap();
-        let bytes = hex::decode(output.invocation_hex).unwrap();
-        let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
-        chain
-            .verify(&dialog_credentials::DidKeyResolver)
-            .await
-            .unwrap();
-        assert_eq!(
-            chain.command().0,
-            vec![
-                "account".to_string(),
-                "link".to_string(),
-                "complete".to_string()
-            ]
-        );
-        assert_eq!(
-            chain.arguments().get("tokenHash"),
-            Some(&Promised::String("hash".into()))
-        );
-        assert_eq!(
-            chain.arguments().get("deviceDid"),
-            Some(&Promised::String(device.to_string()))
-        );
     }
 }

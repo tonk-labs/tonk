@@ -21,11 +21,10 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 
 use crate::auth::{
-    authorize, authorize_link_activation, authorize_root, optional_passkey_metadata,
-    optional_revocation, required_string, string_argument,
+    authorize, authorize_root, optional_passkey_metadata, optional_revocation, required_string,
+    string_argument,
 };
 use crate::core::accounts::{CreateAccount, create_account, preflight_account};
 use crate::core::codes::{generate_code, request_code};
@@ -34,7 +33,6 @@ use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
     DeviceView, detach_device, list_devices, register_device, revoke_device,
 };
-use crate::core::links::{activate_link, complete_link, consume_link, create_link, resolve_link};
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
@@ -150,11 +148,6 @@ async fn handle_request(
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         (Method::POST, "/devices/detach") => devices_detach_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
-        (Method::POST, "/links") => links_create_route(req, &backends).await,
-        (Method::POST, "/links/resolve") => links_resolve_route(req, &backends).await,
-        (Method::POST, "/links/complete") => links_complete_route(req, &backends).await,
-        (Method::POST, "/links/activate") => links_activate_route(req, &backends).await,
-        (Method::POST, "/links/consume") => links_consume_route(req, &backends).await,
         _ => Err(ServiceError::new(
             ErrorCode::NotFound,
             "no such route".to_string(),
@@ -560,7 +553,7 @@ async fn devices_detach_route(
     backends: &Backends,
 ) -> Result<Response<Full<Bytes>>, ServiceError> {
     let intent: tonk_account::detach::SignedDetachIntent = parse_json(req).await?;
-    let outcome = detach_device(&backends.store, &intent, unix_now())
+    let outcome = detach_device(&backends.store, &intent)
         .await
         .map_err(ceremony_error)?;
     Ok(json_response(
@@ -613,104 +606,6 @@ async fn devices_revoke_route(
             "stored": outcome.stored,
         }),
     ))
-}
-
-async fn links_create_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body: LinkCreateRequest = parse_json(req).await?;
-    create_link(
-        &backends.store,
-        &body.token_hash,
-        &body.device_did,
-        &body.device_name,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::CREATED, &serde_json::json!({})))
-}
-
-async fn links_resolve_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body: LinkSecretRequest = parse_json(req).await?;
-    let link = resolve_link(&backends.store, &body.secret, unix_now())
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::OK, &link))
-}
-
-async fn links_complete_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize_root(&body, &["account", "link", "complete"])
-        .await
-        .map_err(ceremony_error)?;
-    complete_link(
-        &backends.store,
-        &caller.root_did,
-        &required_string(&caller.arguments, "tokenHash").map_err(ceremony_error)?,
-        &required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
-        &required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?,
-        &required_string(&caller.arguments, "delegation").map_err(ceremony_error)?,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
-}
-
-async fn links_activate_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize_link_activation(&body)
-        .await
-        .map_err(ceremony_error)?;
-    let token_hash = required_string(&caller.arguments, "tokenHash").map_err(ceremony_error)?;
-    let attachment_id =
-        required_string(&caller.arguments, "attachmentId").map_err(ceremony_error)?;
-    let device = activate_link(
-        &backends.store,
-        &token_hash,
-        &attachment_id,
-        &caller.root_did,
-        &caller.device_did,
-        &caller.delegation_cid,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({
-            "attachmentId": device.attachment_id,
-            "activated": true,
-        }),
-    ))
-}
-
-async fn links_consume_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body: LinkSecretRequest = parse_json(req).await?;
-    match consume_link(&backends.store, &body.secret, unix_now())
-        .await
-        .map_err(ceremony_error)?
-    {
-        Some(consumed) => Ok(json_response(StatusCode::OK, &consumed)),
-        None => Ok(json_response(
-            StatusCode::ACCEPTED,
-            &serde_json::json!({ "pending": true }),
-        )),
-    }
 }
 
 /// Current time as unix seconds.

@@ -37,18 +37,6 @@ pub struct RootCaller {
     pub arguments: BTreeMap<String, Promised>,
 }
 
-/// Cryptographically verified activation caller before an active row exists.
-pub struct ActivationCaller {
-    /// Account root subject of the returned grant.
-    pub root_did: String,
-    /// Persistent device DID signing activation.
-    pub device_did: String,
-    /// CID of the invocation's sole root-to-device proof.
-    pub delegation_cid: String,
-    /// Signed activation arguments.
-    pub arguments: BTreeMap<String, Promised>,
-}
-
 async fn verified_chain(
     body: &[u8],
     expected_command: &[&str],
@@ -170,25 +158,6 @@ pub async fn authorize_root(
 
     Ok(RootCaller {
         root_did: chain.subject().to_string(),
-        arguments: chain.arguments().clone(),
-    })
-}
-
-/// Verify a completed-link activation without consulting normal active-device
-/// authorization, which cannot exist until this call succeeds.
-pub async fn authorize_link_activation(body: &[u8]) -> Result<ActivationCaller, CeremonyError> {
-    let chain = verified_chain(body, &["account", "link", "activate"]).await?;
-    require_ceremony_expiration(&chain)?;
-    let proofs = chain.proofs();
-    if proofs.len() != 1 {
-        return Err(CeremonyError::Unauthorized(
-            "link activation must carry exactly one account grant".to_string(),
-        ));
-    }
-    Ok(ActivationCaller {
-        root_did: chain.subject().to_string(),
-        device_did: chain.issuer().to_string(),
-        delegation_cid: proofs[0].to_string(),
         arguments: chain.arguments().clone(),
     })
 }

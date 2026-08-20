@@ -1,6 +1,5 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
-use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDevice,
     AccountLinkRequest, AccountStatus, AccountSummary, ActivateProfileRequest, EvaluateResponse,
@@ -1024,30 +1023,6 @@ pub async fn submit_account_ceremony(
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         Err(account_service_error(path, status, &text))
-    }
-}
-
-/// Resolve a pending CLI handoff using its raw fragment secret.
-pub async fn resolve_account_link(
-    service: &str,
-    secret: &str,
-) -> Result<ResolvedLink, TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!("{}/links/resolve", service.trim_end_matches('/')))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /links/resolve returned {status}: {text}"
-        )))
     }
 }
 

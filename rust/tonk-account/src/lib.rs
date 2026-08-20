@@ -11,8 +11,6 @@ pub mod delegations;
 mod descriptor;
 /// Canonical device-signed account attachment detach intents.
 pub mod detach;
-/// Shared wire and browser-ceremony contracts for native account handoffs.
-pub mod handoff;
 /// Work deferred until the account confirms its email.
 pub mod pending;
 /// Provider-neutral account spot backup artifacts.

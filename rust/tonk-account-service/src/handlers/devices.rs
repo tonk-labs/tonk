@@ -184,7 +184,7 @@ pub async fn handle_detach(mut req: Request, ctx: RouteContext<()>) -> Result<Re
                 )
             })?;
         let store = build_store(&ctx)?;
-        let outcome = detach_device(&store, &intent, Date::now().as_millis() / 1000)
+        let outcome = detach_device(&store, &intent)
             .await
             .map_err(ceremony_error)?;
         Response::from_json(&serde_json::json!({ "outcome": outcome }))
