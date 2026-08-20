@@ -521,10 +521,15 @@ mod tests {
                 .await?
                 .click()
                 .await?;
+            // Let the creation ceremony finish before navigating
+            // anywhere: it lands back on the approval it interrupted,
+            // and leaving mid-flight loses whatever it had not yet
+            // persisted.
+            element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
             // Approving unlocks the account, which reads the custody
             // cell — and that cell cannot be published until the
-            // customer confirms its email. Do it here, then return to
-            // the approval the signup interrupted.
+            // customer confirms its email. Do it now, then come back to
+            // the approval.
             activate(driver, env, EMAIL).await?;
             driver.goto(approval_url.as_str()).await?;
         }
