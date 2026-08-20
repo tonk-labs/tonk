@@ -81,6 +81,12 @@ A **publish** is signed by the custody key, which is PRF-derived inside a passke
 
 Because each publish costs a passkey prompt, the panel reads the queue first and raises an assertion only when something is actually waiting.
 
+### Drain before unlocking
+
+A queued publish is not only the dashboard's business. Every root-signed ceremony — CLI approval, link completion, revocation, unlocking on this browser — resolves the custody cell to recover the account secret, so any of them run against a still-queued cell fails with "no account custody is published for this passkey".
+
+That is not hypothetical: it broke three CLI-handoff browser tests as soon as the publish was deferred, for a browser that activated without returning to the dashboard. Each of those call sites drains the queue immediately before unlocking. Anything added later that unlocks the root must do the same.
+
 Account creation becomes:
 
 ```
@@ -141,12 +147,13 @@ The way out of a stuck `Registered` is always available: `/customer/enroll` is i
 - Service: the custody protocol test now activates before provisioning, so it exercises the gate end to end rather than around it.
 - Queue: `tonk_account::pending` unit tests cover recorded order, duplicate suppression, partial clearing after a drain that stopped early, and round-tripping.
 - Fixtures: `AccessServiceAddress::activate_customer` for suites holding a root signer, `provision_subject` for subjects that are repository DIDs no test holds a signer for.
-- Browser: `sign_up` follows the emailed activation link, so every caller gets an account that can host a space; `it_signs_up_through_the_account_panels` asserts the registration row reads `Active` and the pending banner is gone.
+- Browser: `sign_up` follows the emailed activation link, so every caller gets an account that can host a space; `enroll_only` stops at `Registered` for tests that want the waiting window. `it_signs_up_through_the_account_panels` asserts the registration row reads `Active` and the pending banner is gone.
+- Browser: `it_hosts_a_space_created_before_activation_once_the_email_is_confirmed` is the queue end to end — space creation succeeds locally while `Registered`, its push is refused, and after the email is confirmed the same push succeeds with nothing further asked of the user.
 
 ## 9. Still to do
 
-- A browser test that pushes a space *before* clicking the link, then activates and asserts the space becomes hosted — end-to-end proof of the queue, which today is covered only at the unit and service layers.
-- The resend control on the activation notice (§6): `enroll_customer` already resends, and the notice already names the address, but there is no button wired to it yet.
+- Nothing blocking. The queue is proven end to end by `it_hosts_a_space_created_before_activation_once_the_email_is_confirmed`, and the resend control is wired.
+- Worth revisiting: the custody publish drains only where a page can raise an assertion. If a headless client ever needs to publish one, that constraint has to be solved rather than worked around — the key is PRF-derived and a signed invocation lives five minutes.
 
 ## 7. Consequences for existing deployments
 
