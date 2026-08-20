@@ -3595,6 +3595,13 @@ pub async fn get_repository(
 
     let tonk = state.read().await;
 
+    // First use of a directory-listed space this device has not
+    // replicated mounts it on demand — same lazy adoption the query
+    // route performs, so a second device can address a spot straight
+    // from the synced account directory. A no-op for mounted repos.
+    if let Err(error) = super::adopt::ensure_space_mounted(&tonk, &name).await {
+        log!("on-demand mount of '{}' failed: {error}", name);
+    }
     let repository = tonk
         .profile
         .repository(&name)
