@@ -361,6 +361,17 @@ mod tests {
         path
     }
 
+    fn tonk_command_in(env: &TestEnvironment, profile: &TempDir) -> Command {
+        let mut command = tonk_command(profile);
+        // Trust this harness's Caddy root specifically. A process-wide
+        // SSL_CERT_FILE would be whichever concurrent harness wrote it
+        // last, leaving this child unable to reach its own origin.
+        if let Some(ca) = &env.ca_certificate {
+            command.env("SSL_CERT_FILE", ca);
+        }
+        command
+    }
+
     fn tonk_command(profile: &TempDir) -> Command {
         let mut command = Command::new(tonk_bin());
         command
@@ -385,8 +396,12 @@ mod tests {
         stderr: String,
     }
 
-    async fn run_cli(profile: &TempDir, args: &[String]) -> Result<CliOutput> {
-        let output = tonk_command(profile).args(args).output().await?;
+    async fn run_cli(
+        env: &TestEnvironment,
+        profile: &TempDir,
+        args: &[String],
+    ) -> Result<CliOutput> {
+        let output = tonk_command_in(env, profile).args(args).output().await?;
         Ok(CliOutput {
             status: output.status,
             stdout: String::from_utf8(output.stdout)?,
@@ -441,7 +456,7 @@ mod tests {
         register_first: bool,
     ) -> Result<LinkedCli> {
         let profile = tempfile::tempdir()?;
-        let mut command = tonk_command(&profile);
+        let mut command = tonk_command_in(env, &profile);
         command
             .args([
                 "account",
@@ -564,6 +579,7 @@ mod tests {
 
     async fn devices(profile: &TempDir, env: &TestEnvironment) -> Result<CliOutput> {
         run_cli(
+            env,
             profile,
             &[
                 "account".to_string(),
@@ -802,6 +818,7 @@ mod tests {
         let mut last_seen = String::from("<spots never completed a run>");
         let recorded = loop {
             let run = run_cli(
+                &env,
                 &second_device.profile,
                 &["account".to_string(), "spots".to_string()],
             )
@@ -812,8 +829,19 @@ mod tests {
                 }
                 last_seen = run.stdout;
             } else if run.stderr.contains("first sync has not succeeded yet") {
-                // Not a failure: hydration is retried on the next
-                // invocation, and this device linked moments ago.
+                // Hydration maps every underlying error to Unhydrated,
+                // so this one message covers both a first sync that has
+                // genuinely not landed yet and one that cannot land at
+                // all. Only the former is worth waiting on: a transport
+                // failure means the harness origin is unreachable from
+                // this CLI child, which no amount of retrying fixes.
+                if run.stderr.contains("Transport error") {
+                    return Err(anyhow!(
+                        "the linked CLI cannot reach the harness origin, so the account \
+                         can never sync: {}",
+                        run.stderr.trim()
+                    ));
+                }
                 last_seen = format!("not hydrated yet: {}", run.stderr.trim());
             } else {
                 // Any other non-zero exit is a real error; failing here
@@ -1082,6 +1110,7 @@ mod tests {
         let linked = link_cli(&driver, &env).await?;
 
         let status = run_cli(
+            &env,
             &linked.profile,
             &["account".to_string(), "status".to_string()],
         )
@@ -1126,6 +1155,7 @@ mod tests {
         let linked = link_cli_with(&driver, &env, true).await?;
 
         let status = run_cli(
+            &env,
             &linked.profile,
             &["account".to_string(), "status".to_string()],
         )
