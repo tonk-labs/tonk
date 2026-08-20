@@ -30,7 +30,7 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # tonk.network apex so staging mints its own passkey credentials rather than
 # production ones (see the RP ID invariants in the crate README).
 [env.staging]
-routes = [{ pattern = "accounts-staging.tonk.xyz", custom_domain = true }]
+routes = [{ pattern = "accounts-staging.tonk.network", custom_domain = true }]
 
 # Ships empty on purpose, as production's did: wrangler refuses to deploy
 # without it, so there is no way to silently deploy staging against the

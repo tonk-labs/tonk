@@ -36,7 +36,7 @@ before a profile exists report as `tonk:anonymous`.
 
 Every web event additionally carries an `environment` super property
 derived from the hostname: `production` (tonk.network), `staging`
-(staging.tonk.xyz), or `dev` (anything else). The marketing site's
+(staging.tonk.network), or `dev` (anything else). The marketing site's
 own snippet registers `environment = "website"` in its repo, so all
 surfaces share one filterable dimension within the PostHog project.
 

@@ -40,7 +40,7 @@ own disjoint credentials, so none of them can derive an apex root key.
 Two things follow. Production account ceremonies run only on `tonk.network`;
 `tonk-ui` refuses ceremonies on every other production-facing host rather than
 writing a second, disjoint identity for the same person into this registry.
-And staging runs off-apex on `staging.tonk.xyz` against its own registry,
+And staging runs off-apex on `staging.tonk.network` against its own registry,
 minting staging-only credentials.
 
 Widening the RP ID later is possible via Related Origin Requests. Narrowing it
@@ -179,7 +179,7 @@ First deploy, in order:
 
 ### Staging
 
-Staging is a wrangler environment in the same config, on `accounts-staging.tonk.xyz`
+Staging is a wrangler environment in the same config, on `accounts-staging.tonk.network`
 with its own database and bucket. Deploy it the same way, in order:
 
 1. `wrangler d1 create tonk-accounts-staging` and paste the returned id into
@@ -191,24 +191,26 @@ with its own database and bucket. Deploy it the same way, in order:
    Secrets are per-environment, so this has to be set explicitly — with the
    same value as production's key, since staging sends from the same verified
    domain.
-6. Add the WAF rate limiting rule for `accounts-staging.tonk.xyz`, matching
-   the production rule above. Staging shares the production Resend key, so it
-   shares the email fan-out vector.
+6. Add the WAF rate limiting rule for `accounts-staging.tonk.network`, matching
+   the production rule above. Note the zone differs: staging is on the
+   `tonk.network` zone, so the rule has to be created there rather than
+   alongside production's on `tonk.xyz`. Staging shares the production Resend
+   key, so it shares the email fan-out vector.
 7. `wrangler deploy -c wrangler.account.toml --env staging`.
 
 There is no DNS step: the route is a Custom Domain (`custom_domain = true`),
 so wrangler provisions the record and certificate itself on deploy. Creating
-`accounts-staging.tonk.xyz` by hand beforehand conflicts with that and blocks
+`accounts-staging.tonk.network` by hand beforehand conflicts with that and blocks
 the deploy.
 
 Exercise the flow against staging by creating an account on
-`https://staging.tonk.xyz/account`—the page reads the staging provider from
+`https://staging.tonk.network/account`—the page reads the staging provider from
 `GET /.well-known/tonk`—then linking the CLI:
 
 ```
 tonk account link \
-  --service-url https://accounts-staging.tonk.xyz \
-  --account-url https://staging.tonk.xyz/account/link
+  --service-url https://accounts-staging.tonk.network \
+  --account-url https://staging.tonk.network/account/link
 ```
 
 ### Preview

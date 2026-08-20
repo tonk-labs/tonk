@@ -78,7 +78,7 @@ The S3 address uses region `auto`, as R2 requires.
 
 As a Cloudflare Worker, build and deploy with `worker-build` / `wrangler` like any `worker`-based crate (the `cdylib` target).
 
-`wrangler.toml` at the repo root carries three environments. The top level is production on `tonk.network`, `[env.staging]` is `staging.tonk.xyz`, and `[env.preview]` is on no route: the deploy workflow uploads one version of it per pull request under a `pr-<number>` preview alias, reached at a workers.dev URL. Each has its own R2 buckets, because this Worker presigns writes into whichever bucket it is bound to and a preview must not be able to write into a real one.
+`wrangler.toml` at the repo root carries three environments. The top level is production on `tonk.network`, `[env.staging]` is `staging.tonk.network`, and `[env.preview]` is on no route: the deploy workflow uploads one version of it per pull request under a `pr-<number>` preview alias, reached at a workers.dev URL. Each has its own R2 buckets, because this Worker presigns writes into whichever bucket it is bound to and a preview must not be able to write into a real one.
 
 `ACCOUNT_SERVICE_URL` and `REVOCATION_RELAY_URL` are checked in for production and staging but overridden per pull request for preview, since the account worker's own alias URL is not known until its upload returns. The checked-in preview values point at an unresolvable host on purpose: a preview that failed to wire itself has to break rather than serve a real registry through `/.well-known/tonk` to browsers that trust it. Bootstrapping the preview environment is described in `tonk-account-service`'s README.
 

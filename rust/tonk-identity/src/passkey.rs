@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(apex_rp_id("www.tonk.network"), None);
         assert_eq!(apex_rp_id("hub.tonk.network"), None);
         assert_eq!(apex_rp_id("a.b.tonk.network"), None);
-        assert_eq!(apex_rp_id("staging.tonk.xyz"), None);
+        assert_eq!(apex_rp_id("staging.tonk.network"), None);
         assert_eq!(apex_rp_id("localhost"), None);
         // A suffix match must not treat a sibling registrable domain as ours.
         assert_eq!(apex_rp_id("evil-tonk.network"), None);

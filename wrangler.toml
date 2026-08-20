@@ -66,7 +66,7 @@ REVOCATION_RELAY_URL = "https://accounts.tonk.xyz/revocations"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 [env.staging]
-routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
+routes = [{ pattern = "staging.tonk.network", custom_domain = true }]
 
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
@@ -93,8 +93,8 @@ migrations_dir = "rust/tonk-access-service/migrations-ingest"
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-staging"
-ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
-REVOCATION_RELAY_URL = "https://accounts-staging.tonk.xyz/revocations"
+ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.network"
+REVOCATION_RELAY_URL = "https://accounts-staging.tonk.network/revocations"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Preview. Every pull request uploads a version of this environment under a
