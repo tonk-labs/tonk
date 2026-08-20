@@ -103,6 +103,51 @@ async fn account_creation(email: &str) -> Vec<u8> {
     hex::decode(ceremony.invocation_hex).unwrap()
 }
 
+async fn account_deletion(email: &str) -> Vec<u8> {
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
+        .await
+        .unwrap();
+    let ceremony = tonk_identity::ceremony::delete_account(root, email.to_string())
+        .await
+        .unwrap();
+    hex::decode(ceremony.invocation_hex).unwrap()
+}
+
+#[dialog_common::test]
+async fn it_deletes_account_state_and_releases_the_email_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let email = "delete-me@example.com";
+
+    client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(account_creation(email).await)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let deleted = client
+        .post(format!("{}/account/delete", server.endpoint))
+        .body(account_deletion(email).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 200);
+    let receipt: serde_json::Value = deleted.json().await.unwrap();
+    assert_eq!(receipt["email"], email);
+
+    let recreated = client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(account_creation(email).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recreated.status(), 201);
+
+    server.stop().await;
+}
+
 #[dialog_common::test]
 async fn it_exposes_captured_codes_over_http() {
     let server = AccountServer::start().await;

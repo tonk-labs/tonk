@@ -281,6 +281,10 @@ pub trait Store {
     /// [`crate::core::accounts::create_account`].
     async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError>;
 
+    /// Atomically remove dependent links and devices, any pending code for
+    /// the verified email, and finally the account row itself.
+    async fn delete_account(&self, account_id: i64, email: &str) -> Result<bool, StoreError>;
+
     /// Atomically create a new account, register its first device, and consume
     /// the email's verified code.
     ///
@@ -417,6 +421,13 @@ pub const SELECT_REPOSITORY_DESCRIPTOR: &str =
 /// SQL: look up an account by email address.
 pub const SELECT_ACCOUNT_BY_EMAIL: &str = "SELECT id, email, root_did, credential_id, \
     repository_descriptor, passkey_created_at, passkey_created_on, created_at FROM accounts WHERE email = ?1";
+
+/// SQL: delete pending links selected by this account before its row.
+pub const DELETE_ACCOUNT_LINKS: &str = "DELETE FROM link_requests WHERE account_id = ?1";
+/// SQL: delete every device generation before its account row.
+pub const DELETE_ACCOUNT_DEVICES: &str = "DELETE FROM devices WHERE account_id = ?1";
+/// SQL: delete the account row after all foreign-key dependents.
+pub const DELETE_ACCOUNT: &str = "DELETE FROM accounts WHERE id = ?1 AND email = ?2";
 
 /// SQL: register a device under an account.
 pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \

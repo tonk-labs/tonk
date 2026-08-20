@@ -117,6 +117,29 @@
       </div>
       <button id="account-unlink" class="account__button account__button--secondary account__button--compact" type="button">Sign out</button>
     </section>
+
+    <section id="delete-account" class="account__section account__danger" aria-labelledby="account-delete-title">
+      <div class="account__section-heading">
+        <h2 id="account-delete-title">Delete account permanently</h2>
+        <p id="account-delete-description">This is not sign out. Tonk will permanently delete the hosted content for every space this account created, account backups, device registrations, and the account record. Your email will be released so you can create a new account later.</p>
+        <p id="account-delete-boundary">Spaces created by other people will not be deleted. Tonk cannot erase copies that other devices have already replicated.</p>
+      </div>
+      <button id="account-delete-review" class="account__button account__button--danger" type="button">Review permanent deletion</button>
+      <div id="account-delete-review-panel" class="account__delete-review" hidden>
+        <p id="account-delete-scope"></p>
+        <ul id="account-delete-spaces" class="account__delete-spaces"></ul>
+        <p id="account-delete-blocked" class="account__error" hidden></p>
+        <label class="account__delete-confirm">
+          Type your account email to confirm
+          <input id="account-delete-email" name="Account email" type="email" autocomplete="off">
+        </label>
+        <label class="account__delete-check">
+          <input id="account-delete-understood" type="checkbox">
+          <span id="account-delete-understood-label">I understand that owned spaces and account data will be permanently deleted from Tonk services and cannot be recovered by Tonk.</span>
+        </label>
+        <button id="account-delete-submit" class="account__button account__button--danger" type="button">Delete owned spaces and account</button>
+      </div>
+    </section>
   </div>
 
   <p id="account-working" class="account__hint" role="status" aria-live="polite">Checking this browser…</p>

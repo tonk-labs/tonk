@@ -87,7 +87,7 @@ mod tests {
         let store = SqliteStore::in_memory().expect("in-memory store");
         for (did, status) in customers {
             store
-                .enroll_customer(did, &format!("{did}@example.com"), b"", "trial", 0)
+                .enroll_customer(did, &format!("{did}@example.com"), b"", "trial@2026-08", 0)
                 .await
                 .expect("customer");
             if *status == CustomerStatus::Active {
@@ -99,7 +99,7 @@ mod tests {
         }
         for (consumer, provider) in consumers {
             store
-                .add_consumer(consumer, provider, 0)
+                .add_consumer(consumer, provider, 0, None, None)
                 .await
                 .expect("consumer");
         }

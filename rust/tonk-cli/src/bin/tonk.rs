@@ -536,6 +536,26 @@ enum AccountCommand {
     /// device. Use `tonk account revoke <DID>` to revoke a device instead.
     Logout,
 
+    /// Review and permanently delete this account in the browser
+    ///
+    /// This does not delete immediately. The browser shows the exact owned
+    /// spaces, requires the verified email, a consequences checkbox, a final
+    /// confirmation, and the account passkey. Joined spaces are left intact;
+    /// copies already replicated to other devices cannot be erased by Tonk.
+    Delete {
+        /// Browser account page that runs the deletion ceremony.
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_ACCOUNT_PAGE,
+            hide = true
+        )]
+        account_url: String,
+        /// Print the review URL without asking the OS to open it.
+        #[arg(long)]
+        no_open: bool,
+    },
+
     /// List or pull the spots your account directory lists
     Spots {
         #[command(subcommand)]
@@ -600,6 +620,27 @@ enum AccountSpotsCommand {
         /// Explicit local spot slug.
         #[arg(long, value_name = "SLUG")]
         name: Option<String>,
+    },
+    /// Review and permanently delete one owned hosted space
+    ///
+    /// This opens the browser for an exact-scope review, typed-email
+    /// confirmation, final warning, and account-passkey authorization. The
+    /// account and every other space remain.
+    Delete {
+        /// Full repository subject DID.
+        #[arg(value_name = "SUBJECT")]
+        subject: String,
+        /// Browser account page that runs the deletion ceremony.
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_ACCOUNT_PAGE,
+            hide = true
+        )]
+        account_url: String,
+        /// Print the review URL without asking the OS to open it.
+        #[arg(long)]
+        no_open: bool,
     },
 }
 
@@ -911,9 +952,11 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 AccountCommand::Status => "status",
                 AccountCommand::Link { .. } => "link",
                 AccountCommand::Logout => "logout",
+                AccountCommand::Delete { .. } => "delete",
                 AccountCommand::Spots { command } => match command {
                     None | Some(AccountSpotsCommand::List) => "spots-list",
                     Some(AccountSpotsCommand::Pull { .. }) => "spots-pull",
+                    Some(AccountSpotsCommand::Delete { .. }) => "spots-delete",
                 },
                 AccountCommand::Migrate => "migrate",
                 AccountCommand::Devices { .. } => "devices",
@@ -1153,8 +1196,8 @@ async fn identity(reset: bool) -> ExitCode {
         Ok(profile) => {
             println!("device: {}", profile.did());
             match identity::local_root(&profile).await {
-                Ok(Some(root)) => println!("root: {}", root.root_did),
-                Ok(None) => println!("root: missing (run `tonk account link`)"),
+                Ok(Some(root)) => println!("account: {}", root.root_did),
+                Ok(None) => println!("account: missing (run `tonk account link`)"),
                 Err(error) => return print_failure(error),
             }
             ExitCode::Success
@@ -1265,19 +1308,23 @@ fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str
 fn render_account_status(status: account::AccountStatus) -> String {
     match status {
         account::AccountStatus::MissingRoot { device_did } => {
-            format!("signed in: no\nroot: missing\nprovider: none\ndevice: {device_did}")
+            format!("signed in: no\naccount: missing\naccount service: none\ndevice: {device_did}")
         }
         account::AccountStatus::Unregistered {
             root_did,
             device_did,
-        } => format!("signed in: no\nroot: {root_did}\nprovider: none\ndevice: {device_did}"),
+        } => {
+            format!(
+                "signed in: no\naccount: {root_did}\naccount service: none\ndevice: {device_did}"
+            )
+        }
         account::AccountStatus::Registered {
             root_did,
             device_did,
             provider,
             account_state,
         } => format!(
-            "signed in: yes\nroot: {root_did}\nprovider: {provider}\ndevice: {device_did}\naccount state: {}",
+            "signed in: yes\naccount: {root_did}\naccount service: {provider}\ndevice: {device_did}\nstatus: {}",
             account_state_label(account_state)
         ),
     }
@@ -1292,11 +1339,11 @@ async fn print_customer_line(profile: &dialog_operator::Profile) {
     use tonk_account::customer::CustomerStatus;
     match tonk_cli::customer::registration_state(profile).await {
         Ok(Some(Some(receipt))) => match receipt.status {
-            CustomerStatus::Active => println!("sync service: registered"),
+            CustomerStatus::Active => println!("access service: registered"),
             CustomerStatus::Registered => {
-                println!("sync service: waiting for email confirmation (check your inbox)")
+                println!("access service: waiting for email confirmation (check your inbox)")
             }
-            CustomerStatus::Suspended => println!("sync service: suspended"),
+            CustomerStatus::Suspended => println!("access service: suspended"),
         },
         Ok(Some(None)) => {
             let page = tonk_cli::customer::access_origin(profile)
@@ -1305,10 +1352,10 @@ async fn print_customer_line(profile: &dialog_operator::Profile) {
                 .flatten()
                 .map(|origin| format!("{origin}account"))
                 .unwrap_or_else(|| "the account page".to_string());
-            println!("sync service: not registered (open {page} in your browser to finish setup)")
+            println!("access service: not registered (open {page} in your browser to finish setup)")
         }
         Ok(None) => {}
-        Err(_) => println!("sync service: unreachable"),
+        Err(_) => println!("access service: unreachable"),
     }
 }
 
@@ -1404,7 +1451,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         {
             Ok(outcome) => {
                 println!(
-                    "linked\nroot: {}\ndevice: {}\naccount state: {}",
+                    "linked\naccount: {}\ndevice: {}\nstatus: {}",
                     outcome.root_did,
                     outcome.device_did,
                     account_state_label(outcome.account_state)
@@ -1421,6 +1468,19 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         AccountCommand::Logout => match account::logout(&profile).await {
             Ok(()) => {
                 println!("logged out\ndevice: {}", profile.did());
+                ExitCode::Success
+            }
+            Err(error) => print_failure(error),
+        },
+        AccountCommand::Delete {
+            account_url,
+            no_open,
+        } => match account::open_deletion(&profile, &account_url, !no_open).await {
+            Ok(url) => {
+                println!("Review permanent account deletion in your browser:\n{url}");
+                println!(
+                    "No data has been deleted yet. The browser will list owned spaces, leave joined spaces intact, and require your email plus passkey."
+                );
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
@@ -1473,6 +1533,22 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                         Err(error) => print_failure(error),
                     }
                 }
+                AccountSpotsCommand::Delete {
+                    subject,
+                    account_url,
+                    no_open,
+                } => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
+                    .await
+                {
+                    Ok(url) => {
+                        println!("Review permanent deletion of {subject} in your browser:\n{url}");
+                        println!(
+                            "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
+                        );
+                        ExitCode::Success
+                    }
+                    Err(error) => print_failure(error),
+                },
             }
         }
         AccountCommand::Devices { service_url } => {
@@ -2043,19 +2119,29 @@ async fn legacy_migrate(
             Ok(blobs) => blobs,
             Err(error) => return print_failure(error),
         };
-        if let Err(error) =
-            tonk_cli::legacy::import_migrated_branch(&destination, branch, &upgraded.csv).await
+        let repaired = match tonk_cli::legacy::import_upgraded_branch(
+            &destination,
+            branch,
+            &upgraded.csv,
+            &upgraded.legacy_csv,
+        )
+        .await
         {
-            return print_failure(error);
-        }
+            Ok(repaired) => repaired,
+            Err(error) => return print_failure(error),
+        };
         println!(
             "{branch}: {} rows ({} remapped, {} dropped as dialog's own), \
-             {} blobs ({} bytes)",
+             {} blobs ({} bytes), {} commands and {} rules restored \
+             ({} unmarked legacy effect entities ignored)",
             upgraded.migration.kept,
             upgraded.migration.remapped,
             upgraded.migration.dropped,
             blobs.copied,
-            blobs.bytes
+            blobs.bytes,
+            repaired.transient_concepts,
+            repaired.native_rules,
+            repaired.ignored_effects
         );
     }
     println!("upgraded {} branch(es)", branches.len());
@@ -3164,14 +3250,14 @@ mod account_spots_parser_tests {
             render_account_status(account::AccountStatus::MissingRoot {
                 device_did: "did:device".to_string(),
             }),
-            "signed in: no\nroot: missing\nprovider: none\ndevice: did:device"
+            "signed in: no\naccount: missing\naccount service: none\ndevice: did:device"
         );
         assert_eq!(
             render_account_status(account::AccountStatus::Unregistered {
                 root_did: "did:root".to_string(),
                 device_did: "did:device".to_string(),
             }),
-            "signed in: no\nroot: did:root\nprovider: none\ndevice: did:device"
+            "signed in: no\naccount: did:root\naccount service: none\ndevice: did:device"
         );
         assert_eq!(
             render_account_status(account::AccountStatus::Registered {
@@ -3180,7 +3266,7 @@ mod account_spots_parser_tests {
                 provider: "https://accounts.example".to_string(),
                 account_state: tonk_account::AccountStateStatus::Ready,
             }),
-            "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: synced"
+            "signed in: yes\naccount: did:root\naccount service: https://accounts.example\ndevice: did:device\nstatus: synced"
         );
     }
 
@@ -3207,6 +3293,18 @@ mod account_spots_parser_tests {
             panic!("expected account link");
         };
         assert_eq!(name.as_deref(), Some("workstation"));
+    }
+
+    #[test]
+    fn account_delete_is_a_browser_review_not_an_immediate_flag() {
+        let cli = Cli::try_parse_from(["tonk", "account", "delete", "--no-open"]).unwrap();
+        let Some(Command::Account {
+            command: AccountCommand::Delete { no_open, .. },
+        }) = cli.command
+        else {
+            panic!("expected account delete");
+        };
+        assert!(no_open);
     }
 
     #[test]
@@ -3257,5 +3355,26 @@ mod account_spots_parser_tests {
         };
         assert_eq!(subject, did);
         assert_eq!(name.as_deref(), Some("garden"));
+    }
+
+    #[test]
+    fn account_spots_delete_requires_an_exact_subject_and_browser_review() {
+        let did = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL";
+        let cli =
+            Cli::try_parse_from(["tonk", "account", "spots", "delete", did, "--no-open"]).unwrap();
+        let Some(Command::Account {
+            command:
+                AccountCommand::Spots {
+                    command:
+                        Some(AccountSpotsCommand::Delete {
+                            subject, no_open, ..
+                        }),
+                },
+        }) = cli.command
+        else {
+            panic!("expected account spots delete");
+        };
+        assert_eq!(subject, did);
+        assert!(no_open);
     }
 }

@@ -14,9 +14,8 @@
 #   TONK_INSTALL_DIR       where to install (default: /usr/local/bin if
 #                          writable, else $HOME/.local/bin)
 #
-# The macOS binary is not Apple-signed (see BUG-22: Apple code signing). This
-# script clears the Gatekeeper quarantine and ad-hoc signs the binary so it
-# runs; a hand-downloaded binary needs the same `xattr -c` + `codesign`.
+# macOS binaries from the current release workflows are Developer ID signed and
+# notarized. Installation must preserve those exact bytes for Gatekeeper.
 set -eu
 
 REPO="tonk-labs/tonk"
@@ -104,7 +103,7 @@ say "downloading $asset"
 fetch "$url" "$tmp/$asset" || die "download failed: $url"
 
 # Verify the archive against the release's checksums.txt. Refuse to install
-# on mismatch; the binary is unsigned, so this is our integrity gate.
+# on mismatch; this protects the archive independently of platform signing.
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -136,26 +135,6 @@ chmod +x "$tmp/tonk"
 mkdir -p "$INSTALL_DIR"
 mv "$tmp/tonk" "$INSTALL_DIR/tonk"
 dest="$INSTALL_DIR/tonk"
-
-# macOS-only Gatekeeper handling. The tonk binary is not Apple-signed, so
-# Gatekeeper would otherwise quarantine it (and, on recent macOS, can kill
-# it on first launch). Two steps make an unsigned binary runnable:
-#   1. clear every extended attribute, including com.apple.quarantine;
-#   2. apply an ad-hoc signature, which arm64 binaries require to execute
-#      and which is re-established after the move/clear.
-# Both are no-ops off macOS (the tools are absent), so the guard is `Darwin`.
-#
-# Ad-hoc signing is unconditional ONLY because the release binary is
-# currently unsigned, so re-signing can't clobber anything of value. Once
-# BUG-22 ships a real Developer ID signature, make this opt-in (e.g. a
-# TONK_RESIGN_MACOS flag) so a normal install preserves the notarized
-# signature instead of replacing it with a local ad-hoc one.
-if [ "$os" = "Darwin" ]; then
-  xattr -c "$dest" 2>/dev/null || true
-  if command -v codesign >/dev/null 2>&1; then
-    codesign --force --sign - "$dest" 2>/dev/null || true
-  fi
-fi
 
 say "installed tonk to $dest"
 
@@ -221,13 +200,11 @@ case ":$PATH:" in
   *) say "note: $INSTALL_DIR is not on your PATH; add it, e.g. export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 
-# Confirm the binary actually runs; if macOS still blocks it, surface the
-# exact recovery command instead of leaving a silent broken install.
+# Confirm the binary actually runs instead of leaving a silent broken install.
 if ! "$dest" --version >/dev/null 2>&1; then
   say "warning: '$dest --version' did not run cleanly."
   if [ "$os" = "Darwin" ]; then
-    say "if macOS blocked it, run: xattr -c \"$dest\" && codesign --force --sign - \"$dest\""
-    say "or allow it once under System Settings > Privacy & Security."
+    say "check your network, then allow it under System Settings > Privacy & Security if macOS blocked it."
   fi
 else
   "$dest" --version 2>/dev/null || true

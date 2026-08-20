@@ -329,7 +329,7 @@ mod tests {
             .env("TONK_UPDATE_STATE", profile.path().join("update"))
             .env("TONK_NO_UPDATE_CHECK", "1")
             .env("DO_NOT_TRACK", "1")
-            .env("NO_PROXY", "127.0.0.1,localhost,tonk.spot")
+            .env("NO_PROXY", "127.0.0.1,localhost,tonk.network")
             .env_remove("TONK_TELEMETRY")
             .env_remove("TONK_SPOT")
             .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");
@@ -503,13 +503,11 @@ mod tests {
         let prefix = format!("{heading}{url_line}{outcome_line}");
         let link = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
         assert!(link.status.success(), "link failed: {}", link.stderr);
-        assert!(link.stdout.contains("linked\nroot: did:key:"));
+        assert!(link.stdout.contains("linked\naccount: did:key:"));
         assert!(link.stdout.contains("device: did:key:"));
         assert!(
-            link.stdout.contains("account state: synced")
-                || link
-                    .stdout
-                    .contains("account state: waiting for first sync")
+            link.stdout.contains("status: synced")
+                || link.stdout.contains("status: waiting for first sync")
         );
 
         Ok(LinkedCli { profile, link })

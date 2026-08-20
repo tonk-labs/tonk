@@ -29,6 +29,7 @@ getrandom_0_3 = { workspace = true }
 js-sys = { workspace = true }
 rand = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
+serde = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [

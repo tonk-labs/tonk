@@ -36,6 +36,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/accounts/preflight", handlers::accounts::handle_options)
         .post_async("/account/summary", handlers::accounts::handle_summary)
         .options_async("/account/summary", handlers::accounts::handle_options)
+        .post_async("/account/delete", handlers::accounts::handle_delete)
+        .options_async("/account/delete", handlers::accounts::handle_options)
         .post_async("/revocations", handlers::revocations::handle)
         .options_async("/revocations", handlers::revocations::handle_options)
         .post_async(

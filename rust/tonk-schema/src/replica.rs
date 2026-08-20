@@ -165,6 +165,27 @@ impl SpaceName {
     }
 }
 
+/// The account-directory copy of a space's exact deletion grant, on
+/// the directory entity — the transport that lets a device other than
+/// the creator present the grant when deleting the hosted space.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceDeletionGrant {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// Hex-encoded `/space/delete` delegation chain.
+    pub grant: crate::domain::space::DeletionGrant,
+}
+
+impl SpaceDeletionGrant {
+    /// A deletion-grant mirror for `subject`.
+    pub fn new(subject: &Did, grant: impl Into<String>) -> Self {
+        Self {
+            this: subject.this(),
+            grant: crate::domain::space::DeletionGrant(grant.into()),
+        }
+    }
+}
+
 /// A [`Replica`] as it was written before the [`Kind`] field
 /// existed: `name` + `subject` + `profile`, no `kind`.
 ///

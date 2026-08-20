@@ -182,7 +182,7 @@ fn scroll_to_fragment(fragment: &str) -> bool {
 
 /// Decide what a click means.
 ///
-/// The guest sets a `<base href="https://{label}.tonk.spot/">` to its
+/// The guest sets a `<base href="https://{label}.tonk.network/">` to its
 /// per-space SYNTHETIC origin, so the BROWSER resolves `anchor.href` for us —
 /// a real URL, not the opaque `null/…` it would be with no base. So we
 /// classify by ORIGIN, the way a normal page does:
@@ -262,7 +262,7 @@ fn classify_click(event: &Event) -> Intent {
 /// The origin a link in this guest is judged against.
 ///
 /// A space guest resolves against its synthetic per-space base
-/// (`https://{label}.tonk.spot`), so that is the origin that means "in-app".
+/// (`https://{label}.tonk.network`), so that is the origin that means "in-app".
 /// The profile/Hub guest has no synthetic origin — `space_origin_for` only
 /// answers for a `did:key`, and the profile is not one — and its links are
 /// genuinely top-level, resolving against the REAL host origin. Judging those

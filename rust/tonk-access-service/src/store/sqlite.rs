@@ -8,8 +8,11 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    ACTIVATE_CUSTOMER, ADD_CONSUMER, Consumer, Customer, INSERT_CUSTOMER, INSERT_SELF_CONSUMER,
-    SELECT_CONSUMER, SELECT_CUSTOMER, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
+    Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, DeletionGrantKind, FINISH_CONSUMER_DELETION,
+    INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
+    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError,
+    UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -35,13 +38,20 @@ impl SqliteStore {
     fn prepare(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(map_err)?;
-        let version: i64 = conn
+        let mut version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(map_err)?;
         if version == 0 {
             conn.execute_batch(include_str!("../../migrations/0001_control.sql"))
                 .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 1)
+                .map_err(map_err)?;
+            version = 1;
+        }
+        if version < 2 {
+            conn.execute_batch(include_str!("../../migrations/0002_deletion.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 2)
                 .map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
@@ -96,15 +106,73 @@ impl Store for SqliteStore {
 
     async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        conn.query_row(SELECT_CONSUMER, params![did], |row| {
+        let row = conn
+            .query_row(SELECT_CONSUMER, params![did], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                ))
+            })
+            .optional()
+            .map_err(map_err)?;
+        row.map(
+            |(did, provider, owner, registered, cid, kind, state, deleted_at)| {
+                Ok(Consumer {
+                    did,
+                    provider,
+                    owner,
+                    registered: registered as u64,
+                    deletion_grant_cid: cid,
+                    deletion_grant_kind: kind
+                        .as_deref()
+                        .map(DeletionGrantKind::parse)
+                        .transpose()?,
+                    deletion_state: ConsumerDeletionState::parse(&state)?,
+                    deleted_at: deleted_at.map(|value| value as u64),
+                })
+            },
+        )
+        .transpose()
+    }
+
+    async fn consumers_by_owner(&self, owner: &str) -> Result<Vec<Consumer>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let mut statement = conn.prepare(SELECT_CONSUMERS_BY_OWNER).map_err(map_err)?;
+        let rows = statement
+            .query_map(params![owner], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                ))
+            })
+            .map_err(map_err)?;
+        rows.map(|row| {
+            let (did, provider, owner, registered, cid, kind, state, deleted_at) =
+                row.map_err(map_err)?;
             Ok(Consumer {
-                did: row.get(0)?,
-                provider: row.get(1)?,
-                registered: row.get::<_, i64>(2)? as u64,
+                did,
+                provider,
+                owner,
+                registered: registered as u64,
+                deletion_grant_cid: cid,
+                deletion_grant_kind: kind.as_deref().map(DeletionGrantKind::parse).transpose()?,
+                deletion_state: ConsumerDeletionState::parse(&state)?,
+                deleted_at: deleted_at.map(|value| value as u64),
             })
         })
-        .optional()
-        .map_err(map_err)
+        .collect()
     }
 
     async fn enroll_customer(
@@ -135,12 +203,68 @@ impl Store for SqliteStore {
         Ok(changed > 0)
     }
 
-    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError> {
+    async fn add_consumer(
+        &self,
+        did: &str,
+        provider: &str,
+        now: u64,
+        deletion_grant_cid: Option<&str>,
+        deletion_grant_kind: Option<DeletionGrantKind>,
+    ) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
-            .execute(ADD_CONSUMER, params![did, provider, now as i64])
+            .execute(
+                ADD_CONSUMER,
+                params![
+                    did,
+                    provider,
+                    now as i64,
+                    deletion_grant_cid,
+                    deletion_grant_kind.map(DeletionGrantKind::as_str)
+                ],
+            )
             .map_err(map_err)?;
         Ok(changed > 0)
+    }
+
+    async fn mark_consumer_deleting(
+        &self,
+        did: &str,
+        deletion_grant_cid: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(MARK_CONSUMER_DELETING, params![did, deletion_grant_cid])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(FINISH_CONSUMER_DELETION, params![did, now as i64])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn mark_self_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(MARK_SELF_CONSUMER_DELETING, params![did])
+            .map_err(map_err)?
+            > 0)
+    }
+
+    async fn delete_customer(&self, did: &str) -> Result<bool, StoreError> {
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        tx.execute(ANONYMIZE_DELETED_CONSUMERS, params![did])
+            .map_err(map_err)?;
+        tx.execute(DELETE_SELF_CONSUMER, params![did])
+            .map_err(map_err)?;
+        let changed = tx.execute(DELETE_CUSTOMER, params![did]).map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
+        Ok(changed == 1)
     }
 
     async fn activate_customer(

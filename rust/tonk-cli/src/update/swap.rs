@@ -1,8 +1,8 @@
 //! Replacing the running binary.
 //!
 //! Everything is prepared on a temp file in the target's own
-//! directory — extracted, permissioned, de-quarantined, and
-//! smoke-tested — and the `rename()` happens last. A failure at any
+//! directory — extracted, permissioned, and smoke-tested — and the
+//! `rename()` happens last. A failure at any
 //! step therefore leaves the working binary untouched: there is no
 //! rollback path to get wrong, because nothing is ever half-applied.
 
@@ -78,8 +78,8 @@ pub fn foreign_install(path: &Path) -> Option<ForeignInstall> {
 
 /// Verify bytes against an expected hex SHA256.
 ///
-/// The integrity gate: the binary is unsigned, so this is the only
-/// thing between a download and your PATH. Mismatch is fatal.
+/// The archive integrity gate, independent of the platform signature.
+/// Mismatch is fatal.
 pub fn verify_sha256(bytes: &[u8], expected: &str) -> anyhow::Result<()> {
     let actual = hex(&Sha256::digest(bytes));
     if actual != expected.trim().to_ascii_lowercase() {
@@ -168,21 +168,6 @@ fn prepare(archive: &[u8], temp: &Path, target: &Path) -> anyhow::Result<()> {
             .context("could not make the new binary executable")?;
     }
 
-    // macOS: the release binary is unsigned, so Gatekeeper would
-    // quarantine it and arm64 requires *some* signature to execute.
-    // Mirrors what install.sh does after a download.
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("xattr")
-            .arg("-c")
-            .arg(temp)
-            .status();
-        let _ = std::process::Command::new("codesign")
-            .args(["--force", "--sign", "-"])
-            .arg(temp)
-            .status();
-    }
-
     // Smoke-test BEFORE the rename. install.sh tests --version after
     // overwriting, so a bad binary is already your `tonk` by the time
     // you find out; testing first means a bad download never lands.
@@ -205,7 +190,7 @@ mod tests {
     use super::*;
 
     /// A `.tar.gz` holding one entry named `tonk` with `body`.
-    fn archive_with(body: &str) -> Vec<u8> {
+    fn archive_with_bytes(body: &[u8]) -> Vec<u8> {
         let mut header = tar::Header::new_gnu();
         header.set_path("tonk").expect("path");
         header.set_size(body.len() as u64);
@@ -213,12 +198,16 @@ mod tests {
         header.set_cksum();
 
         let mut tar = tar::Builder::new(Vec::new());
-        tar.append(&header, body.as_bytes()).expect("append");
+        tar.append(&header, body).expect("append");
         let tar = tar.into_inner().expect("finish");
 
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         std::io::Write::write_all(&mut encoder, &tar).expect("gz");
         encoder.finish().expect("gz finish")
+    }
+
+    fn archive_with(body: &str) -> Vec<u8> {
+        archive_with_bytes(body.as_bytes())
     }
 
     fn sha_of(bytes: &[u8]) -> String {
@@ -296,6 +285,23 @@ mod tests {
             std::fs::read_to_string(&target)
                 .expect("read")
                 .contains("0.5.0")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[dialog_common::test]
+    fn it_preserves_signed_binary_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("tonk");
+        let signed = std::fs::read("/usr/bin/true").expect("read signed system binary");
+        let archive = archive_with_bytes(&signed);
+
+        install(&archive, &sha_of(&archive), &target).expect("install");
+
+        assert_eq!(
+            Sha256::digest(std::fs::read(&target).expect("read installed binary")),
+            Sha256::digest(&signed),
+            "install must not replace the embedded Apple signature"
         );
     }
 

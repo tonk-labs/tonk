@@ -1638,14 +1638,14 @@ mod enable_sync_claim {
     fn it_names_the_space_remote_and_share_marker() {
         let claim = enable_sync_claim_json(
             "did:key:z6Mk",
-            "https://tonk.spot/ucan/",
+            "https://tonk.network/ucan/",
             Some("https://accounts.tonk.xyz/revocations"),
             true,
             7.0,
         );
         let app = &claim["claims"][0]["application"];
         assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
-        assert_eq!(app["parameters"]["remote"], "https://tonk.spot/ucan/");
+        assert_eq!(app["parameters"]["remote"], "https://tonk.network/ucan/");
         assert_eq!(
             app["parameters"]["revocation"],
             "https://accounts.tonk.xyz/revocations"
@@ -1713,16 +1713,16 @@ mod default_remote {
     #[test]
     fn it_appends_the_access_service_path() {
         assert_eq!(
-            default_remote_url("https://tonk.spot"),
-            "https://tonk.spot/ucan/"
+            default_remote_url("https://tonk.network"),
+            "https://tonk.network/ucan/"
         );
     }
 
     #[test]
     fn it_does_not_double_slash_an_origin_that_already_has_one() {
         assert_eq!(
-            default_remote_url("https://tonk.spot/"),
-            "https://tonk.spot/ucan/"
+            default_remote_url("https://tonk.network/"),
+            "https://tonk.network/ucan/"
         );
     }
 }

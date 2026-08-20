@@ -1040,14 +1040,14 @@ mod guest_record {
     #[dialog_common::test]
     async fn it_reads_a_v1_guest_record_as_a_legacy_lease() {
         let subject = subject().await;
-        let bytes = serde_json::json!({ "version": 1, "url": "https://hub.tonk.xyz/join?x=1#s" })
+        let bytes = serde_json::json!({ "version": 1, "url": "https://tonk.network/join?x=1#s" })
             .to_string()
             .into_bytes();
 
         let (url, audience, expires_at) = decode_guest_record(&subject, &bytes).unwrap();
 
         assert_eq!(
-            url, "https://hub.tonk.xyz/join?x=1#s",
+            url, "https://tonk.network/join?x=1#s",
             "the retained URL is what a legacy record still carries",
         );
         assert!(
@@ -1063,7 +1063,7 @@ mod guest_record {
         let audience = Ed25519Signer::import(&[11u8; 32]).await.unwrap().did();
         let bytes = serde_json::json!({
             "version": GUEST_RECORD_VERSION,
-            "url": "https://hub.tonk.xyz/join?x=1#s",
+            "url": "https://tonk.network/join?x=1#s",
             "audience": audience.to_string(),
             "expires_at": 1_700_000_000u64,
         })
@@ -1075,7 +1075,7 @@ mod guest_record {
         assert_eq!(
             decoded,
             (
-                "https://hub.tonk.xyz/join?x=1#s".to_string(),
+                "https://tonk.network/join?x=1#s".to_string(),
                 Some(audience),
                 Some(1_700_000_000),
             )
@@ -1088,12 +1088,12 @@ mod guest_record {
         for partial in [
             serde_json::json!({
                 "version": GUEST_RECORD_VERSION,
-                "url": "https://hub.tonk.xyz/join",
+                "url": "https://tonk.network/join",
                 "expires_at": 1_700_000_000u64,
             }),
             serde_json::json!({
                 "version": GUEST_RECORD_VERSION,
-                "url": "https://hub.tonk.xyz/join",
+                "url": "https://tonk.network/join",
                 "audience": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP",
             }),
         ] {
@@ -1108,7 +1108,7 @@ mod guest_record {
     #[dialog_common::test]
     async fn it_refuses_a_guest_record_from_an_unsupported_version() {
         let subject = subject().await;
-        let bytes = serde_json::json!({ "version": 99, "url": "https://hub.tonk.xyz/join" })
+        let bytes = serde_json::json!({ "version": 99, "url": "https://tonk.network/join" })
             .to_string()
             .into_bytes();
 
@@ -2641,7 +2641,7 @@ mod tests {
         )
         .await
         .unwrap();
-        (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
+        (invite.to_url("https://tonk.network/join").unwrap(), key)
     }
 
     /// Everything a failed join must leave untouched, in one value.
@@ -3163,7 +3163,7 @@ mod tests {
                     .uri(format!("/api/repository/{key}/invite"))
                     .method("POST")
                     .header("content-type", "application/json")
-                    .extension(crate::axum::RequestOrigin::parse("https://hub.tonk.xyz/").unwrap())
+                    .extension(crate::axum::RequestOrigin::parse("https://tonk.network/").unwrap())
                     .body(Body::from("{}"))
                     .unwrap(),
             )
@@ -3269,7 +3269,7 @@ mod tests {
         let before = snapshot(&state, &key).await;
 
         assert_eq!(
-            post_join(&app, "https://hub.tonk.xyz/join?access=not-base58").await,
+            post_join(&app, "https://tonk.network/join?access=not-base58").await,
             StatusCode::BAD_REQUEST,
         );
 

@@ -44,12 +44,12 @@ use url::Url;
 
 /// Canonical base URL for tonk invite links, and the fallback for a repo
 /// with no remote to take an origin from. Callers serializing an [`Invite`]
-/// pass this to [`Invite::to_url`] to mint a link rooted at tonk.spot.
+/// pass this to [`Invite::to_url`] to mint a link rooted at tonk.network.
 ///
 /// Changing it does not invalidate outstanding invites: the base is not a
 /// lookup key, so a link already minted against another host keeps
 /// redeeming for as long as that host stays up.
-pub const DEFAULT_BASE_URL: &str = "https://tonk.spot/join";
+pub const DEFAULT_BASE_URL: &str = "https://tonk.network/join";
 
 /// Lifetime of the authority installed by [`Invite::visit`].
 ///
@@ -538,7 +538,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_missing_access_parameter() {
-        let err = Invite::parse_url("https://hub.tonk.xyz/join")
+        let err = Invite::parse_url("https://tonk.network/join")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("`access`"), "{err}");
@@ -546,7 +546,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_invalid_base58_in_access() {
-        let err = Invite::parse_url("https://hub.tonk.xyz/join?access=!!!not-b58!!!")
+        let err = Invite::parse_url("https://tonk.network/join?access=!!!not-b58!!!")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("valid base58"), "{err}");
@@ -580,7 +580,7 @@ mod tests {
         let audience_signer = signer(&AUDIENCE_SEED).await;
         let audience = audience_signer.did();
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
-        let remote = Url::parse("https://hub.tonk.xyz/ucan/").unwrap();
+        let remote = Url::parse("https://tonk.network/ucan/").unwrap();
 
         // Scoped, with remote
         let invite = Invite::new(chain.clone(), InviteAudience::Scoped, Some(remote.clone()))

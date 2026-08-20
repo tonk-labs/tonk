@@ -49,6 +49,23 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Build tonk'
         run: nix build --accept-flake-config .#tonk-cli
+      # Nix store outputs are read-only. Sign a writable copy and upload
+      # exactly the bytes that passed notarization.
+      - name: 'Stage tonk artifact'
+        run: |
+          mkdir -p artifacts
+          cp result/bin/tonk artifacts/tonk
+          chmod 0755 artifacts/tonk
+      - name: 'Sign and notarize macOS artifact'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
+        uses: ./.github/actions/sign-notarize-macos
+        with:
+          binary-path: artifacts/tonk
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          app-store-connect-key: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
       # Name the build by the hash of its Rust source tree rather than by
       # commit: a doc-only change leaves it identical, and the same tree
       # reached from `stable` or `staging` is one build. Computed here
@@ -69,7 +86,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
-          path: result/bin/tonk
+          path: artifacts/tonk
 
   publish-staging:
     name: 'Publish Staging'
@@ -178,9 +195,7 @@ jobs:
             - macOS (Apple Silicon): `tonk-macos-arm64.tar.gz`
             - Linux (x86_64): `tonk-linux-x86_64.tar.gz`
 
-            On macOS the binary is unsigned. The install script clears the
-            Gatekeeper quarantine for you; if you extract by hand and macOS
-            blocks it, run `xattr -d com.apple.quarantine tonk`.
+            The macOS binary is Developer ID signed and notarized by Apple.
           prerelease: true
           make_latest: false
           files: |
@@ -306,9 +321,7 @@ jobs:
             - https://github.com/${{ github.repository }}/releases/latest/download/tonk-macos-arm64.tar.gz
             - https://github.com/${{ github.repository }}/releases/latest/download/tonk-linux-x86_64.tar.gz
 
-            On macOS the binary is unsigned. The install script clears the
-            Gatekeeper quarantine for you; if you extract by hand and macOS
-            blocks it, run `xattr -d com.apple.quarantine tonk`.
+            The macOS binary is Developer ID signed and notarized by Apple.
           # A pinned release is a historical artifact, never the newest
           # thing: `make_latest` would point `releases/latest` at an older
           # build and downgrade everyone installing from the stable channel.

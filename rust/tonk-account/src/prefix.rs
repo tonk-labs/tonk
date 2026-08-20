@@ -21,6 +21,17 @@ pub fn space_root_site(
     format!("{SPACE_ROOT_SITE_V2_PREFIX}{repository_did}/{account_root}")
 }
 
+/// Credential prefix for exact hosted-space deletion grants.
+pub const SPACE_DELETE_SITE_V1_PREFIX: &str = "tonk-space-delete-v1/";
+
+/// Credential key for one space's deletion grant to one exact account root.
+pub fn space_delete_site(
+    repository_did: &dialog_varsig::Did,
+    account_root: &dialog_varsig::Did,
+) -> String {
+    format!("{SPACE_DELETE_SITE_V1_PREFIX}{repository_did}/{account_root}")
+}
+
 /// A decoded and verified reusable prefix.
 #[derive(Debug)]
 pub struct ValidatedPrefix {

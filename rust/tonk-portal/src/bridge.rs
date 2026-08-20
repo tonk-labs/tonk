@@ -452,7 +452,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // cross-origin fetch (CORS-blocked, origin `null`), so strip the origin
     // prefix and relay the path. TWO origins qualify: the REAL host origin
     // (`context.origin`), and the guest's SYNTHETIC per-space base origin
-    // (`context.base`, e.g. `https://{label}.tonk.spot`) — with a `<base>` set
+    // (`context.base`, e.g. `https://{label}.tonk.network`) — with a `<base>` set
     // to the latter, a relative `/api/…` resolves against it, so a `Request`
     // built from it is fake-origin-absolute and must be stripped the same way.
     var ctx=(window.tonk&&window.tonk.context)||{};
@@ -742,7 +742,7 @@ fn base_tag(base: &str) -> String {
     if base.is_empty() {
         String::new()
     } else {
-        // `base` is a same-origin literal we built (`https://{label}.tonk.spot/`),
+        // `base` is a same-origin literal we built (`https://{label}.tonk.network/`),
         // so there is nothing to escape, but keep it minimal and attribute-safe.
         format!("<base href=\"{base}\">")
     }
@@ -1795,7 +1795,7 @@ fn handle_navigate(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
 /// Translate a guest-world href into the REAL route the host navigates to.
 ///
 /// The guest resolves links against its synthetic per-space origin
-/// (`https://{label}.tonk.spot/`), so an in-space link arrives as a bare
+/// (`https://{label}.tonk.network/`), so an in-space link arrives as a bare
 /// absolute path (`/activity`). The document is really served at
 /// `/space/{did}/...`, so prefix the space segment. A guest with no space
 /// context (profile/Hub), or an already-`/space/...` path, is left as-is.
@@ -2430,7 +2430,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
     // The per-space SYNTHETIC origin this guest believes it lives at
-    // (`https://{label}.tonk.spot/`), so in-guest navigation resolves like an
+    // (`https://{label}.tonk.network/`), so in-guest navigation resolves like an
     // ordinary page: in-space routes are plain absolute paths under it, and an
     // href that escapes it is external. Distinct from `origin` (the REAL host
     // origin, which propagates down nesting and keys the `/api` relay strip).

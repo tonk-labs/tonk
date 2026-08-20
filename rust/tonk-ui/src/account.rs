@@ -8,18 +8,23 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
 use tonk_account::{AccountStateStatus, handoff::ResolvedLink};
-use tonk_worker_api::{AccountStatus, RevocationProjection, RevokeDeviceAcknowledgement};
+use tonk_worker_api::{
+    AccountDeletionPlan, AccountDeletionRequest, AccountSpaceDeletionRequest, AccountStatus,
+    RevocationProjection, RevokeDeviceAcknowledgement,
+};
 
 use crate::identity_bridge::{
-    CeremonyOutput, CompleteLinkInput, CreateAccountInput, EnrollCustodyInput, RevocationOutput,
-    SignRevocationInput, UnlockWithPasskeyInput, complete_link, create_account,
-    enroll_custody_passkey, sign_revocation, unlock_with_passkey,
+    CeremonyOutput, CompleteLinkInput, CreateAccountInput, DeletionProofInput, EnrollCustodyInput,
+    PrepareAccountDeletionInput, PrepareSpaceDeletionInput, RevocationOutput, SignRevocationInput,
+    UnlockWithPasskeyInput, complete_link, create_account, enroll_custody_passkey,
+    prepare_account_deletion, prepare_space_deletion, sign_revocation, unlock_with_passkey,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
 const HANDOFF: &str = "__tonkCliHandoff";
 /// Where a pending callback authorization's `(audience, callback)` is parked.
 const CALLBACK: &str = "__tonkCliCallback";
+const DELETION_PLAN: &str = "__tonkAccountDeletionPlan";
 
 /// The top-document account element. WebAuthn must not run in sealed guests.
 #[derive(Default)]
@@ -143,6 +148,8 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-link-back",
         "#account-handoff-submit",
         "#account-unlink",
+        "#account-delete-review",
+        "#account-delete-submit",
         "#account-add-profile",
         "#account-use-different-account",
     ] {
@@ -266,6 +273,161 @@ fn set_text(host: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = host.query_selector(selector) {
         element.set_text_content(Some(value));
     }
+}
+
+fn requested_space_deletion() -> Option<String> {
+    let href = window()?.location().href().ok()?;
+    url::Url::parse(&href)
+        .ok()?
+        .query_pairs()
+        .find_map(|(name, value)| (name == "delete-space").then(|| value.into_owned()))
+        .filter(|value| !value.is_empty())
+}
+
+fn configure_deletion_entry(host: &HtmlElement) {
+    if requested_space_deletion().is_none() {
+        return;
+    }
+    set_text(
+        host,
+        "#account-delete-title",
+        "Delete owned space permanently",
+    );
+    set_text(
+        host,
+        "#account-delete-description",
+        "This deletes one selected space's hosted content from Tonk services. Your account and every other space remain.",
+    );
+    set_text(
+        host,
+        "#account-delete-boundary",
+        "Tonk cannot erase copies that other devices have already replicated.",
+    );
+    set_text(
+        host,
+        "#account-delete-review",
+        "Review selected space deletion",
+    );
+    set_text(
+        host,
+        "#account-delete-understood-label",
+        "I understand that this owned space's hosted content will be permanently deleted from Tonk services and cannot be recovered by Tonk.",
+    );
+}
+
+fn render_deletion_plan(host: &HtmlElement, plan: &AccountDeletionPlan) -> Result<(), String> {
+    let panel = host
+        .query_selector("#account-delete-review-panel")
+        .ok()
+        .flatten()
+        .ok_or_else(|| "missing deletion review panel".to_string())?;
+    let _ = panel.remove_attribute("hidden");
+    let requested = requested_space_deletion();
+    let visible: Vec<_> = plan
+        .spaces
+        .iter()
+        .filter(|space| {
+            requested
+                .as_deref()
+                .is_none_or(|subject| space.subject == subject)
+        })
+        .collect();
+    if let Some(subject) = requested.as_deref()
+        && visible.is_empty()
+    {
+        return Err(format!(
+            "{subject} is not an owned hosted space for this account"
+        ));
+    }
+    set_text(
+        host,
+        "#account-delete-title",
+        if requested.is_some() {
+            "Delete owned space permanently"
+        } else {
+            "Delete account permanently"
+        },
+    );
+    set_text(
+        host,
+        "#account-delete-submit",
+        if requested.is_some() {
+            "Delete selected owned space"
+        } else {
+            "Delete owned spaces and account"
+        },
+    );
+    set_text(
+        host,
+        "#account-delete-scope",
+        &if requested.is_some() {
+            format!(
+                "This will permanently delete the selected owned hosted space. {} joined space{} will be left intact.",
+                plan.joined_spaces,
+                if plan.joined_spaces == 1 { "" } else { "s" },
+            )
+        } else {
+            format!(
+                "{} owned hosted space{} will be deleted. {} joined space{} will be left intact.",
+                plan.spaces.len(),
+                if plan.spaces.len() == 1 { "" } else { "s" },
+                plan.joined_spaces,
+                if plan.joined_spaces == 1 { "" } else { "s" },
+            )
+        },
+    );
+    let list = host
+        .query_selector("#account-delete-spaces")
+        .ok()
+        .flatten()
+        .ok_or_else(|| "missing deletion space list".to_string())?;
+    list.set_inner_html("");
+    let document = window()
+        .and_then(|window| window.document())
+        .ok_or_else(|| "document is unavailable".to_string())?;
+    for space in &visible {
+        let item = document
+            .create_element("li")
+            .map_err(|_| "could not render deletion space".to_string())?;
+        let label = space.name.as_deref().unwrap_or(&space.subject);
+        item.set_text_content(Some(&format!("{label} — {}", space.state)));
+        let _ = list.append_child(&item);
+    }
+    if visible.is_empty() {
+        let item = document
+            .create_element("li")
+            .map_err(|_| "could not render empty deletion plan".to_string())?;
+        item.set_text_content(Some("No owned hosted spaces"));
+        let _ = list.append_child(&item);
+    }
+    if let Ok(Some(blocked)) = host.query_selector("#account-delete-blocked") {
+        let blocked_visible: Vec<_> = plan
+            .blocked_spaces
+            .iter()
+            .filter(|space| {
+                requested
+                    .as_deref()
+                    .is_none_or(|subject| space.as_str() == subject)
+            })
+            .cloned()
+            .collect();
+        if blocked_visible.is_empty() {
+            let _ = blocked.set_attribute("hidden", "");
+            blocked.set_text_content(None);
+        } else {
+            blocked.set_text_content(Some(&format!(
+                "Deletion is blocked because Tonk cannot recover deletion authority for: {}",
+                blocked_visible.join(", ")
+            )));
+            let _ = blocked.remove_attribute("hidden");
+        }
+    }
+    let value = serde_wasm_bindgen::to_value(plan)
+        .map_err(|_| "could not retain deletion plan".to_string())?;
+    Reflect::set(host.as_ref(), &DELETION_PLAN.into(), &value)
+        .map_err(|_| "could not retain deletion plan".to_string())?;
+    focus_input(host, "#account-delete-email");
+    Ok(())
 }
 
 fn render_summary(host: &HtmlElement, summary: &tonk_worker_api::AccountSummary) {
@@ -1261,6 +1423,7 @@ fn bind_return_links(host: &HtmlElement) {
 fn bind(host: &HtmlElement) {
     prevent_form_navigation(host);
     bind_return_links(host);
+    configure_deletion_entry(host);
     on_click(host, "#account-choose-create", |host| {
         clear_error(&host);
         set_mode(&host, "create");
@@ -1626,6 +1789,211 @@ fn bind(host: &HtmlElement) {
                 Err(error) => {
                     set_busy(&host, false, "");
                     show_error(&host, error.to_string());
+                }
+            }
+        });
+    });
+
+    on_click(host, "#account-delete-review", |host| {
+        clear_error(&host);
+        set_busy(&host, true, "Loading the permanent deletion scope…");
+        spawn_local(async move {
+            match crate::api::account_deletion_plan().await {
+                Ok(plan) => {
+                    set_busy(&host, false, "");
+                    if let Err(error) = render_deletion_plan(&host, &plan) {
+                        show_error(&host, error);
+                    }
+                }
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error.to_string());
+                }
+            }
+        });
+    });
+
+    on_click(host, "#account-delete-submit", |host| {
+        clear_error(&host);
+        let plan = Reflect::get(host.as_ref(), &DELETION_PLAN.into())
+            .ok()
+            .and_then(|value| serde_wasm_bindgen::from_value::<AccountDeletionPlan>(value).ok());
+        let Some(plan) = plan else {
+            return show_error(&host, "Review the current deletion scope first.");
+        };
+        let requested = requested_space_deletion();
+        let blocked = plan.blocked_spaces.iter().any(|space| {
+            requested
+                .as_deref()
+                .is_none_or(|subject| space.as_str() == subject)
+        });
+        if blocked {
+            return show_error(
+                &host,
+                if requested.is_some() {
+                    "This space cannot be deleted because Tonk cannot recover its registered deletion authority."
+                } else {
+                    "Account deletion is blocked until every owned hosted space has recoverable deletion authority."
+                },
+            );
+        }
+        let confirmed_email = match input(&host, "#account-delete-email") {
+            Ok(email) if email == plan.email => email,
+            Ok(_) => {
+                return show_error(&host, "The confirmation email does not match this account.");
+            }
+            Err(error) => return show_error(&host, error),
+        };
+        let understood = host
+            .query_selector("#account-delete-understood")
+            .ok()
+            .flatten()
+            .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
+            .is_some_and(|input| input.checked());
+        if !understood {
+            return show_error(
+                &host,
+                "Confirm that you understand the permanent consequences.",
+            );
+        }
+        let destructive: Vec<_> = plan
+            .spaces
+            .iter()
+            .filter(|space| {
+                space.state != "deleted"
+                    && requested
+                        .as_deref()
+                        .is_none_or(|subject| space.subject == subject)
+            })
+            .cloned()
+            .collect();
+        if requested.is_some() && destructive.len() != 1 {
+            return show_error(&host, "The selected owned space is already deleted.");
+        }
+        let final_confirmation = if requested.is_some() {
+            format!(
+                "Permanently delete {} and its hosted content from Tonk services?\n\nYour account and every other space will remain. Copies already replicated to other devices cannot be erased by Tonk. This cannot be undone.",
+                destructive[0]
+                    .name
+                    .as_deref()
+                    .unwrap_or(&destructive[0].subject),
+            )
+        } else {
+            format!(
+                "Permanently delete {} owned space{}, their hosted content from Tonk services, all account backups, and the account for {}?\n\nJoined spaces will not be deleted. Copies already replicated to other devices cannot be erased by Tonk. This cannot be undone.",
+                destructive.len(),
+                if destructive.len() == 1 { "" } else { "s" },
+                plan.email,
+            )
+        };
+        if !window()
+            .and_then(|window| window.confirm_with_message(&final_confirmation).ok())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        set_busy(&host, true, "Waiting for your passkey…");
+        spawn_local(async move {
+            let result = async {
+                if requested.is_some() {
+                    let space = &destructive[0];
+                    let proof = DeletionProofInput {
+                        kind: space.proof_kind.clone().ok_or_else(|| {
+                            format!("{} has no registered deletion proof kind", space.subject)
+                        })?,
+                        proof_hex: space.proof_hex.clone().ok_or_else(|| {
+                            format!("{} has no recoverable deletion proof", space.subject)
+                        })?,
+                    };
+                    let prepared = prepare_space_deletion(PrepareSpaceDeletionInput {
+                        expected_root: plan.root_did.clone(),
+                        endpoint: proposed_remote()?,
+                        proof,
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    let deleted = crate::api::delete_owned_space(&AccountSpaceDeletionRequest {
+                        subject: space.subject.clone(),
+                        invocation_hex: prepared.invocation_hex,
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    return Ok::<_, String>((Some(deleted.subject), None));
+                }
+                let proofs = destructive
+                    .iter()
+                    .map(|space| {
+                        Ok(DeletionProofInput {
+                            kind: space.proof_kind.clone().ok_or_else(|| {
+                                format!("{} has no registered deletion proof kind", space.subject)
+                            })?,
+                            proof_hex: space.proof_hex.clone().ok_or_else(|| {
+                                format!("{} has no recoverable deletion proof", space.subject)
+                            })?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let prepared = prepare_account_deletion(PrepareAccountDeletionInput {
+                    expected_root: plan.root_did.clone(),
+                    confirmed_email,
+                    endpoint: proposed_remote()?,
+                    proofs,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                if prepared.space_invocations_hex.len() != destructive.len() {
+                    return Err("the passkey ceremony returned an incomplete deletion set".into());
+                }
+                let spaces = destructive
+                    .iter()
+                    .zip(prepared.space_invocations_hex)
+                    .map(|(space, invocation_hex)| AccountSpaceDeletionRequest {
+                        subject: space.subject.clone(),
+                        invocation_hex,
+                    })
+                    .collect();
+                let deleted = crate::api::delete_account(&AccountDeletionRequest {
+                    spaces,
+                    customer_invocation_hex: prepared.customer_invocation_hex,
+                    account_invocation_hex: prepared.account_invocation_hex,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                Ok((None, Some(deleted)))
+            }
+            .await;
+            match result {
+                Ok((Some(subject), None)) => {
+                    let _ = window().map(|window| {
+                        window.alert_with_message(&format!(
+                            "Owned space {subject} deleted from Tonk services. Your account and other spaces remain. Tonk cannot erase copies already replicated to other devices."
+                        ))
+                    });
+                    if let Some(window) = window() {
+                        let _ = window.location().set_href("/account");
+                    }
+                }
+                Ok((None, Some(result))) => {
+                    let _ = window().map(|window| {
+                        window.alert_with_message(&format!(
+                            "Account deleted. {} owned space{} removed from Tonk services; {} joined space{} left intact.",
+                            result.deleted_spaces,
+                            if result.deleted_spaces == 1 { "" } else { "s" },
+                            result.retained_joined_spaces,
+                            if result.retained_joined_spaces == 1 { "" } else { "s" },
+                        ))
+                    });
+                    if let Some(window) = window() {
+                        let _ = window.location().set_href("/account");
+                    }
+                }
+                Ok(_) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, "the deletion result was incomplete");
+                }
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error);
                 }
             }
         });
@@ -2074,6 +2442,10 @@ mod tests {
             "#account-add-profile",
             ".account__passkey",
             ".account__signout",
+            "#account-delete-review",
+            "#account-delete-submit",
+            "#account-delete-email",
+            "#account-delete-understood",
         ] {
             assert!(
                 dashboard.query_selector(selector).unwrap().is_some(),
@@ -2091,6 +2463,9 @@ mod tests {
         assert!(copy.contains("device, browser profile, or password manager"));
         assert!(copy.contains("do not tell Tonk which passkey manager currently stores it"));
         assert!(copy.contains("syncing will stop until you sign in again"));
+        assert!(copy.contains("This is not sign out"));
+        assert!(copy.contains("Spaces created by other people will not be deleted"));
+        assert!(copy.contains("cannot erase copies that other devices have already replicated"));
         for technical in ["authority", "grant", "relink required"] {
             assert!(
                 !copy.contains(technical),

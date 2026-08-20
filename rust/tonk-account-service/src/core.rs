@@ -11,6 +11,7 @@ use crate::store::StoreError;
 pub mod accounts;
 pub mod codes;
 pub mod delegation;
+pub mod deletion;
 pub mod descriptor;
 pub mod devices;
 pub mod links;

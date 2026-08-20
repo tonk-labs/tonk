@@ -89,6 +89,17 @@ pub mod space {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
     pub struct Name(pub String);
+
+    /// The space's exact `/space/delete` grant, hex-encoded, mirrored
+    /// into the account directory at creation so any of the account's
+    /// devices can present it when deleting the hosted space. Public
+    /// by construction: the grant only authorizes the account root,
+    /// so carrying it in the synced directory grants nothing to
+    /// anyone else.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct DeletionGrant(pub String);
 }
 
 /// Attributes for the `tonk/sync` concept — a replica's sync state.

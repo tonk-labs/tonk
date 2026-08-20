@@ -16,10 +16,51 @@ use url::Url;
 /// Production account API used unless explicitly overridden.
 pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
 /// Production account page, where the revoke ceremony runs.
-pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
+pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/account";
 /// Production link ceremony page: it reads `?audience=` and `?callback=`
 /// and posts the grant back to the waiting CLI.
-pub const DEFAULT_LINK_PAGE: &str = "https://tonk.spot/account/link";
+pub const DEFAULT_LINK_PAGE: &str = "https://tonk.network/account/link";
+
+/// Open the browser's passkey-protected, review-first account deletion flow.
+pub async fn open_deletion(
+    profile: &Profile,
+    account_url: &str,
+    open_browser: bool,
+) -> Result<String> {
+    let status = status(profile).await?;
+    if !matches!(status, AccountStatus::Registered { .. }) {
+        bail!("no account is linked to this profile");
+    }
+    let url = format!("{}#delete-account", account_url.trim_end_matches('/'));
+    if open_browser && webbrowser::open(&url).is_err() {
+        bail!("could not open the account deletion page; open {url}");
+    }
+    Ok(url)
+}
+
+/// Open the browser's passkey-protected review for deleting one owned space.
+pub async fn open_space_deletion(
+    profile: &Profile,
+    account_url: &str,
+    subject: &str,
+    open_browser: bool,
+) -> Result<String> {
+    let status = status(profile).await?;
+    if !matches!(status, AccountStatus::Registered { .. }) {
+        bail!("no account is linked to this profile");
+    }
+    subject
+        .parse::<Did>()
+        .context("space subject is not a valid DID")?;
+    let mut url = Url::parse(account_url).context("account page URL is invalid")?;
+    url.query_pairs_mut().append_pair("delete-space", subject);
+    url.set_fragment(Some("delete-account"));
+    let url = url.to_string();
+    if open_browser && webbrowser::open(&url).is_err() {
+        bail!("could not open the space deletion page; open {url}");
+    }
+    Ok(url)
+}
 /// Credential-store key for optional provider attachment metadata.
 pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
@@ -1182,7 +1223,7 @@ mod tests {
         );
         assert_eq!(
             url,
-            "https://tonk.spot/account/link\
+            "https://tonk.network/account/link\
              ?audience=did%3Akey%3AzProfile\
              &callback=http%3A%2F%2F127.0.0.1%3A54321\
              &name=Kitchen%20laptop"
@@ -1264,7 +1305,7 @@ mod tests {
     fn it_points_the_revoke_ceremony_at_the_named_device() {
         assert_eq!(
             revoke_url(DEFAULT_ACCOUNT_PAGE, "did:key:zDevice"),
-            "https://tonk.spot/account?revoke=did:key:zDevice"
+            "https://tonk.network/account?revoke=did:key:zDevice"
         );
     }
 

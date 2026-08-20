@@ -39,7 +39,7 @@ use tonk_account::customer::{
 };
 
 use crate::email::EmailSender;
-use crate::store::{SIGNUP_PLAN, Store, StoreError};
+use crate::store::{DeletionGrantKind, SIGNUP_PLAN, Store, StoreError};
 
 /// The command path segments of [`Enroll`], as they appear in an
 /// invocation. Pinned to the capability-derived ability by a test.
@@ -113,7 +113,7 @@ pub struct Registration<'a, S, E> {
     pub email: &'a E,
     /// The service's signing identity, issuer of activation delegations.
     pub service: &'a Ed25519Signer,
-    /// Origin the activation link points at, e.g. `https://hub.tonk.xyz`.
+    /// Origin the activation link points at, e.g. `https://tonk.network`.
     pub origin: &'a str,
     /// Lifetime of the emailed activation delegation, in seconds.
     pub activation_ttl: u64,
@@ -328,9 +328,30 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         let consent = self.deposited_delegation(&effect.consent.to_string())?;
         self.verify_consent(&consent.delegation, &effect.consumer, &provider)
             .await?;
+        let deletion = match effect.deletion {
+            Some(cid) => {
+                let grant = self.deposited_delegation(&cid.to_string())?;
+                self.verify_exact_deletion_grant(&grant.delegation, &effect.consumer, &provider)
+                    .await?;
+                Some((cid.to_string(), DeletionGrantKind::Exact))
+            }
+            None if is_direct_legacy_owner(&consent.delegation, &effect.consumer, &provider) => {
+                Some((
+                    consent.delegation.to_cid().to_string(),
+                    DeletionGrantKind::LegacyDirect,
+                ))
+            }
+            None => None,
+        };
         if !self
             .store
-            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now)
+            .add_consumer(
+                effect.consumer.as_str(),
+                provider.as_str(),
+                self.now,
+                deletion.as_ref().map(|(cid, _)| cid.as_str()),
+                deletion.as_ref().map(|(_, kind)| *kind),
+            )
             .await
             .map_err(internal)?
         {
@@ -339,7 +360,32 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         Ok(ConsumerReceipt {
             consumer: effect.consumer,
             provider,
+            deletion_ready: deletion.is_some(),
         })
+    }
+
+    async fn verify_exact_deletion_grant(
+        &self,
+        grant: &Delegation<AnySignature>,
+        consumer: &Did,
+        provider: &Did,
+    ) -> Result<(), RegistrationError> {
+        if grant.issuer() != consumer
+            || grant.audience() != provider
+            || grant.subject() != &DelegatedSubject::Specific(consumer.clone())
+            || grant.command().0 != ["space".to_string(), "delete".to_string()]
+        {
+            return Err(RegistrationError::Forbidden {
+                message: "deletion authority must be an exact direct space-to-customer /space/delete grant".to_string(),
+            });
+        }
+        self.check_window(grant)?;
+        grant
+            .verify_signature(&DidKeyResolver)
+            .await
+            .map_err(|err| RegistrationError::Unauthorized {
+                message: format!("deletion grant failed to verify: {err}"),
+            })
     }
 
     /// Validate the deposited consent: the consumer's own delegation to
@@ -660,6 +706,17 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         }
         Ok(())
     }
+}
+
+fn is_direct_legacy_owner(
+    consent: &Delegation<AnySignature>,
+    consumer: &Did,
+    provider: &Did,
+) -> bool {
+    consent.issuer() == consumer
+        && consent.audience() == provider
+        && consent.subject() == &DelegatedSubject::Specific(consumer.clone())
+        && consent.command().0.is_empty()
 }
 
 // [`Store`] and [`EmailSender`] are declared through the same dual

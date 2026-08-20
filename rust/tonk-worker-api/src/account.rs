@@ -17,6 +17,79 @@ pub struct AccountSummary {
     pub passkey: Option<PasskeyMetadata>,
 }
 
+/// One hosted space associated with an account deletion review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionSpace {
+    /// Repository subject to be permanently purged from Tonk services.
+    pub subject: String,
+    /// Best available account backup name.
+    pub name: Option<String>,
+    /// Access-service lifecycle state.
+    pub state: String,
+    /// Registered proof mode (`exact` or narrowly upgraded `legacy-direct`).
+    pub proof_kind: Option<String>,
+    /// Exact public proof bytes the passkey ceremony must present.
+    pub proof_hex: Option<String>,
+}
+
+/// Reviewable destructive scope loaded before asking for a passkey.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionPlan {
+    /// Account root that must sign every destructive request.
+    pub root_did: String,
+    /// Verified email the user must type exactly.
+    pub email: String,
+    /// Hosted spaces originally provided by this account.
+    pub spaces: Vec<AccountDeletionSpace>,
+    /// Owned subjects lacking retrievable registered proof material.
+    pub blocked_spaces: Vec<String>,
+    /// Backed-up spaces absent from the owned service inventory; these are
+    /// joined spaces and are not deleted.
+    pub joined_spaces: usize,
+}
+
+/// One root-signed space purge bound to its reviewed subject.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSpaceDeletionRequest {
+    /// Reviewed repository subject.
+    pub subject: String,
+    /// Hex-encoded root-signed `/space/delete` invocation.
+    pub invocation_hex: String,
+}
+
+/// Prepared destructive invocations returned by one passkey ceremony.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionRequest {
+    /// One invocation for every active/deleting owned hosted space.
+    pub spaces: Vec<AccountSpaceDeletionRequest>,
+    /// Root-signed access-customer finalization invocation.
+    pub customer_invocation_hex: String,
+    /// Root-signed account-service deletion invocation.
+    pub account_invocation_hex: String,
+}
+
+/// Completed service-account deletion result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionResult {
+    /// Number of owned hosted spaces whose purge was confirmed.
+    pub deleted_spaces: usize,
+    /// Joined spaces deliberately left intact locally and on their owners' services.
+    pub retained_joined_spaces: usize,
+}
+
+/// Receipt for deleting one owned hosted space without deleting its account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedSpaceDeletionResult {
+    /// Repository subject removed from Tonk services.
+    pub subject: String,
+}
+
 /// Attach provider services to an already persisted local root, naming the
 /// account repository this root owns.
 #[derive(Clone, Debug, Serialize, Deserialize)]

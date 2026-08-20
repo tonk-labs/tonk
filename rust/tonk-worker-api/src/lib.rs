@@ -29,9 +29,11 @@ pub mod share;
 mod sync;
 
 pub use account::{
-    AccountConvergenceReport, AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse,
-    AccountLinkRequest, AccountStatus, AccountSummary, RevocationProjection,
-    RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+    AccountConvergenceReport, AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult,
+    AccountDeletionSpace, AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse,
+    AccountLinkRequest, AccountSpaceDeletionRequest, AccountStatus, AccountSummary,
+    HostedSpaceDeletionResult, RevocationProjection, RevokeDeviceAcknowledgement,
+    RevokeDeviceRequest,
 };
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};

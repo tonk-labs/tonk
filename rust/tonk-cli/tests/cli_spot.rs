@@ -615,7 +615,7 @@ mod when_minting_against_a_live_remote {
             url.starts_with(&format!("{origin}/@/")),
             "short link sits on the remote's origin: {url}"
         );
-        assert!(!url.contains("tonk.spot"), "not the default base: {url}");
+        assert!(!url.contains("tonk.network"), "not the default base: {url}");
         Ok(())
     }
 
@@ -665,7 +665,7 @@ mod when_minting_against_a_live_remote {
             url.starts_with(&format!("{origin}/@/")),
             "short link sits on the remote's origin: {url}"
         );
-        assert!(!url.contains("tonk.spot"), "not the default base: {url}");
+        assert!(!url.contains("tonk.network"), "not the default base: {url}");
 
         let target = shortcut_target(url).await?;
         assert!(target.contains("access="), "still a real invite: {target}");

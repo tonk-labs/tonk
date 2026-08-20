@@ -84,6 +84,122 @@ async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletionProofInput {
+    kind: String,
+    proof_hex: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepareAccountDeletionInput {
+    expected_root: String,
+    confirmed_email: String,
+    endpoint: String,
+    proofs: Vec<DeletionProofInput>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepareSpaceDeletionInput {
+    expected_root: String,
+    endpoint: String,
+    proof: DeletionProofInput,
+}
+
+async fn prepare_space_deletion(input: JsValue) -> Result<JsValue, JsValue> {
+    use dialog_ucan_core::DelegationChain;
+    use dialog_varsig::Principal as _;
+
+    let input: PrepareSpaceDeletionInput = serde_wasm_bindgen::from_value(input)
+        .map_err(|_| JsValue::from_str("malformed space deletion input"))?;
+    let root = crate::ceremony::unlock_root(&input.endpoint)
+        .await
+        .map_err(js_error)?;
+    if root.did().to_string() != input.expected_root {
+        return Err(JsValue::from_str(
+            "the evaluated passkey does not match the space owner",
+        ));
+    }
+    let bytes = hex::decode(&input.proof.proof_hex)
+        .map_err(|error| JsValue::from_str(&format!("invalid deletion proof hex: {error}")))?;
+    let proof = DelegationChain::try_from(bytes.as_slice())
+        .map_err(|error| JsValue::from_str(&format!("invalid deletion proof: {error}")))?;
+    let invocation = match input.proof.kind.as_str() {
+        "exact" => tonk_account::deletion::build_deletion_invocation(root, &proof).await,
+        "legacy-direct" => {
+            tonk_account::deletion::build_legacy_deletion_invocation(root, &proof).await
+        }
+        _ => return Err(JsValue::from_str("unknown deletion proof kind")),
+    }
+    .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let result = Object::new();
+    Reflect::set(
+        &result,
+        &"invocationHex".into(),
+        &hex::encode(invocation).into(),
+    )?;
+    Ok(result.into())
+}
+
+/// One user-verifying passkey ceremony signs every destructive request in an
+/// already-reviewed plan. Proof shape is revalidated before the prompt result
+/// can be turned into an invocation.
+async fn prepare_account_deletion(input: JsValue) -> Result<JsValue, JsValue> {
+    use dialog_ucan_core::DelegationChain;
+    use dialog_varsig::Principal as _;
+
+    let input: PrepareAccountDeletionInput = serde_wasm_bindgen::from_value(input)
+        .map_err(|_| JsValue::from_str("malformed account deletion input"))?;
+    let root = crate::ceremony::unlock_root(&input.endpoint)
+        .await
+        .map_err(js_error)?;
+    if root.did().to_string() != input.expected_root {
+        return Err(JsValue::from_str(
+            "the evaluated passkey does not match the account being deleted",
+        ));
+    }
+
+    let space_invocations = js_sys::Array::new();
+    for candidate in input.proofs {
+        let bytes = hex::decode(&candidate.proof_hex)
+            .map_err(|error| JsValue::from_str(&format!("invalid deletion proof hex: {error}")))?;
+        let proof = DelegationChain::try_from(bytes.as_slice())
+            .map_err(|error| JsValue::from_str(&format!("invalid deletion proof: {error}")))?;
+        let invocation = match candidate.kind.as_str() {
+            "exact" => {
+                tonk_account::deletion::build_deletion_invocation(root.clone(), &proof).await
+            }
+            "legacy-direct" => {
+                tonk_account::deletion::build_legacy_deletion_invocation(root.clone(), &proof).await
+            }
+            _ => return Err(JsValue::from_str("unknown deletion proof kind")),
+        }
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        space_invocations.push(&JsValue::from_str(&hex::encode(invocation)));
+    }
+    let customer = crate::ceremony::delete_access_customer(root.clone())
+        .await
+        .map_err(js_error)?;
+    let account = crate::ceremony::delete_account(root, input.confirmed_email)
+        .await
+        .map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(&result, &"spaceInvocationsHex".into(), &space_invocations)?;
+    Reflect::set(
+        &result,
+        &"customerInvocationHex".into(),
+        &customer.invocation_hex.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"accountInvocationHex".into(),
+        &account.invocation_hex.into(),
+    )?;
+    Ok(result.into())
+}
+
 fn root_result(ceremony: crate::ceremony::RootCeremony) -> Result<JsValue, JsValue> {
     let result = Object::new();
     Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
@@ -393,6 +509,26 @@ pub fn install() {
     );
     sign_revocation.forget();
 
+    let prepare_deletion = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(prepare_account_deletion(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"prepareAccountDeletion".into(),
+        prepare_deletion.as_ref().unchecked_ref(),
+    );
+    prepare_deletion.forget();
+
+    let prepare_space_deletion = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(prepare_space_deletion(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"prepareSpaceDeletion".into(),
+        prepare_space_deletion.as_ref().unchecked_ref(),
+    );
+    prepare_space_deletion.forget();
+
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
 
@@ -489,6 +625,8 @@ mod tests {
             "completeLink",
             "authorizeDevice",
             "signRevocation",
+            "prepareAccountDeletion",
+            "prepareSpaceDeletion",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");
