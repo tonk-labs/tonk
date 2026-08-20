@@ -17,8 +17,9 @@ use dialog_ucan_core::time::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_account::CUSTOMER_CREDENTIAL_SITE;
 use tonk_account::customer::{CustomerStatus, Receipt};
+use tonk_account::pending::{PendingQueue, PendingWork};
+use tonk_account::{CUSTOMER_CREDENTIAL_SITE, PENDING_WORK_CREDENTIAL_SITE};
 use tonk_common::log;
 use tonk_identity::request::{build_enroll_invocation, build_enroll_invocation_with_deposits};
 use url::Url;
@@ -181,6 +182,11 @@ pub async fn get_state(
                 };
                 save_customer(&state, &refreshed).await?;
             }
+            // This probe is what notices activation, so it is where
+            // work deferred during the wait gets replayed.
+            if receipt.status == CustomerStatus::Active {
+                drain_pending(&state).await;
+            }
             Some(receipt.status)
         }
         Err(HttpError::Upstream(failure)) if failure.status == 404 => None,
@@ -223,8 +229,75 @@ pub async fn provision_custody(
         .map_err(|error| TonkWorkerError::Router(format!("consent is not hex: {error}")))?;
     let consent = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
         .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))?;
-    provision_consumer(&state, &custody, &consent, Some("custody")).await?;
+    provision_or_defer(&state, &custody, &consent, Some("custody")).await?;
     Ok(Json(()))
+}
+
+/// `POST /api/custody/queue` request body: a custody cell that could
+/// not be published yet.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueCustodyRequest {
+    /// The custody space whose cell is waiting.
+    pub custody: String,
+    /// Hex-encoded sealed envelope to publish.
+    pub sealed_hex: String,
+}
+
+/// POST `/api/custody/queue` → record a custody cell for publication
+/// once its space is provisioned and the account confirms its email.
+/// The page publishes it — only a fresh passkey assertion can sign for
+/// the custody key — so this records rather than performs.
+#[wasm_compat]
+pub async fn queue_custody(
+    State(state): State<AppState>,
+    Json(request): Json<QueueCustodyRequest>,
+) -> Result<Json<()>, TonkWorkerError> {
+    let state = state.read().await;
+    defer(
+        &state,
+        PendingWork::PublishCustody {
+            custody: request.custody,
+            sealed_hex: request.sealed_hex,
+        },
+    )
+    .await?;
+    Ok(Json(()))
+}
+
+/// Provision `consumer`, or queue it when the account has not yet
+/// confirmed its email.
+///
+/// The access service provisions nothing for a customer that is only
+/// `Registered`, so that refusal is not a failure here — it is the
+/// expected answer during the window between enrolling and clicking the
+/// emailed link. The entry replays from the status probe that notices
+/// activation. Every other refusal propagates.
+pub(crate) async fn provision_or_defer(
+    state: &crate::worker::TonkState,
+    consumer: &dialog_varsig::Did,
+    consent: &dialog_ucan_core::DelegationChain,
+    kind: Option<&str>,
+) -> Result<(), TonkWorkerError> {
+    match provision_consumer(state, consumer, consent, kind).await {
+        Err(TonkWorkerError::Upstream { ref code, .. })
+            if code.as_deref() == Some("CustomerInactive") =>
+        {
+            log!("{consumer} queued until the account confirms its email");
+            defer(
+                state,
+                PendingWork::Provision {
+                    consumer: consumer.to_string(),
+                    consent_hex: hex::encode(consent.to_bytes().map_err(|error| {
+                        TonkWorkerError::Internal(format!("consent does not encode: {error}"))
+                    })?),
+                    consumer_kind: kind.map(str::to_owned),
+                },
+            )
+            .await
+        }
+        other => other,
+    }
 }
 
 /// Provision `consumer` with the same-origin access service under this
@@ -379,6 +452,183 @@ async fn save_customer(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save the customer record: {error}"))
         })
+}
+
+async fn load_pending(state: &crate::worker::TonkState) -> Result<PendingQueue, TonkWorkerError> {
+    let bytes = match state
+        .profile
+        .credential()
+        .site(PENDING_WORK_CREDENTIAL_SITE)
+        .load::<Vec<u8>>()
+        .perform(&state.operator)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(PendingQueue::default()),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load pending work: {error}"
+            )));
+        }
+    };
+    if bytes.is_empty() {
+        return Ok(PendingQueue::default());
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(queue) => Ok(queue),
+        Err(error) => {
+            // An unreadable queue would otherwise wedge every later
+            // append. The work it held is recoverable — re-running the
+            // ceremony re-queues it — where a permanently poisoned site
+            // is not.
+            log!("stored pending work is unreadable, starting a fresh queue: {error}");
+            Ok(PendingQueue::default())
+        }
+    }
+}
+
+async fn save_pending(
+    state: &crate::worker::TonkState,
+    queue: &PendingQueue,
+) -> Result<(), TonkWorkerError> {
+    let bytes = serde_json::to_vec(queue).map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to serialize pending work: {error}"))
+    })?;
+    state
+        .profile
+        .credential()
+        .site(PENDING_WORK_CREDENTIAL_SITE)
+        .save(bytes)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("failed to save pending work: {error}")))
+}
+
+/// Record `work` for replay once the account confirms its email, then
+/// try to drain immediately — an already-active customer must not wait
+/// for the next status probe.
+pub(crate) async fn defer(
+    state: &crate::worker::TonkState,
+    work: PendingWork,
+) -> Result<(), TonkWorkerError> {
+    let mut queue = load_pending(state).await?;
+    queue.push(work);
+    save_pending(state, &queue).await?;
+    drain_pending(state).await;
+    Ok(())
+}
+
+/// Replay queued work in the order it was recorded, stopping at the
+/// first entry that does not complete.
+///
+/// Stopping rather than skipping is the ordering invariant: a custody
+/// cell may only be published once its DID is provisioned, so an entry
+/// that fails must hold back everything behind it. Best effort by
+/// design — a drain that cannot run leaves the queue exactly as it was,
+/// and the next probe tries again.
+pub(crate) async fn drain_pending(state: &crate::worker::TonkState) {
+    let mut queue = match load_pending(state).await {
+        Ok(queue) => queue,
+        Err(error) => return log!("pending work unreadable: {error}"),
+    };
+    if queue.is_empty() {
+        return;
+    }
+
+    let mut completed = 0;
+    for work in queue.entries() {
+        match run_pending(state, work).await {
+            Ok(()) => completed += 1,
+            Err(error) => {
+                log!("pending work for {} still waiting: {error}", work.subject());
+                break;
+            }
+        }
+    }
+    if completed == 0 {
+        return;
+    }
+    queue.retain_after(completed);
+    if let Err(error) = save_pending(state, &queue).await {
+        // The work itself succeeded; failing to shorten the queue only
+        // costs a repeat, and every entry is idempotent.
+        log!("pending work ran but the queue could not be shortened: {error}");
+    }
+}
+
+/// Perform one queued entry.
+///
+/// A custody publish needs the PRF-derived custody key, which only a
+/// page holding a fresh passkey assertion has, so the worker cannot run
+/// one and reports it as still waiting. That halts the drain by design:
+/// the publish must not be overtaken by entries recorded after it.
+async fn run_pending(
+    state: &crate::worker::TonkState,
+    work: &PendingWork,
+) -> Result<(), TonkWorkerError> {
+    match work {
+        PendingWork::Provision {
+            consumer,
+            consent_hex,
+            consumer_kind,
+        } => {
+            let consumer: dialog_varsig::Did = consumer.parse().map_err(|error| {
+                TonkWorkerError::Router(format!("queued consumer DID is invalid: {error:?}"))
+            })?;
+            let bytes = hex::decode(consent_hex).map_err(|error| {
+                TonkWorkerError::Router(format!("queued consent is not hex: {error}"))
+            })?;
+            let consent =
+                dialog_ucan_core::DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
+                    TonkWorkerError::Router(format!("queued consent does not decode: {error}"))
+                })?;
+            provision_consumer(state, &consumer, &consent, consumer_kind.as_deref()).await
+        }
+        PendingWork::PublishCustody { custody, .. } => Err(TonkWorkerError::Router(format!(
+            "custody publish for {custody} needs a passkey assertion, so a page must run it"
+        ))),
+    }
+}
+
+/// `GET /api/customer/pending` → the queued work a page may have to
+/// run: the account panel reads this to learn whether it must raise a
+/// passkey assertion and publish a custody cell.
+#[wasm_compat]
+pub async fn get_pending(
+    State(state): State<AppState>,
+) -> Result<Json<PendingQueue>, TonkWorkerError> {
+    let state = state.read().await;
+    Ok(Json(load_pending(&state).await?))
+}
+
+/// `POST /api/customer/pending/custody` request body: the custody DID
+/// whose queued publish a page just completed.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletedCustodyRequest {
+    /// The custody space whose cell is now published.
+    pub custody: String,
+}
+
+/// `POST /api/customer/pending/custody` → drop the queued publish for
+/// `custody`, which a page completed with its own assertion, then drain
+/// whatever it was holding back.
+#[wasm_compat]
+pub async fn complete_pending_custody(
+    State(state): State<AppState>,
+    Json(request): Json<CompletedCustodyRequest>,
+) -> Result<Json<()>, TonkWorkerError> {
+    let state = state.read().await;
+    let mut queue = load_pending(&state).await?;
+    let before = queue.len();
+    queue.0.retain(|work| {
+        !matches!(work, PendingWork::PublishCustody { custody, .. } if custody == &request.custody)
+    });
+    if queue.len() != before {
+        save_pending(&state, &queue).await?;
+    }
+    drain_pending(&state).await;
+    Ok(Json(()))
 }
 
 pub(crate) async fn clear_customer(

@@ -199,6 +199,59 @@ fn show_success(host: &HtmlElement) {
 /// every other answer: an active customer needs no notice, and a
 /// deployment without registration should not decorate the panel with
 /// its absence.
+/// Publish every custody cell queued while the account was waiting on
+/// email confirmation.
+///
+/// Each publish needs a fresh passkey assertion, which is a user
+/// prompt, so this runs only when there is something queued — an
+/// activated account with nothing waiting must never see a passkey
+/// dialog it did not ask for. Failures stay queued for the next load.
+async fn publish_queued_custody() {
+    let queue = match crate::api::pending_work().await {
+        Ok(queue) => queue,
+        Err(error) => {
+            web_sys::console::warn_1(&format!("pending work unreadable: {error}").into());
+            return;
+        }
+    };
+    let endpoint = match proposed_remote() {
+        Ok(endpoint) => endpoint,
+        Err(error) => return web_sys::console::warn_1(&format!("no remote: {error}").into()),
+    };
+    for work in queue.entries() {
+        let tonk_account::pending::PendingWork::PublishCustody {
+            custody,
+            sealed_hex,
+        } = work
+        else {
+            continue;
+        };
+        match crate::identity_bridge::publish_queued_custody(
+            crate::identity_bridge::PublishQueuedCustodyInput {
+                custody_did: custody.clone(),
+                sealed_hex: sealed_hex.clone(),
+                endpoint: endpoint.clone(),
+            },
+        )
+        .await
+        {
+            Ok(()) => {
+                if let Err(error) = crate::api::complete_custody_publish(custody).await {
+                    web_sys::console::warn_1(
+                        &format!("custody published but still queued: {error}").into(),
+                    );
+                }
+            }
+            Err(error) => {
+                web_sys::console::warn_1(&format!("custody publish still pending: {error}").into());
+                // Stop at the first failure: a later entry must not
+                // overtake one that is still waiting on provisioning.
+                break;
+            }
+        }
+    }
+}
+
 fn load_activation_notice(host: HtmlElement) {
     spawn_local(async move {
         if !wants_enrollment().await {
@@ -251,6 +304,13 @@ fn load_activation_notice(host: HtmlElement) {
             _ => "Not registered",
         };
         set_text(&host, "#account-registration-value", label);
+        // Activation is what unblocks the queued custody publish, and
+        // only a page can sign it — the custody key lives inside a
+        // passkey assertion. This notice is the one place that both
+        // learns about activation and can raise one.
+        if state["status"].as_str() == Some("Active") {
+            publish_queued_custody().await;
+        }
         if state["status"].as_str() != Some("Registered") {
             return;
         }
@@ -1446,7 +1506,6 @@ fn bind(host: &HtmlElement) {
                     device_did,
                     device_name,
                     remote: proposed_remote()?,
-                    endpoint: proposed_remote()?,
                     created_on: Some(crate::device_name::current()),
                     service_did: deployment_service_did().await,
                 })
@@ -1468,14 +1527,25 @@ fn bind(host: &HtmlElement) {
                 };
                 set_busy(&host, true, "Creating your account…");
                 complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await?;
-                // Provisioning the custody space is retryable; the
-                // published cell is the account's durability.
+                // Neither of these can land before the emailed link is
+                // clicked: the service provisions nothing, and serves
+                // nothing, for a customer that has not confirmed its
+                // email. Both queue instead, and replay on activation.
                 if let Err(error) =
                     crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
                 {
                     web_sys::console::warn_1(
                         &format!("custody provisioning deferred: {error}").into(),
                     );
+                }
+                if let Some(sealed_hex) = &created.sealed_hex
+                    && let Err(error) =
+                        crate::api::queue_custody_publish(&created.custody_did, sealed_hex).await
+                {
+                    // The sealed secret is only in this page's memory
+                    // until it is recorded, so failing to queue it is
+                    // the one loss worth surfacing.
+                    return Err(format!("could not record the account secret: {error}"));
                 }
                 Ok::<(), String>(())
             }
@@ -1516,8 +1586,9 @@ fn bind(host: &HtmlElement) {
                 })
                 .await
                 .map_err(|error| error.to_string())?;
-                // Provisioning is retryable; the published cell is the
-                // account's durability, so a refusal here only warns.
+                // Provision before publishing: the new custody DID is
+                // nobody's consumer until this deposit lands, and the
+                // service serves no unprovisioned subject.
                 if let Err(error) =
                     crate::api::provision_custody(&enrolled.custody_did, &enrolled.consent_hex)
                         .await
@@ -1525,6 +1596,17 @@ fn bind(host: &HtmlElement) {
                     web_sys::console::warn_1(
                         &format!("custody provisioning deferred: {error}").into(),
                     );
+                }
+                // The ceremony hands back sealed bytes when its publish
+                // was refused. Retry now that provisioning has run, and
+                // queue what still will not land.
+                if let Some(sealed_hex) = &enrolled.sealed_hex
+                    && let Err(error) =
+                        crate::api::queue_custody_publish(&enrolled.custody_did, sealed_hex).await
+                {
+                    return Err(format!(
+                        "could not record the sealed account secret: {error}"
+                    ));
                 }
                 crate::api::save_root(
                     enrolled.credential_id,

@@ -533,9 +533,27 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .expect("the consumer row exists");
     assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
 
-    // Re-provisioning under the same customer is a no-op success.
+    // Re-provisioning under the same customer succeeds and changes
+    // nothing: clients retry provisioning freely (a queued entry
+    // replayed twice, two devices racing), so it must be idempotent
+    // rather than a conflict.
+    let registered_at = consumer.registered;
     let container = add_container(&customer, &space, &customer.did()).await;
-    assert!(fixture.registration(&container).handle().await.is_ok());
+    let Answer::Consumer(receipt) = fixture.registration(&container).handle().await.unwrap() else {
+        panic!("expected a consumer receipt");
+    };
+    assert_eq!(receipt.provider, customer.did());
+    let again = fixture
+        .store
+        .consumer(space.did().as_str())
+        .await
+        .unwrap()
+        .expect("the consumer row still exists");
+    assert_eq!(again.provider.as_deref(), Some(customer.did().as_str()));
+    assert_eq!(
+        again.registered, registered_at,
+        "re-provisioning must not re-register the consumer"
+    );
     Ok(())
 }
 
@@ -587,9 +605,23 @@ async fn it_refuses_provisioning_someone_elses_consumer() -> anyhow::Result<()> 
     let container = add_container(&alice, &space, &alice.did()).await;
     fixture.registration(&container).handle().await.unwrap();
 
+    // Mallory holds the space's consent to herself, and is active in her
+    // own right; what stops her is that the space already has a
+    // provider. A consumer has exactly one.
     let container = add_container(&mallory, &space, &mallory.did()).await;
     let refusal = fixture.registration(&container).handle().await.unwrap_err();
     assert!(matches!(refusal, RegistrationError::ConsumerProvided));
+    let consumer = fixture
+        .store
+        .consumer(space.did().as_str())
+        .await
+        .unwrap()
+        .expect("the consumer row exists");
+    assert_eq!(
+        consumer.provider.as_deref(),
+        Some(alice.did().as_str()),
+        "a refused takeover must leave the original provider paying"
+    );
     Ok(())
 }
 

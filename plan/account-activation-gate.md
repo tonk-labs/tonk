@@ -71,19 +71,32 @@ Two entry kinds:
 
 Ordering matters within the queue: a publish for a custody DID must not be replayed before that DID's provision entry, or the presign gate denies it for having no provider. Entries replay in the order they were recorded, which gives that for free.
 
+### Who replays what
+
+The two kinds drain in different places, because only one of them can be signed without a user present.
+
+A **provision** is signed by the device key, which the worker holds, so the worker replays it directly — from the customer status probe that notices activation, and immediately after any entry is appended so an already-active customer never waits.
+
+A **publish** is signed by the custody key, which is PRF-derived inside a passkey assertion and never stored. The worker cannot sign one, and a pre-signed invocation is not an option either: `/memory/publish` carries `Timestamp::five_minutes_from_now()`, which cannot outlive a wait for an email click. So only the sealed bytes are queued, and the account panel replays them behind a fresh assertion once it observes `Active`. The worker's own drain reports a publish entry as still waiting, which stops the drain there rather than letting later entries overtake it.
+
+Because each publish costs a passkey prompt, the panel reads the queue first and raises an assertion only when something is actually waiting.
+
 Account creation becomes:
 
 ```
 1. generate the account secret, create the custody passkey, seal the envelope
+   (the ceremony no longer publishes; it returns the sealed bytes)
 2. sign the account-creation request
 3. /customer/enroll                     -> Registered
-4. queue provision(custody, kind=custody)
+4. provision(custody, kind=custody)     -> refused, queued
 5. queue publish(custody cell, sealed)
-6. drain                                -> both refused while Registered; entries stand
    ...
-7. user clicks the activation link      -> Active
-8. drain                                -> provision, then publish; entries cleared
+6. user clicks the activation link      -> Active
+7. status probe drains the provision
+8. account panel drains the publish behind a fresh assertion
 ```
+
+Step 1 is the load-bearing change to `create_custody_account`: it used to treat a refused publish as fatal, on the grounds that an account whose sealed secret was never published can only be unlocked by the page still holding it. That reasoning stands — which is why the sealed bytes must reach the queue before the ceremony reports success, and why failing to record them is the one error creation surfaces rather than warns about.
 
 A space created before activation appends a `provision` entry the same way and is simply not hosted until the drain succeeds; it works locally throughout.
 
@@ -95,11 +108,13 @@ The queue is drained whenever the customer's status is read or changes:
 
 - immediately after an entry is appended, so an already-active customer never waits
 - on the customer status probe the dashboard polls, which is what notices activation
-- after `/customer/activate` completes in the same browser
+- on the account panel, for the publish entries only the page can sign
 
 No timer and no background loop: the status probe already runs on the account panel, and it is the only thing that learns about activation. A drain stops at the first entry that fails and leaves it, and everything after it, queued — this is what keeps provision-before-publish honest without the drain having to know why an entry failed.
 
-An entry whose failure means the work is already done is cleared rather than retried: `ConsumerProvided` for a provision (some other device got there first), and a custody cell that already holds an envelope for this credential, which is how `enroll_custody` already reconciles a re-enrolled credential.
+An entry whose failure means the work is already done is treated as success and cleared: `ConsumerProvided` for a provision (some other device got there first), and a custody cell that already holds this account's envelope, which is how `enroll_custody` already reconciles a re-enrolled credential.
+
+A queued publish is opened against the asserting passkey's KEK before it is written. A cell that the credential owning it cannot unseal is worse than no cell, so a mismatch fails rather than publishing.
 
 ### Failure surface
 

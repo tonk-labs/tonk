@@ -669,6 +669,71 @@ pub async fn provision_custody(custody: &str, consent_hex: &str) -> Result<(), T
     }
 }
 
+/// The work queued until the account confirms its email, so the page
+/// can run the parts only it can sign.
+pub async fn pending_work() -> Result<tonk_account::pending::PendingQueue, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/customer/pending", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/customer/pending returned {status}: {text}"
+        )))
+    }
+}
+
+/// Queue a custody cell that could not be published yet, so it is
+/// republished once provisioning and email activation let it through.
+pub async fn queue_custody_publish(custody: &str, sealed_hex: &str) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/custody/queue", origin()))
+        .json(&serde_json::json!({
+            "custody": custody,
+            "sealedHex": sealed_hex,
+        }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/custody/queue returned {status}: {text}"
+        )))
+    }
+}
+
+/// Tell the worker a queued custody publish is done, so it drops the
+/// entry and drains whatever it was holding back.
+pub async fn complete_custody_publish(custody: &str) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/customer/pending/custody", origin()))
+        .json(&serde_json::json!({ "custody": custody }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/customer/pending/custody returned {status}: {text}"
+        )))
+    }
+}
+
 /// Register a device with the account service through the worker, so a
 /// grant recipient is already listed before its delegation is delivered.
 pub async fn register_account_device(
