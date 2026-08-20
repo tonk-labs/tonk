@@ -109,6 +109,47 @@ extern "C" {
     pub fn patch_idb_dead_shims();
 }
 
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod idb_lifecycle_tests {
+    use wasm_bindgen::prelude::wasm_bindgen;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    #[wasm_bindgen(inline_js = r#"
+export function dropped_idb_request_handler() {
+    const request = indexedDB.deleteDatabase(
+        `tonk-dropped-idb-handler-${Date.now()}-${Math.random()}`
+    );
+    request.onsuccess = () => {
+        throw new Error('closure invoked recursively or after being dropped');
+    };
+    const handler = request.onsuccess;
+    try {
+        handler.call(request, new Event('success'));
+        return 'ignored';
+    } catch (error) {
+        return String(error && error.message || error);
+    } finally {
+        request.onsuccess = null;
+    }
+}
+"#)]
+    extern "C" {
+        fn dropped_idb_request_handler() -> String;
+    }
+
+    /// A browser may still deliver an event after its originating wasm
+    /// instance has been torn down. That one known stale-shim exception is a
+    /// no-op addressed to dead code, while every other handler error remains
+    /// visible.
+    #[dialog_common::test]
+    fn it_ignores_an_idb_event_for_a_dropped_wasm_closure() {
+        crate::patch_idb_dead_shims();
+        assert_eq!(dropped_idb_request_handler(), "ignored");
+    }
+}
+
 mod broadcast;
 pub use broadcast::*;
 
