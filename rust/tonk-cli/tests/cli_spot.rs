@@ -86,23 +86,28 @@ const DEAD_RELAY: &str = "http://127.0.0.1:9/revocations";
 /// in order. `tonk remote add` wires the *first* remote as `main`'s
 /// upstream and leaves it alone after that, so `remotes[0]` is the one
 /// the repo pushes to.
-fn spot_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) {
+fn spot_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) -> String {
     let relayed: Vec<(&str, &str, Option<&str>)> = remotes
         .iter()
         .map(|(name, endpoint)| (*name, *endpoint, None))
         .collect();
-    spot_with_relayed_remotes(state_dir, &relayed);
+    spot_with_relayed_remotes(state_dir, &relayed)
 }
 
 /// The same, with a revocation relay per remote. An invite that embeds a
 /// remote must name a relay for its revocations to reach, so a mint against
 /// a relay-less remote is refused — see
 /// `when_a_remote_carries_no_revocation_relay`.
-fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&str>)]) {
+fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&str>)]) -> String {
     let site = state_dir.join("site");
     let site = site.to_str().expect("utf-8 site path");
     let output = run(state_dir, &["spot", "new", "demo", "--site", site], &[]);
     assert!(output.status.success(), "{}", stderr_of(&output));
+    let did = stdout_of(&output)
+        .lines()
+        .find_map(|line| line.strip_prefix("DID: "))
+        .expect("spot new reports the new spot's DID")
+        .to_owned();
 
     for (name, endpoint, relay) in remotes {
         let mut args = vec!["remote", "add", name, endpoint];
@@ -112,6 +117,7 @@ fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&s
         let output = run(state_dir, &args, &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
     }
+    did
 }
 
 /// Write a `spots.json` registry directly (bypassing the CLI) so
@@ -583,12 +589,29 @@ mod when_minting_against_a_live_remote {
     /// `#[tokio::test]`, whose current-thread runtime is also hosting
     /// the access service — block that thread on a subprocess and the
     /// service the CLI is talking to can never answer.
-    async fn mint_against(state_dir: PathBuf, endpoint: String, args: &[&str]) -> Output {
+    async fn mint_against(
+        env: &AccessServiceAddress,
+        state_dir: PathBuf,
+        endpoint: String,
+        args: &[&str],
+    ) -> Output {
         let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-        tokio::task::spawn_blocking(move || {
+        let setup_dir = state_dir.clone();
+        let setup_endpoint = endpoint.clone();
+        // Create the spot first so its DID can be provisioned: minting
+        // pushes, and the access service serves no unprovisioned space.
+        let did = tokio::task::spawn_blocking(move || {
             // With a relay, because these mints embed the remote: an invite
             // that carries an endpoint has to say where its revocations go.
-            spot_with_relayed_remotes(&state_dir, &[("origin", &endpoint, Some(DEAD_RELAY))]);
+            spot_with_relayed_remotes(&setup_dir, &[("origin", &setup_endpoint, Some(DEAD_RELAY))])
+        })
+        .await
+        .expect("blocking spot setup joins");
+        env.provision_subject(&did)
+            .await
+            .expect("the spot provisions");
+
+        tokio::task::spawn_blocking(move || {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             run(&state_dir, &args, &[])
         })
@@ -606,7 +629,13 @@ mod when_minting_against_a_live_remote {
         let state = tempfile::tempdir()?;
         let origin = env.access_service_url.trim_end_matches('/').to_owned();
 
-        let output = mint_against(state.path().to_path_buf(), origin.clone(), &["invite"]).await;
+        let output = mint_against(
+            &env,
+            state.path().to_path_buf(),
+            origin.clone(),
+            &["invite"],
+        )
+        .await;
         assert!(output.status.success(), "{}", stderr_of(&output));
 
         let stdout = stdout_of(&output);
@@ -652,6 +681,7 @@ mod when_minting_against_a_live_remote {
         let origin = env.access_service_url.trim_end_matches('/').to_owned();
 
         let output = mint_against(
+            &env,
             state.path().to_path_buf(),
             origin.clone(),
             &["invite", "--no-remote"],
@@ -682,6 +712,7 @@ mod when_minting_against_a_live_remote {
         let origin = env.access_service_url.trim_end_matches('/').to_owned();
 
         let output = mint_against(
+            &env,
             state.path().to_path_buf(),
             origin,
             &["invite", "--base-url", "http://127.0.0.1:9/join"],
@@ -718,9 +749,18 @@ mod when_status_is_synced {
         let state_dir = state.path().to_path_buf();
         let endpoint = env.access_service_url.trim_end_matches('/').to_owned();
 
-        let (expected_hash, status) = tokio::task::spawn_blocking(move || {
-            spot_with_remotes(&state_dir, &[("origin", &endpoint)]);
+        let setup_dir = state_dir.clone();
+        let setup_endpoint = endpoint.clone();
+        let did = tokio::task::spawn_blocking(move || {
+            spot_with_remotes(&setup_dir, &[("origin", &setup_endpoint)])
+        })
+        .await
+        .expect("blocking spot setup joins");
+        env.provision_subject(&did)
+            .await
+            .expect("the spot provisions");
 
+        let (expected_hash, status) = tokio::task::spawn_blocking(move || {
             let pushed = run(&state_dir, &["push"], &[]);
             assert!(pushed.status.success(), "{}", stderr_of(&pushed));
             let pushed = stdout_of(&pushed);

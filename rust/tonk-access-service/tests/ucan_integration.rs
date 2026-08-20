@@ -45,6 +45,9 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
         .perform(&operator)
         .await?;
     profile.access().save(ownership).perform(&operator).await?;
+    // The gate serves a subject only while an active customer pays
+    // for it; these tests are about sync, not registration.
+    env.provision_subject(repo.did().as_str()).await?;
 
     // Set up UCAN remote pointing at our access service
     let address = UcanAddress::new(&env.access_service_url);
@@ -129,6 +132,9 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
         .save(ownership)
         .perform(&alice_op)
         .await?;
+    // Bob syncs Alice's repository, so it is Alice's subject that must
+    // be paid for; Bob's own repo is never pushed.
+    env.provision_subject(alice_repo.did().as_str()).await?;
 
     // Alice sets up UCAN remote
     let address = UcanAddress::new(&env.access_service_url);
@@ -254,6 +260,9 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
         .perform(&operator)
         .await?;
     profile.access().save(ownership).perform(&operator).await?;
+    // The gate serves a subject only while an active customer pays
+    // for it; these tests are about sync, not registration.
+    env.provision_subject(repo.did().as_str()).await?;
 
     let address = UcanAddress::new(&env.access_service_url);
     let origin = repo

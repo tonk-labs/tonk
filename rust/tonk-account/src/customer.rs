@@ -247,6 +247,11 @@ pub enum RegistrationError {
     /// The customer is already active, so enrollment is refused.
     #[error("this customer is already active")]
     CustomerActive,
+    /// The customer enrolled but has not confirmed their email address,
+    /// so nothing may be provisioned under them yet. Recoverable by the
+    /// customer alone: re-enrolling resends the activation email.
+    #[error("this customer is awaiting email activation")]
+    CustomerInactive,
     /// The customer is suspended, so nothing self-serve applies.
     #[error("this customer is suspended")]
     CustomerSuspended,
@@ -267,6 +272,7 @@ impl RegistrationError {
             RegistrationError::Forbidden { .. } => 403,
             RegistrationError::UnknownCustomer => 404,
             RegistrationError::CustomerActive
+            | RegistrationError::CustomerInactive
             | RegistrationError::CustomerSuspended
             | RegistrationError::ConsumerProvided => 409,
             RegistrationError::Internal { .. } => 500,

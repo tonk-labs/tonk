@@ -8,11 +8,11 @@
 //! rule the `Consumer` row has always documented. Without it, any
 //! self-minted keypair stores bytes under its own namespace unbilled.
 //!
-//! Behind a flag (`REQUIRE_PROVISIONING`), default off: existing
-//! deployments ramp it only once their spaces are provisioned, and the
-//! browser's creation ceremony still publishes the custody cell before
-//! the account registers — that ordering must move before a deployment
-//! that serves browsers can enforce.
+//! Always enforced, on both the worker and the native server: a flag
+//! defaulted off is a gate that is not there, and one defaulted on is a
+//! switch for turning billing enforcement off in production. Clients
+//! hold work that lands before activation as a pending queue and replay
+//! it once the email is confirmed, rather than relying on a ramp.
 
 use dialog_capability::access::AuthorizeError;
 use dialog_ucan_core::{Container, Invocation};

@@ -65,6 +65,11 @@ pub struct CustodyAccountCeremony {
     pub custody_did: String,
     /// Hex-encoded consent chain for `/provider/add`.
     pub consent_hex: String,
+    /// Hex-encoded sealed account secret, when the custody cell could
+    /// not be published during the ceremony because the account has not
+    /// confirmed its email yet. The caller queues it and publishes once
+    /// activation lands; `None` means the cell is already published.
+    pub sealed_hex: Option<String>,
 }
 
 /// Informational metadata captured by the browser that created a passkey.
@@ -223,11 +228,14 @@ pub async fn create_account(
 /// stored anywhere; every later custody operation derives its keys
 /// inside a fresh assertion.
 ///
-/// The cell publishes before anything registers: creation without it
-/// would mint an account only this page's memory can unlock, so a
-/// refused publish fails the whole ceremony instead.
+/// The cell cannot publish here: the account has not enrolled yet, let
+/// alone confirmed its email, and the access service serves nothing for
+/// an unactivated customer. The sealed envelope comes back instead, for
+/// the caller to queue and publish once activation lands
+/// (`plan/account-activation-gate.md` §5). It is ciphertext under the
+/// passkey's KEK, so holding it is not holding key material — but until
+/// it is published the account can only be unlocked on this browser.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[allow(clippy::too_many_arguments)]
 pub async fn create_custody_account(
     email: String,
     device_did: dialog_varsig::Did,
@@ -235,7 +243,6 @@ pub async fn create_custody_account(
     remote: String,
     created_on: Option<&str>,
     service: Option<&dialog_varsig::Did>,
-    endpoint: &str,
 ) -> Result<CustodyAccountCeremony> {
     use crate::envelope::{AccountSecret, KekMethod, custody_kek, custody_signer};
 
@@ -259,9 +266,6 @@ pub async fn create_custody_account(
     let custody = custody_signer(&evaluation.key).await?;
     let kek = custody_kek(&evaluation.kek);
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
-    crate::custody::publish_secret(custody.clone(), &sealed, endpoint, None)
-        .await
-        .context("failed to publish the custody cell; the account was not created")?;
     let consent = crate::custody::mint_custody_consent(custody.clone(), &root.did()).await?;
     let consent_hex = hex::encode(
         consent
@@ -297,6 +301,7 @@ pub async fn create_custody_account(
         deposits_hex,
         custody_did: custody.did().to_string(),
         consent_hex,
+        sealed_hex: Some(hex::encode(&sealed)),
     })
 }
 
@@ -347,6 +352,10 @@ pub struct CustodyEnrollment {
     /// Hex-encoded consent chain for `/provider/add`: the custody
     /// key's agreement to being provided by the account.
     pub consent_hex: String,
+    /// Hex-encoded sealed account secret, when the cell could not be
+    /// published yet — the new custody DID is not provisioned until the
+    /// caller deposits the consent above. `None` once it is published.
+    pub sealed_hex: Option<String>,
 }
 
 /// Enroll an additional custody passkey: unlock the account through an
@@ -384,24 +393,40 @@ pub async fn enroll_custody(
     let kek = custody_kek(&evaluation.kek);
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
 
+    // A brand new custody DID is nobody's consumer until the caller
+    // deposits the consent below, and the access service serves no
+    // unprovisioned subject — so a refusal here is the expected first
+    // outcome, not a failure. Hand the sealed bytes back to be queued
+    // and published once provisioning lands.
+    let mut sealed_hex = Some(hex::encode(&sealed));
     if let Err(publish_error) =
         crate::custody::publish_secret(custody.clone(), &sealed, endpoint, None).await
     {
         // The cell may already exist: the same credential re-enrolled
         // names the same space. Anything that opens to this account is
-        // that case; anything else is a real refusal.
+        // that case, and needs no republish; anything else waits.
         match crate::custody::resolve_secret(custody.clone(), endpoint).await {
             Ok(Some(existing)) => {
                 let published = Envelope::decode(&existing)
                     .ok()
                     .and_then(|envelope| kek.open(&envelope).ok());
                 match published {
-                    Some(open) if open.signing_seed() == secret.signing_seed() => {}
+                    Some(open) if open.signing_seed() == secret.signing_seed() => {
+                        sealed_hex = None;
+                    }
                     _ => anyhow::bail!("the custody space already holds a different account"),
                 }
             }
-            _ => return Err(publish_error),
+            // Not published, and not already ours: leave `sealed_hex`
+            // set so the caller queues it. The error itself is the
+            // caller's to report, once it knows whether provisioning is
+            // still pending.
+            _ => {
+                let _ = publish_error;
+            }
         }
+    } else {
+        sealed_hex = None;
     }
 
     let consent = crate::custody::mint_custody_consent(custody.clone(), &root.did()).await?;
@@ -414,7 +439,49 @@ pub async fn enroll_custody(
         custody_did: custody.did().to_string(),
         credential_id,
         consent_hex,
+        sealed_hex,
     })
+}
+
+/// Publish a queued custody cell, with a fresh assertion.
+///
+/// The queued bytes were sealed under this passkey's KEK during the
+/// ceremony that created it; the assertion here re-derives the custody
+/// key that signs the publish, and proves the same credential is
+/// present. A cell that already holds this account's envelope is
+/// success — another device got there first.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn publish_queued_custody(
+    custody_did: &str,
+    sealed: &[u8],
+    endpoint: &str,
+) -> Result<()> {
+    use crate::envelope::{custody_kek, custody_signer};
+
+    let evaluated = crate::passkey::evaluate_custody_passkey().await?;
+    let evaluation = evaluated
+        .evaluation
+        .context("the authenticator returned no PRF outputs")?;
+    let custody = custody_signer(&evaluation.key).await?;
+    if custody.did().to_string() != custody_did {
+        anyhow::bail!("the asserted passkey derives a different custody space");
+    }
+    // Prove the queued bytes open under this passkey before publishing:
+    // a cell that cannot be unsealed by the credential that owns it is
+    // worse than no cell at all.
+    let kek = custody_kek(&evaluation.kek);
+    let envelope = crate::envelope::Envelope::decode(sealed)
+        .map_err(|error| anyhow::anyhow!("the queued envelope is unreadable: {error}"))?;
+    kek.open(&envelope)
+        .map_err(|error| anyhow::anyhow!("the queued envelope did not open: {error}"))?;
+
+    match crate::custody::publish_secret(custody.clone(), sealed, endpoint, None).await {
+        Ok(()) => Ok(()),
+        Err(publish_error) => match crate::custody::resolve_secret(custody, endpoint).await {
+            Ok(Some(_)) => Ok(()),
+            _ => Err(publish_error),
+        },
+    }
 }
 
 /// A passkey unlock's outcome: the device-link ceremony minted from

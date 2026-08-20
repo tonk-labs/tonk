@@ -13,6 +13,8 @@ mod descriptor;
 pub mod detach;
 /// Shared wire and browser-ceremony contracts for native account handoffs.
 pub mod handoff;
+/// Work deferred until the account confirms its email.
+pub mod pending;
 /// Provider-neutral account spot backup artifacts.
 pub mod prefix;
 mod provider;
@@ -45,6 +47,10 @@ pub const ACCOUNT_PROVIDER_CREDENTIAL_SITE: &str = "tonk-account-provider-v1";
 pub const CUSTOMER_CREDENTIAL_SITE: &str = "tonk-customer-v1";
 /// Credential site holding the trusted descriptor hash.
 pub const TRUSTED_BASE_CREDENTIAL_SITE: &str = "tonk-account-trusted-base-v1";
+/// Credential site holding work that cannot run until the account
+/// confirms its email: provisioning calls and the custody-cell publish.
+/// See [`pending`] and `plan/account-activation-gate.md` §5.
+pub const PENDING_WORK_CREDENTIAL_SITE: &str = "tonk-pending-work-v1";
 
 /// What the account service says when an account predates the repository
 /// descriptor and has not established one yet.

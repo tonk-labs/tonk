@@ -139,7 +139,25 @@ mod tests {
             .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))
     }
 
+    /// Create an account and confirm its email, leaving it able to host
+    /// spaces. Most callers want this.
     pub(crate) async fn sign_up(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        email: &str,
+    ) -> Result<()> {
+        enroll_only(driver, env, email).await?;
+        // The access service provisions nothing and serves nothing for a
+        // customer that has not confirmed its email, so a signed-up
+        // account cannot host a space until this happens.
+        activate(driver, env, email).await?;
+        Ok(())
+    }
+
+    /// Create an account and stop, leaving the customer `Registered`
+    /// with its activation email unopened — the window in which the
+    /// service refuses everything and the client queues it.
+    pub(crate) async fn enroll_only(
         driver: &WebDriver,
         env: &TestEnvironment,
         email: &str,
@@ -189,6 +207,24 @@ mod tests {
         Ok(())
     }
 
+    /// Follow the emailed activation link and accept, leaving the
+    /// customer `Active` and its queued work drained.
+    pub(crate) async fn activate(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        email: &str,
+    ) -> Result<()> {
+        let link = activation_link(env, email).await?;
+        let account = driver.current_url().await?;
+        driver.goto(&link).await?;
+        element(driver, "#activate-accept").await?.click().await?;
+        element(driver, "#activate-done").await?;
+        // Back to where the caller was: activation is a detour, not a
+        // navigation the caller asked for.
+        driver.goto(account.as_str()).await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_signs_up_through_the_account_panels(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -216,12 +252,17 @@ mod tests {
         // Signup enrolled the account as a customer: the dashboard names
         // the pending activation, and the emailed link completes it from
         // this (or any) device without a key.
-        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
-            .await?;
-        let link = activation_link(&env, EMAIL).await?;
-        driver.goto(&link).await?;
-        element(&driver, "#activate-accept").await?.click().await?;
-        element(&driver, "#activate-done").await?;
+        // sign_up already followed the emailed link, so the account is
+        // past activation: the registration row says so, and the
+        // pending-activation banner is gone.
+        wait_for_text(&driver, "#account-registration-value", "Active").await?;
+        if let Ok(notice) = driver.find(By::Css("#account-activation-notice")).await {
+            let text = notice.text().await.unwrap_or_default();
+            assert!(
+                !text.contains("activation pending"),
+                "an activated account must not still nag about activation, got {text:?}"
+            );
+        }
 
         driver.quit().await?;
         Ok(())
@@ -320,6 +361,17 @@ mod tests {
         path
     }
 
+    fn tonk_command_in(env: &TestEnvironment, profile: &TempDir) -> Command {
+        let mut command = tonk_command(profile);
+        // Trust this harness's Caddy root specifically. A process-wide
+        // SSL_CERT_FILE would be whichever concurrent harness wrote it
+        // last, leaving this child unable to reach its own origin.
+        if let Some(ca) = &env.ca_certificate {
+            command.env("SSL_CERT_FILE", ca);
+        }
+        command
+    }
+
     fn tonk_command(profile: &TempDir) -> Command {
         let mut command = Command::new(tonk_bin());
         command
@@ -344,8 +396,12 @@ mod tests {
         stderr: String,
     }
 
-    async fn run_cli(profile: &TempDir, args: &[String]) -> Result<CliOutput> {
-        let output = tonk_command(profile).args(args).output().await?;
+    async fn run_cli(
+        env: &TestEnvironment,
+        profile: &TempDir,
+        args: &[String],
+    ) -> Result<CliOutput> {
+        let output = tonk_command_in(env, profile).args(args).output().await?;
         Ok(CliOutput {
             status: output.status,
             stdout: String::from_utf8(output.stdout)?,
@@ -400,7 +456,7 @@ mod tests {
         register_first: bool,
     ) -> Result<LinkedCli> {
         let profile = tempfile::tempdir()?;
-        let mut command = tonk_command(&profile);
+        let mut command = tonk_command_in(env, &profile);
         command
             .args([
                 "account",
@@ -465,6 +521,17 @@ mod tests {
                 .await?
                 .click()
                 .await?;
+            // Let the creation ceremony finish before navigating
+            // anywhere: it lands back on the approval it interrupted,
+            // and leaving mid-flight loses whatever it had not yet
+            // persisted.
+            element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
+            // Approving unlocks the account, which reads the custody
+            // cell — and that cell cannot be published until the
+            // customer confirms its email. Do it now, then come back to
+            // the approval.
+            activate(driver, env, EMAIL).await?;
+            driver.goto(approval_url.as_str()).await?;
         }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
@@ -517,6 +584,7 @@ mod tests {
 
     async fn devices(profile: &TempDir, env: &TestEnvironment) -> Result<CliOutput> {
         run_cli(
+            env,
             profile,
             &[
                 "account".to_string(),
@@ -593,6 +661,94 @@ mod tests {
         })
     }
 
+    /// The pending-work queue, end to end: a space created before the
+    /// activation email is opened cannot be hosted, and becomes hosted
+    /// once it is — with no second attempt from the user.
+    ///
+    /// This is the whole point of the queue. The service refuses both
+    /// provisioning and presign for a `Registered` customer, so a space
+    /// created in that window works locally and syncs nothing; the
+    /// client records the provisioning and replays it when the customer
+    /// activates.
+    #[dialog_common::test]
+    async fn it_hosts_a_space_created_before_activation_once_the_email_is_confirmed(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "queued@example.com";
+        // Stop at Registered: the activation email is sent but unopened.
+        enroll_only(&driver, &env, email).await?;
+        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
+            .await?;
+
+        // The space is created locally and works; only its hosting is
+        // withheld. Creation must not fail on the refused provisioning.
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Made While Waiting",
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create space before activation", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+
+        // Pushing it now must fail: nobody is paying for this subject.
+        let refused = post_json(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        assert!(
+            refused.get("error").is_none(),
+            "the push request itself must reach the worker: {refused}"
+        );
+        assert!(
+            !refused["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status)),
+            "an unactivated account must not be able to host a space: {refused}"
+        );
+
+        // Confirm the email. Nothing else is asked of the user: the
+        // queued provisioning replays off the status probe.
+        activate(&driver, &env, email).await?;
+        wait_for_text(&driver, "#account-registration-value", "Active").await?;
+
+        // The same push now succeeds, with no further provisioning call
+        // from the test — the queue did it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let pushed = post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let ok = pushed["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status));
+            if ok {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the queued provisioning never replayed after activation: {pushed}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_backs_up_a_claimed_spot_for_another_account_device(
         env: TestEnvironment,
@@ -656,33 +812,62 @@ mod tests {
         // spot back out of the synced account DB — the real
         // cross-device path, not a service-side artifact store.
         let second_device = link_cli_with(&claimer, &env, false).await?;
-        // The browser pushes the directory facts on its next sync
-        // drain, so a freshly linked device may pull before they land.
-        // `spots` pulls best-effort on every run; poll until the
-        // recording arrives — the assertion is that promotion recorded
-        // the spot, not that it won a push race.
-        let mut spots = run_cli(
-            &second_device.profile,
-            &["account".to_string(), "spots".to_string()],
-        )
-        .await?;
-        assert!(spots.status.success(), "spots failed: {}", spots.stderr);
-        for _ in 0..30 {
-            if spots.stdout.contains(&key) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            spots = run_cli(
+        // Two things have to land before this reads: the freshly linked
+        // device's first account sync (until then `spots` exits non-zero
+        // with "not yet hydrated"), and the browser's push of the
+        // directory facts, which happens on its next sync drain. Both
+        // are timing, not behaviour, so poll on the outcome under test —
+        // that promotion recorded the spot — rather than asserting on
+        // whichever intermediate state the first run happened to catch.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last_seen = String::from("<spots never completed a run>");
+        let recorded = loop {
+            // Drive the browser's sync drain rather than waiting for
+            // incidental traffic to trigger one. Promotion writes the
+            // directory facts locally; publishing them to the account
+            // remote happens on a drain, and once the test stops
+            // touching the page nothing else schedules one.
+            let _ = post_json(&claimer, "/api/sync", serde_json::json!({})).await;
+            let run = run_cli(
+                &env,
                 &second_device.profile,
                 &["account".to_string(), "spots".to_string()],
             )
             .await?;
-            assert!(spots.status.success(), "spots failed: {}", spots.stderr);
-        }
+            if run.status.success() {
+                if run.stdout.contains(&key) {
+                    break true;
+                }
+                last_seen = run.stdout;
+            } else if run.stderr.contains("first sync has not succeeded yet") {
+                // Hydration maps every underlying error to Unhydrated,
+                // so this one message covers both a first sync that has
+                // genuinely not landed yet and one that cannot land at
+                // all. Only the former is worth waiting on: a transport
+                // failure means the harness origin is unreachable from
+                // this CLI child, which no amount of retrying fixes.
+                if run.stderr.contains("Transport error") {
+                    return Err(anyhow!(
+                        "the linked CLI cannot reach the harness origin, so the account \
+                         can never sync: {}",
+                        run.stderr.trim()
+                    ));
+                }
+                last_seen = format!("not hydrated yet: {}", run.stderr.trim());
+            } else {
+                // Any other non-zero exit is a real error; failing here
+                // beats burning the deadline on it.
+                return Err(anyhow!("spots failed: {}", run.stderr));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break false;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
         assert!(
-            spots.stdout.contains(&key),
-            "promotion completed without recording the claimed spot in the account directory: {}",
-            spots.stdout
+            recorded,
+            "promotion completed without recording the claimed spot in the account \
+             directory; last `spots` output was: {last_seen}"
         );
 
         let devtools = ChromeDevTools::new(claimer.handle.clone());
@@ -936,6 +1121,7 @@ mod tests {
         let linked = link_cli(&driver, &env).await?;
 
         let status = run_cli(
+            &env,
             &linked.profile,
             &["account".to_string(), "status".to_string()],
         )
@@ -980,6 +1166,7 @@ mod tests {
         let linked = link_cli_with(&driver, &env, true).await?;
 
         let status = run_cli(
+            &env,
             &linked.profile,
             &["account".to_string(), "status".to_string()],
         )

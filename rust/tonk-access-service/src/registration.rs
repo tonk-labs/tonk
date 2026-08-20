@@ -304,9 +304,9 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// Execute a verified `/provider/add`: validate the deposited consent
     /// and provision the consumer under the invoking customer.
     /// Re-provisioning under the same customer is a no-op success; a
-    /// consumer another customer provides is refused. Activation is not
-    /// required to add, only to serve: consumers added while the provider
-    /// is `Registered` go live with its activation.
+    /// consumer another customer provides is refused. The customer must
+    /// be `Active`: an unactivated customer provisions nothing, so the
+    /// same email confirmation gates adding and serving alike.
     pub async fn add(
         &self,
         capability: Capability<Add>,
@@ -320,10 +320,15 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             .map_err(internal)?
         {
             None => return Err(RegistrationError::UnknownCustomer),
-            Some(customer) if customer.status == CustomerStatus::Suspended => {
-                return Err(RegistrationError::CustomerSuspended);
-            }
-            Some(_) => {}
+            Some(customer) => match customer.status {
+                CustomerStatus::Active => {}
+                // An unactivated customer gets nothing: not service, and
+                // not provisioning either. The client holds the add as
+                // pending work and replays it once the email is
+                // confirmed; re-enrolling resends that email.
+                CustomerStatus::Registered => return Err(RegistrationError::CustomerInactive),
+                CustomerStatus::Suspended => return Err(RegistrationError::CustomerSuspended),
+            },
         }
         let consent = self.deposited_delegation(&effect.consent.to_string())?;
         self.verify_consent(&consent.delegation, &effect.consumer, &provider)

@@ -484,6 +484,30 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 /// `Err` names the step that did not land, so the caller can report a sweep
 /// worth retrying. Convergence failing is not one of those: it is per-space and
 /// keeps its own retry list, so it is logged and the sweep still counts.
+/// Push profile main to the account remote.
+///
+/// Split out because both sweep arms need it: the ready arm as the tail
+/// of `sync_ready`, and the hydrate arm as the step that publishes what
+/// hydration just established. Only these two paths push profile main —
+/// the generic per-branch sync returns before it reaches the account
+/// key — so a sweep that skips this leaves local facts unpublished.
+async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| format!("account branch unavailable: {error}"))?;
+    session
+        .handle()
+        .push()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| format!("account push failed: {error}"))?;
+    Ok(())
+}
+
 async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     let session = tonk
         .reactor
@@ -517,6 +541,9 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     if let Err(error) = converge_account_state(tonk).await {
         log!("account-state convergence after sync failed: {error}");
     }
+    // Pushed through the session this function already holds, rather
+    // than `push_account_main`, which acquires one of its own for the
+    // hydrate arm.
     session
         .handle()
         .push()
@@ -602,7 +629,17 @@ pub(crate) async fn ensure_account_state_swept(
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
-                    (AccountStateStatus::Ready, Ok(()))
+                    // Push what this sweep just made durable. Without
+                    // it, hydrating leaves the account Ready but never
+                    // uploaded, so nothing local reaches the account
+                    // remote until some *later* sweep happens to take
+                    // the `marker_matches` arm above — which is the only
+                    // other place profile main is pushed. A device that
+                    // is not poked again simply never publishes: its
+                    // spaces stay invisible to the account's other
+                    // devices.
+                    let pushed = push_account_main(tonk).await;
+                    (AccountStateStatus::Ready, pushed)
                 }
                 Err(error) => {
                     log!("account repository hydrated but marker save failed: {error}");
@@ -1454,6 +1491,14 @@ mod tests {
 
         let root = Ed25519Signer::generate().await.unwrap();
         let root_signer = root.clone();
+        // Hydration syncs the account space, which the access service
+        // serves only once its customer has confirmed the emailed
+        // activation link.
+        service
+            .address
+            .activate_customer(&root, "worker-account-state@example.com")
+            .await
+            .unwrap();
         let remote = format!(
             "{}/",
             service.address.access_service_url.trim_end_matches('/')

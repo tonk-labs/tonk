@@ -191,7 +191,6 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
     let remote = string_property(&input, "remote")?;
-    let endpoint = string_property(&input, "endpoint")?;
     let created_on = optional_string_property(&input, "createdOn");
     let service = service_did_property(&input)?;
     let ceremony = crate::ceremony::create_custody_account(
@@ -201,7 +200,6 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
         remote,
         created_on.as_deref(),
         service.as_ref(),
-        &endpoint,
     )
     .await
     .map_err(js_error)?;
@@ -217,13 +215,19 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     set_deposits(&result, &ceremony.deposits_hex)?;
     Reflect::set(&result, &"custodyDid".into(), &ceremony.custody_did.into())?;
     Reflect::set(&result, &"consentHex".into(), &ceremony.consent_hex.into())?;
+    if let Some(sealed_hex) = ceremony.sealed_hex {
+        Reflect::set(&result, &"sealedHex".into(), &sealed_hex.into())?;
+    }
     Ok(result)
 }
 
 /// `enrollCustodyPasskey({ accountDid, label?, endpoint })` →
-/// `{ custodyDid, credentialId, consentHex }`. Creates the custody
-/// passkey, seals the secret under its KEK, and publishes the cell;
-/// the caller provisions the custody DID with the consent afterwards.
+/// `{ custodyDid, credentialId, consentHex, sealedHex? }`. Creates the
+/// custody passkey and seals the secret under its KEK. The caller
+/// provisions the custody DID with the consent; `sealedHex` is present
+/// when the cell could not be published yet — the new custody DID is
+/// nobody's consumer until that provisioning lands — and the caller
+/// queues those bytes to publish afterwards.
 async fn enroll_custody_passkey(input: JsValue) -> Result<JsValue, JsValue> {
     let account_did = string_property(&input, "accountDid")?;
     let label = optional_string_property(&input, "label");
@@ -247,7 +251,25 @@ async fn enroll_custody_passkey(input: JsValue) -> Result<JsValue, JsValue> {
         &"consentHex".into(),
         &enrollment.consent_hex.into(),
     )?;
+    if let Some(sealed_hex) = enrollment.sealed_hex {
+        Reflect::set(&result, &"sealedHex".into(), &sealed_hex.into())?;
+    }
     Ok(result.into())
+}
+
+/// `publishQueuedCustody({ custodyDid, sealedHex, endpoint })` → `{}`.
+/// Publishes a custody cell that could not be written when its
+/// ceremony ran, using a fresh assertion of the same passkey.
+async fn publish_queued_custody(input: JsValue) -> Result<JsValue, JsValue> {
+    let custody_did = string_property(&input, "custodyDid")?;
+    let sealed_hex = string_property(&input, "sealedHex")?;
+    let endpoint = string_property(&input, "endpoint")?;
+    let sealed = hex::decode(&sealed_hex)
+        .map_err(|error| JsValue::from_str(&format!("sealedHex is not hex: {error}")))?;
+    crate::ceremony::publish_queued_custody(&custody_did, &sealed, &endpoint)
+        .await
+        .map_err(js_error)?;
+    Ok(Object::new().into())
 }
 
 /// `unlockWithPasskey({ deviceDid, deviceName, endpoint, serviceDid? })`
@@ -374,6 +396,16 @@ pub fn install() {
         enroll_custody_passkey.as_ref().unchecked_ref(),
     );
     enroll_custody_passkey.forget();
+
+    let publish_queued = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(publish_queued_custody(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"publishQueuedCustody".into(),
+        publish_queued.as_ref().unchecked_ref(),
+    );
+    publish_queued.forget();
 
     let unlock_with_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(unlock_with_passkey(input))

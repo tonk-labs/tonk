@@ -199,6 +199,59 @@ fn show_success(host: &HtmlElement) {
 /// every other answer: an active customer needs no notice, and a
 /// deployment without registration should not decorate the panel with
 /// its absence.
+/// Publish every custody cell queued while the account was waiting on
+/// email confirmation.
+///
+/// Each publish needs a fresh passkey assertion, which is a user
+/// prompt, so this runs only when there is something queued — an
+/// activated account with nothing waiting must never see a passkey
+/// dialog it did not ask for. Failures stay queued for the next load.
+async fn publish_queued_custody() {
+    let queue = match crate::api::pending_work().await {
+        Ok(queue) => queue,
+        Err(error) => {
+            web_sys::console::warn_1(&format!("pending work unreadable: {error}").into());
+            return;
+        }
+    };
+    let endpoint = match proposed_remote() {
+        Ok(endpoint) => endpoint,
+        Err(error) => return web_sys::console::warn_1(&format!("no remote: {error}").into()),
+    };
+    for work in queue.entries() {
+        let tonk_account::pending::PendingWork::PublishCustody {
+            custody,
+            sealed_hex,
+        } = work
+        else {
+            continue;
+        };
+        match crate::identity_bridge::publish_queued_custody(
+            crate::identity_bridge::PublishQueuedCustodyInput {
+                custody_did: custody.clone(),
+                sealed_hex: sealed_hex.clone(),
+                endpoint: endpoint.clone(),
+            },
+        )
+        .await
+        {
+            Ok(()) => {
+                if let Err(error) = crate::api::complete_custody_publish(custody).await {
+                    web_sys::console::warn_1(
+                        &format!("custody published but still queued: {error}").into(),
+                    );
+                }
+            }
+            Err(error) => {
+                web_sys::console::warn_1(&format!("custody publish still pending: {error}").into());
+                // Stop at the first failure: a later entry must not
+                // overtake one that is still waiting on provisioning.
+                break;
+            }
+        }
+    }
+}
+
 fn load_activation_notice(host: HtmlElement) {
     spawn_local(async move {
         if !wants_enrollment().await {
@@ -251,7 +304,17 @@ fn load_activation_notice(host: HtmlElement) {
             _ => "Not registered",
         };
         set_text(&host, "#account-registration-value", label);
+        // Activation is what unblocks the queued custody publish, and
+        // only a page can sign it — the custody key lives inside a
+        // passkey assertion. This notice is the one place that both
+        // learns about activation and can raise one.
+        if state["status"].as_str() == Some("Active") {
+            publish_queued_custody().await;
+        }
         if state["status"].as_str() != Some("Registered") {
+            if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
+                let _ = resend.set_attribute("hidden", "");
+            }
             return;
         }
         let Ok(Some(notice)) = host.query_selector("#account-activation-notice") else {
@@ -265,6 +328,12 @@ fn load_activation_notice(host: HtmlElement) {
         };
         notice.set_text_content(Some(&message));
         let _ = notice.remove_attribute("hidden");
+        // The way out of a stuck Registered: enrollment is idempotent
+        // while Registered and resends the link, which is also the
+        // recovery for one that expired.
+        if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
+            let _ = resend.remove_attribute("hidden");
+        }
     });
 }
 
@@ -1446,7 +1515,6 @@ fn bind(host: &HtmlElement) {
                     device_did,
                     device_name,
                     remote: proposed_remote()?,
-                    endpoint: proposed_remote()?,
                     created_on: Some(crate::device_name::current()),
                     service_did: deployment_service_did().await,
                 })
@@ -1468,8 +1536,10 @@ fn bind(host: &HtmlElement) {
                 };
                 set_busy(&host, true, "Creating your account…");
                 complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await?;
-                // Provisioning the custody space is retryable; the
-                // published cell is the account's durability.
+                // Neither of these can land before the emailed link is
+                // clicked: the service provisions nothing, and serves
+                // nothing, for a customer that has not confirmed its
+                // email. Both queue instead, and replay on activation.
                 if let Err(error) =
                     crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
                 {
@@ -1477,12 +1547,41 @@ fn bind(host: &HtmlElement) {
                         &format!("custody provisioning deferred: {error}").into(),
                     );
                 }
+                if let Some(sealed_hex) = &created.sealed_hex
+                    && let Err(error) =
+                        crate::api::queue_custody_publish(&created.custody_did, sealed_hex).await
+                {
+                    // The sealed secret is only in this page's memory
+                    // until it is recorded, so failing to queue it is
+                    // the one loss worth surfacing.
+                    return Err(format!("could not record the account secret: {error}"));
+                }
                 Ok::<(), String>(())
             }
             .await;
             if let Err(error) = result {
                 set_busy(&host, false, "");
                 show_error(&host, error);
+            }
+        });
+    });
+
+    on_click(host, "#account-resend-activation", |host| {
+        clear_error(&host);
+        set_busy(&host, true, "Sending another activation email…");
+        spawn_local(async move {
+            // Enrollment is idempotent while Registered: the rows stand
+            // and the link is sent again. No ceremony is at hand here,
+            // so the deposits are the device-chained fallback.
+            let result = crate::api::enroll_customer(None, &[]).await;
+            set_busy(&host, false, "");
+            match result {
+                Ok(_) => set_text(
+                    &host,
+                    "#account-activation-notice",
+                    "Sent. Open the link in your activation email.",
+                ),
+                Err(error) => show_error(&host, format!("could not resend: {error}")),
             }
         });
     });
@@ -1516,8 +1615,9 @@ fn bind(host: &HtmlElement) {
                 })
                 .await
                 .map_err(|error| error.to_string())?;
-                // Provisioning is retryable; the published cell is the
-                // account's durability, so a refusal here only warns.
+                // Provision before publishing: the new custody DID is
+                // nobody's consumer until this deposit lands, and the
+                // service serves no unprovisioned subject.
                 if let Err(error) =
                     crate::api::provision_custody(&enrolled.custody_did, &enrolled.consent_hex)
                         .await
@@ -1525,6 +1625,17 @@ fn bind(host: &HtmlElement) {
                     web_sys::console::warn_1(
                         &format!("custody provisioning deferred: {error}").into(),
                     );
+                }
+                // The ceremony hands back sealed bytes when its publish
+                // was refused. Retry now that provisioning has run, and
+                // queue what still will not land.
+                if let Some(sealed_hex) = &enrolled.sealed_hex
+                    && let Err(error) =
+                        crate::api::queue_custody_publish(&enrolled.custody_did, sealed_hex).await
+                {
+                    return Err(format!(
+                        "could not record the sealed account secret: {error}"
+                    ));
                 }
                 crate::api::save_root(
                     enrolled.credential_id,
@@ -1565,6 +1676,9 @@ fn bind(host: &HtmlElement) {
                 // One assertion derives the custody keypair, one
                 // presigned GET fetches the sealed envelope, and the
                 // unwrapped secret self-issues this device's delegation.
+                // Unlocking reads the custody cell, which stays queued
+                // while the customer is unactivated.
+                publish_queued_custody().await;
                 let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
                     device_did,
                     device_name,
@@ -1619,6 +1733,12 @@ fn bind(host: &HtmlElement) {
                                 })?;
                         }
                     }
+                    // Unlocking the account reads the custody cell, which
+                    // stays queued while the customer is unactivated. A
+                    // browser that activated without returning to the
+                    // dashboard still has it waiting, so drain before
+                    // asking the ceremony to resolve it.
+                    publish_queued_custody().await;
                     set_busy(&host, true, "Waiting for your passkey…");
                     // The descriptor must name the same sync remote signup
                     // established — the page's own `/ucan/` endpoint — or the
@@ -1690,6 +1810,9 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
+                // Unlocking reads the custody cell, which stays queued
+                // while the customer is unactivated.
+                publish_queued_custody().await;
                 let ceremony = complete_link(CompleteLinkInput {
                     token_hash: handoff.token_hash,
                     device_did: handoff.device_did,
@@ -2093,6 +2216,9 @@ fn begin_revoke(
                     return;
                 }
             };
+            // Signing a revocation unlocks the root, which reads the
+            // custody cell.
+            publish_queued_custody().await;
             let signed: Result<RevocationOutput, String> = sign_revocation(SignRevocationInput {
                 delegation_cid,
                 path_hex: delegation_hex,
