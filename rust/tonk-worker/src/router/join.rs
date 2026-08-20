@@ -2423,6 +2423,22 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
     }
 }
 
+/// Whether a `/join` URL carries an invite at all.
+///
+/// The delegation chain rides in `access`, so its presence is what
+/// separates "redeem this" from "someone opened /join to paste a link".
+/// Deliberately a query test and not a parse: a malformed or truncated
+/// invite IS an attempt and must still fail loudly with its reason,
+/// rather than being silently treated as an empty visit.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn carries_invite(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| {
+        parsed
+            .query_pairs()
+            .any(|(key, value)| key == "access" && !value.is_empty())
+    })
+}
+
 /// Run the join operation from the command's full URL and drive the
 /// overlay-only join status. Always leaves the overlay in a terminal state
 /// (status retracted on success, `failed` on error).
@@ -2457,6 +2473,20 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             return;
         }
     };
+
+    // A `/join` opened with no invite in its URL is not a failed
+    // attempt — it is someone who arrived holding a link they have not
+    // pasted yet. Claiming nothing and asserting no status leaves the
+    // view in its own inviteless state (the paste form) rather than
+    // flashing a spinner for an invite that will never arrive. A URL
+    // that carries an invite is untouched by this and proceeds exactly
+    // as before.
+    if !carries_invite(&command.url.0) {
+        session.state.clear_overlay();
+        tonk.reactor.schedule_poll(Arc::clone(&session.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        return;
+    }
 
     // Pending: a fresh attempt clears any prior status, then marks
     // pending. Schedule a poll so the view shows "Joining…".
@@ -2600,6 +2630,36 @@ pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
             log!("notify_sync: post_message(sync) failed: {e:?}");
         }
     });
+}
+
+/// The inviteless-`/join` guard, pinned on every target: it decides
+/// whether the route claims or offers its paste form, and getting it
+/// wrong flashes the form before a spinner for an invite that will
+/// never arrive.
+#[cfg(test)]
+mod invite_presence_tests {
+    use super::carries_invite;
+
+    #[test]
+    fn it_separates_a_redeemable_invite_from_an_empty_visit() {
+        assert!(carries_invite(
+            "https://tonk.spot/join?access=chain&remote=https%3A%2F%2Fs#seed"
+        ));
+        // A malformed chain is still an ATTEMPT: it must reach the claim
+        // path and fail with its reason, not be mistaken for an empty visit.
+        assert!(carries_invite("https://tonk.spot/join?access=not-a-chain"));
+
+        assert!(!carries_invite("https://tonk.spot/join"));
+        assert!(!carries_invite("https://tonk.spot/join#seed"));
+        assert!(
+            !carries_invite("https://tonk.spot/join?access="),
+            "an empty access parameter carries no chain"
+        );
+        assert!(!carries_invite(
+            "https://tonk.spot/join?remote=https%3A%2F%2Fs"
+        ));
+        assert!(!carries_invite("not a url"));
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
