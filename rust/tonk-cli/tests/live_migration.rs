@@ -74,21 +74,29 @@ concept!: &pong
     // The derived fact is durable...
     let pong = test
         .eval_inline("pong:\n  this: ?this\n  tag: ?tag\n")
-        .await?
-        .stdout;
-    assert!(
-        pong.contains("hi"),
-        "the rule must derive a durable pong from the ping command; saw:\n{pong}"
+        .await?;
+    let pong_results = &pong.response.matches_after[0].results;
+    assert_eq!(
+        pong_results.len(),
+        1,
+        "the rule must derive exactly one durable pong from the ping command; saw:\n{}",
+        pong.stdout
+    );
+    assert_eq!(
+        pong_results[0].fields.get("tag"),
+        Some(&serde_json::json!("hi")),
+        "the derived pong must retain the command's tag; saw:\n{}",
+        pong.stdout
     );
 
     // ...and the command itself was swept, never committed.
     let ping = test
         .eval_inline("ping:\n  this: ?this\n  tag: ?tag\n")
-        .await?
-        .stdout;
+        .await?;
     assert!(
-        !ping.contains("hi"),
-        "a command must not persist past the commit that dispatched it; saw:\n{ping}"
+        ping.response.matches_after[0].results.is_empty(),
+        "a command must not persist past the commit that dispatched it; saw:\n{}",
+        ping.stdout
     );
 
     Ok(())
