@@ -144,6 +144,8 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
     screen_credentials(body_bytes, env).await?;
     #[cfg(target_arch = "wasm32")]
     screen_consumer_state(body_bytes, env).await?;
+    #[cfg(target_arch = "wasm32")]
+    screen_provisioning(body_bytes, env).await?;
 
     // Write permits carry the declared size as a signed Content-Length,
     // which is the exact byte figure metering records.
@@ -183,6 +185,51 @@ async fn screen_consumer_state(body_bytes: &[u8], env: &Env) -> std::result::Res
         }
         _ => Ok(()),
     }
+}
+
+/// Screen the subject against the provisioning gate: a space is served
+/// only while an active customer pays for it. Registration commands
+/// never reach here — `serve` answers them before the presign path —
+/// so enrolling and activating stay possible while the gate denies the
+/// data plane.
+#[cfg(target_arch = "wasm32")]
+async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
+    use crate::provisioning::{container_subject, screen};
+    use crate::store::d1::D1Store;
+
+    let Some(subject) = container_subject(body_bytes) else {
+        // The authorizer accepted these bytes, so a subject we cannot
+        // read is shape drift between two parsers rather than a caller
+        // error. There is nothing to screen against, so it cannot clear.
+        console_error!("provisioning screen unavailable, container has no readable subject");
+        return Err(provisioning_unavailable());
+    };
+    let store = D1Store::new(env.d1("CONTROL").map_err(|err| {
+        console_error!("provisioning screen unavailable, no CONTROL binding: {err}");
+        provisioning_unavailable()
+    })?);
+    match screen(&store, &subject).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(reason)) => {
+            worker::console_log!("presign rejected: {subject} is not servable ({reason})");
+            Err(reason.into())
+        }
+        Err(err) => {
+            // The gate fails closed, but a store failure is the
+            // service's own unavailability, not a denial to bill.
+            console_error!("presign refused, control store unreachable: {err}");
+            Err(provisioning_unavailable())
+        }
+    }
+}
+
+/// The 503 for a gate that could not reach a verdict.
+#[cfg(target_arch = "wasm32")]
+fn provisioning_unavailable() -> Refusal {
+    AuthorizeError::Unavailable {
+        detail: "provisioning registry unavailable, retry shortly".to_string(),
+    }
+    .into()
 }
 
 #[cfg(target_arch = "wasm32")]

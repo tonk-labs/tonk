@@ -286,6 +286,40 @@ async fn handle_request(
                 .unwrap(),
         ));
     }
+    // Test-only shortcut past the registration ceremony: make a subject
+    // servable by provisioning it under a synthetic active customer.
+    // For tests whose subject is a repository DID they hold no signer
+    // for; anything testing registration itself drives the real
+    // endpoints.
+    if req.method() == Method::POST && req.uri().path() == "/_test/provision" {
+        use http_body_util::BodyExt;
+
+        let body = req.into_body().collect().await.map(|c| c.to_bytes());
+        let subject = body
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| value["subject"].as_str().map(str::to_owned));
+        let Some(subject) = subject else {
+            return Ok(cors_response(
+                Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Full::new(Bytes::from("a subject is required")))
+                    .unwrap(),
+            ));
+        };
+        return Ok(cors_response(
+            match provision_for_tests(&registration.store, &subject).await {
+                Ok(()) => Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+                Err(error) => Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Full::new(Bytes::from(error.to_string())))
+                    .unwrap(),
+            },
+        ));
+    }
     if req.method() == Method::GET && req.uri().path() == "/_test/ingest" {
         let count = registration.ingest.invocations().unwrap_or_default();
         return Ok(cors_response(
@@ -520,6 +554,39 @@ async fn handle_request(
             _ => {}
         }
     }
+    // The provisioning gate, mirroring the worker: a subject is served
+    // only while an active customer pays for it. Registration commands
+    // returned above, so enrolling and activating stay possible while
+    // this denies the data plane.
+    if outcome.is_ok() {
+        match crate::provisioning::container_subject(&body_bytes) {
+            Some(subject) => match crate::provisioning::screen(&registration.store, &subject).await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(reason)) => {
+                    return Ok(cors_response(authorize_error_response(
+                        StatusCode::FORBIDDEN,
+                        &reason,
+                    )));
+                }
+                Err(error) => {
+                    // Fails closed, but as our own unavailability rather
+                    // than a denial billed to the customer.
+                    eprintln!("presign refused, control store unreachable: {error}");
+                    return Ok(cors_response(authorize_error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        &unavailable_provisioning(),
+                    )));
+                }
+            },
+            None => {
+                return Ok(cors_response(authorize_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &unavailable_provisioning(),
+                )));
+            }
+        }
+    }
     // Metering mirrors the worker: permits and attributable denials are
     // recorded, infra failures and unparseable containers are not.
     let metered = match &outcome {
@@ -584,6 +651,58 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock is past the epoch")
         .as_secs()
+}
+
+/// Provision `subject` under a synthetic active customer, so the
+/// provisioning gate serves it. Idempotent, and derived from the
+/// subject so two subjects never collide on one provider row.
+async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Result<()> {
+    use crate::store::{ConsumerKind, SIGNUP_PLAN, Store};
+
+    let provider = format!("did:test:provider-for-{subject}");
+    if store
+        .customer(&provider)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .is_none()
+    {
+        store
+            .enroll_customer(&provider, "tests@example.com", b"", SIGNUP_PLAN, 0)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        store
+            .activate_customer(&provider, "test", 1)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+    }
+    store
+        .add_consumer(subject, &provider, 0, ConsumerKind::Space)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(())
+}
+
+/// The refusal a gate that could not reach a verdict answers with.
+fn unavailable_provisioning() -> dialog_capability::access::AuthorizeError {
+    dialog_capability::access::AuthorizeError::Unavailable {
+        detail: "provisioning registry unavailable, retry shortly".to_string(),
+    }
+}
+
+/// Answer a refusal as the worker does: the serde-tagged
+/// [`AuthorizeError`] itself, which is what the client parses back out.
+/// A plain-text body would classify as unclassified on the other side.
+fn authorize_error_response(
+    status: StatusCode,
+    reason: &dialog_capability::access::AuthorizeError,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            serde_json::to_vec(reason).expect("authorize refusal serializes"),
+        )))
+        .unwrap()
 }
 
 fn deletion_error_response(
