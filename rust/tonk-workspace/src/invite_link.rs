@@ -1,6 +1,6 @@
 //! `<tonk-invite-link>` — turn a pasted invite URL into a local `/join`.
 //!
-//! An invite link carries everything a join needs in its query and
+//! A long invite link carries everything a join needs in its query and
 //! fragment — the delegation chain, the space's sync remote, the
 //! revocation relay — so the origin it was minted on is only a doorway.
 //! Pasting a link minted elsewhere (say, production) into this deployment
@@ -8,13 +8,20 @@
 //! invite names — which is exactly what local debugging against real
 //! data wants.
 //!
-//! Static notation can't read an input, rewrite a URL, or navigate, so
-//! this dumb element bridges the gap the same way [`super::default_remote`]
-//! does for the origin: it sits inside the paste `<form>`, intercepts its
-//! `submit`, swaps the pasted link's origin for this page's own `/join`
-//! route (keeping query + fragment verbatim), and hands the result to the
-//! ordinary navigation path. All join policy stays in the worker's claim
-//! pipeline.
+//! Minted links are usually SHORT, though: `{origin}/@/{hash}#{seed}`,
+//! where the chain and remote live behind that origin's shortcut service
+//! and only the seed rides the fragment. Those must be expanded on the
+//! origin that minted them — a local shortcut service has never seen the
+//! hash. So this element resolves a short link first (`GET /@/{hash}`
+//! answers a relative `Location` and the route is permissionless and
+//! `Access-Control-Allow-Origin: *`), then rewrites the expanded query
+//! onto this deployment's `/join`. The seed never leaves the browser: it
+//! is a fragment, so it is never sent with the request, and this code
+//! carries it across from the pasted link itself.
+//!
+//! Static notation can't read an input, fetch, or navigate, so this dumb
+//! element bridges the gap the same way [`super::default_remote`] does
+//! for the origin. All join policy stays in the worker's claim pipeline.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -63,7 +70,8 @@ impl CustomElement for TonkInviteLink {
             // navigation, so the default is cancelled unconditionally
             // and validity only decides whether we navigate.
             event.prevent_default();
-            submit(&host);
+            let host = host.clone();
+            wasm_bindgen_futures::spawn_local(async move { submit(&host).await });
         }) as Box<dyn FnMut(Event)>);
         let _ = form.add_event_listener_with_callback("submit", listener.as_ref().unchecked_ref());
         *self.submit.borrow_mut() = Some(listener);
@@ -74,12 +82,13 @@ impl CustomElement for TonkInviteLink {
     }
 }
 
-fn submit(this: &HtmlElement) {
+async fn submit(this: &HtmlElement) {
     let field = this
         .get_attribute("field")
         .unwrap_or_else(|| DEFAULT_FIELD.to_string());
     let pasted = read_field(this, &field).unwrap_or_default();
-    match local_join_href(pasted.trim()) {
+    let _ = this.set_attribute(STATE_ATTR, "resolving");
+    match local_join_href(pasted.trim()).await {
         Some(href) => {
             let _ = this.remove_attribute(STATE_ATTR);
             navigate(&href);
@@ -102,23 +111,56 @@ fn read_field(this: &HtmlElement, field: &str) -> Option<String> {
 }
 
 /// Rewrite a pasted invite URL into this deployment's `/join` route,
-/// keeping the query and fragment — where the invite's chain, remote,
-/// and seed actually live — byte for byte. The pasted origin and path
-/// are deliberately discarded: they only say where the link was minted.
-fn local_join_href(pasted: &str) -> Option<String> {
+/// expanding a short link on its own origin first.
+///
+/// The invite's substance is its query (`access`, `remote`, `revocation`)
+/// and its fragment (an open invite's seed). The pasted origin and path
+/// are deliberately discarded — they only say where the link was minted —
+/// EXCEPT for the one thing only that origin can do: expand `/@/{hash}`
+/// into the query it stands for.
+async fn local_join_href(pasted: &str) -> Option<String> {
     if pasted.is_empty() {
         return None;
     }
     let url = web_sys::Url::new(pasted).ok()?;
-    let search = url.search();
-    let hash = url.hash();
-    // A bare origin (or any URL with neither query nor fragment) carries
-    // no invite; refusing here keeps the error visible at the form
-    // instead of bouncing through /join to its failure screen.
-    if search.is_empty() && hash.is_empty() {
+    // The seed rides the fragment and is never sent to any server; carry
+    // it across from the pasted link whichever form the link took.
+    let fragment = url.hash();
+    let query = match shortcut_hash(&url) {
+        Some(_) => expand_shortcut(&url).await?,
+        None => url.search(),
+    };
+    // No query means no delegation chain, so there is no invite to
+    // redeem; refusing here keeps the error at the form instead of
+    // bouncing through /join to its failure screen.
+    if query.is_empty() {
         return None;
     }
-    Some(format!("/join{search}{hash}"))
+    Some(format!("/join{query}{fragment}"))
+}
+
+/// The hash of a `{origin}/@/{hash}` shortcut link, if the path is one.
+fn shortcut_hash(url: &web_sys::Url) -> Option<String> {
+    let hash = url.pathname().strip_prefix("/@/")?.to_string();
+    (!hash.is_empty() && !hash.contains('/')).then_some(hash)
+}
+
+/// Expand a short invite on the origin that minted it: `GET /@/{hash}`
+/// answers a permanent redirect whose `Location` is the stored path +
+/// query, relative and verbatim.
+///
+/// `redirect: "manual"` would give an opaque response no script can read,
+/// so the redirect is followed normally and the landing URL's query is
+/// what the shortcut stored. The join route answers the app shell for any
+/// path, so following costs one document fetch and reveals the query.
+async fn expand_shortcut(url: &web_sys::Url) -> Option<String> {
+    let response = reqwest::Client::new().get(url.href()).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let landed = web_sys::Url::new(response.url().as_str()).ok()?;
+    let query = landed.search();
+    (!query.is_empty()).then_some(query)
 }
 
 /// Navigate through the guest's bridge when sealed (`window.tonk.navigate`),
@@ -156,25 +198,44 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// The rewrite keeps query + fragment verbatim and discards the
-    /// minting origin; inputs carrying no invite material are refused.
+    /// A long link rewrites straight onto the local join route, keeping
+    /// query and fragment verbatim; anything carrying no delegation
+    /// chain is refused rather than bounced through /join.
     #[dialog_common::test]
     async fn it_rewrites_a_foreign_invite_onto_the_local_join_route() {
         assert_eq!(
-            local_join_href("https://staging.tonk.xyz/join?ucan=abc#seed"),
-            Some("/join?ucan=abc#seed".to_string()),
+            local_join_href("https://staging.tonk.xyz/join?access=abc&remote=https%3A%2F%2Fs#seed")
+                .await,
+            Some("/join?access=abc&remote=https%3A%2F%2Fs#seed".to_string()),
         );
+        assert_eq!(local_join_href("").await, None, "empty paste is refused");
         assert_eq!(
-            local_join_href("https://tonk.network/join#onlyfragment"),
-            Some("/join#onlyfragment".to_string()),
-        );
-        assert_eq!(local_join_href(""), None, "empty paste is refused");
-        assert_eq!(
-            local_join_href("https://staging.tonk.xyz/"),
+            local_join_href("https://staging.tonk.xyz/").await,
             None,
             "a bare origin carries no invite"
         );
-        assert_eq!(local_join_href("not a url"), None);
+        assert_eq!(
+            local_join_href("https://staging.tonk.xyz/join#onlyfragment").await,
+            None,
+            "a fragment alone carries no delegation chain"
+        );
+        assert_eq!(local_join_href("not a url").await, None);
+    }
+
+    /// A short link is recognized by its `/@/{hash}` path — the form that
+    /// must be expanded on the minting origin, because the chain and the
+    /// remote live behind that origin's shortcut service and a local one
+    /// has never seen the hash.
+    #[dialog_common::test]
+    async fn it_recognizes_short_links_by_their_shortcut_path() {
+        let short = web_sys::Url::new("https://staging.tonk.xyz/@/abc123#seed").unwrap();
+        assert_eq!(shortcut_hash(&short).as_deref(), Some("abc123"));
+
+        let long = web_sys::Url::new("https://staging.tonk.xyz/join?access=abc#seed").unwrap();
+        assert_eq!(shortcut_hash(&long), None);
+
+        let nested = web_sys::Url::new("https://staging.tonk.xyz/@/a/b").unwrap();
+        assert_eq!(shortcut_hash(&nested), None, "a hash carries no slash");
     }
 
     /// Submitting the form navigates nowhere on an invalid paste and
@@ -207,6 +268,13 @@ mod tests {
             event.default_prevented(),
             "the sealed guest must never run a native form submit"
         );
+        // The submit resolves on a task; yield until it settles.
+        for _ in 0..20 {
+            if element.get_attribute(STATE_ATTR).as_deref() == Some("invalid") {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(10).await;
+        }
         assert_eq!(
             element.get_attribute(STATE_ATTR).as_deref(),
             Some("invalid"),
