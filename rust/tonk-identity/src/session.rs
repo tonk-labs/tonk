@@ -13,7 +13,7 @@
 //! the thing that lapses on its own.
 
 use anyhow::Result;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
@@ -48,7 +48,7 @@ pub async fn mint_session_delegation(
         .map_err(|err| anyhow::anyhow!("session expiration out of range: {err}"))?;
 
     let delegation = DelegationBuilder::new()
-        .issuer(device)
+        .issuer(Signer::from(device))
         .audience(session)
         .subject(UcanSubject::Any)
         .command(vec![])
@@ -139,7 +139,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_extends_a_device_grant_with_a_session_hop() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let session = signer(&SESSION_SEED).await;
         let grant = crate::delegation::mint_device_delegation(root, &device.did())
@@ -161,7 +161,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_narrows_an_unexpiring_grant() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let session = signer(&SESSION_SEED).await;
         let grant = crate::delegation::mint_device_delegation(root, &device.did())

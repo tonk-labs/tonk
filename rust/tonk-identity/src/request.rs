@@ -11,14 +11,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{
     Container, Delegation, DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain,
 };
+use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 use ipld_core::cid::Cid;
 use tonk_account::customer::deposit_scopes;
 
@@ -28,7 +28,7 @@ use tonk_account::customer::deposit_scopes;
 /// account root (the invocation subject and audience), and its single
 /// proof is attached so the service can bind the device to the account.
 pub async fn build_device_invocation(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
@@ -46,7 +46,7 @@ pub async fn build_device_invocation(
     let cid = delegation.to_cid();
 
     let invocation = InvocationBuilder::new()
-        .issuer(device)
+        .issuer(device.into())
         .audience(&root_did)
         .subject(&root_did)
         .command(command)
@@ -77,11 +77,12 @@ pub async fn build_device_invocation(
 /// [`build_enroll_invocation_with_deposits`] with account-signed
 /// deposits when a ceremony produced them.
 pub async fn build_enroll_invocation(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     service: &Did,
     email: &str,
 ) -> Result<Vec<u8>> {
+    let device: Signer = device.into();
     let root_did = link.issuer().clone();
     let mut deposits = Vec::new();
     for scope in deposit_scopes(&root_did, service) {
@@ -108,7 +109,7 @@ pub async fn build_enroll_invocation(
 /// are issued by the customer directly, so they survive revocation of
 /// the device presenting them.
 pub async fn build_enroll_invocation_with_deposits(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     email: &str,
     deposits: &[Vec<u8>],
@@ -116,7 +117,7 @@ pub async fn build_enroll_invocation_with_deposits(
     let named = deposits
         .iter()
         .map(|bytes| {
-            let delegation: Delegation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(bytes)
+            let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(bytes)
                 .context("a ceremony deposit does not decode as a delegation")?;
             Ok((delegation.to_cid(), bytes.clone()))
         })
@@ -126,7 +127,7 @@ pub async fn build_enroll_invocation_with_deposits(
 
 /// Assemble the enroll invocation and append the named deposit tokens.
 async fn assemble_enroll_container(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     email: &str,
     deposits: Vec<(Cid, Vec<u8>)>,
@@ -168,21 +169,11 @@ async fn assemble_enroll_container(
 /// alongside, named by the CID of its head. The server walks the consent
 /// from the consumer to the invoking customer.
 pub async fn build_provider_add_invocation(
-    device: Ed25519Signer,
+    device: impl Into<Signer>,
     link: &DelegationChain,
     consumer: &Did,
     consent: &DelegationChain,
-) -> Result<Vec<u8>> {
-    build_provider_add_invocation_with_deletion(device, link, consumer, consent, None).await
-}
-
-/// Build `/provider/add` while depositing the creator's exact deletion grant.
-pub async fn build_provider_add_invocation_with_deletion(
-    device: Ed25519Signer,
-    link: &DelegationChain,
-    consumer: &Did,
-    consent: &DelegationChain,
-    deletion_grant: Option<&DelegationChain>,
+    kind: Option<&str>,
 ) -> Result<Vec<u8>> {
     let head = consent
         .proofs()
@@ -195,12 +186,8 @@ pub async fn build_provider_add_invocation_with_deletion(
         ),
         ("consent".to_string(), Promised::Link(head.to_cid())),
     ]);
-    if let Some(deletion_grant) = deletion_grant {
-        let deletion = deletion_grant
-            .proofs()
-            .next()
-            .context("the deletion grant carries no delegation")?;
-        arguments.insert("deletion".to_string(), Promised::Link(deletion.to_cid()));
+    if let Some(kind) = kind {
+        arguments.insert("kind".to_string(), Promised::String(kind.to_string()));
     }
     let invocation = build_device_invocation(
         device,
@@ -215,14 +202,31 @@ pub async fn build_provider_add_invocation_with_deletion(
     for delegation in consent.proofs() {
         tokens.push(delegation.encoded().to_vec());
     }
-    if let Some(deletion_grant) = deletion_grant {
-        for delegation in deletion_grant.proofs() {
-            tokens.push(delegation.encoded().to_vec());
-        }
-    }
     Container::new(tokens)
         .to_bytes()
         .context("failed to encode the add container")
+}
+
+/// Build a `/provider/remove` container — the reverse of
+/// [`build_provider_add_invocation`], and how a hosted space is
+/// deleted: the invocation names the customer as its subject and the
+/// space as its `consumer` argument, proving through the account's own
+/// chain. No per-space artifact is deposited.
+pub async fn build_provider_remove_invocation(
+    device: impl Into<Signer>,
+    link: &DelegationChain,
+    consumer: &Did,
+) -> Result<Vec<u8>> {
+    build_device_invocation(
+        device,
+        link,
+        vec!["provider".to_string(), "remove".to_string()],
+        BTreeMap::from([(
+            "consumer".to_string(),
+            Promised::String(consumer.to_string()),
+        )]),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -239,7 +243,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_builds_a_device_signed_invocation_the_service_verifies() {
-        let root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let root = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
         let root_did = root.did();
         let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
         let device_did = device.did();
@@ -261,7 +265,7 @@ mod tests {
 
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
-            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .verify(&dialog_credentials::DidKeyResolver)
             .await
             .unwrap();
         assert!(
@@ -282,7 +286,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_carries_ceremony_minted_deposits_issued_by_the_account() {
-        let root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let root = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
         let root_did = root.did();
         let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
         let service = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
@@ -307,8 +311,7 @@ mod tests {
         // Invocation, the root → device link, and the two deposits.
         assert_eq!(tokens.len(), 4);
         for token in &tokens[2..] {
-            let deposit: Delegation<Ed25519Signature> =
-                serde_ipld_dagcbor::from_slice(token).unwrap();
+            let deposit: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(token).unwrap();
             assert_eq!(
                 deposit.issuer(),
                 &root_did,

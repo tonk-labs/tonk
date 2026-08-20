@@ -20,13 +20,13 @@ use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
 use dialog_ucan_core::{
     Container, Delegation, DelegationBuilder, InvocationBuilder, InvocationChain,
 };
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use tonk_access_service::email::CapturedEmail;
 use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_access_service::registration::{Answer, Registration, SIGNUP_TERMS};
+use tonk_access_service::store::Store;
 use tonk_access_service::store::sqlite::SqliteStore;
-use tonk_access_service::store::{DeletionGrantKind, Store};
 use tonk_account::customer::{Receipt, RegistrationError, deposit_scopes};
 
 /// Current time as unix seconds.
@@ -102,12 +102,12 @@ async fn scoped_deposits(
     customer: &Ed25519Signer,
     service: &Did,
     audience: &Did,
-) -> Vec<Delegation<Ed25519Signature>> {
+) -> Vec<Delegation<AnySignature>> {
     let mut deposits = Vec::new();
     for scope in deposit_scopes(&customer.did(), service) {
         deposits.push(
             DelegationBuilder::new()
-                .issuer(customer.clone())
+                .issuer(dialog_credentials::Signer::from(customer.clone()))
                 .audience(audience)
                 .subject(scope.subject.clone())
                 .command(scope.command.segments().clone())
@@ -132,11 +132,11 @@ async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) 
 async fn enroll_container_with_deposits(
     customer: &Ed25519Signer,
     email: &str,
-    deposits: &[Delegation<Ed25519Signature>],
+    deposits: &[Delegation<AnySignature>],
     carry_deposits: bool,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
         .subject(&customer.did())
         .command(vec!["customer".to_string(), "enroll".to_string()])
@@ -188,7 +188,7 @@ async fn activation_invocation(
     expiration: Timestamp,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
-        .issuer(issuer.clone())
+        .issuer(dialog_credentials::Signer::from(issuer.clone()))
         .audience(subject)
         .subject(subject)
         .command(vec!["customer".to_string(), "activate".to_string()])
@@ -381,7 +381,7 @@ async fn it_refuses_a_deposit_broader_than_the_scopes() -> anyhow::Result<()> {
     // The old shape of the deposit: an unscoped grant of `/` over the
     // whole account space. Enrollment must refuse it rather than hold it.
     let unscoped = DelegationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&service)
         .subject(DelegatedSubject::Specific(customer.did()))
         .command(vec![])
@@ -457,49 +457,23 @@ async fn add_container(
     space: &Ed25519Signer,
     consent_to: &Did,
 ) -> Vec<u8> {
-    add_container_with_deletion(customer, space, consent_to, false).await
-}
-
-async fn add_container_with_deletion(
-    customer: &Ed25519Signer,
-    space: &Ed25519Signer,
-    consent_to: &Did,
-    carry_exact_deletion_grant: bool,
-) -> Vec<u8> {
     let consent = DelegationBuilder::new()
-        .issuer(space.clone())
+        .issuer(dialog_credentials::Signer::from(space.clone()))
         .audience(consent_to)
         .subject(DelegatedSubject::Specific(space.did()))
         .command(vec![])
         .try_build()
         .await
         .expect("consent delegation");
-    let deletion = if carry_exact_deletion_grant {
-        Some(
-            DelegationBuilder::new()
-                .issuer(space.clone())
-                .audience(consent_to)
-                .subject(DelegatedSubject::Specific(space.did()))
-                .command(vec!["space".to_string(), "delete".to_string()])
-                .try_build()
-                .await
-                .expect("deletion delegation"),
-        )
-    } else {
-        None
-    };
-    let mut arguments = BTreeMap::from([
+    let arguments = BTreeMap::from([
         (
             "consumer".to_string(),
             Promised::String(space.did().to_string()),
         ),
         ("consent".to_string(), Promised::Link(consent.to_cid())),
     ]);
-    if let Some(deletion) = &deletion {
-        arguments.insert("deletion".to_string(), Promised::Link(deletion.to_cid()));
-    }
     let invocation = InvocationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
         .subject(&customer.did())
         .command(vec!["provider".to_string(), "add".to_string()])
@@ -509,13 +483,10 @@ async fn add_container_with_deletion(
         .try_build()
         .await
         .expect("add invocation");
-    let mut tokens = vec![
+    let tokens = vec![
         serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes"),
         consent.encoded().to_vec(),
     ];
-    if let Some(deletion) = deletion {
-        tokens.push(deletion.encoded().to_vec());
-    }
     Container::new(tokens)
         .to_bytes()
         .expect("container encodes")
@@ -545,49 +516,10 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .unwrap()
         .expect("the consumer row exists");
     assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
-    assert_eq!(
-        consumer.deletion_grant_kind,
-        Some(DeletionGrantKind::LegacyDirect),
-        "an existing direct owner proof is upgraded once"
-    );
-    assert!(consumer.deletion_grant_cid.is_some());
 
     // Re-provisioning under the same customer is a no-op success.
     let container = add_container(&customer, &space, &customer.did()).await;
     assert!(fixture.registration(&container).handle().await.is_ok());
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn it_registers_the_exact_delete_grant_for_new_spaces() -> anyhow::Result<()> {
-    let fixture = Fixture::new().await;
-    let customer = Ed25519Signer::generate().await?;
-    let space = Ed25519Signer::generate().await?;
-    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
-    fixture.registration(&container).handle().await.unwrap();
-
-    let legacy = add_container(&customer, &space, &customer.did()).await;
-    fixture.registration(&legacy).handle().await.unwrap();
-    assert_eq!(
-        fixture
-            .store
-            .consumer(space.did().as_str())
-            .await?
-            .expect("legacy consumer row")
-            .deletion_grant_kind,
-        Some(DeletionGrantKind::LegacyDirect)
-    );
-
-    let container = add_container_with_deletion(&customer, &space, &customer.did(), true).await;
-    fixture.registration(&container).handle().await.unwrap();
-
-    let consumer = fixture
-        .store
-        .consumer(space.did().as_str())
-        .await?
-        .expect("consumer row");
-    assert_eq!(consumer.deletion_grant_kind, Some(DeletionGrantKind::Exact));
-    assert!(consumer.deletion_grant_cid.is_some());
     Ok(())
 }
 
@@ -733,5 +665,110 @@ async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::
         .as_str()
         .expect("a multikey verification method");
     assert_eq!(format!("did:key:{multibase}"), service_did.to_string());
+    Ok(())
+}
+
+/// The custody protocol end to end (`plan/Account custody.md`): a
+/// registered account provisions the custody DID as a consumer, the
+/// custody key publishes the wrapped account secret as a raw memory
+/// cell, and a fresh resolve reads the same bytes back holding nothing
+/// but the custody key. No repository exists anywhere in this flow.
+#[dialog_common::test]
+async fn it_publishes_and_resolves_the_custody_cell(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_remote_s3::Permit;
+    use tonk_identity::envelope::{
+        AccountSecret, Envelope, KekMethod, custody_kek, custody_signer,
+    };
+    use tonk_identity::{custody, delegation};
+
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+
+    // The account enrolls as a customer.
+    let account = Ed25519Signer::generate().await?;
+    let container = enroll_container(&account, &service_did, "custody@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "enrollment refused");
+
+    // The entry function's two outputs; a PRF would produce these
+    // inside one assertion, at the two custody salts.
+    let custody_key = custody_signer(&[21u8; 32]).await?;
+    let kek = custody_kek(&[22u8; 32]);
+
+    // The account provisions the custody DID, depositing the consent
+    // the custody key minted — the ordinary provisioning contract.
+    let device = Ed25519Signer::generate().await?;
+    let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
+    let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
+    let add = tonk_identity::request::build_provider_add_invocation(
+        device,
+        &link,
+        &custody_key.did(),
+        &consent,
+        Some("custody"),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "provisioning refused");
+
+    // Seal the secret and publish the cell: permit, then presigned PUT.
+    let secret = AccountSecret::generate()?;
+    let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
+    let publish = custody::build_publish_invocation(custody_key.clone(), &sealed, None).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(publish)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "publish permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let stored = permit.upload(sealed.clone()).await?;
+    assert!(
+        stored.status().is_success(),
+        "storage PUT failed: {}",
+        stored.status(),
+    );
+
+    // A fresh device resolves with nothing but the custody key.
+    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "resolve permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let fetched = permit.send().await?;
+    assert!(
+        fetched.status().is_success(),
+        "storage GET failed: {}",
+        fetched.status(),
+    );
+    let bytes = fetched.bytes().await?.to_vec();
+    assert_eq!(bytes, sealed, "the resolved cell is the sealed envelope");
+
+    // The envelope opens back to the same account.
+    let opened = custody_kek(&[22u8; 32]).open(&Envelope::decode(&bytes)?)?;
+    assert_eq!(
+        opened.signing_seed().as_ref(),
+        secret.signing_seed().as_ref(),
+        "the unwrapped secret derives the same account",
+    );
     Ok(())
 }

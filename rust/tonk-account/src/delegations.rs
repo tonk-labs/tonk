@@ -18,10 +18,10 @@
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
-use dialog_effects::blob::Write as BlobWrite;
+use dialog_effects::blob::{Import as BlobImport, Read as BlobRead, Write as BlobWrite};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_repository::{
     Branch, CommitError, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
@@ -111,8 +111,11 @@ where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
+        + Provider<BlobRead>
+        + Provider<BlobImport>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
+        + Provider<Fork<RemoteSite, BlobRead>>
         + ConditionalSync
         + 'static,
 {
@@ -121,7 +124,14 @@ where
         Some(Upstream::Remote { .. }) => {}
         Some(_) => return Err(AdoptError::ForeignUpstream),
     }
-    Ok(access.pull().perform(env).await?)
+    // Pull-and-materialize, not a bare pull: a bare pull adopts the head
+    // by root, leaving the access branch partially replicated — and the
+    // access branch is what authorization walks. A scan that hits a
+    // by-reference node at session open cannot hydrate it (the session
+    // being opened is what would authorize the fetch), which bricks the
+    // worker at boot. Downloading while a live session holds authority
+    // keeps the store complete for the next boot.
+    Ok(access.pull().download().perform(env).await?)
 }
 
 /// Why adopting the account as an access-branch upstream failed.
@@ -142,6 +152,7 @@ pub enum AdoptError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_credentials::Ed25519Signer;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -158,7 +169,12 @@ mod tests {
 
         let profile = Ed25519Signer::generate().await.unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
-        let union = mint_account_union(&profile, &account.did()).await.unwrap();
+        let union = mint_account_union(
+            &dialog_credentials::Signer::from(profile.clone()),
+            &account.did(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(union.issuer(), &profile.did());
         assert_eq!(union.audience(), &account.did());
@@ -195,7 +211,7 @@ mod tests {
 /// return edge would silently make the union asymmetric, and the asymmetry
 /// would only surface later as a proof that inexplicably fails.
 pub async fn mint_account_union(
-    profile: &Ed25519Signer,
+    profile: &Signer,
     account: &Did,
 ) -> Result<DelegationChain, UnionError> {
     let delegation = DelegationBuilder::new()

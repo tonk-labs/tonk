@@ -23,53 +23,48 @@ pub struct AccountSummary {
 pub struct AccountDeletionSpace {
     /// Repository subject to be permanently purged from Tonk services.
     pub subject: String,
-    /// Best available account backup name.
+    /// Display name from the account directory, when recorded.
     pub name: Option<String>,
     /// Access-service lifecycle state.
     pub state: String,
-    /// Registered proof mode (`exact` or narrowly upgraded `legacy-direct`).
-    pub proof_kind: Option<String>,
-    /// Exact public proof bytes the passkey ceremony must present.
-    pub proof_hex: Option<String>,
 }
 
 /// Reviewable destructive scope loaded before asking for a passkey.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDeletionPlan {
-    /// Account root that must sign every destructive request.
+    /// Account root the finalization ceremony must sign for.
     pub root_did: String,
     /// Verified email the user must type exactly.
     pub email: String,
     /// Hosted spaces originally provided by this account.
     pub spaces: Vec<AccountDeletionSpace>,
-    /// Owned subjects lacking retrievable registered proof material.
-    pub blocked_spaces: Vec<String>,
-    /// Backed-up spaces absent from the owned service inventory; these are
-    /// joined spaces and are not deleted.
+    /// Directory spaces absent from the owned service inventory; these
+    /// are joined spaces and are not deleted.
     pub joined_spaces: usize,
 }
 
-/// One root-signed space purge bound to its reviewed subject.
+/// One reviewed hosted-space deprovision. The worker signs the
+/// `/provider/remove` invocation itself — deletion is the account
+/// ending its hosting relationship, and any linked device holds that
+/// authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSpaceDeletionRequest {
     /// Reviewed repository subject.
     pub subject: String,
-    /// Hex-encoded root-signed `/space/delete` invocation.
-    pub invocation_hex: String,
 }
 
-/// Prepared destructive invocations returned by one passkey ceremony.
+/// The reviewed destructive scope. The worker signs every deletion
+/// invocation itself with the device's delegated authority; the UI's
+/// passkey assertion is a user-verification gate, not a signing key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDeletionRequest {
-    /// One invocation for every active/deleting owned hosted space.
+    /// Every reviewed owned hosted space, deprovisioned by the worker.
     pub spaces: Vec<AccountSpaceDeletionRequest>,
-    /// Root-signed access-customer finalization invocation.
-    pub customer_invocation_hex: String,
-    /// Root-signed account-service deletion invocation.
-    pub account_invocation_hex: String,
+    /// The account email the person retyped to confirm the deletion.
+    pub confirmed_email: String,
 }
 
 /// Completed service-account deletion result.
@@ -108,16 +103,6 @@ pub struct AccountLinkRequest {
     /// Seed the current profile name only for a new-account creation winner.
     #[serde(default)]
     pub initialize_name: bool,
-}
-
-/// Persist the service-selected descriptor for a legacy account link.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountRepositoryEstablishRequest {
-    /// Exact descriptor winner returned by the account service.
-    pub descriptor_hex: String,
-    /// Whether this ceremony created the service-side descriptor winner.
-    pub created: bool,
 }
 
 /// Local identity and provider attachment state.
@@ -291,14 +276,6 @@ mod tests {
         assert_eq!(link["delegationHex"], "aa");
         assert_eq!(link["descriptorHex"], "bb");
         assert_eq!(link["initializeName"], true);
-
-        let establish = serde_json::to_value(AccountRepositoryEstablishRequest {
-            descriptor_hex: "cc".into(),
-            created: false,
-        })
-        .unwrap();
-        assert_eq!(establish["descriptorHex"], "cc");
-        assert_eq!(establish["created"], false);
     }
 
     #[dialog_common::test]

@@ -14,11 +14,9 @@ use tonk_worker_api::{
 };
 
 use crate::identity_bridge::{
-    CeremonyOutput, CreateAccountInput, CreateFreshAccountInput, DeletionProofInput,
-    EstablishRepositoryInput, LinkDeviceInput, PrepareAccountDeletionInput,
-    PrepareSpaceDeletionInput, RevocationOutput, SignRevocationInput, complete_link,
-    create_account, create_fresh_account, establish_account_repository, link_device,
-    prepare_account_deletion, prepare_space_deletion, sign_revocation,
+    CeremonyOutput, CompleteLinkInput, CreateAccountInput, EnrollCustodyInput, RevocationOutput,
+    SignRevocationInput, UnlockWithPasskeyInput, VerifyPasskeyInput, complete_link, create_account,
+    enroll_custody_passkey, sign_revocation, unlock_with_passkey, verify_passkey,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -127,7 +125,6 @@ fn set_mode(host: &HtmlElement, mode: &str) {
         ("create", "#account-create"),
         ("link", "#account-link"),
         ("handoff", "#account-handoff"),
-        ("setup", "#account-setup"),
         ("success", "#account-success"),
     ] {
         if let Ok(Some(panel)) = host.query_selector(selector) {
@@ -149,7 +146,6 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-link-submit",
         "#account-link-back",
         "#account-handoff-submit",
-        "#account-setup-submit",
         "#account-unlink",
         "#account-delete-review",
         "#account-delete-submit",
@@ -404,26 +400,10 @@ fn render_deletion_plan(host: &HtmlElement, plan: &AccountDeletionPlan) -> Resul
         let _ = list.append_child(&item);
     }
     if let Ok(Some(blocked)) = host.query_selector("#account-delete-blocked") {
-        let blocked_visible: Vec<_> = plan
-            .blocked_spaces
-            .iter()
-            .filter(|space| {
-                requested
-                    .as_deref()
-                    .is_none_or(|subject| space.as_str() == subject)
-            })
-            .cloned()
-            .collect();
-        if blocked_visible.is_empty() {
-            let _ = blocked.set_attribute("hidden", "");
-            blocked.set_text_content(None);
-        } else {
-            blocked.set_text_content(Some(&format!(
-                "Deletion is blocked because Tonk cannot recover deletion authority for: {}",
-                blocked_visible.join(", ")
-            )));
-            let _ = blocked.remove_attribute("hidden");
-        }
+        // Nothing can block deletion any more: authority is the
+        // account's own chain, not a per-space recovered artifact.
+        let _ = blocked.set_attribute("hidden", "");
+        blocked.set_text_content(None);
     }
     let value = serde_wasm_bindgen::to_value(plan)
         .map_err(|_| "could not retain deletion plan".to_string())?;
@@ -890,8 +870,6 @@ enum Landing {
     /// Straight to the dashboard and load its devices: a `?revoke=` deep link
     /// names a device, and the removal ceremony lives there.
     Devices,
-    /// Explicit one-time descriptor ceremony for a legacy raw link.
-    Setup,
     /// The signed-in dashboard.
     Success,
     /// The link/create choice, with a hint when a revoke deep link
@@ -902,7 +880,6 @@ enum Landing {
 fn landing(account_state: Option<AccountStateStatus>, revoke_target: bool) -> Landing {
     match (account_state, revoke_target) {
         (Some(_), true) => Landing::Devices,
-        (Some(AccountStateStatus::Unconfigured), false) => Landing::Setup,
         (Some(_), false) => Landing::Success,
         (None, revoke_hint) => Landing::Choice { revoke_hint },
     }
@@ -981,10 +958,6 @@ fn load_status(host: HtmlElement) {
                 };
                 match landing(account_state, revoke_target_from_url().is_some()) {
                     Landing::Devices => load_devices(host),
-                    Landing::Setup => {
-                        set_busy(&host, false, "");
-                        set_mode(&host, "setup");
-                    }
                     Landing::Success => {
                         settle_on_load(&host);
                         apply_link_outcome(&host, link_outcome.as_ref());
@@ -1363,41 +1336,6 @@ async fn complete_remote(
     Ok(())
 }
 
-async fn establish_repository(host: &HtmlElement) -> Result<(), String> {
-    let ceremony = establish_account_repository(EstablishRepositoryInput {
-        remote: proposed_remote()?,
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-    let response = crate::api::submit_account_ceremony(
-        &service(host).await?,
-        "/account/repository/establish",
-        &ceremony.invocation_hex,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    let descriptor_hex = descriptor_hex(&response)?;
-    let created = response
-        .get("created")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| "account service omitted created".to_string())?;
-
-    // Persist only the service-selected winner. A losing ceremony candidate is
-    // never written locally, and only the one `created: true` response may ask
-    // the worker to seed this device's current profile name.
-    let status = crate::api::establish_local_account_repository(descriptor_hex, created)
-        .await
-        .map_err(|error| error.to_string())?;
-    settle(host);
-    if is_unhydrated(&status) {
-        show_error(
-            host,
-            "Account setup is saved, but account state is not synchronized yet. Reload /account to retry; do not choose another remote.",
-        );
-    }
-    Ok(())
-}
-
 fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) + 'static) {
     let Ok(Some(element)) = host.query_selector(selector) else {
         return;
@@ -1494,60 +1432,52 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let status = crate::api::root_status()
+                // One ceremony: the secret is generated, sealed under
+                // the new passkey's KEK, published as the custody cell,
+                // and the creation request signed. No key material is
+                // ever stored — every later custody operation derives
+                // its keys inside a fresh assertion.
+                let device_did = crate::api::identify()
                     .await
-                    .map_err(|error| error.to_string())?;
-                let service_did = deployment_service_did().await;
-                let ceremony = match status {
-                    tonk_worker_api::RootStatus::Ready {
-                        root_did,
-                        device_did,
-                        credential_id,
-                        delegation_hex,
-                        passkey,
-                        ..
-                    } => create_account(CreateAccountInput {
-                        email: email.clone(),
-                        device_did,
-                        device_name,
-                        root_did,
-                        credential_id,
-                        delegation_hex,
-                        passkey,
-                        remote: proposed_remote()?,
-                        service_did,
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?,
-                    tonk_worker_api::RootStatus::Missing { device_did } => {
-                        let created = create_fresh_account(CreateFreshAccountInput {
-                            email: email.clone(),
-                            device_did,
-                            device_name,
-                            remote: proposed_remote()?,
-                            created_on: crate::device_name::current(),
-                            service_did,
-                        })
-                        .await
-                        .map_err(|error| error.to_string())?;
-                        crate::api::save_root(
-                            created.credential_id.clone(),
-                            created.delegation_hex.clone(),
-                            Some(created.passkey.clone()),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                        CeremonyOutput {
-                            root_did: created.root_did,
-                            credential_id: created.credential_id,
-                            delegation_hex: created.delegation_hex,
-                            invocation_hex: created.invocation_hex,
-                            deposits_hex: created.deposits_hex,
-                        }
-                    }
+                    .map_err(|error| error.to_string())?
+                    .did;
+                let created = create_account(CreateAccountInput {
+                    email: email.clone(),
+                    device_did,
+                    device_name,
+                    remote: proposed_remote()?,
+                    endpoint: proposed_remote()?,
+                    created_on: Some(crate::device_name::current()),
+                    service_did: deployment_service_did().await,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                crate::api::save_root(
+                    created.credential_id.clone(),
+                    created.delegation_hex.clone(),
+                    created.passkey.clone(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                let ceremony = CeremonyOutput {
+                    root_did: created.root_did,
+                    credential_id: created.credential_id,
+                    delegation_hex: created.delegation_hex,
+                    invocation_hex: created.invocation_hex,
+                    deposits_hex: created.deposits_hex,
                 };
                 set_busy(&host, true, "Creating your account…");
-                complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await
+                complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await?;
+                // Provisioning the custody space is retryable; the
+                // published cell is the account's durability.
+                if let Err(error) =
+                    crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
+                {
+                    web_sys::console::warn_1(
+                        &format!("custody provisioning deferred: {error}").into(),
+                    );
+                }
+                Ok::<(), String>(())
             }
             .await;
             if let Err(error) = result {
@@ -1557,14 +1487,67 @@ fn bind(host: &HtmlElement) {
         });
     });
 
-    on_click(host, "#account-setup-submit", |host| {
+    on_click(host, "#account-add-passkey", |host| {
         clear_error(&host);
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
-            if let Err(error) = establish_repository(&host).await {
-                set_busy(&host, false, "");
-                set_mode(&host, "setup");
-                show_error(&host, error);
+            let result = async {
+                let (root_did, delegation_hex) = match crate::api::root_status()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    tonk_worker_api::RootStatus::Ready {
+                        root_did,
+                        delegation_hex,
+                        ..
+                    } => (root_did, delegation_hex),
+                    tonk_worker_api::RootStatus::Missing { .. } => {
+                        return Err("no account on this browser to add a passkey for".into());
+                    }
+                };
+                let label = crate::api::account_summary()
+                    .await
+                    .ok()
+                    .and_then(|summary| summary.email);
+                let enrolled = enroll_custody_passkey(EnrollCustodyInput {
+                    account_did: root_did,
+                    label,
+                    endpoint: proposed_remote()?,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                // Provisioning is retryable; the published cell is the
+                // account's durability, so a refusal here only warns.
+                if let Err(error) =
+                    crate::api::provision_custody(&enrolled.custody_did, &enrolled.consent_hex)
+                        .await
+                {
+                    web_sys::console::warn_1(
+                        &format!("custody provisioning deferred: {error}").into(),
+                    );
+                }
+                crate::api::save_root(
+                    enrolled.credential_id,
+                    delegation_hex,
+                    Some(tonk_worker_api::PasskeyMetadata {
+                        created_at: (js_sys::Date::now() / 1000.0) as u64,
+                        created_on: crate::device_name::current(),
+                    }),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                Ok::<(), String>(())
+            }
+            .await;
+            set_busy(&host, false, "");
+            match result {
+                Ok(()) => {
+                    if let Ok(Some(button)) = host.query_selector("#account-add-passkey") {
+                        let _ = button.set_attribute("hidden", "");
+                    }
+                    load_summary(host.clone());
+                }
+                Err(error) => show_error(&host, error),
             }
         });
     });
@@ -1579,9 +1562,13 @@ fn bind(host: &HtmlElement) {
                     .await
                     .map_err(|error| error.to_string())?
                     .did;
-                let ceremony = link_device(LinkDeviceInput {
+                // One assertion derives the custody keypair, one
+                // presigned GET fetches the sealed envelope, and the
+                // unwrapped secret self-issues this device's delegation.
+                let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
                     device_did,
                     device_name,
+                    endpoint: proposed_remote()?,
                     service_did: deployment_service_did().await,
                 })
                 .await
@@ -1640,6 +1627,7 @@ fn bind(host: &HtmlElement) {
                         crate::identity_bridge::AuthorizeDeviceInput {
                             device_did: audience.clone(),
                             remote: proposed_remote()?,
+                            endpoint: proposed_remote()?,
                         },
                     )
                     .await
@@ -1702,9 +1690,14 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let ceremony = complete_link(handoff)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                let ceremony = complete_link(CompleteLinkInput {
+                    token_hash: handoff.token_hash,
+                    device_did: handoff.device_did,
+                    device_name: handoff.device_name,
+                    endpoint: proposed_remote()?,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking the command-line profile…");
                 let _ = crate::api::submit_account_ceremony(
                     &service(&host).await?,
@@ -1812,21 +1805,6 @@ fn bind(host: &HtmlElement) {
             return show_error(&host, "Review the current deletion scope first.");
         };
         let requested = requested_space_deletion();
-        let blocked = plan.blocked_spaces.iter().any(|space| {
-            requested
-                .as_deref()
-                .is_none_or(|subject| space.as_str() == subject)
-        });
-        if blocked {
-            return show_error(
-                &host,
-                if requested.is_some() {
-                    "This space cannot be deleted because Tonk cannot recover its registered deletion authority."
-                } else {
-                    "Account deletion is blocked until every owned hosted space has recoverable deletion authority."
-                },
-            );
-        }
         let confirmed_email = match input(&host, "#account-delete-email") {
             Ok(email) if email == plan.email => email,
             Ok(_) => {
@@ -1886,64 +1864,55 @@ fn bind(host: &HtmlElement) {
         spawn_local(async move {
             let result = async {
                 if requested.is_some() {
+                    // Deleting one hosted space is deprovisioning — the
+                    // worker signs `/provider/remove` with this device's
+                    // own authority; no passkey ceremony is involved.
                     let space = &destructive[0];
-                    let proof = DeletionProofInput {
-                        kind: space.proof_kind.clone().ok_or_else(|| {
-                            format!("{} has no registered deletion proof kind", space.subject)
-                        })?,
-                        proof_hex: space.proof_hex.clone().ok_or_else(|| {
-                            format!("{} has no recoverable deletion proof", space.subject)
-                        })?,
-                    };
-                    let prepared = prepare_space_deletion(PrepareSpaceDeletionInput {
-                        expected_root: plan.root_did.clone(),
-                        proof,
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?;
                     let deleted = crate::api::delete_owned_space(&AccountSpaceDeletionRequest {
                         subject: space.subject.clone(),
-                        invocation_hex: prepared.invocation_hex,
                     })
                     .await
                     .map_err(|error| error.to_string())?;
                     return Ok::<_, String>((Some(deleted.subject), None));
                 }
-                let proofs = destructive
-                    .iter()
-                    .map(|space| {
-                        Ok(DeletionProofInput {
-                            kind: space.proof_kind.clone().ok_or_else(|| {
-                                format!("{} has no registered deletion proof kind", space.subject)
-                            })?,
-                            proof_hex: space.proof_hex.clone().ok_or_else(|| {
-                                format!("{} has no recoverable deletion proof", space.subject)
-                            })?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                let prepared = prepare_account_deletion(PrepareAccountDeletionInput {
-                    expected_root: plan.root_did.clone(),
-                    confirmed_email,
-                    proofs,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-                if prepared.space_invocations_hex.len() != destructive.len() {
-                    return Err("the passkey ceremony returned an incomplete deletion set".into());
-                }
+                // Account deletion asks the human to verify with the
+                // account's passkey, then the worker signs every
+                // destructive invocation with this device's delegated
+                // authority.
+                let credential_id = match crate::api::root_status()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    tonk_worker_api::RootStatus::Ready {
+                        root_did,
+                        credential_id,
+                        ..
+                    } => {
+                        if root_did != plan.root_did {
+                            return Err(
+                                "this device's passkey belongs to a different account".into()
+                            );
+                        }
+                        credential_id
+                    }
+                    tonk_worker_api::RootStatus::Missing { .. } => {
+                        return Err(
+                            "no account passkey is registered on this device to verify with".into(),
+                        );
+                    }
+                };
+                verify_passkey(VerifyPasskeyInput { credential_id })
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let spaces = destructive
                     .iter()
-                    .zip(prepared.space_invocations_hex)
-                    .map(|(space, invocation_hex)| AccountSpaceDeletionRequest {
+                    .map(|space| AccountSpaceDeletionRequest {
                         subject: space.subject.clone(),
-                        invocation_hex,
                     })
                     .collect();
                 let deleted = crate::api::delete_account(&AccountDeletionRequest {
                     spaces,
-                    customer_invocation_hex: prepared.customer_invocation_hex,
-                    account_invocation_hex: prepared.account_invocation_hex,
+                    confirmed_email,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -2116,9 +2085,18 @@ fn begin_revoke(
         let revocation_hex = if self_revoke {
             String::new()
         } else {
+            let endpoint = match proposed_remote() {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error);
+                    return;
+                }
+            };
             let signed: Result<RevocationOutput, String> = sign_revocation(SignRevocationInput {
                 delegation_cid,
                 path_hex: delegation_hex,
+                endpoint,
             })
             .await
             .map_err(|error| error.to_string());
@@ -2321,7 +2299,6 @@ mod tests {
             "#account-create-submit",
             "#account-link-submit",
             "#account-handoff-submit",
-            "#account-setup-submit",
         ] {
             assert!(
                 host.query_selector(selector).unwrap().is_some(),
@@ -2894,10 +2871,6 @@ mod tests {
         assert_eq!(
             landing(Some(AccountStateStatus::Unconfigured), true),
             Landing::Devices
-        );
-        assert_eq!(
-            landing(Some(AccountStateStatus::Unconfigured), false),
-            Landing::Setup
         );
         assert_eq!(
             landing(Some(AccountStateStatus::Ready), false),

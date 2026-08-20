@@ -290,9 +290,6 @@ pub async fn activate_link<S: Store>(
         .await?
     {
         ActivateOutcome::Active(device) => Ok(device),
-        ActivateOutcome::ActiveDeviceConflict => Err(CeremonyError::Conflict(
-            "this device is already attached; log out and retry detachment first".to_string(),
-        )),
         ActivateOutcome::RevokedDelegation => Err(CeremonyError::Conflict(
             "this delegation was revoked and can never be reactivated".to_string(),
         )),
@@ -317,7 +314,7 @@ mod tests {
 
     async fn fixture() -> (SqliteStore, String, String, String, String) {
         let store = SqliteStore::in_memory().unwrap();
-        let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+        let root = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
             .await
             .unwrap();
         let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])
@@ -383,10 +380,10 @@ mod tests {
     #[dialog_common::test]
     async fn it_links_a_device_that_is_registered_to_another_account() {
         let store = SqliteStore::in_memory().unwrap();
-        let old_root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+        let old_root = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
             .await
             .unwrap();
-        let new_root = tonk_identity::derive::derive_root_signer(&[9u8; 32])
+        let new_root = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
             .await
             .unwrap();
         let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])
@@ -467,23 +464,11 @@ mod tests {
 
         let consumed = consume_link(&store, SECRET, 103).await.unwrap().unwrap();
         let cid = new_delegation.proof_cids()[0].to_string();
-        assert!(matches!(
-            activate_link(
-                &store,
-                &hash,
-                &consumed.attachment_id,
-                &new_root_did,
-                &device_did,
-                &cid,
-                104,
-            )
-            .await,
-            Err(CeremonyError::Conflict(_))
-        ));
-        store
-            .detach_attachment(&"01".repeat(32), 105)
-            .await
-            .unwrap();
+        // Activating a completed handoff while an earlier attachment of
+        // the same device is still active supersedes it: the old row
+        // detaches and the new one activates in one step. This is what
+        // lets a device whose logout never reached the provider link
+        // again without any client-side detach delivery.
         let active = activate_link(
             &store,
             &hash,
@@ -491,7 +476,7 @@ mod tests {
             &new_root_did,
             &device_did,
             &cid,
-            106,
+            104,
         )
         .await
         .unwrap();
@@ -545,7 +530,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_refuses_to_link_an_unestablished_account() {
         let store = SqliteStore::in_memory().unwrap();
-        let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+        let root = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
             .await
             .unwrap();
         let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])

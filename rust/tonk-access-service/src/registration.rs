@@ -21,12 +21,12 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_capability::{Capability, Provider, Subject};
 use dialog_common::ConditionalSync;
-use dialog_credentials::{Ed25519KeyResolver, Ed25519Signer};
+use dialog_credentials::{DidKeyResolver, Ed25519Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as DelegatedSubject;
 use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
 use dialog_ucan_core::{Container, Delegation, Invocation, InvocationBuilder, InvocationChain};
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use ipld_core::cid::Cid;
 use ipld_core::ipld::Ipld;
@@ -39,7 +39,7 @@ use tonk_account::customer::{
 };
 
 use crate::email::EmailSender;
-use crate::store::{DeletionGrantKind, SIGNUP_PLAN, Store, StoreError};
+use crate::store::{SIGNUP_PLAN, Store, StoreError};
 
 /// The command path segments of [`Enroll`], as they appear in an
 /// invocation. Pinned to the capability-derived ability by a test.
@@ -81,7 +81,7 @@ pub enum RegistrationCommand {
 /// falls through to the presign path and its own error mapping.
 pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationCommand> {
     let tokens = Container::from_bytes(container_bytes).ok()?.into_tokens();
-    let invocation: Invocation<Ed25519Signature> =
+    let invocation: Invocation<AnySignature> =
         serde_ipld_dagcbor::from_slice(tokens.first()?).ok()?;
     let segments: Vec<&str> = invocation.command().0.iter().map(String::as_str).collect();
     match segments.as_slice() {
@@ -328,30 +328,18 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         let consent = self.deposited_delegation(&effect.consent.to_string())?;
         self.verify_consent(&consent.delegation, &effect.consumer, &provider)
             .await?;
-        let deletion = match effect.deletion {
-            Some(cid) => {
-                let grant = self.deposited_delegation(&cid.to_string())?;
-                self.verify_exact_deletion_grant(&grant.delegation, &effect.consumer, &provider)
-                    .await?;
-                Some((cid.to_string(), DeletionGrantKind::Exact))
+        let kind = match effect.kind.as_deref() {
+            None | Some("space") => crate::store::ConsumerKind::Space,
+            Some("custody") => crate::store::ConsumerKind::Custody,
+            Some(other) => {
+                return Err(RegistrationError::Forbidden {
+                    message: format!("unknown consumer kind: {other}"),
+                });
             }
-            None if is_direct_legacy_owner(&consent.delegation, &effect.consumer, &provider) => {
-                Some((
-                    consent.delegation.to_cid().to_string(),
-                    DeletionGrantKind::LegacyDirect,
-                ))
-            }
-            None => None,
         };
         if !self
             .store
-            .add_consumer(
-                effect.consumer.as_str(),
-                provider.as_str(),
-                self.now,
-                deletion.as_ref().map(|(cid, _)| cid.as_str()),
-                deletion.as_ref().map(|(_, kind)| *kind),
-            )
+            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now, kind)
             .await
             .map_err(internal)?
         {
@@ -360,32 +348,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         Ok(ConsumerReceipt {
             consumer: effect.consumer,
             provider,
-            deletion_ready: deletion.is_some(),
         })
-    }
-
-    async fn verify_exact_deletion_grant(
-        &self,
-        grant: &Delegation<Ed25519Signature>,
-        consumer: &Did,
-        provider: &Did,
-    ) -> Result<(), RegistrationError> {
-        if grant.issuer() != consumer
-            || grant.audience() != provider
-            || grant.subject() != &DelegatedSubject::Specific(consumer.clone())
-            || grant.command().0 != ["space".to_string(), "delete".to_string()]
-        {
-            return Err(RegistrationError::Forbidden {
-                message: "deletion authority must be an exact direct space-to-customer /space/delete grant".to_string(),
-            });
-        }
-        self.check_window(grant)?;
-        grant
-            .verify_signature(&Ed25519KeyResolver)
-            .await
-            .map_err(|err| RegistrationError::Unauthorized {
-                message: format!("deletion grant failed to verify: {err}"),
-            })
     }
 
     /// Validate the deposited consent: the consumer's own delegation to
@@ -395,7 +358,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// one; a powerline delegation from the space satisfies it as-is.
     async fn verify_consent(
         &self,
-        consent: &Delegation<Ed25519Signature>,
+        consent: &Delegation<AnySignature>,
         consumer: &Did,
         provider: &Did,
     ) -> Result<(), RegistrationError> {
@@ -438,7 +401,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         }
         self.check_window(consent)?;
         consent
-            .verify_signature(&Ed25519KeyResolver)
+            .verify_signature(&DidKeyResolver)
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("consent failed to verify: {err}"),
@@ -453,7 +416,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         let expiration = timestamp(self.now + self.activation_ttl)?;
         let service = self.service.did();
         let invocation = InvocationBuilder::new()
-            .issuer(self.service.clone())
+            .issuer(dialog_credentials::Signer::from(self.service.clone()))
             .audience(&service)
             .subject(&service)
             .command(ACTIVATE_COMMAND.iter().map(ToString::to_string).collect())
@@ -490,14 +453,14 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         &self,
         expected_command: &[&str],
         window: Option<u64>,
-    ) -> Result<InvocationChain<Ed25519Signature>, RegistrationError> {
+    ) -> Result<InvocationChain<AnySignature>, RegistrationError> {
         let chain = InvocationChain::try_from(self.container).map_err(|err| {
             RegistrationError::Invalid {
                 message: format!("bad invocation container: {err}"),
             }
         })?;
         chain
-            .verify(&Ed25519KeyResolver)
+            .verify(&DidKeyResolver)
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("invocation failed to verify: {err}"),
@@ -547,12 +510,12 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             .skip(1)
             .enumerate()
             .map(|(index, bytes)| {
-                let delegation: Delegation<Ed25519Signature> =
-                    serde_ipld_dagcbor::from_slice(&bytes).map_err(|err| {
-                        RegistrationError::Invalid {
-                            message: format!("failed to decode delegation {index}: {err}"),
-                        }
-                    })?;
+                let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(&bytes)
+                    .map_err(|err| {
+                    RegistrationError::Invalid {
+                        message: format!("failed to decode delegation {index}: {err}"),
+                    }
+                })?;
                 Ok(DelegationToken { delegation, bytes })
             })
             .collect()
@@ -622,7 +585,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// the customer through those links.
     async fn verify_deposit(
         &self,
-        deposit: &Delegation<Ed25519Signature>,
+        deposit: &Delegation<AnySignature>,
         customer: &Did,
     ) -> Result<(), RegistrationError> {
         let service = self.service.did();
@@ -666,7 +629,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// its issuer's.
     async fn check_deposit_link(
         &self,
-        delegation: &Delegation<Ed25519Signature>,
+        delegation: &Delegation<AnySignature>,
         customer: &Did,
     ) -> Result<(), RegistrationError> {
         if let DelegatedSubject::Specific(subject) = delegation.subject()
@@ -680,7 +643,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         }
         self.check_window(delegation)?;
         delegation
-            .verify_signature(&Ed25519KeyResolver)
+            .verify_signature(&DidKeyResolver)
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("access delegation failed to verify: {err}"),
@@ -689,10 +652,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
 
     /// Refuse a delegation whose time window does not contain the
     /// present.
-    fn check_window(
-        &self,
-        delegation: &Delegation<Ed25519Signature>,
-    ) -> Result<(), RegistrationError> {
+    fn check_window(&self, delegation: &Delegation<AnySignature>) -> Result<(), RegistrationError> {
         if let Some(expiration) = delegation.expiration()
             && expiration.to_unix() < self.now
         {
@@ -709,17 +669,6 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         }
         Ok(())
     }
-}
-
-fn is_direct_legacy_owner(
-    consent: &Delegation<Ed25519Signature>,
-    consumer: &Did,
-    provider: &Did,
-) -> bool {
-    consent.issuer() == consumer
-        && consent.audience() == provider
-        && consent.subject() == &DelegatedSubject::Specific(consumer.clone())
-        && consent.command().0.is_empty()
 }
 
 // [`Store`] and [`EmailSender`] are declared through the same dual
@@ -766,7 +715,7 @@ where
 /// A delegation token as it appeared in the container: the decoded
 /// delegation together with its exact bytes.
 struct DelegationToken {
-    delegation: Delegation<Ed25519Signature>,
+    delegation: Delegation<AnySignature>,
     bytes: Vec<u8>,
 }
 

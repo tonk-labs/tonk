@@ -4,7 +4,7 @@ mod common;
 
 use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
-use tonk_account::backup::space_root_site;
+use tonk_account::prefix::space_root_site;
 use tonk_cli::site::{SiteConfig, TonkSite};
 
 /// Open sites the way a real install does, with the account boundary in
@@ -83,12 +83,8 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
     );
 
     let operator = fixture.pre_account_site.operator.inner();
-    assert!(
-        tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fixture.link)
-            .await?,
-        "a hydrated account must retain the grant"
-    );
-    // Content-addressed, so a second retain of the same chain writes nothing.
+    // The fixture already put the root → device link into provable
+    // reach, so retaining it reports already-present.
     assert!(
         !tonk_cli::account_state::retain_space_delegation(
             &fixture.profile,
@@ -96,6 +92,19 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
             &fixture.link
         )
         .await?,
+        "the fixture's link is already retained"
+    );
+    // A chain the account has never seen retains once, and the
+    // content-addressed store dedupes the replay.
+    let (_, fresh) = fixture.space_chain(77).await?;
+    assert!(
+        tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fresh)
+            .await?,
+        "a hydrated account must retain a novel grant"
+    );
+    assert!(
+        !tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fresh)
+            .await?,
         "re-retaining an identical chain must not write again"
     );
     Ok(())
@@ -122,7 +131,7 @@ async fn it_installs_authority_from_a_callback_authorization(
 
     // Exactly what the page mints: the account's powerline to this profile,
     // plus the descriptor that says where the account repository lives.
-    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let root = dialog_credentials::Ed25519Signer::import(&[77; 32]).await?;
     let authorized =
         tonk_identity::ceremony::authorize_device(root.clone(), fixture.profile.did(), &remote)
             .await?;
@@ -270,9 +279,9 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         .await?
         .expect("the owner's account is hydrated");
     assert!(
-        tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
+        !tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
             .await?,
-        "the space authority must reach the account"
+        "creation already retained the space authority into the account"
     );
     account.push().perform(owner_operator).await?;
 
@@ -310,7 +319,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     // does — mint the grant, post it to the callback. Everything after that
     // is the command's own dance: install, persist, mount, adopt, pull,
     // retain both union halves, push.
-    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let root = dialog_credentials::Ed25519Signer::import(&[77; 32]).await?;
     let page = common::authorizing_page(root.clone(), remote.clone()).await?;
     // Nothing opens a browser in a test, so take the approval URL off the
     // announce channel and visit it — the URL carries the callback address
@@ -328,7 +337,6 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
             service_url: remote.clone(),
             device_name: "test-device".to_owned(),
             open_browser: false,
-            abandon_detach: false,
             via: Some(page.url.clone()),
             announce: Some(announce),
             store: Some(tonk_cli::spot::SpotStore::at(
@@ -462,8 +470,8 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
         tonk_cli::site::account_root_prefix_for(&first.profile, operator, &subject, &account_root)
             .await?;
     assert!(
-        tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
-        "device one retains its space authority into the account"
+        !tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
+        "creation already retained device one's space authority into the account"
     );
     account.push().perform(operator).await?;
 

@@ -109,12 +109,23 @@ impl AccountFixture {
     /// A fixture whose account repository points at a REAL remote, for tests
     /// that sync the account between devices.
     pub async fn with_account_remote(remote: &str) -> Result<Self> {
+        Self::build(remote, true).await
+    }
+
+    /// A fixture that has linked but never hydrated: the trusted-base
+    /// marker is absent, exactly like a fresh device right after
+    /// `tonk account link`.
+    pub async fn unhydrated_with_account_remote(remote: &str) -> Result<Self> {
+        Self::build(remote, false).await
+    }
+
+    async fn build(remote: &str, hydrated: bool) -> Result<Self> {
         let test = TestSite::new().await?;
         let profile = test.site.profile.clone();
         let store = tonk_cli::spot::SpotStore::at(test.parent.join("state"));
         let server = tonk_account_service::helpers::AccountServer::start().await;
         let root_prf = [77; 32];
-        let root = tonk_identity::derive::derive_root_signer(&root_prf).await?;
+        let root = dialog_credentials::Ed25519Signer::import(&root_prf).await?;
         let link =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did()).await?;
         let email = "person@example.com".to_string();
@@ -152,17 +163,32 @@ impl AccountFixture {
         )
         .await?;
 
-        // Mark the descriptor trusted, so the fixture models a device that
-        // has hydrated its account rather than one that has only linked it.
-        // Without this the account reads as unhydrated and nothing will mount
-        // its repository.
-        let validated = tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor).await?;
+        // Save the root → device link through the account-store operator
+        // too: hydration and the pull-side prover resolve authority
+        // through it, and access certificates saved only through the
+        // site operator are not in its reach.
+        let account_operator =
+            tonk_cli::account_state::credential_operator_for_store(&profile, &store).await?;
         profile
-            .credential()
-            .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-            .save(validated.content_hash().to_vec())
-            .perform(&test.site.operator)
+            .access()
+            .save(dialog_ucan::UcanDelegation(link.clone()))
+            .perform(&account_operator)
             .await?;
+
+        if hydrated {
+            // Mark the descriptor trusted, so the fixture models a device
+            // that has hydrated its account rather than one that has only
+            // linked it. Without this the account reads as unhydrated and
+            // nothing will mount its repository.
+            let validated =
+                tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor).await?;
+            profile
+                .credential()
+                .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+                .save(validated.content_hash().to_vec())
+                .perform(&test.site.operator)
+                .await?;
+        }
 
         Ok(Self {
             pre_account_site: test.site,
@@ -177,60 +203,91 @@ impl AccountFixture {
         })
     }
 
-    pub async fn backup(
+    /// Mint a `space → account-root` chain for a synthetic space.
+    pub async fn space_chain(
         &self,
         space_seed: u8,
-        name: Option<&str>,
-        remote_url: Option<&str>,
-    ) -> Result<(dialog_varsig::Did, tonk_account::backup::AccountSpotBackup)> {
+    ) -> Result<(dialog_varsig::Did, dialog_ucan_core::DelegationChain)> {
         use dialog_ucan_core::subject::Subject;
         use dialog_ucan_core::{DelegationBuilder, DelegationChain};
         use dialog_varsig::Principal as _;
 
-        let root = tonk_identity::derive::derive_root_signer(&self.root_prf).await?;
+        let root = dialog_credentials::Ed25519Signer::import(&self.root_prf).await?;
         let space = dialog_credentials::Ed25519Signer::import(&[space_seed; 32]).await?;
         let subject = space.did();
         let delegation = DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(&root.did())
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])
             .try_build()
             .await?;
-        let chain = DelegationChain::new(delegation);
-        let backup = tonk_account::backup::AccountSpotBackup {
-            chain_hex: hex::encode(chain.to_bytes()?),
-            deletion_grant_hex: None,
-            remote_url: remote_url.map(str::to_string),
-            revocation_url: None,
-            name: name.map(str::to_string),
-        };
-        Ok((subject, backup))
+        Ok((subject, DelegationChain::new(delegation)))
     }
 
-    pub async fn put(&self, backup: &tonk_account::backup::AccountSpotBackup) -> Result<String> {
-        use dialog_ucan_core::promise::Promised;
+    /// The account-store operator every spots read/write in tests runs
+    /// under.
+    pub async fn operator(
+        &self,
+    ) -> Result<dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>> {
+        tonk_cli::account_state::credential_operator_for_store(&self.profile, &self.store).await
+    }
 
-        let bytes = serde_json::to_vec(backup)?;
-        let body = tonk_identity::request::build_device_invocation(
-            self.profile.signer().signer().clone(),
-            &self.link,
-            vec!["account".into(), "chain".into(), "put".into()],
-            [("chain".to_string(), Promised::String(hex::encode(bytes)))]
-                .into_iter()
-                .collect(),
-        )
-        .await?;
-        let response = reqwest::Client::new()
-            .post(format!("{}/chains/put", self.server.endpoint))
-            .body(body)
-            .send()
+    /// The profile's account branch, which the fixture treats as
+    /// already hydrated (see the trusted-marker write in the
+    /// constructor).
+    pub async fn account_branch(&self) -> Result<dialog_repository::Branch> {
+        let operator = self.operator().await?;
+        tonk_cli::account_state::open_account_branch_in(&self.profile, &operator, &self.store)
             .await?
-            .error_for_status()?;
-        Ok(response.json::<serde_json::Value>().await?["key"]
-            .as_str()
-            .unwrap()
-            .to_string())
+            .ok_or_else(|| anyhow::anyhow!("fixture account branch did not open"))
+    }
+
+    /// Record a synthetic space in the account directory the way
+    /// another device's `record_site` would have, and make its
+    /// authority provable here by saving the `space → root` chain into
+    /// the profile's access store (what adopting a synced account
+    /// would have delivered).
+    pub async fn record_directory_space(
+        &self,
+        space_seed: u8,
+        name: Option<&str>,
+        remote_url: Option<&str>,
+    ) -> Result<dialog_varsig::Did> {
+        use tonk_schema::directory::{MountBranch, MountRecord, MountRemote};
+
+        let (subject, chain) = self.space_chain(space_seed).await?;
+        let operator = self.operator().await?;
+        self.profile
+            .access()
+            .save(dialog_ucan::UcanDelegation(chain))
+            .perform(&operator)
+            .await?;
+        let account = self.account_branch().await?;
+        let record = MountRecord {
+            remotes: remote_url
+                .map(|url| {
+                    vec![MountRemote {
+                        name: "origin".to_string(),
+                        address: dialog_repository::SiteAddress::from(
+                            dialog_remote_ucan_s3::UcanAddress::new(url),
+                        ),
+                        subject: subject.clone(),
+                        revocation: None,
+                    }]
+                })
+                .unwrap_or_default(),
+            branches: remote_url
+                .map(|_| {
+                    vec![MountBranch {
+                        name: "main".to_string(),
+                        upstream: Some(("origin".to_string(), "main".to_string())),
+                    }]
+                })
+                .unwrap_or_default(),
+        };
+        tonk_schema::directory::record(&account, &subject, name, &record, &operator).await?;
+        Ok(subject)
     }
 }
 

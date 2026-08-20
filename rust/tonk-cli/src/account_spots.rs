@@ -1,23 +1,23 @@
-//! Native account spot inventory, pull, and best-effort backup reconciliation.
+//! Native account spot inventory, pull, and directory recording.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use dialog_operator::Profile;
+use dialog_operator::{Operator, Profile};
 use dialog_query::{Output as _, Query, Term};
-use dialog_ucan_core::DelegationChain;
-use dialog_ucan_core::promise::Promised;
+use dialog_remote_ucan_s3::UcanAddress;
+use dialog_repository::{Branch, SiteAddress};
+use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
-use tonk_account::backup::{
-    ACCOUNT_SPOT_BACKUP_MARKER_PREFIX, ACCOUNT_SPOTS_CAPABILITY_HEADER,
-    ACCOUNT_SPOTS_CAPABILITY_V1, AccountSpotBackup, AccountSpotSummary, space_delete_site,
-};
+use tonk_account::{AccountStateStatus, MAIN_BRANCH};
 use tonk_schema::RepositoryName;
+use tonk_schema::directory::{MountBranch, MountRecord, MountRemote};
 use tonk_schema::prelude::DidExt as _;
 
-use crate::account::{self, AccountConnection};
+#[cfg(feature = "integration-tests")]
+use crate::account;
 use crate::remote::{self, DEFAULT_REMOTE};
 use crate::site::TonkSite;
 use crate::spot::{self, SpotStore};
@@ -27,16 +27,14 @@ use crate::spot::{self, SpotStore};
 pub struct AccountSpotRow {
     /// Repository subject DID.
     pub subject: String,
-    /// Name stored in the account backup.
+    /// Name mirrored in the account directory.
     pub remote_name: Option<String>,
     /// Registry name already resolving to this subject.
     pub local_name: Option<String>,
-    /// Whether conflicting legacy artifacts prevent selection.
+    /// Retained for row rendering; legacy escrow ambiguity no longer occurs.
     pub ambiguous: bool,
-    /// Whether the selected artifact carries a usable sync remote.
+    /// Whether the directory carries a mount record for this space.
     pub pullable: bool,
-    /// Whether the account holds exact hosted deletion authority.
-    pub deletion_ready: bool,
 }
 
 /// Result of pulling one account spot.
@@ -54,26 +52,25 @@ pub struct PullOutcome {
     pub warning: Option<String>,
 }
 
-/// Result of attempting to refresh one site's account backup.
+/// What recording a spot in the account directory did.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackupOutcome {
-    /// No account provider is attached.
-    NoProvider,
-    /// The site has no actual `main` upstream yet.
+pub enum RecordOutcome {
+    /// No account is linked (or it has not hydrated yet), so there is
+    /// no directory to record into.
+    NoAccount,
+    /// The site has no `main` upstream yet — a local-only spot is
+    /// deliberately not listed as mountable anywhere else.
     NoUpstream,
-    /// The exact payload was already uploaded successfully.
+    /// The directory already holds exactly this configuration.
     Unchanged,
-    /// A new immutable payload was uploaded and marked locally.
-    Uploaded {
-        /// Content-addressed key returned by the account service.
-        key: String,
-    },
+    /// The directory was updated (and the change pushed best-effort).
+    Recorded,
 }
 
-/// One isolated warning from a whole-registry backup sweep.
+/// One isolated warning from a whole-registry directory sweep.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupWarning {
-    /// Registry name whose backup failed.
+pub struct RecordWarning {
+    /// Registry name whose recording failed.
     pub name: String,
     /// Diagnostic suitable for stderr.
     pub message: String,
@@ -93,150 +90,6 @@ async fn open_site(path: &std::path::Path, profile: &Profile) -> Result<TonkSite
         bail!("registered site profile does not match the active account profile");
     }
     Ok(site)
-}
-
-async fn response_bytes(response: reqwest::Response, path: &str) -> Result<Vec<u8>> {
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("failed to read account service response from {path}"))?
-        .to_vec();
-    if !status.is_success() {
-        let detail = String::from_utf8_lossy(&bytes);
-        bail!("account service rejected {path} ({status}): {detail}");
-    }
-    Ok(bytes)
-}
-
-async fn get_artifact_bytes(
-    profile: &Profile,
-    connection: &AccountConnection,
-    key: &str,
-) -> Result<Vec<u8>> {
-    let arguments = [("key".to_string(), Promised::String(key.to_string()))]
-        .into_iter()
-        .collect();
-    let response = connection
-        .signed_post(
-            profile,
-            "chains/get",
-            vec!["account".into(), "chain".into(), "get".into()],
-            arguments,
-        )
-        .await?;
-    response_bytes(response, "chains/get").await
-}
-
-async fn get_artifact(
-    profile: &Profile,
-    connection: &AccountConnection,
-    key: &str,
-) -> Result<AccountSpotBackup> {
-    let bytes = get_artifact_bytes(profile, connection, key).await?;
-    serde_json::from_slice(&bytes).context("account service returned an invalid spot backup")
-}
-
-fn legacy_rows(artifacts: Vec<(String, AccountSpotBackup, Did)>) -> Vec<AccountSpotSummary> {
-    let mut groups: BTreeMap<String, Vec<(String, AccountSpotBackup, Did)>> = BTreeMap::new();
-    for (key, backup, subject) in artifacts {
-        groups
-            .entry(subject.to_string())
-            .or_default()
-            .push((key, backup, subject));
-    }
-    groups
-        .into_values()
-        .map(|candidates| {
-            let (first_key, first, subject) = &candidates[0];
-            if candidates
-                .iter()
-                .skip(1)
-                .any(|(_, candidate, _)| candidate != first)
-            {
-                AccountSpotSummary {
-                    subject: subject.to_string(),
-                    key: None,
-                    name: None,
-                    remote_url: None,
-                    revocation_url: None,
-                    ambiguous: true,
-                    deletion_ready: false,
-                }
-            } else {
-                AccountSpotSummary {
-                    subject: subject.to_string(),
-                    key: Some(first_key.clone()),
-                    name: first.name.clone(),
-                    remote_url: first.remote_url.clone(),
-                    revocation_url: first.revocation_url.clone(),
-                    ambiguous: false,
-                    deletion_ready: first.deletion_grant_hex.is_some(),
-                }
-            }
-        })
-        .collect()
-}
-
-async fn legacy_inventory(
-    profile: &Profile,
-    connection: &AccountConnection,
-    keys: Vec<String>,
-) -> Result<Vec<AccountSpotSummary>> {
-    let mut artifacts = Vec::new();
-    for key in keys {
-        // Fetch/status failures mean the inventory is incomplete and must be
-        // surfaced. Successfully fetched generic or malformed legacy blobs
-        // are compatibility noise and remain isolated from valid spots.
-        let bytes = get_artifact_bytes(profile, connection, &key).await?;
-        let Ok(backup) = serde_json::from_slice::<AccountSpotBackup>(&bytes) else {
-            continue;
-        };
-        let Ok(validated) = backup.validate_for(&connection.root_did).await else {
-            continue;
-        };
-        artifacts.push((key, backup, validated.subject));
-    }
-    Ok(legacy_rows(artifacts))
-}
-
-async fn remote_inventory(
-    profile: &Profile,
-    connection: &AccountConnection,
-) -> Result<Vec<AccountSpotSummary>> {
-    let response = connection
-        .signed_post(
-            profile,
-            "chains/list",
-            vec!["account".into(), "chain".into(), "list".into()],
-            BTreeMap::new(),
-        )
-        .await?;
-    let supports_spots = response
-        .headers()
-        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
-        .and_then(|value| value.to_str().ok())
-        == Some(ACCOUNT_SPOTS_CAPABILITY_V1);
-    let bytes = response_bytes(response, "chains/list").await?;
-    let keys: Vec<String> =
-        serde_json::from_slice(&bytes).context("account service returned invalid chain keys")?;
-    if !supports_spots {
-        return legacy_inventory(profile, connection, keys).await;
-    }
-
-    let response = connection
-        .signed_post(
-            profile,
-            "chains/spots",
-            vec!["account".into(), "chain".into(), "spots".into()],
-            BTreeMap::new(),
-        )
-        .await?;
-    let bytes = response_bytes(response, "chains/spots").await?;
-    let mut spots: Vec<AccountSpotSummary> =
-        serde_json::from_slice(&bytes).context("account service returned invalid account spots")?;
-    spots.sort_by(|left, right| left.subject.cmp(&right.subject));
-    Ok(spots)
 }
 
 #[derive(Debug, Clone)]
@@ -278,23 +131,72 @@ async fn local_subjects(
     Ok(subjects)
 }
 
-/// List remote account spots and identify subjects already registered locally.
-pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpotRow>> {
-    let connection = account::connection_for_store(profile, store).await?;
-    let local = local_subjects(profile, store).await?;
-    let mut rows: Vec<_> = remote_inventory(profile, &connection)
+/// Open the account branch, hydrating the link first when this device
+/// has not reached Ready yet.
+///
+/// `tonk account spots` must not depend on a prior `tonk account
+/// status` run having done the hydration: a linked-but-unhydrated
+/// profile is an ordinary state right after `tonk account link` on a
+/// fresh device, and reporting it as "no account" reads as data loss.
+async fn ready_account_branch(
+    profile: &Profile,
+    store: &SpotStore,
+) -> Result<(Operator<NativeSpace>, Branch)> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    if let Some(branch) =
+        crate::account_state::open_account_branch_in(profile, &operator, store).await?
+    {
+        return Ok((operator, branch));
+    }
+    let outcome =
+        crate::account_state::ensure_with_operator_and_store(profile, operator, store.clone())
+            .await?;
+    match outcome.status {
+        AccountStateStatus::Unconfigured => {
+            bail!("no account is linked on this profile; run `tonk account link`")
+        }
+        AccountStateStatus::Unhydrated => bail!(
+            "the account is linked but its first sync has not succeeded yet{}",
+            outcome
+                .warning
+                .map(|warning| format!(": {warning}"))
+                .unwrap_or_default()
+        ),
+        AccountStateStatus::Ready => {}
+    }
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let branch = crate::account_state::open_account_branch_in(profile, &operator, store)
         .await?
+        .context("the account branch did not open after hydration")?;
+    Ok((operator, branch))
+}
+
+/// List the account directory's spots and identify subjects already
+/// registered locally. Reads the account DB — the same directory facts
+/// the Hub renders — not the retired spot-backup escrow.
+pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpotRow>> {
+    let (operator, branch) = ready_account_branch(profile, store).await?;
+    // Freshen best-effort: an offline listing still renders the local
+    // copy of the directory.
+    if let Err(error) = branch.pull().download().perform(&operator).await {
+        eprintln!("warning: account sync failed; listing the local copy: {error:#}");
+    }
+    let local = local_subjects(profile, store).await?;
+    let rows = tonk_schema::directory::spaces(&branch, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
         .into_iter()
-        .map(|summary| AccountSpotRow {
-            local_name: local.get(&summary.subject).map(|spot| spot.name.clone()),
-            pullable: !summary.ambiguous && summary.key.is_some() && summary.remote_url.is_some(),
-            subject: summary.subject,
-            remote_name: summary.name,
-            ambiguous: summary.ambiguous,
-            deletion_ready: summary.deletion_ready,
+        .map(|space| {
+            let subject = space.subject.to_string();
+            AccountSpotRow {
+                local_name: local.get(&subject).map(|spot| spot.name.clone()),
+                pullable: space.mountable,
+                remote_name: space.name,
+                ambiguous: false,
+                subject,
+            }
         })
         .collect();
-    rows.sort_by(|left, right| left.subject.cmp(&right.subject));
     Ok(rows)
 }
 
@@ -345,19 +247,36 @@ pub async fn pull(
     let requested: Did = subject
         .parse()
         .map_err(|error| anyhow::anyhow!("invalid account spot subject '{subject}': {error:?}"))?;
-    let connection = account::connection_for_store(profile, store).await?;
-    let summaries = remote_inventory(profile, &connection).await?;
-    let summary = summaries
-        .into_iter()
-        .find(|summary| summary.subject == requested.to_string())
-        .with_context(|| format!("no account spot is backed up for {requested}"))?;
-    if summary.ambiguous {
-        bail!("account spot {requested} has conflicting legacy backups and cannot be pulled");
+    let (operator, account) = ready_account_branch(profile, store).await?;
+    if let Err(error) = account.pull().download().perform(&operator).await {
+        eprintln!("warning: account sync failed; pulling from the local copy: {error:#}");
     }
-    let key = summary
-        .key
-        .as_deref()
-        .context("account spot has no selected backup artifact")?;
+    // Bring retained certificates into the profile's provable reach so
+    // the space→root chain can be assembled below. Best-effort, like
+    // the pull above: with the account unreachable, already-local
+    // certificates may still prove the chain.
+    if let Err(error) =
+        crate::account_state::adopt_account_access_in(profile, &operator, store).await
+    {
+        eprintln!(
+            "warning: account access adoption failed; proving from local certificates: {error:#}"
+        );
+    }
+
+    let record = tonk_schema::directory::mount_record(&account, &requested, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+        .with_context(|| {
+            format!(
+                "the account directory has no mount record for {requested} — the spot                  is local-only on its home device or predates directory records"
+            )
+        })?;
+    let directory_name = tonk_schema::directory::spaces(&account, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+        .into_iter()
+        .find(|space| space.subject == requested)
+        .and_then(|space| space.name);
 
     let local = local_subjects(profile, store).await?;
     if let Some(local) = local.get(requested.as_ref()) {
@@ -372,8 +291,8 @@ pub async fn pull(
 
     let name = requested_name
         .map(str::to_string)
-        .or_else(|| summary.name.clone())
-        .ok_or_else(|| name_error(None, "the backup has no stored name"))?;
+        .or(directory_name)
+        .ok_or_else(|| name_error(None, "the directory has no stored name"))?;
     spot::validate_name(&name).map_err(|error| name_error(Some(&name), error))?;
     let registry = store.load()?;
     if registry.spots.contains_key(&name) {
@@ -399,44 +318,46 @@ pub async fn pull(
         ));
     }
 
-    let artifact = get_artifact(profile, &connection, key).await?;
-    let validated = artifact
-        .validate_for(&connection.root_did)
-        .await
-        .context("account spot backup is invalid")?;
-    if validated.subject != requested {
-        bail!("account spot backup subject does not match {requested}");
-    }
-    let remote_url = artifact
-        .remote_url
-        .as_deref()
-        .context("account spot backup has no usable sync remote")?;
-    let deletion_grant_bytes = validated
-        .deletion_grant
-        .as_ref()
-        .map(DelegationChain::to_bytes)
-        .transpose()
-        .context("failed to serialize restored deletion grant")?;
+    // The space→root chain assembles from certificates the profile now
+    // holds (the account pull above brought the retained delegations
+    // down) — the prover walks them; no escrow artifact involved. The
+    // root is the linked account's root DID — NOT the account branch's
+    // subject: the account is profile main's upstream, so the local
+    // branch's subject is the profile itself.
+    let account_root: Did = crate::identity::local_root_with_operator(profile, &operator)
+        .await?
+        .context("no account root is recorded on this profile")?
+        .root_did
+        .parse()
+        .context("stored root DID is invalid")?;
+    let chain = crate::site::recover_prefix(profile, &operator, &requested, &account_root)
+        .await?
+        .with_context(|| {
+            format!(
+                "no delegation chain from {requested} to the account root is                  provable here — sync the account and retry"
+            )
+        })?;
+    let primary = record
+        .remotes
+        .iter()
+        .find(|remote| remote.name == DEFAULT_REMOTE)
+        .or_else(|| record.remotes.first())
+        .context("the mount record lists no remotes")?;
+    let endpoint = match &primary.address {
+        SiteAddress::Ucan(ucan) => ucan.endpoint().to_owned(),
+        other => bail!("the mount record's remote is not a UCAN site: {other:?}"),
+    };
 
     let mut fresh_target = FreshPullTarget::new(target.clone());
-    let site = crate::site::mount_delegated_at(&target, validated.chain, site_config(profile))
+    let site = crate::site::mount_delegated_at(&target, chain, site_config(profile))
         .await
         .context("failed to mount account spot")?;
-    if let Some(bytes) = deletion_grant_bytes {
-        site.profile
-            .credential()
-            .site(space_delete_site(&requested, &connection.root_did))
-            .save(bytes)
-            .perform(site.operator.local())
-            .await
-            .context("failed to retain the restored deletion grant")?;
-    }
     remote::add_with_revocation(
         &site,
         DEFAULT_REMOTE,
-        remote_url,
+        &endpoint,
         Some(requested.clone()),
-        artifact.revocation_url.as_deref(),
+        primary.revocation.as_deref(),
     )
     .await
     .context("failed to configure the account spot remote")?;
@@ -482,115 +403,101 @@ async fn repository_name(site: &TonkSite) -> Option<String> {
         .map(|row| row.name.0)
 }
 
-async fn marker(site: &TonkSite, subject: &Did) -> Result<Option<Vec<u8>>> {
-    match site
-        .profile
-        .credential()
-        .site(format!("{ACCOUNT_SPOT_BACKUP_MARKER_PREFIX}{subject}"))
-        .load::<Vec<u8>>()
-        .perform(&site.operator)
-        .await
-    {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if crate::account_state::credential_is_missing(&error) => Ok(None),
-        Err(error) => Err(error).context("failed to load the account backup marker"),
-    }
-}
-
-/// Whether this device has already uploaded an account backup for
-/// `site`'s repository.
+/// Whether the account directory lists `site`'s repository with a
+/// mount record — the claim `tonk spot rm` leans on when it tells
+/// someone their data is recoverable with `tonk account spots pull`.
 ///
-/// Answered from the local marker credential alone, so it costs no
-/// network round trip and works while logged out. The marker is
-/// written only after the account service accepts the payload
-/// ([`back_up_site_with_connection`]), which makes its presence a
-/// claim that a backup exists — the claim `tonk spot rm` leans on
-/// when it tells someone their data is recoverable.
-pub async fn has_account_backup(site: &TonkSite) -> Result<bool> {
-    Ok(marker(site, &site.repository.did()).await?.is_some())
+/// Answered from the account branch's local copy of the directory; an
+/// absent or unhydrated account answers `false` rather than failing
+/// the command this probe is trying to make safe.
+pub async fn directory_lists(site: &TonkSite) -> Result<bool> {
+    let store = SpotStore::open()?;
+    let operator =
+        crate::account_state::credential_operator_for_store(&site.profile, &store).await?;
+    let Some(account) =
+        crate::account_state::open_account_branch_in(&site.profile, &operator, &store).await?
+    else {
+        return Ok(false);
+    };
+    Ok(
+        tonk_schema::directory::mount_record(&account, &site.repository.did(), &operator)
+            .await
+            .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+            .is_some(),
+    )
 }
 
-async fn back_up_site_with_connection(
+/// Mirror one site's name and mount configuration into the account
+/// directory as plain facts — [`tonk_schema::directory::record`], fed
+/// from the site's own upstream configuration. The directory (not any
+/// escrow artifact) is what other devices list and what `tonk account
+/// spots pull` mounts from.
+///
+/// Idempotent and quiet: when the directory already says exactly this,
+/// nothing commits, so routine `tonk eval` runs do not churn the
+/// account head.
+pub async fn record_site(registry_name: &str, site: &TonkSite) -> Result<RecordOutcome> {
+    record_site_in(registry_name, site, &SpotStore::open()?).await
+}
+
+/// [`record_site`] against a caller-supplied store.
+pub async fn record_site_in(
     registry_name: &str,
     site: &TonkSite,
-    connection: &AccountConnection,
-) -> Result<BackupOutcome> {
+    store: &SpotStore,
+) -> Result<RecordOutcome> {
     let Some(upstream) = remote::upstream_remote(site).await? else {
-        return Ok(BackupOutcome::NoUpstream);
+        return Ok(RecordOutcome::NoUpstream);
     };
-    let remote = remote::find(site, &upstream)
+    let remote_record = remote::find(site, &upstream)
         .await?
         .with_context(|| format!("upstream remote '{upstream}' is not registered"))?;
+    let subject = site.repository.did();
     let name = repository_name(site)
         .await
         .unwrap_or_else(|| registry_name.to_string());
-    let chain = crate::site::account_root_prefix(site, &connection.root_did).await?;
-    let subject = chain
-        .subject()
-        .cloned()
-        .context("account-root prefix has no repository subject")?;
-    let deletion_grant = crate::site::deletion_grant(site, &connection.root_did).await?;
-    let artifact = AccountSpotBackup {
-        chain_hex: hex::encode(chain.to_bytes()?),
-        deletion_grant_hex: deletion_grant
-            .as_ref()
-            .map(|grant| grant.to_bytes())
-            .transpose()?
-            .map(hex::encode),
-        remote_url: Some(remote.endpoint),
-        revocation_url: remote.revocation_url,
-        name: Some(name),
-    };
-    artifact.validate_for(&connection.root_did).await?;
-    // Re-provision even when the immutable backup itself is unchanged. This
-    // installs exact grants for new spaces and narrowly tags an original
-    // direct broad owner proof as `legacy-direct`; indirect joined chains are
-    // refused and remain non-destructive.
-    if let Err(error) =
-        crate::customer::provision(&site.profile, &subject, &chain, deletion_grant.as_ref()).await
-    {
-        eprintln!("warning: deletion-authority upgrade skipped: {error:#}");
-    }
-    let bytes = serde_json::to_vec(&artifact)?;
-    let content_key = blake3::hash(&bytes).to_hex().to_string();
-    if marker(site, &subject).await?.as_deref() == Some(content_key.as_bytes()) {
-        return Ok(BackupOutcome::Unchanged);
-    }
 
-    let arguments = [("chain".to_string(), Promised::String(hex::encode(&bytes)))]
-        .into_iter()
-        .collect();
-    let response = connection
-        .signed_post(
-            &site.profile,
-            "chains/put",
-            vec!["account".into(), "chain".into(), "put".into()],
-            arguments,
-        )
-        .await?;
-    let response = response_bytes(response, "chains/put").await?;
-    #[derive(serde::Deserialize)]
-    struct PutResponse {
-        key: String,
-    }
-    let put: PutResponse = serde_json::from_slice(&response)
-        .context("account service returned an invalid put result")?;
-    site.profile
-        .credential()
-        .site(format!("{ACCOUNT_SPOT_BACKUP_MARKER_PREFIX}{subject}"))
-        .save(content_key.into_bytes())
-        .perform(&site.operator)
+    let operator =
+        crate::account_state::credential_operator_for_store(&site.profile, store).await?;
+    let Some(account) =
+        crate::account_state::open_account_branch_in(&site.profile, &operator, store).await?
+    else {
+        return Ok(RecordOutcome::NoAccount);
+    };
+
+    let address = SiteAddress::from(UcanAddress::new(remote_record.endpoint.as_str()));
+    let desired = MountRecord {
+        remotes: vec![MountRemote {
+            name: upstream.clone(),
+            address,
+            subject: remote_record.subject.clone(),
+            revocation: remote_record.revocation_url.clone(),
+        }],
+        branches: vec![MountBranch {
+            name: MAIN_BRANCH.to_string(),
+            upstream: Some((upstream.clone(), MAIN_BRANCH.to_string())),
+        }],
+    };
+    let current = tonk_schema::directory::mount_record(&account, &subject, &operator)
         .await
-        .context("failed to save the account backup marker")?;
-    Ok(BackupOutcome::Uploaded { key: put.key })
-}
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?;
+    let current_name = tonk_schema::directory::spaces(&account, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+        .into_iter()
+        .find(|space| space.subject == subject)
+        .and_then(|space| space.name);
+    if current.as_ref() == Some(&desired) && current_name.as_deref() == Some(name.as_str()) {
+        return Ok(RecordOutcome::Unchanged);
+    }
 
-/// Refresh one registered site's account backup.
-pub async fn back_up_site(registry_name: &str, site: &TonkSite) -> Result<BackupOutcome> {
-    let Some(connection) = account::optional_connection(&site.profile).await? else {
-        return Ok(BackupOutcome::NoProvider);
-    };
-    back_up_site_with_connection(registry_name, site, &connection).await
+    tonk_schema::directory::record(&account, &subject, Some(&name), &desired, &operator)
+        .await
+        .context("failed to record the spot in the account directory")?;
+    if let Err(error) = account.push().perform(&operator).await {
+        eprintln!("warning: account directory updated locally; push failed: {error:#}");
+    }
+    Ok(RecordOutcome::Recorded)
 }
 
 fn first_registry_name_for_site<'a>(
@@ -602,8 +509,8 @@ fn first_registry_name_for_site<'a>(
         .find_map(|(name, path)| (path == site_root).then_some(name))
 }
 
-/// Refresh the registry entry matching an already-open site.
-pub(crate) async fn back_up_current(site: &TonkSite) -> Result<BackupOutcome> {
+/// Record the registry entry matching an already-open site.
+pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
     let store = SpotStore::open()?;
     let registry = store.load()?;
     let candidates: Vec<_> = registry
@@ -624,26 +531,17 @@ pub(crate) async fn back_up_current(site: &TonkSite) -> Result<BackupOutcome> {
         &site.root,
     )
     .context("the evaluated site is not registered as a spot")?;
-    back_up_site(name, site).await
+    record_site(name, site).await
 }
 
-/// Best-effort sweep of every registered spot.
-pub async fn back_up_registered(profile: &Profile, store: &SpotStore) -> Vec<BackupWarning> {
+/// Best-effort directory sweep of every registered spot.
+pub async fn record_registered(profile: &Profile, store: &SpotStore) -> Vec<RecordWarning> {
     let registry = match store.load() {
         Ok(registry) => registry,
         Err(error) => {
-            return vec![BackupWarning {
+            return vec![RecordWarning {
                 name: "(registry)".to_string(),
                 message: error.to_string(),
-            }];
-        }
-    };
-    let connection = match account::connection_for_store(profile, store).await {
-        Ok(connection) => connection,
-        Err(error) => {
-            return vec![BackupWarning {
-                name: "(account)".to_string(),
-                message: format!("{error:#}"),
             }];
         }
     };
@@ -653,7 +551,7 @@ pub async fn back_up_registered(profile: &Profile, store: &SpotStore) -> Vec<Bac
         let site = match open_site(&entry.site, profile).await {
             Ok(site) => site,
             Err(error) => {
-                warnings.push(BackupWarning {
+                warnings.push(RecordWarning {
                     name,
                     message: format!("{error:#}"),
                 });
@@ -663,8 +561,8 @@ pub async fn back_up_registered(profile: &Profile, store: &SpotStore) -> Vec<Bac
         if !inspected_subjects.insert(site.repository.did().to_string()) {
             continue;
         }
-        if let Err(error) = back_up_site_with_connection(&name, &site, &connection).await {
-            warnings.push(BackupWarning {
+        if let Err(error) = record_site_in(&name, &site, store).await {
+            warnings.push(RecordWarning {
                 name,
                 message: format!("{error:#}"),
             });
@@ -705,30 +603,5 @@ mod tests {
             first_registry_name_for_site(candidates, &root),
             Some("alpha")
         );
-    }
-
-    #[test]
-    fn it_marks_materially_different_legacy_backups_ambiguous() {
-        let subject: Did = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL"
-            .parse()
-            .unwrap();
-        let first = AccountSpotBackup {
-            chain_hex: "aa".to_string(),
-            deletion_grant_hex: None,
-            remote_url: Some("https://one.example/".to_string()),
-            revocation_url: None,
-            name: None,
-        };
-        let second = AccountSpotBackup {
-            remote_url: Some("https://two.example/".to_string()),
-            ..first.clone()
-        };
-        let rows = legacy_rows(vec![
-            ("a".to_string(), first, subject.clone()),
-            ("b".to_string(), second, subject),
-        ]);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].ambiguous);
-        assert!(rows[0].key.is_none());
     }
 }

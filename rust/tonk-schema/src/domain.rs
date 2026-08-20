@@ -52,6 +52,45 @@ pub mod replica {
     pub struct Status(pub Entity);
 }
 
+/// Attributes for the account-level space directory — one entry per
+/// space, shared by every device on the account.
+///
+/// Distinct from the `xyz.tonk.replica` namespace on purpose: replica
+/// rows are per-device (their entity hashes the device profile in),
+/// and now that profile main syncs through the account every device's
+/// rows land everywhere. A directory that queried replica attributes
+/// would list one row per device per space. These attributes hang on
+/// the repository's own entity instead, so all devices converge on
+/// one entry.
+pub mod space {
+    use super::{Attribute, Entity};
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Subject(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Status(pub Entity);
+
+    /// Whether this device holds a local replica of the space. Written
+    /// to the profile-main OVERLAY only — device-local, never
+    /// replicated — so the Hub can style a directory row it cannot
+    /// open locally (the hollow, replicate-on-first-visit spot).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct Local(pub bool);
+
+    /// The space's display name, mirrored into the account directory
+    /// (the content-branch copy stays the editable source of truth) so
+    /// every device can label a space it has not replicated yet.
+    /// Written at create and updated by the rename command.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Name(pub String);
+}
+
 /// Attributes for the `tonk/sync` concept — a replica's sync state.
 ///
 /// Two orthogonal entity-valued fields, both keyed on the replica entity

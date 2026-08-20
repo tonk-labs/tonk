@@ -8,8 +8,7 @@ use tokio::sync::oneshot;
 use tonk_account::{AccountProviderRecord, AccountRepositoryDescriptorV1, AccountStateStatus};
 use tonk_common::log;
 use tonk_worker_api::{
-    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest,
-    AccountRepositoryEstablishRequest, AccountStatus,
+    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest, AccountStatus,
 };
 
 use super::AppState;
@@ -196,6 +195,29 @@ pub(crate) async fn attach_test_account(
     save_provider(state, &record).await
 }
 
+/// Whether this profile carries ANY account-attachment history: a
+/// stored provider record (configured or not) or the sign-out
+/// tombstone. Only a profile with no history at all — a creation
+/// ceremony whose registration never completed — may have its root
+/// replaced by a retry; a signed-out profile keeps refusing a
+/// different root, because its spaces still hang off the stored one.
+pub(crate) async fn has_attachment_history(state: &crate::worker::TonkState) -> bool {
+    match state
+        .profile
+        .credential()
+        .site(ACCOUNT_PROVIDER_SITE)
+        .load::<Vec<u8>>()
+        .perform(&state.operator)
+        .await
+    {
+        Ok(_) => true,
+        Err(error) if crate::credential::is_missing(&error) => false,
+        // An unreadable record still counts as history: refusing a
+        // replacement is recoverable, silently rebinding is not.
+        Err(_) => true,
+    }
+}
+
 /// The provider both test fixtures name. See [`attach_test_account`].
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) const TEST_ACCOUNT_PROVIDER: &str = "https://accounts.tonk.xyz";
@@ -287,53 +309,6 @@ pub async fn set_display_name(
     }
 }
 
-/// Persist the service-selected descriptor winner for a legacy account.
-///
-/// An account created before repository descriptors existed is attached to a
-/// provider but names no repository. The service picks one winner among the
-/// devices racing to establish it; this stores exactly the bytes it returned,
-/// never the caller's own losing candidate.
-#[wasm_compat]
-pub async fn establish_repository(
-    State(state): State<AppState>,
-    Json(request): Json<AccountRepositoryEstablishRequest>,
-) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    let tonk = state.read().await;
-    let root = super::identity::local_root(&tonk).await?;
-    let attached = load_provider(&tonk, &root.root_did)
-        .await?
-        .ok_or_else(|| TonkWorkerError::Conflict("no account provider is attached".to_string()))?;
-    let descriptor = hex::decode(&request.descriptor_hex)
-        .map_err(|error| TonkWorkerError::Router(format!("invalid descriptor hex: {error}")))?;
-    let record = attached
-        .establish(&descriptor, &root.root_did)
-        .await
-        .map_err(provider_error)?;
-    save_provider(&tonk, &record).await?;
-    // This profile now has an account routing key to hide where a moment ago
-    // it had none.
-    tonk.account_keys.invalidate();
-
-    if request.created {
-        if let Err(error) = super::account_state::initialize_display_name(&tonk).await {
-            log!("initial account display-name seed did not complete: {error}");
-        }
-    } else {
-        super::account_state::ensure_account_state(&tonk).await;
-    }
-
-    // Roster upkeep: this profile just became an account row. The email
-    // comes best-effort from the provider; a failed fetch leaves it
-    // blank until a later refresh.
-    let email = super::account_devices::account_summary(&tonk)
-        .await
-        .ok()
-        .and_then(|summary| summary.email);
-    super::profiles::upsert_active_entry(&tonk, email).await;
-
-    Ok(Json(status(&tonk).await?))
-}
-
 /// Validate that provider ceremony metadata exactly matches the local root,
 /// then store provider metadata and the account repository descriptor without
 /// changing authority.
@@ -407,9 +382,6 @@ pub async fn link(
     // so what gets backed up is the account-rooted authority.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     super::repository::adopt_profile_spaces(&state).await;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::router::account_backup::back_up_existing_spaces(&state).await;
-    crate::router::restore::restore_spaces(&state).await;
 
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it

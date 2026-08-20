@@ -642,7 +642,18 @@ impl Store for D1Store {
         if link.cancelled_at.is_some() {
             return Ok(ActivateOutcome::Cancelled);
         }
-        let insert_sql = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) SELECT account_id, device_did, attachment_id, delegation_cid, delegation_hex, device_name, 'active', ?1 FROM link_requests l WHERE token_hash = ?2 AND attachment_id = ?3 AND completed_at IS NOT NULL AND cancelled_at IS NULL AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_did = l.device_did AND d.status = 'active') AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.delegation_cid = l.delegation_cid AND d.status = 'revoked')";
+        // A still-active earlier attachment of the same device does not
+        // block a freshly completed handoff: the ceremony re-proved
+        // possession of the device key, so the new generation supersedes
+        // the old one (guarded on the same not-revoked condition as the
+        // insert, so a revoked delegation cannot detach anything).
+        let supersede_sql = "UPDATE devices SET status = 'detached' WHERE status = 'active' AND device_did = (SELECT device_did FROM link_requests l WHERE token_hash = ?1 AND attachment_id = ?2 AND completed_at IS NOT NULL AND cancelled_at IS NULL AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.delegation_cid = l.delegation_cid AND d.status = 'revoked'))";
+        let supersede = self
+            .0
+            .prepare(supersede_sql)
+            .bind(&[JsValue::from(token_hash), JsValue::from(attachment_id)])
+            .map_err(map_err)?;
+        let insert_sql = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) SELECT account_id, device_did, attachment_id, delegation_cid, delegation_hex, device_name, 'active', ?1 FROM link_requests l WHERE token_hash = ?2 AND attachment_id = ?3 AND completed_at IS NOT NULL AND cancelled_at IS NULL AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.delegation_cid = l.delegation_cid AND d.status = 'revoked')";
         let insert = self
             .0
             .prepare(insert_sql)
@@ -661,16 +672,16 @@ impl Store for D1Store {
                 JsValue::from(attachment_id),
             ])
             .map_err(map_err)?;
-        self.0.batch(vec![insert, mark]).await.map_err(map_err)?;
+        self.0
+            .batch(vec![supersede, insert, mark])
+            .await
+            .map_err(map_err)?;
         if let Some(device) = self.attachment(attachment_id).await? {
             return Ok(match device.status {
                 DeviceStatus::Active => ActivateOutcome::Active(device),
                 DeviceStatus::Detached => ActivateOutcome::Cancelled,
                 DeviceStatus::Revoked => ActivateOutcome::RevokedDelegation,
             });
-        }
-        if self.active_device_by_did(&link.device_did).await?.is_some() {
-            return Ok(ActivateOutcome::ActiveDeviceConflict);
         }
         let revoked: Option<DeviceRowD1> = self
             .0

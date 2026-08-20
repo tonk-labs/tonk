@@ -195,28 +195,22 @@ mod tests {
         sign_up(&driver, &env, EMAIL).await?;
 
         wait_for_text_containing(&driver, "#account-email-value", EMAIL).await?;
-        let created = element(&driver, "#account-passkey-created-value")
-            .await?
-            .text()
-            .await?;
-        assert!(!created.is_empty() && created != "Loading…" && created != "Unavailable");
+        // Creation mints the first custody passkey in the same ceremony
+        // that generates and seals the secret, so the dashboard
+        // describes it immediately.
         wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
-
-        // These facts are served from the account repository, seeded on every
-        // sweep of a ready account. Reading twice proves the seed recognizes
-        // its own fact rather than restamping it with each pass.
         let first = get_json(&driver, "/api/account/summary").await?;
         let again = get_json(&driver, "/api/account/summary").await?;
         let first = successful_body("account summary", &first);
         let again = successful_body("account summary", &again);
         assert!(
             !first["passkey"].is_null(),
-            "signup records passkey facts: {first}"
+            "creation records passkey facts: {first}"
         );
         assert_eq!(
             first["passkey"], again["passkey"],
-            "a second sweep must not rewrite the recorded creation facts"
+            "a second read must not rewrite the recorded creation facts"
         );
 
         // Signup enrolled the account as a customer: the dashboard names
@@ -279,9 +273,11 @@ mod tests {
             .click()
             .await?;
 
-        // Without the code preflight, the conflict surfaces at account
-        // creation, after the passkey ceremony ran: the passkey exists
-        // and the retry below reuses it rather than minting another.
+        // The conflict surfaces at signed account creation — after the
+        // custody passkey exists. That ordering is deliberate: an
+        // availability probe without a verified code would let anyone
+        // enumerate registered emails, so the failed attempt's cost is
+        // one orphaned passkey in the authenticator.
         wait_for_text(
             &driver,
             "#account-error",
@@ -300,8 +296,8 @@ mod tests {
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
-            1,
-            "the retry must reuse the persisted passkey rather than mint another"
+            2,
+            "each creation attempt mints exactly one custody passkey"
         );
 
         driver.quit().await?;
@@ -509,13 +505,11 @@ mod tests {
         let prefix = format!("{heading}{url_line}{outcome_line}");
         let link = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
         assert!(link.status.success(), "link failed: {}", link.stderr);
-        assert!(link.stdout.contains("linked\nroot: did:key:"));
+        assert!(link.stdout.contains("linked\naccount: did:key:"));
         assert!(link.stdout.contains("device: did:key:"));
         assert!(
-            link.stdout.contains("account state: synced")
-                || link
-                    .stdout
-                    .contains("account state: waiting for first sync")
+            link.stdout.contains("status: synced")
+                || link.stdout.contains("status: waiting for first sync")
         );
 
         Ok(LinkedCli { profile, link })
@@ -657,21 +651,38 @@ mod tests {
         .await?;
         successful_body("promote guest membership", &promoted);
 
-        let account = get_json(&claimer, "/api/account").await?;
-        let root = successful_body("read claiming account", &account)["rootDid"]
-            .as_str()
-            .context("claiming account status omitted its root DID")?;
-        let snapshot: Vec<serde_json::Value> = reqwest::Client::new()
-            .get(env.account_service.join("_test/spots")?)
-            .header("X-Test-Root", root)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
+        // The account directory is the backup now: link a CLI as a
+        // second device of the claimer's account and read the claimed
+        // spot back out of the synced account DB — the real
+        // cross-device path, not a service-side artifact store.
+        let second_device = link_cli_with(&claimer, &env, false).await?;
+        // The browser pushes the directory facts on its next sync
+        // drain, so a freshly linked device may pull before they land.
+        // `spots` pulls best-effort on every run; poll until the
+        // recording arrives — the assertion is that promotion recorded
+        // the spot, not that it won a push race.
+        let mut spots = run_cli(
+            &second_device.profile,
+            &["account".to_string(), "spots".to_string()],
+        )
+        .await?;
+        assert!(spots.status.success(), "spots failed: {}", spots.stderr);
+        for _ in 0..30 {
+            if spots.stdout.contains(&key) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            spots = run_cli(
+                &second_device.profile,
+                &["account".to_string(), "spots".to_string()],
+            )
             .await?;
+            assert!(spots.status.success(), "spots failed: {}", spots.stderr);
+        }
         assert!(
-            snapshot.iter().any(|spot| spot["subject"] == key),
-            "promotion completed without uploading the claimed spot: {snapshot:?}"
+            spots.stdout.contains(&key),
+            "promotion completed without recording the claimed spot in the account directory: {}",
+            spots.stdout
         );
 
         let devtools = ChromeDevTools::new(claimer.handle.clone());
@@ -723,7 +734,19 @@ mod tests {
             ));
         }
 
-        let restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        // Sign-in success precedes the account content pull that
+        // carries the directory rows, and the on-demand mount needs
+        // those rows. The Hub renders from a live subscription, so
+        // arrival is eventually consistent by design; poll the load
+        // the same way a page would re-render.
+        let mut restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        for _ in 0..30 {
+            if restored["status"].as_u64().is_some_and(|s| s == 200) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        }
         let restored = successful_body("load claimed spot on second device", &restored);
         assert_eq!(restored["subject"], key);
 
@@ -741,6 +764,92 @@ mod tests {
         );
 
         claimer.quit().await?;
+        Ok(())
+    }
+
+    /// The full deletion stack under the button: plan review, email
+    /// confirmation, device-signed deprovisioning of every owned
+    /// hosted space, and both account-level finalizations. Only the
+    /// passkey user-verification gesture is UI-side and out of scope;
+    /// everything destructive runs here exactly as in production.
+    #[dialog_common::test]
+    async fn it_deletes_the_account_and_its_hosted_spaces(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "goner@example.com";
+        sign_up(&driver, &env, email).await?;
+
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Doomed Garden",
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create synced spot", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+        let pushed = post_json(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push synced spot", &pushed);
+
+        let plan = get_json(&driver, "/api/account/deletion/plan").await?;
+        let plan = successful_body("review the deletion plan", &plan);
+        assert_eq!(plan["email"], email, "plan reveals the verified email");
+        let spaces = plan["spaces"]
+            .as_array()
+            .context("plan omitted the owned spaces")?;
+        assert_eq!(spaces.len(), 1, "one owned hosted space: {plan}");
+        let subject = spaces[0]["subject"]
+            .as_str()
+            .context("plan space omitted its subject")?
+            .to_string();
+
+        // A mistyped confirmation email refuses before anything burns.
+        let refused = post_json(
+            &driver,
+            "/api/account/delete",
+            serde_json::json!({
+                "spaces": [{ "subject": subject }],
+                "confirmedEmail": "someone-else@example.com",
+            }),
+        )
+        .await?;
+        assert_eq!(
+            refused["status"], 403,
+            "wrong confirmation email must refuse: {refused}"
+        );
+
+        let deleted = post_json(
+            &driver,
+            "/api/account/delete",
+            serde_json::json!({
+                "spaces": [{ "subject": subject }],
+                "confirmedEmail": email,
+            }),
+        )
+        .await?;
+        let receipt = successful_body("delete the account", &deleted);
+        assert_eq!(receipt["deletedSpaces"], 1, "one hosted space purged");
+        assert_eq!(receipt["retainedJoinedSpaces"], 0);
+
+        // The profile is unlinked: the deletion plan is no longer
+        // reviewable because there is no account to review.
+        let after = get_json(&driver, "/api/account/deletion/plan").await?;
+        assert_eq!(
+            after["status"], 404,
+            "a deleted account leaves nothing to plan against: {after}"
+        );
+
+        driver.quit().await?;
         Ok(())
     }
 
@@ -836,8 +945,8 @@ mod tests {
         let provider = status
             .stdout
             .lines()
-            .find_map(|line| line.strip_prefix("provider: "))
-            .context("status output omitted the provider")?;
+            .find_map(|line| line.strip_prefix("account service: "))
+            .context("status output omitted the account service")?;
         assert_eq!(url::Url::parse(provider)?, env.account_service);
         assert!(linked.link.stdout.contains("linked"));
 
@@ -878,7 +987,7 @@ mod tests {
         assert!(status.status.success(), "status failed: {}", status.stderr);
         assert!(status.stdout.contains("signed in: yes"));
         assert!(
-            linked.link.stdout.contains("sync service:"),
+            linked.link.stdout.contains("access service:"),
             "the link reports the registration the signup performed: {}",
             linked.link.stdout
         );

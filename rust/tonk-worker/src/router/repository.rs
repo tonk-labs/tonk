@@ -22,12 +22,13 @@ use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_account::backup::{SPACE_ROOT_SITE_PREFIX, space_delete_site};
+use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
@@ -43,7 +44,7 @@ use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::T
 /// alongside its content branch. It stores local bookkeeping — the
 /// local [`Replica`] record, remotes config, and branch enumeration —
 /// that must never replicate (see [`tonk_schema`]).
-const META_BRANCH: &str = "meta";
+pub(crate) const META_BRANCH: &str = "meta";
 
 /// The single branch the *profile* repository lives on. The profile
 /// has no content/meta split (its whole state is device-local hub
@@ -691,6 +692,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             //    the identity just created. A failure here just leaves it
             //    local-only — retryable from the topbar's Enable sync.
             //    (`remote_from_facts` already dropped empty/blank URLs.)
+            // A blank remote used to mean local-only, which the account
+            // directory now advertises account-wide as a space no other
+            // device can ever replicate. With an account attached, the
+            // account's own sync remote is the natural default — the
+            // same access service the account DB syncs through; the
+            // relay resolves from the remote's origin as usual.
+            let remote = match remote {
+                Some(remote) => Some(remote),
+                None => {
+                    let tonk = env.state().read().await;
+                    super::account::descriptor(&tonk)
+                        .await
+                        .map(|descriptor| descriptor.remote().to_string())
+                }
+            };
             if let Some(remote) = remote
                 && let Err(error) =
                     enable_sync_inner(env.state(), &key, &remote, revocation_url.as_deref()).await
@@ -1660,10 +1676,20 @@ async fn run_rename_repository(
         .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    // Mirror the new name into the account directory so devices that
+    // have not replicated this space still label it correctly.
     if let Ok(subject) = repo.parse::<Did>()
-        && let Err(error) = crate::router::account_backup::back_up_subject(&tonk, &subject).await
+        && let Err(error) = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .transaction()
+            .assert(tonk_schema::SpaceName::new(&subject, name))
+            .commit()
+            .perform(&tonk.operator)
+            .await
     {
-        log!("RenameRepository backup skipped: {error}");
+        log!("RenameRepository directory mirror skipped: {error}");
     }
     Ok(())
 }
@@ -1927,14 +1953,31 @@ async fn remove_replica_from_profile(
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
-    let stream = meta
+
+    // Removal is account-wide: profile main is shared account state, so
+    // EVERY device's replica row for this subject is swept, not just
+    // this device's — a surviving foreign row would resurrect the
+    // directory entry through the next sweep's backfill. This device's
+    // derived entity rides along in case its row is gone but stray
+    // stamps remain.
+    let rows: Vec<Replica> = meta
         .handle()
-        .claims()
-        .select(ArtifactSelector::new().of(entity.clone()))
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::replica::Subject(subject.this())),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
         .perform(&tonk.operator)
+        .try_vec()
         .await
-        .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
-    tokio::pin!(stream);
+        .map_err(|e| RepositoryError::Internal(format!("replica rows query: {e:?}")))?;
+    let mut entities: Vec<dialog_artifacts::Entity> =
+        rows.into_iter().map(|row| row.this).collect();
+    if !entities.contains(&entity) {
+        entities.push(entity);
+    }
 
     let mut transaction = tonk
         .reactor
@@ -1942,11 +1985,51 @@ async fn remove_replica_from_profile(
         .branch(PROFILE_BRANCH)
         .transaction();
     let mut found = false;
-    while let Some(artifact) = stream.next().await {
+    for row_entity in entities {
+        let stream = meta
+            .handle()
+            .claims()
+            .select(ArtifactSelector::new().of(row_entity))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
+        tokio::pin!(stream);
+        while let Some(artifact) = stream.next().await {
+            let artifact = artifact
+                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
+                .to_owned()
+                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+            found = true;
+            transaction = transaction.retract(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: false,
+            });
+        }
+    }
+
+    // The account-level directory entry hangs on the repository's own
+    // entity, so it needs its own sweep — filtered to the space
+    // namespace, because other facts may key on that entity too.
+    // Removing it is what makes "delete spot" account-wide: every
+    // device's Hub lists the directory, not this device's replica row.
+    let directory = meta
+        .handle()
+        .claims()
+        .select(ArtifactSelector::new().of(subject.this()))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("select directory claims: {e}")))?;
+    tokio::pin!(directory);
+    while let Some(artifact) = directory.next().await {
         let artifact = artifact
-            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
+            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?
             .to_owned()
-            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?;
+        if !artifact.the.to_string().starts_with("xyz.tonk.space/") {
+            continue;
+        }
         found = true;
         transaction = transaction.retract(super::claim::RawClaim {
             the: artifact.the,
@@ -1958,7 +2041,7 @@ async fn remove_replica_from_profile(
     if !found {
         // Nothing recorded — a stale row or a repeated submit. Not an
         // error: the desired end state (no record) already holds.
-        log!("remove replica: no facts for {} in profile meta", entity);
+        log!("remove replica: no facts for {} in profile meta", subject);
         return Ok(());
     }
 
@@ -2016,6 +2099,14 @@ extern "C" {
     /// space's routing key. Resolves once both halves settle; never
     /// rejects.
     fn delete_space_storage(name: &str) -> js_sys::Promise;
+}
+
+/// Delete the storage a legacy hidden account repository left behind.
+/// Its content synced with the same remote profile main now follows, so
+/// everything it held is recoverable by pulling.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn delete_legacy_storage(key: &str) {
+    let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(key)).await;
 }
 
 /// Toggle the durable `enabled` preference on the replica and publish the
@@ -2279,17 +2370,14 @@ async fn enable_sync_inner(
         }
     };
 
-    ensure_remote_config(&tonk, &repository, key, &configuration).await?;
+    let effective = ensure_remote_config(&tonk, &repository, key, &configuration).await?;
 
-    // Escrow this owned space's delegation so the account's other devices
-    // can restore it. Resolve the address back through the configuration:
-    // `ensure_remote_config` deliberately preserves an existing upstream,
-    // which may differ from the form-supplied repair URL.
-    if let Err(error) =
-        crate::router::account_backup::back_up_subject(&tonk, &repository.did()).await
-    {
-        log!("enable sync '{}': account backup skipped ({})", key, error);
-    }
+    // Mirror the EFFECTIVE mount configuration into the account
+    // directory so other devices adopt what this device actually
+    // syncs against: an already-configured upstream is preserved, so
+    // the request's (possibly repair-supplied) address must not
+    // overwrite it there.
+    record_space_mount(&tonk, &repository.did(), &effective, None).await;
 
     Ok(())
 }
@@ -2688,13 +2776,6 @@ pub async fn create_repository(
 
     let prefix = delegation.into_chain();
 
-    let deletion_grant = mint_and_persist_space_deletion_grant(
-        tonk,
-        repository.credential().signer(),
-        &repository.did(),
-        &owner,
-    )
-    .await?;
     tonk.profile
         .access()
         .save(UcanDelegation(prefix.clone()))
@@ -2712,8 +2793,7 @@ pub async fn create_repository(
     // consent. Best effort for the same reason retain is — a space is
     // usable the moment its delegations exist locally.
     if let Err(error) =
-        super::customer::provision_consumer(tonk, &repository.did(), &prefix, Some(&deletion_grant))
-            .await
+        super::customer::provision_consumer(tonk, &repository.did(), &prefix, None).await
     {
         log!("consumer provisioning skipped: {error}");
     }
@@ -2751,64 +2831,8 @@ pub async fn create_repository(
     Ok(repository)
 }
 
-async fn mint_and_persist_space_deletion_grant(
-    tonk: &TonkState,
-    signer: &Ed25519Signer,
-    subject: &Did,
-    owner: &Did,
-) -> Result<DelegationChain, RepositoryError> {
-    let grant = tonk_account::deletion::mint_deletion_grant(signer, owner)
-        .await
-        .map_err(|error| {
-            RepositoryError::Internal(format!("Failed to mint space deletion grant: {error}"))
-        })?;
-    let bytes = grant.to_bytes().map_err(|error| {
-        RepositoryError::Internal(format!("Failed to serialize space deletion grant: {error}"))
-    })?;
-    tonk.profile
-        .credential()
-        .site(space_delete_site(subject, owner))
-        .save(bytes)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            RepositoryError::Internal(format!("Failed to persist space deletion grant: {error}"))
-        })?;
-    Ok(grant)
-}
-
-/// Load and validate the exact deletion grant retained for one account root.
-pub(crate) async fn space_deletion_grant(
-    tonk: &TonkState,
-    subject: &Did,
-    owner: &Did,
-) -> Result<Option<DelegationChain>, TonkWorkerError> {
-    let bytes = match tonk
-        .profile
-        .credential()
-        .site(space_delete_site(subject, owner))
-        .load::<Vec<u8>>()
-        .perform(&tonk.operator)
-        .await
-    {
-        Ok(bytes) if bytes.is_empty() => return Ok(None),
-        Ok(bytes) => bytes,
-        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
-        Err(error) => {
-            return Err(TonkWorkerError::Internal(format!(
-                "failed to load space deletion grant: {error}"
-            )));
-        }
-    };
-    tonk_account::deletion::validate_deletion_grant(&bytes, subject, owner)
-        .await
-        .map(|validated| Some(validated.chain))
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("stored space deletion grant is invalid: {error}"))
-        })
-}
-
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -2923,31 +2947,8 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
         } else {
             continue;
         };
-        let mut deletion_grant = space_deletion_grant(tonk, &subject, &root.root_did)
-            .await
-            .ok()
-            .flatten();
-        if deletion_grant.is_none()
-            && let Some(access) = repository.try_access()
-        {
-            match mint_and_persist_space_deletion_grant(
-                tonk,
-                access.signer().signer(),
-                &subject,
-                &root.root_did,
-            )
-            .await
-            {
-                Ok(grant) => deletion_grant = Some(grant),
-                Err(error) => {
-                    log!("adopted space '{subject}' deletion grant did not persist: {error}")
-                }
-            }
-        }
         super::account_state::retain_space_delegation(tonk, &chain).await;
-        if let Err(error) =
-            super::customer::provision_consumer(tonk, &subject, &chain, deletion_grant.as_ref())
-                .await
+        if let Err(error) = super::customer::provision_consumer(tonk, &subject, &chain, None).await
         {
             log!("adopted space '{subject}' provisioning skipped: {error}");
         }
@@ -3202,7 +3203,81 @@ where
         &repository.did(),
         Replica::blank_status(),
     )
-    .await
+    .await?;
+    record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
+    super::adopt::stamp_space_locality(tonk, &repository.did()).await;
+    Ok(())
+}
+
+/// Anchor wrapper so branch/remote concepts can hang off the space's
+/// directory entity (`subject.this()`), giving every device the same
+/// derived entities — the account-level mirror of the per-replica meta
+/// records.
+struct DirectoryAnchor(dialog_artifacts::Entity);
+
+impl AsRef<dialog_artifacts::Entity> for DirectoryAnchor {
+    fn as_ref(&self) -> &dialog_artifacts::Entity {
+        &self.0
+    }
+}
+
+/// Mirror a space's remote/branch configuration — and optionally its
+/// display name — into the account directory as plain facts on
+/// directory-anchored entities, so any device can rebuild the full
+/// [`RepositoryConfiguration`] from the account DB and mount the space
+/// identically, non-default setups included. Individually updatable
+/// like all facts; no serialized blob.
+pub(crate) async fn record_space_mount(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: &RepositoryConfiguration,
+    display_name: Option<&str>,
+) {
+    use tonk_schema::domain::remote::Address as RemoteAddress;
+
+    let anchor_entity = subject.this();
+    let anchor = DirectoryAnchor(anchor_entity.clone());
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction();
+    if let Some(name) = display_name {
+        transaction = transaction.assert(tonk_schema::SpaceName::new(subject, name));
+    }
+    let mut remote_concepts: HashMap<String, Remote> = HashMap::new();
+    for (name, remote_config) in &configuration.remote {
+        let target = remote_config
+            .subject
+            .clone()
+            .unwrap_or_else(|| subject.clone());
+        let concept = Remote::at(
+            &anchor_entity,
+            target,
+            RemoteAddress::encode(&remote_config.address),
+            name.as_str(),
+        );
+        transaction = transaction.assert(concept.clone());
+        if let Some(relay) = &remote_config.revocation_url {
+            transaction = transaction.assert(RemoteExecution::new(&concept, relay.as_str()));
+        }
+        remote_concepts.insert(name.clone(), concept);
+    }
+    for (branch_name, settings) in &configuration.branch {
+        let local = MetaBranch::new(&anchor, branch_name.as_str());
+        transaction = transaction.assert(local.clone());
+        if let Some(upstream) = &settings.upstream
+            && let Some(remote_concept) = remote_concepts.get(&upstream.remote)
+        {
+            let remote_branch = MetaBranch::new(remote_concept, upstream.branch.as_str());
+            transaction = transaction
+                .assert(remote_branch.clone())
+                .assert(TrackingBranch::new(&local, &remote_branch));
+        }
+    }
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("record space mount for '{subject}': {error}");
+    }
 }
 
 /// Expose a fully prepared replica and its initialized status in one profile
@@ -3327,6 +3402,10 @@ async fn record_replica_visibility(
     status: tonk_schema::domain::replica::Status,
 ) -> Result<(), RepositoryError> {
     let replica = Replica::new(tonk.profile.did(), subject.clone());
+    // The account-level directory entry rides the same commit: the
+    // replica row is this device's mount, the `Space` entry is the one
+    // row per space every device's Hub lists.
+    let directory = tonk_schema::Space::new(subject, status.clone());
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
@@ -3344,6 +3423,7 @@ async fn record_replica_visibility(
         .transaction()
         .assert(replica)
         .assert(status)
+        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -3388,6 +3468,7 @@ async fn set_replica_status(
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
         .clone();
+    let directory = tonk_schema::Space::new(subject, status.clone());
     let stamp = SpaceStatus::new(entity, status);
 
     let revision = tonk
@@ -3396,6 +3477,7 @@ async fn set_replica_status(
         .branch(PROFILE_BRANCH)
         .transaction()
         .assert(stamp)
+        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -3513,6 +3595,22 @@ pub async fn get_repository(
 
     let tonk = state.read().await;
 
+    // First use of a directory-listed space this device has not
+    // replicated mounts it on demand — same lazy adoption the query
+    // route performs, so a second device can address a spot straight
+    // from the synced account directory. A no-op for mounted repos.
+    // The outcome rides the not-found error: a swallowed mount failure
+    // turns an explainable miss into a bare 404.
+    let mount = match super::adopt::ensure_space_mounted(&tonk, &name).await {
+        Ok(true) => None,
+        Ok(false) => Some("the account directory holds no mountable record for it".to_string()),
+        Err(error) => {
+            log!("on-demand mount of '{}' failed: {error}", name);
+            Some(format!(
+                "mounting it from the account directory failed: {error}"
+            ))
+        }
+    };
     let repository = tonk
         .profile
         .repository(&name)
@@ -3520,7 +3618,11 @@ pub async fn get_repository(
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", name, e))
+            let mount = mount
+                .as_deref()
+                .map(|note| format!(" ({note})"))
+                .unwrap_or_default();
+            TonkWorkerError::NotFound(format!("Repository '{}' not found{}: {}", name, mount, e))
         })?;
 
     let info = build_repository_info(&tonk, &name, &repository).await;
@@ -4060,12 +4162,16 @@ async fn ensure_remote_config<C>(
     repository: &Repository<C>,
     name: &str,
     configuration: &RepositoryConfiguration,
-) -> Result<(), RepositoryError>
+) -> Result<RepositoryConfiguration, RepositoryError>
 where
     C: Principal + Clone,
 {
+    // What actually took effect: existing remotes are preserved rather
+    // than rewritten, so the caller must mirror THIS into the account
+    // directory, not the request.
+    let mut effective = configuration.clone();
     if configuration.remote.is_empty() && configuration.branch.is_empty() {
-        return Ok(());
+        return Ok(effective);
     }
 
     let meta = repository
@@ -4124,6 +4230,10 @@ where
             }
         };
 
+        if let Some(effective_remote) = effective.remote.get_mut(remote_name) {
+            effective_remote.address = address.clone();
+            effective_remote.subject = Some(subject.clone());
+        }
         let concept = replica.remote(remote_name.as_str(), subject, &address);
         transaction = transaction.assert(concept.clone());
         if let Some(revocation_url) = &remote_config.revocation_url {
@@ -4270,7 +4380,7 @@ where
         }
     }
 
-    Ok(())
+    Ok(effective)
 }
 
 /// Attach remotes (and branch upstreams) to an **existing**
@@ -4860,70 +4970,62 @@ mod tests {
     /// out is how a device reaches it while still holding spaces — creating
     /// them without an account is what the account gate refuses.
     #[dialog_common::test]
-    async fn rename_refreshes_the_named_root_ending_account_artifact() {
-        use wasm_bindgen::JsValue;
+    async fn rename_mirrors_the_name_into_the_account_directory() {
+        use dialog_query::{Output as _, Query, Term};
 
-        let (app, state, key) = fresh_repo("rename-backup-artifact").await;
+        let (app, state, key) = fresh_repo("rename-directory-mirror").await;
         attach(
             &app,
             &key,
             &origin_config("https://sync.example.test/ucan/"),
         )
         .await;
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
 
         let env = crate::router::CommandEnv::new(state.clone(), Default::default());
         super::run_rename_repository(&env, &key, "renamed-garden")
             .await
             .unwrap();
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("renamed backup artifact was produced");
-        assert_eq!(artifact.name.as_deref(), Some("renamed-garden"));
-        let root = {
-            let tonk = state.read().await;
-            crate::router::identity::root_did(&tonk).await.unwrap()
-        };
-        let validated = artifact.validate_for(&root).await.unwrap();
-        assert_eq!(validated.subject.to_string(), key);
-        assert_eq!(validated.chain.audience(), &root);
+
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let names: Vec<tonk_schema::SpaceName> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceName> {
+                this: Term::from(tonk_schema::prelude::DidExt::this(&subject)),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            names.first().map(|row| row.name.0.as_str()),
+            Some("renamed-garden"),
+            "the rename lands in the account directory so unreplicated \
+             devices can label the space"
+        );
     }
 
     #[dialog_common::test]
-    async fn enable_sync_backup_uses_the_preserved_configured_upstream() {
-        use wasm_bindgen::JsValue;
+    async fn enable_sync_records_the_preserved_upstream_in_the_directory() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::domain::remote::Origin as RemoteOrigin;
 
-        let (app, state, key) = fresh_repo("preserved-backup-upstream").await;
+        let (app, state, key) = fresh_repo("preserved-directory-upstream").await;
         attach(
             &app,
             &key,
             &origin_config("https://actual-sync.example.test/ucan/"),
         )
         .await;
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
 
         super::enable_sync_inner(
             &state,
@@ -4934,23 +5036,45 @@ mod tests {
         .await
         .unwrap();
 
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("enable-sync backup artifact was produced");
-        assert_eq!(
-            artifact.remote_url.as_deref(),
-            Some("https://actual-sync.example.test/ucan/")
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let remotes: Vec<super::Remote> = main
+            .handle()
+            .query()
+            .select(Query::<super::Remote> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(RemoteOrigin::from(tonk_schema::prelude::DidExt::this(
+                    &subject,
+                ))),
+                subject: Term::var("subject"),
+                address: Term::var("address"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let addresses: Vec<String> = remotes
+            .iter()
+            .filter_map(|row| {
+                tonk_schema::domain::remote::Address::decode(&row.address)
+                    .ok()
+                    .map(|address| format!("{address:?}"))
+            })
+            .collect();
+        assert!(
+            addresses
+                .iter()
+                .any(|address| address.contains("actual-sync.example.test")),
+            "the directory records the PRESERVED configured upstream, not \
+             the form-supplied repair URL: {addresses:?}"
         );
     }
 

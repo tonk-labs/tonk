@@ -78,6 +78,7 @@ const OTHER_DEAD_REMOTE: &str = "http://127.0.0.1:9/other/";
 
 /// A revocation relay for remotes that need one. Also on the discard port:
 /// a mint parses this URL and embeds it in the link, and never calls it.
+#[cfg(feature = "integration-tests")]
 const DEAD_RELAY: &str = "http://127.0.0.1:9/revocations";
 
 /// Stand up a real spot through the CLI — `tonk spot new` writes the

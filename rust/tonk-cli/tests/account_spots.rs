@@ -1,9 +1,7 @@
-//! Live account-spots coverage against the native account service.
+//! Account-spots coverage against the account directory — the plain
+//! facts in the account DB that replaced the spot-backup escrow.
 
 mod common;
-
-use std::io::{Read as _, Write as _};
-use std::net::TcpListener;
 
 use anyhow::Result;
 use dialog_query::{Output as _, Query, Term};
@@ -14,92 +12,13 @@ use tonk_cli::spot::SpotEntry;
 use tonk_schema::RepositoryName;
 use tonk_schema::prelude::DidExt as _;
 
-fn legacy_capability_server(
-    good: Vec<u8>,
-    fail_valid_get: bool,
-) -> (String, std::thread::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let handle = std::thread::spawn(move || {
-        let mut get_index = 0;
-        for _ in 0..3 {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 4096];
-            loop {
-                let count = stream.read(&mut buffer).unwrap();
-                request.extend_from_slice(&buffer[..count]);
-                let Some(headers_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
-                else {
-                    continue;
-                };
-                let headers = String::from_utf8_lossy(&request[..headers_end]);
-                let length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length: ")
-                            .and_then(|value| value.parse::<usize>().ok())
-                    })
-                    .unwrap_or(0);
-                if request.len() >= headers_end + 4 + length {
-                    break;
-                }
-            }
-            let path = String::from_utf8_lossy(&request)
-                .lines()
-                .next()
-                .and_then(|line| line.split_whitespace().nth(1))
-                .unwrap()
-                .to_string();
-            let (status, content_type, body) = match path.as_str() {
-                "/chains/list" => (
-                    "200 OK",
-                    "application/json",
-                    serde_json::to_vec(&vec!["bad", "good"]).unwrap(),
-                ),
-                "/chains/get" => {
-                    let response = if get_index == 0 {
-                        (
-                            "200 OK",
-                            "application/octet-stream",
-                            b"not an account spot".to_vec(),
-                        )
-                    } else if fail_valid_get {
-                        (
-                            "503 Service Unavailable",
-                            "text/plain",
-                            b"temporarily unavailable".to_vec(),
-                        )
-                    } else {
-                        ("200 OK", "application/octet-stream", good.clone())
-                    };
-                    get_index += 1;
-                    response
-                }
-                other => panic!("an unadvertised service must not receive {other}"),
-            };
-            write!(
-                stream,
-                "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(&body).unwrap();
-        }
-    });
-    (endpoint, handle)
-}
-
 #[tokio::test]
 async fn list_reports_named_unnamed_and_pullable_rows() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
-    let (named_subject, named) = fixture
-        .backup(81, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
+    let named_subject = fixture
+        .record_directory_space(81, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    let (unnamed_subject, unnamed) = fixture.backup(82, None, None).await?;
-    fixture.put(&named).await?;
-    fixture.put(&unnamed).await?;
+    let unnamed_subject = fixture.record_directory_space(82, None, None).await?;
 
     let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 2);
@@ -139,10 +58,10 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
         );
     }
     fixture.store.save(&registry)?;
-    assert!(matches!(
-        account_spots::back_up_site("alpha", &site).await?,
-        account_spots::BackupOutcome::Uploaded { .. }
-    ));
+    assert_eq!(
+        account_spots::record_site_in("alpha", &site, &fixture.store).await?,
+        account_spots::RecordOutcome::Recorded
+    );
 
     let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 1);
@@ -162,75 +81,11 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
 }
 
 #[tokio::test]
-async fn list_uses_legacy_routes_when_the_capability_is_absent() -> Result<()> {
-    let fixture = common::AccountFixture::new().await?;
-    let (subject, backup) = fixture
-        .backup(87, None, Some("https://access.example/ucan/"))
-        .await?;
-    let (endpoint, server) = legacy_capability_server(serde_json::to_vec(&backup)?, false);
-    tonk_cli::account::attach_for_integration_test(
-        &fixture.profile,
-        &TonkSite::open_with(
-            fixture.tmp.path().join(".tonk").as_path(),
-            fixture.config.clone(),
-        )
-        .await?
-        .operator,
-        fixture.config.clone(),
-        &endpoint,
-        "fixture-credential",
-        fixture.link.clone(),
-        &fixture.descriptor,
-    )
-    .await?;
-
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].subject, subject.to_string());
-    assert!(rows[0].remote_name.is_none());
-    assert!(rows[0].pullable);
-    server.join().unwrap();
-    Ok(())
-}
-
-#[tokio::test]
-async fn legacy_list_propagates_fetch_failures_without_hiding_malformed_blobs() -> Result<()> {
-    let fixture = common::AccountFixture::new().await?;
-    let (_, backup) = fixture
-        .backup(88, None, Some("https://access.example/ucan/"))
-        .await?;
-    let (endpoint, server) = legacy_capability_server(serde_json::to_vec(&backup)?, true);
-    tonk_cli::account::attach_for_integration_test(
-        &fixture.profile,
-        &TonkSite::open_with(
-            fixture.tmp.path().join(".tonk").as_path(),
-            fixture.config.clone(),
-        )
-        .await?
-        .operator,
-        fixture.config.clone(),
-        &endpoint,
-        "fixture-credential",
-        fixture.link.clone(),
-        &fixture.descriptor,
-    )
-    .await?;
-
-    let error = account_spots::list(&fixture.profile, &fixture.store)
-        .await
-        .expect_err("a partial old-service inventory must not look empty");
-    assert!(error.to_string().contains("503"), "{error:#}");
-    server.join().unwrap();
-    Ok(())
-}
-
-#[tokio::test]
 async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
-    let (unnamed_subject, unnamed) = fixture
-        .backup(83, None, Some("http://127.0.0.1:9/ucan/"))
+    let unnamed_subject = fixture
+        .record_directory_space(83, None, Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    fixture.put(&unnamed).await?;
     let error = account_spots::pull(
         &fixture.profile,
         &fixture.store,
@@ -238,15 +93,14 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
         None,
     )
     .await
-    .expect_err("legacy names require --name");
+    .expect_err("nameless directory rows require --name");
     assert!(error.to_string().contains("pass --name"), "{error:#}");
     assert!(!fixture.store.canonical_site("garden").exists());
     assert!(fixture.store.load()?.spots.is_empty());
 
-    let (invalid_subject, invalid) = fixture
-        .backup(84, Some("My Garden"), Some("http://127.0.0.1:9/ucan/"))
+    let invalid_subject = fixture
+        .record_directory_space(84, Some("My Garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    fixture.put(&invalid).await?;
     let error = account_spots::pull(
         &fixture.profile,
         &fixture.store,
@@ -286,10 +140,9 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     .expect_err("occupied explicit names are not overwritten");
     assert!(error.to_string().contains("pass --name"), "{error:#}");
 
-    let (colliding_subject, colliding) = fixture
-        .backup(89, Some("occupied"), Some("http://127.0.0.1:9/ucan/"))
+    let colliding_subject = fixture
+        .record_directory_space(89, Some("occupied"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    fixture.put(&colliding).await?;
     let error = account_spots::pull(
         &fixture.profile,
         &fixture.store,
@@ -306,10 +159,9 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
 #[tokio::test]
 async fn pull_retains_an_unbound_canonical_spot_when_initial_sync_is_offline() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
-    let (subject, backup) = fixture
-        .backup(85, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
+    let subject = fixture
+        .record_directory_space(85, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    fixture.put(&backup).await?;
 
     let outcome =
         account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
@@ -339,23 +191,13 @@ async fn pull_retains_an_unbound_canonical_spot_when_initial_sync_is_offline() -
 }
 
 #[tokio::test]
-async fn pull_requires_a_backed_inventory_row_and_returns_an_adopted_site() -> Result<()> {
+async fn pull_requires_a_directory_row_and_returns_an_adopted_site() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
 
     let adopted_root = fixture.tmp.path().join("adopted-site");
     let adopted = TonkSite::init_at_with(&adopted_root, fixture.config.clone()).await?;
     let adopted_subject = adopted.repository.did();
-    let adopted_prefix =
-        tonk_cli::site::account_root_prefix(&adopted, fixture.link.issuer()).await?;
-    fixture
-        .put(&tonk_account::backup::AccountSpotBackup {
-            chain_hex: hex::encode(adopted_prefix.to_bytes()?),
-            deletion_grant_hex: None,
-            remote_url: Some("http://127.0.0.1:9/ucan/".to_string()),
-            revocation_url: None,
-            name: Some("adopted".to_string()),
-        })
-        .await?;
+    configure_upstream(&adopted, "http://127.0.0.1:9/ucan/").await?;
     let mut registry = fixture.store.load()?;
     registry.spots.insert(
         "adopted".to_string(),
@@ -364,6 +206,10 @@ async fn pull_requires_a_backed_inventory_row_and_returns_an_adopted_site() -> R
         },
     );
     fixture.store.save(&registry)?;
+    assert_eq!(
+        account_spots::record_site_in("adopted", &adopted, &fixture.store).await?,
+        account_spots::RecordOutcome::Recorded
+    );
 
     let outcome = account_spots::pull(
         &fixture.profile,
@@ -377,11 +223,11 @@ async fn pull_requires_a_backed_inventory_row_and_returns_an_adopted_site() -> R
     assert_eq!(outcome.site, adopted.root);
     assert_ne!(outcome.site, fixture.store.canonical_site("adopted"));
 
-    let local_root = fixture.tmp.path().join("unbacked-local-site");
+    let local_root = fixture.tmp.path().join("unlisted-local-site");
     let local = TonkSite::init_at_with(&local_root, fixture.config.clone()).await?;
     let mut registry = fixture.store.load()?;
     registry.spots.insert(
-        "unbacked".to_string(),
+        "unlisted".to_string(),
         SpotEntry {
             site: local.root.clone(),
         },
@@ -394,11 +240,8 @@ async fn pull_requires_a_backed_inventory_row_and_returns_an_adopted_site() -> R
         None,
     )
     .await
-    .expect_err("an unbacked local subject is not an account spot");
-    assert!(
-        error.to_string().contains("no account spot is backed up"),
-        "{error:#}"
-    );
+    .expect_err("an unlisted local subject is not an account spot");
+    assert!(error.to_string().contains("no mount record"), "{error:#}");
     Ok(())
 }
 
@@ -438,16 +281,13 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
         .expect("published source has content")
         .tree;
 
-    let prefix = tonk_cli::site::account_root_prefix(&source, fixture.link.issuer()).await?;
-    fixture
-        .put(&tonk_account::backup::AccountSpotBackup {
-            chain_hex: hex::encode(prefix.to_bytes()?),
-            deletion_grant_hex: None,
-            remote_url: Some(env.access_service_url.clone()),
-            revocation_url: None,
-            name: Some("garden".to_string()),
-        })
-        .await?;
+    // The real record path: the site's own upstream configuration lands
+    // in the account directory, exactly as `tonk remote add` would have
+    // written it.
+    assert_eq!(
+        account_spots::record_site_in("garden", &source, &fixture.store).await?,
+        account_spots::RecordOutcome::Recorded
+    );
 
     let outcome =
         account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
@@ -520,9 +360,8 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
 }
 
 #[tokio::test]
-async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Result<()> {
-    use tonk_account::backup::space_root_site;
-    use tonk_cli::account_spots::BackupOutcome;
+async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
+    use tonk_cli::account_spots::RecordOutcome;
 
     let fixture = common::AccountFixture::new().await?;
     let dead_remote = "http://127.0.0.1:9/ucan/";
@@ -535,20 +374,17 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
     name_repository(&owned, "synced-owned").await?;
     configure_upstream(&owned, dead_remote).await?;
     tonk_cli::spot::register_existing_unbound(&fixture.store, "owned-alias", &owned.root)?;
-    assert!(matches!(
-        account_spots::back_up_site("owned-alias", &owned).await?,
-        BackupOutcome::Uploaded { .. }
-    ));
     assert_eq!(
-        account_spots::back_up_site("owned-alias", &owned).await?,
-        BackupOutcome::Unchanged
+        account_spots::record_site_in("owned-alias", &owned, &fixture.store).await?,
+        RecordOutcome::Recorded
+    );
+    assert_eq!(
+        account_spots::record_site_in("owned-alias", &owned, &fixture.store).await?,
+        RecordOutcome::Unchanged,
+        "an unchanged configuration must not commit to the account"
     );
 
-    let (joined_subject, joined_artifact) = fixture.backup(90, None, Some(dead_remote)).await?;
-    let joined_chain = joined_artifact
-        .validate_for(fixture.link.issuer())
-        .await?
-        .chain;
+    let (_, joined_chain) = fixture.space_chain(90).await?;
     let joined = tonk_cli::site::mount_delegated_at(
         &fixture.store.canonical_site("joined-alias"),
         joined_chain,
@@ -557,39 +393,10 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
     .await?;
     configure_upstream(&joined, dead_remote).await?;
     tonk_cli::spot::register_existing_unbound(&fixture.store, "joined-alias", &joined.root)?;
-    assert!(matches!(
-        account_spots::back_up_site("joined-alias", &joined).await?,
-        BackupOutcome::Uploaded { .. }
-    ));
-
-    let recovered = TonkSite::init_at_with(
-        &fixture.store.canonical_site("recovered-alias"),
-        fixture.config.clone(),
-    )
-    .await?;
-    configure_upstream(&recovered, dead_remote).await?;
-    tonk_cli::spot::register_existing_unbound(&fixture.store, "recovered-alias", &recovered.root)?;
-    let recovered_subject = recovered.repository.did();
-    let recovered_key = space_root_site(&recovered_subject, fixture.link.issuer());
-    recovered
-        .profile
-        .credential()
-        .site(recovered_key.clone())
-        .save(Vec::<u8>::new())
-        .perform(&recovered.operator)
-        .await?;
-    assert!(matches!(
-        account_spots::back_up_site("recovered-alias", &recovered).await?,
-        BackupOutcome::Uploaded { .. }
-    ));
-    let recovered_prefix = recovered
-        .profile
-        .credential()
-        .site(recovered_key)
-        .load::<Vec<u8>>()
-        .perform(&recovered.operator)
-        .await?;
-    assert!(!recovered_prefix.is_empty());
+    assert_eq!(
+        account_spots::record_site_in("joined-alias", &joined, &fixture.store).await?,
+        RecordOutcome::Recorded
+    );
 
     let local_only = TonkSite::init_at_with(
         &fixture.store.canonical_site("local-fallback"),
@@ -598,8 +405,8 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
     .await?;
     tonk_cli::spot::register_existing_unbound(&fixture.store, "local-fallback", &local_only.root)?;
     assert_eq!(
-        account_spots::back_up_site("local-fallback", &local_only).await?,
-        BackupOutcome::NoUpstream
+        account_spots::record_site_in("local-fallback", &local_only, &fixture.store).await?,
+        RecordOutcome::NoUpstream
     );
     let before = account_spots::list(&fixture.profile, &fixture.store).await?;
     assert!(
@@ -608,13 +415,13 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
             .any(|row| row.subject == local_only.repository.did().to_string())
     );
     configure_upstream(&local_only, dead_remote).await?;
-    assert!(matches!(
-        account_spots::back_up_site("local-fallback", &local_only).await?,
-        BackupOutcome::Uploaded { .. }
-    ));
+    assert_eq!(
+        account_spots::record_site_in("local-fallback", &local_only, &fixture.store).await?,
+        RecordOutcome::Recorded
+    );
 
     let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 3);
     assert_eq!(
         rows.iter()
             .find(|row| row.subject == owned.repository.did().to_string())
@@ -624,29 +431,14 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
         Some("synced-owned"),
         "synced RepositoryName takes precedence over the registry alias"
     );
-    assert!(
-        rows.iter()
-            .find(|row| row.subject == owned.repository.did().to_string())
-            .unwrap()
-            .deletion_ready,
-        "a newly owned space backup carries its exact deletion grant"
-    );
     assert_eq!(
         rows.iter()
-            .find(|row| row.subject == joined_subject.to_string())
+            .find(|row| row.subject == joined.repository.did().to_string())
             .unwrap()
             .remote_name
             .as_deref(),
         Some("joined-alias"),
         "an unnamed repository falls back to its registry name"
-    );
-    assert!(
-        !rows
-            .iter()
-            .find(|row| row.subject == joined_subject.to_string())
-            .unwrap()
-            .deletion_ready,
-        "a joined space must not acquire deletion authority"
     );
     assert_eq!(
         rows.iter()
@@ -656,46 +448,12 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
             .as_deref(),
         Some("local-fallback")
     );
-
-    // A failed best-effort sweep cannot roll back an already-committed primary
-    // operation. Point only the account transport at a dead service after the
-    // content commit, then observe the warning and retained name.
-    name_repository(&owned, "primary-still-succeeded").await?;
-    let profile_site = TonkSite::open_with(
-        fixture.tmp.path().join(".tonk").as_path(),
-        fixture.config.clone(),
-    )
-    .await?;
-    tonk_cli::account::attach_for_integration_test(
-        &fixture.profile,
-        &profile_site.operator,
-        fixture.config.clone(),
-        "http://127.0.0.1:9",
-        "fixture-credential",
-        fixture.link.clone(),
-        &fixture.descriptor,
-    )
-    .await?;
-    let warnings = account_spots::back_up_registered(&fixture.profile, &fixture.store).await;
-    assert!(!warnings.is_empty());
-    let names: Vec<RepositoryName> = owned
-        .branch()
-        .await?
-        .handle()
-        .query()
-        .select(Query::<RepositoryName> {
-            this: Term::from(owned.repository.did().this()),
-            name: Term::var("name"),
-        })
-        .perform(&owned.operator)
-        .try_vec()
-        .await?;
-    assert_eq!(names[0].name.0, "primary-still-succeeded");
+    assert!(rows.iter().all(|row| row.pullable));
     Ok(())
 }
 
 #[tokio::test]
-async fn backup_sweep_uses_the_first_alias_once() -> Result<()> {
+async fn record_sweep_uses_the_first_alias_once() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("sweep-aliased-site"),
@@ -715,14 +473,14 @@ async fn backup_sweep_uses_the_first_alias_once() -> Result<()> {
     }
     fixture.store.save(&registry)?;
 
-    let warnings = account_spots::back_up_registered(&fixture.profile, &fixture.store).await;
+    let warnings = account_spots::record_registered(&fixture.profile, &fixture.store).await;
     assert!(warnings.is_empty(), "{warnings:?}");
     let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].subject, site.repository.did().to_string());
     assert_eq!(rows[0].remote_name.as_deref(), Some("alpha"));
 
-    let warnings = account_spots::back_up_registered(&fixture.profile, &fixture.store).await;
+    let warnings = account_spots::record_registered(&fixture.profile, &fixture.store).await;
     assert!(warnings.is_empty(), "{warnings:?}");
     let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 1);
@@ -730,18 +488,40 @@ async fn backup_sweep_uses_the_first_alias_once() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn backup_marks_unchanged_payloads_and_preserves_primary_state() -> Result<()> {
-    let fixture = common::AccountFixture::new().await?;
-    let (subject, backup) = fixture
-        .backup(86, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
-        .await?;
-    fixture.put(&backup).await?;
-    account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
+/// The regression `tonk account spots` shipped with: `account status`
+/// reported "signed in: yes" while `spots` claimed no account was
+/// configured, because the spots commands required a prior command to
+/// have hydrated the link. They hydrate on demand now.
+#[dialog_common::test]
+async fn list_hydrates_a_linked_but_unhydrated_profile(env: AccessServiceAddress) -> Result<()> {
+    // Descriptor remotes are canonical with a trailing slash.
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::unhydrated_with_account_remote(&remote).await?;
+    let operator = fixture.operator().await?;
+    assert!(
+        tonk_cli::account_state::open_account_branch_in(
+            &fixture.profile,
+            &operator,
+            &fixture.store
+        )
+        .await?
+        .is_none(),
+        "the fixture must start unhydrated for this pin to mean anything"
+    );
 
-    let warnings = account_spots::back_up_registered(&fixture.profile, &fixture.store).await;
-    assert!(warnings.is_empty(), "{warnings:?}");
-    let second = account_spots::back_up_registered(&fixture.profile, &fixture.store).await;
-    assert!(second.is_empty(), "{second:?}");
+    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    assert!(rows.is_empty());
+
+    let operator = fixture.operator().await?;
+    assert!(
+        tonk_cli::account_state::open_account_branch_in(
+            &fixture.profile,
+            &operator,
+            &fixture.store
+        )
+        .await?
+        .is_some(),
+        "listing hydrated the link"
+    );
     Ok(())
 }

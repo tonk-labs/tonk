@@ -531,16 +531,26 @@ impl Store for SqliteStore {
         if revoked {
             return Ok(ActivateOutcome::RevokedDelegation);
         }
-        let active = tx
+        // A still-active earlier attachment of the same device does not
+        // block a freshly completed handoff: the ceremony re-proved
+        // possession of the device key, so the new generation supersedes
+        // the old one. This is what lets a device that logged out
+        // offline (its detach never arrived) link again.
+        if let Some(row) = tx
             .query_row(
                 SELECT_ACTIVE_DEVICE_BY_DID,
                 params![link.device_did],
                 device_row,
             )
             .optional()
+            .map_err(map_err)?
+        {
+            let previous = device_from_row(row)?;
+            tx.execute(
+                "UPDATE devices SET status = 'detached' WHERE attachment_id = ?1 AND status = 'active'",
+                params![previous.attachment_id],
+            )
             .map_err(map_err)?;
-        if active.is_some() {
-            return Ok(ActivateOutcome::ActiveDeviceConflict);
         }
         tx.execute(
             INSERT_DEVICE,

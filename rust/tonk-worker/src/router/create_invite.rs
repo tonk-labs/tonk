@@ -401,18 +401,6 @@ pub(crate) enum RemoteRequirement {
     Refused(RemoteRefusal),
 }
 
-/// Resolve the actual UCAN remote tracked by `main`, retaining optional
-/// revocation relay metadata for non-invite consumers such as account backup.
-pub(crate) async fn resolve_configured_remote_url<R>(
-    tonk: &crate::worker::TonkState,
-    repository: &dialog_repository::Repository<R>,
-) -> Result<ConfiguredRemoteRequirement, TonkWorkerError>
-where
-    R: Principal + Clone,
-{
-    resolve_configured_remote_url_with(repository, &tonk.operator).await
-}
-
 async fn resolve_configured_remote_url_with<R>(
     repository: &dialog_repository::Repository<R>,
     operator: &crate::worker::DefaultOperator,

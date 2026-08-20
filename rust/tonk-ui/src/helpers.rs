@@ -192,6 +192,8 @@ mod native {
             let access_service_port = Url::parse(&access_service_address.access_service_url)?
                 .port()
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
+            let caddy_data = std::env::temp_dir().join(format!("tonk-e2e-caddy-{web_port}"));
+            std::fs::create_dir_all(&caddy_data)?;
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
                     .args([
@@ -201,6 +203,12 @@ mod native {
                         &format!("{web_port}"),
                         &format!("{access_service_port}"),
                     ])
+                    // Pin Caddy's data dir so its per-run internal CA
+                    // root lands at a knowable path: native CLI
+                    // processes the tests spawn are pointed at it via
+                    // SSL_CERT_FILE, so they can speak TLS to the
+                    // harness origin the descriptors name.
+                    .env("XDG_DATA_HOME", &caddy_data)
                     .stdout(Stdio::piped())
                     // Nix writes build progress to stderr. Inheriting it prevents a
                     // full unread pipe from deadlocking before Caddy starts.
@@ -237,6 +245,33 @@ mod native {
             }
             if !listening {
                 return Err(anyhow!("test web server did not bind port {web_port}"));
+            }
+
+            // Caddy mints its internal CA lazily; wait for the root and
+            // export it process-wide so every CLI child the tests spawn
+            // trusts the harness origin (reqwest is built with
+            // rustls-tls-native-roots, which honors SSL_CERT_FILE). The
+            // name half of the mapping — tonk.network resolving to
+            // loopback for NATIVE processes — comes from /etc/hosts,
+            // which the CI workflow writes; Chrome gets it via
+            // --host-resolver-rules either way.
+            let caddy_root = caddy_data
+                .join("caddy")
+                .join("pki")
+                .join("authorities")
+                .join("local")
+                .join("root.crt");
+            for _ in 0..100 {
+                if caddy_root.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if caddy_root.exists() {
+                // Safe under parallel tests: every TestServers run in
+                // this process serves the same purpose, and children
+                // only ever need whichever harness spawned them last.
+                unsafe { std::env::set_var("SSL_CERT_FILE", &caddy_root) };
             }
 
             // Start ChromeDriver

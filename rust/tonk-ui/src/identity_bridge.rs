@@ -4,88 +4,79 @@ use js_sys::{Function, Promise, Reflect};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
-use tonk_account::handoff::{CompleteLinkCeremony, ResolvedLink};
+use tonk_account::handoff::CompleteLinkCeremony;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
-/// Input for creating or evaluating a root credential.
-#[cfg(test)]
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CreateRootInput {
-    pub device_did: String,
-    /// What the passkey manager should call this credential. Carries the
-    /// verified address when an account ceremony creates the root; omitted
-    /// when a spot creates one, since no account exists to name. Display
-    /// metadata only — no delegation depends on it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// Browser/OS label recorded only for a newly created passkey.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_on: Option<String>,
-}
-
-/// Input for creating an account and its first device registration.
+/// Input for creating an account and its first custody passkey in one
+/// ceremony: the secret is generated, sealed under the passkey's KEK,
+/// and published as the custody cell before the creation request signs.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateAccountInput {
     pub email: String,
     pub device_did: String,
     pub device_name: String,
+    pub remote: String,
+    /// The access service's `/ucan/` endpoint the custody cell
+    /// publishes through.
+    pub endpoint: String,
+    /// Browser/OS label recorded with the created passkey.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
+}
+
+/// Account-creation output: persistence and submission material, plus
+/// the custody DID and consent for provisioning the custody space.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateAccountOutput {
     pub root_did: String,
     pub credential_id: String,
     pub delegation_hex: String,
-    /// Creation facts retained with the local root, when this browser made it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_hex: String,
+    #[serde(default)]
     pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
-    /// Account repository remote this browser proposes for the new account.
-    pub remote: String,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
+    #[serde(default)]
+    pub deposits_hex: Vec<String>,
+    pub custody_did: String,
+    pub consent_hex: String,
 }
 
-/// Input for a fresh account whose passkey root does not exist yet.
+/// Input for enrolling a custody passkey for a locally held account.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CreateFreshAccountInput {
-    pub email: String,
-    pub device_did: String,
-    pub device_name: String,
-    pub remote: String,
-    pub created_on: String,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
+pub(crate) struct EnrollCustodyInput {
+    pub account_did: String,
+    /// What the passkey manager should call the credential — the
+    /// account address, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
+    pub label: Option<String>,
+    /// The access service's `/ucan/` endpoint the cell publishes through.
+    pub endpoint: String,
 }
 
-/// Input for the one-time account repository establishment ceremony.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EstablishRepositoryInput {
-    /// Account repository remote this browser proposes.
-    pub remote: String,
-}
-
-/// Establishment ceremony output sent to the account service.
-///
-/// Its `descriptorHex` is deliberately not read: only the service-selected
-/// winner may be stored locally, and this is merely the candidate this browser
-/// signed. Serde ignores the extra field.
+/// A custody enrollment's outcome.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct EstablishCeremonyOutput {
-    pub invocation_hex: String,
+pub(crate) struct EnrollCustodyOutput {
+    pub custody_did: String,
+    pub credential_id: String,
+    pub consent_hex: String,
 }
 
-/// Input for linking the current browser as another account device.
+/// Input for unlocking an account with a custody passkey on this browser.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LinkDeviceInput {
+pub(crate) struct UnlockWithPasskeyInput {
     pub device_did: String,
     pub device_name: String,
+    /// The access service's `/ucan/` endpoint the cell resolves through.
+    pub endpoint: String,
     /// Access-service DID the ceremony mints account-signed deposits
     /// for, when the deployment names one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,19 +89,9 @@ pub(crate) struct LinkDeviceInput {
 pub(crate) struct SignRevocationInput {
     pub delegation_cid: String,
     pub path_hex: String,
-}
-
-/// Root ceremony output persisted by the service worker.
-#[cfg(test)]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RootOutput {
-    pub root_did: String,
-    pub device_did: String,
-    pub credential_id: String,
-    pub delegation_hex: String,
-    #[serde(default)]
-    pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    /// The access service's `/ucan/` endpoint the custody cell
+    /// resolves through.
+    pub endpoint: String,
 }
 
 /// Account ceremony output sent to the account service.
@@ -127,23 +108,6 @@ pub(crate) struct CeremonyOutput {
     pub deposits_hex: Vec<String>,
 }
 
-/// Fresh-root account output, carrying both local persistence and remote
-/// submission material from one passkey ceremony.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct FreshAccountOutput {
-    pub root_did: String,
-    pub device_did: String,
-    pub credential_id: String,
-    pub delegation_hex: String,
-    pub passkey: tonk_worker_api::PasskeyMetadata,
-    pub invocation_hex: String,
-    /// Hex-encoded account-signed access-service deposits, when the
-    /// input named the service.
-    #[serde(default)]
-    pub deposits_hex: Vec<String>,
-}
-
 /// Root-signed revocation returned by the ceremony API.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,40 +115,13 @@ pub(crate) struct RevocationOutput {
     pub revocation_hex: String,
 }
 
+/// Verification-only assertion input: the account passkey to assert
+/// against, hex-encoded exactly as [`tonk_worker_api::RootStatus`]
+/// stores it.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DeletionProofInput {
-    pub kind: String,
-    pub proof_hex: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PrepareAccountDeletionInput {
-    pub expected_root: String,
-    pub confirmed_email: String,
-    pub proofs: Vec<DeletionProofInput>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PreparedAccountDeletion {
-    pub space_invocations_hex: Vec<String>,
-    pub customer_invocation_hex: String,
-    pub account_invocation_hex: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PrepareSpaceDeletionInput {
-    pub expected_root: String,
-    pub proof: DeletionProofInput,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PreparedSpaceDeletion {
-    pub invocation_hex: String,
+pub(crate) struct VerifyPasskeyInput {
+    pub credential_id: String,
 }
 
 /// Stable failures produced at the JavaScript identity boundary.
@@ -267,37 +204,37 @@ async fn call<I: Serialize, O: DeserializeOwned>(
     serde_wasm_bindgen::from_value(output).map_err(|_| IdentityBridgeError::MalformedOutput)
 }
 
-#[cfg(test)]
-pub(crate) async fn create_root(input: CreateRootInput) -> Result<RootOutput, IdentityBridgeError> {
-    call("createRoot", input).await
-}
-
 pub(crate) async fn create_account(
     input: CreateAccountInput,
-) -> Result<CeremonyOutput, IdentityBridgeError> {
+) -> Result<CreateAccountOutput, IdentityBridgeError> {
     call("createAccount", input).await
 }
 
-pub(crate) async fn create_fresh_account(
-    input: CreateFreshAccountInput,
-) -> Result<FreshAccountOutput, IdentityBridgeError> {
-    call("createFreshAccount", input).await
+pub(crate) async fn enroll_custody_passkey(
+    input: EnrollCustodyInput,
+) -> Result<EnrollCustodyOutput, IdentityBridgeError> {
+    call("enrollCustodyPasskey", input).await
 }
 
-pub(crate) async fn establish_account_repository(
-    input: EstablishRepositoryInput,
-) -> Result<EstablishCeremonyOutput, IdentityBridgeError> {
-    call("establishAccountRepository", input).await
-}
-
-pub(crate) async fn link_device(
-    input: LinkDeviceInput,
+pub(crate) async fn unlock_with_passkey(
+    input: UnlockWithPasskeyInput,
 ) -> Result<CeremonyOutput, IdentityBridgeError> {
-    call("linkDevice", input).await
+    call("unlockWithPasskey", input).await
+}
+
+/// Input for completing a CLI handoff: the resolved link plus the
+/// `/ucan/` endpoint the custody unlock resolves through.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompleteLinkInput {
+    pub token_hash: String,
+    pub device_did: String,
+    pub device_name: String,
+    pub endpoint: String,
 }
 
 pub(crate) async fn complete_link(
-    input: ResolvedLink,
+    input: CompleteLinkInput,
 ) -> Result<CompleteLinkCeremony, IdentityBridgeError> {
     call("completeLink", input).await
 }
@@ -310,6 +247,9 @@ pub(crate) struct AuthorizeDeviceInput {
     pub device_did: String,
     /// The account repository's remote, so the descriptor names it.
     pub remote: String,
+    /// The access service's `/ucan/` endpoint the custody cell
+    /// resolves through.
+    pub endpoint: String,
 }
 
 /// What the ceremony hands back for delivery to a waiting device.
@@ -336,16 +276,10 @@ pub(crate) async fn sign_revocation(
     call("signRevocation", input).await
 }
 
-pub(crate) async fn prepare_account_deletion(
-    input: PrepareAccountDeletionInput,
-) -> Result<PreparedAccountDeletion, IdentityBridgeError> {
-    call("prepareAccountDeletion", input).await
-}
-
-pub(crate) async fn prepare_space_deletion(
-    input: PrepareSpaceDeletionInput,
-) -> Result<PreparedSpaceDeletion, IdentityBridgeError> {
-    call("prepareSpaceDeletion", input).await
+/// Ask the human to verify with the account's own passkey. Nothing is
+/// signed or derived; success means user presence and verification.
+pub(crate) async fn verify_passkey(input: VerifyPasskeyInput) -> Result<(), IdentityBridgeError> {
+    call("verifyPasskey", input).await
 }
 
 #[cfg(test)]
@@ -364,213 +298,6 @@ mod tests {
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
     }
 
-    #[dialog_common::test]
-    async fn it_passes_root_input_as_a_plain_camel_case_object() {
-        install_method(
-            "createRoot",
-            r#"
-            if (input instanceof Map) return Promise.reject(new Error("map"));
-            if (!(Object.getPrototypeOf(input) === Object.prototype || Object.getPrototypeOf(input) === null))
-                return Promise.reject(new Error("prototype"));
-            if (input.deviceDid !== "did:key:device") return Promise.reject(new Error("property"));
-            return Promise.resolve({
-                rootDid: "did:key:root", deviceDid: input.deviceDid,
-                credentialId: "credential", delegationHex: "delegation"
-            });
-            "#,
-        );
-        let output = create_root(CreateRootInput {
-            device_did: "did:key:device".into(),
-            label: None,
-            created_on: None,
-        })
-        .await
-        .unwrap();
-        assert_eq!(output.device_did, "did:key:device");
-    }
-
-    /// The credential label crosses to `window.tonkIdentity` under a name both
-    /// sides have to spell the same way — `install.rs` reads `label` off the
-    /// input object. A rename on either side is silent: the ceremony would run
-    /// and the passkey would simply be unlabelled, which nobody notices until
-    /// they open a passkey manager. Absent when there is no account to name,
-    /// rather than present and empty.
-    #[dialog_common::test]
-    async fn it_sends_the_credential_label_only_when_there_is_one() {
-        install_method(
-            "createRoot",
-            r#"
-            var labelled = input.deviceDid === "did:key:labelled";
-            var expected = labelled ? "someone@example.com" : undefined;
-            if (input.label !== expected)
-                return Promise.reject(new Error("label was " + JSON.stringify(input.label)));
-            if (!labelled && "label" in input)
-                return Promise.reject(new Error("unlabelled input carries the key"));
-            return Promise.resolve({
-                rootDid: "did:key:root", deviceDid: input.deviceDid,
-                credentialId: "credential", delegationHex: "delegation"
-            });
-            "#,
-        );
-
-        create_root(CreateRootInput {
-            device_did: "did:key:labelled".into(),
-            label: Some("someone@example.com".into()),
-            created_on: Some("Chrome on macOS".into()),
-        })
-        .await
-        .expect("an account ceremony sends its verified address");
-
-        create_root(CreateRootInput {
-            device_did: "did:key:plain".into(),
-            label: None,
-            created_on: None,
-        })
-        .await
-        .expect("a spot-created root sends no label at all");
-    }
-
-    #[dialog_common::test]
-    async fn it_passes_every_ceremony_a_plain_camel_case_object() {
-        let plain_object_guard = r#"
-            if (input instanceof Map) return Promise.reject(new Error("map"));
-            if (!(Object.getPrototypeOf(input) === Object.prototype || Object.getPrototypeOf(input) === null))
-                return Promise.reject(new Error("prototype"));
-        "#;
-
-        install_method(
-            "createFreshAccount",
-            &format!(
-                r#"{plain_object_guard}
-                if (input.email !== "fresh@example.test"
-                    || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
-                    || input.createdOn !== "Chrome on macOS"
-                    || input.remote !== "https://tonk.network/ucan/")
-                    return Promise.reject(new Error("property"));
-                return Promise.resolve({{
-                    rootDid: "did:key:root", deviceDid: input.deviceDid,
-                    credentialId: "credential", delegationHex: "delegation",
-                    passkey: {{ createdAt: 1754380800, createdOn: input.createdOn }},
-                    invocationHex: "invocation"
-                }});"#
-            ),
-        );
-        let fresh = create_fresh_account(CreateFreshAccountInput {
-            email: "fresh@example.test".into(),
-            device_did: "did:key:device".into(),
-            device_name: "Browser".into(),
-            remote: "https://tonk.network/ucan/".into(),
-            created_on: "Chrome on macOS".into(),
-            service_did: None,
-        })
-        .await
-        .unwrap();
-        assert_eq!(fresh.invocation_hex, "invocation");
-        assert_eq!(fresh.passkey.created_at, 1_754_380_800);
-
-        install_method(
-            "createAccount",
-            &format!(
-                r#"{plain_object_guard}
-                if (input.email !== "person@example.test"
-                    || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
-                    || input.rootDid !== "did:key:root" || input.credentialId !== "credential"
-                    || input.delegationHex !== "delegation"
-                    || input.passkey.createdAt !== 1754380800
-                    || input.passkey.createdOn !== "Chrome on macOS"
-                    || input.remote !== "https://tonk.network/ucan/")
-                    return Promise.reject(new Error("property"));
-                return Promise.resolve({{
-                    rootDid: input.rootDid, credentialId: input.credentialId,
-                    delegationHex: input.delegationHex, invocationHex: "invocation"
-                }});"#
-            ),
-        );
-        assert_eq!(
-            create_account(CreateAccountInput {
-                email: "person@example.test".into(),
-                device_did: "did:key:device".into(),
-                device_name: "Browser".into(),
-                root_did: "did:key:root".into(),
-                credential_id: "credential".into(),
-                delegation_hex: "delegation".into(),
-                service_did: None,
-                passkey: Some(tonk_worker_api::PasskeyMetadata {
-                    created_at: 1_754_380_800,
-                    created_on: "Chrome on macOS".into(),
-                }),
-                remote: "https://tonk.network/ucan/".into(),
-            })
-            .await
-            .unwrap()
-            .invocation_hex,
-            "invocation"
-        );
-
-        install_method(
-            "linkDevice",
-            &format!(
-                r#"{plain_object_guard}
-                if (input.deviceDid !== "did:key:device" || input.deviceName !== "Browser")
-                    return Promise.reject(new Error("property"));
-                return Promise.resolve({{
-                    rootDid: "did:key:root", credentialId: "credential",
-                    delegationHex: "delegation", invocationHex: "invocation"
-                }});"#
-            ),
-        );
-        link_device(LinkDeviceInput {
-            device_did: "did:key:device".into(),
-            device_name: "Browser".into(),
-            service_did: None,
-        })
-        .await
-        .unwrap();
-
-        install_method(
-            "completeLink",
-            &format!(
-                r#"{plain_object_guard}
-                if (input.tokenHash !== "token" || input.deviceDid !== "did:key:device"
-                    || input.deviceName !== "CLI")
-                    return Promise.reject(new Error("property"));
-                return Promise.resolve({{ invocationHex: "invocation" }});"#
-            ),
-        );
-        assert_eq!(
-            complete_link(ResolvedLink {
-                token_hash: "token".into(),
-                device_did: "did:key:device".into(),
-                device_name: "CLI".into(),
-            })
-            .await
-            .unwrap(),
-            CompleteLinkCeremony {
-                invocation_hex: "invocation".into(),
-            }
-        );
-
-        install_method(
-            "signRevocation",
-            &format!(
-                r#"{plain_object_guard}
-                if (input.delegationCid !== "bafygrant" || input.pathHex !== "path")
-                    return Promise.reject(new Error("property"));
-                return Promise.resolve({{ revocationHex: "revocation" }});"#
-            ),
-        );
-        assert_eq!(
-            sign_revocation(SignRevocationInput {
-                delegation_cid: "bafygrant".into(),
-                path_hex: "path".into(),
-            })
-            .await
-            .unwrap()
-            .revocation_hex,
-            "revocation"
-        );
-    }
-
     /// Completing a CLI handoff only submits the root-signed invocation. The
     /// account service, not this browser response, supplies the durable passkey
     /// credential id when the CLI consumes the completed handoff.
@@ -586,10 +313,11 @@ mod tests {
             "#,
         );
 
-        let output = complete_link(ResolvedLink {
+        let output = complete_link(CompleteLinkInput {
             token_hash: "token".into(),
             device_did: "did:key:device".into(),
             device_name: "CLI".into(),
+            endpoint: "https://tonk.spot/ucan/".into(),
         })
         .await
         .expect("the real completeLink response is a valid bridge output");
@@ -597,15 +325,29 @@ mod tests {
         assert_eq!(output.invocation_hex, "invocation");
     }
 
+    /// `verifyPasskey` succeeds with no payload: the ceremony resolves
+    /// `undefined` and the bridge decodes it into `()`. An object (or any
+    /// other value) would fail the decode, so this pins the empty shape.
+    #[dialog_common::test]
+    async fn it_accepts_the_empty_verify_passkey_output() {
+        install_method("verifyPasskey", "return Promise.resolve(undefined);");
+        verify_passkey(VerifyPasskeyInput {
+            credential_id: "abcd".into(),
+        })
+        .await
+        .expect("an undefined resolution is the valid verifyPasskey output");
+    }
+
     #[dialog_common::test]
     async fn it_classifies_non_promises_rejections_and_malformed_outputs() {
         let window = web_sys::window().unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &JsValue::UNDEFINED).unwrap();
         assert_eq!(
-            create_root(CreateRootInput {
+            unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
-                label: None,
-                created_on: None,
+                device_name: "Browser".into(),
+                endpoint: "https://tonk.spot/ucan/".into(),
+                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -614,36 +356,39 @@ mod tests {
 
         Reflect::set(&window, &"tonkIdentity".into(), &js_sys::Object::new()).unwrap();
         assert_eq!(
-            create_root(CreateRootInput {
+            unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
-                label: None,
-                created_on: None,
+                device_name: "Browser".into(),
+                endpoint: "https://tonk.spot/ucan/".into(),
+                service_did: None,
             })
             .await
             .unwrap_err(),
-            IdentityBridgeError::MissingMethod("createRoot")
+            IdentityBridgeError::MissingMethod("unlockWithPasskey")
         );
 
         let identity = js_sys::Object::new();
-        Reflect::set(&identity, &"createRoot".into(), &42.into()).unwrap();
+        Reflect::set(&identity, &"unlockWithPasskey".into(), &42.into()).unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
         assert_eq!(
-            create_root(CreateRootInput {
+            unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
-                label: None,
-                created_on: None,
+                device_name: "Browser".into(),
+                endpoint: "https://tonk.spot/ucan/".into(),
+                service_did: None,
             })
             .await
             .unwrap_err(),
-            IdentityBridgeError::NotCallable("createRoot")
+            IdentityBridgeError::NotCallable("unlockWithPasskey")
         );
 
-        install_method("createRoot", "return {};");
+        install_method("unlockWithPasskey", "return {};");
         assert_eq!(
-            create_root(CreateRootInput {
+            unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
-                label: None,
-                created_on: None,
+                device_name: "Browser".into(),
+                endpoint: "https://tonk.spot/ucan/".into(),
+                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -651,14 +396,15 @@ mod tests {
         );
 
         install_method(
-            "createRoot",
+            "unlockWithPasskey",
             "return Promise.reject(new DOMException('phone authenticator returned no PRF', 'NotSupportedError')); ",
         );
         assert_eq!(
-            create_root(CreateRootInput {
+            unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
-                label: None,
-                created_on: None,
+                device_name: "Browser".into(),
+                endpoint: "https://tonk.spot/ucan/".into(),
+                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -668,26 +414,28 @@ mod tests {
         );
 
         install_method(
-            "createRoot",
+            "unlockWithPasskey",
             "return Promise.reject('provider unavailable'); ",
         );
         assert_eq!(
-            create_root(CreateRootInput {
+            unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
-                label: None,
-                created_on: None,
+                device_name: "Browser".into(),
+                endpoint: "https://tonk.spot/ucan/".into(),
+                service_did: None,
             })
             .await
             .unwrap_err(),
             IdentityBridgeError::Rejected("provider unavailable".into())
         );
 
-        install_method("createRoot", "return Promise.resolve({});");
+        install_method("unlockWithPasskey", "return Promise.resolve({});");
         assert_eq!(
-            create_root(CreateRootInput {
+            unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
-                label: None,
-                created_on: None,
+                device_name: "Browser".into(),
+                endpoint: "https://tonk.spot/ucan/".into(),
+                service_did: None,
             })
             .await
             .unwrap_err(),

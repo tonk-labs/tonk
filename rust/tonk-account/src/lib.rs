@@ -4,19 +4,17 @@
 //! lifecycle outcomes, and remote initialization primitive. Higher-level
 //! mounting and projection policy remains with the worker and CLI adapters.
 
-/// Provider-neutral account spot backup artifacts.
-pub mod backup;
 /// Customer registration contracts for the access service.
 pub mod customer;
 /// Retaining space authority into the account repository.
 pub mod delegations;
-/// Capability contracts for irreversible hosted-space deletion.
-pub mod deletion;
 mod descriptor;
 /// Canonical device-signed account attachment detach intents.
 pub mod detach;
 /// Shared wire and browser-ceremony contracts for native account handoffs.
 pub mod handoff;
+/// Provider-neutral account spot backup artifacts.
+pub mod prefix;
 mod provider;
 
 pub use descriptor::{AccountRepositoryDescriptorV1, DescriptorError};
@@ -149,6 +147,7 @@ where
         + Provider<Fork<RemoteSite, Resolve>>
         + Provider<Fork<RemoteSite, MemoryPublish>>
         + Provider<Fork<RemoteSite, BlobImport>>
+        + Provider<Fork<RemoteSite, BlobRead>>
         + ConditionalSync
         + 'static,
 {

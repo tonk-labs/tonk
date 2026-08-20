@@ -15,7 +15,7 @@ use std::fmt;
 use dialog_ucan_core::container::{Container, ContainerError};
 use dialog_ucan_core::delegation::Delegation;
 use dialog_ucan_core::invocation::Invocation;
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 
 /// Credential CIDs and validity window presented to the presign endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials,
             "container must contain at least an invocation".to_string(),
         ));
     };
-    let invocation: Invocation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(invocation_bytes)
+    let invocation: Invocation<AnySignature> = serde_ipld_dagcbor::from_slice(invocation_bytes)
         .map_err(|error| {
             ContainerError::Invocation(format!("failed to decode invocation: {error}"))
         })?;
@@ -50,8 +50,8 @@ pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials,
     let mut not_before: Option<u64> = None;
     let mut expires_at = invocation.expiration().map(|stamp| stamp.to_unix());
     for (index, bytes) in tokens.iter().skip(1).enumerate() {
-        let delegation: Delegation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(bytes)
-            .map_err(|error| {
+        let delegation: Delegation<AnySignature> =
+            serde_ipld_dagcbor::from_slice(bytes).map_err(|error| {
                 ContainerError::Invocation(format!("failed to decode delegation {index}: {error}"))
             })?;
         delegation_cids.insert(delegation.to_cid().to_string());

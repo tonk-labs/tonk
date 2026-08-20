@@ -112,16 +112,36 @@ pub struct Add {
     /// container. It must root at the consumer and be issued to the
     /// invoking customer, granting `/consumer/provision` or broader.
     pub consent: Cid,
-    /// Exact direct `/space/delete` grant, when the creator minted one.
-    /// Legacy clients omit this and may be upgraded from their direct broad
-    /// owner proof by the service.
-    #[serde(default)]
-    pub deletion: Option<Cid>,
+    /// What the consumer is: `"space"` (the default) for a user's data
+    /// space, `"custody"` for a passkey's custody namespace — plumbing
+    /// the account provisions for itself. The service keeps the kind so
+    /// deletion can tell a user's spaces from the account's own key
+    /// custody: custody namespaces never appear in a deletion review
+    /// and are purged by customer finalization, last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl Effect for Add {
     type Of = Provider;
     type Output = Result<ConsumerReceipt, RegistrationError>;
+}
+
+/// `/provider/remove` — deprovision a hosted consumer space: the
+/// reverse of [`Add`], and how a hosted space is deleted. The
+/// invocation's subject is the owning customer DID; the service purges
+/// the space's hosted content and denies the consumer forever. No
+/// per-space artifact is presented — the customer's own chain is the
+/// authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Attenuate)]
+pub struct Remove {
+    /// The hosted space being deprovisioned.
+    pub consumer: Did,
+}
+
+impl Effect for Remove {
+    type Of = Provider;
+    type Output = Result<(), RegistrationError>;
 }
 
 /// Ability segment `/consumer`: acts a space takes on its own behalf.
@@ -151,9 +171,6 @@ pub struct ConsumerReceipt {
     pub consumer: Did,
     /// The customer now providing it.
     pub provider: Did,
-    /// Whether the service registered cryptographic deletion authority.
-    #[serde(default)]
-    pub deletion_ready: bool,
 }
 
 /// Customer lifecycle state, as stored and as answered on the wire.
@@ -284,7 +301,7 @@ mod tests {
         let add: Capability<Add> = subject().attenuate(Provider).invoke(Add {
             consumer: did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
             consent: Cid::default(),
-            deletion: None,
+            kind: None,
         });
         assert_eq!(add.ability(), "/provider/add");
 

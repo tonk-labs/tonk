@@ -524,10 +524,6 @@ enum AccountCommand {
         /// Print the approval URL without asking the OS to open it.
         #[arg(long)]
         no_open: bool,
-        /// Link even though an earlier logout's detach never reached the
-        /// account service. Those devices may stay listed until revoked.
-        #[arg(long)]
-        abandon_detach: bool,
         /// Authorize through a page that posts the grant back directly,
         /// instead of registering a handoff with the account service.
         #[arg(long, value_name = "URL")]
@@ -560,7 +556,7 @@ enum AccountCommand {
         no_open: bool,
     },
 
-    /// List or pull the spots backed up under this account
+    /// List or pull the spots your account directory lists
     Spots {
         #[command(subcommand)]
         command: Option<AccountSpotsCommand>,
@@ -719,7 +715,7 @@ enum SpotCommand {
     ///
     /// This destroys the spot's facts, not just its registration.
     /// It asks for confirmation first, and says whether the data is
-    /// backed up to your account (so you can pull it again) or
+    /// listed in your account directory (so you can pull it again) or
     /// local-only (so it is gone for good).
     ///
     /// To stop a directory from resolving to a spot without touching
@@ -1200,8 +1196,8 @@ async fn identity(reset: bool) -> ExitCode {
         Ok(profile) => {
             println!("device: {}", profile.did());
             match identity::local_root(&profile).await {
-                Ok(Some(root)) => println!("root: {}", root.root_did),
-                Ok(None) => println!("root: missing (run `tonk account link`)"),
+                Ok(Some(root)) => println!("account: {}", root.root_did),
+                Ok(None) => println!("account: missing (run `tonk account link`)"),
                 Err(error) => return print_failure(error),
             }
             ExitCode::Success
@@ -1312,19 +1308,23 @@ fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str
 fn render_account_status(status: account::AccountStatus) -> String {
     match status {
         account::AccountStatus::MissingRoot { device_did } => {
-            format!("signed in: no\nroot: missing\nprovider: none\ndevice: {device_did}")
+            format!("signed in: no\naccount: missing\naccount service: none\ndevice: {device_did}")
         }
         account::AccountStatus::Unregistered {
             root_did,
             device_did,
-        } => format!("signed in: no\nroot: {root_did}\nprovider: none\ndevice: {device_did}"),
+        } => {
+            format!(
+                "signed in: no\naccount: {root_did}\naccount service: none\ndevice: {device_did}"
+            )
+        }
         account::AccountStatus::Registered {
             root_did,
             device_did,
             provider,
             account_state,
         } => format!(
-            "signed in: yes\nroot: {root_did}\nprovider: {provider}\ndevice: {device_did}\naccount state: {}",
+            "signed in: yes\naccount: {root_did}\naccount service: {provider}\ndevice: {device_did}\nstatus: {}",
             account_state_label(account_state)
         ),
     }
@@ -1339,11 +1339,11 @@ async fn print_customer_line(profile: &dialog_operator::Profile) {
     use tonk_account::customer::CustomerStatus;
     match tonk_cli::customer::registration_state(profile).await {
         Ok(Some(Some(receipt))) => match receipt.status {
-            CustomerStatus::Active => println!("sync service: registered"),
+            CustomerStatus::Active => println!("access service: registered"),
             CustomerStatus::Registered => {
-                println!("sync service: waiting for email confirmation (check your inbox)")
+                println!("access service: waiting for email confirmation (check your inbox)")
             }
-            CustomerStatus::Suspended => println!("sync service: suspended"),
+            CustomerStatus::Suspended => println!("access service: suspended"),
         },
         Ok(Some(None)) => {
             let page = tonk_cli::customer::access_origin(profile)
@@ -1352,10 +1352,10 @@ async fn print_customer_line(profile: &dialog_operator::Profile) {
                 .flatten()
                 .map(|origin| format!("{origin}account"))
                 .unwrap_or_else(|| "the account page".to_string());
-            println!("sync service: not registered (open {page} in your browser to finish setup)")
+            println!("access service: not registered (open {page} in your browser to finish setup)")
         }
         Ok(None) => {}
-        Err(_) => println!("sync service: unreachable"),
+        Err(_) => println!("access service: unreachable"),
     }
 }
 
@@ -1366,7 +1366,37 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     };
     match command {
         AccountCommand::Status => match account::status(&profile).await {
-            Ok(status) => {
+            Ok(mut status) => {
+                // An unhydrated account retries its first sync right
+                // here, bounded: the status read is the natural moment
+                // someone notices "waiting for first sync", and leaving
+                // it sticky until the next link would report a state
+                // nothing is working to leave.
+                if matches!(
+                    &status,
+                    account::AccountStatus::Registered {
+                        account_state: tonk_account::AccountStateStatus::Unhydrated,
+                        ..
+                    }
+                ) {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        tonk_cli::account_state::ensure(&profile),
+                    )
+                    .await
+                    {
+                        Ok(Ok(outcome)) => {
+                            if let Some(warning) = outcome.warning {
+                                eprintln!("warning: account sync attempt: {warning}");
+                            }
+                            if let Ok(fresh) = account::status(&profile).await {
+                                status = fresh;
+                            }
+                        }
+                        Ok(Err(error)) => eprintln!("warning: account sync attempt: {error:#}"),
+                        Err(_) => eprintln!("warning: account sync attempt timed out"),
+                    }
+                }
                 let linked = matches!(status, account::AccountStatus::Registered { .. });
                 println!("{}", render_account_status(status));
                 if linked {
@@ -1405,7 +1435,6 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             name,
             service_url,
             no_open,
-            abandon_detach,
             via,
         } => match account::link(
             &profile,
@@ -1413,7 +1442,6 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 service_url,
                 device_name: name.unwrap_or_else(account::default_device_name),
                 open_browser: !no_open,
-                abandon_detach,
                 via,
                 announce: None,
                 store: None,
@@ -1423,7 +1451,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         {
             Ok(outcome) => {
                 println!(
-                    "linked\nroot: {}\ndevice: {}\naccount state: {}",
+                    "linked\naccount: {}\ndevice: {}\nstatus: {}",
                     outcome.root_did,
                     outcome.device_did,
                     account_state_label(outcome.account_state)
@@ -1432,7 +1460,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     eprintln!("warning: account repository is not synchronized: {warning}");
                 }
                 print_customer_line(&profile).await;
-                back_up_all_best_effort(&profile).await;
+                record_all_spots_best_effort(&profile).await;
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
@@ -1466,7 +1494,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 AccountSpotsCommand::List => match account_spots::list(&profile, &store).await {
                     Ok(rows) => {
                         if rows.is_empty() {
-                            println!("(no account spots backed up)");
+                            println!("(no spots listed in the account directory)");
                         } else {
                             for row in rows {
                                 let state = if row.ambiguous {
@@ -1562,25 +1590,25 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     }
 }
 
-async fn back_up_all_best_effort(profile: &dialog_operator::Profile) {
+async fn record_all_spots_best_effort(profile: &dialog_operator::Profile) {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("warning: account spot backup skipped: {error}");
+            eprintln!("warning: account directory update skipped: {error}");
             return;
         }
     };
-    for warning in account_spots::back_up_registered(profile, &store).await {
+    for warning in account_spots::record_registered(profile, &store).await {
         eprintln!(
-            "warning: account spot backup for '{}' failed: {}",
+            "warning: account directory update for '{}' failed: {}",
             warning.name, warning.message
         );
     }
 }
 
-async fn back_up_site_best_effort(name: &str, site: &site::TonkSite) {
-    if let Err(error) = account_spots::back_up_site(name, site).await {
-        eprintln!("warning: account spot backup failed: {error:#}");
+async fn record_spot_best_effort(name: &str, site: &site::TonkSite) {
+    if let Err(error) = account_spots::record_site(name, site).await {
+        eprintln!("warning: account directory update failed: {error:#}");
     }
 }
 
@@ -1678,9 +1706,9 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     println!("binding: {}", cwd.display());
                     print_active_resolution(&store, flag, Some(&cwd));
                     match site::TonkSite::open(&outcome.site).await {
-                        Ok(site) => back_up_site_best_effort(&outcome.name, &site).await,
+                        Ok(site) => record_spot_best_effort(&outcome.name, &site).await,
                         Err(error) => {
-                            eprintln!("warning: account spot backup skipped: {error:#}")
+                            eprintln!("warning: account directory update skipped: {error:#}")
                         }
                     }
                     ExitCode::Success
@@ -2000,7 +2028,7 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
     match result {
         Ok(outcome) => {
             print_sync_outcome(op, &outcome);
-            back_up_site_best_effort(&resolved.name, &site).await;
+            record_spot_best_effort(&resolved.name, &site).await;
             ExitCode::Success
         }
         Err(err) => {
@@ -2301,13 +2329,13 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
                     // An existing upstream is never touched.
                     match remote::upstream_configured(&site).await {
                         Ok(true) => {
-                            back_up_site_best_effort(&resolved.name, &site).await;
+                            record_spot_best_effort(&resolved.name, &site).await;
                             ExitCode::Success
                         }
                         Ok(false) => match remote::set_upstream(&site, &name).await {
                             Ok(upstream) => {
                                 print_set_upstream_outcome(&upstream);
-                                back_up_site_best_effort(&resolved.name, &site).await;
+                                record_spot_best_effort(&resolved.name, &site).await;
                                 ExitCode::Success
                             }
                             Err(err) => {
@@ -2347,7 +2375,7 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
             match remote::set_upstream(&site, &name).await {
                 Ok(outcome) => {
                     print_set_upstream_outcome(&outcome);
-                    back_up_site_best_effort(&resolved.name, &site).await;
+                    record_spot_best_effort(&resolved.name, &site).await;
                     ExitCode::Success
                 }
                 Err(err) => {
@@ -2672,8 +2700,8 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
             print_claim_outcome(&name, &root, &cwd, &outcome);
             print_active_resolution(&store, flag, Some(&cwd));
             match site::TonkSite::open(&root).await {
-                Ok(site) => back_up_site_best_effort(&name, &site).await,
-                Err(error) => eprintln!("warning: account spot backup skipped: {error:#}"),
+                Ok(site) => record_spot_best_effort(&name, &site).await,
+                Err(error) => eprintln!("warning: account directory update skipped: {error:#}"),
             }
             ExitCode::Success
         }
@@ -3222,14 +3250,14 @@ mod account_spots_parser_tests {
             render_account_status(account::AccountStatus::MissingRoot {
                 device_did: "did:device".to_string(),
             }),
-            "signed in: no\nroot: missing\nprovider: none\ndevice: did:device"
+            "signed in: no\naccount: missing\naccount service: none\ndevice: did:device"
         );
         assert_eq!(
             render_account_status(account::AccountStatus::Unregistered {
                 root_did: "did:root".to_string(),
                 device_did: "did:device".to_string(),
             }),
-            "signed in: no\nroot: did:root\nprovider: none\ndevice: did:device"
+            "signed in: no\naccount: did:root\naccount service: none\ndevice: did:device"
         );
         assert_eq!(
             render_account_status(account::AccountStatus::Registered {
@@ -3238,7 +3266,7 @@ mod account_spots_parser_tests {
                 provider: "https://accounts.example".to_string(),
                 account_state: tonk_account::AccountStateStatus::Ready,
             }),
-            "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: synced"
+            "signed in: yes\naccount: did:root\naccount service: https://accounts.example\ndevice: did:device\nstatus: synced"
         );
     }
 

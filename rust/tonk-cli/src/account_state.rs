@@ -8,13 +8,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
-use dialog_credentials::{Credential, Ed25519Verifier};
 use dialog_effects::credential::CredentialError;
-use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
 use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Repository, RepositoryExt as _, SiteAddress, Upstream};
+use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan_core::DelegationChain;
 use tonk_account::{
@@ -31,8 +29,6 @@ use tonk_schema::{Replica, prelude::DidExt as _};
 const ACCOUNT_OPERATOR_CONTEXT: &[u8] = b"tonk/account-state/v1";
 /// Remote name for the account's access branch in the profile repository.
 const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
-
-const META_BRANCH: &str = "meta";
 
 /// Result of an ensure attempt. Remote failures are a durable Unhydrated
 /// status plus diagnostics, not a failure of the already-persisted account
@@ -172,7 +168,18 @@ pub async fn adopt_account_access_in(
         .perform(operator)
         .await
     {
-        Ok(remote) => remote,
+        Ok(remote) if remote.address().site() == &address && remote.did() == subject => remote,
+        // Stale cell from an earlier link; see `repoint_remote`.
+        Ok(_) => {
+            repoint_remote(
+                &repository,
+                ACCOUNT_ACCESS_REMOTE,
+                &address,
+                &subject,
+                operator,
+            )
+            .await?
+        }
         Err(_) => repository
             .remote(ACCOUNT_ACCESS_REMOTE)
             .create(address)
@@ -436,7 +443,7 @@ async fn operator_with_profile(
 
 /// Build the stable account operator used by both credentials and repository
 /// storage.
-pub(crate) async fn credential_operator_for_store(
+pub async fn credential_operator_for_store(
     profile: &Profile,
     store: &crate::spot::SpotStore,
 ) -> Result<Operator<NativeSpace>> {
@@ -450,6 +457,20 @@ pub(crate) async fn credential_operator_for_store(
             &root,
             crate::site::PROFILE_NAME,
             Directory::Profile,
+        )
+        .await;
+    }
+    // An attached integration profile knows its own name and directory,
+    // so it can be remounted like the persisted install profile —
+    // deriving from an unmounted profile handle fails with "no provider
+    // found for subject".
+    #[cfg(feature = "integration-tests")]
+    if let Some(config) = crate::account::integration_site_config(profile) {
+        return operator_with_profile(
+            profile,
+            &root,
+            &config.profile_name,
+            config.profile_directory,
         )
         .await;
     }
@@ -481,30 +502,47 @@ pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<Na
     .await
 }
 
+/// Republish a stored remote's address cell so it matches the current
+/// descriptor, returning the repointed remote.
+///
+/// A remote's address is a memory cell, not an immutable record: when
+/// the link's provider address changes (local dev services bind a fresh
+/// port every restart) or the profile links to a different account, the
+/// stored cell goes stale and every strict-equality check after it
+/// would refuse to mount forever.
+async fn repoint_remote(
+    repository: &Repository<dialog_credentials::SignerCredential>,
+    name: &str,
+    address: &SiteAddress,
+    subject: &dialog_varsig::Did,
+    operator: &Operator<NativeSpace>,
+) -> Result<RemoteRepository> {
+    let reference = repository.remote(name);
+    let target = RemoteAddress::new(address.clone(), subject.clone());
+    let cell = reference.address();
+    // Resolve first: publish is a compare-and-swap against the cell's
+    // current version, and a fresh handle has not seen one yet.
+    cell.resolve()
+        .perform(operator)
+        .await
+        .with_context(|| format!("failed to resolve the '{name}' remote"))?;
+    cell.publish(target.clone())
+        .perform(operator)
+        .await
+        .with_context(|| format!("failed to repoint the '{name}' remote"))?;
+    Ok(RemoteRepository::new(cell.retain(target), reference))
+}
+
+/// Point profile main at the account: the account is the upstream
+/// remote of the profile repository's main branch, exactly as the
+/// worker configures it — no separate repository, no extra storage.
 async fn mount(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     descriptor: &AccountRepositoryDescriptorV1,
-) -> Result<Repository> {
+) -> Result<Repository<dialog_credentials::SignerCredential>> {
     let subject = descriptor.account_subject().clone();
-    let key = subject.repo_key();
-    let repository = match profile.repository(key).load().perform(operator).await {
-        Ok(repository) => repository,
-        Err(_) => {
-            let verifier: Ed25519Verifier = subject
-                .to_string()
-                .parse()
-                .context("account subject is not an Ed25519 did:key")?;
-            let local = Subject::from(profile.did()).attenuate(Space::new(key));
-            Repository::from(
-                local
-                    .create(Credential::from(verifier))
-                    .perform(operator)
-                    .await
-                    .context("failed to mount local account repository")?,
-            )
-        }
-    };
+    let repository = Repository::from(profile);
 
     let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
     let remote = match repository
@@ -513,11 +551,21 @@ async fn mount(
         .perform(operator)
         .await
     {
-        Ok(remote) => {
-            if remote.address().site() != &address || remote.did() != subject {
-                bail!("mounted account repository has different immutable remote configuration");
-            }
-            remote
+        Ok(remote) if remote.address().site() == &address && remote.did() == subject => remote,
+        // A stored remote that disagrees with the descriptor follows an
+        // older link — a previous provider address (dev services change
+        // ports every restart) or an account this profile has since
+        // left. The descriptor is the current link, so repoint the
+        // address cell to it rather than refusing to mount forever.
+        Ok(_) => {
+            repoint_remote(
+                &repository,
+                tonk_account::ORIGIN_REMOTE,
+                &address,
+                &subject,
+                operator,
+            )
+            .await?
         }
         Err(_) => repository
             .remote(tonk_account::ORIGIN_REMOTE)
@@ -533,7 +581,7 @@ async fn mount(
         .open()
         .perform(operator)
         .await
-        .context("failed to open account main branch")?;
+        .context("failed to open profile main branch")?;
     let remote_branch = remote
         .branch(tonk_account::MAIN_BRANCH)
         .open()
@@ -543,8 +591,12 @@ async fn mount(
     match branch.upstream() {
         Some(Upstream::Remote { remote, branch, .. })
             if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
-        Some(_) => bail!("mounted account main tracks a different upstream"),
-        None => branch
+        // A pointer left by an earlier account scheme (or an older link)
+        // is repointed, like the remote cell above: with a linked
+        // account, the account IS profile main's upstream by
+        // definition, and set_upstream promotes over an existing
+        // tracking target.
+        _ => branch
             .set_upstream(&remote_branch)
             .perform(operator)
             .await
@@ -552,15 +604,9 @@ async fn mount(
     }
 
     let replica = Replica::account(profile.did(), subject);
-    repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(operator)
-        .await
-        .context("failed to open account meta")?
+    branch
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
         .assert(replica.branch(tonk_account::MAIN_BRANCH))
         .commit()
         .perform(operator)
@@ -571,7 +617,7 @@ async fn mount(
 }
 
 async fn hydrate(
-    repository: &Repository,
+    repository: &Repository<dialog_credentials::SignerCredential>,
     operator: &crate::account_authority::AccountBoundOperator,
 ) -> Result<()> {
     let branch = repository
@@ -755,6 +801,180 @@ mod tests {
         ));
         assert!(!marker_matches(Some(&[8; 32]), &descriptor));
         assert!(!marker_matches(None, &descriptor));
+    }
+
+    /// Relinking must survive the provider address changing (local dev
+    /// services bind a fresh port every restart): the stored `origin`
+    /// remote cell is repointed to the current descriptor instead of
+    /// refusing forever with "profile main already follows a different
+    /// account remote" — the failure that left `tonk account spots`
+    /// reporting no account while `tonk account status` said signed in.
+    #[dialog_common::test]
+    async fn it_repoints_the_account_remote_when_the_link_moves() {
+        use dialog_common::helpers::Provisionable as _;
+        use dialog_operator::Profile;
+        use dialog_ucan::UcanDelegation;
+        use dialog_varsig::Principal as _;
+        use tonk_access_service::helpers::AccessServiceAddress;
+
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let store = crate::spot::SpotStore::at(temp.path().join("state"));
+        let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
+        let profile_name = format!("cli-account-repoint-{}", rand::random::<u64>());
+        let storage = Storage::<NativeSpace>::default();
+        let profile = Profile::open(&profile_name)
+            .at(profile_dir.clone())
+            .perform(&storage)
+            .await
+            .unwrap();
+        let root = Ed25519Signer::generate().await.unwrap();
+        let live_remote = format!(
+            "{}/",
+            service.address.access_service_url.trim_end_matches('/')
+        );
+        let live_descriptor = AccountRepositoryDescriptorV1::sign(&root, &live_remote)
+            .await
+            .unwrap();
+        let root_did = root.did();
+        let delegation =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did())
+                .await
+                .unwrap();
+        async fn account_operator(
+            profile: &Profile,
+            store: &crate::spot::SpotStore,
+            profile_name: &str,
+            profile_dir: &Directory,
+        ) -> Operator<NativeSpace> {
+            operator_with_profile(
+                profile,
+                &store.account_dir(),
+                profile_name,
+                profile_dir.clone(),
+            )
+            .await
+            .unwrap()
+        }
+        async fn attach(
+            profile: &Profile,
+            store: &crate::spot::SpotStore,
+            profile_name: &str,
+            profile_dir: &Directory,
+            root_did: &dialog_varsig::Did,
+            descriptor_bytes: &[u8],
+            at: u64,
+        ) {
+            let attachment = tonk_account::AccountProviderRecord::attach(
+                "https://accounts.example",
+                descriptor_bytes,
+                root_did,
+                at,
+            )
+            .await
+            .unwrap();
+            let operator = account_operator(profile, store, profile_name, profile_dir).await;
+            profile
+                .credential()
+                .site(crate::account::ACCOUNT_LINK_SITE)
+                .save(attachment.encode().unwrap())
+                .perform(&operator)
+                .await
+                .unwrap();
+        }
+        profile
+            .save(UcanDelegation(delegation.clone()))
+            .perform(&account_operator(&profile, &store, &profile_name, &profile_dir).await)
+            .await
+            .unwrap();
+        let local_root = crate::identity::LocalRoot {
+            credential_id: "cli-account-repoint-credential".to_string(),
+            root_did: root_did.to_string(),
+            delegation_cid: delegation.proof_cids()[0].to_string(),
+            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+        };
+        profile
+            .credential()
+            .site(crate::identity::LOCAL_ROOT_SITE)
+            .save(serde_json::to_vec(&local_root).unwrap())
+            .perform(&account_operator(&profile, &store, &profile_name, &profile_dir).await)
+            .await
+            .unwrap();
+        attach(
+            &profile,
+            &store,
+            &profile_name,
+            &profile_dir,
+            &root_did,
+            live_descriptor.bytes(),
+            1,
+        )
+        .await;
+        let outcome = ensure_with_operator(
+            &profile,
+            account_operator(&profile, &store, &profile_name, &profile_dir).await,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome.status,
+            AccountStateStatus::Ready,
+            "ensure warning: {:?}",
+            outcome.warning
+        );
+
+        // The link moves to an unreachable provider address. The mount
+        // must follow the descriptor — the old strict-equality check
+        // errored here, permanently.
+        let moved_descriptor =
+            AccountRepositoryDescriptorV1::sign(&root, "http://127.0.0.1:9/ucan/")
+                .await
+                .unwrap();
+        attach(
+            &profile,
+            &store,
+            &profile_name,
+            &profile_dir,
+            &root_did,
+            moved_descriptor.bytes(),
+            2,
+        )
+        .await;
+        let outcome = ensure_with_operator(
+            &profile,
+            account_operator(&profile, &store, &profile_name, &profile_dir).await,
+        )
+        .await
+        .expect("a moved link must repoint, not refuse to mount");
+        assert_eq!(outcome.status, AccountStateStatus::Unhydrated);
+
+        // Moving back to the live address recovers to Ready: the cell
+        // follows the descriptor in both directions.
+        attach(
+            &profile,
+            &store,
+            &profile_name,
+            &profile_dir,
+            &root_did,
+            live_descriptor.bytes(),
+            3,
+        )
+        .await;
+        let outcome = ensure_with_operator(
+            &profile,
+            account_operator(&profile, &store, &profile_name, &profile_dir).await,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome.status,
+            AccountStateStatus::Ready,
+            "ensure warning: {:?}",
+            outcome.warning
+        );
+        service.stop().await.unwrap();
     }
 
     #[dialog_common::test]

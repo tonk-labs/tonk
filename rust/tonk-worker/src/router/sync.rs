@@ -629,17 +629,34 @@ pub async fn pull(
         }));
     }
 
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .pull()
-        .perform(&tonk_state.operator)
-        .await
-    {
+    // Authorization-bearing branches (the account, and through it the
+    // profile's access branch) must never be left partial: the session
+    // open at the next boot walks them with no network reach, and a
+    // head adopted by reference with blocks still remote bricks that
+    // boot with "Blob not found". Content spaces stay lazy.
+    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
+    let pulled = if hydrate {
+        tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .download()
+            .perform(&tonk_state.operator)
+            .await
+    } else {
+        tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .perform(&tonk_state.operator)
+            .await
+    };
+    match pulled {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
-            if super::account_state::is_account_key(&tonk_state, &params.repo).await
+            if hydrate
                 && let Err(error) = super::account_state::converge_account_state(&tonk_state).await
             {
                 log!("account-state convergence after pull failed: {error}");
@@ -955,18 +972,31 @@ pub async fn sync(
     // Pull with bounded refresh-and-retry on a head that moved under us.
     let mut after_pull = None;
     let mut pull_error: Option<TonkWorkerError> = None;
+    // See the pull handler: authorization-bearing branches hydrate.
+    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
     for attempt in 0..SYNC_RETRY_LIMIT {
-        match tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .pull()
-            .perform(&tonk_state.operator)
-            .await
-        {
+        let pulled = if hydrate {
+            tonk_state
+                .reactor
+                .repository(&params.repo)
+                .branch(&params.branch)
+                .pull()
+                .download()
+                .perform(&tonk_state.operator)
+                .await
+        } else {
+            tonk_state
+                .reactor
+                .repository(&params.repo)
+                .branch(&params.branch)
+                .pull()
+                .perform(&tonk_state.operator)
+                .await
+        };
+        match pulled {
             Ok(after) => {
                 log!("Pull succeeded: {}@{}", params.branch, params.repo);
-                if super::account_state::is_account_key(&tonk_state, &params.repo).await
+                if hydrate
                     && let Err(error) =
                         super::account_state::converge_account_state(&tonk_state).await
                 {
@@ -1175,6 +1205,17 @@ impl SyncQueue {
 /// Branches are synced per-repo; repos run sequentially here (the reactor
 /// serializes branch state anyway), priority-ordered by activity.
 pub async fn drain_sync(state: &AppState) {
+    // One drain at a time, and concurrent triggers coalesce instead of
+    // queueing: a keepalive beat arriving while a transact-triggered
+    // drain runs would only repeat the same sweep, and letting them
+    // interleave is how branch commits tear (session rotation and the
+    // account ensure both write without a per-branch lock in dialog).
+    // Whatever this beat would have pushed, the next one covers.
+    static DRAIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let Ok(_serialized) = DRAIN.try_lock() else {
+        return;
+    };
+
     // Before anything presigns: the operator's delegation expires, and a
     // drain is the regular beat this worker has to notice that on.
     // Best-effort here — a failed rotation must not take the drain down.
@@ -1209,12 +1250,38 @@ pub async fn drain_sync(state: &AppState) {
         .filter(|repo| seen.insert(repo.clone()))
         .collect();
 
-    for repo in order {
-        if let Err(e) = sync_repository(state, &repo).await {
+    for repo in &order {
+        if let Err(e) = sync_repository(state, repo).await {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
             let tonk = state.read().await;
-            tonk.sync_queue.requeue(&repo, now);
+            tonk.sync_queue.requeue(repo, now);
+        }
+    }
+
+    // The account rides profile main, which no repository — and so no
+    // reactor entry — represents in the pull population above. Sweep it
+    // explicitly each drain, unless a dirty mark already routed it
+    // through `sync_repository` — sweeping twice per heartbeat is the
+    // exact duplication the dedicated path exists to avoid.
+    let account_already_swept = {
+        let tonk = state.read().await;
+        let mut swept = false;
+        for repo in &order {
+            if super::account_state::is_account_key(&tonk, repo).await {
+                swept = true;
+                break;
+            }
+        }
+        swept
+    };
+    if !account_already_swept {
+        let tonk = state.read().await;
+        let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
+        if status != tonk_account::AccountStateStatus::Unconfigured
+            && let Err(error) = swept
+        {
+            log!("drain_sync: account state did not fully reconcile: {error}");
         }
     }
 }
@@ -1239,7 +1306,8 @@ pub(crate) const GUEST_RENEWAL_MARGIN_SECONDS: u64 = 5 * 60;
 /// - Legacy metadata. A version 1 record kept only the URL, so nothing
 ///   is known about the chain standing on it. Refresh once and it
 ///   rewrites itself in the current shape.
-/// - A different audience. Every worker restart derives a new operator,
+/// - A different audience. A worker whose persisted session was lost
+///   (or a pre-session-reuse worker) derives a new operator,
 ///   and a guest chain is addressed to the operator it was minted for.
 ///   A record naming any other one describes a chain that can no longer
 ///   be proved to, whatever its recorded expiry says.
@@ -1298,8 +1366,9 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
     }
 
     // Mint outside the lock — nothing else may proceed while a write
-    // lock is held, and this signs.
-    let session = crate::session::open(&profile, &storage).await?;
+    // lock is held, and this signs. Rotate, never reuse: renewal is
+    // only reached when something needs a NEW audience.
+    let session = crate::session::rotate(&profile, &storage).await?;
 
     let mut tonk = state.write().await;
     // A concurrent drain may have rotated while this one was minting.
@@ -1857,12 +1926,14 @@ mod renewal_tests {
                 .unwrap()
         };
 
-        // What a service-worker restart leaves behind: a new operator
-        // over the same profile and storage, and a guest record still
-        // naming the old one with an hour left on it.
+        // A restart normally reuses the persisted session (same
+        // operator, no rebind needed). This models the reuse MISS — a
+        // persisted session lost or unusable — where the replacement
+        // worker really does hold a new operator while the guest
+        // record still names the old one with an hour left on it.
         let restarted = {
             let mut tonk = state.write().await;
-            let session = crate::session::open(&tonk.profile, &tonk.storage)
+            let session = crate::session::rotate(&tonk.profile, &tonk.storage)
                 .await
                 .expect("a replacement session opens");
             let did = session.operator.did();

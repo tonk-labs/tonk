@@ -14,7 +14,7 @@ use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
     ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
-    Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, DeletionGrantKind, FINISH_CONSUMER_DELETION,
+    ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
     INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
     SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError,
     UPDATE_REGISTERED_EMAIL, parse_status,
@@ -76,8 +76,7 @@ struct ConsumerRowD1 {
     provider: Option<String>,
     owner: Option<String>,
     registered: f64,
-    deletion_grant_cid: Option<String>,
-    deletion_grant_kind: Option<String>,
+    kind: String,
     deletion_state: String,
     deleted_at: Option<f64>,
 }
@@ -91,12 +90,7 @@ impl TryFrom<ConsumerRowD1> for Consumer {
             provider: row.provider,
             owner: row.owner,
             registered: row.registered as u64,
-            deletion_grant_cid: row.deletion_grant_cid,
-            deletion_grant_kind: row
-                .deletion_grant_kind
-                .as_deref()
-                .map(DeletionGrantKind::parse)
-                .transpose()?,
+            kind: ConsumerKind::parse(&row.kind)?,
             deletion_state: ConsumerDeletionState::parse(&row.deletion_state)?,
             deleted_at: row.deleted_at.map(|value| value as u64),
         })
@@ -197,8 +191,7 @@ impl Store for D1Store {
         did: &str,
         provider: &str,
         now: u64,
-        deletion_grant_cid: Option<&str>,
-        deletion_grant_kind: Option<DeletionGrantKind>,
+        kind: ConsumerKind,
     ) -> Result<bool, StoreError> {
         let result = self
             .0
@@ -207,10 +200,7 @@ impl Store for D1Store {
                 JsValue::from(did),
                 JsValue::from(provider),
                 JsValue::from_f64(now as f64),
-                deletion_grant_cid.map_or(JsValue::NULL, JsValue::from),
-                deletion_grant_kind
-                    .map(DeletionGrantKind::as_str)
-                    .map_or(JsValue::NULL, JsValue::from),
+                JsValue::from(kind.as_str()),
             ])
             .map_err(map_err)?
             .run()
@@ -219,15 +209,11 @@ impl Store for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 
-    async fn mark_consumer_deleting(
-        &self,
-        did: &str,
-        deletion_grant_cid: &str,
-    ) -> Result<bool, StoreError> {
+    async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
         let result = self
             .0
             .prepare(MARK_CONSUMER_DELETING)
-            .bind(&[JsValue::from(did), JsValue::from(deletion_grant_cid)])
+            .bind(&[JsValue::from(did)])
             .map_err(map_err)?
             .run()
             .await

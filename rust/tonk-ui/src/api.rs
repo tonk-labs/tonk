@@ -3,11 +3,10 @@ use serde::Deserialize;
 use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDevice,
-    AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus, AccountSummary,
-    ActivateProfileRequest, EvaluateResponse, HostedSpaceDeletionResult, IdentifyResponse,
-    JoinRequest, JoinResponse, MembershipResponse, ProfilesResponse, QueryResponse, RepositoryInfo,
-    RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse,
-    SyncStatusResponse,
+    AccountLinkRequest, AccountStatus, AccountSummary, ActivateProfileRequest, EvaluateResponse,
+    HostedSpaceDeletionResult, IdentifyResponse, JoinRequest, JoinResponse, MembershipResponse,
+    ProfilesResponse, QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement,
+    RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -604,32 +603,6 @@ pub async fn save_account_link(
     }
 }
 
-/// Persist and hydrate the service-selected repository winner for a legacy link.
-pub async fn establish_local_account_repository(
-    descriptor_hex: String,
-    created: bool,
-) -> Result<AccountStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/repository/establish", origin()))
-        .json(&AccountRepositoryEstablishRequest {
-            descriptor_hex,
-            created,
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/account/repository/establish returned {status}: {text}"
-        )))
-    }
-}
-
 /// List the devices registered under the linked account.
 pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -671,6 +644,33 @@ pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
 /// Register a freshly authorized device in the account service's
 /// registry, through this browser's own membership. Answers the service's
 /// JSON, which carries the issued `attachmentId`.
+/// Provision a custody space under this profile's account: the page
+/// ran the enrollment ceremony, the worker deposits the consent
+/// through `/provider/add`.
+pub async fn provision_custody(custody: &str, consent_hex: &str) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/custody/provision", origin()))
+        .json(&serde_json::json!({
+            "custody": custody,
+            "consentHex": consent_hex,
+        }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/custody/provision returned {status}: {text}"
+        )))
+    }
+}
+
+/// Register a device with the account service through the worker, so a
+/// grant recipient is already listed before its delegation is delivered.
 pub async fn register_account_device(
     did: &str,
     name: &str,

@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use thiserror::Error;
-use tonk_account::backup::ACCOUNT_SPOTS_CAPABILITY_HEADER;
 use url::Url;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -16,8 +15,6 @@ pub(crate) struct HttpResponse {
     #[allow(dead_code)]
     pub status: u16,
     pub body: Vec<u8>,
-    /// Account-spot capability advertised by a successful legacy list route.
-    pub account_spots_capability: Option<String>,
 }
 
 /// Structured non-success response from an upstream service.
@@ -61,11 +58,26 @@ fn failure(status: u16, body: &[u8]) -> UpstreamFailure {
                 .filter(|message| !message.is_empty())
                 .unwrap_or_else(|| "upstream service rejected the request".to_string()),
         },
-        Err(_) => UpstreamFailure {
-            status,
-            code: None,
-            message: "upstream service rejected the request".to_string(),
-        },
+        // Not the structured envelope: surface what the service actually
+        // said (a plain-text rejection, a proxy page) rather than a
+        // generic phrase that hides the cause.
+        Err(_) => {
+            let text = String::from_utf8_lossy(bounded);
+            let text = text.trim();
+            UpstreamFailure {
+                status,
+                code: None,
+                message: if text.is_empty() {
+                    "upstream service rejected the request".to_string()
+                } else {
+                    let mut snippet: String = text.chars().take(512).collect();
+                    if snippet.len() < text.len() {
+                        snippet.push('…');
+                    }
+                    snippet
+                },
+            }
+        }
     }
 }
 
@@ -126,11 +138,6 @@ async fn request_with_timeout(
         }
     })?;
     let status = response.status().as_u16();
-    let account_spots_capability = response
-        .headers()
-        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
     let bytes = response
         .bytes()
         .await
@@ -142,7 +149,6 @@ async fn request_with_timeout(
     Ok(HttpResponse {
         status,
         body: bytes,
-        account_spots_capability,
     })
 }
 
@@ -245,11 +251,6 @@ async fn request_with_timeout(
         }
     })?;
     let status = response.status();
-    let account_spots_capability = response
-        .headers()
-        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
-        .ok()
-        .flatten();
     let buffer = JsFuture::from(
         response
             .array_buffer()
@@ -264,7 +265,6 @@ async fn request_with_timeout(
     Ok(HttpResponse {
         status,
         body: bytes,
-        account_spots_capability,
     })
 }
 
@@ -281,10 +281,10 @@ impl From<HttpError> for crate::TonkWorkerError {
                 code: Some("UPSTREAM_TIMEOUT".to_string()),
                 message: "upstream service timed out".to_string(),
             },
-            HttpError::Transport(_) => crate::TonkWorkerError::Upstream {
+            HttpError::Transport(detail) => crate::TonkWorkerError::Upstream {
                 status: 503,
                 code: Some("UPSTREAM_UNAVAILABLE".to_string()),
-                message: "upstream service is unavailable".to_string(),
+                message: format!("upstream service is unavailable: {detail}"),
             },
         }
     }
@@ -306,10 +306,24 @@ mod tests {
         assert_eq!(parsed.code.as_deref(), Some("CREDENTIAL_REVOKED"));
         assert_eq!(parsed.message, "revoked");
 
+        let plain = failure(
+            401,
+            b"Authorization failed: hosted space is deleting or deleted",
+        );
+        assert_eq!(plain.code, None);
+        assert_eq!(
+            plain.message,
+            "Authorization failed: hosted space is deleting or deleted"
+        );
+
         let malformed = failure(502, &vec![b'x'; MAX_ERROR_BODY + 1]);
         assert_eq!(malformed.status, 502);
         assert_eq!(malformed.code, None);
-        assert_eq!(malformed.message, "upstream service rejected the request");
+        assert_eq!(malformed.message.chars().count(), 513);
+        assert!(malformed.message.ends_with('…'));
+
+        let empty = failure(502, b"");
+        assert_eq!(empty.message, "upstream service rejected the request");
     }
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -364,7 +378,6 @@ mod tests {
         let response = post_json(&endpoint, br#"{"ok":true}"#).await.unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{}");
-        assert_eq!(response.account_spots_capability.as_deref(), Some("v1"));
         let request = request.recv().unwrap();
         let request = String::from_utf8_lossy(&request);
         assert!(
@@ -432,7 +445,7 @@ mod tests {
                     }
                     return new Response(new Uint8Array([7, 8, 9]), {
                         status: 201,
-                        headers: { "X-Tonk-Account-Spots": "v1" }
+                        headers: { "X-Test-Echo": "v1" }
                     });
                 });
                 "#,
@@ -442,7 +455,6 @@ mod tests {
             let response = post_cbor(&endpoint, &[0xd9, 0xd9, 0xf7]).await.unwrap();
             assert_eq!(response.status, 201);
             assert_eq!(response.body, [7, 8, 9]);
-            assert_eq!(response.account_spots_capability.as_deref(), Some("v1"));
 
             let capture = js_sys::Reflect::get(&global, &"__tonkHttpCapture".into()).unwrap();
             assert_eq!(

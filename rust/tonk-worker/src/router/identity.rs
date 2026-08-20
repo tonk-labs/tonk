@@ -69,7 +69,7 @@ pub(crate) async fn validate_grant(
         ));
     }
     proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .verify_signature(&dialog_credentials::DidKeyResolver)
         .await
         .map_err(|error| {
             TonkWorkerError::Forbidden(format!("invalid root delegation signature: {error}"))
@@ -203,15 +203,34 @@ pub(crate) async fn persist_root(
         // and never overwrites the root this profile's spaces hang off.
         // An unreadable stored delegation refuses too — the roots can't
         // be proven equal.
+        //
+        // A root is replaceable only when this profile has NO account
+        // attachment history at all: a creation ceremony binds the
+        // root before registration can still fail (an email already
+        // taken, a service outage), and that half-created record must
+        // not wedge the profile — a retry may replace it. A stored
+        // attachment OR the sign-out tombstone both refuse: signed out
+        // or signed in, this profile's spaces and delegations hang off
+        // the stored root, and a different account arrives through
+        // add-account, never by rebinding this profile.
         let stored_root = DelegationChain::try_from(existing.delegation.as_slice())
             .ok()
             .map(|stored| stored.issuer().clone());
         if stored_root.as_ref() != Some(chain.issuer()) {
-            return Err(TonkWorkerError::Conflict(
-                "a different account is already signed in on this profile; \
-                 use \"Add account\" to sign in with another account"
-                    .to_string(),
-            ));
+            if super::account::has_attachment_history(state).await {
+                return Err(TonkWorkerError::Conflict(
+                    "a different account is already signed in on this profile; \
+                     use \"Add account\" to sign in with another account"
+                        .to_string(),
+                ));
+            }
+            tonk_common::log!(
+                "replacing a dangling account root (no attachment was ever made): {} -> {}",
+                stored_root
+                    .map(|did| did.to_string())
+                    .unwrap_or_else(|| "unreadable".to_string()),
+                chain.issuer()
+            );
         }
     }
 
@@ -257,7 +276,15 @@ pub async fn save(
     Json(request): Json<SaveRootRequest>,
 ) -> Result<Json<RootStatus>, TonkWorkerError> {
     let state = state.read().await;
-    Ok(Json(persist_root(&state, request).await?))
+    let status = persist_root(&state, request).await?;
+    // A save that carries creation metadata is a passkey arriving — at
+    // signup or at a later custody enrollment. Seed the account facts
+    // now rather than on the next sweep, so the dashboard reflects the
+    // enrollment immediately. Idempotent and best-effort.
+    if super::account_state::seed_passkey_facts(&state).await {
+        tonk_common::log!("recorded this device's passkey creation facts in the account space");
+    }
+    Ok(Json(status))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -269,7 +296,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    use crate::router::tests::{test_state, test_state_without_root};
+    use crate::router::tests::{test_state, test_state_without_account, test_state_without_root};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -383,6 +410,28 @@ mod tests {
         assert_eq!(
             current_root, previous_root,
             "the refused ceremony must leave the persisted root untouched"
+        );
+    }
+
+    /// The dangling case `has_attachment_history` exists for: a
+    /// creation ceremony saved the root, registration failed, and no
+    /// attachment (nor sign-out tombstone) was ever written. A retry
+    /// with a fresh passkey must replace the leftover root instead of
+    /// wedging the profile.
+    #[dialog_common::test]
+    async fn it_replaces_a_dangling_root_when_no_attachment_was_ever_made() {
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let device = state.read().await.profile.did();
+        let (replacement, _) = request_for(2, &device).await;
+        let replacement_credential = replacement.credential_id.clone();
+
+        let status = save(State(state.clone()), Json(replacement)).await.unwrap();
+        assert!(
+            matches!(
+                status.0,
+                RootStatus::Ready { credential_id, .. } if credential_id == replacement_credential
+            ),
+            "the retry's credential must be the persisted one"
         );
     }
 

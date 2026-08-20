@@ -15,10 +15,6 @@ database_id = "a0c6698d-25e6-414b-8986-4fbeb1b5f992"
 migrations_dir = "rust/tonk-account-service/migrations"
 
 [[r2_buckets]]
-binding = "CHAINS"
-bucket_name = "tonk-account-chains"
-
-[[r2_buckets]]
 binding = "REVOCATIONS"
 bucket_name = "tonk-revocations"
 
@@ -40,10 +36,6 @@ binding = "DB"
 database_name = "tonk-accounts-staging"
 database_id = "e1f11539-c01c-4c48-a27b-988609ad3fe1"
 migrations_dir = "rust/tonk-account-service/migrations"
-
-[[env.staging.r2_buckets]]
-binding = "CHAINS"
-bucket_name = "tonk-account-chains-staging"
 
 [[env.staging.r2_buckets]]
 binding = "REVOCATIONS"
@@ -75,10 +67,6 @@ binding = "DB"
 database_name = "tonk-accounts-preview"
 database_id = "323cb440-c356-4d1d-b238-2ffd11abedcc"
 migrations_dir = "rust/tonk-account-service/migrations"
-
-[[env.preview.r2_buckets]]
-binding = "CHAINS"
-bucket_name = "tonk-account-chains-preview"
 
 [[env.preview.r2_buckets]]
 binding = "REVOCATIONS"

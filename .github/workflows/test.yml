@@ -56,6 +56,14 @@ jobs:
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Map tonk.network to loopback'
+        # The harness serves the app at https://tonk.network:{port} and
+        # maps the name inside Chrome via --host-resolver-rules. Native
+        # CLI processes spawned by the tests resolve through the system,
+        # so they need the same mapping to reach the account remote the
+        # browser-minted descriptor names.
+        shell: bash
+        run: echo '127.0.0.1 tonk.network' | sudo tee -a /etc/hosts
       - name: 'Run end-to-end tests'
         shell: bash
         run: |

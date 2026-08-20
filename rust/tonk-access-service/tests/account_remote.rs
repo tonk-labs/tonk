@@ -44,7 +44,7 @@ async fn account_device(root: &Ed25519Signer, endpoint: &str) -> anyhow::Result<
     let root_did = root.did();
     let (operator, profile) = test_operator_with_profile().await;
     let link = DelegationBuilder::new()
-        .issuer(root.clone())
+        .issuer(dialog_credentials::Signer::from(root.clone()))
         .audience(&profile.did())
         .subject(UcanSubject::Any)
         .command(vec![])

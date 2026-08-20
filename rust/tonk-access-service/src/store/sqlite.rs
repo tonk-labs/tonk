@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
-    Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, DeletionGrantKind, FINISH_CONSUMER_DELETION,
+    ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
     INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
     SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError,
     UPDATE_REGISTERED_EMAIL, parse_status,
@@ -52,6 +52,20 @@ impl SqliteStore {
             conn.execute_batch(include_str!("../../migrations/0002_deletion.sql"))
                 .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 2)
+                .map_err(map_err)?;
+            version = 2;
+        }
+        if version < 3 {
+            conn.execute_batch(include_str!("../../migrations/0003_deprovision.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 3)
+                .map_err(map_err)?;
+            version = 3;
+        }
+        if version < 4 {
+            conn.execute_batch(include_str!("../../migrations/0004_consumer_kind.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 4)
                 .map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
@@ -113,26 +127,21 @@ impl Store for SqliteStore {
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
         row.map(
-            |(did, provider, owner, registered, cid, kind, state, deleted_at)| {
+            |(did, provider, owner, registered, kind, state, deleted_at)| {
                 Ok(Consumer {
                     did,
                     provider,
                     owner,
                     registered: registered as u64,
-                    deletion_grant_cid: cid,
-                    deletion_grant_kind: kind
-                        .as_deref()
-                        .map(DeletionGrantKind::parse)
-                        .transpose()?,
+                    kind: ConsumerKind::parse(&kind)?,
                     deletion_state: ConsumerDeletionState::parse(&state)?,
                     deleted_at: deleted_at.map(|value| value as u64),
                 })
@@ -151,23 +160,21 @@ impl Store for SqliteStore {
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
                 ))
             })
             .map_err(map_err)?;
         rows.map(|row| {
-            let (did, provider, owner, registered, cid, kind, state, deleted_at) =
+            let (did, provider, owner, registered, kind, state, deleted_at) =
                 row.map_err(map_err)?;
             Ok(Consumer {
                 did,
                 provider,
                 owner,
                 registered: registered as u64,
-                deletion_grant_cid: cid,
-                deletion_grant_kind: kind.as_deref().map(DeletionGrantKind::parse).transpose()?,
+                kind: ConsumerKind::parse(&kind)?,
                 deletion_state: ConsumerDeletionState::parse(&state)?,
                 deleted_at: deleted_at.map(|value| value as u64),
             })
@@ -208,33 +215,22 @@ impl Store for SqliteStore {
         did: &str,
         provider: &str,
         now: u64,
-        deletion_grant_cid: Option<&str>,
-        deletion_grant_kind: Option<DeletionGrantKind>,
+        kind: ConsumerKind,
     ) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(
                 ADD_CONSUMER,
-                params![
-                    did,
-                    provider,
-                    now as i64,
-                    deletion_grant_cid,
-                    deletion_grant_kind.map(DeletionGrantKind::as_str)
-                ],
+                params![did, provider, now as i64, kind.as_str()],
             )
             .map_err(map_err)?;
         Ok(changed > 0)
     }
 
-    async fn mark_consumer_deleting(
-        &self,
-        did: &str,
-        deletion_grant_cid: &str,
-    ) -> Result<bool, StoreError> {
+    async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
-            .execute(MARK_CONSUMER_DELETING, params![did, deletion_grant_cid])
+            .execute(MARK_CONSUMER_DELETING, params![did])
             .map_err(map_err)?;
         Ok(changed > 0)
     }

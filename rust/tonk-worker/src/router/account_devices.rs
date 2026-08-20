@@ -15,7 +15,6 @@ use tonk_worker_api::{
 };
 
 use super::AppState;
-use super::account_backup::account_service_url;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
@@ -30,6 +29,11 @@ struct ServiceDevice {
     created_at: u64,
     delegation_cid: String,
     delegation_hex: Option<String>,
+}
+
+/// The linked account provider's base URL, when an account is attached.
+pub(crate) async fn account_service_url(tonk: &TonkState) -> Option<String> {
+    crate::router::account::provider(tonk).await
 }
 
 /// Resolve the stored link and service URL, or explain what's missing.

@@ -364,7 +364,7 @@ mod tests {
         Ed25519Signer,
         dialog_ucan_core::DelegationChain,
     ) {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device_signer = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();

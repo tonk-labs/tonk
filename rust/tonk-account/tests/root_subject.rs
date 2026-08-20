@@ -20,7 +20,7 @@ async fn it_commits_a_root_subject_revision_without_storing_the_root_key() -> an
     let root_did = root.did();
 
     let delegation = DelegationBuilder::new()
-        .issuer(root)
+        .issuer(dialog_credentials::Signer::from(root))
         .audience(&profile.did())
         .subject(UcanSubject::Any)
         .command(vec![])

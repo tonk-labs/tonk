@@ -1646,13 +1646,62 @@ pub(crate) async fn boot_state(
     profile: Profile,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
-    let session = crate::session::open(&profile, &storage)
-        .await
-        .map_err(|e| {
-            crate::TonkWorkerError::Internal(format!("failed to open a signing session: {e}"))
-        })?;
-
     let reactor = crate::Reactor::new(profile.clone());
+    let session = match crate::session::open(&profile, &storage).await {
+        Ok(session) => session,
+        Err(error) => {
+            // A partial access branch bricks session open: a remote
+            // profile update adopted by reference leaves the head ahead
+            // of the local blocks, and the authorization walk reads
+            // entirely locally by design (its recursion-bounding env has
+            // no network reach — hydration inside it would be circular).
+            // Hydrate the access branch with a network-capable operator
+            // and retry once; offline or truly broken states surface the
+            // original error.
+            tonk_common::log!(
+                "session open failed ({error}); hydrating the access branch and retrying"
+            );
+            use dialog_operator::DeriveOperator as _;
+            let context: [u8; 16] = rand::random();
+            let operator = profile
+                .derive(context.to_vec())
+                .build(storage.clone())
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to derive a hydration operator: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            let access = reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .acquire(&operator)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to open the access branch for hydration: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            access
+                .handle()
+                .download()
+                .perform(&operator)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to hydrate the access branch: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            crate::session::open(&profile, &storage)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to open a signing session after hydrating the access branch: {e}"
+                    ))
+                })?
+        }
+    };
+
     let state = TonkState {
         profile,
         operator: session.operator,
@@ -1727,6 +1776,11 @@ impl TonkServiceWorker {
         // Patch IDB versionchange handling before any IDB operations.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         crate::patch_idb_versionchange();
+        // And guard handler slots against events addressed to a
+        // torn-down predecessor instance (an update swap or a stop
+        // mid-transaction) — they log quietly instead of throwing.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        crate::patch_idb_dead_shims();
 
         // 1. Create storage backend
         let storage = Storage::<DefaultSpace>::default();
@@ -1756,11 +1810,9 @@ impl TonkServiceWorker {
         let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
-        // Catch up on spaces claimed/created on other devices since last
-        // boot. Fire-and-forget: account-service latency must not delay
-        // startup. `restore_spaces` itself no-ops when unlinked, so an
-        // unconditional call here is fine whether or not this profile
-        // turns out to be linked.
+        // Fire-and-forget boot chores: remote latency must not delay
+        // startup, and each step no-ops when this profile turns out to
+        // be unlinked.
         //
         // Placed here rather than right after `bootstrap_profile` above
         // because the cloneable `AppState` handle a detached task needs to
@@ -1776,7 +1828,9 @@ impl TonkServiceWorker {
                 // already have — the grandfathering path.
                 crate::router::profiles::upsert_active_entry(&tonk, None).await;
                 crate::router::account_state::ensure_account_state(&tonk).await;
-                crate::router::restore::restore_spaces(&tonk).await;
+                // Overlay locality stamps for the Hub's hollow-spot
+                // styling — device-local, re-stamped every boot.
+                crate::router::adopt::stamp_local_spaces(&tonk).await;
             });
         }
 

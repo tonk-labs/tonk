@@ -31,7 +31,7 @@
 pub mod shortcut;
 
 use anyhow::{Context, Result};
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan::{Scope, UcanProof};
 use dialog_ucan_core::{
     DelegationBuilder, DelegationChain,
@@ -381,8 +381,10 @@ impl Invite {
                     .cloned()
                     .map(UcanSubject::Specific)
                     .unwrap_or(UcanSubject::Any);
+                // The chain carries algorithm-agnostic signatures, so the
+                // redelegation is issued through the polymorphic signer.
                 let mut builder = DelegationBuilder::new()
-                    .issuer(ephemeral)
+                    .issuer(Signer::from(ephemeral))
                     .audience(audience)
                     .subject(subject)
                     .command(vec![]);
@@ -490,7 +492,7 @@ mod tests {
     ) -> DelegationChain {
         let issuer = Ed25519Signer::import(issuer_seed).await.unwrap();
         let delegation = DelegationBuilder::new()
-            .issuer(issuer)
+            .issuer(dialog_credentials::Signer::from(issuer))
             .audience(audience_did)
             .subject(UcanSubject::Specific(subject_did.clone()))
             .command(vec![])
@@ -514,7 +516,7 @@ mod tests {
             .map(UcanSubject::Specific)
             .unwrap_or(UcanSubject::Any);
         let delegation = DelegationBuilder::new()
-            .issuer(issuer)
+            .issuer(dialog_credentials::Signer::from(issuer))
             .audience(audience)
             .subject(subject)
             .command(vec![])

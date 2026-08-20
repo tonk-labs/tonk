@@ -70,39 +70,41 @@ pub struct Consumer {
     pub owner: Option<String>,
     /// Registration time as a unix timestamp in seconds.
     pub registered: u64,
-    /// CID of the direct proof registered for destructive authority.
-    pub deletion_grant_cid: Option<String>,
-    /// Whether the CID names a purpose-built grant or a legacy owner proof.
-    pub deletion_grant_kind: Option<DeletionGrantKind>,
+    /// What this consumer is: a user's data space, or a custody
+    /// namespace the account provisions for its own key material.
+    pub kind: ConsumerKind,
     /// Denial-first hosted deletion lifecycle.
     pub deletion_state: ConsumerDeletionState,
     /// Completed deletion time, when any.
     pub deleted_at: Option<u64>,
 }
 
-/// Verification rule attached to a registered deletion proof.
+/// What a consumer namespace holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeletionGrantKind {
-    /// Exact direct `/space/delete` grant minted at creation.
-    Exact,
-    /// One-time upgrade from an original direct broad owner delegation.
-    LegacyDirect,
+pub enum ConsumerKind {
+    /// A user's data space — reviewable, individually deletable.
+    Space,
+    /// A passkey's custody namespace — account plumbing. Never shown in
+    /// a deletion review; purged by customer finalization, last, so the
+    /// deletion machinery cannot destroy the account's own key custody
+    /// while anything might still need it.
+    Custody,
 }
 
-impl DeletionGrantKind {
+impl ConsumerKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Exact => "exact",
-            Self::LegacyDirect => "legacy-direct",
+            Self::Space => "space",
+            Self::Custody => "custody",
         }
     }
 
     pub fn parse(value: &str) -> Result<Self, StoreError> {
         match value {
-            "exact" => Ok(Self::Exact),
-            "legacy-direct" => Ok(Self::LegacyDirect),
+            "space" => Ok(Self::Space),
+            "custody" => Ok(Self::Custody),
             other => Err(StoreError::Internal(format!(
-                "unknown deletion grant kind: {other}"
+                "unknown consumer kind: {other}"
             ))),
         }
     }
@@ -178,16 +180,11 @@ pub trait Store {
         did: &str,
         provider: &str,
         now: u64,
-        deletion_grant_cid: Option<&str>,
-        deletion_grant_kind: Option<DeletionGrantKind>,
+        kind: ConsumerKind,
     ) -> Result<bool, StoreError>;
 
     /// Atomically deny future storage operations before object removal.
-    async fn mark_consumer_deleting(
-        &self,
-        did: &str,
-        deletion_grant_cid: &str,
-    ) -> Result<bool, StoreError>;
+    async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError>;
 
     /// Finalize a denied consumer after its entire object prefix is empty.
     async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError>;
@@ -220,14 +217,12 @@ SELECT did, email, status, plan, verified, terms_version
 "#;
 
 pub const SELECT_CONSUMER: &str = r#"
-SELECT did, provider, owner, registered, deletion_grant_cid, deletion_grant_kind,
-       deletion_state, deleted_at
+SELECT did, provider, owner, registered, kind, deletion_state, deleted_at
   FROM consumer WHERE did = ?1
 "#;
 
 pub const SELECT_CONSUMERS_BY_OWNER: &str = r#"
-SELECT did, provider, owner, registered, deletion_grant_cid, deletion_grant_kind,
-       deletion_state, deleted_at
+SELECT did, provider, owner, registered, kind, deletion_state, deleted_at
   FROM consumer WHERE owner = ?1 ORDER BY registered, did
 "#;
 
@@ -249,20 +244,11 @@ ON CONFLICT (did) DO NOTHING
 /// customer re-runs the update, while a consumer someone else provides
 /// matches no row and changes nothing.
 pub const ADD_CONSUMER: &str = r#"
-INSERT INTO consumer (did, provider, owner, registered, deletion_grant_cid, deletion_grant_kind)
-VALUES (?1, ?2, ?2, ?3, ?4, ?5)
+INSERT INTO consumer (did, provider, owner, registered, kind)
+VALUES (?1, ?2, ?2, ?3, ?4)
 ON CONFLICT (did) DO UPDATE SET
   provider = excluded.provider,
-  deletion_grant_cid = CASE
-    WHEN excluded.deletion_grant_kind = 'exact' THEN excluded.deletion_grant_cid
-    WHEN consumer.deletion_grant_cid IS NULL THEN excluded.deletion_grant_cid
-    ELSE consumer.deletion_grant_cid
-  END,
-  deletion_grant_kind = CASE
-    WHEN excluded.deletion_grant_kind = 'exact' THEN excluded.deletion_grant_kind
-    WHEN consumer.deletion_grant_kind IS NULL THEN excluded.deletion_grant_kind
-    ELSE consumer.deletion_grant_kind
-  END
+  kind = excluded.kind
 WHERE (consumer.provider IS NULL OR consumer.provider = excluded.provider)
   AND consumer.deletion_state = 'active'
 "#;
@@ -283,9 +269,7 @@ UPDATE customer
 
 pub const MARK_CONSUMER_DELETING: &str = r#"
 UPDATE consumer SET deletion_state = 'deleting'
- WHERE did = ?1
-   AND deletion_grant_cid = ?2
-   AND deletion_state = 'active'
+ WHERE did = ?1 AND deletion_state = 'active'
 "#;
 
 pub const FINISH_CONSUMER_DELETION: &str = r#"
@@ -305,9 +289,7 @@ UPDATE consumer SET deletion_state = 'deleting'
 pub const ANONYMIZE_DELETED_CONSUMERS: &str = r#"
 UPDATE consumer
    SET provider = NULL,
-       owner = NULL,
-       deletion_grant_cid = NULL,
-       deletion_grant_kind = NULL
+       owner = NULL
  WHERE owner = ?1
    AND did <> ?1
    AND deletion_state = 'deleted'

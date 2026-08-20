@@ -193,6 +193,40 @@ pub async fn get_state(
     }))
 }
 
+/// `POST /api/custody/provision` request body: the custody DID a
+/// passkey enrollment derived, and the consent chain the custody key
+/// minted for `/provider/add`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionCustodyRequest {
+    /// The custody space's subject.
+    pub custody: String,
+    /// Hex-encoded consent delegation chain.
+    pub consent_hex: String,
+}
+
+/// POST `/api/custody/provision` → provision a custody space under
+/// this profile's account. The page runs the enrollment ceremony and
+/// hands the consent here; the call is idempotent, and retryable — the
+/// published cell, not this row, is the account's durability.
+#[wasm_compat]
+pub async fn provision_custody(
+    State(state): State<AppState>,
+    Json(request): Json<ProvisionCustodyRequest>,
+) -> Result<Json<()>, TonkWorkerError> {
+    let state = state.read().await;
+    let custody: dialog_varsig::Did = request
+        .custody
+        .parse()
+        .map_err(|error| TonkWorkerError::Router(format!("invalid custody DID: {error:?}")))?;
+    let bytes = hex::decode(&request.consent_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("consent is not hex: {error}")))?;
+    let consent = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
+        .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))?;
+    provision_consumer(&state, &custody, &consent, Some("custody")).await?;
+    Ok(Json(()))
+}
+
 /// Provision `consumer` with the same-origin access service under this
 /// profile's account, depositing `consent` — the space's powerline to
 /// the account. A consumer another customer already provides is not an
@@ -202,25 +236,19 @@ pub(crate) async fn provision_consumer(
     state: &crate::worker::TonkState,
     consumer: &dialog_varsig::Did,
     consent: &dialog_ucan_core::DelegationChain,
-    deletion_grant: Option<&dialog_ucan_core::DelegationChain>,
+    kind: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
-    use tonk_identity::request::build_provider_add_invocation_with_deletion;
+    use tonk_identity::request::build_provider_add_invocation;
 
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
     let device = state.profile.signer().signer().clone();
-    let body = build_provider_add_invocation_with_deletion(
-        device,
-        &link,
-        consumer,
-        consent,
-        deletion_grant,
-    )
-    .await
-    .map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
-    })?;
+    let body = build_provider_add_invocation(device, &link, consumer, consent, kind)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
+        })?;
     let origin = service_origin()?;
     match post_cbor(&ucan_endpoint(&origin)?, &body).await {
         Ok(_) => Ok(()),
@@ -232,6 +260,29 @@ pub(crate) async fn provision_consumer(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Deprovision `consumer` at `origin`: the device-signed
+/// `/provider/remove` that deletes the hosted space. Authority is the
+/// account's own chain — any linked device may exercise it.
+pub(crate) async fn deprovision_consumer(
+    state: &crate::worker::TonkState,
+    origin: &Url,
+    consumer: &dialog_varsig::Did,
+) -> Result<(), TonkWorkerError> {
+    use tonk_identity::request::build_provider_remove_invocation;
+
+    let link = super::account::account_link(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
+    })?;
+    let device = state.profile.signer().signer().clone();
+    let body = build_provider_remove_invocation(device, &link, consumer)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the remove invocation: {error}"))
+        })?;
+    post_cbor(&ucan_endpoint(origin)?, &body).await?;
+    Ok(())
 }
 
 /// The worker's own origin, which the access service serves. Known only

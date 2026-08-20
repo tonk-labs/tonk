@@ -134,7 +134,7 @@ mod tests {
         let inviter = signer(&INVITER_SEED).await;
         let ephemeral = signer(&EPHEMERAL_SEED).await;
         let delegation = DelegationBuilder::new()
-            .issuer(inviter)
+            .issuer(dialog_credentials::Signer::from(inviter))
             .audience(&ephemeral.did())
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])
@@ -187,7 +187,7 @@ mod tests {
         let ephemeral = signer(&EPHEMERAL_SEED).await;
         let claimer = signer(&CLAIMER_SEED).await.did();
         let redelegation = DelegationBuilder::new()
-            .issuer(ephemeral)
+            .issuer(dialog_credentials::Signer::from(ephemeral))
             .audience(&claimer)
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])
@@ -219,7 +219,7 @@ mod tests {
         let device = signer(&CLAIMER_SEED).await;
         let ephemeral = signer(&EPHEMERAL_SEED).await;
         let first = DelegationBuilder::new()
-            .issuer(space.clone())
+            .issuer(dialog_credentials::Signer::from(space.clone()))
             .audience(&root.did())
             .subject(UcanSubject::Specific(space.did()))
             .command(vec![])
@@ -227,7 +227,7 @@ mod tests {
             .await
             .unwrap();
         let root_to_device = DelegationBuilder::new()
-            .issuer(root.clone())
+            .issuer(dialog_credentials::Signer::from(root.clone()))
             .audience(&device.did())
             .subject(UcanSubject::Specific(space.did()))
             .command(vec![])
@@ -235,7 +235,7 @@ mod tests {
             .await
             .unwrap();
         let device_to_invite = DelegationBuilder::new()
-            .issuer(device.clone())
+            .issuer(dialog_credentials::Signer::from(device.clone()))
             .audience(&ephemeral.did())
             .subject(UcanSubject::Specific(space.did()))
             .command(vec![])
@@ -258,7 +258,7 @@ mod tests {
         let inviter = signer(&INVITER_SEED).await;
         let ephemeral = signer(&EPHEMERAL_SEED).await.did();
         let delegation = DelegationBuilder::new()
-            .issuer(inviter)
+            .issuer(dialog_credentials::Signer::from(inviter))
             .audience(&ephemeral)
             .subject(UcanSubject::Any)
             .command(vec![])

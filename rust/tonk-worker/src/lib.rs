@@ -1,6 +1,9 @@
 #![warn(missing_docs)]
 //! Service worker implementation for Tonk.
 //!
+//! Storage rides dialog's IndexedDB adapters; their transaction settling
+//! is race-armed and watchdogged (see dialog-storage's `settle`).
+//!
 //! This crate provides a Wasm-based service worker that runs in the browser and
 //! handles API requests using Axum.
 //!
@@ -46,12 +49,64 @@ export function patch_idb_versionchange() {
         configurable: true,
     });
 }
+
+// Guard IDB event handlers against a torn-down wasm instance. When a
+// worker is killed or replaced mid-transaction (an update swap, a
+// DevTools stop), IndexedDB still delivers the transaction's terminal
+// events — into wasm-bindgen shims whose instance is gone, which throw
+// `closure invoked recursively or after being dropped` as uncaught
+// errors. The wasm side cannot fix this: the code that owns the
+// closure no longer exists. So the handler SETTERS are wrapped here,
+// and an event that lands on a dead shim is logged quietly instead of
+// thrown — semantically it is a no-op addressed to a dead instance.
+export function patch_idb_dead_shims() {
+    const guard = (proto, name) => {
+        const desc = Object.getOwnPropertyDescriptor(proto, name);
+        if (!desc || !desc.set) return;
+        const origSet = desc.set;
+        Object.defineProperty(proto, name, {
+            set(handler) {
+                if (typeof handler !== 'function') {
+                    origSet.call(this, handler);
+                    return;
+                }
+                origSet.call(this, function (...args) {
+                    try {
+                        return handler.apply(this, args);
+                    } catch (e) {
+                        if (String(e && e.message || e).includes('closure invoked')) {
+                            console.debug(
+                                `idb ${name}: event for a torn-down wasm instance ignored`
+                            );
+                            return;
+                        }
+                        throw e;
+                    }
+                });
+            },
+            get: desc.get,
+            configurable: true,
+        });
+    };
+    for (const name of ['oncomplete', 'onerror', 'onabort']) {
+        guard(IDBTransaction.prototype, name);
+    }
+    for (const name of ['onsuccess', 'onerror']) {
+        guard(IDBRequest.prototype, name);
+    }
+    guard(IDBOpenDBRequest.prototype, 'onupgradeneeded');
+}
 "#)]
 extern "C" {
     /// Apply the IDB versionchange workaround. Must be called before any
     /// IDB operations. Called automatically by `TonkServiceWorker::new()`
     /// and should be called at the start of wasm tests.
     pub fn patch_idb_versionchange();
+
+    /// Wrap IDB handler setters so events addressed to a torn-down wasm
+    /// instance are ignored instead of throwing. Must be called before
+    /// any IDB operations, alongside [`patch_idb_versionchange`].
+    pub fn patch_idb_dead_shims();
 }
 
 mod broadcast;

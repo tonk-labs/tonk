@@ -82,7 +82,7 @@ use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience};
 use tonk_schema::{
@@ -538,8 +538,6 @@ pub(crate) struct StagedJoin {
     chain: DelegationChain,
     /// Staged content to publish, when the attempt produced a head.
     installable: Option<StagedContent>,
-    /// The same member has already claimed this exact invitation.
-    repeated_claim: bool,
 }
 
 /// The staged head to publish locally, and how much of it the durable
@@ -1413,9 +1411,8 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
     // A guest records no roster row; every durable claim, including a
     // renewal, stages roster/provenance/name into the exact revision that will
     // be installed before authority is saved.
-    let mut repeated_claim = false;
     if let Some(member) = &prepared.member {
-        let (changes, already_claimed) = claim_changes(
+        let (changes, _already_claimed) = claim_changes(
             tonk,
             &branch,
             staging.operator(),
@@ -1425,7 +1422,6 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
             &prepared.subject,
         )
         .await?;
-        repeated_claim = already_claimed;
         if !changes.is_empty() {
             branch
                 .transaction()
@@ -1455,7 +1451,6 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
         staging,
         chain,
         installable,
-        repeated_claim,
     })
 }
 
@@ -1518,7 +1513,6 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
         staging,
         chain,
         installable,
-        repeated_claim,
     } = staged;
 
     let repository = if prepared.installs_replica() {
@@ -1581,16 +1575,31 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
             if prepared.guest {
                 clear_guest(tonk, &prepared.subject).await?;
             }
-            // Escrow a newly accepted claim so another of this account's
-            // devices can recover the space. Exact local repeats are already
-            // escrowed, while an owner's space-root prefix is backed up by
-            // the owned-space path. Best-effort, and strictly after the local
-            // commit — the join is already complete.
-            if !(prepared.is_self_claim() || prepared.existing && repeated_claim)
-                && let Err(error) =
-                    crate::router::account_backup::back_up_subject(tonk, &prepared.subject).await
-            {
-                log!("joined-space backup skipped: {error}");
+            // The account directory is how another of this account's
+            // devices recovers this claim: alongside the membership
+            // facts, record the mount configuration the invite carried,
+            // or a fresh sign-in lists a spot it can never mount.
+            // Renewals and promotions record too — the guest visit that
+            // preceded a promotion recorded nothing account-level.
+            // Best-effort, and strictly after the local commit — the
+            // join is already complete.
+            match invite_configuration(
+                &prepared.subject,
+                prepared.remote_url.as_deref(),
+                prepared.revocation_url.as_deref(),
+            ) {
+                Ok(configuration) => {
+                    super::repository::record_space_mount(
+                        tonk,
+                        &prepared.subject,
+                        &configuration,
+                        None,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    log!("claimed space directory record skipped: {error}");
+                }
             }
         }
     }
@@ -2206,9 +2215,20 @@ pub(crate) async fn mount_replica(
         }
     };
 
-    // Mirror what `PUT /api/repository/{name}` writes: a single `main`
-    // branch, plus an `origin` remote tracking the invite's/space's
-    // access service if one was attached.
+    let configuration = invite_configuration(subject, remote_url, revocation_url)?;
+    finish_mount(tonk, &repository, &key, configuration).await?;
+    Ok(repository)
+}
+
+/// The repository configuration an invite describes: a single `main`
+/// branch, plus an `origin` remote tracking the invite's/space's access
+/// service if one was attached — mirroring what
+/// `PUT /api/repository/{name}` writes.
+fn invite_configuration(
+    subject: &Did,
+    remote_url: Option<&str>,
+    revocation_url: Option<&str>,
+) -> Result<RepositoryConfiguration, TonkWorkerError> {
     let mut configuration = RepositoryConfiguration::default();
     if let Some(url) = remote_url {
         let address = SiteAddress::from(UcanAddress::new(url));
@@ -2230,13 +2250,66 @@ pub(crate) async fn mount_replica(
     } else {
         configuration = configuration.branch(DEFAULT_BRANCH, BranchConfiguration::default());
     }
+    Ok(configuration)
+}
 
-    // No display name to seed: a joined/restored repo's name lives in
-    // the shared content branch and arrives over the pull. The helper
-    // only uses this for log context, so the routing key stands in.
-    record_replica_local_meta(tonk, &repository, &key, &configuration).await?;
-
+/// Mount a space with a full, caller-supplied configuration — the
+/// directory-adoption entry point, where the configuration is rebuilt
+/// from account-DB facts and applied verbatim so a non-default setup
+/// replicates identically.
+pub(crate) async fn mount_replica_with_configuration(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: RepositoryConfiguration,
+) -> Result<Repository<Credential>, TonkWorkerError> {
+    let key = subject.repo_key().to_owned();
+    if super::account_state::is_account_key(tonk, &key).await {
+        return Err(TonkWorkerError::Forbidden(
+            "account system repository cannot be mounted as a user space".to_string(),
+        ));
+    }
+    let repository = match tonk
+        .profile
+        .repository(key.as_str())
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(repository) => repository,
+        Err(_) => {
+            let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
+                TonkWorkerError::Router(format!("subject is not a valid Ed25519 did:key: {e:?}"))
+            })?;
+            let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
+            let space_credential = space_capability
+                .create(Credential::from(verifier))
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    TonkWorkerError::Internal(format!(
+                        "failed to create local replica '{key}': {e}"
+                    ))
+                })?;
+            Repository::from(space_credential)
+        }
+    };
+    finish_mount(tonk, &repository, &key, configuration).await?;
     Ok(repository)
+}
+
+/// The shared tail of every mount: record the local meta from the
+/// configuration. No display name to seed — a joined/adopted repo's
+/// name lives in the shared content branch and arrives over the pull;
+/// the helper only uses the name for log context, so the routing key
+/// stands in.
+async fn finish_mount(
+    tonk: &TonkState,
+    repository: &Repository<Credential>,
+    key: &str,
+    configuration: RepositoryConfiguration,
+) -> Result<(), TonkWorkerError> {
+    record_replica_local_meta(tonk, repository, key, &configuration).await?;
+    Ok(())
 }
 
 /// Check whether the active profile already holds a replica for the
@@ -2584,7 +2657,7 @@ mod tests {
         let subject = subject_signer.did();
         let key = subject.repo_key().to_owned();
         let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
+            .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(audience)
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])
@@ -2623,8 +2696,6 @@ mod tests {
         guest: bool,
         /// Whether durable proof storage authorizes the worker for the subject.
         authority: bool,
-        /// Number of accepted claims handed to the backup boundary.
-        backup_dispatches: usize,
     }
 
     async fn snapshot(state: &crate::router::AppState, key: &str) -> JoinSnapshot {
@@ -2724,7 +2795,6 @@ mod tests {
             provenance,
             guest,
             authority,
-            backup_dispatches: crate::router::account_backup::backup_dispatch_count(),
         }
     }
 
@@ -2808,10 +2878,9 @@ mod tests {
 
     #[dialog_common::test]
     async fn durable_join_persists_and_builds_a_named_root_ending_backup() {
-        use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+        use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
         use tonk_schema::RepositoryName;
         use tonk_schema::prelude::DidExt as _;
-        use wasm_bindgen::JsValue;
 
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let (url, key) = handcrafted_invite_url(105, 106).await;
@@ -2861,34 +2930,6 @@ mod tests {
                 .await
                 .unwrap();
         }
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
-        {
-            let tonk = state.read().await;
-            crate::router::account_backup::back_up_subject(&tonk, &subject)
-                .await
-                .unwrap();
-        }
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("durable join backup artifact was produced");
-        assert_eq!(artifact.name.as_deref(), Some("joined-garden"));
         let (root, persisted) = {
             let tonk = state.read().await;
             let root = crate::router::identity::root_did(&tonk).await.unwrap();
@@ -2902,10 +2943,9 @@ mod tests {
                 .unwrap();
             (root, bytes)
         };
-        let validated = artifact.validate_for(&root).await.unwrap();
-        assert_eq!(validated.subject, subject);
-        assert_eq!(validated.chain.audience(), &root);
-        assert_eq!(validated.chain.to_bytes().unwrap(), persisted);
+        let chain = dialog_ucan_core::DelegationChain::try_from(persisted.as_slice())
+            .expect("the persisted space-root prefix parses");
+        assert_eq!(chain.audience(), &root, "the prefix ends at the root");
     }
 
     /// Joining an invite records the claimer's membership, the
@@ -3453,8 +3493,6 @@ mod tests {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let (url, key) = handcrafted_invite_url(72, 73).await;
         assert_eq!(post_visit(&app, &url).await, StatusCode::CREATED);
-        let backups_before = crate::router::account_backup::backup_dispatch_count();
-
         let (status, body) = promote(&app, &key).await;
         assert_eq!(status, StatusCode::OK, "promotion acknowledges with a body");
         assert_eq!(
@@ -3466,10 +3504,6 @@ mod tests {
         let after = snapshot(&state, &key).await;
         assert!(!after.guest, "the guest credential is cleared on promotion");
         assert!(after.authority, "the accepted authority is durable");
-        assert_eq!(
-            after.backup_dispatches, backups_before,
-            "a local-only promotion has no pullable upstream to back up",
-        );
 
         let root_entity = {
             let tonk = state.read().await;
@@ -3482,6 +3516,40 @@ mod tests {
         assert!(
             memberships.iter().any(|row| row.member.0 == root_entity),
             "a promoted guest is recorded by root DID",
+        );
+
+        // The directory is how another of this account's devices
+        // recovers the claim: promotion must leave the space's branch
+        // configuration behind, or a fresh sign-in lists a spot it can
+        // never mount. This invite carries no reachable remote, so the
+        // pin reads the recorded branch facts directly; the
+        // remote-carrying shape is covered by the adopt round-trip test
+        // and the browser e2e.
+        use dialog_query::{Output as _, Query, Term};
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let branches: Vec<tonk_schema::Branch> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Branch> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(tonk_schema::domain::branch::Origin::from(subject.this())),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(
+            !branches.is_empty(),
+            "promotion records the space's mount configuration in the account directory",
         );
     }
 

@@ -1237,7 +1237,7 @@ mod when_mounting_account_authority {
     use dialog_ucan_core::subject::Subject;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal as _;
-    use tonk_account::backup::{space_delete_site, space_root_site};
+    use tonk_account::prefix::space_root_site;
     use tonk_cli::site::{self, TonkSite};
     use tonk_schema::{Invitation, InvitedVia, MemberName, MemberRole, Membership};
 
@@ -1261,33 +1261,13 @@ mod when_mounting_account_authority {
         let space = Ed25519Signer::import(&[91; 32]).await?;
         let subject = space.did();
         let delegation = DelegationBuilder::new()
-            .issuer(space)
+            .issuer(dialog_credentials::Signer::from(space))
             .audience(account_root)
             .subject(Subject::Specific(subject.clone()))
             .command(vec![])
             .try_build()
             .await?;
         Ok((subject, DelegationChain::new(delegation)))
-    }
-
-    #[dialog_common::test]
-    async fn it_retains_an_exact_delete_grant_for_a_new_owned_space() -> Result<()> {
-        let test = common::TestSite::new().await?;
-        let root = local_root(&test.site).await?;
-        let subject = test.site.repository.did();
-        let bytes = test
-            .site
-            .profile
-            .credential()
-            .site(space_delete_site(&subject, &root))
-            .load::<Vec<u8>>()
-            .perform(&test.site.operator)
-            .await?;
-
-        let validated =
-            tonk_account::deletion::validate_deletion_grant(&bytes, &subject, &root).await?;
-        assert_eq!(validated.command, "/space/delete");
-        Ok(())
     }
 
     #[dialog_common::test]
