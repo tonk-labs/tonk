@@ -349,13 +349,15 @@ view/directory!:
           background: var(--wa-color-surface-default); color: var(--wa-color-text-normal); }
         #wiz-start:checked ~ .spot-overlay,
         #wiz-tmpl:checked ~ .spot-overlay,
-        #wiz-agent:checked ~ .spot-overlay { display: block; }
+        #wiz-agent:checked ~ .spot-overlay,
+        #wiz-invite:checked ~ .spot-overlay { display: block; }
         /* chooser paging: the wiz radios (siblings of .spot-overlay) switch screens */
         .onb-screen { display: none; position: absolute; inset: 0; flex-direction: column;
           align-items: center; justify-content: center; gap: 34px; padding: 60px 40px; }
         #wiz-start:checked ~ .spot-overlay .onb-screen--start { display: flex; }
         #wiz-tmpl:checked ~ .spot-overlay .onb-screen--details,
         #wiz-agent:checked ~ .spot-overlay .onb-screen--details { display: flex; }
+        #wiz-invite:checked ~ .spot-overlay .onb-screen--invite { display: flex; }
         .onb-tpl { display: none; }
         .onb-nav { position: absolute; top: 16px; }
         .onb-nav--close { right: 20px; }
@@ -369,7 +371,18 @@ view/directory!:
         /* Start-screen choices + template grid are Web Awesome cards wrapped
            in a <label> so a click toggles the driving radio. The card carries
            the surface/border/hover; the label only forwards the click. */
-        .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; }
+        .onb-choices { display: grid; grid-template-columns: repeat(3, minmax(0,280px)); gap: 18px; }
+        /* Paste-an-invite screen: one input, one button. The error line is
+           hidden until `<tonk-invite-link>` stamps `data-state=invalid` on
+           itself — pure sibling CSS, no script in the template. */
+        .onb-join { display: flex; flex-direction: column; gap: 14px;
+          width: min(540px, 100%); }
+        .onb-join wa-input { width: 100%; }
+        .onb-join wa-button { align-self: center; min-width: 220px; }
+        .onb-join-error { display: none; color: var(--wa-color-danger-on-quiet); }
+        tonk-invite-link[data-state="invalid"] ~ .onb-join-error { display: block; }
+        .onb-art--invite { background: var(--wa-color-surface-lowered);
+          font-size: 30px; color: var(--wa-color-text-quiet); }
         /* The template picker: a grid of card <label>s (2x2 at four
            templates), shown once the template path is chosen. */
         .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,280px));
@@ -493,6 +506,7 @@ view/directory!:
       <input class="spot-wiz" type="radio" name="__wiz" id="wiz-start">
       <input class="spot-wiz" type="radio" name="__wiz" id="wiz-tmpl">
       <input class="spot-wiz" type="radio" name="__wiz" id="wiz-agent">
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-invite">
 
       <header class="spot-top">
         <div class="spot-brand">
@@ -603,6 +617,16 @@ view/directory!:
                   <div class="onb-card__cta">start blank &rsaquo;</div>
                 </wa-card>
               </label>
+              <label class="onb-card" for="wiz-invite">
+                <wa-card appearance="outlined">
+                  <div class="onb-art onb-art--invite">
+                    <wa-icon name="link"></wa-icon>
+                  </div>
+                  <div class="onb-card__name">From an invite link</div>
+                  <div class="onb-card__desc">Join a spot shared with you, wherever it is hosted.</div>
+                  <div class="onb-card__cta">paste a link &rsaquo;</div>
+                </wa-card>
+              </label>
             </div>
           </div>
 
@@ -666,6 +690,38 @@ view/directory!:
             </div>
           </div>
         </form>
+
+        <!-- Paste-an-invite screen. Its OWN form, as a SIBLING of the
+             create form (forms cannot nest): `.onb-screen` is absolutely
+             positioned against `.spot-overlay`, so it pages exactly like
+             the create screens via the `wiz-invite` radio. The invite URL
+             carries the space's sync remote in its query/fragment, so a
+             link minted on another deployment joins here while syncing
+             from wherever the invite says the space lives —
+             `<tonk-invite-link>` rewrites the pasted link onto this
+             deployment's /join route and the ordinary claim pipeline does
+             the rest. -->
+        <div class="onb-screen onb-screen--invite">
+          <label class="onb-nav onb-nav--back" for="wiz-start">
+            <wa-button variant="neutral" appearance="plain" size="small">
+              <wa-icon slot="start" name="angle-left"></wa-icon>back
+            </wa-button>
+          </label>
+          <label class="onb-nav onb-nav--close" for="wiz-closed">
+            <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
+          </label>
+          <div class="onb-head">
+            <h3>Join with an invite link</h3>
+            <p class="onb-lede">Paste a link someone shared with you. The spot syncs from
+              wherever the invite says it lives, so links from other deployments work too.</p>
+          </div>
+          <form class="onb-join">
+            <wa-input name="url" placeholder="https://&hellip;/join?&hellip;" autocomplete="off" required></wa-input>
+            <tonk-invite-link field="url"></tonk-invite-link>
+            <p class="onb-join-error onb-lede">That doesn't look like an invite link.</p>
+            <wa-button type="submit" variant="brand">Join spot</wa-button>
+          </form>
+        </div>
       </div>
     </div>
 

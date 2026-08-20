@@ -20,6 +20,7 @@ mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod invite_link;
 mod join_retry;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod origin;
@@ -51,4 +52,5 @@ pub fn register() {
     default_remote::register();
     editable::register();
     join_retry::register();
+    invite_link::register();
 }
