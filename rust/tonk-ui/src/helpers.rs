@@ -267,17 +267,25 @@ mod native {
                 .join("authorities")
                 .join("local")
                 .join("root.crt");
-            for _ in 0..100 {
+            // Caddy mints the CA lazily, on its first TLS handshake, so
+            // this can take a moment on a cold machine.
+            for _ in 0..200 {
                 if caddy_root.exists() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
+            if !caddy_root.exists() {
+                return Err(anyhow!(
+                    "Caddy never minted its root certificate at {}; CLI children could not                      trust the harness origin",
+                    caddy_root.display()
+                ));
+            }
             // Handed to CLI children individually rather than exported:
             // each harness mints its own CA under its own port, so a
             // process-wide `SSL_CERT_FILE` makes concurrent runs trust
             // the wrong root and fail to connect.
-            let ca_certificate = caddy_root.exists().then_some(caddy_root);
+            let ca_certificate = Some(caddy_root);
 
             // Start ChromeDriver
             let chromedriver_port =
