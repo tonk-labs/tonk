@@ -126,6 +126,29 @@ where
         }
     }
 
+    rotate(profile, storage).await
+}
+
+/// Mint a FRESH session unconditionally: a new random derivation
+/// context, so the operator gets its own audience and the delegation
+/// it retires stays behind rather than beside it.
+///
+/// [`open`] reuses the persisted session while it is fresh — right for
+/// boot, wrong for renewal: guest rotation replays leases onto a NEW
+/// operator, and reusing the current one would hand back the same
+/// audience with the lapsed chain still provable next to the
+/// replacement.
+pub async fn rotate<S>(
+    profile: &Profile,
+    storage: &Storage<S>,
+) -> Result<Session<S>, TonkWorkerError>
+where
+    S: SpaceProvider + Clone + 'static,
+    S: Provider<dialog_effects::blob::Read>
+        + Provider<dialog_effects::blob::Write>
+        + Provider<dialog_effects::blob::Import>,
+    S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
+{
     // A random derivation context is what makes the operator key
     // session-scoped: `derive` is a KDF over the profile seed and this
     // context, so a fixed context would hand every session the same

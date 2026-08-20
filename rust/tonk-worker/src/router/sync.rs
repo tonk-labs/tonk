@@ -1306,7 +1306,8 @@ pub(crate) const GUEST_RENEWAL_MARGIN_SECONDS: u64 = 5 * 60;
 /// - Legacy metadata. A version 1 record kept only the URL, so nothing
 ///   is known about the chain standing on it. Refresh once and it
 ///   rewrites itself in the current shape.
-/// - A different audience. Every worker restart derives a new operator,
+/// - A different audience. A worker whose persisted session was lost
+///   (or a pre-session-reuse worker) derives a new operator,
 ///   and a guest chain is addressed to the operator it was minted for.
 ///   A record naming any other one describes a chain that can no longer
 ///   be proved to, whatever its recorded expiry says.
@@ -1365,8 +1366,9 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
     }
 
     // Mint outside the lock — nothing else may proceed while a write
-    // lock is held, and this signs.
-    let session = crate::session::open(&profile, &storage).await?;
+    // lock is held, and this signs. Rotate, never reuse: renewal is
+    // only reached when something needs a NEW audience.
+    let session = crate::session::rotate(&profile, &storage).await?;
 
     let mut tonk = state.write().await;
     // A concurrent drain may have rotated while this one was minting.
@@ -1924,12 +1926,14 @@ mod renewal_tests {
                 .unwrap()
         };
 
-        // What a service-worker restart leaves behind: a new operator
-        // over the same profile and storage, and a guest record still
-        // naming the old one with an hour left on it.
+        // A restart normally reuses the persisted session (same
+        // operator, no rebind needed). This models the reuse MISS — a
+        // persisted session lost or unusable — where the replacement
+        // worker really does hold a new operator while the guest
+        // record still names the old one with an hour left on it.
         let restarted = {
             let mut tonk = state.write().await;
-            let session = crate::session::open(&tonk.profile, &tonk.storage)
+            let session = crate::session::rotate(&tonk.profile, &tonk.storage)
                 .await
                 .expect("a replacement session opens");
             let did = session.operator.did();

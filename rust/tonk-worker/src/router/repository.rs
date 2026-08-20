@@ -2370,11 +2370,14 @@ async fn enable_sync_inner(
         }
     };
 
-    ensure_remote_config(&tonk, &repository, key, &configuration).await?;
+    let effective = ensure_remote_config(&tonk, &repository, key, &configuration).await?;
 
-    // Mirror the (possibly repaired) mount configuration into the
-    // account directory so other devices can adopt this space.
-    record_space_mount(&tonk, &repository.did(), &configuration, None).await;
+    // Mirror the EFFECTIVE mount configuration into the account
+    // directory so other devices adopt what this device actually
+    // syncs against: an already-configured upstream is preserved, so
+    // the request's (possibly repair-supplied) address must not
+    // overwrite it there.
+    record_space_mount(&tonk, &repository.did(), &effective, None).await;
 
     Ok(())
 }
@@ -4137,12 +4140,16 @@ async fn ensure_remote_config<C>(
     repository: &Repository<C>,
     name: &str,
     configuration: &RepositoryConfiguration,
-) -> Result<(), RepositoryError>
+) -> Result<RepositoryConfiguration, RepositoryError>
 where
     C: Principal + Clone,
 {
+    // What actually took effect: existing remotes are preserved rather
+    // than rewritten, so the caller must mirror THIS into the account
+    // directory, not the request.
+    let mut effective = configuration.clone();
     if configuration.remote.is_empty() && configuration.branch.is_empty() {
-        return Ok(());
+        return Ok(effective);
     }
 
     let meta = repository
@@ -4201,6 +4208,10 @@ where
             }
         };
 
+        if let Some(effective_remote) = effective.remote.get_mut(remote_name) {
+            effective_remote.address = address.clone();
+            effective_remote.subject = Some(subject.clone());
+        }
         let concept = replica.remote(remote_name.as_str(), subject, &address);
         transaction = transaction.assert(concept.clone());
         if let Some(revocation_url) = &remote_config.revocation_url {
@@ -4347,7 +4358,7 @@ where
         }
     }
 
-    Ok(())
+    Ok(effective)
 }
 
 /// Attach remotes (and branch upstreams) to an **existing**
