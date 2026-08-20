@@ -182,7 +182,7 @@ pub(crate) async fn stamp_local_spaces(tonk: &TonkState) {
 /// Rebuild a space's configuration from the account directory — the
 /// shared `tonk_schema::directory` reader, converted into the worker's
 /// [`RepositoryConfiguration`].
-async fn directory_configuration(
+pub(crate) async fn directory_configuration(
     tonk: &TonkState,
     subject: &dialog_varsig::Did,
 ) -> Option<RepositoryConfiguration> {

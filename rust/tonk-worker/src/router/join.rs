@@ -1575,11 +1575,32 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
             if prepared.guest {
                 clear_guest(tonk, &prepared.subject).await?;
             }
-            // Escrow a newly accepted claim so another of this account's
-            // devices can recover the space. Exact local repeats are already
-            // escrowed, while an owner's space-root prefix is backed up by
-            // the owned-space path. Best-effort, and strictly after the local
-            // commit — the join is already complete.
+            // The account directory is how another of this account's
+            // devices recovers this claim: alongside the membership
+            // facts, record the mount configuration the invite carried,
+            // or a fresh sign-in lists a spot it can never mount.
+            // Renewals and promotions record too — the guest visit that
+            // preceded a promotion recorded nothing account-level.
+            // Best-effort, and strictly after the local commit — the
+            // join is already complete.
+            match invite_configuration(
+                &prepared.subject,
+                prepared.remote_url.as_deref(),
+                prepared.revocation_url.as_deref(),
+            ) {
+                Ok(configuration) => {
+                    super::repository::record_space_mount(
+                        tonk,
+                        &prepared.subject,
+                        &configuration,
+                        None,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    log!("claimed space directory record skipped: {error}");
+                }
+            }
         }
     }
 
@@ -2194,9 +2215,20 @@ pub(crate) async fn mount_replica(
         }
     };
 
-    // Mirror what `PUT /api/repository/{name}` writes: a single `main`
-    // branch, plus an `origin` remote tracking the invite's/space's
-    // access service if one was attached.
+    let configuration = invite_configuration(subject, remote_url, revocation_url)?;
+    finish_mount(tonk, &repository, &key, configuration).await?;
+    Ok(repository)
+}
+
+/// The repository configuration an invite describes: a single `main`
+/// branch, plus an `origin` remote tracking the invite's/space's access
+/// service if one was attached — mirroring what
+/// `PUT /api/repository/{name}` writes.
+fn invite_configuration(
+    subject: &Did,
+    remote_url: Option<&str>,
+    revocation_url: Option<&str>,
+) -> Result<RepositoryConfiguration, TonkWorkerError> {
     let mut configuration = RepositoryConfiguration::default();
     if let Some(url) = remote_url {
         let address = SiteAddress::from(UcanAddress::new(url));
@@ -2218,9 +2250,7 @@ pub(crate) async fn mount_replica(
     } else {
         configuration = configuration.branch(DEFAULT_BRANCH, BranchConfiguration::default());
     }
-
-    finish_mount(tonk, &repository, &key, configuration).await?;
-    Ok(repository)
+    Ok(configuration)
 }
 
 /// Mount a space with a full, caller-supplied configuration — the
@@ -3486,6 +3516,40 @@ mod tests {
         assert!(
             memberships.iter().any(|row| row.member.0 == root_entity),
             "a promoted guest is recorded by root DID",
+        );
+
+        // The directory is how another of this account's devices
+        // recovers the claim: promotion must leave the space's branch
+        // configuration behind, or a fresh sign-in lists a spot it can
+        // never mount. This invite carries no reachable remote, so the
+        // pin reads the recorded branch facts directly; the
+        // remote-carrying shape is covered by the adopt round-trip test
+        // and the browser e2e.
+        use dialog_query::{Output as _, Query, Term};
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let branches: Vec<tonk_schema::Branch> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Branch> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(tonk_schema::domain::branch::Origin::from(subject.this())),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(
+            !branches.is_empty(),
+            "promotion records the space's mount configuration in the account directory",
         );
     }
 

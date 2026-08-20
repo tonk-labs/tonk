@@ -3599,9 +3599,18 @@ pub async fn get_repository(
     // replicated mounts it on demand — same lazy adoption the query
     // route performs, so a second device can address a spot straight
     // from the synced account directory. A no-op for mounted repos.
-    if let Err(error) = super::adopt::ensure_space_mounted(&tonk, &name).await {
-        log!("on-demand mount of '{}' failed: {error}", name);
-    }
+    // The outcome rides the not-found error: a swallowed mount failure
+    // turns an explainable miss into a bare 404.
+    let mount = match super::adopt::ensure_space_mounted(&tonk, &name).await {
+        Ok(true) => None,
+        Ok(false) => Some("the account directory holds no mountable record for it".to_string()),
+        Err(error) => {
+            log!("on-demand mount of '{}' failed: {error}", name);
+            Some(format!(
+                "mounting it from the account directory failed: {error}"
+            ))
+        }
+    };
     let repository = tonk
         .profile
         .repository(&name)
@@ -3609,7 +3618,11 @@ pub async fn get_repository(
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", name, e))
+            let mount = mount
+                .as_deref()
+                .map(|note| format!(" ({note})"))
+                .unwrap_or_default();
+            TonkWorkerError::NotFound(format!("Repository '{}' not found{}: {}", name, mount, e))
         })?;
 
     let info = build_repository_info(&tonk, &name, &repository).await;
