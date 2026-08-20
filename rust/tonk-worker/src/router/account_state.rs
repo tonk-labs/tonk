@@ -12,8 +12,9 @@ use std::sync::Mutex;
 
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Repository, SiteAddress, Upstream};
+use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_ucan_core::DelegationChain;
+use dialog_varsig::Principal;
 use tonk_account::{
     AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
     probe_remote_main, publish_genesis_if_absent,
@@ -230,6 +231,40 @@ pub(crate) async fn retract_account_replicas(tonk: &TonkState) -> Result<(), Ton
     Ok(())
 }
 
+/// Republish a stored remote's address cell so it matches the current
+/// descriptor, returning the repointed remote.
+///
+/// A remote's address is a memory cell, not an immutable record: when
+/// the link's provider address changes or the profile links to a
+/// different account, the stored cell goes stale and every
+/// strict-equality check after it would refuse to mount forever.
+async fn repoint_remote<C: Principal>(
+    repository: &Repository<C>,
+    name: &str,
+    address: &SiteAddress,
+    subject: &dialog_varsig::Did,
+    tonk: &TonkState,
+) -> Result<RemoteRepository, TonkWorkerError> {
+    let reference = repository.remote(name);
+    let target = RemoteAddress::new(address.clone(), subject.clone());
+    let cell = reference.address();
+    // Resolve first: publish is a compare-and-swap against the cell's
+    // current version, and a fresh handle has not seen one yet.
+    cell.resolve()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to resolve the '{name}' remote: {error}"))
+        })?;
+    cell.publish(target.clone())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to repoint the '{name}' remote: {error}"))
+        })?;
+    Ok(RemoteRepository::new(cell.retain(target), reference))
+}
+
 /// Point profile main at the account: the account is the upstream
 /// remote of the profile repository's main branch (`Account model.md`
 /// §5 in its literal form), not a separate repository. The subject-
@@ -254,13 +289,21 @@ async fn configure_account_upstream(
         .perform(&tonk.operator)
         .await
     {
-        Ok(remote) => {
-            if remote.address().site() != &address || remote.did() != subject {
-                return Err(TonkWorkerError::Conflict(
-                    "profile main already follows a different account remote".to_string(),
-                ));
-            }
-            remote
+        Ok(remote) if remote.address().site() == &address && remote.did() == subject => remote,
+        // A stored remote that disagrees with the descriptor follows an
+        // older link — a previous provider address or an account this
+        // profile has since left. The descriptor is the current link,
+        // so repoint the address cell to it rather than refusing to
+        // mount forever.
+        Ok(_) => {
+            repoint_remote(
+                &repository,
+                tonk_account::ORIGIN_REMOTE,
+                &address,
+                &subject,
+                tonk,
+            )
+            .await?
         }
         Err(_) => repository
             .remote(tonk_account::ORIGIN_REMOTE)
@@ -295,12 +338,12 @@ async fn configure_account_upstream(
     match branch.upstream() {
         Some(Upstream::Remote { remote, branch, .. })
             if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
-        Some(_) => {
-            return Err(TonkWorkerError::Conflict(
-                "profile main tracks a different upstream".to_string(),
-            ));
-        }
-        None => branch
+        // A pointer left by an earlier account scheme (or an older link)
+        // is repointed, like the remote cell above: with a linked
+        // account, the account IS profile main's upstream by
+        // definition, and set_upstream promotes over an existing
+        // tracking target.
+        _ => branch
             .set_upstream(&remote_branch)
             .perform(&tonk.operator)
             .await
@@ -695,7 +738,18 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
         .perform(&tonk.operator)
         .await
     {
-        Ok(remote) => remote,
+        Ok(remote) if remote.address().site() == &address && remote.did() == subject => remote,
+        // Stale cell from an earlier link; see `repoint_remote`.
+        Ok(_) => {
+            match repoint_remote(&repository, ACCOUNT_ACCESS_REMOTE, &address, &subject, tonk).await
+            {
+                Ok(remote) => remote,
+                Err(error) => {
+                    log!("repoint the account access remote: {error}");
+                    return false;
+                }
+            }
+        }
         Err(_) => match repository
             .remote(ACCOUNT_ACCESS_REMOTE)
             .create(address)
