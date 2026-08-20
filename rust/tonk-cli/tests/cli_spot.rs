@@ -39,6 +39,7 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         // These fixtures exercise remote selection, not identity provisioning.
         // Production omits this explicit unsafe compatibility override.
         .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
+        .env_remove("TONK_SPACE")
         .env_remove("TONK_SPOT");
     for (key, value) in extra_env {
         cmd.env(key, value);
@@ -148,7 +149,7 @@ mod when_nothing_is_registered {
         let output = run(state.path(), &[], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("no spots registered"), "{stderr}");
+        assert!(stderr.contains("no spaces registered"), "{stderr}");
         assert!(!stderr.contains("Usage: tonk"), "{stderr}");
     }
 
@@ -181,7 +182,7 @@ mod when_nothing_is_registered {
         let output = run(state.path(), &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("no spots registered"), "{stderr}");
+        assert!(stderr.contains("no spaces registered"), "{stderr}");
         assert!(stderr.contains("--site"), "{stderr}");
     }
 }
@@ -226,7 +227,7 @@ mod when_resolving_with_precedence {
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: a (flag)"), "{stderr}");
+        assert!(stderr.contains("active space: a (flag)"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -237,7 +238,7 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: a (env)"), "{stderr}");
+        assert!(stderr.contains("active space: a (env)"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -249,7 +250,7 @@ mod when_resolving_with_precedence {
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
         assert!(
-            stderr.contains("no spot active for this directory"),
+            stderr.contains("no space active for this directory"),
             "{stderr}"
         );
     }
@@ -262,7 +263,7 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["use"], &[("TONK_SPOT", "a")]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("current spot: a"), "{stdout}");
+        assert!(stdout.contains("current space: a"), "{stdout}");
         assert!(stdout.contains("selected via: env"), "{stdout}");
         assert!(stdout.contains("next: tonk context"), "{stdout}");
     }
@@ -277,7 +278,7 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "nope")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("unknown spot 'nope'"), "{stderr}");
+        assert!(stderr.contains("unknown space 'nope'"), "{stderr}");
         assert!(stderr.contains("registered: a"), "{stderr}");
     }
 }
@@ -790,7 +791,7 @@ mod when_a_directory_is_bound {
         let output = run_in(state.path(), &nested, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: a (directory"), "{stderr}");
+        assert!(stderr.contains("active space: a (directory"), "{stderr}");
         assert!(stderr.contains(&shown(&work)), "{stderr}");
     }
 
@@ -816,7 +817,7 @@ mod when_a_directory_is_bound {
         let output = run_in(state.path(), &nested, &["status"], &[("TONK_SPOT", "b")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: b (env)"), "{stderr}");
+        assert!(stderr.contains("active space: b (env)"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -828,7 +829,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: a"), "{stdout}");
-        assert!(stdout.contains("active spot: b (env)"), "{stdout}");
+        assert!(stdout.contains("active space: b (env)"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -841,19 +842,21 @@ mod when_a_directory_is_bound {
         let output = run_in(state.path(), &nested, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: b (directory"), "{stderr}");
+        assert!(stderr.contains("active space: b (directory"), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn it_lists_bindings() {
+    fn directory_binding_still_resolves_after_the_inventory_change() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
         bind(state.path(), &work, "a");
 
-        let output = run_in(state.path(), state.path(), &["spot", "list"], &[]);
-        let stdout = stdout_of(&output);
-        assert!(stdout.contains("directories:"), "{stdout}");
-        assert!(stdout.contains(&shown(&work)), "{stdout}");
+        let status = run_in(state.path(), &work, &["status"], &[]);
+        assert!(
+            stderr_of(&status).contains("active space: a (directory"),
+            "{}",
+            stderr_of(&status)
+        );
     }
 
     #[dialog_common::test]
@@ -873,7 +876,7 @@ mod when_a_directory_is_bound {
         let output = run_in(state.path(), &nested, &["status"], &[]);
         let stderr = stderr_of(&output);
         assert!(
-            stderr.contains("no spot active for this directory"),
+            stderr.contains("no space active for this directory"),
             "{stderr}"
         );
     }
@@ -888,7 +891,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
-        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
+        assert!(stdout.contains("active space: b (directory"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -902,11 +905,11 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
-        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
+        assert!(stdout.contains("active space: b (directory"), "{stdout}");
 
         let status = run_in(state.path(), &work, &["status"], &[]);
         let stderr = stderr_of(&status);
-        assert!(stderr.contains("active spot: b (directory"), "{stderr}");
+        assert!(stderr.contains("active space: b (directory"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -936,12 +939,12 @@ mod when_a_directory_is_bound {
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("active spot: c (directory"), "{stdout}");
+        assert!(stdout.contains("active space: c (directory"), "{stdout}");
 
         let status = run_in(state.path(), &work, &["status"], &[]);
         assert!(status.status.success(), "{}", stderr_of(&status));
         let stdout = stdout_of(&status);
-        assert!(stdout.contains("spot: c (directory"), "{stdout}");
+        assert!(stdout.contains("space: c (directory"), "{stdout}");
     }
 }
 
@@ -973,12 +976,12 @@ mod when_a_binding_is_orphaned {
         let output = run_in(state.path(), &work, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("unknown spot 'a'"), "{stderr}");
+        assert!(stderr.contains("unknown space 'a'"), "{stderr}");
         assert!(
             stderr.contains(&work_canon.display().to_string()),
             "{stderr}"
         );
-        assert!(stderr.contains("spot unbind"), "{stderr}");
+        assert!(stderr.contains("space unbind"), "{stderr}");
     }
 }
 
@@ -1036,13 +1039,13 @@ mod when_deleting_a_spot {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(
-            stdout.contains("Deleted spot 'garden' and its data"),
+            stdout.contains("Removed space 'garden' from this device and deleted its local data"),
             "{stdout}"
         );
         assert!(!site.exists(), "data deleted");
 
         let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
-        assert!(listed.contains("no spots registered"), "{listed}");
+        assert!(listed.contains("no spaces visible"), "{listed}");
         assert!(!listed.contains("unregistered site data"), "{listed}");
     }
 
@@ -1062,17 +1065,12 @@ mod when_deleting_a_spot {
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("Unregistered spot 'garden'"), "{stdout}");
+        assert!(stdout.contains("Unregistered space 'garden'"), "{stdout}");
         assert!(stdout.contains("data kept at"), "{stdout}");
         assert!(site.is_dir(), "data kept");
 
-        let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
-        assert!(listed.contains("unregistered site data"), "{listed}");
-        let canonical = site.canonicalize().expect("canonicalize site");
-        assert!(
-            listed.contains(&canonical.display().to_string()),
-            "{listed}"
-        );
+        let listed = stdout_of(&run(state.path(), &["space", "list", "--all"], &[]));
+        assert!(listed.contains("\tOrphaned\t"), "{listed}");
     }
 
     /// Re-using the name after `--keep-data` silently picks the old
@@ -1098,5 +1096,77 @@ mod when_deleting_a_spot {
             stdout.contains("on the site data already at that path"),
             "{stdout}"
         );
+    }
+}
+
+mod when_using_canonical_and_legacy_spellings {
+    use super::*;
+
+    #[derive(Debug, PartialEq)]
+    struct WorkflowOutcome {
+        exit_codes: Vec<Option<i32>>,
+        inventory: serde_json::Value,
+        share_path: String,
+        share_query_keys: Vec<String>,
+        orphaned_inventory: serde_json::Value,
+    }
+
+    fn normalized_inventory(output: &Output) -> serde_json::Value {
+        assert!(output.status.success(), "{}", stderr_of(output));
+        let mut rows: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("inventory is valid JSON");
+        for row in rows.as_array_mut().expect("inventory is an array") {
+            row["subject"] = serde_json::Value::String("<subject>".to_string());
+        }
+        rows
+    }
+
+    fn workflow(canonical: bool) -> WorkflowOutcome {
+        let state = tempfile::tempdir().expect("tempdir");
+        let site = state.path().join("site");
+        let site = site.to_str().expect("utf-8 site path");
+        let noun = if canonical { "space" } else { "spot" };
+        let selector = if canonical { "TONK_SPACE" } else { "TONK_SPOT" };
+        let share = if canonical { "share" } else { "invite" };
+
+        let created = run(state.path(), &[noun, "new", "garden", "--site", site], &[]);
+        let status = run(state.path(), &["status"], &[(selector, "garden")]);
+        let shared = run(
+            state.path(),
+            &[share, "--no-remote", "--no-shorten"],
+            &[(selector, "garden")],
+        );
+        let inventory = run(state.path(), &[noun, "list", "--json"], &[]);
+        let removed = run(state.path(), &[noun, "rm", "garden", "--keep-data"], &[]);
+        let orphaned = run(state.path(), &[noun, "list", "--all", "--json"], &[]);
+
+        for output in [&created, &status, &shared, &inventory, &removed, &orphaned] {
+            assert!(output.status.success(), "{}", stderr_of(output));
+        }
+        let share_url = stdout_of(&shared)
+            .lines()
+            .find_map(|line| url::Url::parse(line).ok())
+            .expect("share output contains its URL");
+        let mut share_query_keys: Vec<_> = share_url
+            .query_pairs()
+            .map(|(key, _)| key.into_owned())
+            .collect();
+        share_query_keys.sort();
+
+        WorkflowOutcome {
+            exit_codes: [&created, &status, &shared, &inventory, &removed, &orphaned]
+                .into_iter()
+                .map(|output| output.status.code())
+                .collect(),
+            inventory: normalized_inventory(&inventory),
+            share_path: share_url.path().to_string(),
+            share_query_keys,
+            orphaned_inventory: normalized_inventory(&orphaned),
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_preserves_every_legacy_cli_spelling() {
+        assert_eq!(workflow(true), workflow(false));
     }
 }

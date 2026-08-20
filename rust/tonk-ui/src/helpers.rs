@@ -172,8 +172,18 @@ mod native {
             // access service's own port.
             let web_port =
                 free_local_port().expect("Could not get a free local port for test server");
+            let native_web_port = loop {
+                let candidate = free_local_port()
+                    .expect("Could not get a free local port for native test access");
+                if candidate != web_port {
+                    break candidate;
+                }
+            };
             let settings = AccessServiceSettings {
                 deployment: Some(DeploymentConfig {
+                    access_remote_url: Some(Url::parse(&format!(
+                        "http://127.0.0.1:{native_web_port}/ucan/"
+                    ))?),
                     account_service_url: account_service_url.clone(),
                     revocation_relay_url: Url::parse(&format!(
                         "{}/revocations",
@@ -202,6 +212,7 @@ mod native {
                         "--",
                         &format!("{web_port}"),
                         &format!("{access_service_port}"),
+                        &format!("{native_web_port}"),
                     ])
                     // Pin Caddy's data dir so its per-run internal CA
                     // root lands at a knowable path: native CLI
@@ -245,6 +256,25 @@ mod native {
             }
             if !listening {
                 return Err(anyhow!("test web server did not bind port {web_port}"));
+            }
+            let mut native_listening = false;
+            for _ in 0..100 {
+                if tokio::net::TcpStream::connect(("127.0.0.1", native_web_port))
+                    .await
+                    .is_ok()
+                {
+                    native_listening = true;
+                    break;
+                }
+                if let Some(status) = web_server.child_mut().try_wait()? {
+                    return Err(anyhow!("test web server exited before binding: {status}"));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if !native_listening {
+                return Err(anyhow!(
+                    "test web server did not bind native port {native_web_port}"
+                ));
             }
 
             // Caddy mints its internal CA lazily; wait for the root and

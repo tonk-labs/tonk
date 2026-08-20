@@ -89,7 +89,7 @@ impl Recovery {
     pub fn restore_hint(&self) -> Option<String> {
         match self {
             Recovery::Account { subject } => Some(format!(
-                "restore it later with `tonk account spots pull {subject}`"
+                "restore it later with `tonk account spaces pull {subject}`"
             )),
             Recovery::Remote { .. } | Recovery::LocalOnly | Recovery::Unknown { .. } => None,
         }

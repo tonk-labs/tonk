@@ -22,7 +22,6 @@ use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
@@ -1831,6 +1830,12 @@ pub(crate) async fn remove_space_inner(
         {
             return Err(RepositoryError::Internal(error.to_string()));
         }
+        // Persist the device-local restore veto before hiding the replica.
+        // If this write fails, the visible local registration remains intact.
+        tonk.registry
+            .suppress_space(&tonk.storage, &tonk.profile_name, &subject.to_string())
+            .await
+            .map_err(|error| RepositoryError::Internal(error.to_string()))?;
         remove_replica_from_profile(&tonk, subject).await?;
         // Drain the poll the retraction scheduled so the Hub's meta
         // subscription reflects the removal (mirrors set_replica_status).
@@ -2198,7 +2203,7 @@ async fn run_pause_sync(
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn space_config(
+pub(crate) fn space_config(
     remote: &str,
     revocation_url: Option<&str>,
 ) -> Result<RepositoryConfiguration, RepositoryError> {
@@ -2550,6 +2555,8 @@ async fn seed_and_initialize(
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     }
     log!("Repository '{}' initialized", key);
+    let tonk = state.read().await;
+    super::account_reconcile::reconcile(&tonk).await;
     Ok(())
 }
 
@@ -2832,7 +2839,6 @@ pub async fn create_repository(
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -3671,7 +3677,11 @@ const CONTENT_BRANCH: &str = "main";
 /// visible everywhere the content branch syncs. Falls back to the
 /// routing `key` when the content branch can't be opened or carries no
 /// name yet (a freshly created repo before its name is seeded).
-async fn repository_label<R>(tonk: &TonkState, repository: &Repository<R>, key: &str) -> String
+pub(crate) async fn repository_label<R>(
+    tonk: &TonkState,
+    repository: &Repository<R>,
+    key: &str,
+) -> String
 where
     R: Principal + Clone,
 {
@@ -4381,6 +4391,30 @@ where
     }
 
     Ok(effective)
+}
+
+/// Attach the deployment default only when reconciliation has already
+/// established that this repository has no usable upstream.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn ensure_account_remote(
+    tonk: &TonkState,
+    key: &str,
+    remote: &str,
+    revocation_url: Option<&str>,
+) -> Result<(), RepositoryError> {
+    let repository = tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("failed to load account enrollment target: {error}"))
+        })?;
+    let configuration = space_config(remote, revocation_url)?;
+    ensure_remote_config(tonk, &repository, key, &configuration)
+        .await
+        .map(|_| ())
 }
 
 /// Attach remotes (and branch upstreams) to an **existing**
@@ -5180,6 +5214,14 @@ mod tests {
         );
         {
             let tonk = state.read().await;
+            assert!(
+                tonk.registry
+                    .read_space_suppressions(&tonk.storage, &tonk.profile_name)
+                    .await
+                    .expect("suppression record loads")
+                    .contains(&subject.to_string()),
+                "removal must persist suppression before retracting the replica"
+            );
             assert!(
                 !tonk.reactor.repos().read().contains_key(&key),
                 "the repo must be evicted from the reactor cache"

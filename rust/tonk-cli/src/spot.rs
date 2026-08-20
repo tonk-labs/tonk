@@ -25,15 +25,18 @@
 //! go through a temp file + atomic rename. A corrupt registry is a
 //! hard error naming the file — never silently recreated.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_schema::{RepositoryName, prelude::DidExt as _};
 
-/// Environment variable naming the spot to use, beaten only by the
-/// `--spot` flag. Automation (agents, bench, CI) should always set
+/// Canonical environment variable naming the space to use.
+pub const SPACE_ENV: &str = "TONK_SPACE";
+
+/// Compatibility environment variable naming the spot to use, beaten only by the
+/// `--space`/`--spot` flag. Automation (agents, bench, CI) should always set
 /// this (or pass `--spot`) to override a directory binding.
 pub const SPOT_ENV: &str = "TONK_SPOT";
 
@@ -70,6 +73,14 @@ pub struct Registry {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub bindings: BTreeMap<PathBuf, String>,
+    /// Repository subjects explicitly hidden on this profile/device.
+    /// Account membership and authority remain unchanged.
+    #[serde(
+        default,
+        rename = "suppressedSubjects",
+        skip_serializing_if = "BTreeSet::is_empty"
+    )]
+    pub suppressed_subjects: BTreeSet<String>,
     /// Fields this binary does not recognise. `spots.json` is a public
     /// format other applications read and rewrite directly, and this
     /// binary is not necessarily the newest one touching it — an
@@ -78,6 +89,23 @@ pub struct Registry {
     /// heard of just because it round-tripped the registry.
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Registry {
+    /// Hide a repository subject on this profile/device.
+    pub fn suppress(&mut self, subject: impl Into<String>) -> bool {
+        self.suppressed_subjects.insert(subject.into())
+    }
+
+    /// Clear this profile/device's hidden marker after an explicit successful pull.
+    pub fn unsuppress(&mut self, subject: &str) -> bool {
+        self.suppressed_subjects.remove(subject)
+    }
+
+    /// Whether this profile/device has explicitly hidden the repository subject.
+    pub fn is_suppressed(&self, subject: &str) -> bool {
+        self.suppressed_subjects.contains(subject)
+    }
 }
 
 /// One registered spot.
@@ -126,21 +154,31 @@ pub struct Resolved {
 /// Failure modes for registry access and resolution.
 #[derive(Debug, Error)]
 pub enum SpotError {
-    /// Spots exist but neither the process nor cwd selects one.
+    /// Canonical and compatibility environment variables disagree.
     #[error(
-        "no spot active for this directory; run `tonk use <name>`, \
-         pass --spot, or set TONK_SPOT"
+        "TONK_SPACE selects '{space}' but TONK_SPOT selects '{spot}'; unset one or give both the same value"
+    )]
+    EnvironmentConflict {
+        /// Canonical value.
+        space: String,
+        /// Compatibility value.
+        spot: String,
+    },
+    /// Spaces exist but neither the process nor cwd selects one.
+    #[error(
+        "no space active for this directory; run `tonk use <name>`, \
+         pass --space, or set TONK_SPACE"
     )]
     NoSelection,
-    /// The registry has zero spots — selection is moot; the fix is
+    /// The registry has zero spaces — selection is moot; the fix is
     /// creating one.
     #[error(
-        "no spots registered; create one with `tonk spot new <name>` \
+        "no spaces registered; create one with `tonk space new <name>` \
          (add --site <path> to adopt an existing .tonk directory)"
     )]
     NothingRegistered,
     /// A name that isn't in the registry.
-    #[error("unknown spot '{name}'{}", unknown_hint(.available, .binding))]
+    #[error("unknown space '{name}'{}", unknown_hint(.available, .binding))]
     Unknown {
         /// The name that failed to resolve.
         name: String,
@@ -175,7 +213,7 @@ pub enum SpotError {
     /// The registry file exists but doesn't parse. Deliberately
     /// not self-healing: silently recreating it would orphan every
     /// registered spot.
-    #[error("corrupt spot registry at {path}: {detail}")]
+    #[error("corrupt space registry at {path}: {detail}")]
     Corrupt {
         /// Path to the offending `spots.json`.
         path: PathBuf,
@@ -184,7 +222,7 @@ pub enum SpotError {
     },
     /// A name outside the allowed slug. Canonical names become
     /// directory names, so the alphabet is conservative.
-    #[error("invalid spot name '{0}': use [a-z0-9][a-z0-9-_]*")]
+    #[error("invalid space name '{0}': use [a-z0-9][a-z0-9-_]*")]
     InvalidName(String),
     /// The platform reports no data directory (no home).
     #[error("could not determine the platform data directory")]
@@ -197,6 +235,38 @@ pub enum SpotError {
     Io(String),
 }
 
+/// Resolve canonical and compatibility environment values without silently
+/// choosing when both are present and disagree.
+pub fn environment_selection(
+    space: Option<&str>,
+    spot: Option<&str>,
+) -> Result<Option<String>, SpotError> {
+    let space = space.filter(|value| !value.is_empty());
+    let spot = spot.filter(|value| !value.is_empty());
+    match (space, spot) {
+        (Some(space), Some(spot)) if space != spot => Err(SpotError::EnvironmentConflict {
+            space: space.to_owned(),
+            spot: spot.to_owned(),
+        }),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value.to_owned())),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Evaluate environment variables only when no explicit command-line value
+/// already won the selection precedence.
+pub fn environment_selection_for_flag(
+    flag: Option<&str>,
+    space: Option<&str>,
+    spot: Option<&str>,
+) -> Result<Option<String>, SpotError> {
+    if flag.is_some() {
+        Ok(None)
+    } else {
+        environment_selection(space, spot)
+    }
+}
+
 /// Hint suffix for [`SpotError::Unknown`]: list what is registered,
 /// or point at `spot new` when nothing is; when the name came from a
 /// directory binding, name the directory too and point at `spot
@@ -204,13 +274,13 @@ pub enum SpotError {
 /// there is no obvious way to clear it.
 fn unknown_hint(available: &[String], binding: &Option<PathBuf>) -> String {
     let registered = if available.is_empty() {
-        "; none registered (create one with `tonk spot new <name>`)".to_string()
+        "; none registered (create one with `tonk space new <name>`)".to_string()
     } else {
         format!("; registered: {}", available.join(", "))
     };
     match binding {
         Some(directory) => format!(
-            "{registered}; via binding at {directory} — clear it with `tonk spot unbind {directory}`",
+            "{registered}; via binding at {directory} — clear it with `tonk space unbind {directory}`",
             directory = directory.display(),
         ),
         None => registered,
@@ -552,6 +622,26 @@ pub fn register_existing_unbound(
     name: &str,
     site: &Path,
 ) -> Result<(), SpotError> {
+    register_existing_unbound_inner(store, name, site, None)
+}
+
+/// Atomically register a successfully pulled canonical site and clear only
+/// that repository subject's local suppression marker.
+pub fn register_pulled_space(
+    store: &SpotStore,
+    name: &str,
+    site: &Path,
+    subject: &str,
+) -> Result<(), SpotError> {
+    register_existing_unbound_inner(store, name, site, Some(subject))
+}
+
+fn register_existing_unbound_inner(
+    store: &SpotStore,
+    name: &str,
+    site: &Path,
+    unsuppress: Option<&str>,
+) -> Result<(), SpotError> {
     validate_name(name)?;
     let site = site.canonicalize().map_err(|error| {
         SpotError::Io(format!(
@@ -561,13 +651,13 @@ pub fn register_existing_unbound(
     })?;
     let canonical = store.canonical_site(name).canonicalize().map_err(|error| {
         SpotError::Io(format!(
-            "account spot is not mounted at canonical site {}: {error}",
+            "account space is not mounted at canonical site {}: {error}",
             store.canonical_site(name).display()
         ))
     })?;
     if site != canonical {
         return Err(SpotError::Io(format!(
-            "account spot must be mounted at canonical site {}",
+            "account space must be mounted at canonical site {}",
             canonical.display()
         )));
     }
@@ -577,6 +667,9 @@ pub fn register_existing_unbound(
         return Err(SpotError::Exists(name.to_owned()));
     }
     registry.spots.insert(name.to_owned(), SpotEntry { site });
+    if let Some(subject) = unsuppress {
+        registry.unsuppress(subject);
+    }
     store.save(&registry)
 }
 
@@ -788,13 +881,68 @@ pub fn remove(store: &SpotStore, name: &str, data: Data) -> Result<RemoveOutcome
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Deletion::AlreadyGone,
             Err(e) => {
                 return Err(SpotError::Io(format!(
-                    "could not delete {}: {e}; spot '{name}' is still registered",
+                    "could not delete {}: {e}; space '{name}' is still registered",
                     entry.site.display()
                 )));
             }
         },
     };
     store.save(&registry)?;
+
+    Ok(RemoveOutcome {
+        name: name.to_owned(),
+        site: entry.site,
+        data: deletion,
+        unbound,
+    })
+}
+
+/// Remove a locally registered account space and atomically record that its
+/// repository subject is hidden on this profile/device.
+///
+/// The registry commit happens before optional byte deletion so a crash cannot
+/// leave an account-backed subject absent but unsuppressed. A deletion failure
+/// reports that bytes remain; it never rolls back or weakens the durable
+/// suppression marker.
+pub fn remove_with_subject(
+    store: &SpotStore,
+    name: &str,
+    data: Data,
+    subject: &str,
+) -> Result<RemoveOutcome, SpotError> {
+    let mut registry = store.load()?;
+    let Some(entry) = registry.spots.remove(name) else {
+        return Err(SpotError::Unknown {
+            name: name.to_owned(),
+            available: registry.spots.keys().cloned().collect(),
+            binding: None,
+        });
+    };
+    let unbound: Vec<PathBuf> = registry
+        .bindings
+        .iter()
+        .filter(|(_, spot)| spot.as_str() == name)
+        .map(|(directory, _)| directory.clone())
+        .collect();
+    for directory in &unbound {
+        registry.bindings.remove(directory);
+    }
+    registry.suppress(subject);
+    store.save(&registry)?;
+
+    let deletion = match data {
+        Data::Keep => Deletion::Kept,
+        Data::Delete => match std::fs::remove_dir_all(&entry.site) {
+            Ok(()) => Deletion::Deleted,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Deletion::AlreadyGone,
+            Err(error) => {
+                return Err(SpotError::Io(format!(
+                    "could not delete {}: {error}; space '{name}' is hidden on this device but its data remains",
+                    entry.site.display()
+                )));
+            }
+        },
+    };
 
     Ok(RemoveOutcome {
         name: name.to_owned(),
@@ -829,6 +977,7 @@ mod tests {
                 })
                 .collect(),
             bindings: BTreeMap::new(),
+            suppressed_subjects: BTreeSet::new(),
             extra: serde_json::Map::new(),
         }
     }
@@ -854,9 +1003,11 @@ mod tests {
         #[test]
         fn it_round_trips_the_registry() {
             let (_tmp, store) = store();
-            let registry = registry_with(&[("garden", "/tmp/garden")], None);
+            let mut registry = registry_with(&[("garden", "/tmp/garden")], None);
+            registry.suppress("did:key:zSpace");
             store.save(&registry).expect("save");
             assert_eq!(store.load().expect("load"), registry);
+            assert!(store.load().expect("load").is_suppressed("did:key:zSpace"));
         }
 
         #[test]
@@ -901,6 +1052,7 @@ mod tests {
 
             let registry = store.load().expect("load");
             assert_eq!(registry.legacy_current.as_deref(), Some("garden"));
+            assert!(registry.suppressed_subjects.is_empty());
             assert_eq!(
                 registry.spots.get("garden").map(|e| &e.site),
                 Some(&PathBuf::from("/tmp/garden"))
@@ -914,6 +1066,7 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(store.registry_path()).unwrap())
                     .expect("parse");
             assert_eq!(reloaded["futureField"]["some"], "value");
+            assert!(reloaded.get("suppressedSubjects").is_none());
             assert!(reloaded.get("current").is_none());
             assert_eq!(reloaded["spots"]["garden"]["site"], "/tmp/garden");
         }
@@ -970,6 +1123,36 @@ mod tests {
         use super::*;
 
         #[test]
+        fn it_resolves_canonical_and_legacy_environment_without_ambiguity() {
+            assert_eq!(
+                environment_selection(Some("garden"), None)
+                    .unwrap()
+                    .as_deref(),
+                Some("garden")
+            );
+            assert_eq!(
+                environment_selection(None, Some("garden"))
+                    .unwrap()
+                    .as_deref(),
+                Some("garden")
+            );
+            assert_eq!(
+                environment_selection(Some("garden"), Some("garden"))
+                    .unwrap()
+                    .as_deref(),
+                Some("garden")
+            );
+            let error = environment_selection(Some("garden"), Some("work")).unwrap_err();
+            assert!(error.to_string().contains("TONK_SPACE"));
+            assert!(error.to_string().contains("TONK_SPOT"));
+            assert_eq!(
+                environment_selection_for_flag(Some("explicit"), Some("garden"), Some("work"))
+                    .unwrap(),
+                None
+            );
+        }
+
+        #[test]
         fn it_prefers_flag_over_env() {
             let (_tmp, store) = store();
             let registry = registry_with(&[("a", "/s/a"), ("b", "/s/b"), ("c", "/s/c")], Some("c"));
@@ -1002,7 +1185,7 @@ mod tests {
             let (_tmp, store) = store();
             let err = store.resolve(None, None, None).expect_err("empty");
             assert!(matches!(err, SpotError::NothingRegistered), "{err}");
-            assert!(err.to_string().contains("tonk spot new"), "{err}");
+            assert!(err.to_string().contains("tonk space new"), "{err}");
         }
 
         #[test]
@@ -1112,7 +1295,7 @@ mod tests {
             };
             assert_eq!(binding.as_deref(), Some(Path::new("/proj")));
             assert!(err.to_string().contains("/proj"), "{err}");
-            assert!(err.to_string().contains("spot unbind"), "{err}");
+            assert!(err.to_string().contains("space unbind"), "{err}");
         }
 
         #[dialog_common::test]
@@ -1129,7 +1312,7 @@ mod tests {
                 panic!("{err}");
             };
             assert_eq!(*binding, None);
-            assert!(!err.to_string().contains("spot unbind"), "{err}");
+            assert!(!err.to_string().contains("space unbind"), "{err}");
         }
     }
 
@@ -1211,6 +1394,44 @@ mod tests {
 
     mod removal {
         use super::*;
+
+        #[dialog_common::test]
+        fn it_suppresses_an_account_space_when_removed_locally() {
+            let (tmp, store) = store();
+            let other = SpotStore::at(tmp.path().join("other-profile"));
+            store
+                .save(&registry_with(&[("garden", "/tmp/garden")], None))
+                .expect("save");
+            other.save(&Registry::default()).expect("save other");
+
+            remove_with_subject(&store, "garden", Data::Keep, "did:key:zGarden").expect("remove");
+
+            let registry = store.load().expect("load");
+            assert!(!registry.spots.contains_key("garden"));
+            assert!(registry.is_suppressed("did:key:zGarden"));
+            assert!(other.load().expect("other").suppressed_subjects.is_empty());
+        }
+
+        #[dialog_common::test]
+        fn it_clears_suppression_only_after_an_explicit_pull_commits() {
+            let (tmp, store) = store();
+            let mut registry = Registry::default();
+            registry.suppress("did:key:zGarden");
+            store.save(&registry).expect("save");
+            let target = store.canonical_site("garden");
+            std::fs::create_dir_all(&target).expect("target");
+
+            let wrong = tmp.path().join("wrong");
+            std::fs::create_dir_all(&wrong).expect("wrong");
+            register_pulled_space(&store, "garden", &wrong, "did:key:zGarden")
+                .expect_err("wrong target");
+            assert!(store.load().expect("load").is_suppressed("did:key:zGarden"));
+
+            register_pulled_space(&store, "garden", &target, "did:key:zGarden").expect("register");
+            let registry = store.load().expect("load");
+            assert!(registry.spots.contains_key("garden"));
+            assert!(!registry.is_suppressed("did:key:zGarden"));
+        }
 
         /// A failed delete must leave the spot registered. The
         /// alternative — name unregistered, data still on disk — is

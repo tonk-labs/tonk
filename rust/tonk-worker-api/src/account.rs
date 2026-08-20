@@ -103,6 +103,13 @@ pub struct AccountLinkRequest {
     /// Seed the current profile name only for a new-account creation winner.
     #[serde(default)]
     pub initialize_name: bool,
+    /// Default content access remote for local-only spaces, when deployment
+    /// discovery supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_remote: Option<String>,
+    /// Default invitation-revocation relay paired with `access_remote`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_relay: Option<String>,
 }
 
 /// Local identity and provider attachment state.
@@ -166,6 +173,95 @@ pub struct AccountDisplayNameResponse {
     pub name: String,
     /// Idempotent projection work completed after the account commit.
     pub convergence: AccountConvergenceReport,
+}
+
+/// Canonical account membership state for one repository subject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountSpaceMembership {
+    /// The account currently discovers this subject.
+    Active,
+    /// A monotonic account-owned archive marker hides this subject.
+    Archived,
+}
+
+/// Whether one account space is visible on this browser profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountSpaceVisibility {
+    /// Not suppressed on this profile.
+    Visible,
+    /// Explicitly removed from this device/profile.
+    HiddenOnThisDevice,
+}
+
+/// Durable browser enrollment phase for one locally known space.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountSpaceEnrollment {
+    /// No automatic remote enrollment has begun.
+    #[default]
+    LocalOnly,
+    /// Remote provisioning is in progress or remains retryable.
+    Provisioning,
+    /// A remote exists but the exact content tree is not yet confirmed.
+    PendingPush,
+    /// Content, canonical membership, and saved access all converged.
+    Connected,
+    /// The last bounded enrollment pass failed at a named step.
+    Error,
+}
+
+/// One browser account-space inventory row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSpaceRow {
+    /// Wire schema version; exactly 1.
+    pub version: u8,
+    /// Immutable repository subject DID.
+    pub subject: String,
+    /// Account-facing display name when known.
+    pub name: Option<String>,
+    /// Signed account-repository membership state.
+    pub membership: AccountSpaceMembership,
+    /// Whether a local replica is mounted in this profile.
+    pub local: bool,
+    /// Device-local discovery visibility.
+    pub visibility: AccountSpaceVisibility,
+    /// Configured content remote when known.
+    pub remote_url: Option<String>,
+    /// Exact tree last accepted by that content remote.
+    pub confirmed_revision: Option<String>,
+    /// Whether explicit download has unambiguous saved access.
+    pub pullable: bool,
+    /// Last durable enrollment phase recorded on this browser profile.
+    #[serde(default)]
+    pub enrollment: AccountSpaceEnrollment,
+    /// Last enrollment error, present only for `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment_error: Option<String>,
+}
+
+/// Result of explicitly downloading one account space.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSpaceDownloadResponse {
+    /// Subject mounted locally.
+    pub subject: String,
+    /// Whether this profile now has a local replica.
+    pub local: bool,
+}
+
+/// Result of writing an account-owned archive marker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSpaceArchiveResponse {
+    /// Subject archived in the canonical account repository.
+    pub subject: String,
+    /// Whether this request committed a new marker.
+    pub newly_archived: bool,
+    /// Best-effort provider-projection warning, if canonical commit succeeded.
+    pub warning: Option<String>,
 }
 
 /// One device registered under the attached provider account.
@@ -270,12 +366,31 @@ mod tests {
             delegation_hex: "aa".into(),
             descriptor_hex: "bb".into(),
             initialize_name: true,
+            access_remote: Some("https://sync.example/ucan/".into()),
+            revocation_relay: Some("https://relay.example/revocations/".into()),
         })
         .unwrap();
         assert_eq!(link["credentialId"], "cred");
         assert_eq!(link["delegationHex"], "aa");
         assert_eq!(link["descriptorHex"], "bb");
         assert_eq!(link["initializeName"], true);
+        assert_eq!(link["accessRemote"], "https://sync.example/ucan/");
+        assert_eq!(
+            link["revocationRelay"],
+            "https://relay.example/revocations/"
+        );
+
+        let legacy: AccountLinkRequest = serde_json::from_value(serde_json::json!({
+            "provider": "https://accounts.example",
+            "rootDid": "did:key:root",
+            "credentialId": "cred",
+            "delegationHex": "aa",
+            "descriptorHex": "bb",
+            "initializeName": false
+        }))
+        .unwrap();
+        assert_eq!(legacy.access_remote, None);
+        assert_eq!(legacy.revocation_relay, None);
     }
 
     #[dialog_common::test]
@@ -309,6 +424,44 @@ mod tests {
         assert_eq!(value["convergence"]["profileChanged"], true);
         assert_eq!(value["convergence"]["changedKeys"][0], "one");
         assert_eq!(value["convergence"]["failedKeys"][0], "two");
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_account_space_lifecycle_without_collapsing_visibility() {
+        let value = serde_json::to_value(AccountSpaceRow {
+            version: 1,
+            subject: "did:key:space".into(),
+            name: Some("garden".into()),
+            membership: AccountSpaceMembership::Active,
+            local: false,
+            visibility: AccountSpaceVisibility::HiddenOnThisDevice,
+            remote_url: Some("https://sync.example/ucan/".into()),
+            confirmed_revision: Some("#tree".into()),
+            pullable: true,
+            enrollment: AccountSpaceEnrollment::PendingPush,
+            enrollment_error: None,
+        })
+        .unwrap();
+        assert_eq!(value["membership"], "active");
+        assert_eq!(value["visibility"], "hiddenOnThisDevice");
+        assert_eq!(value["confirmedRevision"], "#tree");
+        assert_eq!(value["enrollment"], "pendingPush");
+        assert!(value.get("confirmed_revision").is_none());
+
+        let legacy: AccountSpaceRow = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "subject": "did:key:legacy",
+            "name": null,
+            "membership": "active",
+            "local": false,
+            "visibility": "visible",
+            "remoteUrl": null,
+            "confirmedRevision": null,
+            "pullable": false
+        }))
+        .unwrap();
+        assert_eq!(legacy.enrollment, AccountSpaceEnrollment::LocalOnly);
+        assert_eq!(legacy.enrollment_error, None);
     }
 
     #[dialog_common::test]

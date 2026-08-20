@@ -7,6 +7,10 @@ use url::Url;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentConfig {
+    /// Content repository access remote. Absent on deployments where clients
+    /// should derive the same-origin `/ucan/` endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_remote_url: Option<Url>,
     /// Account linking, custody, and device-management service.
     pub account_service_url: Url,
     /// Relay accepting immutable invitation and device revocation artifacts.
@@ -25,11 +29,13 @@ mod tests {
     #[test]
     fn it_serializes_canonical_camel_case_urls() {
         let config = DeploymentConfig {
+            access_remote_url: Some("https://sync.example/ucan/".parse().unwrap()),
             account_service_url: "https://accounts.example/".parse().unwrap(),
             revocation_relay_url: "https://relay.example/revocations".parse().unwrap(),
             service_did: None,
         };
         let value = serde_json::to_value(config).unwrap();
+        assert_eq!(value["accessRemoteUrl"], "https://sync.example/ucan/");
         assert_eq!(value["accountServiceUrl"], "https://accounts.example/");
         assert_eq!(
             value["revocationRelayUrl"],
@@ -38,6 +44,13 @@ mod tests {
         // Absent identity serializes to nothing, so configs written by a
         // deployment without one keep parsing in strict old clients.
         assert!(value.get("serviceDid").is_none());
+
+        let legacy: DeploymentConfig = serde_json::from_value(serde_json::json!({
+            "accountServiceUrl": "https://accounts.example/",
+            "revocationRelayUrl": "https://relay.example/revocations"
+        }))
+        .unwrap();
+        assert_eq!(legacy.access_remote_url, None);
     }
 
     #[test]

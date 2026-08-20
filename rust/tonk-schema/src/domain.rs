@@ -573,7 +573,7 @@ pub mod profile {
 
 /// Root-owned account state replicated through the hidden account repository.
 pub mod account {
-    use super::Attribute;
+    use super::{Attribute, Entity};
 
     /// The account-wide display name. Cardinality-one merge semantics choose a
     /// deterministic winner when linked devices write concurrently.
@@ -600,6 +600,47 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct PasskeyCreatedOn(pub String);
+
+    /// Immutable account root that owns an account-space membership fact.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account-space")]
+    #[cardinality(one)]
+    pub struct Root(pub Entity);
+
+    /// Repository subject known to an account.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account-space")]
+    #[cardinality(one)]
+    pub struct Space(pub Entity);
+
+    /// Account-facing repository display name.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account-space")]
+    #[cardinality(one)]
+    pub struct Name(pub String);
+
+    /// Content synchronization endpoint associated with the repository.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account-space")]
+    #[cardinality(one)]
+    pub struct Remote(pub String);
+
+    /// Invitation-revocation relay associated with the repository.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account-space")]
+    #[cardinality(one)]
+    pub struct Relay(pub String);
+
+    /// Exact content tree accepted by the configured remote.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account-space")]
+    #[cardinality(one)]
+    pub struct Tree(pub String);
+
+    /// Monotonic archive marker. Its presence, rather than its payload, is the state.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account-space")]
+    pub struct Archived(pub bool);
 }
 
 /// Attributes that describe a repository on its content branch, keyed by the

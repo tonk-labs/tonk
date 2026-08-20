@@ -6,6 +6,7 @@ use tonk_worker_api::DeploymentConfig;
 #[dialog_common::test]
 async fn it_serves_deployment_config_when_configured() -> anyhow::Result<()> {
     let expected = DeploymentConfig {
+        access_remote_url: Some("http://127.0.0.1:4200/ucan/".parse()?),
         account_service_url: "http://127.0.0.1:4100".parse()?,
         revocation_relay_url: "http://127.0.0.1:4100/revocations".parse()?,
         service_did: None,
@@ -25,6 +26,7 @@ async fn it_serves_deployment_config_when_configured() -> anyhow::Result<()> {
     .json()
     .await?;
     assert_eq!(actual.account_service_url, expected.account_service_url);
+    assert_eq!(actual.access_remote_url, expected.access_remote_url);
     assert_eq!(actual.revocation_relay_url, expected.revocation_relay_url);
     // The server fills discovery with its own generated identity.
     assert_eq!(

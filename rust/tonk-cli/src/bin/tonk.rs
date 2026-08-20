@@ -35,10 +35,15 @@ use tonk_cli::{ExitCode, account, account_spots, agents, context, guide, identit
     after_help = "Start with live state, not documentation:\n  tonk context\n  tonk query <CONCEPT> --json\n  tonk assert <CONCEPT> <ENTITY> --<field> <value>\n  tonk query <CONCEPT> <ENTITY> --json\n\nBare `tonk` runs `tonk context`. Use `tonk help <COMMAND>` for more workflows."
 )]
 struct Cli {
-    /// Operate on this spot instead of the active directory binding.
-    /// Precedence: --spot > TONK_SPOT > `tonk use` in the nearest
+    /// Operate on this space instead of the active directory binding.
+    /// Precedence: --space/--spot > TONK_SPACE/TONK_SPOT > `tonk use` in the nearest
     /// ancestor directory.
-    #[arg(long, global = true, value_name = "NAME")]
+    #[arg(
+        long = "space",
+        visible_alias = "spot",
+        global = true,
+        value_name = "NAME"
+    )]
     spot: Option<String>,
 
     /// Print full error chains: every layer of context down to the
@@ -68,7 +73,7 @@ enum Command {
         json: bool,
     },
 
-    /// Read or update the AGENTS.md claim carried by this spot
+    /// Read or update the AGENTS.md claim carried by this space
     ///
     /// With no subcommand, writes the raw Markdown to stdout so it can be
     /// projected with `tonk agents > AGENTS.md`. The claim on the repository
@@ -268,7 +273,9 @@ enum Command {
     /// recipient lands on the deployment that actually serves the
     /// repo — and that origin's shortcut service can shorten it.
     #[command(
-        after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod\n  tonk invite --no-remote\n  tonk invite --no-shorten"
+        name = "share",
+        visible_alias = "invite",
+        after_help = "Examples:\n  tonk share\n  tonk share --remote prod\n  tonk share --no-remote\n  tonk share --no-shorten\n\nCompatibility alias: `tonk invite`"
     )]
     Invite {
         /// Override the URL prefix the invite is built against.
@@ -310,13 +317,13 @@ enum Command {
         no_shorten: bool,
     },
 
-    /// Join a shared repo from an invite URL into a new spot
+    /// Join a shared repo from an invite URL into a new space
     #[command(after_help = "Examples:\n  tonk join 'https://...#invite' --name garden")]
     Join {
         /// The invite URL (quote it - the #fragment matters).
         #[arg(value_name = "URL")]
         url: String,
-        /// Spot name to register the joined repo under.
+        /// Space name to register the joined repo under.
         #[arg(long, value_name = "NAME")]
         name: String,
     },
@@ -336,19 +343,20 @@ enum Command {
     },
 
     // -- setup --------------------------------------------------------
-    /// Use a spot in this directory and its descendants
+    /// Use a space in this directory and its descendants
     ///
-    /// Stores only a pointer in the central registry; spot data stays
+    /// Stores only a pointer in the profile registry; space data stays
     /// in its central site directory. A nested binding overrides this
-    /// one. Pin one invocation with --spot or TONK_SPOT instead.
+    /// one. Pin one invocation with --space or TONK_SPACE instead.
     #[command(after_help = "Examples:\n  tonk use\n  tonk use garden")]
     Use {
-        /// A registered spot name. Omit it to inspect the current selection.
+        /// A registered space name. Omit it to inspect the current selection.
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
 
-    /// Manage spots: named, centrally registered fact stores
+    /// Manage spaces: named, profile-local registered fact stores
+    #[command(name = "space", visible_alias = "spot")]
     Spot {
         #[command(subcommand)]
         command: SpotCommand,
@@ -435,7 +443,7 @@ enum Command {
         #[arg(long = "move")]
         do_move: bool,
 
-        /// Upgrade a spot written before the dialog format change.
+        /// Upgrade a space written before the dialog format change.
         ///
         /// Downloads the last build that can read it, exports each
         /// branch, rewrites the schema namespace, and imports the
@@ -443,18 +451,18 @@ enum Command {
         #[arg(long, conflicts_with_all = ["from", "do_move"])]
         legacy: bool,
 
-        /// Name of the registered legacy spot to upgrade. Required with
+        /// Name of the registered legacy space to upgrade. Required with
         /// `--legacy`.
         ///
         /// A name rather than a path: the build that reads it resolves
-        /// spots through the registry, so one that is not registered
+        /// spaces through the registry, so one that is not registered
         /// cannot be exported by it at all.
         #[arg(long, value_name = "NAME", requires = "legacy")]
         site: Option<String>,
 
         /// Branches to upgrade. Repeatable; defaults to `main`.
         ///
-        /// Branches are not discoverable on a legacy spot — listing them
+        /// Branches are not discoverable on a legacy space — listing them
         /// needs an open branch, which is what fails — so any beyond
         /// `main` must be named.
         #[arg(long, value_name = "NAME", requires = "legacy")]
@@ -489,7 +497,7 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum AgentsCommand {
-    /// Assert a Markdown document on the selected spot's repository subject
+    /// Assert a Markdown document on the selected space's repository subject
     Set {
         /// Markdown file to assert, or `-` for stdin.
         #[arg(value_name = "PATH", default_value = "AGENTS.md")]
@@ -591,7 +599,7 @@ enum AccountCommand {
 
     /// Disconnect account services on this device
     ///
-    /// Preserves the local identity, root, and spots without revoking this
+    /// Preserves the local identity, root, and spaces without revoking this
     /// device. Use `tonk account revoke <DID>` to revoke a device instead.
     Logout,
 
@@ -619,6 +627,7 @@ enum AccountCommand {
     Sync,
 
     /// List or pull the spaces your account directory lists
+    #[command(name = "spaces", visible_alias = "spots")]
     Spots {
         #[command(subcommand)]
         command: Option<AccountSpotsCommand>,
@@ -627,7 +636,7 @@ enum AccountCommand {
     /// Move stored delegations into their durable homes
     ///
     /// Drains the legacy certificate store into the profile's access branch
-    /// and retains each spot's authority into the account space, so another
+    /// and retains each space's authority into the account repository, so another
     /// device regains access by pulling the account. Safe to re-run.
     #[command(after_help = "Examples:\n  tonk account migrate")]
     Migrate,
@@ -672,14 +681,24 @@ enum AccountCommand {
 
 #[derive(Subcommand, Debug)]
 enum AccountSpotsCommand {
-    /// List remote account spots and local registration state
-    List,
+    /// List account spaces and local registration state
+    List {
+        /// Include hidden, archived, ambiguous, and orphaned rows.
+        #[arg(long)]
+        all: bool,
+        /// Refresh provider inventory and remote heads without mutating state.
+        #[arg(long)]
+        refresh: bool,
+        /// Emit stable version-one JSON rows.
+        #[arg(long)]
+        json: bool,
+    },
     /// Pull one exact repository subject into canonical local storage
     Pull {
         /// Full repository subject DID.
         #[arg(value_name = "SUBJECT")]
         subject: String,
-        /// Explicit local spot slug.
+        /// Explicit local space slug.
         #[arg(long, value_name = "SLUG")]
         name: Option<String>,
     },
@@ -749,7 +768,7 @@ enum RemoteCommand {
 
 #[derive(Subcommand, Debug)]
 enum SpotCommand {
-    /// Create (or adopt) a spot, register it, and use it here
+    /// Create (or adopt) a space, register it, and use it here
     ///
     /// The site lands in the canonical store
     /// (`~/Library/Application Support/tonk/spots/<name>` on macOS)
@@ -757,10 +776,10 @@ enum SpotCommand {
     /// site directory adopts it instead of creating fresh — the
     /// migration path for pre-registry `.tonk/` dirs.
     #[command(
-        after_help = "Examples:\n  tonk spot new garden\n  tonk spot new work --site ~/work/site\n  tonk spot new proj --site ~/proj/.tonk"
+        after_help = "Examples:\n  tonk space new garden\n  tonk space new work --site ~/work/site\n  tonk space new proj --site ~/proj/.tonk\n\nCompatibility alias: `tonk spot new`"
     )]
     New {
-        /// Spot name ([a-z0-9][a-z0-9-_]*).
+        /// Space name ([a-z0-9][a-z0-9-_]*).
         #[arg(value_name = "NAME")]
         name: String,
         /// Store the site at this directory instead of the
@@ -769,34 +788,44 @@ enum SpotCommand {
         site: Option<PathBuf>,
     },
 
-    /// List registered spots, directory bindings, and what is active here
-    #[command(after_help = "Examples:\n  tonk spot list")]
-    List,
+    /// List local and account spaces with independent lifecycle state
+    #[command(
+        after_help = "Examples:\n  tonk space list\n  tonk space list --all\n  tonk space list --json"
+    )]
+    List {
+        /// Include hidden, archived, ambiguous, and orphaned rows.
+        #[arg(long)]
+        all: bool,
+        /// Refresh provider inventory and remote heads without mutating state.
+        #[arg(long)]
+        refresh: bool,
+        /// Emit stable version-one JSON rows.
+        #[arg(long)]
+        json: bool,
+    },
 
-    /// Delete a spot and its data from disk
+    /// Remove a space from this device
     ///
-    /// This destroys the spot's facts, not just its registration.
-    /// It asks for confirmation first, and says whether the exact revision is
-    /// confirmed remotely and listed in your account directory (so you can
-    /// pull it again) or
-    /// local-only (so it is gone for good).
+    /// Records profile-local suppression before unregistering it. Local bytes
+    /// are deleted by default when safe; account membership, remote data,
+    /// peer copies, and authority are unchanged.
     ///
-    /// To stop a directory from resolving to a spot without touching
-    /// any data, use `tonk spot unbind`. To drop the registration but
+    /// To stop a directory from resolving to a space without touching
+    /// any data, use `tonk space unbind`. To drop the registration but
     /// keep the data, use --keep-data.
     #[command(
-        after_help = "Examples:\n  tonk spot rm garden\n  tonk spot rm garden --yes\n  tonk spot rm garden --keep-data"
+        after_help = "Examples:\n  tonk space rm garden\n  tonk space rm garden --yes\n  tonk space rm garden --keep-data\n\nCompatibility alias: `tonk spot rm`"
     )]
     Rm {
-        /// Spot name to delete.
+        /// Space name to remove from this device.
         #[arg(value_name = "NAME")]
         name: String,
-        /// Unregister the spot but leave its data on disk.
+        /// Unregister the space but leave its data on disk.
         ///
-        /// The data then belongs to no spot: `tonk spot list` reports
-        /// it, `tonk spot new <name> --site <path>` adopts it back,
+        /// The data then belongs to no space: `tonk space list --all` reports
+        /// it, `tonk space new <name> --site <path>` adopts it back,
         /// and it keeps its canonical name reserved against `tonk
-        /// join` and `tonk account spots pull`.
+        /// join` and `tonk account spaces pull`.
         #[arg(long, conflicts_with = "delete")]
         keep_data: bool,
         /// Delete without asking for confirmation.
@@ -808,14 +837,29 @@ enum SpotCommand {
         delete: bool,
     },
 
-    /// Unbind a directory from its spot (see `tonk use`)
+    /// Permanently archive a repository subject from this account
     ///
-    /// Only unlinks the directory: the spot stays registered and no
-    /// data is touched. `tonk spot rm` is the one that deletes.
+    /// This hides ordinary account discovery on every current client. It does
+    /// not delete local or remote bytes and does not revoke authority.
+    Archive {
+        /// Full repository subject DID.
+        #[arg(value_name = "SUBJECT")]
+        subject: String,
+        /// Archive without interactive confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Unbind a directory from its space (see `tonk use`)
+    ///
+    /// Only unlinks the directory: the space stays registered and no
+    /// data is touched. `tonk space rm` removes it from this device.
     ///
     /// Matches exactly: run from the directory that was bound,
     /// not a subdirectory of it.
-    #[command(after_help = "Examples:\n  tonk spot unbind\n  tonk spot unbind ~/old-project")]
+    #[command(
+        after_help = "Examples:\n  tonk space unbind\n  tonk space unbind ~/old-project\n\nCompatibility alias: `tonk spot unbind`"
+    )]
     Unbind {
         /// Directory to unbind. Default: the current directory. Pass
         /// an absolute path to clear an entry whose directory no
@@ -1000,11 +1044,12 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         ),
         Command::Use { .. } => ("use", None),
         Command::Spot { command } => (
-            "spot",
+            "space",
             Some(match command {
                 SpotCommand::New { .. } => "new",
-                SpotCommand::List => "list",
+                SpotCommand::List { .. } => "list",
                 SpotCommand::Rm { .. } => "rm",
+                SpotCommand::Archive { .. } => "archive",
                 SpotCommand::Unbind { .. } => "unbind",
             }),
         ),
@@ -1022,9 +1067,9 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 AccountCommand::Delete { .. } => "delete",
                 AccountCommand::Sync => "sync",
                 AccountCommand::Spots { command } => match command {
-                    None | Some(AccountSpotsCommand::List) => "spots-list",
-                    Some(AccountSpotsCommand::Pull { .. }) => "spots-pull",
-                    Some(AccountSpotsCommand::Delete { .. }) => "spots-delete",
+                    None | Some(AccountSpotsCommand::List { .. }) => "spaces-list",
+                    Some(AccountSpotsCommand::Pull { .. }) => "spaces-pull",
+                    Some(AccountSpotsCommand::Delete { .. }) => "spaces-delete",
                 },
                 AccountCommand::Migrate => "migrate",
                 AccountCommand::Devices { .. } => "devices",
@@ -1044,7 +1089,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Push => ("push", None),
         Command::Pull => ("pull", None),
         Command::Status => ("status", None),
-        Command::Invite { .. } => ("invite", None),
+        Command::Invite { .. } => ("share", None),
         Command::Join { .. } => ("join", None),
         Command::Remote { command } => (
             "remote",
@@ -1337,7 +1382,7 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, spot: Option<&str
                 Ok(Some(claim)) => claim,
                 Ok(None) => {
                     return print_error(
-                        "this spot has no AGENTS.md claim\ncreate one: tonk agents set AGENTS.md",
+                        "this space has no AGENTS.md claim\ncreate one: tonk agents set AGENTS.md",
                     );
                 }
                 Err(err) => return print_error(format!("could not read AGENTS.md claim: {err:#}")),
@@ -1807,7 +1852,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                         if outcome.certificates == 1 { "" } else { "s" }
                     );
                     println!(
-                        "retained {} spot{} into the account space ({} already there)",
+                        "retained {} space{} into the account repository ({} already there)",
                         outcome.spots,
                         if outcome.spots == 1 { "" } else { "s" },
                         outcome.already
@@ -1844,6 +1889,30 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             Err(error) => print_failure(error),
         },
         AccountCommand::Sync => {
+            let operator =
+                match tonk_cli::account_state::operator_for_store(&profile, &context.store).await {
+                    Ok(operator) => operator,
+                    Err(error) => return print_failure(error),
+                };
+            let account_state = match tonk_cli::account_state::ensure_with_operator_and_store(
+                &profile,
+                operator,
+                context.store.clone(),
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => return print_failure(error),
+            };
+            if let Some(warning) = account_state.warning {
+                eprintln!("warning: account repository is not synchronized: {warning}");
+            }
+            if account_state.status != tonk_account::AccountStateStatus::Ready {
+                return print_error(format!(
+                    "account repository is {}; retry `tonk account sync` when its remote is reachable",
+                    account_state_label(account_state.status)
+                ));
+            }
             let context = retry_deployment_discovery(&profiles, context, &profile).await;
             let report = tonk_cli::account_sync::reconcile_profile(&context).await;
             let failed = report.rows.iter().any(|row| {
@@ -1869,32 +1938,22 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         }
         AccountCommand::Spots { command } => {
             let store = &context.store;
-            match command.unwrap_or(AccountSpotsCommand::List) {
-                AccountSpotsCommand::List => match account_spots::list(&profile, store).await {
-                    Ok(rows) => {
-                        if rows.is_empty() {
-                            println!("(no spaces listed in the account directory)");
-                        } else {
-                            for row in rows {
-                                let state = if row.ambiguous {
-                                    "ambiguous"
-                                } else if row.local_name.is_some() {
-                                    "local"
-                                } else {
-                                    "remote"
-                                };
-                                let name = row
-                                    .remote_name
-                                    .as_deref()
-                                    .or(row.local_name.as_deref())
-                                    .unwrap_or("-");
-                                println!("{state}\t{name}\t{}", row.subject);
-                            }
-                        }
-                        ExitCode::Success
+            match command.unwrap_or(AccountSpotsCommand::List {
+                all: false,
+                refresh: false,
+                json: false,
+            }) {
+                AccountSpotsCommand::List { all, refresh, json } => {
+                    match tonk_cli::inventory::list(
+                        &context,
+                        tonk_cli::inventory::InventoryOptions { all, refresh },
+                    )
+                    .await
+                    {
+                        Ok(rows) => render_space_inventory(&rows, json),
+                        Err(error) => print_failure(error),
                     }
-                    Err(error) => print_failure(error),
-                },
+                }
                 AccountSpotsCommand::Pull { subject, name } => {
                     match account_spots::pull(&profile, store, &subject, name.as_deref()).await {
                         Ok(outcome) => {
@@ -2011,7 +2070,7 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
                 Ok(Some(selected)) => selected,
                 Ok(None) => {
                     return print_error(
-                        "no account profile is selected; create a spot or run `tonk account add`",
+                        "no account profile is selected; create a space or run `tonk account add`",
                     );
                 }
                 Err(error) => return print_failure(error),
@@ -2038,16 +2097,19 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
             }
         }
         None => {
-            let env = spot_from_environment();
+            let env = match spot_from_environment(flag) {
+                Ok(env) => env,
+                Err(error) => return print_failure(error),
+            };
             let active = profiles.resolve(flag, env.as_deref(), cwd.as_deref()).ok();
             match &active {
                 Some(active) => println!(
-                    "current spot: {} ({})\nselected via: {}",
+                    "current space: {} ({})\nselected via: {}",
                     active.name,
                     active.site.display(),
                     active.source
                 ),
-                None => println!("current spot: (none)"),
+                None => println!("current space: (none)"),
             }
             match profiles.selected() {
                 Ok(Some(selected)) => match selected.store.load() {
@@ -2075,7 +2137,41 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
     }
 }
 
-/// `tonk spot new|list|rm` — registry management.
+fn render_space_inventory(
+    rows: &[tonk_cli::inventory::SpaceInventoryRowV1],
+    json: bool,
+) -> ExitCode {
+    if json {
+        match serde_json::to_string_pretty(rows) {
+            Ok(json) => println!("{json}"),
+            Err(error) => return print_failure(error),
+        }
+    } else if rows.is_empty() {
+        println!("(no spaces visible; use `tonk space list --all` for hidden rows)");
+    } else {
+        println!(
+            "SUBJECT\tNAME\tLOCAL\tMEMBERSHIP\tTRANSPORT\tSYNC\tAUTHORITY\tVISIBILITY\tPULLABLE\tCONFIRMED"
+        );
+        for row in rows {
+            println!(
+                "{}\t{}\t{:?}\t{:?}\t{:?}\t{:?}\t{:?}\t{:?}\t{}\t{}",
+                row.subject,
+                row.name.as_deref().unwrap_or("-"),
+                row.local_presence,
+                row.account_membership,
+                row.transport,
+                row.sync,
+                row.authority,
+                row.visibility,
+                row.pullable,
+                row.confirmed_revision.as_deref().unwrap_or("-"),
+            );
+        }
+    }
+    ExitCode::Success
+}
+
+/// `tonk space new|list|rm|archive` — lifecycle management.
 async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
     let profiles = match tonk_cli::account_profiles::NativeProfileStore::open() {
         Ok(store) => store,
@@ -2102,18 +2198,18 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 Ok(outcome) => {
                     if let Err(error) = profiles.bind(&profile.id, &name, &cwd) {
                         return print_error(format!(
-                            "spot '{}' was created and registered, but binding {} failed: {error}",
+                            "space '{}' was created and registered, but binding {} failed: {error}",
                             outcome.name,
                             cwd.display()
                         ));
                     }
                     if outcome.adopted {
                         println!(
-                            "Registered spot '{}' on the site data already at that path",
+                            "Registered space '{}' on the site data already at that path",
                             outcome.name
                         );
                     } else {
-                        println!("Registered spot '{}'", outcome.name);
+                        println!("Registered space '{}'", outcome.name);
                     }
                     println!("site: {}", outcome.site.display());
                     println!("DID: {}", outcome.did);
@@ -2125,64 +2221,27 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 Err(err) => print_failure(err),
             }
         }
-        SpotCommand::List => {
-            let env = std::env::var(tonk_cli::spot::SPOT_ENV)
-                .ok()
-                .filter(|value| !value.is_empty());
-            let cwd = working_directory();
+        SpotCommand::List { all, refresh, json } => {
             let profile = match profiles.selected() {
                 Ok(Some(profile)) => profile,
                 Ok(None) => {
-                    println!("(no spots registered; create one with `tonk spot new <name>`)");
+                    if json {
+                        println!("[]");
+                    } else {
+                        println!("(no spaces registered; create one with `tonk space new <name>`)");
+                    }
                     return ExitCode::Success;
                 }
                 Err(error) => return print_failure(error),
             };
-            match tonk_cli::spot::listing(&profile.store, flag, env.as_deref(), None) {
-                Ok(listing) => {
-                    if listing.rows.is_empty() {
-                        println!("(no spots registered; create one with `tonk spot new <name>`)");
-                        print_orphaned_sites(&listing.orphans);
-                        return ExitCode::Success;
-                    }
-                    let routed = profiles.resolve(flag, env.as_deref(), cwd.as_deref()).ok();
-                    let active = routed.as_ref().and_then(|resolved| {
-                        (resolved.profile.id == profile.id).then_some(resolved.name.as_str())
-                    });
-                    for (name, site) in &listing.rows {
-                        let marker = if Some(name.as_str()) == active {
-                            '*'
-                        } else {
-                            ' '
-                        };
-                        println!("{marker} {name}\t{site}", site = site.display());
-                    }
-                    if let Some(resolved) = &routed {
-                        println!(
-                            "active here: {name} ({source})",
-                            name = resolved.name,
-                            source = resolved.source,
-                        );
-                    }
-                    let install = match profiles.load_or_bootstrap() {
-                        Ok(install) => install,
-                        Err(error) => return print_failure(error),
-                    };
-                    if !install.bindings.is_empty() {
-                        println!();
-                        println!("directories:");
-                        for (directory, binding) in &install.bindings {
-                            println!(
-                                "  {directory}\t{name}",
-                                directory = directory.display(),
-                                name = binding.space
-                            );
-                        }
-                    }
-                    print_orphaned_sites(&listing.orphans);
-                    ExitCode::Success
-                }
-                Err(err) => print_failure(err),
+            match tonk_cli::inventory::list(
+                &profile,
+                tonk_cli::inventory::InventoryOptions { all, refresh },
+            )
+            .await
+            {
+                Ok(rows) => render_space_inventory(&rows, json),
+                Err(error) => print_failure(error),
             }
         }
         SpotCommand::Rm {
@@ -2197,6 +2256,48 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 Err(error) => return print_failure(error),
             };
             spot_rm(&profiles, &profile, &name, keep_data, yes).await
+        }
+        SpotCommand::Archive { subject, yes } => {
+            if !yes {
+                if !std::io::stdin().is_terminal() {
+                    return print_error(
+                        "refusing to archive without confirmation: pass --yes in non-interactive use",
+                    );
+                }
+                println!(
+                    "This permanently archives account membership for {subject}. Local and remote data are not deleted, and authority is not revoked."
+                );
+                if !confirm_by_name(&subject) {
+                    println!("Aborted; account membership was not archived.");
+                    return ExitCode::IoError;
+                }
+            }
+            let profile = match profiles.selected() {
+                Ok(Some(profile)) => profile,
+                Ok(None) => return print_error("no account profile is selected"),
+                Err(error) => return print_failure(error),
+            };
+            let mounted = match profile.load_profile().await {
+                Ok(profile) => profile,
+                Err(error) => return print_failure(error),
+            };
+            match account_spots::archive(&mounted, &profile.store, &subject).await {
+                Ok(outcome) => {
+                    if outcome.newly_archived {
+                        println!("Archived account space {}", outcome.subject);
+                    } else {
+                        println!("Account space {} was already archived", outcome.subject);
+                    }
+                    println!("Local and remote data were not deleted; authority was not revoked.");
+                    if let Some(warning) = outcome.projection_warning {
+                        eprintln!(
+                            "warning: canonical archive succeeded, but provider projection is pending: {warning}"
+                        );
+                    }
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            }
         }
         SpotCommand::Unbind { path } => {
             let directory = match path.or_else(working_directory) {
@@ -2216,24 +2317,6 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
             }
         }
     }
-}
-
-/// Report canonical site data that no registered spot names.
-///
-/// Silent when there is none, so the common listing stays clean. When
-/// there is some it belongs on screen: it is otherwise entirely
-/// invisible, and it is the thing that will refuse a later `tonk
-/// join` or `tonk account spots pull` on the same name.
-fn print_orphaned_sites(orphans: &[PathBuf]) {
-    if orphans.is_empty() {
-        return;
-    }
-    println!();
-    println!("unregistered site data (belongs to no spot):");
-    for path in orphans {
-        println!("  {}", path.display());
-    }
-    println!("  adopt it with `tonk spot new <name> --site <path>`, or delete the directory");
 }
 
 /// `tonk spot rm` — delete a spot's data, or (with --keep-data) just
@@ -2269,18 +2352,32 @@ async fn spot_rm(
         });
     };
     let site = entry.site.clone();
+    let subject = if profile.record.account_root.is_some() {
+        let mut config = profile.site_config();
+        config.require_account = false;
+        match tonk_cli::site::TonkSite::open_with(&site, config).await {
+            Ok(site) => Some(site.repository.did().to_string()),
+            Err(error) => {
+                return print_failure(error.context(
+                    "cannot identify this account-backed space; nothing was removed or suppressed",
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     if keep_data {
-        return match profiles.remove_space(&profile.id, name, Data::Keep) {
+        return match profiles.remove_space(&profile.id, name, Data::Keep, subject.as_deref()) {
             Ok(outcome) => {
-                println!("Unregistered spot '{}'", outcome.name);
+                println!("Unregistered space '{}'", outcome.name);
                 println!("data kept at {}", outcome.site.display());
                 println!(
-                    "  it belongs to no spot now: re-adopt it with \
-                     `tonk spot new <name> --site {}`,",
+                    "  it belongs to no space now: re-adopt it with \
+                     `tonk space new <name> --site {}`,",
                     outcome.site.display()
                 );
-                println!("  or delete it with `tonk spot rm <name>` after re-adopting");
+                println!("  or remove it with `tonk space rm <name>` after re-adopting");
                 for directory in &outcome.unbound {
                     println!("unbound {}", directory.display());
                 }
@@ -2304,7 +2401,7 @@ async fn spot_rm(
         }
         let recovery = tonk_cli::recovery::inspect(&site, profile.site_config()).await;
         println!();
-        println!("This permanently deletes the spot's data from disk:");
+        println!("This removes the space from this device and permanently deletes its local data:");
         println!("  {}", site.display());
         println!();
         println!("{}", recovery.consequence(name));
@@ -2320,16 +2417,22 @@ async fn spot_rm(
         }
     }
 
-    match profiles.remove_space(&profile.id, name, Data::Delete) {
+    match profiles.remove_space(&profile.id, name, Data::Delete, subject.as_deref()) {
         Ok(outcome) => {
             match outcome.data {
                 Deletion::Deleted => {
-                    println!("Deleted spot '{}' and its data", outcome.name);
+                    println!(
+                        "Removed space '{}' from this device and deleted its local data",
+                        outcome.name
+                    );
                     println!("removed {}", outcome.site.display());
                 }
                 // Nothing was destroyed, so don't say it was.
                 Deletion::AlreadyGone => {
-                    println!("Unregistered spot '{}'", outcome.name);
+                    println!(
+                        "Removed space '{}' from this device; local data was kept",
+                        outcome.name
+                    );
                     println!("its data was already gone from {}", outcome.site.display());
                 }
                 Deletion::Kept => unreachable!("Data::Delete never keeps the site"),
@@ -2501,7 +2604,7 @@ async fn legacy_migrate(
 ) -> ExitCode {
     let Some(site) = site else {
         return print_failure(anyhow::anyhow!(
-            "--legacy needs --site <NAME>, the registered spot to upgrade"
+            "--legacy needs --site <NAME>, the registered space to upgrade"
         ));
     };
     let branches = if branches.is_empty() {
@@ -2699,7 +2802,7 @@ async fn status_op(spot: Option<&str>) -> ExitCode {
         Err(code) => return code,
     };
     println!(
-        "spot: {name} ({source})",
+        "space: {name} ({source})",
         name = resolved.name,
         source = resolved.source,
     );
@@ -3179,7 +3282,7 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
             }
             if let Err(error) = profiles.bind(&profile.id, &name, &cwd) {
                 return print_error(format!(
-                    "joined and registered spot '{name}', but binding {} failed: {error}",
+                    "joined and registered space '{name}', but binding {} failed: {error}",
                     cwd.display()
                 ));
             }
@@ -3201,7 +3304,7 @@ fn print_claim_outcome(
     directory: &std::path::Path,
     outcome: &ClaimOutcome,
 ) {
-    println!("Joined spot '{name}' ({})", root.display());
+    println!("Joined space '{name}' ({})", root.display());
     println!("subject: {}", outcome.subject);
     if let Some(remote) = &outcome.auto_configured_remote
         && let Some(url) = &outcome.remote_url
@@ -3237,7 +3340,7 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
             );
             println!("DID: {}", outcome.repo_did);
             println!(
-                "register it as a spot: `tonk spot new <name> --site {}`",
+                "register it as a space: `tonk space new <name> --site {}`",
                 outcome.destination.display()
             );
             println!(
@@ -3643,10 +3746,10 @@ fn working_directory() -> Option<PathBuf> {
     std::env::current_dir().ok()
 }
 
-fn spot_from_environment() -> Option<String> {
-    std::env::var(tonk_cli::spot::SPOT_ENV)
-        .ok()
-        .filter(|value| !value.is_empty())
+fn spot_from_environment(flag: Option<&str>) -> Result<Option<String>, tonk_cli::spot::SpotError> {
+    let space = std::env::var(tonk_cli::spot::SPACE_ENV).ok();
+    let spot = std::env::var(tonk_cli::spot::SPOT_ENV).ok();
+    tonk_cli::spot::environment_selection_for_flag(flag, space.as_deref(), spot.as_deref())
 }
 
 /// Report the spot that would actually answer a data command after a
@@ -3656,16 +3759,22 @@ fn print_active_resolution(
     flag: Option<&str>,
     cwd: Option<&std::path::Path>,
 ) {
-    let env = spot_from_environment();
+    let env = match spot_from_environment(flag) {
+        Ok(env) => env,
+        Err(error) => {
+            eprintln!("warning: binding saved, but space environment is ambiguous: {error}");
+            return;
+        }
+    };
     match store.resolve(flag, env.as_deref(), cwd) {
         Ok(resolved) => println!(
-            "active spot: {name} ({source})\nsite: {site}",
+            "active space: {name} ({source})\nsite: {site}",
             name = resolved.name,
             source = resolved.source,
             site = resolved.site.display(),
         ),
         Err(err) => {
-            eprintln!("warning: binding saved, but the active spot does not resolve: {err}")
+            eprintln!("warning: binding saved, but the active space does not resolve: {err}")
         }
     }
 }
@@ -3677,11 +3786,13 @@ fn print_active_spot_context(flag: Option<&str>) {
     let Ok(store) = tonk_cli::account_profiles::NativeProfileStore::open() else {
         return;
     };
-    let env = spot_from_environment();
+    let Ok(env) = spot_from_environment(flag) else {
+        return;
+    };
     let cwd = working_directory();
     if let Ok(resolved) = store.resolve(flag, env.as_deref(), cwd.as_deref()) {
         eprintln!(
-            "active spot: {name} ({source})\nprofile: {profile}\naccount: {account}\nsigned in: {signed_in}\nsite: {site}",
+            "active space: {name} ({source})\nprofile: {profile}\naccount: {account}\nsigned in: {signed_in}\nsite: {site}",
             name = resolved.name,
             source = resolved.source,
             profile = resolved.profile.record.label,
@@ -3714,9 +3825,10 @@ async fn open_selected(
         Ok(store) => store,
         Err(err) => return Err(print_failure(err)),
     };
-    let env = std::env::var(tonk_cli::spot::SPOT_ENV)
-        .ok()
-        .filter(|value| !value.is_empty());
+    let env = match spot_from_environment(flag) {
+        Ok(env) => env,
+        Err(error) => return Err(print_failure(error)),
+    };
     let cwd = working_directory();
     let routed = match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
         Ok(resolved) => resolved,
@@ -3725,7 +3837,7 @@ async fn open_selected(
     match site::TonkSite::open_with(&routed.site, routed.profile.site_config()).await {
         Ok(site) => Ok((routed, site)),
         Err(err) => Err(print_error(format!(
-            "could not open the active spot for profile '{}': {err:#}",
+            "could not open the active space for profile '{}': {err:#}",
             routed.profile.record.label
         ))),
     }
@@ -3742,6 +3854,7 @@ fn classify(err: &EvalError) -> ExitCode {
 #[cfg(test)]
 mod account_spots_parser_tests {
     use super::*;
+    use clap::CommandFactory as _;
 
     #[test]
     fn account_status_makes_sign_in_state_explicit() {
@@ -3888,7 +4001,7 @@ mod account_spots_parser_tests {
             else {
                 panic!("expected account spots");
             };
-            assert!(command.is_none() || matches!(command, Some(AccountSpotsCommand::List)));
+            assert!(command.is_none() || matches!(command, Some(AccountSpotsCommand::List { .. })));
         }
     }
 
@@ -3930,5 +4043,69 @@ mod account_spots_parser_tests {
         };
         assert_eq!(subject, did);
         assert!(no_open);
+    }
+
+    #[test]
+    fn canonical_space_share_and_account_spaces_aliases_parse_like_legacy_spellings() {
+        for args in [
+            ["tonk", "space", "list"].as_slice(),
+            ["tonk", "spot", "list"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_from(args).expect("space alias parses");
+            assert!(matches!(
+                cli.command,
+                Some(Command::Spot {
+                    command: SpotCommand::List { .. }
+                })
+            ));
+        }
+        for verb in ["share", "invite"] {
+            let cli = Cli::try_parse_from(["tonk", verb, "--no-remote", "--no-shorten"])
+                .expect("share alias parses");
+            assert!(matches!(cli.command, Some(Command::Invite { .. })));
+        }
+        for noun in ["spaces", "spots"] {
+            let cli = Cli::try_parse_from(["tonk", "account", noun, "list"])
+                .expect("account spaces alias parses");
+            assert!(matches!(
+                cli.command,
+                Some(Command::Account {
+                    command: AccountCommand::Spots { .. }
+                })
+            ));
+        }
+        for flag in ["--space", "--spot"] {
+            let cli = Cli::try_parse_from(["tonk", flag, "garden", "status"])
+                .expect("space flag alias parses");
+            assert_eq!(cli.spot.as_deref(), Some("garden"));
+        }
+        let archive = Cli::try_parse_from(["tonk", "space", "archive", "did:key:zGarden", "--yes"])
+            .expect("space archive parses");
+        assert!(matches!(
+            archive.command,
+            Some(Command::Spot {
+                command: SpotCommand::Archive { yes: true, .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn canonical_help_leads_with_space_and_share_and_keeps_aliases_visible() {
+        let mut root = Cli::command();
+        let root_help = root.render_long_help().to_string();
+        assert!(root_help.contains("space"));
+        assert!(root_help.contains("spot"));
+        assert!(root_help.contains("share"));
+        assert!(root_help.contains("invite"));
+
+        let mut new = Cli::command()
+            .find_subcommand("space")
+            .and_then(|space| space.find_subcommand("new"))
+            .expect("space new help")
+            .clone();
+        let help = new.render_long_help().to_string();
+        let canonical = help.find("tonk space new").expect("canonical example");
+        let compatibility = help.find("tonk spot new").expect("visible alias note");
+        assert!(canonical < compatibility);
     }
 }

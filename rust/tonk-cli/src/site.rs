@@ -618,6 +618,33 @@ pub async fn load_account_root_prefix_for(
     )
 }
 
+/// Inspect held authority without migrating or writing credential records.
+pub async fn inspect_account_root_prefix_for(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    subject: &Did,
+    account_root: &Did,
+) -> Result<DelegationChain> {
+    let current = space_root_site(subject, account_root);
+    if let Some(bytes) = optional_credential(profile, operator, current).await? {
+        return validate_prefix(bytes, account_root)
+            .await
+            .context("stored account-root prefix is invalid");
+    }
+    let legacy = format!("{SPACE_ROOT_SITE_PREFIX}{subject}");
+    if let Some(bytes) = optional_credential(profile, operator, legacy).await? {
+        return validate_prefix(bytes, account_root)
+            .await
+            .context("stored legacy account-root prefix is invalid");
+    }
+    if let Some(chain) = recover_prefix(profile, operator, subject, account_root).await? {
+        return Ok(chain);
+    }
+    anyhow::bail!(
+        "no stored account-root prefix proves subject {subject} for account {account_root}"
+    )
+}
+
 async fn existing_account_root_prefix_for(
     profile: &Profile,
     operator: &Operator<NativeSpace>,

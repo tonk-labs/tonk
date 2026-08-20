@@ -31,9 +31,10 @@ mod sync;
 pub use account::{
     AccountConvergenceReport, AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult,
     AccountDeletionSpace, AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse,
-    AccountLinkRequest, AccountSpaceDeletionRequest, AccountStatus, AccountSummary,
-    HostedSpaceDeletionResult, RevocationProjection, RevokeDeviceAcknowledgement,
-    RevokeDeviceRequest,
+    AccountLinkRequest, AccountSpaceArchiveResponse, AccountSpaceDeletionRequest,
+    AccountSpaceDownloadResponse, AccountSpaceEnrollment, AccountSpaceMembership, AccountSpaceRow,
+    AccountSpaceVisibility, AccountStatus, AccountSummary, HostedSpaceDeletionResult,
+    RevocationProjection, RevokeDeviceAcknowledgement, RevokeDeviceRequest,
 };
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};

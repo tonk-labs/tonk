@@ -53,6 +53,7 @@ pub mod deployment;
 pub mod eval;
 pub mod guide;
 pub mod identity;
+pub mod inventory;
 pub mod invite;
 /// Migrating a CSV export written by a pre-dialog-upgrade build.
 pub mod legacy;

@@ -18,6 +18,8 @@
 //! profile rather than inside the profile it names: a pointer stored in
 //! the thing it points at could not be read before opening it.
 
+use std::collections::BTreeSet;
+
 use dialog_effects::storage::Directory;
 use dialog_operator::Profile;
 use dialog_storage::provider::storage::Storage;
@@ -48,6 +50,28 @@ const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 /// credential load, maintained by the worker at the moments it already
 /// has the facts in hand (boot, link, unlink, rename, switch).
 const PROFILE_ROSTER_SITE: &str = "tonk-profile-roster-v1";
+
+/// Prefix for one versioned suppression document per browser profile.
+///
+/// These records live on the fixed registry profile so restore can read
+/// them before opening or activating the profile they describe.
+const SPACE_SUPPRESSIONS_SITE_PREFIX: &str = "tonk-space-suppressions-v1/";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpaceSuppressionsV1 {
+    version: u8,
+    subjects: BTreeSet<String>,
+}
+
+impl Default for SpaceSuppressionsV1 {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            subjects: BTreeSet::new(),
+        }
+    }
+}
 
 /// One profile this browser knows about, as the switcher renders it.
 ///
@@ -275,6 +299,100 @@ impl Registry {
             })
     }
 
+    /// Device-local subjects hidden for one browser profile.
+    pub(crate) async fn read_space_suppressions(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        profile_name: &str,
+    ) -> Result<BTreeSet<String>, TonkWorkerError> {
+        let registry = self.open_self(storage).await?;
+        let site = format!("{SPACE_SUPPRESSIONS_SITE_PREFIX}{profile_name}");
+        let bytes = match registry
+            .credential()
+            .site(site)
+            .load::<Vec<u8>>()
+            .perform(storage)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) if crate::credential::is_missing(&error) => return Ok(BTreeSet::new()),
+            Err(error) => {
+                return Err(TonkWorkerError::Internal(format!(
+                    "failed to read space suppressions for profile '{profile_name}': {error}"
+                )));
+            }
+        };
+        let document: SpaceSuppressionsV1 = serde_json::from_slice(&bytes).map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "stored space suppressions for profile '{profile_name}' are malformed: {error}"
+            ))
+        })?;
+        if document.version != 1 {
+            return Err(TonkWorkerError::Internal(format!(
+                "unsupported space suppression version {} for profile '{profile_name}'",
+                document.version
+            )));
+        }
+        Ok(document.subjects)
+    }
+
+    async fn write_space_suppressions(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        profile_name: &str,
+        subjects: BTreeSet<String>,
+    ) -> Result<(), TonkWorkerError> {
+        let bytes = serde_json::to_vec(&SpaceSuppressionsV1 {
+            version: 1,
+            subjects,
+        })
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to serialize space suppressions: {error}"))
+        })?;
+        let registry = self.open_self(storage).await?;
+        registry
+            .credential()
+            .site(format!("{SPACE_SUPPRESSIONS_SITE_PREFIX}{profile_name}"))
+            .save(bytes)
+            .perform(storage)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "failed to save space suppressions for profile '{profile_name}': {error}"
+                ))
+            })
+    }
+
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", target_os = "unknown")),
+        allow(dead_code)
+    )]
+    pub(crate) async fn suppress_space(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        profile_name: &str,
+        subject: &str,
+    ) -> Result<(), TonkWorkerError> {
+        let mut subjects = self.read_space_suppressions(storage, profile_name).await?;
+        subjects.insert(subject.to_string());
+        self.write_space_suppressions(storage, profile_name, subjects)
+            .await
+    }
+
+    pub(crate) async fn unsuppress_space(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        profile_name: &str,
+        subject: &str,
+    ) -> Result<(), TonkWorkerError> {
+        let mut subjects = self.read_space_suppressions(storage, profile_name).await?;
+        if subjects.remove(subject) {
+            self.write_space_suppressions(storage, profile_name, subjects)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Generate a fresh profile and make it the active one.
     pub(crate) async fn rotate(
         &self,
@@ -450,6 +568,138 @@ mod tests {
             "the entry keeps its position and takes the new value"
         );
         assert_eq!(roster[1].profile_name, "two");
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_space_suppressions_disjoint_between_profiles() {
+        let registry = scratch();
+        let storage = Storage::<DefaultSpace>::default();
+
+        registry
+            .suppress_space(&storage, "profile-one", "did:key:space-one")
+            .await
+            .unwrap();
+        registry
+            .suppress_space(&storage, "profile-two", "did:key:space-two")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .read_space_suppressions(&storage, "profile-one")
+                .await
+                .unwrap(),
+            ["did:key:space-one".to_string()].into_iter().collect()
+        );
+        assert_eq!(
+            registry
+                .read_space_suppressions(&storage, "profile-two")
+                .await
+                .unwrap(),
+            ["did:key:space-two".to_string()].into_iter().collect()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_absent_suppressions_as_empty_and_round_trips_updates() {
+        let registry = scratch();
+        let storage = Storage::<DefaultSpace>::default();
+
+        assert!(
+            registry
+                .read_space_suppressions(&storage, "profile")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        registry
+            .suppress_space(&storage, "profile", "did:key:space-one")
+            .await
+            .unwrap();
+        registry
+            .suppress_space(&storage, "profile", "did:key:space-two")
+            .await
+            .unwrap();
+        registry
+            .unsuppress_space(&storage, "profile", "did:key:space-one")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .read_space_suppressions(&storage, "profile")
+                .await
+                .unwrap(),
+            ["did:key:space-two".to_string()].into_iter().collect()
+        );
+    }
+
+    async fn save_raw_suppressions(
+        registry: &Registry,
+        storage: &Storage<DefaultSpace>,
+        profile_name: &str,
+        bytes: &[u8],
+    ) {
+        registry
+            .open_self(storage)
+            .await
+            .unwrap()
+            .credential()
+            .site(format!("{SPACE_SUPPRESSIONS_SITE_PREFIX}{profile_name}"))
+            .save(bytes.to_vec())
+            .perform(storage)
+            .await
+            .unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn it_fails_closed_on_corrupt_space_suppressions() {
+        let registry = scratch();
+        let storage = Storage::<DefaultSpace>::default();
+        save_raw_suppressions(&registry, &storage, "profile", b"not-json").await;
+
+        let error = registry
+            .read_space_suppressions(&storage, "profile")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("malformed"), "{error}");
+    }
+
+    #[dialog_common::test]
+    async fn it_fails_closed_on_unknown_suppression_versions_or_fields() {
+        let registry = scratch();
+        let storage = Storage::<DefaultSpace>::default();
+        save_raw_suppressions(
+            &registry,
+            &storage,
+            "profile",
+            br#"{"version":2,"subjects":[]}"#,
+        )
+        .await;
+
+        let version_error = registry
+            .read_space_suppressions(&storage, "profile")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(version_error.contains("unsupported"), "{version_error}");
+
+        save_raw_suppressions(
+            &registry,
+            &storage,
+            "profile",
+            br#"{"version":1,"subjects":[],"future":true}"#,
+        )
+        .await;
+        let field_error = registry
+            .read_space_suppressions(&storage, "profile")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(field_error.contains("unknown field"), "{field_error}");
     }
 
     #[dialog_common::test]

@@ -1,9 +1,10 @@
 # tonk
 
-A local-only CLI for reading and writing tonk facts via asserted-notation.
+A local-first CLI for reading, writing, synchronizing, and sharing Tonk facts
+via asserted notation.
 
 `tonk` is the headless companion to tonk-ui, without a browser: it operates on
-the selected **spot** — a named fact store resolved through a central
+the selected **space** — a named fact store resolved through a profile-local
 registry, so the CLI works from any directory. The mutating verb is `eval`,
 which runs a notation document through the analyze → query → plan → commit
 pipeline. The other subcommands are read-only introspection, one-shot setup,
@@ -14,9 +15,9 @@ drive the same code paths as the binary.
 ## Usage
 
 ```sh
-# Create a spot (stored canonically, e.g. ~/Library/Application Support/tonk/spots/garden).
-tonk spot new garden
-# Use an existing spot in another project directory:
+# Create a space (stored canonically, e.g. ~/Library/Application Support/tonk/spots/garden).
+tonk space new garden
+# Use an existing space in another project directory:
 tonk use garden
 
 # Evaluate a notation document: inline, from a file, or piped.
@@ -71,11 +72,18 @@ tonk account sync
 tonk account logout
 
 # Delegate access to the space.
-tonk invite                    # audience-open: anyone holding it can claim
-tonk invite --remote prod      # selected remote must carry a revocation relay
-tonk invite --recipient-root did:key:z6Mk... # seed-free targeted invite
-tonk invite --no-remote        # embed none; the claimer wires an upstream by hand
+tonk share                    # audience-open: anyone holding it can claim
+tonk share --remote prod      # selected remote must carry a revocation relay
+tonk share --recipient-root did:key:z6Mk... # seed-free targeted invite
+tonk share --no-remote        # embed none; the claimer wires an upstream by hand
 tonk join 'https://...#invite' --name garden
+
+# One lifecycle inventory, offline by default.
+tonk space list
+tonk space list --all --json
+tonk space list --refresh
+tonk account spaces pull did:key:z6Mk... --name garden
+tonk space archive did:key:z6Mk... --yes
 ```
 
 ## Telemetry
@@ -88,25 +96,28 @@ nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
 
 ## How it works
 
-### Spots and sites
+### Spaces and sites
 
-A **spot** is a named entry in `spots.json`, a registry kept under the
+A **space** is a named entry in the internal `spots.json` registry kept under the
 platform data dir (`~/Library/Application Support/tonk/` on macOS). Each
 entry points at a **site**: the working directory holding the actual dialog
 repository (`main`, opened on the `main` branch — multi-branch and multi-repo
 workflows are intentionally not exposed). Sites live canonically under
-`spots/<name>/`, or anywhere you like via `tonk spot new --site <path>`.
-Commands resolve which spot to use as `--spot` > `TONK_SPOT` > the nearest
+`spots/<name>/`, or anywhere you like via `tonk space new --site <path>`.
+Commands resolve which space to use as `--space`/`--spot` >
+`TONK_SPACE`/`TONK_SPOT` > the nearest
 directory bound by `tonk use <name>`, then open its central site. There is no
 machine-global fallback. Parallel sessions in separate directories therefore
-hold their own spot without repeating a flag. The directory is only a key into
-the registry — no site data or pointer file is stored there. `tonk spot unbind`
+hold their own space without repeating a flag. Equal canonical and legacy
+environment values are accepted; conflicting values fail before opening a
+repository. The directory is only a key into the registry — no site data or
+pointer file is stored there. `tonk space unbind`
 removes an exact binding. `spots.json` is plain JSON, so any application can
 read the registry without going through the CLI.
 
-To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
-somewhere you keep data outside the canonical store) as a spot, point
-`--site` at it: `tonk spot new proj --site ~/proj/.tonk`. The local identity
+To adopt an existing `.tonk/` directory (from a pre-registry checkout, or
+somewhere you keep data outside the canonical store) as a space, point
+`--site` at it: `tonk space new proj --site ~/proj/.tonk`. The local identity
 is a shared profile (`tonk identity` prints its DID; `--reset` mints a fresh
 one).
 
@@ -138,8 +149,9 @@ rooted selected profile back into that same account.
 
 Directory bindings carry both the profile and the space name. A directory
 bound to profile A's `garden` continues to open A even when B is selected;
-explicit `--spot garden`, `TONK_SPOT=garden`, new spaces, joins, pulls, and
-account commands use the selected profile. Different profiles may therefore
+explicit `--space garden` (or compatibility `--spot`), `TONK_SPACE` (or
+`TONK_SPOT`), new spaces, joins, pulls, and account commands use the selected
+profile. Different profiles may therefore
 both have a space named `garden` without sharing state or authority.
 
 After account login, Tonk asks that ceremony deployment for
@@ -188,8 +200,44 @@ provider, deployment, or account repository for profile A's space.
 | State | Local query/edit/commit | Remote sync |
 | --- | --- | --- |
 | Logged out | allowed | denied before HTTP |
-| Active account, spot delegated to it | allowed | allowed with only that account's grant |
-| Active account, spot delegated only to another account | allowed | denied before HTTP |
+| Active account, space delegated to it | allowed | allowed with only that account's grant |
+| Active account, space delegated only to another account | allowed | denied before HTTP |
+
+### Space inventory and lifecycle
+
+`tonk space list` joins local registration, signed account membership,
+transport, synchronization, authority, and device-local visibility without
+collapsing them into one “synced” flag. The default read is offline and does
+not mutate repositories. `--refresh` may fetch provider inventory and remote
+heads, but never pulls, merges, provisions, pushes, archives, or changes a
+directory binding. `--all` includes suppressed, archived, ambiguous, and
+orphaned rows; `--json` emits the stable version-1 lifecycle schema.
+
+“Remove from this device” and “Archive from account” are deliberately separate:
+
+| Operation | Local registration/data | Account discovery | Authority or remote/peer data |
+| --- | --- | --- | --- |
+| `tonk space rm` | hides locally; may delete local bytes | remains active | unchanged |
+| explicit `account spaces pull` | mounts locally and clears this profile's suppression | unchanged | unchanged |
+| `tonk space archive <SUBJECT>` | unchanged | permanently archived for this subject | unchanged |
+
+Archive writes a signed monotonic tombstone. It never means “delete
+everywhere”: offline peers and already-held copies cannot be compelled to
+erase data. A saved-access artifact is also not a content backup. Tonk reports
+an exact `confirmedRevision` only after that tree was accepted by the content
+remote; a remote URL alone is not evidence that current content is recoverable.
+
+Canonical vocabulary is `space`, `--space`, `TONK_SPACE`, `account spaces`,
+and `share`. For at least this compatibility release the visible aliases below
+reach the identical handlers and telemetry operation:
+
+| Compatibility spelling | Canonical spelling |
+| --- | --- |
+| `spot` | `space` |
+| `--spot` | `--space` |
+| `TONK_SPOT` | `TONK_SPACE` |
+| `account spots` | `account spaces` |
+| `invite` | `share` |
 
 ### Sync and sharing
 
@@ -200,12 +248,12 @@ with errors that name the upstream-not-configured and non-fast-forward cases.
 Remotes are UCAN-S3 access services registered on the repository's meta branch.
 Their immutable-artifact relay is separate metadata supplied with
 `tonk remote add --revocation-url`; it is never inferred from the access host.
-`tonk invite` mints a UCAN delegation chain over the repo and prints an
+`tonk share` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
-embedded ephemeral key); `tonk join` claims one into a fresh spot
-(`tonk join <url> --name <spot>`).
+embedded ephemeral key); `tonk join` claims one into a fresh space
+(`tonk join <url> --name <space>`).
 
-A bare `tonk invite` resolves the repo's remote, builds the link on that
+A bare `tonk share` resolves the repo's remote, builds the link on that
 remote's origin, and embeds it so the claimer auto-configures the same access
 service. `--remote <NAME>` picks one when several are registered; `--no-remote`
 mints without one. A selected remote without relay metadata remains listable

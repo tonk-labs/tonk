@@ -9,7 +9,8 @@ use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
 use tonk_account::{AccountStateStatus, handoff::ResolvedLink};
 use tonk_worker_api::{
-    AccountDeletionPlan, AccountDeletionRequest, AccountSpaceDeletionRequest, AccountStatus,
+    AccountDeletionPlan, AccountDeletionRequest, AccountSpaceDeletionRequest,
+    AccountSpaceEnrollment, AccountSpaceMembership, AccountSpaceVisibility, AccountStatus,
     RevocationProjection, RevokeDeviceAcknowledgement,
 };
 
@@ -191,6 +192,7 @@ fn show_success(host: &HtmlElement) {
     set_mode(host, "success");
     load_summary(host.clone());
     load_devices(host.clone());
+    load_spaces(host.clone());
     load_profiles(host.clone());
     load_activation_notice(host.clone());
 }
@@ -588,6 +590,109 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         }
         let _ = list.append_child(&item);
     }
+}
+
+fn render_spaces(host: &HtmlElement, spaces: &[tonk_worker_api::AccountSpaceRow]) {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    for selector in [
+        "#account-space-list",
+        "#account-hidden-space-list",
+        "#account-archived-space-list",
+    ] {
+        if let Ok(Some(list)) = host.query_selector(selector) {
+            list.set_inner_html("");
+        }
+    }
+
+    for space in spaces {
+        let selector = if space.membership == AccountSpaceMembership::Archived {
+            "#account-archived-space-list"
+        } else if space.visibility == AccountSpaceVisibility::HiddenOnThisDevice {
+            "#account-hidden-space-list"
+        } else {
+            "#account-space-list"
+        };
+        let Ok(Some(list)) = host.query_selector(selector) else {
+            continue;
+        };
+        let Ok(item) = document.create_element("li") else {
+            continue;
+        };
+        let _ = item.set_attribute("class", "account__device-row");
+        let Ok(identity) = document.create_element("div") else {
+            continue;
+        };
+        let _ = identity.set_attribute("class", "account__device-identity");
+        let Ok(name) = document.create_element("strong") else {
+            continue;
+        };
+        let _ = name.set_attribute("class", "account__device-name");
+        name.set_text_content(Some(space.name.as_deref().unwrap_or("Unnamed space")));
+        let _ = identity.append_child(&name);
+        let Ok(meta) = document.create_element("span") else {
+            continue;
+        };
+        let _ = meta.set_attribute("class", "account__device-meta");
+        let local = if space.local {
+            "On this device; remove from this device in the Hub"
+        } else if space.pullable {
+            "Available to download"
+        } else {
+            "Not recoverable from saved access"
+        };
+        let enrollment = match space.enrollment {
+            AccountSpaceEnrollment::LocalOnly => "Local only".to_string(),
+            AccountSpaceEnrollment::Provisioning => "Provisioning remote".to_string(),
+            AccountSpaceEnrollment::PendingPush => "Waiting for confirmed push".to_string(),
+            AccountSpaceEnrollment::Connected => "Connected to account recovery".to_string(),
+            AccountSpaceEnrollment::Error => format!(
+                "Enrollment error: {}",
+                space.enrollment_error.as_deref().unwrap_or("unknown error")
+            ),
+        };
+        meta.set_text_content(Some(&format!("{} · {local} · {enrollment}", space.subject)));
+        let _ = identity.append_child(&meta);
+        let _ = item.append_child(&identity);
+
+        if space.pullable {
+            if let Ok(button) = document.create_element("button") {
+                let _ = button.set_attribute("type", "button");
+                let _ = button.set_attribute(
+                    "class",
+                    "account__button account__button--secondary account__button--compact",
+                );
+                let _ = button.set_attribute("data-download-space", &space.subject);
+                button.set_text_content(Some("Download"));
+                let _ = item.append_child(&button);
+            }
+        }
+        if space.membership == AccountSpaceMembership::Active {
+            if let Ok(button) = document.create_element("button") {
+                let _ = button.set_attribute("type", "button");
+                let _ = button.set_attribute(
+                    "class",
+                    "account__button account__button--secondary account__button--compact",
+                );
+                let _ = button.set_attribute("data-archive-space", &space.subject);
+                button.set_text_content(Some("Archive from account"));
+                let _ = item.append_child(&button);
+            }
+        }
+        let _ = list.append_child(&item);
+    }
+}
+
+fn load_spaces(host: HtmlElement) {
+    spawn_local(async move {
+        match crate::api::account_spaces().await {
+            Ok(spaces) => render_spaces(&host, &spaces),
+            Err(error) => {
+                web_sys::console::warn_1(&format!("account spaces unavailable: {error}").into());
+            }
+        }
+    });
 }
 
 /// What a switcher row is titled: the roster's display name, else the
@@ -1187,14 +1292,17 @@ async fn persist(
         .await
         .map_err(|error| error.to_string())?;
     }
-    crate::api::save_account_link(
-        provider.to_string(),
-        ceremony.root_did.clone(),
-        ceremony.credential_id.clone(),
-        ceremony.delegation_hex.clone(),
+    let deployment = crate::deployment::get().await.ok();
+    crate::api::save_account_link(tonk_worker_api::AccountLinkRequest {
+        provider: provider.to_string(),
+        root_did: ceremony.root_did.clone(),
+        credential_id: ceremony.credential_id.clone(),
+        delegation_hex: ceremony.delegation_hex.clone(),
         descriptor_hex,
         initialize_name,
-    )
+        access_remote: proposed_remote().await.ok(),
+        revocation_relay: deployment.map(|config| config.revocation_relay_url.to_string()),
+    })
     .await
     .map_err(|error| error.to_string())
 }
@@ -1238,7 +1346,12 @@ async fn deployment_service_did() -> Option<String> {
 /// The account repository remote this browser proposes: its own origin's
 /// `/ucan/` endpoint. Only a ceremony ever signs one; the stored descriptor is
 /// always the service-selected winner.
-fn proposed_remote() -> Result<String, String> {
+async fn proposed_remote() -> Result<String, String> {
+    if let Ok(config) = crate::deployment::get().await
+        && let Some(remote) = config.access_remote_url
+    {
+        return Ok(remote.to_string());
+    }
     window()
         .and_then(|window| window.location().origin().ok())
         .map(|origin| format!("{}/ucan/", origin.trim_end_matches('/')))
@@ -1445,8 +1558,8 @@ fn bind(host: &HtmlElement) {
                     email: email.clone(),
                     device_did,
                     device_name,
-                    remote: proposed_remote()?,
-                    endpoint: proposed_remote()?,
+                    remote: proposed_remote().await?,
+                    endpoint: proposed_remote().await?,
                     created_on: Some(crate::device_name::current()),
                     service_did: deployment_service_did().await,
                 })
@@ -1512,7 +1625,7 @@ fn bind(host: &HtmlElement) {
                 let enrolled = enroll_custody_passkey(EnrollCustodyInput {
                     account_did: root_did,
                     label,
-                    endpoint: proposed_remote()?,
+                    endpoint: proposed_remote().await?,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -1568,7 +1681,7 @@ fn bind(host: &HtmlElement) {
                 let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
                     device_did,
                     device_name,
-                    endpoint: proposed_remote()?,
+                    endpoint: proposed_remote().await?,
                     service_did: deployment_service_did().await,
                 })
                 .await
@@ -1626,8 +1739,8 @@ fn bind(host: &HtmlElement) {
                     let authorized = crate::identity_bridge::authorize_device(
                         crate::identity_bridge::AuthorizeDeviceInput {
                             device_did: audience.clone(),
-                            remote: proposed_remote()?,
-                            endpoint: proposed_remote()?,
+                            remote: proposed_remote().await?,
+                            endpoint: proposed_remote().await?,
                         },
                     )
                     .await
@@ -1694,7 +1807,7 @@ fn bind(host: &HtmlElement) {
                     token_hash: handoff.token_hash,
                     device_did: handoff.device_did,
                     device_name: handoff.device_name,
-                    endpoint: proposed_remote()?,
+                    endpoint: proposed_remote().await?,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -1751,7 +1864,7 @@ fn bind(host: &HtmlElement) {
             .map(|window| {
                 window
                     .confirm_with_message(
-                        "Sign out on this device? Your existing spots will stay here, but account syncing will stop until you sign in again.",
+                        "Sign out on this device? Existing spaces stay here. Account discovery and recovery pause, while already configured content remotes may continue to sync.",
                     )
                     .unwrap_or(false)
             })
@@ -2010,6 +2123,81 @@ fn bind(host: &HtmlElement) {
         closure.forget();
     }
 
+    for selector in [
+        "#account-space-list",
+        "#account-hidden-space-list",
+        "#account-archived-space-list",
+    ] {
+        let Ok(Some(list)) = host.query_selector(selector) else {
+            continue;
+        };
+        let host_for_space = host.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            else {
+                return;
+            };
+            if let Some(subject) = target.get_attribute("data-download-space") {
+                let host = host_for_space.clone();
+                set_busy(&host, true, "Downloading space…");
+                spawn_local(async move {
+                    match crate::api::download_account_space(&subject).await {
+                        Ok(_) => {
+                            set_busy(&host, false, "");
+                            load_spaces(host);
+                        }
+                        Err(error) => {
+                            set_busy(&host, false, "");
+                            show_error(&host, error.to_string());
+                        }
+                    }
+                });
+                return;
+            }
+            let Some(subject) = target.get_attribute("data-archive-space") else {
+                return;
+            };
+            let confirmed = window()
+                .map(|window| {
+                    window
+                        .confirm_with_message(
+                            "Archive this space from the account? This permanently hides account discovery for this subject. It does not remove local or remote bytes, erase peer copies, or revoke access.",
+                        )
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if !confirmed {
+                return;
+            }
+            let host = host_for_space.clone();
+            set_busy(&host, true, "Archiving account space…");
+            spawn_local(async move {
+                match crate::api::archive_account_space(&subject).await {
+                    Ok(response) => {
+                        set_busy(&host, false, "");
+                        if let Some(warning) = response.warning {
+                            show_error(
+                                &host,
+                                format!(
+                                    "The canonical archive succeeded, but its provider projection is pending: {warning}"
+                                ),
+                            );
+                        }
+                        load_spaces(host);
+                    }
+                    Err(error) => {
+                        set_busy(&host, false, "");
+                        show_error(&host, error.to_string());
+                    }
+                }
+            });
+        });
+        let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+        closure.forget();
+    }
+
     if let Ok(Some(list)) = host.query_selector("#account-device-list") {
         let host_for_revoke = host.clone();
         let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
@@ -2085,7 +2273,7 @@ fn begin_revoke(
         let revocation_hex = if self_revoke {
             String::new()
         } else {
-            let endpoint = match proposed_remote() {
+            let endpoint = match proposed_remote().await {
                 Ok(endpoint) => endpoint,
                 Err(error) => {
                     set_busy(&host, false, "");
@@ -2395,6 +2583,9 @@ mod tests {
             "#account-email-value",
             "#account-passkey-created-value",
             "#account-passkey-device-value",
+            "#account-space-list",
+            "#account-hidden-spaces",
+            "#account-archived-spaces",
             "#account-profile-list",
             "#account-add-profile",
             ".account__passkey",
@@ -2419,7 +2610,8 @@ mod tests {
         let copy = dashboard.text_content().unwrap();
         assert!(copy.contains("device, browser profile, or password manager"));
         assert!(copy.contains("do not tell Tonk which passkey manager currently stores it"));
-        assert!(copy.contains("syncing will stop until you sign in again"));
+        assert!(copy.contains("Account discovery and recovery pause"));
+        assert!(copy.contains("content remotes may continue to sync"));
         assert!(copy.contains("This is not sign out"));
         assert!(copy.contains("Spaces created by other people will not be deleted"));
         assert!(copy.contains("cannot erase copies that other devices have already replicated"));

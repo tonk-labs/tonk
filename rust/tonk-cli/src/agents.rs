@@ -75,13 +75,13 @@ pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpotAgents>> 
     let doc = format!("{CONCEPT_NAME}:\n  this: {entity}\n  markdown: ?markdown\n");
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default())
         .await
-        .context("query spot AGENTS.md claim")?;
+        .context("query space AGENTS.md claim")?;
     let revision = outcome
         .response
         .revision_before
         .as_ref()
         .map(|revision| revision.tree.to_string())
-        .ok_or_else(|| anyhow!("spot AGENTS.md query returned no branch revision"))?;
+        .ok_or_else(|| anyhow!("space AGENTS.md query returned no branch revision"))?;
     let Some(row) = outcome
         .response
         .matches_after
@@ -93,7 +93,7 @@ pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpotAgents>> 
     };
     if row.this != entity {
         return Err(anyhow!(
-            "spot AGENTS.md resolved on {}, expected repository subject {entity}",
+            "space AGENTS.md resolved on {}, expected repository subject {entity}",
             row.this
         ));
     }
@@ -101,7 +101,7 @@ pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpotAgents>> 
         .fields
         .get("markdown")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow!("spot AGENTS.md claim has no text `markdown` field"))?
+        .ok_or_else(|| anyhow!("space AGENTS.md claim has no text `markdown` field"))?
         .to_owned();
     Ok(Some(SpotAgents {
         source: SOURCE,
@@ -142,7 +142,7 @@ tonk/agents!:
     );
     auto_sync::run_eval(site, Source::Inline(doc), Options::default(), sync)
         .await
-        .context("assert spot AGENTS.md claim")?;
+        .context("assert space AGENTS.md claim")?;
     get_declared(site)
         .await?
         .ok_or_else(|| anyhow!("AGENTS.md write committed but no claim was readable"))

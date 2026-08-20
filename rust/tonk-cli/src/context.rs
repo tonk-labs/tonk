@@ -289,7 +289,7 @@ impl ContextReport {
         let _ = writeln!(out, "# Tonk context");
         let _ = writeln!(
             out,
-            "spot: `{}` · branch: `{}` · selected via: `{}`",
+            "space: `{}` · branch: `{}` · selected via: `{}`",
             self.spot.name, self.spot.branch, self.spot.selected_via
         );
         let _ = writeln!(out, "site: `{}`", self.spot.site);

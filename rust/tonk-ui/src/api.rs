@@ -3,7 +3,8 @@ use serde::Deserialize;
 use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDevice,
-    AccountLinkRequest, AccountStatus, AccountSummary, ActivateProfileRequest, EvaluateResponse,
+    AccountLinkRequest, AccountSpaceArchiveResponse, AccountSpaceDownloadResponse, AccountSpaceRow,
+    AccountStatus, AccountSummary, ActivateProfileRequest, EvaluateResponse,
     HostedSpaceDeletionResult, IdentifyResponse, JoinRequest, JoinResponse, MembershipResponse,
     ProfilesResponse, QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement,
     RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse, SyncStatusResponse,
@@ -570,25 +571,11 @@ pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
 }
 
 /// Persist a verified account-root delegation in the local profile.
-pub async fn save_account_link(
-    provider: String,
-    root_did: String,
-    credential_id: String,
-    delegation_hex: String,
-    descriptor_hex: String,
-    initialize_name: bool,
-) -> Result<AccountStatus, TonkUiError> {
+pub async fn save_account_link(request: AccountLinkRequest) -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/attach", origin()))
-        .json(&AccountLinkRequest {
-            provider,
-            root_did,
-            credential_id,
-            delegation_hex,
-            descriptor_hex,
-            initialize_name,
-        })
+        .json(&request)
         .send()
         .await
         .map_err(into_api_error)?;
@@ -637,6 +624,70 @@ pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "GET /api/account/summary returned {status}: {text}"
+        )))
+    }
+}
+
+/// List account spaces without mounting account-only rows into the Hub.
+pub async fn account_spaces() -> Result<Vec<AccountSpaceRow>, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/account/spaces", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/account/spaces returned {status}: {text}"
+        )))
+    }
+}
+
+/// Explicitly download one active account space onto this profile.
+pub async fn download_account_space(
+    subject: &str,
+) -> Result<AccountSpaceDownloadResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/account/spaces/{subject}/download",
+            origin()
+        ))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST account-space download returned {status}: {text}"
+        )))
+    }
+}
+
+/// Archive one subject in the signed account repository.
+pub async fn archive_account_space(
+    subject: &str,
+) -> Result<AccountSpaceArchiveResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/spaces/{subject}/archive", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST account-space archive returned {status}: {text}"
         )))
     }
 }

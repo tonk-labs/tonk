@@ -266,18 +266,14 @@ async fn reconcile_site(
     {
         return error_row(name, subject, "retain", error);
     }
-    match crate::account_state::open_account_branch_in(
+    let account_branch = match crate::account_state::open_account_branch_in(
         &site.profile,
         &account_operator,
         &context.store,
     )
     .await
     {
-        Ok(Some(branch)) => {
-            if let Err(error) = branch.push().perform(&account_operator).await {
-                return error_row(name, subject, "account-push", error);
-            }
-        }
+        Ok(Some(branch)) => branch,
         Ok(None) => {
             return error_row(
                 name,
@@ -287,6 +283,35 @@ async fn reconcile_site(
             );
         }
         Err(error) => return error_row(name, subject, "account-push", error),
+    };
+    let upstream = match crate::remote::upstream_remote(&site).await {
+        Ok(Some(upstream)) => upstream,
+        Ok(None) => return error_row(name, subject, "membership", "space has no upstream"),
+        Err(error) => return error_row(name, subject, "membership", error),
+    };
+    let remote = match crate::remote::find(&site, &upstream).await {
+        Ok(Some(remote)) => remote,
+        Ok(None) => return error_row(name, subject, "membership", "upstream is not registered"),
+        Err(error) => return error_row(name, subject, "membership", error),
+    };
+    if let Err(error) = tonk_schema::account::record_active_account_space(
+        &account_branch,
+        tonk_schema::account::AccountSpaceInput {
+            account: account_root,
+            subject: subject.clone(),
+            name: Some(name.clone()),
+            remote_url: Some(remote.endpoint),
+            revocation_url: remote.revocation_url,
+            confirmed_revision: Some(tree.to_string()),
+        },
+        &account_operator,
+    )
+    .await
+    {
+        return error_row(name, subject, "membership", error);
+    }
+    if let Err(error) = account_branch.push().perform(&account_operator).await {
+        return error_row(name, subject, "account-push", error);
     }
     if let Err(error) = crate::account_spots::record_site_in(&name, &site, &context.store).await {
         return error_row(name, subject, "project", error);
@@ -354,5 +379,67 @@ pub fn phase_label(phase: &EnrollmentPhase) -> String {
         EnrollmentPhase::PendingPush => "pending push".to_owned(),
         EnrollmentPhase::Connected { confirmed } => format!("connected {confirmed}"),
         EnrollmentPhase::Error { step, detail } => format!("error ({step}): {detail}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::account_profiles::{NativeProfileId, NativeProfileRecord};
+    use crate::site::{SiteConfig, TonkSite};
+    use dialog_effects::storage::Directory;
+
+    fn local_context(root: &std::path::Path, label: &str) -> NativeProfileContext {
+        let id = NativeProfileId::generate();
+        NativeProfileContext {
+            record: NativeProfileRecord {
+                label: label.to_string(),
+                dialog_profile_name: format!("tonk-account-sync-test-{}", id.as_str()),
+                account_root: None,
+                ceremony_origin: None,
+                default_access_remote: None,
+                default_revocation_relay: None,
+                extra: serde_json::Map::new(),
+            },
+            store: crate::spot::SpotStore::at(root.join(id.as_str())),
+            id,
+        }
+    }
+
+    async fn add_local_space(context: &NativeProfileContext, name: &str) -> anyhow::Result<()> {
+        let path = context.store.canonical_site(name);
+        let site = TonkSite::init_at_with(
+            &path,
+            SiteConfig {
+                profile_name: context.record.dialog_profile_name.clone(),
+                profile_directory: Directory::Profile,
+                require_account: false,
+                account_store: context.store.clone(),
+            },
+        )
+        .await?;
+        crate::spot::register_existing_unbound(&context.store, name, &site.root)?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_reconciles_only_the_activated_profile() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let active = local_context(root.path(), "active");
+        let inactive = local_context(root.path(), "inactive");
+        add_local_space(&active, "active-garden").await?;
+        add_local_space(&inactive, "inactive-garden").await?;
+
+        let report = reconcile_profile(&active).await;
+
+        assert_eq!(report.profile, active.id);
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].name, "active-garden");
+        assert_eq!(report.rows[0].phase, EnrollmentPhase::LocalOnly);
+        assert!(
+            inactive.store.load()?.spots.contains_key("inactive-garden"),
+            "reconciling the active context must not mutate another profile's registry"
+        );
+        Ok(())
     }
 }

@@ -52,6 +52,18 @@ pub struct PullOutcome {
     pub warning: Option<String>,
 }
 
+/// Result of canonically archiving one account-space subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveOutcome {
+    /// Exact archived repository subject.
+    pub subject: String,
+    /// Whether this call committed the monotonic marker.
+    pub newly_archived: bool,
+    /// Compatibility projection diagnostic. The directory-backed custody
+    /// model needs no provider projection, so this is normally absent.
+    pub projection_warning: Option<String>,
+}
+
 /// What recording a spot in the account directory did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordOutcome {
@@ -274,6 +286,20 @@ pub async fn pull(
         );
     }
 
+    let account_root: Did = crate::identity::local_root_with_operator(profile, &operator)
+        .await?
+        .context("no account root is recorded on this profile")?
+        .root_did
+        .parse()
+        .context("stored root DID is invalid")?;
+    let archived = tonk_schema::account::list_account_spaces(&account, &operator)
+        .await?
+        .into_iter()
+        .any(|row| row.account == account_root && row.subject == requested && row.archived);
+    if archived {
+        bail!("account space {requested} is archived");
+    }
+
     let record = tonk_schema::directory::mount_record(&account, &requested, &operator)
         .await
         .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
@@ -291,6 +317,10 @@ pub async fn pull(
 
     let local = local_subjects(profile, store).await?;
     if let Some(local) = local.get(requested.as_ref()) {
+        let mut registry = store.load()?;
+        if registry.unsuppress(requested.as_ref()) {
+            store.save(&registry)?;
+        }
         return Ok(PullOutcome {
             subject: requested.to_string(),
             name: local.name.clone(),
@@ -335,12 +365,6 @@ pub async fn pull(
     // root is the linked account's root DID — NOT the account branch's
     // subject: the account is profile main's upstream, so the local
     // branch's subject is the profile itself.
-    let account_root: Did = crate::identity::local_root_with_operator(profile, &operator)
-        .await?
-        .context("no account root is recorded on this profile")?
-        .root_did
-        .parse()
-        .context("stored root DID is invalid")?;
     let chain = crate::site::recover_prefix(profile, &operator, &requested, &account_root)
         .await?
         .with_context(|| {
@@ -378,22 +402,72 @@ pub async fn pull(
     let canonical_target = target
         .canonicalize()
         .context("failed to canonicalize the mounted account spot")?;
-    spot::register_existing_unbound(store, &name, &canonical_target)?;
+    crate::sync::pull(&site)
+        .await
+        .with_context(|| format!("initial pull from '{DEFAULT_REMOTE}' failed"))?;
+    spot::register_pulled_space(store, &name, &canonical_target, requested.as_ref())?;
     fresh_target.commit();
 
-    let warning = match crate::sync::pull(&site).await {
-        Ok(_) => None,
-        Err(error) => Some(format!(
-            "initial pull from '{DEFAULT_REMOTE}' failed: {error}; run `tonk pull` before making changes so you don't diverge from upstream"
-        )),
-    };
     Ok(PullOutcome {
         subject: requested.to_string(),
         name,
         site: canonical_target,
         already_local: false,
-        warning,
+        warning: None,
     })
+}
+
+/// Commit a monotonic archive fact to the canonical account repository.
+pub async fn archive(
+    profile: &Profile,
+    store: &SpotStore,
+    subject: &str,
+) -> Result<ArchiveOutcome> {
+    let operator = crate::account_state::operator_for_store(profile, store).await?;
+    archive_with_operator(profile, store, subject, &operator).await
+}
+
+async fn archive_with_operator(
+    profile: &Profile,
+    store: &SpotStore,
+    subject: &str,
+    operator: &Operator<NativeSpace>,
+) -> Result<ArchiveOutcome> {
+    let subject: Did = subject
+        .parse()
+        .map_err(|error| anyhow::anyhow!("invalid account space subject '{subject}': {error:?}"))?;
+    let root: Did = crate::identity::local_root_with_operator(profile, operator)
+        .await?
+        .context("no account root is recorded on this profile")?
+        .root_did
+        .parse()
+        .context("stored root DID is invalid")?;
+    let branch = crate::account_state::open_account_branch_in(profile, operator, store)
+        .await?
+        .context("account repository is not hydrated")?;
+    let newly_archived =
+        tonk_schema::account::archive_account_space(&branch, &root, &subject, operator).await?;
+    branch
+        .push()
+        .perform(operator)
+        .await
+        .context("canonical account archive committed locally but its push failed")?;
+    Ok(ArchiveOutcome {
+        subject: subject.to_string(),
+        newly_archived,
+        projection_warning: None,
+    })
+}
+
+#[cfg(feature = "integration-tests")]
+#[doc(hidden)]
+pub async fn archive_with_operator_for_integration_test(
+    profile: &Profile,
+    store: &SpotStore,
+    subject: &str,
+    operator: &Operator<NativeSpace>,
+) -> Result<ArchiveOutcome> {
+    archive_with_operator(profile, store, subject, operator).await
 }
 
 async fn repository_name(site: &TonkSite) -> Option<String> {

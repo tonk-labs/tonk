@@ -57,9 +57,12 @@ pub async fn discover(
         config.revocation_relay_url.as_str(),
         "advertised revocation relay URL",
     )?;
-    let access_remote = ceremony_origin
-        .join("/ucan/")
-        .context("failed to form deployment access URL")?;
+    let access_remote = match config.access_remote_url {
+        Some(url) => validated_http_url(url.as_str(), "advertised access remote URL")?,
+        None => ceremony_origin
+            .join("/ucan/")
+            .context("failed to form deployment access URL")?,
+    };
     Ok(DeploymentDefaults {
         ceremony_origin,
         access_remote,
@@ -115,6 +118,7 @@ mod tests {
 
     async fn deployment_server(
         account_path: &str,
+        access_remote_url: Option<Url>,
     ) -> Result<(String, tokio::task::JoinHandle<()>)> {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let origin = format!("http://{}", listener.local_addr()?);
@@ -125,8 +129,10 @@ mod tests {
             get(move || {
                 let account = account.clone();
                 let relay = relay.clone();
+                let access_remote_url = access_remote_url.clone();
                 async move {
                     Json(DeploymentConfig {
+                        access_remote_url,
                         account_service_url: account,
                         revocation_relay_url: relay,
                         service_did: None,
@@ -142,7 +148,7 @@ mod tests {
 
     #[tokio::test]
     async fn it_discovers_the_access_remote_from_the_ceremony_deployment() -> Result<()> {
-        let (origin, server) = deployment_server("/accounts/").await?;
+        let (origin, server) = deployment_server("/accounts/", None).await?;
         let defaults = discover(
             &format!("{origin}/account/link?intent=login"),
             &format!("{origin}/accounts"),
@@ -154,6 +160,20 @@ mod tests {
             defaults.revocation_relay.as_str(),
             format!("{origin}/revocations/")
         );
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn it_prefers_an_advertised_loopback_access_remote() -> Result<()> {
+        let remote: Url = "http://127.0.0.1:4200/ucan/".parse()?;
+        let (origin, server) = deployment_server("/accounts/", Some(remote.clone())).await?;
+        let defaults = discover(
+            &format!("{origin}/account/link"),
+            &format!("{origin}/accounts"),
+        )
+        .await?;
+        assert_eq!(defaults.access_remote, remote);
         server.abort();
         Ok(())
     }
@@ -174,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn it_rejects_a_different_advertised_account_service() -> Result<()> {
-        let (origin, server) = deployment_server("/other/").await?;
+        let (origin, server) = deployment_server("/other/", None).await?;
         let error = discover(
             &format!("{origin}/account/link"),
             &format!("{origin}/accounts"),

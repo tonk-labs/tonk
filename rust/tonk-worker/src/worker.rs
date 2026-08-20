@@ -1831,6 +1831,7 @@ impl TonkServiceWorker {
                 // Overlay locality stamps for the Hub's hollow-spot
                 // styling — device-local, re-stamped every boot.
                 crate::router::adopt::stamp_local_spaces(&tonk).await;
+                crate::router::account_reconcile::reconcile(&tonk).await;
             });
         }
 

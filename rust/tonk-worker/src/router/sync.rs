@@ -1284,6 +1284,15 @@ pub async fn drain_sync(state: &AppState) {
             log!("drain_sync: account state did not fully reconcile: {error}");
         }
     }
+
+    // The same drain is used by confirmed pushes, connectivity recovery, and
+    // visibility recovery. Retry account enrollment only after that work has
+    // settled; the reconciler is profile-coalesced and remains best-effort.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let tonk = state.read().await;
+        super::account_reconcile::reconcile(&tonk).await;
+    }
 }
 
 /// How long before a guest delegation lapses it is replayed.

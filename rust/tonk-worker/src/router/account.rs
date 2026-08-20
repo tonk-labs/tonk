@@ -3,6 +3,7 @@
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
+use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::{AccountProviderRecord, AccountRepositoryDescriptorV1, AccountStateStatus};
@@ -15,6 +16,114 @@ use super::AppState;
 use crate::TonkWorkerError;
 
 const ACCOUNT_PROVIDER_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
+const ACCOUNT_DEPLOYMENT_SITE: &str = "tonk-account-deployment-v1";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AccountDeploymentDefaultsV1 {
+    version: u8,
+    pub(crate) access_remote: Option<String>,
+    pub(crate) revocation_relay: Option<String>,
+}
+
+fn validate_deployment_url(label: &str, value: &str) -> Result<(), TonkWorkerError> {
+    let url = url::Url::parse(value)
+        .map_err(|error| TonkWorkerError::Router(format!("invalid {label}: {error}")))?;
+    let loopback = url
+        .host_str()
+        .is_some_and(|host| host == "localhost" || host == "127.0.0.1" || host == "::1");
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return Err(TonkWorkerError::Router(format!(
+            "{label} must use HTTPS (loopback HTTP is allowed for local development)"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod deployment_url_tests {
+    use super::validate_deployment_url;
+
+    #[test]
+    fn it_accepts_https_and_loopback_http_deployment_defaults() {
+        assert!(validate_deployment_url("remote", "https://sync.example/ucan/").is_ok());
+        assert!(validate_deployment_url("remote", "http://127.0.0.1:8787/ucan/").is_ok());
+        assert!(validate_deployment_url("remote", "http://localhost:8787/ucan/").is_ok());
+        assert!(validate_deployment_url("remote", "http://sync.example/ucan/").is_err());
+        assert!(validate_deployment_url("remote", "relative").is_err());
+    }
+}
+
+async fn save_deployment_defaults(
+    state: &crate::worker::TonkState,
+    request: &AccountLinkRequest,
+) -> Result<(), TonkWorkerError> {
+    if let Some(remote) = request.access_remote.as_deref() {
+        validate_deployment_url("access remote", remote)?;
+    }
+    if let Some(relay) = request.revocation_relay.as_deref() {
+        validate_deployment_url("revocation relay", relay)?;
+    }
+    if request.access_remote.is_none() && request.revocation_relay.is_none() {
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec(&AccountDeploymentDefaultsV1 {
+        version: 1,
+        access_remote: request.access_remote.clone(),
+        revocation_relay: request.revocation_relay.clone(),
+    })
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("serialize account deployment defaults: {error}"))
+    })?;
+    state
+        .profile
+        .credential()
+        .site(ACCOUNT_DEPLOYMENT_SITE)
+        .save(bytes)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("save account deployment defaults: {error}"))
+        })
+}
+
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) async fn deployment_defaults(
+    state: &crate::worker::TonkState,
+) -> Result<Option<AccountDeploymentDefaultsV1>, TonkWorkerError> {
+    let bytes = match state
+        .profile
+        .credential()
+        .site(ACCOUNT_DEPLOYMENT_SITE)
+        .load::<Vec<u8>>()
+        .perform(&state.operator)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "load account deployment defaults: {error}"
+            )));
+        }
+    };
+    let defaults: AccountDeploymentDefaultsV1 =
+        serde_json::from_slice(&bytes).map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "stored account deployment defaults are invalid: {error}"
+            ))
+        })?;
+    if defaults.version != 1 {
+        return Err(TonkWorkerError::Internal(format!(
+            "unsupported account deployment defaults version {}",
+            defaults.version
+        )));
+    }
+    Ok(Some(defaults))
+}
 
 /// Map an attachment failure onto the router's error taxonomy. A rejected
 /// descriptor is the caller presenting the wrong account's bytes, not a local
@@ -352,6 +461,7 @@ pub(crate) async fn persist_link(
             ));
         }
     }
+    save_deployment_defaults(state, request).await?;
     save_provider(state, &record).await?;
     // This profile now has an account repository to keep hidden.
     state.account_keys.invalidate();
@@ -382,6 +492,8 @@ pub async fn link(
     // so what gets backed up is the account-rooted authority.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     super::repository::adopt_profile_spaces(&state).await;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    crate::router::account_reconcile::reconcile(&state).await;
 
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it
@@ -445,6 +557,8 @@ pub(crate) async fn tests_matching_request(
         delegation_hex: hex::encode(root.bytes),
         descriptor_hex: hex::encode(descriptor.bytes()),
         initialize_name: false,
+        access_remote: None,
+        revocation_relay: None,
     }
 }
 

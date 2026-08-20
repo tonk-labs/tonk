@@ -534,6 +534,7 @@
               #!${bash}/bin/bash
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
+              NATIVE_PORT=''${3:-8081}
 
               echo "Test server live at https://tonk.network:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
@@ -562,6 +563,11 @@
                       root * ${self.packages.${system}.tonk-ui}
                       try_files {path} /index.html
                       file_server
+                  }
+              }
+              http://127.0.0.1:$NATIVE_PORT {
+                  handle /ucan/* {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
               }
               EOF

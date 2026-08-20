@@ -16,6 +16,10 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("REVOCATION_RELAY_URL"),
     ) {
         (Ok(account), Ok(revocations)) => Some(DeploymentConfig {
+            access_remote_url: std::env::var("ACCESS_REMOTE_URL")
+                .ok()
+                .map(|url| url.parse())
+                .transpose()?,
             account_service_url: account.parse()?,
             revocation_relay_url: revocations.parse()?,
             // Filled in by the server with its own generated identity.

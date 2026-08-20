@@ -63,6 +63,45 @@ mod tests {
         }
     }
 
+    async fn click_in_guest(driver: &WebDriver, selector: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut paths = vec![Vec::<u16>::new()];
+            for _depth in 0..5 {
+                let current = std::mem::take(&mut paths);
+                for path in current {
+                    driver.enter_default_frame().await?;
+                    let mut reachable = true;
+                    for index in &path {
+                        if driver.enter_frame(*index).await.is_err() {
+                            reachable = false;
+                            break;
+                        }
+                    }
+                    if !reachable {
+                        continue;
+                    }
+                    if let Ok(element) = driver.find(By::Css(selector.to_string())).await {
+                        element.click().await?;
+                        driver.enter_default_frame().await?;
+                        return Ok(());
+                    }
+                    let count = driver.find_all(By::Css("iframe".to_string())).await?.len();
+                    for index in 0..count.min(u16::MAX as usize) {
+                        let mut child = path.clone();
+                        child.push(index as u16);
+                        paths.push(child);
+                    }
+                }
+            }
+            driver.enter_default_frame().await?;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for {selector} in guest frames"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wait_for_text(driver: &WebDriver, selector: &str, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -333,6 +372,7 @@ mod tests {
             .env("DO_NOT_TRACK", "1")
             .env("NO_PROXY", "127.0.0.1,localhost,tonk.network")
             .env_remove("TONK_TELEMETRY")
+            .env_remove("TONK_SPACE")
             .env_remove("TONK_SPOT")
             .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");
         command
@@ -583,6 +623,82 @@ mod tests {
             "{operation} failed: {result}"
         );
         &result["body"]
+    }
+
+    fn profile_space_keys(body: &serde_json::Value) -> Vec<String> {
+        body["space"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry["key"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    async fn wait_for_account_space(
+        driver: &WebDriver,
+        subject: &str,
+        membership: &str,
+        visibility: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let response = get_json(driver, "/api/account/spaces").await?;
+            if response["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status))
+                && let Some(row) = response["body"].as_array().and_then(|rows| {
+                    rows.iter().find(|row| {
+                        row["subject"] == subject
+                            && row["membership"] == membership
+                            && visibility.is_none_or(|expected| row["visibility"] == expected)
+                    })
+                })
+            {
+                return Ok(row.clone());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for account space {subject} membership={membership} visibility={visibility:?}: {response}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn create_connected_space(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        name: &str,
+    ) -> Result<String> {
+        let created = post_json(
+            driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": name,
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let subject = successful_body("create connected space", &created)["key"]
+            .as_str()
+            .context("create response omitted the space key")?
+            .to_string();
+        let pushed = post_json(
+            driver,
+            &format!("/api/repository/{subject}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push connected space", &pushed);
+        let row = wait_for_account_space(driver, &subject, "active", Some("visible")).await?;
+        assert_eq!(row["enrollment"], "connected");
+        assert!(row["confirmedRevision"].is_string());
+        Ok(subject)
     }
 
     fn did_for_device<'a>(output: &'a str, name: &str) -> Option<&'a str> {
@@ -847,6 +963,388 @@ mod tests {
         assert_eq!(
             after["status"], 404,
             "a deleted account leaves nothing to plan against: {after}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_shares_inventory_between_cli_and_browser(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "inventory@example.com").await?;
+
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Cross-client Garden",
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let subject = successful_body("create cross-client space", &created)["key"]
+            .as_str()
+            .context("create response omitted the space key")?
+            .to_string();
+        let pushed = post_json(
+            &driver,
+            &format!("/api/repository/{subject}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push cross-client space", &pushed);
+
+        // Reconciliation is deliberately asynchronous. Provider projection is
+        // its final step, so an inventory row with an exact confirmed revision
+        // proves all earlier canonical writes completed too.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let browser_row = loop {
+            let response = get_json(&driver, "/api/account/spaces").await?;
+            if response["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status))
+                && let Some(row) = response["body"].as_array().and_then(|rows| {
+                    rows.iter().find(|row| {
+                        row["subject"] == subject
+                            && row["membership"] == "active"
+                            && row["enrollment"] == "connected"
+                            && row["confirmedRevision"].is_string()
+                    })
+                })
+            {
+                break row.clone();
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for connected browser account inventory: {response}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        assert_eq!(browser_row["local"], true);
+        assert_eq!(browser_row["pullable"], false);
+        let confirmed = browser_row["confirmedRevision"]
+            .as_str()
+            .context("browser inventory omitted the confirmed revision")?
+            .to_string();
+        let remote = browser_row["remoteUrl"]
+            .as_str()
+            .context("browser inventory omitted the content remote")?
+            .parse::<url::Url>()?;
+        assert_eq!(remote.scheme(), "http");
+        assert_eq!(remote.host_str(), Some("127.0.0.1"));
+        assert_eq!(remote.path(), "/ucan/");
+
+        let account = get_json(&driver, "/api/account").await?;
+        let root = successful_body("read inventory account", &account)["rootDid"]
+            .as_str()
+            .context("inventory account status omitted its root DID")?
+            .to_string();
+        let provider_snapshot: Vec<serde_json::Value> = reqwest::Client::new()
+            .get(env.account_service.join("_test/spots")?)
+            .header("X-Test-Root", &root)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            provider_snapshot
+                .iter()
+                .any(|row| row["subject"] == subject && row["key"].is_string()),
+            "connected browser inventory has no selected provider artifact: {provider_snapshot:?}"
+        );
+
+        let linked = link_cli(&driver, &env).await?;
+        assert!(linked.link.status.success());
+        let synced = run_cli(
+            &linked.profile,
+            &["account".to_string(), "sync".to_string()],
+        )
+        .await?;
+        assert!(
+            synced.status.success(),
+            "account sync failed after link: stdout={} stderr={}",
+            synced.stdout,
+            synced.stderr
+        );
+        let status = run_cli(
+            &linked.profile,
+            &["account".to_string(), "status".to_string()],
+        )
+        .await?;
+        assert!(
+            status.status.success(),
+            "account status failed: {}",
+            status.stderr
+        );
+        assert!(
+            status.stdout.contains(&root),
+            "CLI linked to a different account root; browser={root} status={}",
+            status.stdout
+        );
+        let provider = status
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("provider: "))
+            .context("account status omitted the provider")?;
+        assert_eq!(url::Url::parse(provider)?, env.account_service);
+        let listed = run_cli(
+            &linked.profile,
+            &[
+                "space".to_string(),
+                "list".to_string(),
+                "--all".to_string(),
+                "--refresh".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .await?;
+        assert!(
+            listed.status.success(),
+            "space list failed: {}",
+            listed.stderr
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&listed.stdout)?;
+        let cli_row = rows
+            .iter()
+            .find(|row| row["subject"] == subject)
+            .with_context(|| {
+                format!(
+                    "CLI inventory omitted the browser-created subject; link={} rows={}",
+                    linked.link.stdout, listed.stdout
+                )
+            })?;
+        assert_eq!(cli_row["accountMembership"], "active");
+        assert_eq!(cli_row["localPresence"], "absent");
+        assert_eq!(cli_row["transport"], "configured");
+        assert_eq!(
+            cli_row["authority"], "retained",
+            "refreshed CLI inventory rejected saved authority: {}",
+            listed.stderr
+        );
+        assert_eq!(cli_row["confirmedRevision"], confirmed);
+        assert_eq!(cli_row["pullable"], true);
+
+        let pulled = run_cli(
+            &linked.profile,
+            &[
+                "account".to_string(),
+                "spaces".to_string(),
+                "pull".to_string(),
+                subject.clone(),
+                "--name".to_string(),
+                "cross-client-garden".to_string(),
+            ],
+        )
+        .await?;
+        assert!(
+            pulled.status.success(),
+            "space pull failed: {}",
+            pulled.stderr
+        );
+        assert!(pulled.stdout.contains("pulled\tcross-client-garden\t"));
+
+        let listed = run_cli(
+            &linked.profile,
+            &[
+                "space".to_string(),
+                "list".to_string(),
+                "--all".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .await?;
+        assert!(
+            listed.status.success(),
+            "space relist failed: {}",
+            listed.stderr
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&listed.stdout)?;
+        let cli_row = rows
+            .iter()
+            .find(|row| row["subject"] == subject)
+            .context("CLI inventory lost the pulled subject")?;
+        assert_eq!(cli_row["localPresence"], "registered");
+        assert_eq!(cli_row["pullable"], false);
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_device_local_removal_hidden_across_reload_and_profile_switch(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "hidden-space@example.com").await?;
+        let subject = create_connected_space(&driver, &env, "Hidden Garden").await?;
+        let linked = link_cli(&driver, &env).await?;
+        let synced = run_cli(
+            &linked.profile,
+            &["account".to_string(), "sync".to_string()],
+        )
+        .await?;
+        assert!(
+            synced.status.success(),
+            "account sync failed: {}",
+            synced.stderr
+        );
+
+        driver.goto(env.tonk_web.as_str()).await?;
+        click_in_guest(&driver, &format!("label[for=\"rm-{subject}\"]")).await?;
+        click_in_guest(
+            &driver,
+            &format!("form[data-remove=\"{subject}\"] wa-button[type=\"submit\"]"),
+        )
+        .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let profile = get_json(&driver, "/api/profile").await?;
+            if !profile_space_keys(successful_body("read profile after removal", &profile))
+                .contains(&subject)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("device-local removal did not retract {subject}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let hidden =
+            wait_for_account_space(&driver, &subject, "active", Some("hiddenOnThisDevice")).await?;
+        assert_eq!(hidden["local"], false);
+
+        driver.refresh().await?;
+        element(&driver, "tonk-site").await?;
+        let reloaded = get_json(&driver, "/api/profile").await?;
+        assert!(
+            !profile_space_keys(successful_body("read reloaded profile", &reloaded))
+                .contains(&subject)
+        );
+        wait_for_account_space(&driver, &subject, "active", Some("hiddenOnThisDevice")).await?;
+
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let first_profile = successful_body("read first profile", &profiles)["active"]
+            .as_str()
+            .context("profiles response omitted active profile")?
+            .to_string();
+        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        click(&driver, "#account-add-profile").await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        sign_up(&driver, &env, "other-profile@example.com").await?;
+        click(
+            &driver,
+            &format!("#account-profile-list button[data-activate=\"{first_profile}\"]"),
+        )
+        .await?;
+        wait_for_text_containing(&driver, "#account-email-value", "hidden-space@example.com")
+            .await?;
+        let switched_back = get_json(&driver, "/api/profile").await?;
+        assert!(
+            !profile_space_keys(successful_body("read switched profile", &switched_back))
+                .contains(&subject)
+        );
+        wait_for_account_space(&driver, &subject, "active", Some("hiddenOnThisDevice")).await?;
+
+        let listed = run_cli(
+            &linked.profile,
+            &[
+                "space".to_string(),
+                "list".to_string(),
+                "--all".to_string(),
+                "--refresh".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .await?;
+        assert!(
+            listed.status.success(),
+            "CLI list failed: {}",
+            listed.stderr
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&listed.stdout)?;
+        let cli_row = rows
+            .iter()
+            .find(|row| row["subject"] == subject)
+            .context("another device lost active account membership")?;
+        assert_eq!(cli_row["accountMembership"], "active");
+        assert_eq!(cli_row["localPresence"], "absent");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_archives_account_membership_without_claiming_remote_or_peer_deletion(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "archive-space@example.com").await?;
+        let subject = create_connected_space(&driver, &env, "Archive Garden").await?;
+        let linked = link_cli(&driver, &env).await?;
+        let synced = run_cli(
+            &linked.profile,
+            &["account".to_string(), "sync".to_string()],
+        )
+        .await?;
+        assert!(
+            synced.status.success(),
+            "account sync failed: {}",
+            synced.stderr
+        );
+        let devices_before = devices(&linked.profile, &env).await?;
+        assert!(devices_before.status.success(), "{}", devices_before.stderr);
+
+        let archived = run_cli(
+            &linked.profile,
+            &[
+                "space".to_string(),
+                "archive".to_string(),
+                subject.clone(),
+                "--yes".to_string(),
+            ],
+        )
+        .await?;
+        assert!(
+            archived.status.success(),
+            "CLI archive failed: stdout={} stderr={}",
+            archived.stdout,
+            archived.stderr
+        );
+        assert!(archived.stdout.contains("Archived account space"));
+
+        let row = wait_for_account_space(&driver, &subject, "archived", None).await?;
+        assert_eq!(row["local"], true, "archive must not unmount the peer copy");
+        assert_eq!(row["pullable"], false);
+        let readable = get_json(&driver, &format!("/api/repository/{subject}")).await?;
+        successful_body("read already-mounted archived space", &readable);
+
+        let account = get_json(&driver, "/api/account").await?;
+        let root = successful_body("read archive account", &account)["rootDid"]
+            .as_str()
+            .context("account response omitted root DID")?;
+        let active_provider: Vec<serde_json::Value> = reqwest::Client::new()
+            .get(env.account_service.join("_test/spots")?)
+            .header("X-Test-Root", root)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            active_provider.iter().all(|row| row["subject"] != subject),
+            "the archived tombstone must replace the active provider head: {active_provider:?}"
+        );
+        let devices_after = devices(&linked.profile, &env).await?;
+        assert!(devices_after.status.success(), "{}", devices_after.stderr);
+        assert_eq!(
+            devices_after.stdout, devices_before.stdout,
+            "archive must not revoke devices or authority"
         );
 
         driver.quit().await?;

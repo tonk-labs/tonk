@@ -266,6 +266,7 @@ async fn finish_swap(
         wasm_bindgen_futures::spawn_local(async move {
             let tonk = state.read().await;
             super::account_state::ensure_account_state(&tonk).await;
+            super::account_reconcile::reconcile(&tonk).await;
         });
     }
 

@@ -4669,6 +4669,7 @@ name = "tonk-account"
 version = "0.6.7"
 dependencies = [
  "anyhow",
+ "base58",
  "blake3",
  "dialog-capability",
  "dialog-common",

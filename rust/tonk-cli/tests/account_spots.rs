@@ -3,6 +3,9 @@
 
 mod common;
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use anyhow::Result;
 use dialog_query::{Output as _, Query, Term};
 use tonk_access_service::helpers::AccessServiceAddress;
@@ -158,36 +161,29 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
 }
 
 #[tokio::test]
-async fn pull_retains_an_unbound_canonical_spot_when_initial_sync_is_offline() -> Result<()> {
+async fn pull_preserves_suppression_and_cleans_up_when_initial_sync_is_offline() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let subject = fixture
         .record_directory_space(85, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
+    let mut registry = fixture.store.load()?;
+    registry.suppress(subject.as_ref());
+    fixture.store.save(&registry)?;
 
-    let outcome =
-        account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
-    assert!(!outcome.already_local);
+    let error = account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None)
+        .await
+        .expect_err("an unreachable initial sync must not register a partial space");
     assert!(
-        outcome
-            .warning
-            .as_deref()
-            .is_some_and(|warning| { warning.contains("run `tonk pull`") })
-    );
-    assert_eq!(
-        outcome.site,
-        fixture.store.canonical_site("garden").canonicalize()?
+        error
+            .to_string()
+            .contains("initial pull from 'origin' failed"),
+        "{error:#}"
     );
     let registry = fixture.store.load()?;
-    assert_eq!(registry.spots["garden"].site, outcome.site);
+    assert!(!registry.spots.contains_key("garden"));
+    assert!(registry.is_suppressed(subject.as_ref()));
     assert!(registry.bindings.is_empty());
-
-    let second =
-        account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
-    assert!(second.already_local);
-    assert_eq!(second.name, "garden");
-
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
-    assert_eq!(rows[0].local_name.as_deref(), Some("garden"));
+    assert!(!fixture.store.canonical_site("garden").exists());
     Ok(())
 }
 
@@ -372,6 +368,126 @@ async fn mark_content_confirmed(
             "the seeded fixture site must have a local revision"
         );
     }
+    Ok(())
+}
+
+fn directory_bytes(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+    fn visit(root: &Path, path: &Path, files: &mut BTreeMap<String, Vec<u8>>) -> Result<()> {
+        let mut entries = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(root, &path, files)?;
+            } else if path.is_file() {
+                files.insert(
+                    path.strip_prefix(root)?.to_string_lossy().into_owned(),
+                    std::fs::read(path)?,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
+#[dialog_common::test]
+async fn archive_preserves_local_data_and_authority(env: AccessServiceAddress) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    let store = fixture.config.account_store.clone();
+    let local_root = store.canonical_site("garden");
+    let site = TonkSite::init_at_with(&local_root, fixture.config.clone()).await?;
+    name_repository(&site, "garden").await?;
+    configure_upstream(&site, &remote).await?;
+    tonk_cli::spot::register_existing_unbound(&store, "garden", &site.root)?;
+
+    let operator = fixture.pre_account_site.operator.inner();
+    let account =
+        tonk_cli::account_state::open_account_branch_in(&fixture.profile, operator, &store)
+            .await?
+            .expect("the linked fixture account is hydrated");
+    let subject = site.repository.did();
+    let prefix = tonk_cli::site::account_root_prefix(&site, fixture.link.issuer()).await?;
+    tonk_schema::account::record_active_account_space(
+        &account,
+        tonk_schema::account::AccountSpaceInput {
+            account: fixture.link.issuer().clone(),
+            subject: subject.clone(),
+            name: Some("garden".to_string()),
+            remote_url: Some(remote),
+            revocation_url: None,
+            confirmed_revision: None,
+        },
+        operator,
+    )
+    .await?;
+    account.push().perform(operator).await?;
+    assert_eq!(
+        account_spots::record_site_in("garden", &site, &store).await?,
+        account_spots::RecordOutcome::Recorded
+    );
+
+    let revision_before = site.branch().await?.handle().revision();
+    let bytes_before = directory_bytes(&site.root)?;
+    let registry_before = store.load()?;
+    let authority_before = prefix.to_bytes()?;
+
+    let archived = account_spots::archive_with_operator_for_integration_test(
+        &fixture.profile,
+        &store,
+        subject.as_ref(),
+        operator,
+    )
+    .await?;
+
+    assert!(archived.newly_archived);
+    assert!(archived.projection_warning.is_none(), "{archived:?}");
+    let updated_account =
+        tonk_cli::account_state::open_account_branch_in(&fixture.profile, operator, &store)
+            .await?
+            .expect("the account remains hydrated after archive");
+    let rows = tonk_schema::account::list_account_spaces(&updated_account, operator).await?;
+    assert!(
+        rows.iter()
+            .any(|row| row.subject == subject && row.archived),
+        "the canonical account fact remains queryable"
+    );
+    assert_eq!(store.load()?, registry_before);
+    assert_eq!(site.branch().await?.handle().revision(), revision_before);
+    assert_eq!(directory_bytes(&site.root)?, bytes_before);
+    assert_eq!(
+        tonk_cli::site::load_account_root_prefix_for(
+            &site.profile,
+            site.operator.inner(),
+            &subject,
+            fixture.link.issuer(),
+        )
+        .await?
+        .to_bytes()?,
+        authority_before,
+        "archive must not revoke repository authority"
+    );
+    let pull_error = account_spots::pull(&fixture.profile, &store, subject.as_ref(), None)
+        .await
+        .expect_err("an archived account space must not be pullable");
+    assert!(
+        pull_error.to_string().contains("is archived"),
+        "{pull_error:#}"
+    );
+
+    let again = account_spots::archive_with_operator_for_integration_test(
+        &fixture.profile,
+        &store,
+        subject.as_ref(),
+        operator,
+    )
+    .await?;
+    assert!(!again.newly_archived);
+    assert_eq!(directory_bytes(&site.root)?, bytes_before);
     Ok(())
 }
 

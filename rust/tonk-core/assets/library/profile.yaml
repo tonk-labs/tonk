@@ -541,20 +541,20 @@ view/directory!:
             <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
             <span class="srow-name">{name}</span>
           </a>
-          <label class="srm-open" for="rm-{subject}" aria-label="Remove spot">
+          <label class="srm-open" for="rm-{subject}" aria-label="Remove space from this device">
             <wa-icon name="xmark"></wa-icon>
           </label>
           <div class="srm-overlay">
             <form class="srm-card" onsubmit=space/remove data-remove={subject} data-close-radio="rm-closed">
-              <h3 class="srm-title">Delete this spot?</h3>
+              <h3 class="srm-title">Remove this space from this device?</h3>
               <div class="srm-name">{name}</div>
-              <p class="onb-lede">Removes this spot from your account, on every device.
-                A synced spot can be rejoined with an invite link; a local-only spot is gone for good.</p>
+              <p class="onb-lede">Hides this space on this device and may remove its local data.
+                Account membership, remote data, peer copies, and authority are unchanged.</p>
               <div class="srm-actions">
                 <label class="srm-cancel" for="rm-closed">
                   <wa-button variant="neutral" appearance="plain" size="small">cancel</wa-button>
                 </label>
-                <wa-button type="submit" variant="danger" size="small">delete spot</wa-button>
+                <wa-button type="submit" variant="danger" size="small">remove from this device</wa-button>
               </div>
             </form>
           </div>

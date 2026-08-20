@@ -37,6 +37,7 @@ pub async fn handle(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
         .map(|signer| signer.did().to_string());
     let config = (|| {
         Ok::<_, Error>(DeploymentConfig {
+            access_remote_url: None,
             account_service_url: configured_url(&ctx, "ACCOUNT_SERVICE_URL")?,
             revocation_relay_url: configured_url(&ctx, "REVOCATION_RELAY_URL")?,
             service_did,

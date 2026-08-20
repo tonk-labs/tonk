@@ -573,6 +573,19 @@ where
     }
 }
 
+/// Probe `main` for the configured content endpoint, whether or not it has a
+/// revocation relay suitable for invitations.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn resolve_configured_remote_url<R>(
+    tonk: &crate::worker::TonkState,
+    repository: &dialog_repository::Repository<R>,
+) -> Result<ConfiguredRemoteRequirement, TonkWorkerError>
+where
+    R: Principal + Clone,
+{
+    resolve_configured_remote_url_with(repository, &tonk.operator).await
+}
+
 /// Probe `main` for an invite-ready endpoint. Unlike generic sync and account
 /// backup, invites require an explicit revocation relay.
 pub(crate) async fn resolve_remote_url<R>(

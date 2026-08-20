@@ -594,14 +594,22 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let tonk = state.write().await;
-    let outcome = join_invite(&tonk, &body.url, JoinMode::Durable).await?;
-    log!(
-        "POST /api/profile/join -> subject {} (key {})",
-        outcome.subject,
-        outcome.key
-    );
-    joined_response(&tonk, outcome).await
+    let response = {
+        let tonk = state.write().await;
+        let outcome = join_invite(&tonk, &body.url, JoinMode::Durable).await?;
+        log!(
+            "POST /api/profile/join -> subject {} (key {})",
+            outcome.subject,
+            outcome.key
+        );
+        joined_response(&tonk, outcome).await?
+    };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let tonk = state.read().await;
+        super::account_reconcile::reconcile(&tonk).await;
+    }
+    Ok(response)
 }
 
 /// Load the committed replica and shape the route's success body.

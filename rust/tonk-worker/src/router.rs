@@ -23,6 +23,9 @@ mod customer;
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) mod account_reconcile;
+mod account_spaces;
 mod http;
 
 pub(crate) mod adopt;
@@ -173,6 +176,15 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/custody/provision", post(customer::provision_custody))
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/summary", get(account_devices::summary))
+        .route("/api/account/spaces", get(account_spaces::list))
+        .route(
+            "/api/account/spaces/{subject}/download",
+            post(account_spaces::download),
+        )
+        .route(
+            "/api/account/spaces/{subject}/archive",
+            post(account_spaces::archive),
+        )
         .route(
             "/api/account/devices/register",
             post(account_devices::register),

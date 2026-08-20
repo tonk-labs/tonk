@@ -1489,6 +1489,8 @@ mod tests {
                 delegation_hex,
                 descriptor_hex: hex::encode(descriptor.bytes()),
                 initialize_name: false,
+                access_remote: None,
+                revocation_relay: None,
             },
         )
         .await

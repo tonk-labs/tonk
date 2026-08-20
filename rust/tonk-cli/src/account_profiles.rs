@@ -258,7 +258,7 @@ pub enum ProfileError {
     },
     /// A binding points at a missing profile-local space.
     #[error(
-        "unknown spot '{space}' in profile '{profile}'; native profile registry at {path} has a binding at {directory}; clear it with `tonk spot unbind {directory}`"
+        "unknown space '{space}' in profile '{profile}'; native profile registry at {path} has a binding at {directory}; clear it with `tonk space unbind {directory}`"
     )]
     DanglingBinding {
         /// Registry path.
@@ -822,10 +822,14 @@ impl NativeProfileStore {
         profile: &NativeProfileId,
         space: &str,
         data: spot::Data,
+        subject: Option<&str>,
     ) -> Result<spot::RemoveOutcome, ProfileError> {
         let mut registry = self.load_or_bootstrap()?;
         let context = self.context_from(&registry, profile)?;
-        let mut outcome = spot::remove(&context.store, space, data)?;
+        let mut outcome = match subject {
+            Some(subject) => spot::remove_with_subject(&context.store, space, data, subject)?,
+            None => spot::remove(&context.store, space, data)?,
+        };
         let removed: Vec<PathBuf> = registry
             .bindings
             .iter()
