@@ -32,6 +32,9 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("upgraded"),
         account_config(&fixture),
@@ -46,6 +49,10 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
         .perform(&site.operator)
         .await?;
     configure_upstream(&site, &env.access_service_url).await?;
+    // What is under test is push authority, not provisioning; the space
+    // still has to be someone's to serve.
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
 
     tonk_cli::sync::push(&site).await?;
 
@@ -127,6 +134,9 @@ async fn it_installs_authority_from_a_callback_authorization(
 
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
     let operator = fixture.pre_account_site.operator.inner();
 
     // Exactly what the page mints: the account's powerline to this profile,
@@ -235,6 +245,8 @@ async fn it_installs_authority_from_a_callback_authorization(
     )
     .await?;
     configure_upstream(&site, &env.access_service_url).await?;
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
     tonk_cli::sync::push(&site)
         .await
         .context("a spot must push under authority that reaches the account root")?;
@@ -257,6 +269,9 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
 
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let owner = common::AccountFixture::with_account_remote(&remote).await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    owner.activate_with(&env).await?;
     let owner_operator = owner.pre_account_site.operator.inner();
     let account_root = owner.link.issuer().clone();
 
@@ -454,6 +469,9 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     // Device one: an account, and a spot whose authority it retains there.
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let first = common::AccountFixture::with_account_remote(&remote).await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    first.activate_with(&env).await?;
     let site = TonkSite::init_at_with(&first.tmp.path().join("device-one"), account_config(&first))
         .await?;
     configure_upstream(&site, &env.access_service_url).await?;
@@ -600,9 +618,14 @@ async fn it_pushes_a_spot_created_before_the_account_existed(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
     let path = fixture.pre_account_site.root.clone();
     let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
     configure_upstream(&site, &env.access_service_url).await?;
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
 
     tonk_cli::sync::push(&site).await?;
 

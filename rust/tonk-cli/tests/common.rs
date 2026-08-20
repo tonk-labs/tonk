@@ -203,6 +203,25 @@ impl AccountFixture {
         })
     }
 
+    /// Enroll this fixture's account root with `access` and confirm its
+    /// email, so the access service will serve and provision for it.
+    ///
+    /// The gate serves nothing for a customer that has not confirmed an
+    /// email address, so any fixture that pushes, pulls, or provisions
+    /// against a live access service comes through here first.
+    pub async fn activate_with(
+        &self,
+        access: &tonk_access_service::helpers::AccessServiceAddress,
+    ) -> Result<()> {
+        let root = dialog_credentials::Ed25519Signer::import(&self.root_prf).await?;
+        access.activate_customer(&root, "person@example.com").await
+    }
+
+    /// This fixture's account root signer.
+    pub async fn root_signer(&self) -> Result<dialog_credentials::Ed25519Signer> {
+        Ok(dialog_credentials::Ed25519Signer::import(&self.root_prf).await?)
+    }
+
     /// Mint a `space → account-root` chain for a synthetic space.
     pub async fn space_chain(
         &self,

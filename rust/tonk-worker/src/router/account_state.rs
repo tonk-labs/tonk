@@ -1454,6 +1454,14 @@ mod tests {
 
         let root = Ed25519Signer::generate().await.unwrap();
         let root_signer = root.clone();
+        // Hydration syncs the account space, which the access service
+        // serves only once its customer has confirmed the emailed
+        // activation link.
+        service
+            .address
+            .activate_customer(&root, "worker-account-state@example.com")
+            .await
+            .unwrap();
         let remote = format!(
             "{}/",
             service.address.access_service_url.trim_end_matches('/')

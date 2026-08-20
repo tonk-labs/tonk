@@ -831,6 +831,13 @@ mod tests {
             .await
             .unwrap();
         let root = Ed25519Signer::generate().await.unwrap();
+        // The account space is servable only once its customer has
+        // confirmed the emailed activation link.
+        service
+            .address
+            .activate_customer(&root, "account-state@example.com")
+            .await
+            .unwrap();
         let live_remote = format!(
             "{}/",
             service.address.access_service_url.trim_end_matches('/')
@@ -998,6 +1005,13 @@ mod tests {
             .await
             .unwrap();
         let root = Ed25519Signer::generate().await.unwrap();
+        // The account space is servable only once its customer has
+        // confirmed the emailed activation link.
+        service
+            .address
+            .activate_customer(&root, "account-state@example.com")
+            .await
+            .unwrap();
         let remote = format!(
             "{}/",
             service.address.access_service_url.trim_end_matches('/')

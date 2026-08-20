@@ -186,6 +186,31 @@ mod tests {
                 "account creation stopped in mode {mode:?}; error={error:?}; status={working:?}"
             ));
         }
+
+        // Confirm the email: the access service provisions nothing and
+        // serves nothing for a customer that has not, so a signed-up
+        // account cannot host a space until this happens. Callers that
+        // push data need the account past this point, and callers that
+        // do not are unaffected by it.
+        activate(driver, env, email).await?;
+        Ok(())
+    }
+
+    /// Follow the emailed activation link and accept, leaving the
+    /// customer `Active` and its queued work drained.
+    pub(crate) async fn activate(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        email: &str,
+    ) -> Result<()> {
+        let link = activation_link(env, email).await?;
+        let account = driver.current_url().await?;
+        driver.goto(&link).await?;
+        element(driver, "#activate-accept").await?.click().await?;
+        element(driver, "#activate-done").await?;
+        // Back to where the caller was: activation is a detour, not a
+        // navigation the caller asked for.
+        driver.goto(account.as_str()).await?;
         Ok(())
     }
 
@@ -216,12 +241,17 @@ mod tests {
         // Signup enrolled the account as a customer: the dashboard names
         // the pending activation, and the emailed link completes it from
         // this (or any) device without a key.
-        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
-            .await?;
-        let link = activation_link(&env, EMAIL).await?;
-        driver.goto(&link).await?;
-        element(&driver, "#activate-accept").await?.click().await?;
-        element(&driver, "#activate-done").await?;
+        // sign_up already followed the emailed link, so the account is
+        // past activation: the registration row says so, and the
+        // pending-activation banner is gone.
+        wait_for_text(&driver, "#account-registration-value", "Active").await?;
+        if let Ok(notice) = driver.find(By::Css("#account-activation-notice")).await {
+            let text = notice.text().await.unwrap_or_default();
+            assert!(
+                !text.contains("activation pending"),
+                "an activated account must not still nag about activation, got {text:?}"
+            );
+        }
 
         driver.quit().await?;
         Ok(())

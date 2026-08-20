@@ -250,9 +250,12 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
+    fixture.activate_with(&env).await?;
     let source_root = fixture.tmp.path().join("published-source");
     let source = TonkSite::init_at_with(&source_root, fixture.config.clone()).await?;
     let subject = source.repository.did();
+    // The published space has to be someone's to serve before it syncs.
+    env.provision_subject(subject.as_str()).await?;
     let source_branch = source.branch().await?;
     source_branch
         .handle()
@@ -497,6 +500,9 @@ async fn list_hydrates_a_linked_but_unhydrated_profile(env: AccessServiceAddress
     // Descriptor remotes are canonical with a trailing slash.
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let fixture = common::AccountFixture::unhydrated_with_account_remote(&remote).await?;
+    // Hydration syncs the account space, which is servable only once
+    // its customer has confirmed the emailed activation link.
+    fixture.activate_with(&env).await?;
     let operator = fixture.operator().await?;
     assert!(
         tonk_cli::account_state::open_account_branch_in(
