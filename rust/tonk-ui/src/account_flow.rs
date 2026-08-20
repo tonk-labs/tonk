@@ -734,7 +734,19 @@ mod tests {
             ));
         }
 
-        let restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        // Sign-in success precedes the account content pull that
+        // carries the directory rows, and the on-demand mount needs
+        // those rows. The Hub renders from a live subscription, so
+        // arrival is eventually consistent by design; poll the load
+        // the same way a page would re-render.
+        let mut restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        for _ in 0..30 {
+            if restored["status"].as_u64().is_some_and(|s| s == 200) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        }
         let restored = successful_body("load claimed spot on second device", &restored);
         assert_eq!(restored["subject"], key);
 
