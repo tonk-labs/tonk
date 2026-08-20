@@ -11,7 +11,6 @@ use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
-use tonk_account::prefix::space_delete_site;
 use tonk_account::{AccountStateStatus, MAIN_BRANCH};
 use tonk_schema::RepositoryName;
 use tonk_schema::directory::{MountBranch, MountRecord, MountRemote};
@@ -36,8 +35,6 @@ pub struct AccountSpotRow {
     pub ambiguous: bool,
     /// Whether the directory carries a mount record for this space.
     pub pullable: bool,
-    /// Whether the account holds exact hosted deletion authority.
-    pub deletion_ready: bool,
 }
 
 /// Result of pulling one account spot.
@@ -194,7 +191,6 @@ pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpo
             AccountSpotRow {
                 local_name: local.get(&subject).map(|spot| spot.name.clone()),
                 pullable: space.mountable,
-                deletion_ready: space.deletion_ready,
                 remote_name: space.name,
                 ambiguous: false,
                 subject,
@@ -352,28 +348,10 @@ pub async fn pull(
         other => bail!("the mount record's remote is not a UCAN site: {other:?}"),
     };
 
-    // The directory's mirrored deletion grant travels to this device
-    // as a local credential, so a later deletion ceremony here can
-    // present it without the creating device.
-    let deletion_grant_bytes =
-        tonk_schema::directory::deletion_grant(&account, &requested, &operator)
-            .await
-            .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
-            .and_then(|grant_hex| hex::decode(grant_hex).ok());
-
     let mut fresh_target = FreshPullTarget::new(target.clone());
     let site = crate::site::mount_delegated_at(&target, chain, site_config(profile))
         .await
         .context("failed to mount account spot")?;
-    if let Some(bytes) = deletion_grant_bytes {
-        site.profile
-            .credential()
-            .site(space_delete_site(&requested, &account_root))
-            .save(bytes)
-            .perform(site.operator.local())
-            .await
-            .context("failed to retain the restored deletion grant")?;
-    }
     remote::add_with_revocation(
         &site,
         DEFAULT_REMOTE,
@@ -500,22 +478,6 @@ pub async fn record_site_in(
             upstream: Some((upstream.clone(), MAIN_BRANCH.to_string())),
         }],
     };
-    // The creator's local deletion grant rides along, so any device on
-    // the account can present it when deleting the hosted space.
-    let grant_hex =
-        match crate::identity::local_root_with_operator(&site.profile, &operator).await? {
-            Some(root) => {
-                let root: Did = root
-                    .root_did
-                    .parse()
-                    .context("stored root DID is invalid")?;
-                crate::site::deletion_grant(site, &root)
-                    .await?
-                    .and_then(|chain| chain.to_bytes().ok())
-                    .map(hex::encode)
-            }
-            None => None,
-        };
     let current = tonk_schema::directory::mount_record(&account, &subject, &operator)
         .await
         .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?;
@@ -525,24 +487,13 @@ pub async fn record_site_in(
         .into_iter()
         .find(|space| space.subject == subject)
         .and_then(|space| space.name);
-    let current_grant = tonk_schema::directory::deletion_grant(&account, &subject, &operator)
-        .await
-        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?;
-    if current.as_ref() == Some(&desired)
-        && current_name.as_deref() == Some(name.as_str())
-        && (grant_hex.is_none() || current_grant == grant_hex)
-    {
+    if current.as_ref() == Some(&desired) && current_name.as_deref() == Some(name.as_str()) {
         return Ok(RecordOutcome::Unchanged);
     }
 
     tonk_schema::directory::record(&account, &subject, Some(&name), &desired, &operator)
         .await
         .context("failed to record the spot in the account directory")?;
-    if let Some(grant_hex) = grant_hex.filter(|grant| current_grant.as_ref() != Some(grant)) {
-        tonk_schema::directory::record_deletion_grant(&account, &subject, &grant_hex, &operator)
-            .await
-            .context("failed to record the deletion grant in the account directory")?;
-    }
     if let Err(error) = account.push().perform(&operator).await {
         eprintln!("warning: account directory updated locally; push failed: {error:#}");
     }

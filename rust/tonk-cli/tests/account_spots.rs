@@ -431,13 +431,6 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
         Some("synced-owned"),
         "synced RepositoryName takes precedence over the registry alias"
     );
-    assert!(
-        rows.iter()
-            .find(|row| row.subject == owned.repository.did().to_string())
-            .unwrap()
-            .deletion_ready,
-        "a newly owned space backup carries its exact deletion grant"
-    );
     assert_eq!(
         rows.iter()
             .find(|row| row.subject == joined.repository.did().to_string())
@@ -446,14 +439,6 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
             .as_deref(),
         Some("joined-alias"),
         "an unnamed repository falls back to its registry name"
-    );
-    assert!(
-        !rows
-            .iter()
-            .find(|row| row.subject == joined.repository.did().to_string())
-            .unwrap()
-            .deletion_ready,
-        "a joined space must not acquire deletion authority"
     );
     assert_eq!(
         rows.iter()

@@ -1,4 +1,12 @@
-//! Capability-authorized, denial-first hosted-space deletion.
+//! Denial-first hosted-space deletion as deprovisioning.
+//!
+//! Deleting a hosted space is the owning customer ending its hosting
+//! relationship — the reverse of `/provider/add` — not an operation on
+//! the space. The invocation's subject is the CUSTOMER, authorized by
+//! the customer's own chain (root-signed, or device-signed through the
+//! root's delegation), so no chain rooted in the space — invites
+//! included — can ever reach it. No per-space deletion artifact is
+//! registered or presented.
 
 use async_trait::async_trait;
 use dialog_credentials::DidKeyResolver;
@@ -8,10 +16,10 @@ use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Consumer, ConsumerDeletionState, DeletionGrantKind, Store};
+use crate::store::{ConsumerDeletionState, Store};
 
-/// Exact destructive command recognized at the UCAN endpoint.
-pub const COMMAND: [&str; 2] = ["space", "delete"];
+/// The deprovisioning command: the reverse of `/provider/add`.
+pub const COMMAND: [&str; 2] = ["provider", "remove"];
 /// Root-authenticated inventory command used before a destructive ceremony.
 pub const CUSTOMER_PLAN_COMMAND: [&str; 3] = ["customer", "deletion", "plan"];
 /// Root-authenticated access-service customer finalization command.
@@ -31,13 +39,11 @@ pub struct Receipt {
 #[serde(rename_all = "camelCase")]
 pub struct HostedSpace {
     pub space: String,
-    pub deletion_ready: bool,
-    pub deletion_kind: Option<String>,
     pub deletion_state: String,
 }
 
-/// Authoritative access-service inventory. `owner` discovers candidates; it
-/// never substitutes for each row's registered destructive proof.
+/// Authoritative access-service inventory of the customer's owned
+/// hosted spaces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomerDeletionPlan {
@@ -61,11 +67,11 @@ pub enum Error {
     Malformed(String),
     #[error("deletion invocation failed cryptographic verification: {0}")]
     Unauthorized(String),
-    #[error("the hosted space has no registered deletion authority")]
+    #[error("the space is not hosted here")]
     NotRegistered,
-    #[error("the invocation does not present the registered deletion proof")]
+    #[error("the invocation does not carry the required proof")]
     WrongGrant,
-    #[error("registered deletion authority does not have the required direct shape")]
+    #[error("only the owning customer may deprovision a hosted space")]
     Forbidden,
     #[error("hosted-space deletion is temporarily incomplete: {0}")]
     Incomplete(String),
@@ -96,7 +102,7 @@ pub trait SpacePurger {
     async fn purge(&self, prefix: &str) -> Result<(), String>;
 }
 
-/// Return true only for the exact destructive command.
+/// Return true only for the deprovisioning command.
 pub fn is_deletion(container: &[u8]) -> bool {
     let Ok(tokens) = Container::from_bytes(container).map(Container::into_tokens) else {
         return false;
@@ -145,48 +151,51 @@ pub fn subject(container: &[u8]) -> Option<Did> {
         .map(|chain| chain.subject().clone())
 }
 
-/// Delete one hosted space. State flips to deleting before object removal,
-/// so stale replicas cannot resurrect a partial purge.
+/// Deprovision one hosted space. State flips to deleting before object
+/// removal, so stale replicas cannot resurrect a partial purge.
 pub async fn delete<S: Store, P: SpacePurger>(
     store: &S,
     purger: &P,
     container: &[u8],
     now: u64,
 ) -> Result<Receipt, Error> {
-    let space = subject(container).ok_or_else(|| Error::Malformed("missing subject".into()))?;
+    let customer = verify_customer_command(store, container, &COMMAND, now, true).await?;
+    let space = consumer_argument(container)?;
+    if space.as_str() == customer {
+        // The customer's own account space is finalized through
+        // `/customer/delete`, after every other owned space is gone.
+        return Err(Error::Forbidden);
+    }
     let consumer = store
         .consumer(space.as_str())
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .ok_or(Error::NotRegistered)?;
-    verify(container, &consumer, now).await?;
+    if consumer.owner.as_deref() != Some(customer.as_str()) {
+        return Err(Error::Forbidden);
+    }
 
     if consumer.deletion_state == ConsumerDeletionState::Deleted {
         return Ok(receipt(&space, consumer.deleted_at.unwrap_or_default()));
     }
-    if consumer.deletion_state == ConsumerDeletionState::Active {
-        let cid = consumer
-            .deletion_grant_cid
-            .as_deref()
-            .ok_or(Error::NotRegistered)?;
-        if !store
-            .mark_consumer_deleting(space.as_str(), cid)
+    if consumer.deletion_state == ConsumerDeletionState::Active
+        && !store
+            .mark_consumer_deleting(space.as_str())
             .await
             .map_err(|error| Error::Internal(error.to_string()))?
-        {
-            let current = store
-                .consumer(space.as_str())
-                .await
-                .map_err(|error| Error::Internal(error.to_string()))?
-                .ok_or(Error::NotRegistered)?;
-            if current.deletion_state == ConsumerDeletionState::Deleted {
-                return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
-            }
-            if current.deletion_state != ConsumerDeletionState::Deleting {
-                return Err(Error::Internal(
-                    "could not enter deletion denial state".into(),
-                ));
-            }
+    {
+        let current = store
+            .consumer(space.as_str())
+            .await
+            .map_err(|error| Error::Internal(error.to_string()))?
+            .ok_or(Error::NotRegistered)?;
+        if current.deletion_state == ConsumerDeletionState::Deleted {
+            return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
+        }
+        if current.deletion_state != ConsumerDeletionState::Deleting {
+            return Err(Error::Internal(
+                "could not enter deletion denial state".into(),
+            ));
         }
     }
 
@@ -212,6 +221,20 @@ pub async fn delete<S: Store, P: SpacePurger>(
     Ok(receipt(&space, now))
 }
 
+/// The `consumer` argument naming which hosted space to deprovision.
+fn consumer_argument(container: &[u8]) -> Result<Did, Error> {
+    use dialog_ucan_core::promise::Promised;
+
+    let chain = InvocationChain::try_from(container)
+        .map_err(|error| Error::Malformed(error.to_string()))?;
+    match chain.arguments().get("consumer") {
+        Some(Promised::String(did)) => did
+            .parse()
+            .map_err(|_| Error::Malformed("consumer argument is not a DID".into())),
+        _ => Err(Error::Malformed("missing consumer argument".into())),
+    }
+}
+
 /// List every non-account consumer originally associated with this customer.
 pub async fn customer_plan<S: Store>(
     store: &S,
@@ -228,11 +251,6 @@ pub async fn customer_plan<S: Store>(
         .filter(|consumer| consumer.did != customer)
         .map(|consumer| HostedSpace {
             space: consumer.did,
-            deletion_ready: consumer.deletion_grant_cid.is_some()
-                && consumer.deletion_grant_kind.is_some(),
-            deletion_kind: consumer
-                .deletion_grant_kind
-                .map(|kind| kind.as_str().to_string()),
             deletion_state: consumer.deletion_state.as_str().to_string(),
         })
         .collect();
@@ -357,51 +375,6 @@ fn receipt(space: &Did, deleted_at: u64) -> Receipt {
         space: space.clone(),
         state: "deleted".to_string(),
         deleted_at,
-    }
-}
-
-async fn verify(container: &[u8], consumer: &Consumer, now: u64) -> Result<(), Error> {
-    let chain = InvocationChain::try_from(container)
-        .map_err(|error| Error::Malformed(error.to_string()))?;
-    chain
-        .verify(&DidKeyResolver)
-        .await
-        .map_err(|error| Error::Unauthorized(error.to_string()))?;
-    let space: Did = consumer
-        .did
-        .parse()
-        .map_err(|_| Error::Internal("stored consumer DID is invalid".into()))?;
-    if chain.subject() != &space || chain.command().0 != COMMAND.map(str::to_string) {
-        return Err(Error::Forbidden);
-    }
-    let expiration = chain
-        .invocation
-        .expiration()
-        .ok_or_else(|| Error::Unauthorized("invocation must expire".into()))?;
-    if expiration.to_unix() < now {
-        return Err(Error::Unauthorized("invocation has expired".into()));
-    }
-    if chain.proofs().len() != 1 {
-        return Err(Error::Forbidden);
-    }
-    let registered = consumer
-        .deletion_grant_cid
-        .as_deref()
-        .ok_or(Error::NotRegistered)?;
-    if chain.proofs()[0].to_string() != registered {
-        return Err(Error::WrongGrant);
-    }
-    let proof = deposited_proof(container, registered)?;
-    if proof.issuer() != &space
-        || proof.audience() != chain.issuer()
-        || proof.subject() != &Subject::Specific(space)
-    {
-        return Err(Error::Forbidden);
-    }
-    match consumer.deletion_grant_kind.ok_or(Error::NotRegistered)? {
-        DeletionGrantKind::Exact if proof.command().0 == COMMAND.map(str::to_string) => Ok(()),
-        DeletionGrantKind::LegacyDirect if proof.command().0.is_empty() => Ok(()),
-        _ => Err(Error::Forbidden),
     }
 }
 
@@ -548,15 +521,40 @@ fn xml_values(xml: &str, element: &str) -> Vec<String> {
 mod tests {
     use std::sync::Mutex;
 
+    use std::collections::BTreeMap;
+
     use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::InvocationBuilder;
+    use dialog_ucan_core::promise::Promised;
     use dialog_ucan_core::time::timestamp::Timestamp;
     use dialog_varsig::Principal as _;
-    use tonk_account::deletion::{build_deletion_invocation, mint_deletion_grant};
 
     use super::*;
     use crate::store::sqlite::SqliteStore;
     use crate::store::{SIGNUP_PLAN, Store};
+
+    /// A device-signed deprovision invocation, proving through the
+    /// root's delegation — the shape the worker sends.
+    async fn remove_container(
+        root: &Ed25519Signer,
+        device: &Ed25519Signer,
+        consumer: &dialog_varsig::Did,
+    ) -> Vec<u8> {
+        let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
+        tonk_identity::request::build_device_invocation(
+            device.clone(),
+            &link,
+            COMMAND.map(str::to_string).to_vec(),
+            BTreeMap::from([(
+                "consumer".to_string(),
+                Promised::String(consumer.to_string()),
+            )]),
+        )
+        .await
+        .unwrap()
+    }
 
     struct FlakyPurger {
         fail_once: Mutex<bool>,
@@ -620,14 +618,8 @@ mod tests {
     async fn denial_precedes_purge_and_retry_finishes_idempotently() {
         let store = SqliteStore::in_memory().unwrap();
         let root = Ed25519Signer::import(&[71; 32]).await.unwrap();
+        let device = Ed25519Signer::import(&[73; 32]).await.unwrap();
         let space = Ed25519Signer::import(&[72; 32]).await.unwrap();
-        let grant = mint_deletion_grant(
-            &dialog_credentials::Signer::from(space.clone()),
-            &root.did(),
-        )
-        .await
-        .unwrap();
-        let cid = grant.proof_cids()[0].to_string();
         let at = now();
         store
             .enroll_customer(
@@ -640,18 +632,10 @@ mod tests {
             .await
             .unwrap();
         store
-            .add_consumer(
-                space.did().as_str(),
-                root.did().as_str(),
-                at,
-                Some(&cid),
-                Some(DeletionGrantKind::Exact),
-            )
+            .add_consumer(space.did().as_str(), root.did().as_str(), at)
             .await
             .unwrap();
-        let invocation = build_deletion_invocation(root.clone(), &grant)
-            .await
-            .unwrap();
+        let invocation = remove_container(&root, &device, &space.did()).await;
         let purger = FlakyPurger {
             fail_once: Mutex::new(true),
             prefixes: Mutex::new(Vec::new()),
@@ -695,20 +679,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let grant = mint_deletion_grant(
-            &dialog_credentials::Signer::from(space.clone()),
-            &root.did(),
-        )
-        .await
-        .unwrap();
         store
-            .add_consumer(
-                space.did().as_str(),
-                root.did().as_str(),
-                at,
-                Some(&grant.proof_cids()[0].to_string()),
-                Some(DeletionGrantKind::Exact),
-            )
+            .add_consumer(space.did().as_str(), root.did().as_str(), at)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&[83; 32]).await.unwrap();
@@ -716,7 +688,7 @@ mod tests {
             .await
             .unwrap();
         let plan_invocation = tonk_identity::request::build_device_invocation(
-            device,
+            device.clone(),
             &link,
             CUSTOMER_PLAN_COMMAND.map(str::to_string).to_vec(),
             Default::default(),
@@ -726,7 +698,6 @@ mod tests {
         let plan = customer_plan(&store, &plan_invocation, at).await.unwrap();
         assert_eq!(plan.spaces.len(), 1);
         assert_eq!(plan.spaces[0].space, space.did().to_string());
-        assert!(plan.spaces[0].deletion_ready);
 
         let customer_invocation = root_container(root.clone(), &CUSTOMER_DELETE_COMMAND).await;
         let purger = RecordingPurger(Mutex::new(Vec::new()));
@@ -736,9 +707,7 @@ mod tests {
         ));
         assert!(store.customer(root.did().as_str()).await.unwrap().is_some());
 
-        let space_invocation = build_deletion_invocation(root.clone(), &grant)
-            .await
-            .unwrap();
+        let space_invocation = remove_container(&root, &device, &space.did()).await;
         delete(&store, &purger, &space_invocation, at + 2)
             .await
             .unwrap();
@@ -758,17 +727,9 @@ mod tests {
         assert_eq!(denial.deletion_state, ConsumerDeletionState::Deleted);
         assert!(denial.provider.is_none());
         assert!(denial.owner.is_none());
-        assert!(denial.deletion_grant_cid.is_none());
-        assert!(denial.deletion_grant_kind.is_none());
         assert!(
             !store
-                .add_consumer(
-                    space.did().as_str(),
-                    root.did().as_str(),
-                    at + 4,
-                    Some(&grant.proof_cids()[0].to_string()),
-                    Some(DeletionGrantKind::Exact),
-                )
+                .add_consumer(space.did().as_str(), root.did().as_str(), at + 4)
                 .await
                 .unwrap()
         );

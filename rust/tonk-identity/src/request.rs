@@ -174,35 +174,17 @@ pub async fn build_provider_add_invocation(
     consumer: &Did,
     consent: &DelegationChain,
 ) -> Result<Vec<u8>> {
-    build_provider_add_invocation_with_deletion(device, link, consumer, consent, None).await
-}
-
-/// Build `/provider/add` while depositing the creator's exact deletion grant.
-pub async fn build_provider_add_invocation_with_deletion(
-    device: impl Into<Signer>,
-    link: &DelegationChain,
-    consumer: &Did,
-    consent: &DelegationChain,
-    deletion_grant: Option<&DelegationChain>,
-) -> Result<Vec<u8>> {
     let head = consent
         .proofs()
         .next()
         .context("the consent chain carries no delegation")?;
-    let mut arguments = BTreeMap::from([
+    let arguments = BTreeMap::from([
         (
             "consumer".to_string(),
             Promised::String(consumer.to_string()),
         ),
         ("consent".to_string(), Promised::Link(head.to_cid())),
     ]);
-    if let Some(deletion_grant) = deletion_grant {
-        let deletion = deletion_grant
-            .proofs()
-            .next()
-            .context("the deletion grant carries no delegation")?;
-        arguments.insert("deletion".to_string(), Promised::Link(deletion.to_cid()));
-    }
     let invocation = build_device_invocation(
         device,
         link,
@@ -216,14 +198,31 @@ pub async fn build_provider_add_invocation_with_deletion(
     for delegation in consent.proofs() {
         tokens.push(delegation.encoded().to_vec());
     }
-    if let Some(deletion_grant) = deletion_grant {
-        for delegation in deletion_grant.proofs() {
-            tokens.push(delegation.encoded().to_vec());
-        }
-    }
     Container::new(tokens)
         .to_bytes()
         .context("failed to encode the add container")
+}
+
+/// Build a `/provider/remove` container — the reverse of
+/// [`build_provider_add_invocation`], and how a hosted space is
+/// deleted: the invocation names the customer as its subject and the
+/// space as its `consumer` argument, proving through the account's own
+/// chain. No per-space artifact is deposited.
+pub async fn build_provider_remove_invocation(
+    device: impl Into<Signer>,
+    link: &DelegationChain,
+    consumer: &Did,
+) -> Result<Vec<u8>> {
+    build_device_invocation(
+        device,
+        link,
+        vec!["provider".to_string(), "remove".to_string()],
+        BTreeMap::from([(
+            "consumer".to_string(),
+            Promised::String(consumer.to_string()),
+        )]),
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -7,7 +7,6 @@ use axum::{
     extract::{Extension, State},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_ucan_core::InvocationChain;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -32,8 +31,6 @@ struct AccessPlan {
 #[serde(rename_all = "camelCase")]
 struct AccessSpace {
     space: String,
-    deletion_ready: bool,
-    deletion_kind: Option<String>,
     deletion_state: String,
 }
 
@@ -113,79 +110,18 @@ async fn load_plan(
                 .map(|name| (space.subject.to_string(), name))
         })
         .collect();
-    let root = link.issuer().clone();
-
     let mut spaces = Vec::with_capacity(access.spaces.len());
-    let mut blocked_spaces = Vec::new();
     for hosted in access.spaces {
-        let mut name = names.get(&hosted.space).cloned();
-        let mut proof_hex = None;
-        if hosted.deletion_state != "deleted"
-            && let Ok(subject) = hosted.space.parse::<dialog_varsig::Did>()
-        {
-            name = name.or_else(|| names.get(&hosted.space).cloned());
-            proof_hex = match hosted.deletion_kind.as_deref() {
-                Some("exact") => {
-                    // The creator's local credential answers first; the
-                    // synced directory fact covers every other device on
-                    // the account.
-                    match super::repository::space_deletion_grant(state, &subject, &root).await? {
-                        Some(chain) => chain.to_bytes().ok().map(hex::encode),
-                        None => {
-                            let recorded = tonk_schema::directory::deletion_grant(
-                                main.handle(),
-                                &subject,
-                                &state.operator,
-                            )
-                            .await
-                            .map_err(|error| {
-                                TonkWorkerError::Internal(format!(
-                                    "account directory query failed: {error:?}"
-                                ))
-                            })?;
-                            match recorded {
-                                Some(grant_hex) => {
-                                    let bytes = hex::decode(&grant_hex).unwrap_or_default();
-                                    tonk_account::deletion::validate_deletion_grant(
-                                        &bytes, &subject, &root,
-                                    )
-                                    .await
-                                    .ok()
-                                    .map(|_| grant_hex)
-                                }
-                                None => None,
-                            }
-                        }
-                    }
-                }
-                // The original direct `space → root` proof, persisted at
-                // creation on the creating device. Another device on the
-                // account cannot present it yet; the plan reports the
-                // space as blocked there rather than guessing.
-                Some("legacy-direct") => super::repository::space_root_prefix(state, &subject)
-                    .await
-                    .ok()
-                    .and_then(|chain| chain.to_bytes().ok())
-                    .map(hex::encode),
-                _ => None,
-            };
-        }
-        if hosted.deletion_state != "deleted" && (!hosted.deletion_ready || proof_hex.is_none()) {
-            blocked_spaces.push(hosted.space.clone());
-        }
         spaces.push(AccountDeletionSpace {
+            name: names.get(&hosted.space).cloned(),
             subject: hosted.space,
-            name,
             state: hosted.deletion_state,
-            proof_kind: hosted.deletion_kind,
-            proof_hex,
         });
     }
     Ok(AccountDeletionPlan {
         root_did,
         email,
         spaces,
-        blocked_spaces,
         joined_spaces,
     })
 }
@@ -200,17 +136,11 @@ pub async fn plan(
     Ok(Json(load_plan(&state, origin.url()).await?))
 }
 
-fn invocation_subject(encoded: &str) -> Result<String, TonkWorkerError> {
-    let bytes = hex::decode(encoded)
-        .map_err(|error| TonkWorkerError::Router(format!("invalid invocation hex: {error}")))?;
-    let chain = InvocationChain::try_from(bytes.as_slice()).map_err(|error| {
-        TonkWorkerError::Router(format!("invalid deletion invocation: {error}"))
-    })?;
-    Ok(chain.subject().to_string())
-}
-
 /// POST `/api/account/spaces/delete` deletes one reviewed owned hosted space
-/// while leaving the account and every other space intact.
+/// while leaving the account and every other space intact. The worker
+/// signs the `/provider/remove` itself: deletion is the account ending
+/// its hosting relationship, and this linked device holds that
+/// authority.
 #[wasm_compat]
 pub async fn delete_space(
     State(state): State<AppState>,
@@ -231,32 +161,16 @@ pub async fn delete_space(
             subject: request.subject,
         }));
     }
-    if selected.proof_hex.is_none()
-        || current
-            .blocked_spaces
-            .iter()
-            .any(|space| space == &request.subject)
-        || invocation_subject(&request.invocation_hex)? != request.subject
+    let subject: dialog_varsig::Did = request.subject.parse().map_err(|error| {
+        TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
+    })?;
     {
-        return Err(TonkWorkerError::Forbidden(
-            "space deletion does not match recoverable registered authority".into(),
-        ));
+        let state = state.read().await;
+        super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
     }
-    let ucan = origin
-        .url()
-        .join("ucan/")
-        .map_err(|error| TonkWorkerError::Internal(format!("access endpoint: {error}")))?;
-    let bytes = hex::decode(&request.invocation_hex)
-        .map_err(|error| TonkWorkerError::Router(format!("invalid invocation hex: {error}")))?;
-    super::http::post_cbor(&ucan, &bytes).await?;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        let subject = request.subject.parse().map_err(|error| {
-            TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error}"))
-        })?;
-        super::repository::remove_space_inner(&state, &subject).await?;
-    }
+    super::repository::remove_space_inner(&state, &subject).await?;
     Ok(Json(HostedSpaceDeletionResult {
         subject: request.subject,
     }))
@@ -273,12 +187,6 @@ pub async fn delete(
         let state = state.read().await;
         load_plan(&state, origin.url()).await?
     };
-    if !current.blocked_spaces.is_empty() {
-        return Err(TonkWorkerError::Conflict(format!(
-            "deletion proof is unavailable for: {}",
-            current.blocked_spaces.join(", ")
-        )));
-    }
     let required: BTreeSet<_> = current
         .spaces
         .iter()
@@ -290,24 +198,26 @@ pub async fn delete(
         .iter()
         .map(|space| space.subject.clone())
         .collect();
-    let subjects_match = request.spaces.iter().all(|space| {
-        invocation_subject(&space.invocation_hex).is_ok_and(|subject| subject == space.subject)
-    });
-    if supplied != required || !subjects_match {
+    if supplied != required {
         return Err(TonkWorkerError::Forbidden(
-            "prepared deletion invocations do not match the reviewed space set".into(),
+            "the reviewed space set does not match the account's owned hosted spaces".into(),
         ));
     }
 
+    // Deprovision every reviewed space with this device's own
+    // authority, then finalize with the root-signed invocations the
+    // ceremony returned.
+    for space in &request.spaces {
+        let subject: dialog_varsig::Did = space.subject.parse().map_err(|error| {
+            TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
+        })?;
+        let state = state.read().await;
+        super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
+    }
     let ucan = origin
         .url()
         .join("ucan/")
         .map_err(|error| TonkWorkerError::Internal(format!("access endpoint: {error}")))?;
-    for space in &request.spaces {
-        let bytes = hex::decode(&space.invocation_hex)
-            .map_err(|error| TonkWorkerError::Router(format!("invalid invocation hex: {error}")))?;
-        super::http::post_cbor(&ucan, &bytes).await?;
-    }
     let customer = hex::decode(&request.customer_invocation_hex).map_err(|error| {
         TonkWorkerError::Router(format!("invalid customer deletion invocation: {error}"))
     })?;

@@ -223,7 +223,7 @@ pub async fn provision_custody(
         .map_err(|error| TonkWorkerError::Router(format!("consent is not hex: {error}")))?;
     let consent = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
         .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))?;
-    provision_consumer(&state, &custody, &consent, None).await?;
+    provision_consumer(&state, &custody, &consent).await?;
     Ok(Json(()))
 }
 
@@ -236,25 +236,18 @@ pub(crate) async fn provision_consumer(
     state: &crate::worker::TonkState,
     consumer: &dialog_varsig::Did,
     consent: &dialog_ucan_core::DelegationChain,
-    deletion_grant: Option<&dialog_ucan_core::DelegationChain>,
 ) -> Result<(), TonkWorkerError> {
-    use tonk_identity::request::build_provider_add_invocation_with_deletion;
+    use tonk_identity::request::build_provider_add_invocation;
 
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
     let device = state.profile.signer().signer().clone();
-    let body = build_provider_add_invocation_with_deletion(
-        device,
-        &link,
-        consumer,
-        consent,
-        deletion_grant,
-    )
-    .await
-    .map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
-    })?;
+    let body = build_provider_add_invocation(device, &link, consumer, consent)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
+        })?;
     let origin = service_origin()?;
     match post_cbor(&ucan_endpoint(&origin)?, &body).await {
         Ok(_) => Ok(()),
@@ -266,6 +259,29 @@ pub(crate) async fn provision_consumer(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Deprovision `consumer` at `origin`: the device-signed
+/// `/provider/remove` that deletes the hosted space. Authority is the
+/// account's own chain — any linked device may exercise it.
+pub(crate) async fn deprovision_consumer(
+    state: &crate::worker::TonkState,
+    origin: &Url,
+    consumer: &dialog_varsig::Did,
+) -> Result<(), TonkWorkerError> {
+    use tonk_identity::request::build_provider_remove_invocation;
+
+    let link = super::account::account_link(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
+    })?;
+    let device = state.profile.signer().signer().clone();
+    let body = build_provider_remove_invocation(device, &link, consumer)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the remove invocation: {error}"))
+        })?;
+    post_cbor(&ucan_endpoint(origin)?, &body).await?;
+    Ok(())
 }
 
 /// The worker's own origin, which the access service serves. Known only

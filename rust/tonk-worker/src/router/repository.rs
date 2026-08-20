@@ -22,17 +22,18 @@ use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_account::prefix::{SPACE_ROOT_SITE_PREFIX, space_delete_site};
+use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SpaceDeletionGrant, SpaceStatus, TrackingBranch,
+    RemoteExecution, Replica, RepositoryName, SpaceStatus, TrackingBranch,
 };
 use url::Url;
 
@@ -2772,13 +2773,6 @@ pub async fn create_repository(
 
     let prefix = delegation.into_chain();
 
-    let deletion_grant = mint_and_persist_space_deletion_grant(
-        tonk,
-        repository.credential().signer(),
-        &repository.did(),
-        &owner,
-    )
-    .await?;
     tonk.profile
         .access()
         .save(UcanDelegation(prefix.clone()))
@@ -2795,9 +2789,7 @@ pub async fn create_repository(
     // consumer of the access service, depositing the powerline as its
     // consent. Best effort for the same reason retain is — a space is
     // usable the moment its delegations exist locally.
-    if let Err(error) =
-        super::customer::provision_consumer(tonk, &repository.did(), &prefix, Some(&deletion_grant))
-            .await
+    if let Err(error) = super::customer::provision_consumer(tonk, &repository.did(), &prefix).await
     {
         log!("consumer provisioning skipped: {error}");
     }
@@ -2835,82 +2827,8 @@ pub async fn create_repository(
     Ok(repository)
 }
 
-async fn mint_and_persist_space_deletion_grant(
-    tonk: &TonkState,
-    signer: &dialog_credentials::Signer,
-    subject: &Did,
-    owner: &Did,
-) -> Result<DelegationChain, RepositoryError> {
-    let grant = tonk_account::deletion::mint_deletion_grant(signer, owner)
-        .await
-        .map_err(|error| {
-            RepositoryError::Internal(format!("Failed to mint space deletion grant: {error}"))
-        })?;
-    let bytes = grant.to_bytes().map_err(|error| {
-        RepositoryError::Internal(format!("Failed to serialize space deletion grant: {error}"))
-    })?;
-    let grant_hex = hex::encode(&bytes);
-    tonk.profile
-        .credential()
-        .site(space_delete_site(subject, owner))
-        .save(bytes)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            RepositoryError::Internal(format!("Failed to persist space deletion grant: {error}"))
-        })?;
-    // Mirror the grant into the account directory so any of the
-    // account's devices can present it at deletion time — the
-    // cross-device transport, replacing the retired escrow artifact.
-    // Best-effort like the rest of the directory mirror: a space is
-    // fully usable without it, and the sweep can re-record.
-    if let Err(error) = tonk
-        .reactor
-        .profile_repository()
-        .branch(PROFILE_BRANCH)
-        .transaction()
-        .assert(SpaceDeletionGrant::new(subject, grant_hex))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-    {
-        log!("record deletion grant for '{subject}': {error}");
-    }
-    Ok(grant)
-}
-
-/// Load and validate the exact deletion grant retained for one account root.
-pub(crate) async fn space_deletion_grant(
-    tonk: &TonkState,
-    subject: &Did,
-    owner: &Did,
-) -> Result<Option<DelegationChain>, TonkWorkerError> {
-    let bytes = match tonk
-        .profile
-        .credential()
-        .site(space_delete_site(subject, owner))
-        .load::<Vec<u8>>()
-        .perform(&tonk.operator)
-        .await
-    {
-        Ok(bytes) if bytes.is_empty() => return Ok(None),
-        Ok(bytes) => bytes,
-        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
-        Err(error) => {
-            return Err(TonkWorkerError::Internal(format!(
-                "failed to load space deletion grant: {error}"
-            )));
-        }
-    };
-    tonk_account::deletion::validate_deletion_grant(&bytes, subject, owner)
-        .await
-        .map(|validated| Some(validated.chain))
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("stored space deletion grant is invalid: {error}"))
-        })
-}
-
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -3025,32 +2943,8 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
         } else {
             continue;
         };
-        let mut deletion_grant = space_deletion_grant(tonk, &subject, &root.root_did)
-            .await
-            .ok()
-            .flatten();
-        if deletion_grant.is_none()
-            && let Some(access) = repository.try_access()
-        {
-            match mint_and_persist_space_deletion_grant(
-                tonk,
-                access.signer().signer(),
-                &subject,
-                &root.root_did,
-            )
-            .await
-            {
-                Ok(grant) => deletion_grant = Some(grant),
-                Err(error) => {
-                    log!("adopted space '{subject}' deletion grant did not persist: {error}")
-                }
-            }
-        }
         super::account_state::retain_space_delegation(tonk, &chain).await;
-        if let Err(error) =
-            super::customer::provision_consumer(tonk, &subject, &chain, deletion_grant.as_ref())
-                .await
-        {
+        if let Err(error) = super::customer::provision_consumer(tonk, &subject, &chain).await {
             log!("adopted space '{subject}' provisioning skipped: {error}");
         }
     }

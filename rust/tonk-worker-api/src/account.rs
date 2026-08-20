@@ -23,48 +23,44 @@ pub struct AccountSummary {
 pub struct AccountDeletionSpace {
     /// Repository subject to be permanently purged from Tonk services.
     pub subject: String,
-    /// Best available account backup name.
+    /// Display name from the account directory, when recorded.
     pub name: Option<String>,
     /// Access-service lifecycle state.
     pub state: String,
-    /// Registered proof mode (`exact` or narrowly upgraded `legacy-direct`).
-    pub proof_kind: Option<String>,
-    /// Exact public proof bytes the passkey ceremony must present.
-    pub proof_hex: Option<String>,
 }
 
 /// Reviewable destructive scope loaded before asking for a passkey.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDeletionPlan {
-    /// Account root that must sign every destructive request.
+    /// Account root the finalization ceremony must sign for.
     pub root_did: String,
     /// Verified email the user must type exactly.
     pub email: String,
     /// Hosted spaces originally provided by this account.
     pub spaces: Vec<AccountDeletionSpace>,
-    /// Owned subjects lacking retrievable registered proof material.
-    pub blocked_spaces: Vec<String>,
-    /// Backed-up spaces absent from the owned service inventory; these are
-    /// joined spaces and are not deleted.
+    /// Directory spaces absent from the owned service inventory; these
+    /// are joined spaces and are not deleted.
     pub joined_spaces: usize,
 }
 
-/// One root-signed space purge bound to its reviewed subject.
+/// One reviewed hosted-space deprovision. The worker signs the
+/// `/provider/remove` invocation itself — deletion is the account
+/// ending its hosting relationship, and any linked device holds that
+/// authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSpaceDeletionRequest {
     /// Reviewed repository subject.
     pub subject: String,
-    /// Hex-encoded root-signed `/space/delete` invocation.
-    pub invocation_hex: String,
 }
 
-/// Prepared destructive invocations returned by one passkey ceremony.
+/// The reviewed scope plus the two root-signed finalizations one
+/// passkey ceremony returns.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDeletionRequest {
-    /// One invocation for every active/deleting owned hosted space.
+    /// Every reviewed owned hosted space, deprovisioned by the worker.
     pub spaces: Vec<AccountSpaceDeletionRequest>,
     /// Root-signed access-customer finalization invocation.
     pub customer_invocation_hex: String,

@@ -13,8 +13,7 @@ use crate::domain::branch::Origin as BranchOrigin;
 use crate::domain::remote::{Address as RemoteAddress, Origin as RemoteOrigin};
 use crate::prelude::DidExt as _;
 use crate::{
-    Branch as BranchConcept, Remote, RemoteExecution, Replica, Space, SpaceDeletionGrant,
-    SpaceName, TrackingBranch,
+    Branch as BranchConcept, Remote, RemoteExecution, Replica, Space, SpaceName, TrackingBranch,
 };
 use dialog_artifacts::Entity;
 use dialog_capability::{Fork, Provider};
@@ -39,8 +38,6 @@ pub struct DirectorySpace {
     /// replicate. `false` marks a row that is listed but (currently)
     /// unmountable, e.g. one recorded local-only.
     pub mountable: bool,
-    /// Whether a `/space/delete` grant is recorded for the space.
-    pub deletion_ready: bool,
 }
 
 /// One remote in a space's mount record.
@@ -154,67 +151,6 @@ where
     Ok(())
 }
 
-/// Record one space's hex-encoded `/space/delete` grant in the
-/// directory, so any of the account's devices can present it when
-/// deleting the hosted space. Cardinality-one on the directory entity;
-/// a re-record supersedes.
-pub async fn record_deletion_grant<Env>(
-    account: &Branch,
-    subject: &Did,
-    grant_hex: &str,
-    env: &Env,
-) -> Result<(), CommitError>
-where
-    Env: Provider<Get>
-        + Provider<Put>
-        + Provider<Import>
-        + Provider<Resolve>
-        + Provider<Publish>
-        + Provider<Identify>
-        + Provider<Attest>
-        + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, Resolve>>
-        + ConditionalSync
-        + 'static,
-{
-    account
-        .transaction()
-        .assert(SpaceDeletionGrant::new(subject, grant_hex))
-        .commit()
-        .perform(env)
-        .await?;
-    Ok(())
-}
-
-/// The recorded `/space/delete` grant for one space, when a creator
-/// mirrored one into the directory.
-pub async fn deletion_grant<Env>(
-    account: &Branch,
-    subject: &Did,
-    env: &Env,
-) -> Result<Option<String>, EvaluationError>
-where
-    Env: Provider<Get>
-        + Provider<Put>
-        + Provider<Resolve>
-        + Provider<Identify>
-        + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, Resolve>>
-        + ConditionalSync
-        + 'static,
-{
-    let rows: Vec<SpaceDeletionGrant> = account
-        .query()
-        .select(Query::<SpaceDeletionGrant> {
-            this: Term::from(subject.this()),
-            grant: Term::var("grant"),
-        })
-        .perform(env)
-        .try_vec()
-        .await?;
-    Ok(rows.into_iter().next().map(|row| row.grant.0))
-}
-
 /// Every space the directory lists, with names and mountability.
 pub async fn spaces<Env>(
     account: &Branch,
@@ -262,22 +198,10 @@ where
         .try_vec()
         .await?;
 
-    let grants: Vec<SpaceDeletionGrant> = account
-        .query()
-        .select(Query::<SpaceDeletionGrant> {
-            this: Term::var("this"),
-            grant: Term::var("grant"),
-        })
-        .perform(env)
-        .try_vec()
-        .await?;
-
     let named: std::collections::HashMap<String, String> = names
         .into_iter()
         .map(|row| (row.this.to_string(), row.name.0))
         .collect();
-    let deletable: std::collections::HashSet<String> =
-        grants.into_iter().map(|row| row.this.to_string()).collect();
     let mountable: std::collections::HashSet<String> = remotes
         .into_iter()
         .map(|row| row.origin.0.to_string())
@@ -293,7 +217,6 @@ where
             name: named.get(&anchor).cloned(),
             status: row.status.0.to_string(),
             mountable: mountable.contains(&anchor),
-            deletion_ready: deletable.contains(&anchor),
             subject,
         });
     }

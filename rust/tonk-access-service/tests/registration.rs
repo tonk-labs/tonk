@@ -25,8 +25,8 @@ use dialog_varsig::{Did, Principal};
 use tonk_access_service::email::CapturedEmail;
 use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_access_service::registration::{Answer, Registration, SIGNUP_TERMS};
+use tonk_access_service::store::Store;
 use tonk_access_service::store::sqlite::SqliteStore;
-use tonk_access_service::store::{DeletionGrantKind, Store};
 use tonk_account::customer::{Receipt, RegistrationError, deposit_scopes};
 
 /// Current time as unix seconds.
@@ -457,15 +457,6 @@ async fn add_container(
     space: &Ed25519Signer,
     consent_to: &Did,
 ) -> Vec<u8> {
-    add_container_with_deletion(customer, space, consent_to, false).await
-}
-
-async fn add_container_with_deletion(
-    customer: &Ed25519Signer,
-    space: &Ed25519Signer,
-    consent_to: &Did,
-    carry_exact_deletion_grant: bool,
-) -> Vec<u8> {
     let consent = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(space.clone()))
         .audience(consent_to)
@@ -474,30 +465,13 @@ async fn add_container_with_deletion(
         .try_build()
         .await
         .expect("consent delegation");
-    let deletion = if carry_exact_deletion_grant {
-        Some(
-            DelegationBuilder::new()
-                .issuer(space.clone())
-                .audience(consent_to)
-                .subject(DelegatedSubject::Specific(space.did()))
-                .command(vec!["space".to_string(), "delete".to_string()])
-                .try_build()
-                .await
-                .expect("deletion delegation"),
-        )
-    } else {
-        None
-    };
-    let mut arguments = BTreeMap::from([
+    let arguments = BTreeMap::from([
         (
             "consumer".to_string(),
             Promised::String(space.did().to_string()),
         ),
         ("consent".to_string(), Promised::Link(consent.to_cid())),
     ]);
-    if let Some(deletion) = &deletion {
-        arguments.insert("deletion".to_string(), Promised::Link(deletion.to_cid()));
-    }
     let invocation = InvocationBuilder::new()
         .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
@@ -509,13 +483,10 @@ async fn add_container_with_deletion(
         .try_build()
         .await
         .expect("add invocation");
-    let mut tokens = vec![
+    let tokens = vec![
         serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes"),
         consent.encoded().to_vec(),
     ];
-    if let Some(deletion) = deletion {
-        tokens.push(deletion.encoded().to_vec());
-    }
     Container::new(tokens)
         .to_bytes()
         .expect("container encodes")
@@ -545,49 +516,10 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .unwrap()
         .expect("the consumer row exists");
     assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
-    assert_eq!(
-        consumer.deletion_grant_kind,
-        Some(DeletionGrantKind::LegacyDirect),
-        "an existing direct owner proof is upgraded once"
-    );
-    assert!(consumer.deletion_grant_cid.is_some());
 
     // Re-provisioning under the same customer is a no-op success.
     let container = add_container(&customer, &space, &customer.did()).await;
     assert!(fixture.registration(&container).handle().await.is_ok());
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn it_registers_the_exact_delete_grant_for_new_spaces() -> anyhow::Result<()> {
-    let fixture = Fixture::new().await;
-    let customer = Ed25519Signer::generate().await?;
-    let space = Ed25519Signer::generate().await?;
-    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
-    fixture.registration(&container).handle().await.unwrap();
-
-    let legacy = add_container(&customer, &space, &customer.did()).await;
-    fixture.registration(&legacy).handle().await.unwrap();
-    assert_eq!(
-        fixture
-            .store
-            .consumer(space.did().as_str())
-            .await?
-            .expect("legacy consumer row")
-            .deletion_grant_kind,
-        Some(DeletionGrantKind::LegacyDirect)
-    );
-
-    let container = add_container_with_deletion(&customer, &space, &customer.did(), true).await;
-    fixture.registration(&container).handle().await.unwrap();
-
-    let consumer = fixture
-        .store
-        .consumer(space.did().as_str())
-        .await?
-        .expect("consumer row");
-    assert_eq!(consumer.deletion_grant_kind, Some(DeletionGrantKind::Exact));
-    assert!(consumer.deletion_grant_cid.is_some());
     Ok(())
 }
 

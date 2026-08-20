@@ -14,10 +14,10 @@ use tonk_worker_api::{
 };
 
 use crate::identity_bridge::{
-    CeremonyOutput, CompleteLinkInput, CreateAccountInput, DeletionProofInput, EnrollCustodyInput,
-    PrepareAccountDeletionInput, PrepareSpaceDeletionInput, RevocationOutput, SignRevocationInput,
-    UnlockWithPasskeyInput, complete_link, create_account, enroll_custody_passkey,
-    prepare_account_deletion, prepare_space_deletion, sign_revocation, unlock_with_passkey,
+    CeremonyOutput, CompleteLinkInput, CreateAccountInput, EnrollCustodyInput,
+    PrepareAccountDeletionInput, RevocationOutput, SignRevocationInput, UnlockWithPasskeyInput,
+    complete_link, create_account, enroll_custody_passkey, prepare_account_deletion,
+    sign_revocation, unlock_with_passkey,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -401,26 +401,10 @@ fn render_deletion_plan(host: &HtmlElement, plan: &AccountDeletionPlan) -> Resul
         let _ = list.append_child(&item);
     }
     if let Ok(Some(blocked)) = host.query_selector("#account-delete-blocked") {
-        let blocked_visible: Vec<_> = plan
-            .blocked_spaces
-            .iter()
-            .filter(|space| {
-                requested
-                    .as_deref()
-                    .is_none_or(|subject| space.as_str() == subject)
-            })
-            .cloned()
-            .collect();
-        if blocked_visible.is_empty() {
-            let _ = blocked.set_attribute("hidden", "");
-            blocked.set_text_content(None);
-        } else {
-            blocked.set_text_content(Some(&format!(
-                "Deletion is blocked because Tonk cannot recover deletion authority for: {}",
-                blocked_visible.join(", ")
-            )));
-            let _ = blocked.remove_attribute("hidden");
-        }
+        // Nothing can block deletion any more: authority is the
+        // account's own chain, not a per-space recovered artifact.
+        let _ = blocked.set_attribute("hidden", "");
+        blocked.set_text_content(None);
     }
     let value = serde_wasm_bindgen::to_value(plan)
         .map_err(|_| "could not retain deletion plan".to_string())?;
@@ -1822,21 +1806,6 @@ fn bind(host: &HtmlElement) {
             return show_error(&host, "Review the current deletion scope first.");
         };
         let requested = requested_space_deletion();
-        let blocked = plan.blocked_spaces.iter().any(|space| {
-            requested
-                .as_deref()
-                .is_none_or(|subject| space.as_str() == subject)
-        });
-        if blocked {
-            return show_error(
-                &host,
-                if requested.is_some() {
-                    "This space cannot be deleted because Tonk cannot recover its registered deletion authority."
-                } else {
-                    "Account deletion is blocked until every owned hosted space has recoverable deletion authority."
-                },
-            );
-        }
         let confirmed_email = match input(&host, "#account-delete-email") {
             Ok(email) if email == plan.email => email,
             Ok(_) => {
@@ -1896,60 +1865,31 @@ fn bind(host: &HtmlElement) {
         spawn_local(async move {
             let result = async {
                 if requested.is_some() {
+                    // Deleting one hosted space is deprovisioning — the
+                    // worker signs `/provider/remove` with this device's
+                    // own authority; no passkey ceremony is involved.
                     let space = &destructive[0];
-                    let proof = DeletionProofInput {
-                        kind: space.proof_kind.clone().ok_or_else(|| {
-                            format!("{} has no registered deletion proof kind", space.subject)
-                        })?,
-                        proof_hex: space.proof_hex.clone().ok_or_else(|| {
-                            format!("{} has no recoverable deletion proof", space.subject)
-                        })?,
-                    };
-                    let prepared = prepare_space_deletion(PrepareSpaceDeletionInput {
-                        expected_root: plan.root_did.clone(),
-                        endpoint: proposed_remote()?,
-                        proof,
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?;
                     let deleted = crate::api::delete_owned_space(&AccountSpaceDeletionRequest {
                         subject: space.subject.clone(),
-                        invocation_hex: prepared.invocation_hex,
                     })
                     .await
                     .map_err(|error| error.to_string())?;
                     return Ok::<_, String>((Some(deleted.subject), None));
                 }
-                let proofs = destructive
-                    .iter()
-                    .map(|space| {
-                        Ok(DeletionProofInput {
-                            kind: space.proof_kind.clone().ok_or_else(|| {
-                                format!("{} has no registered deletion proof kind", space.subject)
-                            })?,
-                            proof_hex: space.proof_hex.clone().ok_or_else(|| {
-                                format!("{} has no recoverable deletion proof", space.subject)
-                            })?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
+                // Account deletion still takes the passkey ceremony for
+                // its two root-signed finalizations; the worker
+                // deprovisions the reviewed spaces itself.
                 let prepared = prepare_account_deletion(PrepareAccountDeletionInput {
                     expected_root: plan.root_did.clone(),
                     confirmed_email,
                     endpoint: proposed_remote()?,
-                    proofs,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
-                if prepared.space_invocations_hex.len() != destructive.len() {
-                    return Err("the passkey ceremony returned an incomplete deletion set".into());
-                }
                 let spaces = destructive
                     .iter()
-                    .zip(prepared.space_invocations_hex)
-                    .map(|(space, invocation_hex)| AccountSpaceDeletionRequest {
+                    .map(|space| AccountSpaceDeletionRequest {
                         subject: space.subject.clone(),
-                        invocation_hex,
                     })
                     .collect();
                 let deleted = crate::api::delete_account(&AccountDeletionRequest {
