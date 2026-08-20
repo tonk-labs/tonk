@@ -817,6 +817,12 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut last_seen = String::from("<spots never completed a run>");
         let recorded = loop {
+            // Drive the browser's sync drain rather than waiting for
+            // incidental traffic to trigger one. Promotion writes the
+            // directory facts locally; publishing them to the account
+            // remote happens on a drain, and once the test stops
+            // touching the page nothing else schedules one.
+            let _ = post_json(&claimer, "/api/sync", serde_json::json!({})).await;
             let run = run_cli(
                 &env,
                 &second_device.profile,
