@@ -368,17 +368,170 @@ mod when_introspecting_the_schema {
 
     use crate::common::{self, ATTRIBUTE_DECL, CONCEPT_DECL};
 
-    // TODO(post-#447): re-port `tonk_cli::schema::render` to the new
-    // analyzer model. After the head/this/anchor rewrite, the
-    // built-in `attribute:` query no longer surfaces standalone
-    // attribute entities the same way, and the `as:` value
-    // capitalisation needs to round-trip through `text` /
-    // `boolean` / etc. instead of `Text` / `Boolean`. The
-    // re-submittability contract this test pins is still a
-    // load-bearing property — leave the test in place but
-    // ignored so the next pass can flip it back on.
+    /// The full behavior round trip: schema + rules + views
+    /// synthesized off one branch must re-evaluate on a fresh
+    /// branch and synthesize identically there. Rule identity is
+    /// checked by entity — the entity is the content address of
+    /// the canonical body, so set equality is byte equality.
     #[dialog_common::test]
-    #[ignore = "schema render needs a separate port to the post-#447 analyzer model"]
+    async fn it_round_trips_behavior_through_notation() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(
+            r#"
+attribute!: &rt-tag
+  description: "round-trip tag"
+  the:         xyz.tonk.rt/tag
+  as:          text
+  cardinality: one
+
+attribute!: &rt-echo
+  description: "round-trip echo"
+  the:         xyz.tonk.rt/echo
+  as:          text
+  cardinality: one
+
+command!: &rt-ping
+  description: "round-trip ping"
+  with:
+    tag: rt-tag
+
+concept!: &rt-pong
+  this: tonk:rt-pong
+  description: "round-trip pong"
+  with:
+    echo: rt-echo
+
+rule!:
+  assert!: rt-pong
+  when:
+    - assert: rt-ping
+      where:
+        this: ?this
+        tag: ?echo
+
+view!: &rt-pong-view
+  this: id:rt-pong/view
+  model: tonk:rt-pong
+  display: |
+    <div>{echo}</div>
+"#,
+        )
+        .await?;
+
+        let concepts = schema::render(&test.site).await?;
+        let rules = schema::render_rules(&test.site).await?;
+        let views = schema::render_views(&test.site).await?;
+        assert!(rules.contains("rule!:"), "{rules}");
+        assert!(rules.contains("assert!: rt-pong"), "{rules}");
+        assert!(rules.contains("assert: rt-ping"), "{rules}");
+        assert!(
+            views.contains("view!: &rt-pong-view\n  this: id:rt-pong/view"),
+            "{views}"
+        );
+
+        assert!(
+            !rules.contains("not expressible"),
+            "every stored rule should render:\n{rules}"
+        );
+
+        let fresh = common::TestSite::new().await?;
+        let outcome = fresh
+            .eval_inline(&format!("{concepts}{rules}{views}"))
+            .await?;
+        assert!(outcome.committed, "replay should commit");
+
+        // The authored rule must survive the round trip
+        // byte-identically — the entity is the content address of
+        // the canonical body, so membership is byte equality.
+        // (Stdlib rules whose embedded attribute descriptions
+        // drifted from the branch's current claims legitimately
+        // re-derive under new addresses, so full set equality is
+        // not the contract.)
+        let rt_rule: Vec<String> = schema::enumerate_rules(&test.site)
+            .await?
+            .into_iter()
+            .filter_map(|(entity, rule)| {
+                let tonk_schema::rule::Rule::Inductive(rule) = rule else {
+                    return None;
+                };
+                serde_json::to_string(&rule.descriptor())
+                    .ok()?
+                    .contains("xyz.tonk.rt/echo")
+                    .then(|| entity.to_string())
+            })
+            .collect();
+        assert_eq!(rt_rule.len(), 1, "the authored rule should be stored");
+        let replayed: std::collections::HashSet<String> = schema::enumerate_rules(&fresh.site)
+            .await?
+            .into_iter()
+            .map(|(entity, _)| entity.to_string())
+            .collect();
+        assert!(
+            replayed.contains(&rt_rule[0]),
+            "rule {} must survive the round trip byte-identically",
+            rt_rule[0]
+        );
+
+        assert_eq!(concepts, schema::render(&fresh.site).await?);
+        assert_eq!(views, schema::render_views(&fresh.site).await?);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_renders_commands_descriptions_and_optional_fields() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(
+            r#"
+attribute!: &ping-tag
+  description: "ping tag"
+  the:         xyz.tonk.test/ping-tag
+  as:          text
+  cardinality: one
+
+attribute!: &ping-note
+  description: "ping note"
+  the:         xyz.tonk.test/ping-note
+  as:          text
+  cardinality: one
+
+command!: &ping
+  description: "a ping command"
+  with:
+    tag: ping-tag
+  maybe:
+    note: ping-note
+
+concept!: &pinned
+  this: tonk:test/pinned
+  description: "a pinned concept"
+  with:
+    tag: ping-tag
+"#,
+        )
+        .await?;
+
+        let rendered = schema::render(&test.site).await?;
+        for marker in [
+            // The transient marker decides the head keyword; the
+            // `command!:` form derives the same entity, so
+            // commandness survives a replay.
+            "command!: &ping",
+            "description: \"a ping command\"",
+            "  maybe:\n    note: ping-note",
+            // Pinned concepts re-emit their `this:` so replay
+            // lands on the authored entity, not the content
+            // address.
+            "concept!: &pinned\n  this: tonk:test/pinned",
+        ] {
+            assert!(
+                rendered.contains(marker),
+                "expected `{marker}` in schema:\n{rendered}",
+            );
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_emits_a_re_submittable_notation_document() -> Result<()> {
         let test = common::TestSite::new().await?;
         test.eval_inline(ATTRIBUTE_DECL).await?;
