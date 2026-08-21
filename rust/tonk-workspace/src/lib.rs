@@ -21,6 +21,7 @@ mod default_remote;
 mod editable;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod invite_link;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod join_retry;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod origin;
