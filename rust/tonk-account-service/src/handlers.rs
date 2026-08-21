@@ -7,12 +7,9 @@ pub mod info;
 #[cfg(target_arch = "wasm32")]
 pub mod accounts;
 #[cfg(target_arch = "wasm32")]
-#[cfg(target_arch = "wasm32")]
 pub mod codes;
 #[cfg(target_arch = "wasm32")]
 pub mod devices;
-#[cfg(target_arch = "wasm32")]
-pub mod links;
 #[cfg(target_arch = "wasm32")]
 pub mod repository;
 #[cfg(target_arch = "wasm32")]

@@ -4,7 +4,6 @@ use js_sys::{Function, Promise, Reflect};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
-use tonk_account::handoff::CompleteLinkCeremony;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
@@ -248,23 +247,6 @@ pub(crate) async fn unlock_with_passkey(
     call("unlockWithPasskey", input).await
 }
 
-/// Input for completing a CLI handoff: the resolved link plus the
-/// `/ucan/` endpoint the custody unlock resolves through.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CompleteLinkInput {
-    pub token_hash: String,
-    pub device_did: String,
-    pub device_name: String,
-    pub endpoint: String,
-}
-
-pub(crate) async fn complete_link(
-    input: CompleteLinkInput,
-) -> Result<CompleteLinkCeremony, IdentityBridgeError> {
-    call("completeLink", input).await
-}
-
 /// Input for [`authorize_device`].
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -322,33 +304,6 @@ mod tests {
         let function = Function::new_with_args("input", body);
         Reflect::set(&identity, &name.into(), &function).unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
-    }
-
-    /// Completing a CLI handoff only submits the root-signed invocation. The
-    /// account service, not this browser response, supplies the durable passkey
-    /// credential id when the CLI consumes the completed handoff.
-    #[dialog_common::test]
-    async fn it_accepts_the_actual_complete_link_output() {
-        install_method(
-            "completeLink",
-            r#"
-            return Promise.resolve({
-                rootDid: "did:key:root", deviceDid: input.deviceDid,
-                delegationHex: "delegation", invocationHex: "invocation"
-            });
-            "#,
-        );
-
-        let output = complete_link(CompleteLinkInput {
-            token_hash: "token".into(),
-            device_did: "did:key:device".into(),
-            device_name: "CLI".into(),
-            endpoint: "https://tonk.spot/ucan/".into(),
-        })
-        .await
-        .expect("the real completeLink response is a valid bridge output");
-
-        assert_eq!(output.invocation_hex, "invocation");
     }
 
     /// `verifyPasskey` succeeds with no payload: the ceremony resolves

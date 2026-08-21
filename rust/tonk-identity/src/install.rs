@@ -296,27 +296,6 @@ async fn unlock_with_passkey(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result)
 }
 
-fn parse_complete_link_input(
-    input: JsValue,
-) -> Result<tonk_account::handoff::ResolvedLink, JsValue> {
-    let input = serde_wasm_bindgen::from_value::<tonk_account::handoff::ResolvedLink>(input)
-        .map_err(|_| JsValue::from_str("malformed completeLink input"))?;
-    if input.token_hash.is_empty() {
-        return Err(JsValue::from_str("missing or invalid tokenHash"));
-    }
-    if input.device_name.is_empty() {
-        return Err(JsValue::from_str("missing or invalid deviceName"));
-    }
-    if input.device_did.is_empty() {
-        return Err(JsValue::from_str("missing or invalid deviceDid"));
-    }
-    input
-        .device_did
-        .parse::<dialog_varsig::Did>()
-        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
-    Ok(input)
-}
-
 /// `authorizeDevice({ deviceDid, remote, endpoint })` → `{ rootDid,
 /// deviceDid, delegationHex, descriptorHex }`.
 ///
@@ -347,26 +326,6 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
         Reflect::set(&output, &key.into(), &value.into())?;
     }
     Ok(output.into())
-}
-
-async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {
-    let endpoint = string_property(&input, "endpoint")?;
-    let input = parse_complete_link_input(input)?;
-    let device_did = input
-        .device_did
-        .parse()
-        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
-    let root = crate::ceremony::unlock_root(&endpoint)
-        .await
-        .map_err(js_error)?;
-    let ceremony =
-        crate::ceremony::complete_link(root, input.token_hash, device_did, input.device_name)
-            .await
-            .map_err(js_error)?;
-    serde_wasm_bindgen::to_value(&tonk_account::handoff::CompleteLinkCeremony {
-        invocation_hex: ceremony.invocation_hex,
-    })
-    .map_err(|_| JsValue::from_str("failed to serialize completeLink output"))
 }
 
 /// Install `window.tonkIdentity` on the page. Idempotent; a no-op
@@ -417,16 +376,6 @@ pub fn install() {
     );
     unlock_with_passkey.forget();
 
-    let complete_link = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(complete_link(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"completeLink".into(),
-        complete_link.as_ref().unchecked_ref(),
-    );
-    complete_link.forget();
-
     let authorize_device = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(authorize_device(input))
     });
@@ -467,80 +416,6 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_browser);
 
-    fn complete_link_input(
-        token_hash: JsValue,
-        device_did: JsValue,
-        device_name: JsValue,
-    ) -> JsValue {
-        let input = Object::new();
-        Reflect::set(&input, &"tokenHash".into(), &token_hash).unwrap();
-        Reflect::set(&input, &"deviceDid".into(), &device_did).unwrap();
-        Reflect::set(&input, &"deviceName".into(), &device_name).unwrap();
-        input.into()
-    }
-
-    fn parse_error(input: JsValue) -> String {
-        parse_complete_link_input(input)
-            .unwrap_err()
-            .as_string()
-            .expect("parser errors are stable strings")
-    }
-
-    #[dialog_common::test]
-    async fn it_rejects_invalid_complete_link_input_before_the_ceremony() {
-        use dialog_varsig::Principal;
-
-        assert_eq!(
-            parse_error(Object::new().into()),
-            "malformed completeLink input"
-        );
-        assert_eq!(
-            parse_error(complete_link_input(
-                "".into(),
-                "did:key:unused".into(),
-                "terminal".into(),
-            )),
-            "missing or invalid tokenHash"
-        );
-        assert_eq!(
-            parse_error(complete_link_input(
-                "hash".into(),
-                "did:key:unused".into(),
-                "".into(),
-            )),
-            "missing or invalid deviceName"
-        );
-        assert_eq!(
-            parse_error(complete_link_input(
-                "hash".into(),
-                "".into(),
-                "terminal".into(),
-            )),
-            "missing or invalid deviceDid"
-        );
-        assert!(
-            parse_error(complete_link_input(
-                "hash".into(),
-                "not a DID".into(),
-                "terminal".into(),
-            ))
-            .starts_with("invalid deviceDid: ")
-        );
-
-        let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])
-            .await
-            .unwrap();
-        let valid = tonk_account::handoff::ResolvedLink {
-            token_hash: "hash".to_string(),
-            device_did: device.did().to_string(),
-            device_name: "terminal".to_string(),
-        };
-        assert_eq!(
-            parse_complete_link_input(serde_wasm_bindgen::to_value(&valid).unwrap()).unwrap(),
-            valid
-        );
-    }
-
     #[dialog_common::test]
     fn it_installs_ceremony_functions_on_window_tonk_identity() {
         install();
@@ -550,7 +425,6 @@ mod tests {
             "createAccount",
             "enrollCustodyPasskey",
             "unlockWithPasskey",
-            "completeLink",
             "authorizeDevice",
             "signRevocation",
             "verifyPasskey",

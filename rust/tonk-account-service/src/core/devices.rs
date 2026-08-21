@@ -96,8 +96,6 @@ pub enum DetachOutcome {
     Detached,
     /// This exact generation had already been detached.
     AlreadyDetached,
-    /// A completed handoff was cancelled before activation.
-    CancelledPendingActivation,
     /// A newer generation supersedes this one.
     Superseded,
     /// The exact generation is permanently revoked.
@@ -108,7 +106,6 @@ pub enum DetachOutcome {
 pub async fn detach_device<S: Store>(
     store: &S,
     intent: &tonk_account::detach::SignedDetachIntent,
-    now: u64,
 ) -> Result<DetachOutcome, CeremonyError> {
     let payload = intent.validate().await.map_err(|error| match error {
         tonk_account::detach::DetachIntentError::Signature => {
@@ -116,49 +113,27 @@ pub async fn detach_device<S: Store>(
         }
         _ => CeremonyError::Invalid(error.to_string()),
     })?;
-    let device = store.attachment(&payload.attachment_id).await?;
-    let link = if device.is_none() {
-        store
-            .completed_link_by_attachment(&payload.attachment_id)
-            .await?
-    } else {
-        None
-    };
-    if device.is_none() && link.is_none() {
-        return Err(CeremonyError::NotFound(
-            "unknown attachment generation".to_string(),
-        ));
-    }
+    let device = store
+        .attachment(&payload.attachment_id)
+        .await?
+        .ok_or_else(|| CeremonyError::NotFound("unknown attachment generation".to_string()))?;
     let account = store
         .account_by_root(&payload.account_root)
         .await?
         .ok_or_else(|| CeremonyError::Conflict("detach account root does not match".to_string()))?;
 
-    if let Some(device) = device {
-        if device.account_id != account.id
-            || device.device_did != payload.device_did
-            || device.delegation_cid != payload.delegation_cid
-        {
-            return Err(CeremonyError::Conflict(
-                "detach payload does not match the stored attachment".to_string(),
-            ));
-        }
-    } else if let Some(link) = link
-        && (link.account_id != Some(account.id)
-            || link.device_did != payload.device_did
-            || link.delegation_cid.as_deref() != Some(payload.delegation_cid.as_str()))
+    if device.account_id != account.id
+        || device.device_did != payload.device_did
+        || device.delegation_cid != payload.delegation_cid
     {
         return Err(CeremonyError::Conflict(
-            "detach payload does not match the completed attachment".to_string(),
+            "detach payload does not match the stored attachment".to_string(),
         ));
     }
 
-    match store.detach_attachment(&payload.attachment_id, now).await? {
+    match store.detach_attachment(&payload.attachment_id).await? {
         DetachStoreOutcome::Detached => Ok(DetachOutcome::Detached),
         DetachStoreOutcome::AlreadyDetached => Ok(DetachOutcome::AlreadyDetached),
-        DetachStoreOutcome::CancelledPendingActivation => {
-            Ok(DetachOutcome::CancelledPendingActivation)
-        }
         DetachStoreOutcome::Superseded => Ok(DetachOutcome::Superseded),
         DetachStoreOutcome::Revoked => Ok(DetachOutcome::Revoked),
         DetachStoreOutcome::UnknownAttachment => Err(CeremonyError::NotFound(
@@ -429,11 +404,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            detach_device(&store, &intent, 11).await.unwrap(),
+            detach_device(&store, &intent).await.unwrap(),
             DetachOutcome::Detached
         );
         assert_eq!(
-            detach_device(&store, &intent, 12).await.unwrap(),
+            detach_device(&store, &intent).await.unwrap(),
             DetachOutcome::AlreadyDetached
         );
         assert!(list_devices(&store, &account).await.unwrap().is_empty());
@@ -441,7 +416,7 @@ mod tests {
         let mut forged = intent;
         forged.signature[0] ^= 1;
         assert!(matches!(
-            detach_device(&store, &forged, 13).await,
+            detach_device(&store, &forged).await,
             Err(CeremonyError::Forbidden(_))
         ));
     }

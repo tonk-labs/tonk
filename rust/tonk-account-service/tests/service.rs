@@ -10,7 +10,6 @@ use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
 use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
-use tonk_account::handoff::{ConsumedLink, LinkCreateRequest, LinkSecretRequest, ResolvedLink};
 use tonk_account_service::helpers::AccountServer;
 
 const ROOT_PRF: [u8; 32] = [7u8; 32];
@@ -786,122 +785,27 @@ async fn it_drives_the_full_ceremony_over_http() {
         "revoked"
     );
 
-    // A native profile creates a bearer-secret handoff. The browser
-    // resolves its metadata, completes it with the passkey root, and
-    // the native caller consumes the resulting delegation exactly once.
-    let secret = "1111111111111111111111111111111111111111111111111111111111111111";
-    let token_hash = blake3::hash(&hex::decode(secret).unwrap())
-        .to_hex()
-        .to_string();
+    // A command-line profile is registered through the same root ceremony
+    // the browser runs when it approves a `tonk account link` callback.
     let cli = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
-    let cli_did = cli.did().to_string();
-    let response = client
-        .post(format!("{base}/links"))
-        .json(&LinkCreateRequest {
-            token_hash: token_hash.clone(),
-            device_did: cli_did.clone(),
-            device_name: "terminal".to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 201);
-    let response = client
-        .post(format!("{base}/links/resolve"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let pending: ResolvedLink = response.json().await.unwrap();
-    assert_eq!(pending.token_hash, token_hash);
-    assert_eq!(pending.device_did, cli_did);
-    assert_eq!(pending.device_name, "terminal");
-
     let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
-    let ceremony = tonk_identity::ceremony::complete_link(
-        root,
-        token_hash.clone(),
-        cli.did(),
-        "terminal".into(),
-    )
-    .await
-    .unwrap();
-    let expected_delegation = ceremony.delegation_hex.clone();
+    let ceremony = tonk_identity::ceremony::link_device(root, cli.did(), "terminal".into())
+        .await
+        .unwrap();
+    let cli_grant_bytes = hex::decode(&ceremony.delegation_hex).unwrap();
+    let cli_grant = DelegationChain::try_from(cli_grant_bytes.as_slice()).unwrap();
     let response = client
-        .post(format!("{base}/links/complete"))
+        .post(format!("{base}/devices/link"))
         .body(hex::decode(ceremony.invocation_hex).unwrap())
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let response = client
-        .post(format!("{base}/links/consume"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let consumed: ConsumedLink = response.json().await.unwrap();
-    assert_eq!(consumed.delegation_hex, expected_delegation);
-    assert_eq!(consumed.credential_id, "cred-1");
-    assert_eq!(consumed.descriptor_hex, expected_descriptor);
-    assert_eq!(consumed.attachment_id.len(), 64);
-    let response = client
-        .post(format!("{base}/links/consume"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.json::<ConsumedLink>().await.unwrap(), consumed);
-
-    let completed_link =
-        DelegationChain::try_from(hex::decode(&consumed.delegation_hex).unwrap().as_slice())
-            .unwrap();
-    let activation = container_with_link(
-        &cli,
-        &completed_link,
-        vec!["account".into(), "link".into(), "activate".into()],
-        [
-            (
-                "tokenHash".to_string(),
-                Promised::String(token_hash.clone()),
-            ),
-            (
-                "attachmentId".to_string(),
-                Promised::String(consumed.attachment_id.clone()),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/links/activate"))
-        .body(activation)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-
-    let response = client
-        .post(format!("{base}/links/consume"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 401);
+    let linked: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(linked["descriptorHex"], expected_descriptor);
+    let cli_attachment = linked["attachmentId"].as_str().unwrap().to_string();
 
     // Logout detaches the exact generation without presenting the reusable
     // account grant, and replay is idempotent.
@@ -912,8 +816,8 @@ async fn it_drives_the_full_ceremony_over_http() {
     let detach = tonk_account::detach::SignedDetachIntent::sign(
         &dialog_credentials::SignerCredential::from(cli.clone()),
         &root_did,
-        &consumed.attachment_id,
-        &completed_link.proof_cids()[0].to_string(),
+        &cli_attachment,
+        &cli_grant.proof_cids()[0].to_string(),
         1,
     )
     .await
