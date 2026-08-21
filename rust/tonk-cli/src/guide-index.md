@@ -32,7 +32,7 @@ quote every string literal (`name: "alice"`, not `name: alice`).
 Commands run against the selected *space* (a named fact store). The
 cwd never locates site data — it's only a possible key into the
 registry. Resolution order: `--space <name>` > `TONK_SPACE` env > a
-binding created by `tonk use <name>`. There is no global fallback.
+binding created by `tonk space use <name>`. There is no global fallback.
 In automation, pin the space per-process (`TONK_SPACE=x tonk ...` or
 `--space x`), or bind a dedicated working directory once with `tonk
 use <name>`. `tonk space unbind` removes an exact binding. `tonk space

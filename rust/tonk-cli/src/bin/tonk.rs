@@ -38,7 +38,7 @@ use tonk_cli::{ExitCode, account, account_spaces, agents, context, guide, identi
 )]
 struct Cli {
     /// Operate on this space instead of the active directory binding.
-    /// Precedence: --space > TONK_SPACE > compatibility aliases > `tonk use`
+    /// Precedence: --space > TONK_SPACE > compatibility aliases > `tonk space use`
     /// in the nearest
     /// ancestor directory.
     #[arg(
@@ -352,21 +352,6 @@ enum Command {
     },
 
     // -- setup --------------------------------------------------------
-    /// Use a space in this directory and its descendants
-    ///
-    /// Stores only a pointer in the central registry; space data stays
-    /// in its central site directory. A nested binding overrides this
-    /// one. Pin one invocation with --space or TONK_SPACE instead.
-    #[command(after_help = "Examples:\n  tonk use\n  tonk use garden")]
-    Use {
-        /// A registered space name. Omit it to inspect the current selection.
-        #[arg(value_name = "NAME")]
-        name: Option<String>,
-        /// Emit versioned camelCase JSON.
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Manage spaces: named, centrally registered fact stores
     #[command(name = "space", visible_alias = "spot")]
     Space {
@@ -759,6 +744,23 @@ enum SpaceCommand {
         site: Option<PathBuf>,
     },
 
+    /// Use a space in this directory and its descendants
+    ///
+    /// Stores only a pointer in the central registry; space data stays
+    /// in its central site directory. A nested binding overrides this
+    /// one. Pin one invocation with --space or TONK_SPACE instead.
+    ///
+    /// Omit NAME to report what this directory currently resolves to.
+    #[command(after_help = "Examples:\n  tonk space use\n  tonk space use garden")]
+    Use {
+        /// A registered space name. Omit it to inspect the current selection.
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// List every local replica with its account, role, and access
     #[command(after_help = "Examples:\n  tonk space list\n  tonk space list --json")]
     List {
@@ -815,7 +817,7 @@ enum SpaceCommand {
         delete: bool,
     },
 
-    /// Unbind a directory from its space (see `tonk use`)
+    /// Unbind a directory from its space (see `tonk space use`)
     ///
     /// Only unlinks the directory: the space stays registered and no
     /// data is touched. `tonk space rm` is the one that deletes.
@@ -1067,11 +1069,11 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 AgentsCommand::Set { .. } => "set",
             }),
         ),
-        Command::Use { .. } => ("use", None),
         Command::Space { command } => (
             "space",
             Some(match command {
                 SpaceCommand::New { .. } => "new",
+                SpaceCommand::Use { .. } => "use",
                 SpaceCommand::List { .. } => "list",
                 SpaceCommand::Link { .. } => "link",
                 SpaceCommand::Rm { .. } => "rm",
@@ -1240,7 +1242,6 @@ async fn main() {
     let exit = match command {
         Command::Context { json } => context_op(json, space.as_deref()).await,
         Command::Agents { json, command } => agents_op(json, command, space.as_deref()).await,
-        Command::Use { name, json } => use_op(name, json, space.as_deref()).await,
         Command::Space { command } => space_op(command, space.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
@@ -1976,7 +1977,7 @@ async fn record_space_best_effort(name: &str, site: &site::TonkSite) {
     }
 }
 
-/// `tonk use [name]` — inspect the active space or bind this directory.
+/// `tonk space use [name]` — inspect the active space or bind this directory.
 async fn use_op(name: Option<String>, json: bool, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
@@ -2047,6 +2048,11 @@ async fn use_op(name: Option<String>, json: bool, flag: Option<&str>) -> ExitCod
 
 /// `tonk space new|list|link|rm` — registry management.
 async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
+    // `use` opens its own store and needs no site config; taking it here
+    // keeps it off the setup both of those cost.
+    if let SpaceCommand::Use { name, json } = command {
+        return use_op(name, json, flag).await;
+    }
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
         Err(err) => return print_failure(err),
@@ -2056,6 +2062,7 @@ async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
         Err(error) => return print_failure(error),
     };
     match command {
+        SpaceCommand::Use { .. } => unreachable!("taken above"),
         SpaceCommand::New { name, site } => {
             // Signed in, a new space is the account's from birth: it is
             // provisioned, pushed, and listed for the account's other
@@ -2819,7 +2826,7 @@ struct DeviceRowV1 {
     this_device: bool,
 }
 
-/// `tonk use --json`, and the no-selection case it has to be able to say.
+/// `tonk space use --json`, and the no-selection case it has to be able to say.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ActiveSpaceV1 {
@@ -3946,6 +3953,33 @@ mod account_spaces_parser_tests {
         assert!(Cli::try_parse_from(["tonk", "account", "add", "--label", "work"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "account", "use", "work"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "account", "list"]).is_err());
+    }
+
+    #[test]
+    fn binding_a_directory_is_a_space_subcommand_with_no_top_level_alias() {
+        // `use` and `unbind` are inverses, so they live in the same group.
+        // The top-level spelling is gone rather than aliased: an alias would
+        // leave half the pair where it was, which is what the move fixes.
+        let cli = Cli::try_parse_from(["tonk", "space", "use", "garden"]).unwrap();
+        let Some(Command::Space {
+            command: SpaceCommand::Use { name, json },
+        }) = cli.command
+        else {
+            panic!("expected space use");
+        };
+        assert_eq!(name.as_deref(), Some("garden"));
+        assert!(!json);
+
+        // No name inspects rather than binds.
+        let cli = Cli::try_parse_from(["tonk", "space", "use"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Space {
+                command: SpaceCommand::Use { name: None, .. }
+            })
+        ));
+
+        assert!(Cli::try_parse_from(["tonk", "use", "garden"]).is_err());
     }
 
     #[test]

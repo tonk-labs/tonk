@@ -17,7 +17,7 @@ drive the same code paths as the binary.
 # Create a local space and bind this directory to it.
 tonk space new garden
 # Use an existing space in another project directory:
-tonk use garden
+tonk space use garden
 
 # Every local replica, with the owner each space names.
 tonk space list
@@ -140,7 +140,7 @@ tag and the `access` flag that went with it, and added `owner`, `ownerName`,
 and `ownerIsYou` read from the roster.
 
 Commands resolve `--space` > `TONK_SPACE` > the visible `--spot` / `TONK_SPOT`
-compatibility aliases > the nearest directory bound by `tonk use <name>`.
+compatibility aliases > the nearest directory bound by `tonk space use <name>`.
 There is no machine-global fallback, so parallel sessions in separate
 directories hold their own space without repeating a flag. The directory is
 only a key into the registry — no site data or pointer file is stored there.

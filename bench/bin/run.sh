@@ -70,7 +70,7 @@ for i in $(seq 1 "$RUNS"); do
   echo "run: $RUN_DIR" >&2
 
   # The CLI is space-based: it resolves a space by --space, then TONK_SPACE,
-  # then the `tonk use` selection, and never consults the cwd. So a
+  # then the `tonk space use` selection, and never consults the cwd. So a
   # `cd` into the site directory buys nothing — without these two the
   # harness would silently drive whatever space the developer happens to
   # have selected globally. TONK_SPACES_STATE keeps the registry (and

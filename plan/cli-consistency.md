@@ -57,7 +57,7 @@ and its state, in four different layouts — five counting `tonk identity`,
 which prints the device and account DIDs a third way.
 
 ```text
-$ tonk status                $ tonk use
+$ tonk status                $ tonk space use
 space: demo (env)            current space: demo
 no-upstream (set one …)      site: /…/spaces/demo
 hash: #7PHx…                 selected via: env
@@ -83,7 +83,7 @@ it as sections and keep them as aliases that print the one they own:
 |---|---|
 | `tonk context` | space, sync, account, concepts, workflows |
 | `tonk status` | the sync section alone |
-| `tonk use` | the space section alone |
+| `tonk space use` | the space section alone |
 | `tonk account status` | the account section alone |
 
 One renderer, one field vocabulary, one JSON document with the sections as
@@ -106,12 +106,16 @@ fetch as the thing that distinguishes it.
 clears that binding. One is top level, the other is a `space` subcommand —
 and `unbind`'s own help says *"see `tonk use`"*, which is the tell.
 
-**Proposal.** `tonk space use <name>` and `tonk space unbind`, with `tonk use`
-kept as a visible top-level alias. Binding is space registry management; that
-is where the noun already is. The top-level alias stays because `tonk use` is
-short, is in the guide, and is what a person types.
+**Proposal.** `tonk space use <name>` and `tonk space unbind`, and no
+top-level alias. Binding is space registry management; that is where the noun
+already is, and the whole point of moving it is that the pair reads as a pair.
+A top-level alias kept for typing convenience would put half the pair back
+where it was, which is the thing being fixed.
 
-**Cost.** Additive. Nothing breaks.
+**Cost.** Breaking. `tonk use` stops resolving. It is one line in the guide,
+the README, and the bench harness, all updated with the move; the failure mode
+is clap's "unrecognized subcommand" with a suggestion, not silent wrong
+behaviour.
 
 ## 3. `link` means two unrelated things
 

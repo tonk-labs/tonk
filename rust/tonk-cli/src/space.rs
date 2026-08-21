@@ -208,7 +208,7 @@ pub struct Resolved {
 pub enum SpaceError {
     /// Spaces exist but neither the process nor cwd selects one.
     #[error(
-        "no space active for this directory; run `tonk use <name>`, \
+        "no space active for this directory; run `tonk space use <name>`, \
          pass --space, or set TONK_SPACE"
     )]
     NoSelection,

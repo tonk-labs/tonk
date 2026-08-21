@@ -7,9 +7,9 @@ invalidates an old claim, not a deletion.
 
 Commands run from anywhere, against whichever spot is selected —
 resolution is `--spot` > `TONK_SPOT` > a directory attached with
-`tonk use <name> --here` > `tonk use`. Automation (agents, CI) should
+`tonk space use <name> --here` > `tonk space use`. Automation (agents, CI) should
 set `TONK_SPOT` or pass `--spot` rather than relying on the global
-`tonk use` selection; an agent working out of a fixed directory can
+`tonk space use` selection; an agent working out of a fixed directory can
 attach it once instead.
 
 ## Orientation
@@ -97,7 +97,7 @@ tonk render <route>                         # headless HTML render (e.g. alice@p
 tonk spot new <name>              # create a spot (site) and select it
 tonk spot new <name> --site <path>  # adopt an existing .tonk directory as a spot
 tonk spot list                    # registered spots, with the resolved current
-tonk use <name>                   # set the global current spot
+tonk space use <name>                   # set the global current spot
 tonk identity                     # show the local profile DID
 tonk migrate                      # convert a .carry/ site to .tonk/
 ```

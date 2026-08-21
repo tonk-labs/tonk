@@ -484,7 +484,7 @@ mod when_resolving_with_precedence {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
-        let output = run(state.path(), &["use"], &[("TONK_SPACE", "a")]);
+        let output = run(state.path(), &["space", "use"], &[("TONK_SPACE", "a")]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("current space: a"), "{stdout}");
@@ -1065,7 +1065,7 @@ mod when_a_directory_is_bound {
     }
 
     fn bind(state: &Path, cwd: &Path, name: &str) {
-        let output = run_in(state, cwd, &["use", name], &[]);
+        let output = run_in(state, cwd, &["space", "use", name], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
     }
 
@@ -1112,7 +1112,12 @@ mod when_a_directory_is_bound {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
 
-        let output = run_in(state.path(), &work, &["use", "a"], &[("TONK_SPACE", "b")]);
+        let output = run_in(
+            state.path(),
+            &work,
+            &["space", "use", "a"],
+            &[("TONK_SPACE", "b")],
+        );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: a"), "{stdout}");
@@ -1172,7 +1177,7 @@ mod when_a_directory_is_bound {
         let (work, _nested) = fixture(state.path());
         bind(state.path(), &work, "a");
 
-        let output = run_in(state.path(), &work, &["use", "b"], &[]);
+        let output = run_in(state.path(), &work, &["space", "use", "b"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
@@ -1186,7 +1191,7 @@ mod when_a_directory_is_bound {
         bind(state.path(), &work, "a");
 
         // `use` rewrites this directory's one binding.
-        let output = run_in(state.path(), &work, &["use", "b"], &[]);
+        let output = run_in(state.path(), &work, &["space", "use", "b"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
@@ -1202,7 +1207,7 @@ mod when_a_directory_is_bound {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
 
-        let output = run_in(state.path(), &work, &["use", "a"], &[]);
+        let output = run_in(state.path(), &work, &["space", "use", "a"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stderr = stderr_of(&output);
         assert!(stderr.is_empty(), "{stderr}");
@@ -1494,7 +1499,7 @@ mod when_reading {
         for args in [
             vec!["context", "--json"],
             vec!["status", "--json"],
-            vec!["use", "--json"],
+            vec!["space", "use", "--json"],
             vec!["query", "task", "--json"],
             vec!["concept", "ls", "--json"],
             vec!["view", "ls", "--json"],

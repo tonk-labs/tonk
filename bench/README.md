@@ -153,7 +153,7 @@ task.md/rubric.md are frozen.
   `$BENCH_URL/ucan/`.
 
 **Space pinning** — the CLI resolves a space by `--space`, then `TONK_SPACE`, then
-a directory attachment (`tonk use <name> --here`), then the `tonk use`
+a directory attachment (`tonk space use <name> --here`), then the `tonk space use`
 selection. `cd`-ing into the site directory does nothing on its own — only an
 explicit attachment makes a directory mean anything — and an unpinned `tonk`
 call succeeds against whatever space the developer happens to have selected

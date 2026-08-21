@@ -1,6 +1,6 @@
 //! Space management ops: create/register/bind/list/remove against
 //! an isolated store. These exercise the `space` module's ops layer
-//! the way the `tonk use` / `tonk space *` commands drive it —
+//! the way the `tonk space use` / `tonk space *` commands drive it —
 //! nothing here touches process env or the user's data dir.
 
 mod common;
