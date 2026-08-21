@@ -655,6 +655,97 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_lets_the_root_revoke_a_grandchild_it_never_issued() {
+        // The spec's reach rule: "any UCAN that contains a proof where
+        // the revoker matches the `iss` field, even transitively, MAY be
+        // revoked." The space issued only the first hop, yet may revoke
+        // the second.
+        let (space, member, _, path) = invite_path().await;
+        let grandchild = path.proof_cids()[1];
+        assert_ne!(path.proofs().next().unwrap().issuer(), &member.did());
+
+        let verified = verify(
+            &mint_root_revocation(space.clone(), &path, &grandchild)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.target_cid, grandchild.to_string());
+        assert_eq!(verified.subject, space.did());
+        assert_eq!(verified.authority, RevocationAuthority::PathIssuer);
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_revoker_further_down_the_chain_than_the_target() {
+        // Authority runs downward only. The member issued the second
+        // hop, so it may not revoke the first one above it.
+        let (_, member, _, path) = invite_path().await;
+        let above = path.proof_cids()[0];
+
+        assert!(
+            mint_root_revocation(member.clone(), &path, &above)
+                .await
+                .is_err()
+        );
+        let bytes = raw_revocation(member, &path, Promised::Link(above), None).await;
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_records_the_subject_rather_than_the_signer() {
+        // What a validator matches against a presented chain's issuers.
+        // For a self-revocation the device signs, but the authority
+        // exercised is the space's, and the space is what appears in
+        // chains rooted there.
+        let (space, _, invite, path) = invite_path().await;
+        let target = path.proof_cids()[1];
+        let verified = verify(
+            &mint_self_revocation(invite.clone(), &path, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.issuer, invite.did(), "the device signed it");
+        assert_eq!(
+            verified.subject,
+            space.did(),
+            "the space's authority is what a chain check matches"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_witness_that_is_not_a_connected_chain() {
+        // A witness is a delegation path, not a bag of delegations: two
+        // unrelated grants prove nothing about reach.
+        let (space, _, invite, path) = invite_path().await;
+        let unrelated_space = signer(11).await;
+        let unrelated = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(unrelated_space.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(unrelated_space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let disjoint = DelegationChain::new(unrelated);
+        let target = path.proof_cids()[1];
+
+        // The target is not in the presented witness at all.
+        let bytes = raw_revocation(space, &disjoint, Promised::Link(target), None).await;
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Malformed(_))
+        ));
+    }
+
+    #[dialog_common::test]
     async fn it_rejects_an_unauthorized_issuer() {
         let (_, _, _, path) = invite_path().await;
         let outsider = signer(8).await;
