@@ -1017,6 +1017,52 @@ mod when_listing_views {
         Ok(())
     }
 
+    /// `view add` writes `xyz.tonk.view/display`; the listing used to
+    /// select on `text/html` alone and so came back empty right after
+    /// a successful add.
+    #[dialog_common::test]
+    async fn it_lists_a_view_authored_through_view_add() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(common::ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::CONCEPT_DECL).await?;
+        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+
+        let listed = views::list(&test.site).await?;
+        let row = listed
+            .iter()
+            .find(|row| row.name.as_deref() == Some("task-view"))
+            .expect("the authored view should be listed");
+        assert_eq!(row.model.as_deref(), Some("task"));
+        // The `display: |` block scalar keeps its trailing newline.
+        assert_eq!(row.body_bytes, "<b>{title}</b>\n".len());
+        Ok(())
+    }
+
+    /// The standard library seeds twenty-five views. They are branch
+    /// data like any other, so only the pin filter keeps them out.
+    #[dialog_common::test]
+    async fn it_omits_the_views_the_standard_library_seeds() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        assert!(views::list(&test.site).await?.is_empty());
+
+        test.eval_inline(common::ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::CONCEPT_DECL).await?;
+        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+
+        let listed = views::list(&test.site).await?;
+        assert!(
+            listed
+                .iter()
+                .all(|row| row.entity.to_string() != "tonk:blob/media-view"),
+            "seeded views should stay out of the listing: {:?}",
+            listed
+                .iter()
+                .map(|row| row.entity.to_string())
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_surfaces_every_bookmarked_view() -> Result<()> {
         let test = common::TestSite::new().await?;

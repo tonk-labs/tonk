@@ -231,9 +231,10 @@ page!: &about
     <h1>About</h1>
 ```
 
-`tonk view ls` lists every entity carrying a `text/html` claim. It is
-claim-driven, so a plain concept like this `page` shows up next to
-real views — but no route serves a bare claim. The page reaches a
+`tonk view ls` lists every entity carrying a renderable claim: the
+four view-template attributes the display stack resolves, plus
+`text/html`. It is claim-driven, so a plain concept like this `page`
+shows up next to real views — but no route serves a bare claim. The page reaches a
 browser through `<tonk-portal>`, the sandboxed iframe the display
 stack mounts for a view whose projected `type` is `text/html`; the
 worker serves the body behind it. So you reach it the way you reach

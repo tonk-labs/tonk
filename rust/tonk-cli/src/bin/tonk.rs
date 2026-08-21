@@ -896,11 +896,13 @@ enum ViewCommand {
         name: Option<String>,
     },
 
-    /// List renderable entities (those carrying a text/html claim)
+    /// List renderable entities (those carrying a template claim)
     ///
-    /// One row per entity, tab-separated `name<TAB>entity<TAB>bytes`.
-    /// Claim-driven: surfaces anything the host route would serve,
-    /// regardless of how the claim was asserted.
+    /// One row per entity, tab-separated
+    /// `name<TAB>entity<TAB>model<TAB>bytes`. Claim-driven: surfaces
+    /// anything the display stack or the host route would render,
+    /// regardless of how the claim was asserted. Standard-library
+    /// views are omitted.
     #[command(after_help = "Examples:\n  tonk view ls")]
     Ls,
 }
@@ -3292,7 +3294,8 @@ async fn home_op(models: Vec<String>, spot: Option<&str>) -> ExitCode {
 }
 
 /// List renderable entities (`tonk view ls`), one tab-separated
-/// `name<TAB>entity<TAB>bytes` row per `text/html` claim carrier.
+/// `name<TAB>entity<TAB>model<TAB>bytes` row per template-claim
+/// carrier.
 async fn list_views_op(site: &site::TonkSite) -> ExitCode {
     let listed = match views::list(site).await {
         Ok(v) => v,
@@ -3310,7 +3313,12 @@ async fn list_views_op(site: &site::TonkSite) -> ExitCode {
 
 fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::Result<()> {
     let name = row.name.as_deref().unwrap_or("-");
-    writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
+    let model = row.model.as_deref().unwrap_or("-");
+    writeln!(
+        out,
+        "{}\t{}\t{}\t{}",
+        name, row.entity, model, row.body_bytes
+    )
 }
 
 async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {

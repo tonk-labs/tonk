@@ -44,7 +44,7 @@ active for this invocation.
 1. Discover what's already on the branch — don't guess or memorize:
    - `tonk schema [<concept>]` — attributes and concepts, as re-submittable notation
    - `tonk concept ls` — user-defined concepts (name + description)
-   - `tonk view ls`    — entities carrying a renderable claim
+   - `tonk view ls`    — entities carrying a renderable claim, and the model each renders
 2. Define schema: `tonk concept add <name> --attr <field>:<type>:<card> …`
    (types enumerate on a miss; `one`/`many` cardinality). The concept is
    immediately usable: `tonk assert <name> --help` shows its typed flags.

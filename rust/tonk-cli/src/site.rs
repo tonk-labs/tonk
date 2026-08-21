@@ -57,6 +57,32 @@ pub(crate) fn standard_library_has_name(name: &str) -> bool {
     })
 }
 
+/// Whether the seeded standard library pins `uri` as the `this:` of
+/// one of its own declarations.
+///
+/// Every library declaration that matters here — its views above all —
+/// carries an explicit `this:`, so the set of pinned URIs is exactly
+/// the set of entities the library seeded. Listings of branch data
+/// (`tonk view ls`) use it to tell the library's twenty-five views
+/// from the author's own.
+///
+/// Query variables (`this: ?this`, inside the library's rules) are not
+/// entities and never match a claim's subject, so they are skipped.
+pub(crate) fn standard_library_pins_entity(uri: &str) -> bool {
+    STANDARD_LIBRARY
+        .lines()
+        .filter_map(pinned_entity)
+        .any(|pinned| pinned == uri)
+}
+
+/// The `this:` value declared on one standard-library line, at any
+/// indentation. `None` for every other line, and for the query
+/// variables the library's rule bodies bind.
+fn pinned_entity(line: &str) -> Option<&str> {
+    let value = line.trim_start().strip_prefix("this:")?.trim();
+    (!value.is_empty() && !value.starts_with('?')).then_some(value)
+}
+
 /// Name of the dialog repository tonk uses inside `.tonk/`.
 pub const REPO_NAME: &str = "main";
 
