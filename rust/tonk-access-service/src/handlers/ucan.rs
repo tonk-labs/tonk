@@ -235,7 +235,7 @@ fn provisioning_unavailable() -> Refusal {
 #[cfg(target_arch = "wasm32")]
 async fn screen_credentials(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
     use crate::expiry::{WindowVerdict, check_window};
-    use crate::revocation::{self, SetVerdict, r2::R2RevocationSource};
+    use crate::revocation::{self, index::kv::KvRevocationIndex};
 
     let presented = match revocation::collect_presented(body_bytes) {
         Ok(presented) => presented,
@@ -272,28 +272,26 @@ async fn screen_credentials(body_bytes: &[u8], env: &Env) -> std::result::Result
         }
     }
 
-    let registry = match env.bucket("REVOCATIONS") {
-        Ok(bucket) => R2RevocationSource::new(bucket),
+    let index = match env.kv("REVOCATIONS_KV") {
+        Ok(store) => KvRevocationIndex::new(store),
         Err(err) => {
-            console_error!("revocation screen unavailable, no REVOCATIONS binding: {err}");
+            console_error!("revocation screen unavailable, no REVOCATIONS_KV binding: {err}");
             return Err(unavailable());
         }
     };
-    match revocation::assess(&registry, &presented, now_ms).await {
-        SetVerdict::Allowed => Ok(()),
-        SetVerdict::AllowedStale(reason) => {
-            console_error!("revocation registry unreachable, serving cached verdicts: {reason}");
-            Ok(())
-        }
-        SetVerdict::Revoked => {
-            worker::console_log!("presign rejected: revoked credential present");
+    match revocation::screen_revoked(&index, &presented).await {
+        Ok(None) => Ok(()),
+        Ok(Some(cid)) => {
+            worker::console_log!("presign rejected: chain rests on revoked delegation {cid}");
             Err(AuthorizeError::Revoked {
                 subject: presented.subject.clone(),
             }
             .into())
         }
-        SetVerdict::Unavailable(reason) => {
-            console_error!("presign refused, revocation registry unreachable: {reason}");
+        // An index we cannot read says nothing about whether anything
+        // was revoked, so it is our unavailability rather than a denial.
+        Err(err) => {
+            console_error!("presign refused, revocation index unreachable: {err}");
             Err(unavailable())
         }
     }

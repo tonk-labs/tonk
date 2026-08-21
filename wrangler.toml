@@ -26,12 +26,6 @@ run_worker_first = [
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
 
-# Read-only view of the provider-independent immutable revocation registry.
-# The account service owns publication; the presign path only lists prefixes.
-[[r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations"
-
 # Control state for customer registration: customers, consumers, and
 # plans. Registration commands answer 500 while this binding is absent or
 # empty; the presign path never touches it.
@@ -83,10 +77,6 @@ routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-staging"
 
-[[env.staging.r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations-staging"
-
 # Ships empty, as production's did; filled at bootstrap so there is no way
 # to silently deploy staging against the production database.
 [[env.staging.d1_databases]]
@@ -130,10 +120,6 @@ routes = []
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-preview"
-
-[[env.preview.r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations-preview"
 
 # Replaced per pull request, like the account service's preview database:
 # continuous integration creates `tonk-access-control-pr-<N>` and rewrites
