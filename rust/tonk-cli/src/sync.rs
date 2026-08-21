@@ -82,9 +82,9 @@ pub enum SyncError {
     Io(String),
 }
 
-impl SyncError {
+impl crate::Coded for SyncError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         match self {
             SyncError::UpstreamNotConfigured { .. }
             | SyncError::Io(_)

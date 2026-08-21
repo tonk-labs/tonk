@@ -12,10 +12,11 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+use tonk_cli::Coded;
 use tonk_cli::auto_sync;
 use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
 use tonk_cli::data_ops;
-use tonk_cli::eval::{self, EvalError, Source};
+use tonk_cli::eval::{self, Source};
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
 use tonk_cli::listing::{self, Listing};
 use tonk_cli::migrate::{self, Mode as MigrateMode};
@@ -2533,10 +2534,7 @@ async fn sync_op(op: SyncOp, space: Option<&str>) -> ExitCode {
             );
             err.exit_code()
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -2695,10 +2693,7 @@ async fn export_op(out: Option<PathBuf>, branch: &str, space: Option<&str>) -> E
             }
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -2745,10 +2740,7 @@ async fn import_op(file: PathBuf, branch: &str, space: Option<&str>) -> ExitCode
             );
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -2777,10 +2769,7 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
     };
     let status = match sync::status_with_hash(&site).await {
         Ok(status) => status,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return err.exit_code();
-        }
+        Err(err) => return print_coded(err),
     };
     if json {
         let report = StatusReportV1 {
@@ -2951,10 +2940,7 @@ async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
                         }
                     }
                 }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
+                Err(err) => print_coded(err),
             }
         }
         RemoteCommand::List { json } => match remote::list(&site).await {
@@ -2963,10 +2949,7 @@ async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
                 print_remote_list(&records);
                 ExitCode::Success
             }
-            Err(err) => {
-                eprintln!("error: {err}");
-                err.exit_code()
-            }
+            Err(err) => print_coded(err),
         },
         RemoteCommand::SetUpstream { remote: name } => {
             match remote::set_upstream(&site, &name).await {
@@ -2975,10 +2958,7 @@ async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
                     record_space_best_effort(&resolved.name, &site).await;
                     ExitCode::Success
                 }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
+                Err(err) => print_coded(err),
             }
         }
     }
@@ -3022,20 +3002,14 @@ async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
                     print_blob_add_outcome(&outcome);
                     ExitCode::Success
                 }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
+                Err(err) => print_coded(err),
             }
         }
         BlobCommand::Cat { reference } => {
             let mut stdout = tokio::io::stdout();
             match blob::cat(&site, &reference, &mut stdout).await {
                 Ok(_) => ExitCode::Success,
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
+                Err(err) => print_coded(err),
             }
         }
         BlobCommand::Ls { json } => match blob::ls(&site).await {
@@ -3044,10 +3018,7 @@ async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
                 print_blob_ls(&rows);
                 ExitCode::Success
             }
-            Err(err) => {
-                eprintln!("error: {err}");
-                err.exit_code()
-            }
+            Err(err) => print_coded(err),
         },
     }
 }
@@ -3235,10 +3206,7 @@ async fn mint_invite(
             print_invite_outcome(&outcome);
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -3335,10 +3303,7 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
             }
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -3437,10 +3402,7 @@ async fn query_op(concept: String, json: bool, space: Option<&str>) -> ExitCode 
             }
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -3460,10 +3422,7 @@ async fn get_op(concept: String, entity: String, json: bool, space: Option<&str>
             }
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -3527,10 +3486,7 @@ async fn assert_cmd(concept: Option<String>, rest: Vec<String>, space: Option<&s
             }
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -3556,10 +3512,7 @@ async fn retract_op(
             }
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -3587,10 +3540,7 @@ async fn concept_op(command: ConceptCommand, space: Option<&str>) -> ExitCode {
                     }
                     ExitCode::Success
                 }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
+                Err(err) => print_coded(err),
             }
         }
         ConceptCommand::Ls { json } => list_concepts_op(&site, json).await,
@@ -3642,10 +3592,7 @@ async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
                     }
                     ExitCode::Success
                 }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
+                Err(err) => print_coded(err),
             }
         }
         ViewCommand::Ls { json } => list_views_op(&site, json).await,
@@ -3668,10 +3615,7 @@ async fn home_op(models: Vec<String>, write: WriteArgs, space: Option<&str>) -> 
             }
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_coded(err),
     }
 }
 
@@ -3710,10 +3654,7 @@ async fn print_schema(concept: Option<String>, space: Option<&str>) -> ExitCode 
     let rendered = match &concept {
         Some(name) => match data_ops::schema_subset(&site, name).await {
             Ok(text) => text,
-            Err(err) => {
-                eprintln!("error: {err}");
-                return err.exit_code();
-            }
+            Err(err) => return print_coded(err),
         },
         None => match schema::render(&site).await {
             Ok(text) => text,
@@ -3798,8 +3739,25 @@ fn failure_text(error: &anyhow::Error) -> String {
 }
 
 /// Print an [`anyhow::Error`] as `error: …`, honoring `--verbose`.
+///
+/// Flattens to [`ExitCode::IoError`], so it is for failures that carry no
+/// code of their own. A typed error goes through [`print_coded`] instead.
 fn print_failure(error: impl Into<anyhow::Error>) -> ExitCode {
     print_error(failure_text(&error.into()))
+}
+
+/// Print a typed failure honoring `--verbose`, and return the exit code it
+/// carries.
+///
+/// The two used to be mutually exclusive: [`print_failure`] rendered the
+/// whole chain and threw the code away, while the call sites that needed a
+/// real code printed the error inline and ignored `--verbose` — so `-v` on
+/// any of them produced a byte-identical message, which reads as a broken
+/// flag.
+fn print_coded(error: impl tonk_cli::Coded) -> ExitCode {
+    let code = error.exit_code();
+    eprintln!("error: {}", failure_text(&anyhow::Error::new(error)));
+    code
 }
 
 /// The process's working directory, used only as a key into the
@@ -3869,14 +3827,6 @@ async fn open_selected(
             "could not open the active space: {err:#}"
         ))),
     }
-}
-
-/// Specialized [`print_error`] for parse-error mapping. Kept
-/// alongside the others so future lint runs notice if [`EvalError`]
-/// gains variants without an exit-code mapping.
-#[allow(dead_code)]
-fn classify(err: &EvalError) -> ExitCode {
-    err.exit_code()
 }
 
 #[cfg(test)]

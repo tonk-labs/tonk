@@ -94,9 +94,9 @@ pub enum RemoteError {
     Io(String),
 }
 
-impl RemoteError {
+impl crate::Coded for RemoteError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         ExitCode::IoError
     }
 }

@@ -36,9 +36,9 @@ pub enum BlobError {
     NotFound(String),
 }
 
-impl BlobError {
+impl crate::Coded for BlobError {
     /// Map to a process exit code.
-    pub fn exit_code(&self) -> crate::ExitCode {
+    fn exit_code(&self) -> crate::ExitCode {
         match self {
             BlobError::Io(_) => crate::ExitCode::IoError,
             BlobError::Site(_) => crate::ExitCode::CommitError,

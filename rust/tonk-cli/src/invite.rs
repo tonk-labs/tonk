@@ -125,9 +125,9 @@ pub enum InviteError {
     Io(String),
 }
 
-impl InviteError {
+impl crate::Coded for InviteError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         ExitCode::IoError
     }
 }

@@ -32,9 +32,9 @@ pub enum TransferError {
     Import(dialog_repository::CommitError),
 }
 
-impl TransferError {
+impl crate::Coded for TransferError {
     /// Map to a process exit code.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         match self {
             TransferError::Io(_) => ExitCode::IoError,
             TransferError::Export(_) | TransferError::Import(_) => ExitCode::CommitError,

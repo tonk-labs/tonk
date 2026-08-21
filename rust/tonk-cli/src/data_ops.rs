@@ -167,9 +167,9 @@ fn strip_clap_error_header(e: &clap::Error) -> String {
     }
 }
 
-impl DataOpError {
+impl crate::Coded for DataOpError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> crate::ExitCode {
+    fn exit_code(&self) -> crate::ExitCode {
         match self {
             DataOpError::NoConcept { .. }
             | DataOpError::Io(_)

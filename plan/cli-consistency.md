@@ -271,24 +271,35 @@ different thing again: a transaction envelope, not a listing. It may be right
 to leave it alone and say so, since it is the read that shares its shape with
 `tonk eval --format json`.
 
-## 7. `--verbose` does nothing on the typed-error path
+## 7. Two error printers, and you have to pick which half to lose
 
 Errors leave the binary two ways:
 
 - `print_failure(err)` — honours `--verbose`, printing the whole `{:#}` chain,
   but flattens every failure to `ExitCode::IoError`.
 - `eprintln!("error: {err}"); err.exit_code()` — 20 call sites — keeps the
-  typed exit code and silently ignores `--verbose`, so the chain that explains
-  the failure is unreachable.
+  typed exit code and ignores `--verbose`.
 
-A caller who hits one of those 20 and runs it again with `-v` gets a
-byte-identical message, which reads as the flag being broken.
+So a call site that needs a real exit code cannot honour `-v`, and one that
+honours `-v` cannot return a real exit code.
 
-**Proposal.** One helper that takes both: render through `failure_text` (so
-`--verbose` works everywhere) and return the error's own exit code (so the
-typed codes survive). Mechanical; no output changes without `-v`.
+**How much `-v` actually loses today: nothing.** Every error enum the 20 sites
+print is flat or interpolates its source (`#[error("io error: {0}")]`,
+`#[error(transparent)]` onto another flat enum), so `{:#}` renders the same
+string as `{}`. The gap is latent, not live — the first variant that gains a
+non-interpolated `#[source]` is where it bites, and it bites silently.
 
-**Cost.** None. This is the cheapest item on the list and should go first.
+**Proposal.** A `Coded` trait on the library's error enums, and one printer
+that renders through `failure_text` and returns `error.exit_code()`. Three
+things fall out: 20 copies of a 4-line block become 20 one-line arms, `-v`
+starts working the moment an error grows a chain rather than needing to be
+rediscovered then, and "every error enum maps to an exit code" becomes a
+trait impl the compiler checks — which retires the `#[allow(dead_code)] fn
+classify` that was standing in for that check and, being dead and allowed,
+could not perform it.
+
+**Cost.** None to output. This is the cheapest item on the list and goes
+first.
 
 ## 8. Retire the compatibility aliases
 
