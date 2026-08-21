@@ -206,10 +206,95 @@ The container arrives at `/ucan/` like any other, carrying the revoked delegatio
 
 1. **Already recorded?** If `(target_cid, issuer)` is already in the set, answer Ok and stop. Idempotent by spec — the empty nonce says so — and a replay must not bill twice.
 2. **Is the subject ours to protect?** Consumer-row check per §2.3. Absent or pruned, refuse and say which.
-3. **Is the evidence good?** The revoker must be an issuer in the witnessed path through the target, or hold a delegation of `ucan/revoke` for it. `tonk_identity::revocation::verify` already draws exactly this distinction as `RevocationAuthority::{PathIssuer, Delegated}`.
+3. **Is the evidence good?** Per the rules in §2.5a: none for `iss == sub` or a powerline, a chain `sub -> iss` otherwise, validated as §2.5b describes. The revoker may also hold a delegation of `ucan/revoke`; `tonk_identity::revocation::verify` draws that distinction as `RevocationAuthority::{PathIssuer, Delegated}`. Note the path predicate is membership in the chain through the target, issuer **or audience**, so the recipient of a hop may withdraw what it was handed.
 4. **Record and answer.** Add the issuer to the target's set. On invalid evidence, refuse with the reason.
 
 Note the target need not be known to us. The spec RECOMMENDS accepting revocations for delegations not yet seen, since a holder may sit on a capability and reveal it late, so step 3 verifies the evidence rather than looking the target up.
+
+### 2.5a What evidence is actually for
+
+Evidence does not authorize a revocation. The screen does, and it asks one
+question of the *victim's* chain:
+
+    is revocation.sub among the issuers of the chain being presented?
+
+A forged path cannot influence that. Mallory may mint `[bogus, target]` and
+sign it, but `sub = mallory` never appears in a chain Mallory did not issue
+into, so the recorded row never intersects anything and is inert forever.
+Evidence is therefore not a security boundary; it is a **write filter**. Its
+only job is to keep the index from being an open write surface.
+
+That reframing settles what to require. The rules, by revocation shape:
+
+| Revocation | Evidence |
+| --- | --- |
+| `iss == sub` | none — the signature is the proof |
+| specific subject, `iss != sub` | a chain `sub -> iss` |
+| `Subject::Any` (powerline) | none possible, so none required |
+
+**Why `sub -> iss` for the middle row.** To write a row you must exhibit a
+chain the subject signed. That is not forgeable without the subject's key, so
+the write surface shrinks from "anyone with a keypair" to "principals the
+subject has actually delegated to." That is the whole win, and it is a real
+one.
+
+**Why the powerline row is an exception, not a uniform rule.** A powerline is
+`Subject::Any` — it is not *about* any space. There is no subject to name that
+would make `sub -> iss` meaningful, and naming one arbitrary space would
+revoke the powerline for that space alone while it kept working everywhere
+else. So no evidence can exist, and none is required.
+
+The cost of that exception is bounded, and mostly by code that already exists:
+
+- The consumer-row check (§2.3) refuses any `sub` that is not a registered,
+  non-deleted consumer. An attacker's fresh keypair is not one. To write
+  garbage at all you must be a customer we can identify, bill, and cut off.
+- Rows are keyed `revoked/{target}/{sub}`, so a customer can only pollute
+  under their own subject. They cannot grow anyone else's key space.
+
+So the exposure is inert rows written by identifiable customers. No cap is
+proposed. If it ever bites, a per-subject row limit is the cheap fix, and it
+can wait for evidence that it is needed.
+
+> [!caution]
+> `subject()` in `tonk-identity/src/revocation.rs` falls back to
+> `path.issuer()` when the chain has no specific subject. So a powerline
+> revocation is minted with `sub` = the revoker's own DID and lands in the
+> `iss == sub` row. That happens to be correct — the revoker did issue the
+> powerline hop, so they are in the victim's chain and the screen bites — but
+> it is correct by coincidence of a fallback, not by design. Anything that
+> changes the fallback silently changes which row a powerline revocation
+> lands in.
+
+### 2.5b Validity of the evidence
+
+Evidence must verify structurally — every certificate signed, hops chaining
+(`aud[i] == iss[i+1]`), subject matching — and it must be **currently valid**.
+No special handling of time bounds, and no "was ever valid" allowance.
+
+The reason that costs nothing: a chain's effective validity is the
+intersection of its hops. If `sub -> iss` has expired, then everything `iss`
+delegated downstream of it has expired too, since you cannot grant what you no
+longer hold. Writing a longer expiry on a downstream hop does not extend it;
+the chain still intersects to the shorter window.
+
+So an expired evidence chain means the thing it would revoke is already dead,
+and the presign screen drops it on expiry alone without revocation being
+involved. There is nothing to withdraw, so refusing the revocation forfeits
+nothing.
+
+> [!note]
+> This also rules out the "delegate short, redelegate long" attack one might
+> worry about — a recipient extending their own access past the grantor's
+> ability to revoke it. The intersection makes it impossible: the recipient's
+> access dies with the grantor's hop regardless of what the recipient wrote.
+
+Current shape of our data, for calibration:
+
+- `mint_account_union` builds the powerline with `Subject::Any` and **no**
+  `not_before` or `expiration`, so nothing here applies to it.
+- Invite *visit* redelegations do carry a TTL (`VISIT_TTL_SECONDS`), and they
+  expire on their own without needing revocation at all.
 
 ### 2.6 Immutable, monotone, evictable on expiry
 
