@@ -65,7 +65,6 @@ web-sys = { workspace = true, features = [
     "ShadowRoot",
     "ShadowRootInit",
     "ShadowRootMode",
-    "Storage",
     "Text",
     "VisibilityState",
     "VisualViewport",

@@ -163,12 +163,59 @@ light-DOM and are slotted, exactly as `fabb.js` slots `<tonk-menu>`.
    parked before this still carries `template`; serde ignores unknown fields,
    and the wire-shape test keeps sending it to prove the upgrade is safe.
 
-10. **Next** — the Hub itself: `profile.yaml`'s `view/directory!:
-    id:tonk:space/directory`, conformed to `hub.html`. Scope is the hub page
-    only (masthead, hubbar, the 432px spaces stack with hover verbs, the
-    remove-confirm cluster); the settings overlay, account stack and usage
-    banner stay out. Tokens are settled — reuse the bar's, which `hub.html`
-    restates verbatim.
+10. **Done** — the Hub: `profile.yaml`'s `view/directory!:
+    id:tonk:space/directory`, conformed to `hub.html`. Masthead logotype,
+    hubbar, the 432px spaces stack with hover verbs, the remove-confirm
+    cluster, the empty state, one breakpoint at 640. Two supporting elements
+    in `tonk-workspace`: `<ui-mode-switch>` (the ink cap) and
+    `<ui-copy-link>` (a verb that answers in place).
+
+## The sealed guest, and what it costs
+
+Everything a view renders happens inside the portal guest —
+`sandbox="allow-scripts"`, an **opaque origin**. `tonk_workspace`,
+`tonk_display` and `tonk_fab` are registered only in `tonk-guest`; the top
+page registers `tonk_portal::register_site()` and the account/activate
+routes. Consequences that shaped the Hub:
+
+- **`localStorage` throws there.** The mode persistence added to the bar in
+  step 8 was therefore dead on arrival — `window().local_storage()` returns
+  `Err`, `.ok().flatten()` swallowed it, and nothing was ever stored. Removed
+  from both the bar and the cap rather than left pretending. The override now
+  lasts the session, which is what the sandbox actually allows.
+- **Clipboard works**, because `tonk-portal::shared` delegates the
+  `clipboard-write` Permissions Policy into the guest. `<ui-copy-link>` still
+  reports "couldn't copy" on a rejected write rather than claiming success.
+- **The theme class is propagated**: the bridge stamps the page's `rootClass`
+  into the guest and keeps `wa-dark`/`wa-light` live off
+  `prefers-color-scheme`. So the Hub's dark twin keys off `:root.wa-dark`,
+  the app's existing signal, rather than a second one of its own.
+
+### Follow-up: persisting the mode
+
+Two viable routes, both their own change:
+
+1. A `mode` page effect in `tonk-host::page_effect`, beside `navigate` and
+   `title`. The PAGE stores it, and `index.html` can then apply it before
+   first paint — no flash. Most correct.
+2. A profile claim through `window.tonk.transact`, exactly as the FAB stores
+   its dock. Already proven to work from inside a guest, but it lands after
+   the guest has painted, so the theme would flip on load.
+
+## Hub deltas from the wireframe
+
+- **One account rung, not two.** `hub.html` has `account ▸` (a switcher) and
+  `settings` (an overlay). Both are out of scope, and both live at `/account`
+  today — it already IS the settings surface. Two cells to one destination
+  would be chrome pretending to offer a choice.
+- **No per-row sync disc.** `hub.html` has none, so this follows it — but the
+  previous launcher did, via `<ui-sync-status>` per row. Rows still dim while
+  seeding (`data-status`) and when not replicated (`data-local`); finer sync
+  state (paused, offline, conflict) is now only visible on the bar inside the
+  space. Worth a second look if that reads as a loss.
+- **`copy link` copies the space URL**, which is a bookmark for existing
+  members, not an invite. Sharing with someone new is the bar's `share`,
+  which mints and delegates.
 
 ## Knowingly not conformant
 

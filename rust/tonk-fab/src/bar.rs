@@ -27,6 +27,12 @@
 //!   alerted rung washes. Never a colour (law 5).
 //! - `collapsed` `up` `flip` `responsive` `static`.
 //!
+//! The mode pill overrides the system preference for this bar, and the
+//! override lasts the session. It cannot yet be remembered: the bar renders
+//! inside a sealed guest (`sandbox="allow-scripts"`, an opaque origin) where
+//! `localStorage` throws. See `tonk-workspace::ui_mode_switch` for the two
+//! routes that would fix it — both belong in their own change.
+//!
 //! ## Stacks
 //!
 //! A stack is a light-DOM `<tonk-menu slot="menu" data-for="space|share">`.
@@ -94,7 +100,6 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
                 "dark"
             };
             let _ = host.set_attribute("mode", next);
-            store_mode(next);
             shadow::apply_mode(&host);
             propagate(&host);
             let detail = Object::new();
@@ -224,7 +229,6 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
         listeners.push(listener);
     }
 
-    restore_mode(this);
     if this.has_attribute("folded")
         && let Some(wrapper) = wrapper(this)
     {
@@ -233,42 +237,6 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
     apply_flip(this);
     update(this);
     listeners
-}
-
-/// Where the chosen mode is remembered. The same key `hub.html` uses, so the
-/// Hub's own switch and the bar's pill agree about what the user picked.
-const MODE_KEY: &str = "tonk-mode";
-
-/// Remember an explicit mode choice for this device.
-///
-/// Per-device chrome preference, so `localStorage` rather than the branch:
-/// which way this one browser paints its bar is not something the user's
-/// other devices should inherit.
-fn store_mode(mode: &str) {
-    if let Some(storage) = window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.set_item(MODE_KEY, mode);
-    }
-}
-
-/// Re-apply a remembered mode.
-///
-/// Absent, the bar follows the system — law 8: the pill OVERRIDES the system
-/// preference rather than replacing it, so storing nothing has to mean
-/// "follow along", not "light".
-fn restore_mode(this: &HtmlElement) {
-    if this.has_attribute("mode") {
-        return;
-    }
-    let Some(stored) = window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|storage| storage.get_item(MODE_KEY).ok().flatten())
-    else {
-        return;
-    };
-    if stored == "dark" || stored == "light" {
-        let _ = this.set_attribute("mode", &stored);
-        shadow::apply_mode(this);
-    }
 }
 
 /// The `.w` wrapper every token and state class hangs on.
