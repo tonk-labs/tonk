@@ -168,12 +168,6 @@ const BLOCKED_NEEDS_MEMBERSHIP: &str = tonk_worker_api::share::BLOCKED_NEEDS_MEM
 /// scaffolding can tell the two subscriptions' frames apart.
 const BLOCKED_TAG: &str = "tonk-share-blocked";
 
-/// The refusal class the same prompt repairs by attaching a relay rather than
-/// a remote: the spot syncs, but its remote carries no revocation relay, so a
-/// minted invite could never be withdrawn.
-const BLOCKED_MISSING_REVOCATION_RELAY: &str =
-    tonk_worker_api::share::BLOCKED_MISSING_REVOCATION_RELAY;
-
 /// The enable-sync prompt's id, and the attributes marking its confirm button,
 /// its reason slot, and the line describing what confirming does. Authored in
 /// `markup.rs`; every lookup here is `Option`-guarded, so the element still
@@ -223,15 +217,6 @@ impl Repair {
                 label: "Turn on sync?",
                 action: "Turn on sync so the people you share with can open it.",
                 confirm: "Turn on sync & copy link",
-            }),
-            // The spot already syncs — this repair upserts the relay onto the
-            // remote that is there. Every spot whose remote predates in-band
-            // revocation lands here, so the wording explains a gap the user
-            // never chose rather than asking them to configure anything.
-            BLOCKED_MISSING_REVOCATION_RELAY => Some(Self {
-                label: "Finish setting up sharing?",
-                action: "Add a revocation relay so you can take access back later.",
-                confirm: "Add relay & copy link",
             }),
             _ => None,
         }
@@ -637,23 +622,7 @@ impl TonkShare {
             set_state(&host, ShareState::Copying);
             arm_timeout(&host, &state);
             close_enable_sync_dialog();
-            let host_for_config = host.clone();
-            let state_for_config = Rc::clone(&state);
-            wasm_bindgen_futures::spawn_local(async move {
-                match deployment_revocation_url(&origin).await {
-                    Ok(revocation_url) => {
-                        dispatch_enable_sync(&space, &remote, Some(&revocation_url), time);
-                    }
-                    Err(error) => {
-                        warn(&format!("share: {error}"));
-                        fail_copy(
-                            &host_for_config,
-                            &state_for_config,
-                            "Could not load sharing configuration.",
-                        );
-                    }
-                }
-            });
+            dispatch_enable_sync(&space, &remote, time);
         });
         let target: &web_sys::EventTarget = document.unchecked_ref();
         let _ =
@@ -675,30 +644,8 @@ fn dispatch_invite(space: &str, time: f64) {
 /// Dispatch the `tonk:enable-sync` claim, asking the worker to attach `remote`
 /// to this spot and — because `share` is set — mint the invite the refused
 /// click was after, as soon as the attach lands.
-fn dispatch_enable_sync(space: &str, remote: &str, revocation_url: Option<&str>, time: f64) {
-    dispatch_claim(&enable_sync_claim_json(
-        space,
-        remote,
-        revocation_url,
-        true,
-        time,
-    ));
-}
-
-async fn deployment_revocation_url(origin: &str) -> Result<String, String> {
-    let response = reqwest::Client::new()
-        .get(format!("{origin}/.well-known/tonk"))
-        .send()
-        .await
-        .map_err(|_| "deployment configuration is unavailable".to_string())?;
-    if !response.status().is_success() {
-        return Err("deployment configuration is unavailable".to_string());
-    }
-    response
-        .json::<tonk_worker_api::DeploymentConfig>()
-        .await
-        .map(|config| config.revocation_relay_url.to_string())
-        .map_err(|_| "deployment configuration is invalid".to_string())
+fn dispatch_enable_sync(space: &str, remote: &str, time: f64) {
+    dispatch_claim(&enable_sync_claim_json(space, remote, true, time));
 }
 
 /// Hand a claim to `window.tonk.transact`. A no-op wherever the bridge is not
@@ -1872,94 +1819,6 @@ mod tests {
         );
 
         dialog.remove();
-    }
-
-    /// A spot whose remote carries no revocation relay is repairable, not
-    /// terminal: it syncs, so the mint is refused only because the invite
-    /// could never be withdrawn, and confirming upserts the relay.
-    ///
-    /// The regression this pins: every spot whose remote predates in-band
-    /// revocation lands here, and the class used to fall through to the
-    /// terminal branch — a dead, greyed-out confirm with no way forward.
-    #[dialog_common::test]
-    fn it_offers_the_relay_repair_when_the_remote_has_no_revocation_relay() {
-        let (dialog, detail, confirm) = dialog_stub();
-        let host = fresh_host();
-        let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        state.borrow_mut().pending_time = Some(7.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
-        set_state(&host, ShareState::Copying);
-
-        handle_blocked(
-            &host,
-            &state,
-            Blocked {
-                code: BLOCKED_MISSING_REVOCATION_RELAY.to_owned(),
-                detail: "Invites to this spot can't be withdrawn yet.".to_owned(),
-                time: 7.0,
-            },
-        );
-
-        assert_eq!(read_state(&host), ShareState::Blocked);
-        assert!(
-            !confirm.has_attribute("disabled"),
-            "the relay repair must offer a working confirm button",
-        );
-        assert_eq!(
-            detail.text_content().as_deref(),
-            Some("Invites to this spot can't be withdrawn yet.")
-        );
-        assert!(
-            state.borrow().pending.is_none(),
-            "the clipboard write is abandoned while the question is on screen",
-        );
-
-        dialog.remove();
-    }
-
-    /// The prompt is one element reused across refusal classes, so the wording
-    /// has to be rewritten per class and not merely appended to. A spot that
-    /// already syncs must never be told to turn on sync — the bug that made a
-    /// missing relay show "Turn on sync so the people you share with can open
-    /// it." above a button offering the same.
-    #[dialog_common::test]
-    fn it_rewrites_the_whole_prompt_for_each_refusal_class() {
-        let (dialog, _detail, confirm) = dialog_stub();
-
-        open_enable_sync_dialog(
-            "This spot only exists on this device.",
-            Repair::for_code(BLOCKED_NOT_SYNCED),
-        );
-        let synced_action = action_text(&dialog);
-        let synced_confirm = confirm.text_content().unwrap_or_default();
-        let synced_label = dialog.get_attribute("label").unwrap_or_default();
-
-        open_enable_sync_dialog(
-            "Invites to this spot can't be withdrawn yet.",
-            Repair::for_code(BLOCKED_MISSING_REVOCATION_RELAY),
-        );
-        let relay_action = action_text(&dialog);
-        let relay_confirm = confirm.text_content().unwrap_or_default();
-        let relay_label = dialog.get_attribute("label").unwrap_or_default();
-
-        dialog.remove();
-
-        assert!(synced_action.contains("Turn on sync"));
-        assert!(synced_confirm.contains("Turn on sync"));
-        assert_eq!(synced_label, "Turn on sync?");
-
-        assert!(
-            !relay_action.contains("Turn on sync"),
-            "a synced spot is not asked to turn on sync, got {relay_action:?}",
-        );
-        assert!(
-            !relay_confirm.contains("Turn on sync"),
-            "nor offered it on the button, got {relay_confirm:?}",
-        );
-        assert!(
-            !relay_label.contains("Turn on sync"),
-            "nor in the heading, got {relay_label:?}",
-        );
     }
 
     /// A terminal refusal must not leave the previous repair's promise on

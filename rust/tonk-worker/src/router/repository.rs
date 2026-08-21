@@ -321,7 +321,7 @@ pub async fn post_space(
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     if let Some(remote) = request.remote.filter(|remote| !remote.trim().is_empty()) {
-        enable_sync_inner(&state, &key, &remote, request.revocation_url.as_deref()).await?;
+        enable_sync_inner(&state, &key, &remote).await?;
     }
 
     Ok((
@@ -335,15 +335,6 @@ pub async fn post_space(
 /// Kept in sync with those notation commands' `remote` field `the:`.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
-
-/// The form-event attribute carrying the optional revocation relay — the
-/// hidden `revocation` input beside `remote` on the `space/create` form.
-/// Same `/value` leaf as every other control read: the segment after the
-/// control name is the JS property the event layer reads, so a
-/// descriptive leaf (`revocation-url`) resolves to `undefined` and kills
-/// the submit.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const REVOCATION_URL_ATTR: &str = "dom.event.current-target.elements.revocation/value";
 
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
@@ -370,11 +361,6 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn revocation_url_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    text_fact_any_target(facts, REVOCATION_URL_ATTR)
-}
-
 /// The `tonk:enable-sync` transient's target spot, read from the raw facts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
@@ -382,8 +368,6 @@ const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 /// The `tonk:enable-sync` transient's endpoint, read from the raw facts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_REMOTE_ATTR: &str = "xyz.tonk.enable-sync/remote";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const ENABLE_SYNC_REVOCATION_URL_ATTR: &str = "xyz.tonk.enable-sync/revocation-url";
 
 /// Marker asking the handler to mint once the remote is attached.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -629,7 +613,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
         // The optional remote is read from the facts directly (tolerating
         // the URL's `Value::Entity` representation), not via a concept.
         let remote = remote_from_facts(facts);
-        let revocation_url = revocation_url_from_facts(facts);
         let template = template_from_facts(facts);
         let env = env.clone();
 
@@ -658,7 +641,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
                     tonk_worker_api::PendingIntent::CreateSpace {
                         name,
                         remote,
-                        revocation_url,
                         template,
                     },
                 );
@@ -708,8 +690,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
                 }
             };
             if let Some(remote) = remote
-                && let Err(error) =
-                    enable_sync_inner(env.state(), &key, &remote, revocation_url.as_deref()).await
+                && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
             {
                 log!("CreateSpace '{}': remote attach failed: {}", key, error);
             }
@@ -911,7 +892,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
             .unwrap_or_default();
         let space = text_fact(facts, ENABLE_SYNC_SPACE_ATTR);
         let remote = text_fact(facts, ENABLE_SYNC_REMOTE_ATTR);
-        let revocation_url = text_fact(facts, ENABLE_SYNC_REVOCATION_URL_ATTR);
         let share = text_fact(facts, ENABLE_SYNC_SHARE_ATTR).is_some();
         let env = env.clone();
 
@@ -929,9 +909,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
             let key = did.repo_key().to_owned();
             log!("command EnableSync repo={} share={}", key, share);
 
-            if let Err(error) =
-                enable_sync_inner(env.state(), &key, &remote, revocation_url.as_deref()).await
-            {
+            if let Err(error) = enable_sync_inner(env.state(), &key, &remote).await {
                 log!("EnableSync '{}' failed: {}", key, error);
                 if share {
                     let subject = match space.parse::<Entity>() {
@@ -1058,10 +1036,7 @@ async fn run_invite(
     let encoded_access: String =
         url::form_urlencoded::byte_serialize(remote_execution.access_url.as_str().as_bytes())
             .collect();
-    let encoded_relay: String =
-        url::form_urlencoded::byte_serialize(remote_execution.revocation_url.as_str().as_bytes())
-            .collect();
-    let remote = format!("&remote={encoded_access}&revocation={encoded_relay}");
+    let remote = format!("&remote={encoded_access}");
 
     // Mint a fresh membership keypair. Its private seed becomes the invite
     // URL's `#` fragment; its public DID is the audience the repo access is
@@ -1086,11 +1061,11 @@ async fn run_invite(
     let chain = delegation.into_chain();
     let invitation =
         Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
-    let execution = InvitationExecution::new(
-        &invitation,
-        "open",
-        remote_execution.revocation_url.as_str(),
-    );
+    // `revocation_url` is cardinality-one, so an execution row written
+    // without one would not resolve and `kind` would go with it. The
+    // revocation goes to the access service, so record that endpoint.
+    let execution =
+        InvitationExecution::new(&invitation, "open", remote_execution.access_url.as_str());
 
     // base58-encode the delegation chain — the `?access=` parameter the
     // view reads back and assembles into the final URL.
@@ -2198,10 +2173,7 @@ async fn run_pause_sync(
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn space_config(
-    remote: &str,
-    revocation_url: Option<&str>,
-) -> Result<RepositoryConfiguration, RepositoryError> {
+fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
     use dialog_remote_ucan_s3::UcanAddress;
 
     let remote = remote.trim();
@@ -2211,15 +2183,8 @@ fn space_config(
         );
     }
     let address = SiteAddress::from(UcanAddress::new(remote));
-    let mut remote_configuration = RemoteConfiguration::new(address);
-    if let Some(revocation_url) = revocation_url.filter(|url| !url.trim().is_empty()) {
-        let url = Url::parse(revocation_url).map_err(|error| {
-            RepositoryError::InvalidConfiguration(format!("invalid revocation relay URL: {error}"))
-        })?;
-        remote_configuration = remote_configuration.revocation_url(url);
-    }
     Ok(RepositoryConfiguration::default()
-        .remote("origin", remote_configuration)
+        .remote("origin", RemoteConfiguration::new(address))
         .branch(
             "main",
             BranchConfiguration::default().upstream("origin", "main"),
@@ -2264,47 +2229,6 @@ async fn create_space_inner(
     Ok(key)
 }
 
-/// The relay the access service behind `remote` publishes revocations to,
-/// read from its `/.well-known/tonk`.
-///
-/// The fallback for a caller that named a remote but no relay. Resolved
-/// against the *remote's* origin rather than this worker's, because the
-/// relay belongs to the access service the spot actually syncs through —
-/// which is not necessarily the deployment serving this page.
-///
-/// Best-effort: `None` on any failure, so a blip leaves the spot synced
-/// but unshareable rather than not synced at all. That state is no longer
-/// a dead end — the share prompt offers to attach a relay to an existing
-/// remote (see [`RemoteRefusal::MissingRevocationRelay`]).
-///
-/// [`RemoteRefusal::MissingRevocationRelay`]: super::create_invite::RemoteRefusal::MissingRevocationRelay
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn deployment_revocation_url(remote: &str) -> Option<String> {
-    use wasm_bindgen::JsCast as _;
-    use wasm_bindgen_futures::JsFuture;
-
-    let endpoint = Url::parse(remote).ok()?.join("/.well-known/tonk").ok()?;
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global().dyn_into().ok()?;
-    let response: web_sys::Response = JsFuture::from(global.fetch_with_str(endpoint.as_str()))
-        .await
-        .and_then(|value| value.dyn_into())
-        .ok()?;
-    if !response.ok() {
-        log!(
-            "deployment config at {} returned HTTP {}",
-            endpoint,
-            response.status()
-        );
-        return None;
-    }
-    let body = JsFuture::from(response.text().ok()?)
-        .await
-        .ok()?
-        .as_string()?;
-    let config: tonk_worker_api::DeploymentConfig = serde_json::from_str(&body).ok()?;
-    Some(config.revocation_relay_url.to_string())
-}
-
 /// Attach a sync remote to a space, idempotently, via
 /// [`ensure_remote_config`] — the same helper [`attach_remote`] uses, so
 /// the in-app path and the HTTP route converge on one implementation.
@@ -2314,38 +2238,18 @@ async fn deployment_revocation_url(remote: &str) -> Option<String> {
 /// sync" forms. A missing repository or empty URL is a no-op (logged),
 /// not an error.
 ///
-/// A caller that names no relay gets the remote's own
-/// ([`deployment_revocation_url`]) rather than a remote with none. The
-/// create wizard is exactly that caller: its hidden `revocation` input is
-/// filled by an async fetch that a fast submit can beat, and an omitted
-/// relay used to produce a spot that could sync but never be shared.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enable_sync_inner(
     state: &AppState,
     key: &str,
     remote: &str,
-    revocation_url: Option<&str>,
 ) -> Result<(), RepositoryError> {
     if remote.trim().is_empty() {
         // Submitted with no URL — nothing to attach.
         log!("enable sync '{}': empty remote, nothing to attach", key);
         return Ok(());
     }
-    let relay = match revocation_url.filter(|url| !url.trim().is_empty()) {
-        Some(url) => Some(url.to_owned()),
-        None => {
-            let resolved = deployment_revocation_url(remote).await;
-            if resolved.is_none() {
-                log!(
-                    "enable sync '{}': no relay given and none advertised by {}",
-                    key,
-                    remote
-                );
-            }
-            resolved
-        }
-    };
-    let configuration = space_config(remote, relay.as_deref())?;
+    let configuration = space_config(remote)?;
 
     let tonk = state.write().await;
     // A missing repository is a no-op, not an error — defensive against a
@@ -4461,7 +4365,7 @@ mod space_config_tests {
 
     #[test]
     fn it_builds_a_local_only_config_for_an_empty_remote() {
-        let config = space_config("", None).unwrap();
+        let config = space_config("").unwrap();
         assert!(
             config.remote.is_empty(),
             "an empty remote must leave the space local-only"
@@ -4475,18 +4379,14 @@ mod space_config_tests {
 
     #[test]
     fn it_treats_a_whitespace_remote_as_local_only() {
-        let config = space_config("   ", None).unwrap();
+        let config = space_config("   ").unwrap();
         assert!(config.remote.is_empty());
         assert!(config.branch.get("main").unwrap().upstream.is_none());
     }
 
     #[test]
     fn it_wires_origin_and_tracks_main_for_a_remote_url() {
-        let config = space_config(
-            "https://example.test/ucan/",
-            Some("https://relay.example.test/revocations"),
-        )
-        .unwrap();
+        let config = space_config("https://example.test/ucan/").unwrap();
         assert!(
             config.remote.contains_key("origin"),
             "a remote URL must register the origin remote"
@@ -4499,13 +4399,6 @@ mod space_config_tests {
         assert_eq!(upstream.remote, "origin");
         assert_eq!(upstream.branch, "main");
     }
-
-    #[test]
-    fn it_rejects_an_invalid_revocation_relay() {
-        let error = space_config("https://example.test/ucan/", Some("not a URL"))
-            .expect_err("invalid relay must not be silently discarded");
-        assert!(error.to_string().contains("invalid revocation relay URL"));
-    }
 }
 
 /// The create form and this handler must name one attribute per control.
@@ -4514,11 +4407,11 @@ mod space_config_tests {
 /// decode) so an older, frozen profile descriptor still triggers it. That
 /// tolerance cuts both ways: a renamed attribute on either side doesn't
 /// fail — the fact simply never matches, the field reads as absent, and
-/// the spot is created missing the remote or the relay with nothing
-/// logged. Pin both sides against the seeded document. Native.
+/// the spot is created missing the remote with nothing logged. Pin both
+/// sides against the seeded document. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod form_attribute_tests {
-    use super::{REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR};
+    use super::{REMOTE_ATTR, TEMPLATE_ATTR};
 
     /// The document the worker seeds onto a profile branch, embedded for
     /// the same reason `tests/standard_library.rs` embeds it: CI runs from
@@ -4527,7 +4420,7 @@ mod form_attribute_tests {
 
     #[test]
     fn it_reads_the_attributes_the_create_form_declares() {
-        for attribute in [REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR] {
+        for attribute in [REMOTE_ATTR, TEMPLATE_ATTR] {
             assert!(
                 PROFILE_LIBRARY.contains(attribute),
                 "profile.yaml declares no `the: {attribute}` — the handler \
@@ -5027,14 +4920,9 @@ mod tests {
         )
         .await;
 
-        super::enable_sync_inner(
-            &state,
-            &key,
-            "https://form-repair.example.test/ucan/",
-            Some("https://relay.example.test/revocations"),
-        )
-        .await
-        .unwrap();
+        super::enable_sync_inner(&state, &key, "https://form-repair.example.test/ucan/")
+            .await
+            .unwrap();
 
         let tonk = state.read().await;
         let subject: dialog_varsig::Did = key.parse().unwrap();

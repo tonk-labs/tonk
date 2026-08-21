@@ -144,7 +144,6 @@ pub(crate) async fn replay(intent: PendingIntent) -> Result<(), String> {
         PendingIntent::CreateSpace {
             name,
             remote,
-            revocation_url,
             template,
         } => {
             let created: tonk_worker_api::CreateSpaceResponse = post(
@@ -152,7 +151,6 @@ pub(crate) async fn replay(intent: PendingIntent) -> Result<(), String> {
                 &tonk_worker_api::CreateSpaceRequest {
                     name,
                     remote,
-                    revocation_url,
                     template,
                 },
             )
@@ -296,7 +294,6 @@ mod tests {
         park(&PendingIntent::CreateSpace {
             name: "Notes".into(),
             remote: None,
-            revocation_url: None,
             template: None,
         });
         assert!(matches!(

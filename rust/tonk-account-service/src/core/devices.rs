@@ -1,10 +1,9 @@
-//! Device registry operations: list, register, and publish revocations.
+//! Device registry operations: list, register, and record revocations.
 
-use tonk_identity::revocation::{RevocationAuthority, VerifyError};
+use tonk_identity::revocation::{RevocationAuthority, VerifyError, verify};
 
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
-use crate::revocations::{PublishError, RevocationStore, publish};
 use crate::store::{Account, DetachStoreOutcome, Device, DeviceStatus, Store, StoreError};
 
 /// A device row as surfaced to API callers.
@@ -166,7 +165,7 @@ impl Attestation {
 pub enum Projection {
     /// The matching D1 row now says revoked.
     Updated,
-    /// R2 accepted the artifact but the D1 projection failed.
+    /// The artifact verified but the D1 projection failed.
     Stale,
 }
 
@@ -180,7 +179,7 @@ impl Projection {
     }
 }
 
-/// Result of publishing a device revocation and attempting its UI projection.
+/// Result of verifying a device revocation and attempting its UI projection.
 pub struct RevokeOutcome {
     /// Product-level authority used.
     pub attestation: Attestation,
@@ -190,8 +189,6 @@ pub struct RevokeOutcome {
     pub target_cid: String,
     /// Canonical artifact CID.
     pub artifact_cid: String,
-    /// Whether this call created the immutable R2 object.
-    pub stored: bool,
 }
 
 /// Focused device lookup/projection seam used by revocation publication.
@@ -232,22 +229,21 @@ impl<S: Store> DeviceRevocationProjection for S {
     }
 }
 
-fn publication_error(error: PublishError) -> CeremonyError {
+fn verification_error(error: VerifyError) -> CeremonyError {
     match error {
-        PublishError::Verification(VerifyError::Malformed(message)) => {
-            CeremonyError::Invalid(message)
-        }
-        PublishError::Verification(VerifyError::Unauthorized(message)) => {
-            CeremonyError::Unauthorized(message)
-        }
-        PublishError::Store(error) => CeremonyError::Internal(error.to_string()),
+        VerifyError::Malformed(message) => CeremonyError::Invalid(message),
+        VerifyError::Unauthorized(message) => CeremonyError::Unauthorized(message),
     }
 }
 
-/// Publish a verified device revocation before projecting its D1 status.
-pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
+/// Verify a device revocation and project its D1 status.
+///
+/// The artifact itself is durably recorded by the access service's
+/// revocation index, which is what enforcement reads. This path only
+/// establishes that the caller may revoke the named device and mirrors
+/// the outcome onto the device list the account panel renders.
+pub async fn revoke_device<S: DeviceRevocationProjection>(
     store: &S,
-    revocations: &R,
     account: &Account,
     caller_did: &str,
     attachment_id: &str,
@@ -259,15 +255,13 @@ pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
         .await?
         .ok_or_else(|| CeremonyError::Invalid("unknown device".to_string()))?;
 
-    let published = publish(revocations, artifact)
-        .await
-        .map_err(publication_error)?;
+    let verified = verify(artifact).await.map_err(verification_error)?;
     if device.device_did != target_did || device.attachment_id != attachment_id {
         return Err(CeremonyError::Invalid(
             "revocation target does not match the selected attachment".to_string(),
         ));
     }
-    if published.verified.target_cid != device.delegation_cid {
+    if verified.target_cid != device.delegation_cid {
         return Err(CeremonyError::Invalid(
             "revocation names a delegation other than the target device's".to_string(),
         ));
@@ -275,13 +269,13 @@ pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
 
     let revoking_self = caller_did == target_did;
     let attestation = if revoking_self
-        && published.verified.issuer.to_string() == device.device_did
-        && published.verified.authority == RevocationAuthority::Delegated
+        && verified.issuer.to_string() == device.device_did
+        && verified.authority == RevocationAuthority::Delegated
     {
         Attestation::Device
     } else if !revoking_self
-        && published.verified.issuer.to_string() == account.root_did
-        && published.verified.authority == RevocationAuthority::PathIssuer
+        && verified.issuer.to_string() == account.root_did
+        && verified.authority == RevocationAuthority::PathIssuer
     {
         Attestation::Root
     } else {
@@ -311,22 +305,19 @@ pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
     Ok(RevokeOutcome {
         attestation,
         projection,
-        target_cid: published.verified.target_cid,
-        artifact_cid: published.verified.artifact_cid,
-        stored: published.stored,
+        target_cid: verified.target_cid,
+        artifact_cid: verified.artifact_cid,
     })
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal;
 
     use super::*;
-    use crate::revocations::{PutOutcome, RevocationStoreError, object_key};
     use crate::store::sqlite::SqliteStore;
 
     const ROOT_PRF: [u8; 32] = [7u8; 32];
@@ -484,26 +475,6 @@ mod tests {
         }
     }
 
-    struct SpyRevocations {
-        objects: Mutex<HashMap<String, Vec<u8>>>,
-        events: Arc<Mutex<Vec<&'static str>>>,
-    }
-
-    impl RevocationStore for SpyRevocations {
-        async fn put(
-            &self,
-            verified: &tonk_identity::revocation::VerifiedRevocation,
-            bytes: &[u8],
-        ) -> Result<PutOutcome, RevocationStoreError> {
-            self.events.lock().unwrap().push("r2");
-            self.objects
-                .lock()
-                .unwrap()
-                .insert(object_key(verified), bytes.to_vec());
-            Ok(PutOutcome::Stored)
-        }
-    }
-
     async fn spies(
         fail_projection: bool,
     ) -> (
@@ -512,7 +483,6 @@ mod tests {
         Ed25519Signer,
         dialog_ucan_core::DelegationChain,
         SpyProjection,
-        SpyRevocations,
         Arc<Mutex<Vec<&'static str>>>,
     ) {
         let (account, device, root, grant) = fixture().await;
@@ -522,24 +492,12 @@ mod tests {
             events: events.clone(),
             fail: fail_projection,
         };
-        let revocations = SpyRevocations {
-            objects: Mutex::new(HashMap::new()),
-            events: events.clone(),
-        };
-        (
-            account,
-            device,
-            root,
-            grant,
-            projection,
-            revocations,
-            events,
-        )
+        (account, device, root, grant, projection, events)
     }
 
     #[dialog_common::test]
-    async fn it_writes_r2_before_projecting_device_status() {
-        let (account, device, root, grant, projection, revocations, events) = spies(false).await;
+    async fn it_projects_device_status_for_a_verified_revocation() {
+        let (account, device, root, grant, projection, events) = spies(false).await;
         let artifact =
             tonk_identity::revocation::mint_root_revocation(root, &grant, &grant.proof_cids()[0])
                 .await
@@ -547,7 +505,6 @@ mod tests {
 
         let outcome = revoke_device(
             &projection,
-            &revocations,
             &account,
             CALLER_DID,
             &device.attachment_id,
@@ -557,13 +514,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(events.lock().unwrap().as_slice(), ["r2", "d1"]);
+        assert_eq!(events.lock().unwrap().as_slice(), ["d1"]);
         assert_eq!(outcome.projection, Projection::Updated);
     }
 
     #[dialog_common::test]
     async fn it_accepts_a_revocation_when_the_projection_fails() {
-        let (account, device, root, grant, projection, revocations, events) = spies(true).await;
+        let (account, device, root, grant, projection, events) = spies(true).await;
         let artifact =
             tonk_identity::revocation::mint_root_revocation(root, &grant, &grant.proof_cids()[0])
                 .await
@@ -571,7 +528,6 @@ mod tests {
 
         let outcome = revoke_device(
             &projection,
-            &revocations,
             &account,
             CALLER_DID,
             &device.attachment_id,
@@ -582,17 +538,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.projection, Projection::Stale);
-        assert_eq!(events.lock().unwrap().as_slice(), ["r2", "d1"]);
+        assert_eq!(events.lock().unwrap().as_slice(), ["d1"]);
     }
 
     #[dialog_common::test]
     async fn it_never_projects_an_artifact_that_failed_verification() {
-        let (account, device, _, _, projection, revocations, events) = spies(false).await;
+        let (account, device, _, _, projection, events) = spies(false).await;
 
         assert!(
             revoke_device(
                 &projection,
-                &revocations,
                 &account,
                 CALLER_DID,
                 &device.attachment_id,

@@ -746,21 +746,6 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(revoked["targetCid"], second_grant_cid);
     assert_eq!(revoked["published"], true);
 
-    // The unauthenticated global endpoint verifies the same artifact and
-    // treats an identical publication as idempotent.
-    let response = client
-        .post(format!("{base}/revocations"))
-        .header("Content-Type", "application/cbor")
-        .body(revocation.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 202);
-    let published: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(published["targetCid"], second_grant_cid);
-    assert_eq!(published["artifactCid"], revoked["artifactCid"]);
-    assert_eq!(published["stored"], false);
-
     let body = container_with_link(
         &device,
         &first_grant,

@@ -67,7 +67,6 @@ id = "REPLACED-AT-BOOTSTRAP"
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces"
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
-REVOCATION_RELAY_URL = "https://accounts.tonk.xyz/revocations"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 [env.staging]
@@ -99,7 +98,6 @@ id = "REPLACED-AT-BOOTSTRAP"
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-staging"
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
-REVOCATION_RELAY_URL = "https://accounts-staging.tonk.xyz/revocations"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Preview. Every pull request uploads a version of this environment under a
@@ -152,4 +150,3 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # unresolvable: a preview that failed to wire itself has to break visibly rather
 # than quietly serve a real registry to browsers that trust `/.well-known/tonk`.
 ACCOUNT_SERVICE_URL = "https://accounts-preview.invalid"
-REVOCATION_RELAY_URL = "https://accounts-preview.invalid/revocations"

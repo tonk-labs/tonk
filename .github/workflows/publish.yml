@@ -214,10 +214,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # The two service URLs are the only configuration that cannot be checked
-      # in, because an alias URL exists only once its upload returns. Command
-      # line vars merge over the environment's, so the rest of `[env.preview]`
-      # still applies.
+      # The account service URL is the only configuration that cannot be
+      # checked in, because an alias URL exists only once its upload returns.
+      # Command line vars merge over the environment's, so the rest of
+      # `[env.preview]` still applies.
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
@@ -230,8 +230,7 @@ jobs:
             wrangler versions upload --env preview \
               -c "${{ steps.access-database.outputs.config }}" \
               --preview-alias "$preview_alias" \
-              --var "ACCOUNT_SERVICE_URL:$account" \
-              --var "REVOCATION_RELAY_URL:$account/revocations" 2>&1 | tee "$log"
+              --var "ACCOUNT_SERVICE_URL:$account" 2>&1 | tee "$log"
           url="$(grep -Eo "https://$preview_alias-tonk-access-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
             echo "::error::wrangler printed no preview alias URL for the access worker"

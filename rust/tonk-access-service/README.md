@@ -18,12 +18,11 @@ The Worker (`src/lib.rs`) routes:
 
 ```json
 {
-  "accountServiceUrl": "https://accounts.tonk.xyz/",
-  "revocationRelayUrl": "https://accounts.tonk.xyz/revocations"
+  "accountServiceUrl": "https://accounts.tonk.xyz/"
 }
 ```
 
-Both values are validated as absolute URLs. Missing or invalid configuration is
+The value is validated as an absolute URL. Missing or invalid configuration is
 a 500; browser clients do not guess from the host or use a production default.
 
 ### `POST /ucan/`
@@ -54,9 +53,9 @@ Unbounded chains are unaffected. A `root → device` grant carries no expiration
 
 ### Revocation
 
-After authorization, `POST /ucan/` collects only the delegation CIDs in the presented path and compares them with a monotone set derived from signed artifacts in the dedicated `REVOCATIONS` R2 bucket. Refresh follows every listing cursor, fetches unseen `revocations/<target-cid>/<artifact-cid>` objects, verifies each artifact and its key, and updates freshness only after the complete pass succeeds. Known revoked CIDs are never removed and return `403 CREDENTIAL_REVOKED` even during an outage. Clients accept the legacy `DEVICE_REVOKED` code during rollout.
+A revocation is an ordinary `ucan/revoke` invocation, so it arrives at `POST /ucan/` like everything else and is answered before the presign path: it writes the index rather than reading it. The service verifies the artifact, refuses a subject it holds nothing for, and records one `REVOCATIONS_KV` key per `(revoked delegation, revoking subject)` pair. The key is the fact, so concurrent revokers cannot clobber each other the way a shared set value would.
 
-A complete snapshot is fresh for 60 seconds (`REVOCATION_TTL_MS`) and may clear clean paths for a further 10 minutes (`REVOCATION_GRACE_MS`) only when refresh is unavailable. Without a complete snapshot, or after grace, the screen fails closed with retryable `503 REVOCATION_UNAVAILABLE`. Mutable account rows and issuer DID strings are not enforcement inputs.
+After authorization, a presign looks the presented delegation CIDs up in that index by point read. A match returns `403 CREDENTIAL_REVOKED`; clients accept the legacy `DEVICE_REVOKED` code during rollout. A failed index read is kept distinct from a denial and answers retryable `503 REVOCATION_UNAVAILABLE`, since a store outage is the service's fault rather than the caller's. Mutable account rows and issuer DID strings are not enforcement inputs.
 
 ## Configuration
 
@@ -66,11 +65,8 @@ The authorizer is constructed per request from the Worker environment (`src/hand
 - `R2_BUCKET_NAME` (var): target bucket
 - `R2_ACCESS_KEY_ID` (secret): R2 access key
 - `R2_SECRET_ACCESS_KEY` (secret): R2 secret key
-- `REVOCATIONS` (R2 binding): read-only view of immutable, self-certifying revocation artifacts published by relay services.
 - `ACCOUNT_SERVICE_URL` (var): account provider returned by
   `/.well-known/tonk`.
-- `REVOCATION_RELAY_URL` (var): immutable-artifact submission endpoint returned
-  by `/.well-known/tonk`.
 
 The S3 address uses region `auto`, as R2 requires.
 
@@ -80,7 +76,7 @@ As a Cloudflare Worker, build and deploy with `worker-build` / `wrangler` like a
 
 `wrangler.toml` at the repo root carries three environments. The top level is production on `tonk.network`, `[env.staging]` is `staging.tonk.xyz`, and `[env.preview]` is on no route: the deploy workflow uploads one version of it per pull request under a `pr-<number>` preview alias, reached at a workers.dev URL. Each has its own R2 buckets, because this Worker presigns writes into whichever bucket it is bound to and a preview must not be able to write into a real one.
 
-`ACCOUNT_SERVICE_URL` and `REVOCATION_RELAY_URL` are checked in for production and staging but overridden per pull request for preview, since the account worker's own alias URL is not known until its upload returns. The checked-in preview values point at an unresolvable host on purpose: a preview that failed to wire itself has to break rather than serve a real registry through `/.well-known/tonk` to browsers that trust it. Bootstrapping the preview environment is described in `tonk-account-service`'s README.
+`ACCOUNT_SERVICE_URL` is checked in for production and staging but overridden per pull request for preview, since the account worker's own alias URL is not known until its upload returns. The checked-in preview value points at an unresolvable host on purpose: a preview that failed to wire itself has to break rather than serve a real service through `/.well-known/tonk` to browsers that trust it. Bootstrapping the preview environment is described in `tonk-account-service`'s README.
 
 For local development and integration tests, the `helpers` feature builds a native HTTP server that mirrors the Worker behavior without deploying to Cloudflare. The `tonk-access-local` binary (`src/bin/local.rs`, requires `--features helpers`) starts that server against a local backing S3 and prints its URL:
 

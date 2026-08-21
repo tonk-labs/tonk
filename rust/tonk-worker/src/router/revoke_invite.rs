@@ -1,4 +1,9 @@
-//! Revoke a recorded invitation through its configured global relay.
+//! Revoke a recorded invitation at the space's own access service.
+//!
+//! The artifact is an ordinary `ucan/revoke` invocation, so it goes to
+//! the same `/ucan/` endpoint every other invocation does: the access
+//! service records it in the index its presign path already screens
+//! against. There is no separate relay to configure or to miss.
 
 use axum::{
     Json,
@@ -6,13 +11,16 @@ use axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
+use dialog_repository::RepositoryExt as _;
 use ipld_core::cid::Cid;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_account::customer::RevokeReceipt;
 use tonk_schema::{Invitation, InvitationExecution};
-use tonk_worker_api::{InvitationKind, InvitationSummary, RevokeInvitationAcknowledgement};
+use tonk_worker_api::{InvitationKind, InvitationSummary};
 
 use super::AppState;
+use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use crate::TonkWorkerError;
 
 /// Revoke only an invitation path recorded in the named repository.
@@ -20,7 +28,7 @@ use crate::TonkWorkerError;
 pub async fn revoke(
     State(state): State<AppState>,
     Path((repo, target_cid)): Path<(String, String)>,
-) -> Result<Json<RevokeInvitationAcknowledgement>, TonkWorkerError> {
+) -> Result<Json<RevokeReceipt>, TonkWorkerError> {
     let target: Cid = target_cid
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid target CID: {error}")))?;
@@ -57,29 +65,6 @@ pub async fn revoke(
                 "the target CID is not a recorded invitation for this repository".to_string(),
             )
         })?;
-    let executions: Vec<InvitationExecution> = session
-        .handle()
-        .query()
-        .select(Query::<InvitationExecution> {
-            this: Term::var("this"),
-            kind: Term::var("kind"),
-            revocation_url: Term::var("revocation_url"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("invitation execution query failed: {error:?}"))
-        })?;
-    let execution = executions
-        .into_iter()
-        .find(|execution| execution.this == invitation.this)
-        .ok_or_else(|| {
-            TonkWorkerError::Conflict(
-                "this legacy invitation has no revocation relay; configure an explicit relay and mint a new invitation"
-                    .to_string(),
-            )
-        })?;
     let bytes = hex::decode(&invitation.path_hex.0).map_err(|error| {
         TonkWorkerError::Internal(format!("stored invitation path is invalid: {error}"))
     })?;
@@ -100,21 +85,39 @@ pub async fn revoke(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("revocation preflight failed: {error}"))
         })?;
-    let relay = url::Url::parse(&execution.revocation_url.0)
-        .map_err(|error| TonkWorkerError::Internal(format!("invalid revocation relay: {error}")))?;
-    let response = super::http::post_cbor(&relay, &artifact).await?;
-    let acknowledgement: RevokeInvitationAcknowledgement = serde_json::from_slice(&response.body)
+    // The revocation belongs at the access service the space actually
+    // syncs through, which is the remote `main` tracks.
+    let repository = tonk
+        .profile
+        .repository(&repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
         .map_err(|error| {
+            TonkWorkerError::NotFound(format!("repository '{repo}' not found: {error}"))
+        })?;
+    let endpoint = match resolve_configured_remote_url_with(&repository, &tonk.operator).await? {
+        ConfiguredRemoteRequirement::Ready(remote) => remote.access_url,
+        ConfiguredRemoteRequirement::Refused(reason) => {
+            return Err(TonkWorkerError::Conflict(format!(
+                "cannot revoke an invitation to '{repo}': {} ({})",
+                reason.detail(),
+                reason.code()
+            )));
+        }
+    };
+    let response = super::http::post_cbor(&endpoint, &artifact).await?;
+    let receipt: RevokeReceipt = serde_json::from_slice(&response.body).map_err(|error| {
         TonkWorkerError::Internal(format!(
-            "revocation relay returned an invalid acknowledgement: {error}"
+            "the access service returned an unreadable revoke receipt: {error}"
         ))
     })?;
-    if acknowledgement.target_cid != target_cid {
+    if receipt.revoked != target {
         return Err(TonkWorkerError::Internal(
-            "revocation relay acknowledged a different invitation".to_string(),
+            "the access service acknowledged a different invitation".to_string(),
         ));
     }
-    Ok(Json(acknowledgement))
+    Ok(Json(receipt))
 }
 
 /// List secret-free invitation management rows for one repository.

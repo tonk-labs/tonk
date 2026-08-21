@@ -35,7 +35,6 @@ const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
 /// The form-control `name` filled when the element sets no `field`.
 const DEFAULT_FIELD: &str = "remote";
-const DEFAULT_RELAY_FIELD: &str = "revocation";
 
 /// Attribute that makes the element silently fill the target on connect.
 const AUTO_ATTR: &str = "auto";
@@ -134,32 +133,9 @@ fn ensure_button(this: &HtmlElement) -> Option<Element> {
 
 /// Resolve and fill the default remote URL, if this page can determine it.
 fn fill_default(this: &HtmlElement) {
-    let Some(origin) = page_origin() else {
-        return;
-    };
     if let Some(url) = default_remote_url() {
         fill_target(this, &url);
     }
-    let host = this.clone();
-    wasm_bindgen_futures::spawn_local(async move {
-        let Ok(response) = reqwest::Client::new()
-            .get(format!("{origin}/.well-known/tonk"))
-            .send()
-            .await
-        else {
-            return;
-        };
-        if !response.status().is_success() {
-            return;
-        }
-        let Ok(config) = response.json::<tonk_worker_api::DeploymentConfig>().await else {
-            return;
-        };
-        let field = host
-            .get_attribute("relay-field")
-            .unwrap_or_else(|| DEFAULT_RELAY_FIELD.to_string());
-        fill_named_target(&host, &field, config.revocation_relay_url.as_str());
-    });
 }
 
 /// Install the click listener: resolve `origin + /ucan/` and write it
@@ -184,10 +160,6 @@ fn fill_target(this: &HtmlElement, url: &str) {
     let field = this
         .get_attribute("field")
         .unwrap_or_else(|| DEFAULT_FIELD.to_string());
-    fill_named_target(this, &field, url);
-}
-
-fn fill_named_target(this: &HtmlElement, field: &str, url: &str) {
     let Ok(Some(form)) = this.closest("form") else {
         return;
     };

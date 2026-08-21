@@ -1319,6 +1319,143 @@ mod tests {
         Ok(())
     }
 
+    /// Revocation as the user experiences it: a guest who claimed an
+    /// invite loses access to the space when that invite is withdrawn.
+    ///
+    /// The property under test is the one that matters, and the one the
+    /// account-service device list cannot show: after revocation the
+    /// claimed credential no longer reaches storage. That runs the whole
+    /// path, from minting the artifact through `/ucan/revoke` recording
+    /// it to the presign screen refusing a chain that rests on it.
+    #[dialog_common::test]
+    async fn it_cuts_off_storage_access_when_an_invite_is_revoked(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        sign_up(&owner, &env, "owner@example.com").await?;
+
+        let created = post_json(
+            &owner,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Revocable Garden",
+                "remote": env.tonk_web.join("ucan/")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create space", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+        successful_body(
+            "push space",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        let invited = post_json(
+            &owner,
+            &format!("/api/repository/{key}/invite"),
+            serde_json::json!({ "baseUrl": env.tonk_web.join("join")? }),
+        )
+        .await?;
+        let invite_url = successful_body("mint invite", &invited)["url"]
+            .as_str()
+            .context("invite response omitted its URL")?
+            .to_string();
+        // The mint answers a URL; the revocation target comes from the
+        // invitation listing, which is where its CID is recorded.
+        let listed = get_json(&owner, &format!("/api/repository/{key}/invites")).await?;
+        let invite_cid = successful_body("list invites", &listed)
+            .as_array()
+            .and_then(|invites| invites.first())
+            .and_then(|invite| invite["target_cid"].as_str())
+            .context("invitation listing carried no target CID")?
+            .to_string();
+
+        // A guest claims it and can reach the space.
+        let guest = driver_with_prf(&env).await?;
+        sign_up(&guest, &env, "guest@example.com").await?;
+        successful_body(
+            "visit invite",
+            &post_json(
+                &guest,
+                "/api/profile/visit",
+                serde_json::json!({ "url": invite_url }),
+            )
+            .await?,
+        );
+        successful_body(
+            "guest pulls before revocation",
+            &post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        // The owner withdraws it.
+        successful_body(
+            "revoke invite",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/invites/{invite_cid}/revoke"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        // The guest's chain now rests on a withdrawn delegation, so the
+        // access service refuses to presign for it. Polled because the
+        // index is eventually consistent by design.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let last = loop {
+            let attempt = post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let refused = !attempt["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status));
+            if refused {
+                break attempt;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a revoked invite still reached storage: {attempt}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert!(
+            last.get("error").is_none(),
+            "the pull must reach the worker rather than fail in transport: {last}"
+        );
+
+        // The owner is unaffected: revoking one invite withdraws that
+        // delegation, not the space.
+        successful_body(
+            "owner still reaches the space",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        guest.quit().await?;
+        owner.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_revokes_the_cli_device_from_the_browser(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
