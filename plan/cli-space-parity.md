@@ -202,10 +202,11 @@ Verified:
 
 - `cargo test -p tonk-cli --features integration-tests` — all suites pass,
   including live account/access-service coverage of linking, relinking, the
-  account switch, and every refusal. One run of the whole suite saw a single
-  failure in `tests/site.rs` that did not reproduce in four later runs of that
-  suite alone or of the whole suite; treat it as load flakiness under full
-  parallelism until it recurs with a name attached.
+  account switch, and every refusal. Two separate whole-suite runs each saw a
+  single failure somewhere in `tests/site.rs`, which then passed in every
+  isolated run of that suite and in six later whole-suite runs — long enough
+  to swallow the failing test's name both times. Treat it as load flakiness
+  under full parallelism until a run captures which test it is.
 - `cargo clippy --workspace --all-targets --all-features` — clean.
 - `cargo fmt --all --check` — clean.
 
