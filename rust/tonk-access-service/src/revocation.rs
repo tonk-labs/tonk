@@ -5,6 +5,7 @@
 //! from verified immutable artifacts. A refresh is authoritative only after a
 //! complete listing, fetch, and verification pass succeeds.
 
+pub mod index;
 #[cfg(target_arch = "wasm32")]
 pub mod r2;
 
