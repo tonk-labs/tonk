@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_distinct_valid_artifacts_for_the_same_target() {
+    async fn it_collapses_repeated_revocations_of_the_same_target() {
         let store = MemoryRevocationStore::default();
         let root = Ed25519Signer::import(&[1u8; 32]).await.unwrap();
         let device = Ed25519Signer::import(&[2u8; 32]).await.unwrap();
@@ -189,15 +189,21 @@ mod tests {
         let first_outcome = publish(&store, &first).await.unwrap();
         let second_outcome = publish(&store, &second).await.unwrap();
 
+        // Revocation is idempotent, and the spec's empty nonce is what
+        // makes that visible: the same revoker withdrawing the same
+        // delegation twice is one fact, so both mints are the same
+        // artifact and the store holds one.
         assert_eq!(
             first_outcome.verified.target_cid,
             second_outcome.verified.target_cid
         );
-        assert_ne!(
+        assert_eq!(
             first_outcome.verified.artifact_cid,
             second_outcome.verified.artifact_cid
         );
-        assert_eq!(store.len(), 2);
+        assert!(first_outcome.stored);
+        assert!(!second_outcome.stored);
+        assert_eq!(store.len(), 1);
     }
 
     #[dialog_common::test]
