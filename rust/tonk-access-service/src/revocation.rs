@@ -128,6 +128,47 @@ mod tests {
         }
     }
 
+    /// Revoking a powerline must cut off every chain it enables.
+    ///
+    /// `account -> profile` is `Subject::Any`: it is not scoped to a
+    /// space, it is the hop that lets the profile act for the account
+    /// everywhere. A chain like `space -> account -> profile` is only
+    /// usable because that hop exists, so withdrawing it must deny the
+    /// chain.
+    ///
+    /// The screen matches `revocation.sub` against the presented chain's
+    /// ISSUER set. On `space -> account -> profile` the issuers are
+    /// {space, account}, so a revocation recorded under `sub = account`
+    /// matches and the chain is denied.
+    ///
+    /// Pinned because the recording side derives `sub` from a fallback
+    /// (`path.issuer()` when the delegation is `Subject::Any`) rather
+    /// than from anything the powerline itself states. The fallback lands
+    /// on the right principal — the granting account issues into every
+    /// chain its powerline enables — but a change to it would leave these
+    /// chains live with nothing else failing.
+    #[dialog_common::test]
+    async fn it_denies_a_chain_running_through_a_revoked_powerline() {
+        let revocations = index::MemoryRevocationIndex::default();
+        // The powerline hop, revoked by the account that issued it.
+        revocations
+            .record("bafyPowerline", "did:key:zAccount")
+            .await
+            .unwrap();
+
+        // space -> account -> profile: issuers {space, account}. The
+        // powerline CID is carried as one of the presented proofs.
+        let through = presented(
+            &["bafySpaceToAccount", "bafyPowerline"],
+            &["did:key:zSpace", "did:key:zAccount"],
+        );
+        assert_eq!(
+            screen_revoked(&revocations, &through).await.unwrap(),
+            Some("bafyPowerline".to_string()),
+            "a chain resting on a revoked powerline must be denied"
+        );
+    }
+
     #[dialog_common::test]
     async fn it_passes_a_chain_nothing_revoked() {
         let revocations = index::MemoryRevocationIndex::default();

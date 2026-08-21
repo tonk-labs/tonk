@@ -316,6 +316,33 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
     // previous hop's audience. Without this, any principal could staple an
     // unrelated (validly signed) grant onto a real prefix and claim the
     // authority the prefix carries.
+    // Signatures prove each hop was issued; they say nothing about
+    // whether it still holds. Authority that has lapsed is not authority,
+    // so every hop of the witness must be valid now. A chain's effective
+    // window is the intersection of its hops, so checking each one covers
+    // the chain.
+    let now = dialog_ucan_core::time::timestamp::Timestamp::now().to_unix();
+    for delegation in &path_delegations {
+        if let Some(expiration) = delegation.expiration()
+            && expiration.to_unix() < now
+        {
+            return Err(VerifyError::Unauthorized(format!(
+                "witness hop issued by {} expired at {}",
+                delegation.issuer(),
+                expiration.to_unix()
+            )));
+        }
+        if let Some(not_before) = delegation.not_before()
+            && not_before.to_unix() > now
+        {
+            return Err(VerifyError::Unauthorized(format!(
+                "witness hop issued by {} is not valid until {}",
+                delegation.issuer(),
+                not_before.to_unix()
+            )));
+        }
+    }
+
     // Linkage says the hops connect; it does not say where they start. A
     // connected chain rooted in an arbitrary principal is a well-formed
     // statement about somebody else's authority, so bind the root to the
@@ -972,6 +999,116 @@ mod tests {
             verify(&bytes).await.is_err(),
             "a witness that does not start at the subject must not authorize \
              a revocation against that subject"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_records_the_issuer_as_subject_for_a_powerline_revocation() {
+        // A powerline (`Subject::Any`) has no subject of its own, so the
+        // revocation's `sub` falls back to the path's issuer — the
+        // account that granted it. Verification is unaffected: the screen
+        // matches `sub` against the victim chain's issuer set, and the
+        // account issues into every chain the powerline enables
+        // (`space -> account -> profile`), so the match lands.
+        //
+        // It is however a LOSSY encoding. "scoped to subject X" and
+        // "about a powerline, which has no subject, and X merely issued
+        // it" both come out as `sub = X`, so nothing downstream can tell
+        // them apart without knowing the fallback exists. The evidence
+        // record keys powerlines under `_` precisely to keep that
+        // distinction somewhere.
+        //
+        // Pinned because it is a default rather than a stated fact.
+        let account = signer(15).await;
+        let profile = signer(16).await;
+        let powerline = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(account.clone()))
+            .audience(&profile.did())
+            .subject(Subject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(powerline);
+        let target = chain.proof_cids()[0];
+
+        let verified = verify(
+            &mint_root_revocation(account.clone(), &chain, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            verified.subject,
+            account.did(),
+            "a powerline revocation must be recorded under the granting \
+             account, which is the issuer every enabled chain carries"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_revocation_from_a_principal_outside_the_chain() {
+        // The attacker holds a real keypair and can sign anything it
+        // likes — but it never appears in the chain leading to the
+        // target, so it holds no authority to withdraw it. Signing
+        // validly is not the same as being authorized.
+        let (_, _, _, path) = invite_path().await;
+        let attacker = signer(21).await;
+        let target = path.proof_cids()[1];
+
+        // The honest minter refuses outright.
+        assert!(
+            mint_root_revocation(attacker.clone(), &path, &target)
+                .await
+                .is_err(),
+            "an outsider must not be able to mint a revocation"
+        );
+
+        // And a hand-rolled container, validly signed by the attacker,
+        // does not verify either.
+        let bytes = raw_revocation(attacker, &path, Promised::Link(target), None).await;
+        assert!(
+            matches!(verify(&bytes).await, Err(VerifyError::Unauthorized(_))),
+            "a validly signed revocation from outside the chain must not verify"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_revocation_witnessed_by_an_expired_delegation() {
+        // Authority that has lapsed is not authority. An attacker who
+        // once held a delegation, or who presents one whose window has
+        // closed, must not be able to withdraw anything with it.
+        let space = signer(3).await;
+        let member = signer(4).await;
+        let invite = signer(5).await;
+        let past = Timestamp::new(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+
+        let expired = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&member.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .expiration(past)
+            .try_build()
+            .await
+            .unwrap();
+        let onward = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(member.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(expired).push(onward).unwrap();
+        let target = chain.proof_cids()[1];
+
+        let bytes = raw_revocation(member, &chain, Promised::Link(target), None).await;
+        assert!(
+            verify(&bytes).await.is_err(),
+            "a witness whose hop has expired must not establish authority"
         );
     }
 
