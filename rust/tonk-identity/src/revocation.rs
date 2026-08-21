@@ -4,12 +4,14 @@
 //! delegation path that witnesses that target. Consumers can therefore verify
 //! revocation authority without consulting an account provider or registry.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, Result};
 use dialog_credentials::{DidKeyResolver, Signer};
 use dialog_ucan_core::promise::Promised;
-use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{
+    Container, Delegation, DelegationChain, InvocationBuilder, InvocationChain,
+};
 use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use ipld_core::cid::Cid;
@@ -65,18 +67,28 @@ fn command() -> Vec<String> {
         .collect()
 }
 
+/// Build the spec's arguments: the target as a link, and the witness as
+/// a list of links.
+///
+/// Both are IPLD links rather than strings. The spec types `revoke` as
+/// `&Delegation` and `path` as `[&Delegation]`, so a revocation minted
+/// here decodes as one anywhere else that implements the spec, and the
+/// CIDs stay addressable rather than being opaque text.
 fn arguments(target: &Cid, path: &DelegationChain) -> Result<BTreeMap<String, Promised>> {
+    let index = target_index(path, target)?;
     let mut arguments = BTreeMap::new();
-    arguments.insert(
-        REVOKE_ARGUMENT.to_string(),
-        Promised::String(target.to_string()),
-    );
+    arguments.insert(REVOKE_ARGUMENT.to_string(), Promised::Link(*target));
+    // The witness runs from the root through the target: enough to show
+    // the revoker issued something on the way, and no more.
     arguments.insert(
         PATH_ARGUMENT.to_string(),
-        Promised::String(hex::encode(
-            path.to_bytes()
-                .context("failed to serialize revocation path")?,
-        )),
+        Promised::List(
+            path.proof_cids()
+                .iter()
+                .take(index + 1)
+                .map(|cid| Promised::Link(*cid))
+                .collect(),
+        ),
     );
     Ok(arguments)
 }
@@ -129,12 +141,27 @@ async fn mint(
         .try_build()
         .await
         .map_err(|err| anyhow::anyhow!("failed to mint the revocation: {err}"))?;
-    let delegations = proofs
-        .map(|chain| chain.export().collect())
-        .unwrap_or_default();
+    // Assemble the container directly rather than through
+    // `InvocationChain::to_bytes`, which emits only delegations named in
+    // `invocation.proofs()`. The witness is referenced from `args.path`
+    // rather than from proofs, so that writer would drop it and leave a
+    // verifier unable to resolve the links it was handed.
+    let mut tokens = vec![
+        serde_ipld_dagcbor::to_vec(&invocation)
+            .context("failed to serialize the revocation invocation")?,
+    ];
+    let mut seen: BTreeSet<Cid> = BTreeSet::new();
+    for (cid, delegation) in path
+        .export()
+        .chain(proofs.into_iter().flat_map(|c| c.export()))
+    {
+        if seen.insert(cid) {
+            tokens.push(delegation.encoded().to_vec());
+        }
+    }
 
-    InvocationChain::new(invocation, delegations)
-        .to_bytes()
+    Container::new(tokens)
+        .into_bytes()
         .map_err(|err| anyhow::anyhow!("failed to serialize the revocation: {err}"))
 }
 
@@ -171,16 +198,56 @@ pub async fn mint_delegated_revocation(
     mint(issuer, path, target, Some(proofs)).await
 }
 
-fn string_argument<'a>(
-    chain: &'a InvocationChain<AnySignature>,
-    name: &str,
-) -> std::result::Result<&'a str, VerifyError> {
-    match chain.arguments().get(name) {
-        Some(Promised::String(value)) if !value.is_empty() => Ok(value),
-        _ => Err(VerifyError::Malformed(format!(
-            "{name} must be a non-empty string"
-        ))),
+/// Index every delegation the container carries, keyed by canonical CID.
+fn carried_delegations(
+    bytes: &[u8],
+) -> std::result::Result<HashMap<Cid, Delegation<AnySignature>>, VerifyError> {
+    let tokens = Container::from_bytes(bytes)
+        .map_err(|err| VerifyError::Malformed(format!("bad container: {err}")))?
+        .into_tokens();
+    let mut carried = HashMap::new();
+    // Token 0 is the invocation; the rest are delegations.
+    for token in tokens.iter().skip(1) {
+        let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(token)
+            .map_err(|err| VerifyError::Malformed(format!("bad delegation token: {err}")))?;
+        carried.insert(delegation.to_cid(), delegation);
     }
+    Ok(carried)
+}
+
+/// Read a link argument, per the spec's `&Delegation`.
+fn link_argument(
+    chain: &InvocationChain<AnySignature>,
+    name: &str,
+) -> std::result::Result<Cid, VerifyError> {
+    match chain.arguments().get(name) {
+        Some(Promised::Link(cid)) => Ok(*cid),
+        _ => Err(VerifyError::Malformed(format!("{name} must be a link"))),
+    }
+}
+
+/// Read a list-of-links argument, per the spec's `[&Delegation]`.
+fn link_list_argument(
+    chain: &InvocationChain<AnySignature>,
+    name: &str,
+) -> std::result::Result<Vec<Cid>, VerifyError> {
+    let Some(Promised::List(items)) = chain.arguments().get(name) else {
+        return Err(VerifyError::Malformed(format!(
+            "{name} must be a list of links"
+        )));
+    };
+    if items.is_empty() {
+        return Err(VerifyError::Malformed(format!("{name} must not be empty")));
+    }
+    items
+        .iter()
+        .map(|item| match item {
+            Promised::Link(cid) => Ok(*cid),
+            _ => Err(VerifyError::Malformed(format!(
+                "{name} must contain only links"
+            ))),
+        })
+        .collect()
 }
 
 /// Parse and verify a self-contained revocation artifact.
@@ -195,33 +262,28 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         )));
     }
 
-    let target_string = string_argument(&chain, REVOKE_ARGUMENT)?;
-    let target = target_string
-        .parse::<Cid>()
-        .map_err(|err| VerifyError::Malformed(format!("invalid target CID: {err}")))?;
-    if target.to_string() != target_string {
-        return Err(VerifyError::Malformed(
-            "target CID is not canonical".to_string(),
-        ));
-    }
+    let target = link_argument(&chain, REVOKE_ARGUMENT)?;
 
-    let path_hex = string_argument(&chain, PATH_ARGUMENT)?;
-    let path_bytes = hex::decode(path_hex)
-        .map_err(|err| VerifyError::Malformed(format!("invalid path hex: {err}")))?;
-    let path = DelegationChain::try_from(path_bytes.as_slice())
-        .map_err(|err| VerifyError::Malformed(format!("invalid delegation path: {err}")))?;
-
-    for delegation in path.proofs() {
+    // The witness names its delegations by link; resolve each against
+    // the container that carried them. `InvocationChain` keeps its
+    // delegation map private, so index the tokens we already parsed.
+    let carried = carried_delegations(bytes)?;
+    let path_cids = link_list_argument(&chain, PATH_ARGUMENT)?;
+    let mut path_delegations = Vec::with_capacity(path_cids.len());
+    for cid in &path_cids {
+        let delegation = carried.get(cid).ok_or_else(|| {
+            VerifyError::Malformed(format!("witness delegation {cid} is not in the container"))
+        })?;
         delegation
             .verify_signature(&DidKeyResolver)
             .await
             .map_err(|err| {
                 VerifyError::Unauthorized(format!("path signature failed to verify: {err}"))
             })?;
+        path_delegations.push(delegation);
     }
 
-    let mut matches = path
-        .proof_cids()
+    let mut matches = path_cids
         .iter()
         .enumerate()
         .filter_map(|(index, cid)| (cid == &target).then_some(index));
@@ -243,7 +305,11 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         })?;
 
     let issuer = chain.issuer().clone();
-    let authority = if is_path_issuer(&path, target_index, &issuer) {
+    let authority = if path_delegations
+        .iter()
+        .take(target_index + 1)
+        .any(|delegation| delegation.issuer() == &issuer)
+    {
         RevocationAuthority::PathIssuer
     } else {
         chain.verify(&DidKeyResolver).await.map_err(|err| {
@@ -257,7 +323,27 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         RevocationAuthority::Delegated
     };
 
-    let canonical_bytes = chain.to_bytes().map_err(|err| {
+    // Re-encode and compare, so a container carrying extra tokens, a
+    // different order, or a re-serialized delegation is refused rather
+    // than silently accepted. Rebuilt the way `mint` builds it:
+    // `InvocationChain::to_bytes` would drop the witness, since the
+    // witness is named by `args.path` rather than by proofs.
+    let mut expected = vec![
+        serde_ipld_dagcbor::to_vec(&chain.invocation).map_err(|err| {
+            VerifyError::Malformed(format!("failed to re-encode the invocation: {err}"))
+        })?,
+    ];
+    let mut seen: BTreeSet<Cid> = BTreeSet::new();
+    for cid in path_cids.iter().chain(chain.proofs().iter()) {
+        if !seen.insert(*cid) {
+            continue;
+        }
+        let delegation = carried.get(cid).ok_or_else(|| {
+            VerifyError::Malformed(format!("delegation {cid} is not in the container"))
+        })?;
+        expected.push(delegation.encoded().to_vec());
+    }
+    let canonical_bytes = Container::new(expected).into_bytes().map_err(|err| {
         VerifyError::Malformed(format!(
             "failed to canonicalize invocation container: {err}"
         ))
@@ -268,9 +354,8 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         ));
     }
 
-    let target_expires_at = path
-        .proofs()
-        .nth(target_index)
+    let target_expires_at = path_delegations
+        .get(target_index)
         .and_then(|delegation| delegation.expiration())
         .map(|expiration| expiration.to_unix());
 
@@ -333,17 +418,24 @@ mod tests {
         (space, member, invite, path)
     }
 
+    /// Build a revocation container by hand, so tests can inject a
+    /// malformed `revoke` argument that `mint` would never produce.
     async fn raw_revocation(
         issuer: impl Into<Signer>,
         path: &DelegationChain,
-        named: String,
+        named: Promised,
         proofs: Option<&DelegationChain>,
     ) -> Vec<u8> {
         let mut args = BTreeMap::new();
-        args.insert(REVOKE_ARGUMENT.into(), Promised::String(named));
+        args.insert(REVOKE_ARGUMENT.into(), named);
         args.insert(
             PATH_ARGUMENT.into(),
-            Promised::String(hex::encode(path.to_bytes().unwrap())),
+            Promised::List(
+                path.proof_cids()
+                    .iter()
+                    .map(|cid| Promised::Link(*cid))
+                    .collect(),
+            ),
         );
         let subject = subject(path);
         let invocation = InvocationBuilder::new()
@@ -360,14 +452,17 @@ mod tests {
             .try_build()
             .await
             .unwrap();
-        InvocationChain::new(
-            invocation,
-            proofs
-                .map(|chain| chain.export().collect())
-                .unwrap_or_default(),
-        )
-        .to_bytes()
-        .unwrap()
+        let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation).unwrap()];
+        let mut seen: BTreeSet<Cid> = BTreeSet::new();
+        for (cid, delegation) in path
+            .export()
+            .chain(proofs.into_iter().flat_map(|chain| chain.export()))
+        {
+            if seen.insert(cid) {
+                tokens.push(delegation.encoded().to_vec());
+            }
+        }
+        Container::new(tokens).into_bytes().unwrap()
     }
 
     #[dialog_common::test]
@@ -433,7 +528,7 @@ mod tests {
         let bytes = raw_revocation(
             root,
             &decoy_path,
-            real_path.proof_cids()[0].to_string(),
+            Promised::Link(real_path.proof_cids()[0]),
             None,
         )
         .await;
@@ -445,7 +540,11 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_rejects_a_path_changed_after_signing() {
+    async fn it_rejects_a_witness_swapped_after_signing() {
+        // The witness is named by link, so tampering means swapping the
+        // carried block for a different delegation. Its CID no longer
+        // matches what the signed arguments name, and the container
+        // stops being canonical.
         let (space, member, _, original) = invite_path().await;
         let other_invite = signer(6).await;
         let replacement_leaf = DelegationBuilder::new()
@@ -456,25 +555,19 @@ mod tests {
             .try_build()
             .await
             .unwrap();
-        let changed = DelegationChain::new(original.proofs().next().unwrap().clone())
-            .push(replacement_leaf)
-            .unwrap();
         let target = original.proof_cids()[0];
-        let mut bytes = mint_root_revocation(space, &original, &target)
+        let bytes = mint_root_revocation(space, &original, &target)
             .await
             .unwrap();
-        let old = hex::encode(original.to_bytes().unwrap());
-        let new = hex::encode(changed.to_bytes().unwrap());
-        assert_eq!(old.len(), new.len());
-        let start = bytes
-            .windows(old.len())
-            .position(|window| window == old.as_bytes())
-            .unwrap();
-        bytes[start..start + old.len()].copy_from_slice(new.as_bytes());
+
+        // Replace the last carried delegation with the replacement.
+        let mut tokens = Container::from_bytes(&bytes).unwrap().into_tokens();
+        *tokens.last_mut().unwrap() = replacement_leaf.encoded().to_vec();
+        let tampered = Container::new(tokens).into_bytes().unwrap();
 
         assert!(matches!(
-            verify(&bytes).await,
-            Err(VerifyError::Unauthorized(_))
+            verify(&tampered).await,
+            Err(VerifyError::Malformed(_))
         ));
     }
 
@@ -482,7 +575,8 @@ mod tests {
     async fn it_rejects_an_unauthorized_issuer() {
         let (_, _, _, path) = invite_path().await;
         let outsider = signer(8).await;
-        let bytes = raw_revocation(outsider, &path, path.proof_cids()[1].to_string(), None).await;
+        let bytes =
+            raw_revocation(outsider, &path, Promised::Link(path.proof_cids()[1]), None).await;
 
         assert!(matches!(
             verify(&bytes).await,
@@ -491,12 +585,15 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_rejects_a_non_canonical_target_cid() {
+    async fn it_rejects_a_target_that_is_not_a_link() {
         let (root, _, path) = root_grant().await;
+        // The spec types `revoke` as `&Delegation`. A stringified CID is
+        // the shape the previous encoding used, so it is exactly what a
+        // stale client would send.
         let bytes = raw_revocation(
             root,
             &path,
-            path.proof_cids()[0].to_string().to_ascii_uppercase(),
+            Promised::String(path.proof_cids()[0].to_string()),
             None,
         )
         .await;
