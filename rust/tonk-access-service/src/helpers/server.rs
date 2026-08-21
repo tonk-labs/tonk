@@ -60,6 +60,9 @@ struct RegistrationState {
     service: Ed25519Signer,
     origin: String,
     purger: crate::deletion::NativeSpacePurger,
+    /// Revocations recorded by `/ucan/revoke`, read back by the presign
+    /// screen. In memory, as the worker's KV namespace is.
+    revocations: crate::revocation::index::MemoryRevocationIndex,
 }
 
 /// Captures activation emails and announces them on stdout, so a human
@@ -145,6 +148,7 @@ impl AccessServer {
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
             purger,
+            revocations: Default::default(),
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -493,6 +497,34 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
+    // Revocation writes to the index rather than reading it, so it is
+    // answered before the presign path, mirroring the worker.
+    if crate::revoke::is_revocation(&body_bytes) {
+        let response = match crate::revoke::revoke(
+            &registration.store,
+            &registration.revocations,
+            &body_bytes,
+        )
+        .await
+        {
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("revoke receipt serializes"),
+                )))
+                .unwrap(),
+            Err(error) => Response::builder()
+                .status(error.status())
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({ "error": error }))
+                        .expect("revoke refusal serializes"),
+                )))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     if registration_command(&body_bytes).is_some() {
         let env = Registration {
             store: &registration.store,
@@ -554,6 +586,41 @@ async fn handle_request(
             _ => {}
         }
     }
+    // The revocation screen, mirroring the worker: a chain resting on a
+    // delegation one of its own issuers withdrew is refused.
+    if outcome.is_ok() {
+        match crate::revocation::collect_presented(&body_bytes) {
+            Ok(presented) => {
+                match crate::revocation::screen_revoked(&registration.revocations, &presented).await
+                {
+                    Ok(None) => {}
+                    Ok(Some(_)) => {
+                        return Ok(cors_response(authorize_error_response(
+                            StatusCode::FORBIDDEN,
+                            &dialog_capability::access::AuthorizeError::Revoked {
+                                subject: presented.subject.clone(),
+                            },
+                        )));
+                    }
+                    Err(error) => {
+                        eprintln!("presign refused, revocation index unreachable: {error}");
+                        return Ok(cors_response(authorize_error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            &unavailable_provisioning(),
+                        )));
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("revocation screen unavailable, container unparseable: {error}");
+                return Ok(cors_response(authorize_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &unavailable_provisioning(),
+                )));
+            }
+        }
+    }
+
     // The provisioning gate, mirroring the worker: a subject is served
     // only while an active customer pays for it. Registration commands
     // returned above, so enrolling and activating stay possible while

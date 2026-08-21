@@ -183,11 +183,7 @@ pub async fn create_invite(
         InviteAudience::Open { .. } => "open",
         InviteAudience::Scoped => "scoped",
     };
-    // `revocation_url` is a cardinality-one field, so an execution row
-    // written without one would not resolve at all and `kind` would go
-    // with it. Revocation no longer reads the value, so record the
-    // access endpoint the revocation actually goes to.
-    let execution = InvitationExecution::new(&invitation, kind, remote.access_url.as_str());
+    let execution = InvitationExecution::new(&invitation, kind);
     tonk.reactor
         .repository(&repo_name)
         .branch(CONTENT_BRANCH)

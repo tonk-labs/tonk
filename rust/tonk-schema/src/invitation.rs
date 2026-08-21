@@ -160,18 +160,10 @@ mod tests {
     async fn it_keys_execution_metadata_to_the_invitation_entity() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let invitation = Invitation::from_chain(&minted_chain(&subject).await).unwrap();
-        let execution = crate::InvitationExecution::new(
-            &invitation,
-            "open",
-            "https://artifacts.example.test/revocations/",
-        );
+        let execution = crate::InvitationExecution::new(&invitation, "open");
 
         assert_eq!(execution.this, invitation.this);
         assert_eq!(execution.kind.0, "open");
-        assert_eq!(
-            execution.revocation_url.0,
-            "https://artifacts.example.test/revocations/"
-        );
     }
 
     #[dialog_common::test]

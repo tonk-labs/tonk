@@ -1371,11 +1371,14 @@ mod tests {
         // The mint answers a URL; the revocation target comes from the
         // invitation listing, which is where its CID is recorded.
         let listed = get_json(&owner, &format!("/api/repository/{key}/invites")).await?;
-        let invite_cid = successful_body("list invites", &listed)
+        let body = successful_body("list invites", &listed);
+        let invite_cid = body
             .as_array()
             .and_then(|invites| invites.first())
-            .and_then(|invite| invite["target_cid"].as_str())
-            .context("invitation listing carried no target CID")?
+            .and_then(|invite| invite["targetCid"].as_str())
+            .with_context(|| {
+                format!("invitation listing carried no target CID; listing was: {body}")
+            })?
             .to_string();
 
         // A guest claims it and can reach the space.

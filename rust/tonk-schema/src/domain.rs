@@ -843,11 +843,6 @@ pub mod invitation_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation-execution")]
     pub struct Kind(pub String);
-
-    /// Explicit endpoint that accepts immutable revocation artifacts.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.invitation-execution")]
-    pub struct RevocationUrl(pub String);
 }
 
 /// Attributes that live on [`Remote`] entities only.

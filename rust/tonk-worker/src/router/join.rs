@@ -458,8 +458,8 @@ pub(crate) struct PreparedJoin {
     /// Derived from the chain *as parsed*, before any redelegation
     /// changes the leaf.
     invitation: Invitation,
-    /// Explicit relay metadata carried by modern invites.
-    invitation_execution: Option<InvitationExecution>,
+    /// Audience metadata recorded beside the invitation.
+    invitation_execution: InvitationExecution,
     subject: Did,
     key: String,
     /// The durable member the chain terminates at. `None` for a guest
@@ -1263,13 +1263,8 @@ async fn prepare_join(
         .expect("Invite invariant: chain has a specific subject");
 
     let open = matches!(&invite.audience, InviteAudience::Open { .. });
-    let invitation_execution = invite.revocation_url.as_ref().map(|relay| {
-        InvitationExecution::new(
-            &invitation,
-            if open { "open" } else { "scoped" },
-            relay.as_str(),
-        )
-    });
+    let invitation_execution =
+        InvitationExecution::new(&invitation, if open { "open" } else { "scoped" });
     let subject = invite.subject().clone();
     let key = subject.repo_key().to_owned();
     let remote_url = invite.remote_url.as_ref().map(url::Url::to_string);
@@ -1417,7 +1412,7 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
             &branch,
             staging.operator(),
             &prepared.invitation,
-            prepared.invitation_execution.as_ref(),
+            &prepared.invitation_execution,
             member,
             &prepared.subject,
         )
@@ -2078,7 +2073,7 @@ async fn claim_changes<Env: BranchEnv>(
     branch: &Branch,
     env: &Env,
     invitation: &Invitation,
-    invitation_execution: Option<&InvitationExecution>,
+    invitation_execution: &InvitationExecution,
     member: &Did,
     subject: &Did,
 ) -> Result<(Changes, bool), JoinFailure> {
@@ -2141,9 +2136,7 @@ async fn claim_changes<Env: BranchEnv>(
 
     let mut changes = Changes::new();
     invitation.clone().assert(&mut changes);
-    if let Some(execution) = invitation_execution {
-        execution.clone().assert(&mut changes);
-    }
+    invitation_execution.clone().assert(&mut changes);
     membership.clone().assert(&mut changes);
     if !already_named {
         let display_name = crate::router::profile_name::resolve_display_name(tonk).await;

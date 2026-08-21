@@ -1061,11 +1061,7 @@ async fn run_invite(
     let chain = delegation.into_chain();
     let invitation =
         Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
-    // `revocation_url` is cardinality-one, so an execution row written
-    // without one would not resolve and `kind` would go with it. The
-    // revocation goes to the access service, so record that endpoint.
-    let execution =
-        InvitationExecution::new(&invitation, "open", remote_execution.access_url.as_str());
+    let execution = InvitationExecution::new(&invitation, "open");
 
     // base58-encode the delegation chain — the `?access=` parameter the
     // view reads back and assembles into the final URL.

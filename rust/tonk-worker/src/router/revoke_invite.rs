@@ -71,15 +71,59 @@ pub async fn revoke(
     let path = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
         TonkWorkerError::Internal(format!("stored invitation path is invalid: {error}"))
     })?;
-    let artifact = tonk_identity::revocation::mint_root_revocation(
-        tonk.profile.signer().signer().clone(),
-        &path,
-        &target,
-    )
-    .await
-    .map_err(|error| {
-        TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
-    })?;
+    // The revocation's subject is the space, but this device signs it,
+    // so the invocation has to carry the delegation that proves the
+    // device may act for that subject. The old relay verified the
+    // artifact standalone and never asked; `/ucan/` runs the full chain
+    // check on every invocation before dispatch, and refuses a subject
+    // the presented proofs do not authorize.
+    let subject = path
+        .subject()
+        .cloned()
+        .unwrap_or_else(|| path.issuer().clone());
+    // The space-root prefix is persisted by the browser at creation, so
+    // it is only reachable there. Native builds carry this handler for
+    // the router's shape, not to run it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let artifact = {
+        // The stored prefix runs space to account root, so on its own it
+        // authorizes the root rather than this device. Extend it with
+        // the root to device grant, which is the same pair every other
+        // invocation on a space subject presents.
+        let prefix = super::repository::space_root_prefix(&tonk, &subject).await?;
+        let root = super::identity::local_root(&tonk).await?;
+        let mut authority = prefix;
+        for delegation in root.delegation.proofs() {
+            authority = authority.push(delegation.clone()).map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "space authority and device grant do not chain: {error}"
+                ))
+            })?;
+        }
+        tonk_identity::revocation::mint_delegated_revocation(
+            tonk.profile.signer().signer().clone(),
+            &path,
+            &target,
+            &authority,
+        )
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
+        })?
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let artifact = {
+        let _ = &subject;
+        tonk_identity::revocation::mint_root_revocation(
+            tonk.profile.signer().signer().clone(),
+            &path,
+            &target,
+        )
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
+        })?
+    };
     tonk_identity::revocation::verify(&artifact)
         .await
         .map_err(|error| {
@@ -157,7 +201,6 @@ pub async fn list(
         .select(Query::<InvitationExecution> {
             this: Term::var("this"),
             kind: Term::var("kind"),
-            revocation_url: Term::var("revocation_url"),
         })
         .perform(&tonk.operator)
         .try_vec()

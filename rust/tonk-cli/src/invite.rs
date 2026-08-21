@@ -269,17 +269,14 @@ async fn mint_for(
     // secret-free half of the invite (the seed stays in the URL).
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
-    let execution = invite.revocation_url.as_ref().map(|relay| {
-        InvitationExecution::new(
-            &invitation,
-            if matches!(&invite.audience, InviteAudience::Open { .. }) {
-                "open"
-            } else {
-                "scoped"
-            },
-            relay.as_str(),
-        )
-    });
+    let execution = InvitationExecution::new(
+        &invitation,
+        if matches!(&invite.audience, InviteAudience::Open { .. }) {
+            "open"
+        } else {
+            "scoped"
+        },
+    );
     let meta = site
         .repository
         .branch(META_BRANCH)
@@ -287,11 +284,9 @@ async fn mint_for(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
-    let mut transaction = meta.transaction().assert(invitation);
-    if let Some(execution) = execution {
-        transaction = transaction.assert(execution);
-    }
-    transaction
+    meta.transaction()
+        .assert(invitation)
+        .assert(execution)
         .commit()
         .perform(&site.operator)
         .await
@@ -391,17 +386,14 @@ pub async fn claim(
         .map_err(|e| InviteError::InvalidInvite(e.to_string()))?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
-    let invitation_execution = invite.revocation_url.as_ref().map(|relay| {
-        InvitationExecution::new(
-            &invitation,
-            if matches!(&invite.audience, InviteAudience::Open { .. }) {
-                "open"
-            } else {
-                "scoped"
-            },
-            relay.as_str(),
-        )
-    });
+    let invitation_execution = InvitationExecution::new(
+        &invitation,
+        if matches!(&invite.audience, InviteAudience::Open { .. }) {
+            "open"
+        } else {
+            "scoped"
+        },
+    );
 
     std::fs::create_dir_all(root)
         .map_err(|e| InviteError::Io(format!("failed to create {}: {e}", root.display())))?;
@@ -471,9 +463,7 @@ pub async fn claim(
         .transaction()
         .assert(invitation)
         .assert(membership.clone());
-    if let Some(execution) = invitation_execution {
-        transaction = transaction.assert(execution);
-    }
+    transaction = transaction.assert(invitation_execution);
     if !self_invite {
         transaction = transaction.assert(InvitedVia::new(
             membership.this().clone(),
