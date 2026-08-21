@@ -987,6 +987,45 @@ mod when_listing_concepts {
     }
 
     #[dialog_common::test]
+    async fn it_omits_the_runtime_vocabulary_a_fresh_site_seeds() -> Result<()> {
+        // Site init lowers core.yaml and the analyzer registers its
+        // built-ins, so a fresh branch carries forty-odd concepts the
+        // author never wrote. None of them belongs in the listing.
+        let test = common::TestSite::new().await?;
+        let concepts = schema::list_concepts(&test.site).await?;
+        assert!(
+            concepts.is_empty(),
+            "a fresh site defines no concepts of its own; saw {:?}",
+            concepts.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        // Each of these is a different source of noise: an analyzer
+        // built-in, a standard-library concept, and a standard-library
+        // command. Naming them pins the filter to all three.
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let listed: Vec<_> = schema::list_concepts(&test.site)
+            .await?
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(listed, vec!["task".to_string()]);
+        for omitted in ["command", "view", "tonk/agents", "tonk/invite"] {
+            assert!(
+                !listed.contains(&omitted.to_string()),
+                "{omitted} is runtime vocabulary and should not be listed"
+            );
+            // Omitted from the listing, but still addressable by name:
+            // the filter is presentational, not a scoping rule.
+            assert!(
+                schema::find_concept(&test.site, omitted).await?.is_some(),
+                "{omitted} should still resolve by name"
+            );
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_excludes_user_defined_concepts_absent_on_a_fresh_site() -> Result<()> {
         // A fresh site has no user-defined `task` concept — only
         // built-ins are seeded. This pins that the user-defined

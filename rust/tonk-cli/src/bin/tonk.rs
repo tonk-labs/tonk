@@ -858,11 +858,13 @@ enum ConceptCommand {
         description: Option<String>,
     },
 
-    /// List user-defined concepts on the branch
+    /// List the concepts this space defines
     ///
     /// One row per concept, tab-separated `name<TAB>description`.
-    /// Built-in concepts (`attribute`, `concept`, …) are omitted —
-    /// they're resolvable everywhere and would just be noise.
+    /// The runtime vocabulary — analyzer built-ins, the standard
+    /// library, the space-home recipe — is omitted; it resolves
+    /// everywhere and would bury what you defined. `tonk schema`
+    /// still shows the whole branch.
     #[command(after_help = "Examples:\n  tonk concept ls")]
     Ls,
 }

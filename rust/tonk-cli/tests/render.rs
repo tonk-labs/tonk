@@ -45,14 +45,16 @@ async fn seeded() -> Result<TestSite> {
 
 #[dialog_common::test]
 async fn it_seeds_the_standard_library_on_init() -> Result<()> {
-    // A fresh site has the built-in `view` concept without any manual
-    // seeding — proof that site init lowered core.yaml.
+    // A fresh site resolves the standard library's `view` concept
+    // without any manual seeding — proof that site init lowered
+    // core.yaml. Asked by name: `list_concepts` is the author-facing
+    // listing and deliberately omits everything init seeded.
     let test = TestSite::new().await?;
-    let concepts = tonk_cli::schema::list_concepts(&test.site).await?;
     assert!(
-        concepts.iter().any(|c| c.name == "view"),
-        "the built-in `view` concept should be seeded at init: {:?}",
-        concepts.iter().map(|c| &c.name).collect::<Vec<_>>()
+        tonk_cli::schema::find_concept(&test.site, "view")
+            .await?
+            .is_some(),
+        "the standard library's `view` concept should be seeded at init"
     );
     Ok(())
 }

@@ -40,13 +40,24 @@ use tonk_account::prefix::{
 /// repository creation.
 const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 
-/// Whether the seeded standard library publishes `name`.
+/// Whether the seeded standard library declares a concept (or a
+/// command, its transient sibling) called `name`.
 ///
-/// Live schema enumeration also sees runtime/system concepts. Agent-facing
-/// workflow surfaces use this to keep the application vocabulary short.
-pub(crate) fn standard_library_has_name(name: &str) -> bool {
+/// Live schema enumeration also sees these runtime concepts, and on a
+/// fresh space they outnumber the author's own by forty to one.
+/// Agent-facing listings use this to keep the application vocabulary
+/// short — see [`crate::schema::is_system_concept`].
+///
+/// Only `concept!:` and `command!:` anchors count. The library also
+/// anchors attributes, views, and routes, but those live in a
+/// different namespace: a concept named after one of them is the
+/// author's, not the library's.
+pub(crate) fn standard_library_declares_concept(name: &str) -> bool {
     STANDARD_LIBRARY.lines().any(|line| {
-        let Some((_, anchor)) = line.split_once("!: &") else {
+        let Some(anchor) = line
+            .strip_prefix("concept!: &")
+            .or_else(|| line.strip_prefix("command!: &"))
+        else {
             return false;
         };
         anchor
