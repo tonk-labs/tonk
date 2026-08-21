@@ -1374,19 +1374,16 @@ mod rename_repo {
 /// `name` is always sent (the wizard's hidden input always carries the
 /// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
 /// alone — an absent `name` fact means the command never fires at all).
-/// `remote` and `template` are read directly off the transient's facts by
-/// the handler (not decoded as typed `CreateSpace` fields), so an empty
-/// value is omitted rather than sent as `""` — an omitted fact and a
+/// `remote` is read directly off the transient's facts by the handler
+/// (not decoded as a typed `CreateSpace` field), so an empty value is
+/// omitted rather than sent as `""` — an omitted fact and a
 /// filtered-empty fact land the same way handler-side, but omitting
 /// mirrors what the browser's own event extractor would have done, and
 /// keeps this consistent with [`rename_repo_claim_json`].
-pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
+pub fn create_space_claim_json(name: &str, remote: &str) -> Value {
     let mut parameters = json!({ "name": name });
     if !remote.is_empty() {
         parameters["remote"] = json!(remote);
-    }
-    if !template.is_empty() {
-        parameters["template"] = json!(template);
     }
     json!({
         "claims": [{
@@ -1398,8 +1395,7 @@ pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Valu
                         "description": "A request to create a new space from the wizard form.",
                         "with": {
                             "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" }
                         }
                     }
                 },
@@ -1415,7 +1411,7 @@ mod create_space {
 
     #[test]
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
-        let claim = create_space_claim_json("Untitled", "https://x", "wiki");
+        let claim = create_space_claim_json("Untitled", "https://x");
         let text = claim.to_string();
         // Verbatim, kebab-cased as declared — the handler matches on these.
         // Every control is read at `/value`: the segment after the control
@@ -1424,16 +1420,14 @@ mod create_space {
         // handler would never see the field here.
         assert!(text.contains("dom.event.current-target.elements.name/value"));
         assert!(text.contains("dom.event.current-target.elements.remote/value"));
-        assert!(text.contains("dom.event.current-target.elements.template/value"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
         assert_eq!(params["remote"], "https://x");
-        assert_eq!(params["template"], "wiki");
     }
 
     #[test]
     fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "", "blank");
+        let claim = create_space_claim_json("Untitled", "");
         // The descriptor's `with.remote` mapping is always present (it is
         // schema metadata) — what must be absent is the `remote` PARAMETER,
         // the thing that actually becomes a fact. Asserting on a bare
@@ -1442,16 +1436,6 @@ mod create_space {
         assert!(
             claim["claims"][0]["application"]["parameters"]
                 .get("remote")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn it_omits_a_blank_template_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "https://x", "");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("template")
                 .is_none()
         );
     }
@@ -1845,7 +1829,7 @@ mod wire_types {
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),
             rename_repo_claim_json("did:key:zX", "N").to_string(),
-            create_space_claim_json("N", "https://r", "wiki").to_string(),
+            create_space_claim_json("N", "https://r").to_string(),
             profile_rename_claim_json("N").to_string(),
             invite_claim_json("did:key:zX", 1.0).to_string(),
             pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),

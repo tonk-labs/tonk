@@ -942,7 +942,6 @@ mod tests {
             "/api/spaces",
             serde_json::json!({
                 "name": "Made While Waiting",
-                "template": "blank",
             }),
         )
         .await?;
@@ -996,7 +995,6 @@ mod tests {
             "/api/spaces",
             serde_json::json!({
                 "name": "Made After Activation",
-                "template": "blank",
             }),
         )
         .await?;
@@ -1047,7 +1045,7 @@ mod tests {
         let created = post_json(
             &driver,
             "/api/spaces",
-            serde_json::json!({ "name": "Opted In", "template": "blank" }),
+            serde_json::json!({ "name": "Opted In" }),
         )
         .await?;
         let key = successful_body("create space before activation", &created)["key"]
@@ -1122,7 +1120,6 @@ mod tests {
                 "name": "Shared Garden",
                 "remote": env.tonk_web.join("ucan/")?,
                 "revocation_url": env.account_service.join("revocations")?,
-                "template": "blank",
             }),
         )
         .await?;
@@ -1331,7 +1328,6 @@ mod tests {
                 "name": "Doomed Garden",
                 "remote": env.tonk_web.join("ucan/")?,
                 "revocation_url": env.account_service.join("revocations")?,
-                "template": "blank",
             }),
         )
         .await?;
@@ -1426,7 +1422,6 @@ mod tests {
                 "name": "First Garden",
                 "remote": env.tonk_web.join("ucan/")?,
                 "revocation_url": env.account_service.join("revocations")?,
-                "template": "blank",
             }),
         )
         .await?;
@@ -1775,7 +1770,6 @@ mod tests {
             serde_json::json!({
                 "name": "Revocable Garden",
                 "remote": env.tonk_web.join("ucan/")?,
-                "template": "blank",
             }),
         )
         .await?;
@@ -2156,15 +2150,13 @@ mod tests {
                                 "description": "A request to create a new space from the wizard form.",
                                 "with": {
                                     "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                                    "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                                    "template": { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                                    "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" }
                                 }
                             }
                         },
                         "parameters": {
                             "name": "Custodied After Assertion",
-                            "remote": env.tonk_web.join("ucan/")?,
-                            "template": "blank"
+                            "remote": env.tonk_web.join("ucan/")?
                         }
                     }
                 }]

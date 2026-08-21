@@ -608,7 +608,7 @@ fn navigate(path: &str) {
 /// No remote is supplied by the page: the worker resolves where the space
 /// syncs from the account's provider registration.
 fn create_space() {
-    let claim = crate::logic::create_space_claim_json("Untitled", "", "");
+    let claim = crate::logic::create_space_claim_json("Untitled", "");
     transact(&claim);
 }
 

@@ -310,7 +310,7 @@ pub async fn post_space(
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let key = create_space_inner(&state, name, request.template.as_deref()).await?;
+    let key = create_space_inner(&state, name).await?;
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     let key = {
@@ -427,32 +427,6 @@ fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) ->
         })
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
-}
-
-/// The create form's template field — which library template the repo
-/// should seed. Read directly from the facts (like the remote), so the
-/// command keeps decoding against an older profile descriptor that lacks
-/// this field.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const TEMPLATE_ATTR: &str = "dom.event.current-target.elements.template/value";
-
-/// The chosen template name, read from the create command's facts.
-/// `None` when absent or blank (an older form, or "build with an agent" /
-/// "start blank" — both map to the lean default).
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn template_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use dialog_artifacts::Value;
-
-    facts
-        .iter()
-        .find(|artifact| artifact.the.to_string() == TEMPLATE_ATTR)
-        .and_then(|artifact| match &artifact.is {
-            Value::String(name) => Some(name.clone()),
-            Value::Entity(uri) => Some(uri.to_string()),
-            _ => None,
-        })
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
 }
 
 /// The default display label for a space created without a user-typed
@@ -644,7 +618,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
         // The optional remote is read from the facts directly (tolerating
         // the URL's `Value::Entity` representation), not via a concept.
         let remote = remote_from_facts(facts);
-        let template = template_from_facts(facts);
         let env = env.clone();
 
         Box::pin(async move {
@@ -678,7 +651,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             //    whether or not a remote was given (and never vanishes on
             //    a remote failure). The create mints a fresh identity and
             //    returns its routing key.
-            let key = match create_space_inner(env.state(), &name, template.as_deref()).await {
+            let key = match create_space_inner(env.state(), &name).await {
                 Ok(key) => key,
                 Err(error) => {
                     log!("CreateSpace '{}' failed: {}", name, error);
@@ -752,7 +725,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
 const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
 
 /// Read the target space DID from a `tonk:invite` transient's facts,
-/// opportunistically — mirrors [`remote_from_facts`]/[`template_from_facts`].
+/// opportunistically — mirrors [`remote_from_facts`].
 ///
 /// `Some` when the FAB's newer profile-dispatched share claim named its
 /// target explicitly (asserted as either a `Value::Entity` DID or a
@@ -2266,11 +2239,7 @@ async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn create_space_inner(
-    state: &AppState,
-    name: &str,
-    template: Option<&str>,
-) -> Result<String, RepositoryError> {
+async fn create_space_inner(state: &AppState, name: &str) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
     let configuration =
@@ -2290,7 +2259,7 @@ async fn create_space_inner(
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
-    seed_and_initialize(state, name, &key, &subject, &branches, template).await?;
+    seed_and_initialize(state, name, &key, &subject, &branches).await?;
     Ok(key)
 }
 
@@ -2394,8 +2363,7 @@ fn spawn_seed(
     branches: Vec<String>,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) =
-            seed_and_initialize(&state, &display_name, &key, &subject, &branches, None).await
+        if let Err(e) = seed_and_initialize(&state, &display_name, &key, &subject, &branches).await
         {
             log!("Background seed for '{}' failed: {}", key, e);
         }
@@ -2486,7 +2454,6 @@ async fn seed_and_initialize(
     key: &str,
     subject: &Did,
     branches: &[String],
-    template: Option<&str>,
 ) -> Result<(), RepositoryError> {
     // The seed can run long after the replica record was asserted (the
     // detached `spawn_seed` path, or just a slow library fetch on the
@@ -2504,31 +2471,24 @@ async fn seed_and_initialize(
     }
 
     if !branches.is_empty() {
-        // Fetch every library document this repo seeds — core, then the
-        // chosen template. Concatenated and evaluated in ONE commit per
-        // branch so the rule engine saturates over the whole document at
-        // once (the name flash fix).
-        let urls = seed_library_urls(template);
-        let mut documents: Vec<String> = Vec::with_capacity(urls.len());
-        for url in &urls {
-            let document = fetch_standard_library(url)
-                .await
-                .map_err(|e| RepositoryError::Internal(format!("fetch '{url}': {e}")))?;
-            documents.push(document);
-        }
+        // The scaffold and the repository's name go in as ONE body, so the
+        // rule engine saturates over the whole document in a single commit
+        // per branch (the name flash fix).
+        let scaffold = fetch_standard_library(STANDARD_LIBRARY_URL)
+            .await
+            .map_err(|e| {
+                RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}"))
+            })?;
 
         let name_body = repository_name_body(subject, display_name)?;
         let tonk = state.read().await;
         for branch_name in branches {
-            let mut body = documents.join("\n");
-            body.push('\n');
-            body.push_str(&name_body);
+            let body = format!("{scaffold}\n{name_body}");
             seed_standard_library(&tonk, key, branch_name, &body)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
             log!(
-                "Seeded {} doc(s) + name on '{}' branch '{}'",
-                urls.len(),
+                "Seeded scaffold + name on '{}' branch '{}'",
                 key,
                 branch_name
             );
@@ -2556,39 +2516,6 @@ async fn seed_and_initialize(
 /// SW-scoped background seed path.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
-
-/// URL of the served sheets-template asset, appended on top of the
-/// scaffold when the `sheets` template is chosen.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const SHEETS_LIBRARY_URL: &str = "/library/sheets.yaml";
-
-/// URL of the served wiki-template asset, appended on top of the
-/// scaffold when the `wiki` template is chosen.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const WIKI_LIBRARY_URL: &str = "/library/wiki.yaml";
-
-/// URL of the served board-template asset, appended on top of the
-/// scaffold when the `board` template is chosen.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const BOARD_LIBRARY_URL: &str = "/library/board.yaml";
-
-/// The ordered list of library documents to concatenate and seed for a
-/// new repo. Core is always first. The `sheets` template appends the
-/// sheets workspace (which overrides the `tonk/space` alias to the
-/// binder); the `wiki` template appends the wiki (tree + block canvas,
-/// same alias override); the `board` template appends the card canvas
-/// (columns of text/checklist/table cards, same alias override). Every
-/// other template value (including `blank`, `agent`, or an unknown one)
-/// is core alone — the lean default that renders the blank canvas.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn seed_library_urls(template: Option<&str>) -> Vec<&'static str> {
-    match template {
-        Some("sheets") => vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL],
-        Some("wiki") => vec![STANDARD_LIBRARY_URL, WIKI_LIBRARY_URL],
-        Some("board") => vec![STANDARD_LIBRARY_URL, BOARD_LIBRARY_URL],
-        _ => vec![STANDARD_LIBRARY_URL],
-    }
-}
 
 /// URL of the lean profile library — only the `space` concept and the
 /// Hub directory view. Seeded onto the profile's meta branch, which
@@ -4457,10 +4384,9 @@ pub async fn attach_remote(
     Ok(Json(info))
 }
 
-/// Seed-split regression tests: the scaffold (`core.yaml`) makes a
-/// repository renderable but seeds zero instances, and a template
-/// (`sheets.yaml`, …) layers its workspace on top, resolving its bare
-/// concept references against the committed scaffold.
+/// Scaffold regression tests: `core.yaml` makes a repository renderable
+/// but seeds zero instances, so a fresh space opens on the blank canvas
+/// and everything else is authored into it afterwards.
 ///
 /// These embed the real assets via `include_str!` and seed them
 /// through [`evaluate_body`] — the same `parse → analyze → commit`
@@ -4522,7 +4448,7 @@ mod space_config_tests {
 /// sides against the seeded document. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod form_attribute_tests {
-    use super::{REMOTE_ATTR, TEMPLATE_ATTR};
+    use super::REMOTE_ATTR;
 
     /// The document the worker seeds onto a profile branch, embedded for
     /// the same reason `tests/standard_library.rs` embeds it: CI runs from
@@ -4531,13 +4457,11 @@ mod form_attribute_tests {
 
     #[test]
     fn it_reads_the_attributes_the_create_form_declares() {
-        for attribute in [REMOTE_ATTR, TEMPLATE_ATTR] {
-            assert!(
-                PROFILE_LIBRARY.contains(attribute),
-                "profile.yaml declares no `the: {attribute}` — the handler \
-                 would read this field as absent on every submit",
-            );
-        }
+        assert!(
+            PROFILE_LIBRARY.contains(REMOTE_ATTR),
+            "profile.yaml declares no `the: {REMOTE_ATTR}` — the handler \
+             would read this field as absent on every submit",
+        );
     }
 }
 
@@ -4622,62 +4546,6 @@ mod remote_from_facts_tests {
             .is("   ".to_string())
             .assert(&mut changes);
         assert!(remote_from_facts(&artifacts(changes)).is_none());
-    }
-}
-
-/// The optional-template reader the create handler uses. Native.
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
-mod template_from_facts_tests {
-    use super::template_from_facts;
-    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement};
-    use dialog_query::the;
-
-    fn artifacts(changes: Changes) -> Vec<Artifact> {
-        changes
-            .into_instructions()
-            .into_iter()
-            .map(|instruction| match instruction {
-                Instruction::Assert(artifact)
-                | Instruction::Replace(artifact)
-                | Instruction::Retract(artifact) => artifact,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn it_reads_the_chosen_template() {
-        let of: Entity = "did:key:zTemplate".parse().expect("entity");
-        let mut changes = Changes::new();
-        the!("dom.event.current-target.elements.template/value")
-            .of(of)
-            .is("sheets".to_string())
-            .assert(&mut changes);
-        assert_eq!(
-            template_from_facts(&artifacts(changes)).as_deref(),
-            Some("sheets"),
-        );
-    }
-
-    #[test]
-    fn it_returns_none_without_a_template_fact() {
-        let of: Entity = "did:key:zNoTemplate".parse().expect("entity");
-        let mut changes = Changes::new();
-        the!("dom.event.current-target.elements.name/value")
-            .of(of)
-            .is("test".to_string())
-            .assert(&mut changes);
-        assert!(template_from_facts(&artifacts(changes)).is_none());
-    }
-
-    #[test]
-    fn it_treats_a_blank_template_as_none() {
-        let of: Entity = "did:key:zBlankTemplate".parse().expect("entity");
-        let mut changes = Changes::new();
-        the!("dom.event.current-target.elements.template/value")
-            .of(of)
-            .is("   ".to_string())
-            .assert(&mut changes);
-        assert!(template_from_facts(&artifacts(changes)).is_none());
     }
 }
 
@@ -4843,48 +4711,6 @@ mod next_untitled_label_tests {
 }
 
 /// The pure library-URL selector. Native.
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
-mod seed_library_urls_tests {
-    use super::seed_library_urls;
-
-    #[test]
-    fn it_seeds_core_only_for_a_blank_repo() {
-        assert_eq!(seed_library_urls(None), vec!["/library/core.yaml"],);
-    }
-
-    #[test]
-    fn it_appends_sheets_for_the_sheets_template() {
-        assert_eq!(
-            seed_library_urls(Some("sheets")),
-            vec!["/library/core.yaml", "/library/sheets.yaml"],
-        );
-    }
-
-    #[test]
-    fn it_appends_wiki_for_the_wiki_template() {
-        assert_eq!(
-            seed_library_urls(Some("wiki")),
-            vec!["/library/core.yaml", "/library/wiki.yaml"],
-        );
-    }
-
-    #[test]
-    fn it_appends_board_for_the_board_template() {
-        assert_eq!(
-            seed_library_urls(Some("board")),
-            vec!["/library/core.yaml", "/library/board.yaml"],
-        );
-    }
-
-    #[test]
-    fn it_seeds_core_for_an_unknown_template() {
-        assert_eq!(
-            seed_library_urls(Some("garden")),
-            vec!["/library/core.yaml"],
-        );
-    }
-}
-
 /// The rename result → outcome mapping. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod rename_outcome_tests {
@@ -5008,7 +4834,6 @@ mod tests {
 
     /// The scaffold notation, embedded at compile time.
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-    const SHEETS: &str = include_str!("../../../tonk-core/assets/library/sheets.yaml");
 
     /// Create a fresh repo and return its router, wrapped state, and
     /// minted routing key. PUTs a branchless `{}` so the worker seeds
@@ -5682,26 +5507,23 @@ mod tests {
         );
     }
 
-    /// Both empty-state canvases keep the pending label only while the invite
+    /// The empty-state canvas keeps the pending label only while the invite
     /// request is unanswered. A refusal resolves the nested model and renders
     /// the explicit local-only notice instead of spinning forever.
     #[dialog_common::test]
     fn it_routes_refused_agent_links_to_the_local_only_notice() {
-        for document in [CORE, SHEETS] {
-            assert!(
-                document.contains("slot=\"no-entity\"")
-                    && document.contains("model=tonk:share/blocked"),
-                "agent-link fallback should query the share refusal",
-            );
-            assert!(
-                !document.contains("agent link &middot; paste into your agent"),
-                "the rendered state should provide its own single label",
-            );
-            assert!(
-                document.contains("tonk-display > [slot][hidden]"),
-                "inactive pending and refusal slots should not survive a ready result",
-            );
-        }
+        assert!(
+            CORE.contains("slot=\"no-entity\"") && CORE.contains("model=tonk:share/blocked"),
+            "agent-link fallback should query the share refusal",
+        );
+        assert!(
+            !CORE.contains("agent link &middot; paste into your agent"),
+            "the rendered state should provide its own single label",
+        );
+        assert!(
+            CORE.contains("tonk-display > [slot][hidden]"),
+            "inactive pending and refusal slots should not survive a ready result",
+        );
         assert!(CORE.contains("local spot &middot; no sync remote"));
         assert!(CORE.contains("Use Share to turn on sync and create an agent link."));
     }

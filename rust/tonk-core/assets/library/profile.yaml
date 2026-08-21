@@ -83,14 +83,13 @@ command!: &space/create
   with:
     name:
       description: >
-        The space name, read from the form's `name` input on submit. The
-        wizard no longer asks for one: a hidden input carries the
-        "Untitled" sentinel, which the worker's CreateSpaceHandler
-        uniquifies against the existing space labels ("Untitled",
-        "Untitled 2", …); the user renames the spot later. The sentinel
-        must be non-empty — the event extractor omits blank fields, and
-        with no `name` fact the transient would never trigger the
-        handler.
+        The space name. There is no form asking for one: the bar's `new`
+        row carries the "Untitled" sentinel, which the worker's
+        CreateSpaceHandler uniquifies against the existing space labels
+        ("Untitled", "Untitled 2", …), and the user renames the space in
+        place on arrival. The sentinel must be non-empty — the event
+        extractor omits blank fields, and with no `name` fact the
+        transient would never trigger the handler.
       the: dom.event.current-target.elements.name/value
       as: text
     remote:
@@ -118,17 +117,6 @@ command!: &space/create
         segment after the control name is a JS property, so any other
         leaf reads `undefined` and aborts the whole command on submit.
       the: dom.event.current-target.elements.revocation/value
-      as: text
-    template:
-      description: >
-        Which template to seed: "wiki" for linked pages, "sheets" for
-        the tabbed workspace, "board" for the card canvas, or
-        blank/absent for the lean default (the blank canvas). Read from
-        the wizard's `template` control on submit, exactly as `name`
-        and `remote` are. The worker's CreateSpaceHandler reads it via
-        template_from_facts; an older form that omits it decodes as
-        blank.
-      the: dom.event.current-target.elements.template/value
       as: text
     prevent-default:
       description: Stop the form submission from reloading the page
@@ -252,26 +240,19 @@ view/directory!:
            for the fill: the wireframe hardcodes this specific lime here. */
         .spot-badge { font-family: var(--spot-font-ui); font-weight: 600; font-size: 19px;
           line-height: 1.1; padding: 3px 11px; color: var(--wa-color-brand-on-loud); background: #DEFF1A; }
-        /* Nav/trigger buttons ("+ new spot", close, back) are themed chrome
-           INSIDE a driving <label>: the label toggles the wizard's paging
-           radio via its `for`. The wa-button MUST NOT swallow the click (its
-           shadow <button> would capture it and the radio would never toggle),
-           so it is `pointer-events: none` and the label alone is interactive.
-           Hover feedback is driven off the LABEL's :hover onto the button's
-           base part, since the button can't receive :hover itself. */
+        /* "+ new spot" is a real submit button in its own form, so it keeps
+           its own pointer events; the styling below only makes it read as
+           plain ink text rather than a filled control. */
         .spot-account { display: inline-flex; align-items: center; min-height: 44px;
           color: var(--wa-color-text-normal); font-size: 18px; text-decoration: none; }
         .spot-account:hover { color: var(--wa-color-brand-on-quiet); }
-        .spot-new, .onb-nav { cursor: pointer; }
-        .spot-new wa-button, .onb-nav wa-button { pointer-events: none; }
+        .spot-new { cursor: pointer; }
         /* "+ new spot" reads as plain ink text at the wireframe size (18px);
            on hover the ink lifts to the brand accent (matching the wireframe's
            "+ new spot" affordance). */
         .spot-new wa-button { font-size: 18px; }
-        .spot-new wa-button::part(base),
-        .onb-nav wa-button::part(base) { color: var(--wa-color-text-normal); font-weight: 400; }
-        .spot-new:hover wa-button::part(base),
-        .onb-nav:hover wa-button::part(base) { color: var(--wa-color-brand-on-quiet); }
+        .spot-new wa-button::part(base) { color: var(--wa-color-text-normal); font-weight: 400; }
+        .spot-new:hover wa-button::part(base) { color: var(--wa-color-brand-on-quiet); }
         /* list — vertically centered */
         .spot-list { flex: 1; display: flex; flex-direction: column; justify-content: center;
           gap: 0; max-width: 880px; width: 100%; margin: 0 auto; padding: 30px 0; }
@@ -337,179 +318,37 @@ view/directory!:
         .srm-cancel { cursor: pointer; }
         .srm-cancel wa-button { pointer-events: none; }
 
-        /* ── Create-spot wizard ─────────────────────────────────────────────
-           A CSS-paged wizard driven by native radios (the guest WA bundle
-           registers no <wa-radio-group>, so the radios stay native but every
-           surface is a Web Awesome component or WA-token-styled). One radio
-           group toggles the overlay: wiz-closed (default) hides it; wiz-start
-           opens it at the start screen; wiz-tmpl/wiz-agent page within it. The
-           overlay is a full-screen sheet over the launcher. */
+        /* The hidden radios driving the remove-confirm overlays. Native
+           radios because the guest's Web Awesome bundle registers no
+           <wa-radio-group>; positioned out of the way rather than
+           `display:none`, which would take them out of the form. */
         .spot-wiz { position: absolute; opacity: 0; pointer-events: none; }
-        .spot-overlay { display: none; position: fixed; inset: 0; z-index: 50;
-          background: var(--wa-color-surface-default); color: var(--wa-color-text-normal); }
-        #wiz-start:checked ~ .spot-overlay,
-        #wiz-tmpl:checked ~ .spot-overlay,
-        #wiz-agent:checked ~ .spot-overlay { display: block; }
-        /* chooser paging: the wiz radios (siblings of .spot-overlay) switch screens */
-        .onb-screen { display: none; position: absolute; inset: 0; flex-direction: column;
-          align-items: center; justify-content: center; gap: 34px; padding: 60px 40px; }
-        #wiz-start:checked ~ .spot-overlay .onb-screen--start { display: flex; }
-        #wiz-tmpl:checked ~ .spot-overlay .onb-screen--details,
-        #wiz-agent:checked ~ .spot-overlay .onb-screen--details { display: flex; }
-        .onb-tpl { display: none; }
-        .onb-nav { position: absolute; top: 16px; }
-        .onb-nav--close { right: 20px; }
-        .onb-nav--back { left: 20px; }
-        .onb-head { text-align: center; max-width: 560px; }
-        .onb-head h3 { font-family: var(--spot-font-display); font-weight: 300; font-size: 38px;
-          letter-spacing: -1.3px; margin: 0 0 12px; color: var(--wa-color-text-normal);
-          /* opt out of the global heading "headline-cover" dark box */
-          background: none; padding: 0; display: block; }
+        /* Body copy inside the remove confirm. */
         .onb-lede { font-size: 16px; line-height: 1.5; color: var(--wa-color-text-quiet); margin: 0; }
-        /* Start-screen choices + template grid are Web Awesome cards wrapped
-           in a <label> so a click toggles the driving radio. The card carries
-           the surface/border/hover; the label only forwards the click. */
-        .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,280px)); gap: 18px; }
-        /* The template picker: a grid of card <label>s (2x2 at four
-           templates), shown once the template path is chosen. */
-        .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,280px));
-          gap: 18px; justify-content: center; }
-        #wiz-tmpl:checked ~ .spot-overlay .onb-grid { display: grid; }
-        /* Screen-1 choice cards: a <label> wrapping a wa-card. The wa-card owns
-           the surface/border; the label forwards the click to the paging radio. */
-        /* Brutalist card hover (from the wireframe): a hard, un-blurred offset
-           drop-shadow plus a 1px nudge up-left, so the card reads as physically
-           lifting off the page. The shadow colour is the theme's own text ink
-           (`--wa-color-text-normal`) mixed down to a low alpha — so it's dark on
-           the light surface and light on the dark surface automatically, the
-           same lift in both modes, with no hard-coded rgb. Matches the
-           wireframe's `6px 6px 0 rgba(0,0,0,.14)` in light mode. */
-        .spot { --onb-lift-shadow: 6px 6px 0
-          color-mix(in srgb, var(--wa-color-text-normal) 15%, transparent); }
-        .onb-card, .onb-tcard {
-          transition: transform .12s ease, box-shadow .12s ease;
-        }
-        .onb-tcard:hover {
-          transform: translate(-1px, -1px);
-          box-shadow: var(--onb-lift-shadow);
-        }
-        /* The <label> wrapper hugs the wa-card (block, full height), so the
-           brutalist lift shadow rides on the LABEL itself — the global
-           `wa-card { box-shadow: none }` reset would otherwise swallow a shadow
-           set on the card. */
-        .onb-card { display: block; cursor: pointer; }
-        .onb-card wa-card { height: 100%; display: block; }
-        .onb-card wa-card::part(body) { display: flex; flex-direction: column; gap: 8px; }
-        .onb-card:hover {
-          transform: translate(-1px, -1px);
-          box-shadow: var(--onb-lift-shadow);
-        }
-        /* Template card: a bordered box laid out as a column. Hover lifts it
-           (shared brutalist shadow above); the CHECKED radio paints its card
-           with the brand lime (fill + border + dark ink) so the selected
-           template is unmistakable — clearly distinct from the hover lift. */
-        .onb-tcard { display: flex; flex-direction: column; gap: 8px; cursor: pointer;
-          padding: var(--wa-space-l); text-align: left;
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          background: var(--wa-color-surface-default); }
-        /* Selected template: mostly just a brand-coloured border, with only the
-           faintest brand wash behind it (a low-alpha mix, not the solid
-           `brand-fill-quiet`, which read too green — especially in dark mode).
-           Reads as "chosen" without a loud fill. The radios sit just before
-           .onb-grid inside the details screen, so the checked one reaches its
-           card via the general-sibling combinator into the grid. */
-        #tpl-wiki:checked   ~ .onb-grid .onb-tcard[data-for="tpl-wiki"],
-        #tpl-sheets:checked ~ .onb-grid .onb-tcard[data-for="tpl-sheets"],
-        #tpl-board:checked  ~ .onb-grid .onb-tcard[data-for="tpl-board"],
-        #tpl-blank:checked  ~ .onb-grid .onb-tcard[data-for="tpl-blank"] {
-          border-color: var(--wa-color-brand-fill-loud);
-          box-shadow: inset 0 0 0 1px var(--wa-color-brand-fill-loud);
-          background: color-mix(in srgb, var(--wa-color-brand-fill-loud) 8%, var(--wa-color-surface-default));
-        }
-        .onb-card__name { font-family: var(--spot-font-display); font-weight: 400; font-size: 22px;
-          letter-spacing: -.4px; color: var(--wa-color-text-normal); }
-        .onb-card__desc { font-size: 13.5px; line-height: 1.45; color: var(--wa-color-text-quiet); }
-        .onb-card__cta { font-family: var(--spot-font-mono); font-size: 12.5px;
-          color: var(--wa-color-text-quiet); margin-top: 4px; }
-        .onb-card:hover .onb-card__cta { color: var(--wa-color-brand-on-quiet); }
-        /* Illustrative art blocks (schematic previews). All strokes/fills come
-           from neutral/brand tokens so they invert with the theme. */
-        .onb-art { height: 78px; margin-bottom: 6px; display: flex; align-items: center;
-          justify-content: center; gap: 12px; overflow: hidden;
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
-        /* Both schematic-art backgrounds are quiet neutral surfaces — the loud
-           brand tint read as distracting here. The template one is a touch
-           lowered so the two choices still differ subtly. */
-        .onb-art--tmpl { background: var(--wa-color-surface-lowered); }
-        .onb-art--agent { background: var(--wa-color-neutral-fill-quiet); }
-        .onb-swatch { width: 30px; height: 46px; background: var(--wa-color-surface-default);
-          border: var(--wa-border-width-s) solid var(--wa-color-text-normal); }
-        .onb-lines { display: flex; flex-direction: column; gap: 7px; width: 96px; }
-        .onb-lines i { height: 6px; background: var(--wa-color-text-normal); opacity: .5; display: block; }
-        .onb-lines i:last-child { width: 62%; }
-        .onb-prompt { display: flex; flex-direction: column; gap: 7px; width: 150px; padding: 0 8px; }
-        .onb-prompt i { height: 6px; background: var(--wa-color-text-normal); opacity: .7; display: block; }
-        .onb-prompt i:nth-child(2) { width: 88%; } .onb-prompt i:nth-child(3) { width: 72%; }
-        .onb-prompt i:last-child { width: 40%; opacity: .4; }
-        .tmpl__art { height: 96px; margin-bottom: 6px; display: flex; align-items: center;
-          justify-content: center; overflow: hidden;
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          background: var(--wa-color-surface-lowered); }
-        .tmpl__art--wiki { align-items: flex-start; flex-direction: column; gap: 8px; padding: 18px 20px; }
-        .tmpl__art--wiki .title { width: 112px; height: 14px; background: var(--wa-color-text-normal);
-          display: block; margin-bottom: 2px; }
-        .tmpl__art--wiki i { height: 7px; background: var(--wa-color-neutral-fill-normal); display: block; width: 100%; }
-        .tmpl__art--wiki i:nth-of-type(4) { width: 72%; }
-        .tmpl__art--board { align-items: flex-start; gap: 10px; padding: 16px 18px; }
-        .tmpl__art--board .col { flex: 1; display: flex; flex-direction: column; gap: 7px; }
-        .tmpl__art--board .col i { display: block; width: 100%; height: 12px;
-          background: var(--wa-color-neutral-fill-normal); }
-        .tmpl__art--board .col i.tall { height: 30px; }
-        .tmpl__art--sheets { padding: 20px 22px; }
-        .tmpl__art--sheets .grid { width: 100%; height: 54px; display: block;
-          background:
-            linear-gradient(var(--wa-color-neutral-fill-normal) 1.5px, transparent 1.5px) 0 0 / 100% 18px,
-            linear-gradient(90deg, transparent calc(33.333% - .75px), var(--wa-color-neutral-fill-normal) calc(33.333% - .75px), var(--wa-color-neutral-fill-normal) calc(33.333% + .75px), transparent calc(33.333% + .75px), transparent calc(66.666% - .75px), var(--wa-color-neutral-fill-normal) calc(66.666% - .75px), var(--wa-color-neutral-fill-normal) calc(66.666% + .75px), transparent calc(66.666% + .75px));
-          border-bottom: var(--wa-border-width-s) solid var(--wa-color-neutral-fill-normal); }
-        .onb-agent-note { display: none; text-align: center; }
-        #wiz-agent:checked ~ .spot-overlay .onb-agent-note { display: block; }
-        /* Details-screen heading follows the chosen path (same trick as the
-           note/grid above). `.onb-head .onb-h` (0,2,0) so the hide out-ranks
-           the `.onb-head h3 { display: block }` headline-cover opt-out above;
-           the checked-radio reveals carry an id and out-rank both. */
-        .onb-head .onb-h { display: none; }
-        #wiz-tmpl:checked ~ .spot-overlay .onb-h--tmpl { display: block; }
-        #wiz-agent:checked ~ .spot-overlay .onb-h--agent { display: block; }
-        .onb-fields { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 620px; }
-        /* The submit shouldn't span the whole column — shrink it to its
-           content (the flex column would otherwise stretch it) with a
-           floor for a comfortable hit target. */
-        .onb-fields wa-button { align-self: center; min-width: 220px; }
       </style>
-
-      <!-- wizard state radio group: closed by default; each open state is a
-           distinct screen so "New spot" (→ wiz-start) always resets to start -->
-      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-closed" checked>
-      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-start">
-      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-tmpl">
-      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-agent">
 
       <header class="spot-top">
         <div class="spot-brand">
           <span class="spot-logo">tonk</span>
           <span class="spot-badge">spot</span>
         </div>
-        <!-- The <label> drives the wiz-start radio; the wa-button is styled
-             chrome inside it (pointer-events flow to the label). Neutral+plain
-             so it reads as plain ink text ("+ new spot"), matching the
-             wireframe — not the brand lime, which read as a small green pill. -->
+        <!-- Creating a spot asks nothing up front: it starts "Untitled"
+             (the worker uniquifies the sentinel) and is renamed in place
+             once you are inside it. The hidden inputs carry the sync
+             remote and its revocation relay, filled on connect by
+             <tonk-default-remote auto> — without them the worker would
+             still create the spot, silently local-only. -->
         <div class="spot-actions">
           <a class="spot-account" href="/account">account</a>
-          <label class="spot-new" for="wiz-start">
-            <wa-button variant="neutral" appearance="plain">
+          <form class="spot-new" onsubmit=space/create>
+            <input type="hidden" name="name" value="Untitled">
+            <input type="hidden" name="remote" value="">
+            <input type="hidden" name="revocation" value="">
+            <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
+            <wa-button type="submit" variant="neutral" appearance="plain">
               <wa-icon slot="start" name="plus"></wa-icon>new spot
             </wa-button>
-          </label>
+          </form>
         </div>
       </header>
 
@@ -561,113 +400,6 @@ view/directory!:
         </div>
       </div>
 
-      <div class="spot-overlay">
-        <form class="onb-overlay-body" onsubmit=space/create data-close-radio="wiz-closed">
-          <!-- No name up front: the hidden sentinel becomes "Untitled" /
-               "Untitled 2" (worker-uniquified); the user renames later.
-               Must be non-empty or the extractor omits the field and the
-               command never fires. -->
-          <input type="hidden" name="name" value="Untitled">
-          <input type="hidden" name="remote" value="">
-          <input type="hidden" name="revocation" value="">
-          <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
-
-          <!-- Screen 1: start chooser (navigation only, no submit) -->
-          <div class="onb-screen onb-screen--start">
-            <label class="onb-nav onb-nav--close" for="wiz-closed">
-              <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
-            </label>
-            <div class="onb-head">
-              <h3>How do you want to start?</h3>
-              <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
-            </div>
-            <div class="onb-choices">
-              <label class="onb-card" for="wiz-tmpl">
-                <wa-card appearance="outlined">
-                  <div class="onb-art onb-art--tmpl">
-                    <div class="onb-swatch"></div>
-                    <div class="onb-lines"><i></i><i></i><i></i></div>
-                  </div>
-                  <div class="onb-card__name">From a template</div>
-                  <div class="onb-card__desc">Seed the view with a ready-made layout.</div>
-                  <div class="onb-card__cta">choose a template &rsaquo;</div>
-                </wa-card>
-              </label>
-              <label class="onb-card" for="wiz-agent">
-                <wa-card appearance="outlined">
-                  <div class="onb-art onb-art--agent">
-                    <div class="onb-prompt"><i></i><i></i><i></i><i></i></div>
-                  </div>
-                  <div class="onb-card__name">Build with an agent</div>
-                  <div class="onb-card__desc">Start blank; hand the spot to an agent from inside it.</div>
-                  <div class="onb-card__cta">start blank &rsaquo;</div>
-                </wa-card>
-              </label>
-            </div>
-          </div>
-
-          <!-- Screen 2: details — the only submit. Template picker
-               (template path) or agent note (agent path); no name field —
-               the spot starts "Untitled" and is renamed in place. The
-               heading follows the path via the same checked-radio sibling
-               selectors that page the screens. -->
-          <div class="onb-screen onb-screen--details">
-            <label class="onb-nav onb-nav--back" for="wiz-start">
-              <wa-button variant="neutral" appearance="plain" size="small">
-                <wa-icon slot="start" name="angle-left"></wa-icon>back
-              </wa-button>
-            </label>
-            <label class="onb-nav onb-nav--close" for="wiz-closed">
-              <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
-            </label>
-            <div class="onb-head">
-              <h3 class="onb-h onb-h--tmpl">Pick a template</h3>
-              <h3 class="onb-h onb-h--agent">Build with an agent</h3>
-            </div>
-            <!-- Template picker. Native radios drive a 3-up grid of card
-                 <label>s (reliable side-by-side layout, matching the
-                 wireframe); the checked radio paints its card with the brand
-                 lime so the selection is unmistakable. The radios feed the form
-                 as `template`; blank is the default. -->
-            <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
-            <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
-            <input class="onb-tpl" type="radio" name="template" value="wiki" id="tpl-wiki">
-            <input class="onb-tpl" type="radio" name="template" value="board" id="tpl-board">
-            <div class="onb-grid">
-              <label class="onb-tcard" data-for="tpl-wiki" for="tpl-wiki">
-                <div class="tmpl__art tmpl__art--wiki">
-                  <span class="title"></span><i></i><i></i><i></i><i></i>
-                </div>
-                <div class="onb-card__name">Wiki</div>
-                <div class="onb-card__desc">Linked pages of editable blocks, with comments.</div>
-              </label>
-              <label class="onb-tcard" data-for="tpl-sheets" for="tpl-sheets">
-                <div class="tmpl__art tmpl__art--sheets"><span class="grid"></span></div>
-                <div class="onb-card__name">Sheets</div>
-                <div class="onb-card__desc">A tabbed workspace of artifacts.</div>
-              </label>
-              <label class="onb-tcard" data-for="tpl-board" for="tpl-board">
-                <div class="tmpl__art tmpl__art--board">
-                  <div class="col"><i class="tall"></i><i></i></div>
-                  <div class="col"><i></i><i></i><i></i></div>
-                  <div class="col"><i></i><i class="tall"></i></div>
-                </div>
-                <div class="onb-card__name">Board</div>
-                <div class="onb-card__desc">Columns of text, checklist and table cards on a pannable canvas.</div>
-              </label>
-              <label class="onb-tcard" data-for="tpl-blank" for="tpl-blank">
-                <div class="onb-card__name">Blank</div>
-                <div class="onb-card__desc">An empty canvas to build by hand or with an agent.</div>
-              </label>
-            </div>
-            <p class="onb-agent-note onb-lede">An agent will build this spot from a blank canvas.</p>
-            <div class="onb-fields">
-              <wa-button type="submit" variant="brand">Create spot</wa-button>
-            </div>
-          </div>
-        </form>
-
-      </div>
     </div>
 
 # ============================================================

@@ -30,16 +30,6 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
-/// The sheets template — seeded on top of core when chosen. Must lower
-/// self-contained (it re-declares the core concepts it references).
-const SHEETS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/sheets.yaml");
-
-/// The wiki template — seeded on top of core when chosen, like sheets.
-const WIKI_LIBRARY: &str = include_str!("../../tonk-core/assets/library/wiki.yaml");
-
-/// The board template — seeded on top of core when chosen, like sheets.
-const BOARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/board.yaml");
-
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
 fn assert_library_lowers(label: &str, document: &str) {
@@ -137,9 +127,6 @@ fn kebab_to_camel(segment: &str) -> String {
 fn it_reads_form_controls_at_properties_they_have() {
     assert_form_reads_resolve("standard library (core.yaml)", STANDARD_LIBRARY);
     assert_form_reads_resolve("profile library (profile.yaml)", PROFILE_LIBRARY);
-    assert_form_reads_resolve("sheets template (sheets.yaml)", SHEETS_LIBRARY);
-    assert_form_reads_resolve("wiki template (wiki.yaml)", WIKI_LIBRARY);
-    assert_form_reads_resolve("board template (board.yaml)", BOARD_LIBRARY);
 }
 
 #[test]
@@ -155,71 +142,9 @@ fn it_leaves_network_bearing_space_bindings_unquoted() {
 }
 
 #[test]
-fn it_lowers_core_concatenated_with_the_sheets_template() {
-    // The worker never seeds sheets.yaml alone: for the `sheets`
-    // template it concatenates core.yaml ahead of it into ONE document
-    // and evaluates the whole thing in a single commit. The template
-    // therefore relies on the concepts core declares (tonk:view,
-    // tonk:view/directory, tonk:replica) and must not redeclare them —
-    // duplicate anchors are rejected within a document. Analyze the
-    // same concatenation the seed builds so that collision is caught
-    // here rather than at first launch.
-    let seeded = format!("{STANDARD_LIBRARY}\n{SHEETS_LIBRARY}");
-    assert_library_lowers("core.yaml + sheets.yaml (sheets template)", &seeded);
-}
-
-#[test]
-fn it_lowers_core_concatenated_with_the_wiki_template() {
-    // Same single-document seed as sheets: core.yaml is concatenated
-    // ahead of wiki.yaml, so the template must reuse core's concepts
-    // (tonk:view, tonk:view/directory, tonk:replica, `component`)
-    // without redeclaring their anchors.
-    let seeded = format!("{STANDARD_LIBRARY}\n{WIKI_LIBRARY}");
-    assert_library_lowers("core.yaml + wiki.yaml (wiki template)", &seeded);
-}
-
-#[test]
-fn it_lowers_core_concatenated_with_the_board_template() {
-    // Same single-document seed as sheets and wiki: core.yaml is
-    // concatenated ahead of board.yaml, so the template must reuse
-    // core's concepts (tonk:view, tonk:view/directory, tonk:replica,
-    // `component`) without redeclaring their anchors.
-    let seeded = format!("{STANDARD_LIBRARY}\n{BOARD_LIBRARY}");
-    assert_library_lowers("core.yaml + board.yaml (board template)", &seeded);
-}
-
-#[test]
-fn it_overrides_the_space_alias_to_the_wiki_in_wiki() {
-    assert!(
-        WIKI_LIBRARY.contains("entity: tonk:wiki"),
-        "wiki.yaml must override tonk/space -> tonk:wiki",
-    );
-}
-
-#[test]
-fn it_overrides_the_space_alias_to_the_board_in_board() {
-    assert!(
-        BOARD_LIBRARY.contains("entity: tonk:board/canvas"),
-        "board.yaml must override tonk/space -> tonk:board/canvas",
-    );
-}
-
-#[test]
 fn it_defaults_the_space_alias_to_blank_in_core() {
     assert!(
         STANDARD_LIBRARY.contains("entity: tonk:blank"),
         "core.yaml must seed the default tonk/space -> tonk:blank alias",
-    );
-    assert!(
-        !STANDARD_LIBRARY.contains("model: tonk:sheet"),
-        "core.yaml must not carry the sheets workspace after the split",
-    );
-}
-
-#[test]
-fn it_overrides_the_space_alias_to_binder_in_sheets() {
-    assert!(
-        SHEETS_LIBRARY.contains("entity: tonk:binder"),
-        "sheets.yaml must override tonk/space -> tonk:binder",
     );
 }
