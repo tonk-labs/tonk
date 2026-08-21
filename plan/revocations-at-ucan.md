@@ -298,7 +298,17 @@ The first row is what forces the value to be a set of DIDs. Keyed by delegation 
 | KV read fails during validation | 503 `Unavailable`, not a denial |
 | Revocation of a delegation that has expired | Accepted, and evictable |
 
-## 5. Open questions
+## 5. Testing the KV path
+
+`KvRevocationIndex` is covered by its trait's shared behaviour through `MemoryRevocationIndex`, and by integration tests against a deployed binding. The KV code itself — the bulk get, the cursor loop, the threshold — is not exercised by `cargo test`.
+
+That is a structural limit rather than a choice we made badly. `env.kv()` only yields a `KvStore` inside a real Worker, and `KvStore` is a thin wasm-bindgen wrapper over JS objects, so it cannot be constructed or mocked from native test code. `wasm-bindgen-test` cannot reach workerd either ([rustwasm/wasm-bindgen#3891](https://github.com/rustwasm/wasm-bindgen/issues/3891), open since March 2024 with none of its roadmap implemented), and no Rust equivalent of miniflare exists.
+
+The trait with a native twin is what the ecosystem converges on for exactly this reason, and it is already how this crate handles D1 (`D1Store` / `SqliteStore`).
+
+> The one thing beyond it that is actually used: workers-rs tests its own KV by compiling the worker to wasm, loading it into Miniflare, and driving it from a TypeScript vitest suite (`test/tests/kv.spec.ts`). That would give real coverage of the real path, but it is a Node test suite living outside Cargo. Worth doing deliberately at some point — D1 has the same gap today — rather than as a side effect of this work.
+
+## 6. Open questions
 
 1. ~~Concurrent writes.~~ Settled: key-per-pair, so there is no shared value to lose. See §2.2.
 2. **Is the `path` witness required or optional?** The spec makes it MAY, and names exactly the reason to require it:
@@ -314,7 +324,7 @@ The first row is what forces the value to be a set of DIDs. Keyed by delegation 
 6. **Fail-open or fail-closed on a store outage.** Keep "revoked" and "could not check" distinct: a KV read error is `Unavailable` (503, the service's own fault, unbilled) rather than a denial. Storacha conflates the two and has an acknowledged TODO about it, which is worth not copying.
 7. **Eviction.** The spec permits dropping a revocation once its target expires, plus clock skew. Worth doing to bound the per-subject set, but it needs the target's `exp`, which means either storing it alongside or re-reading the delegation. Defer until the set is big enough to matter.
 
-## 6. Sequencing
+## 7. Sequencing
 
 This unblocks the rest:
 
