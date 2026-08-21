@@ -415,7 +415,7 @@ rule!:
     Ok(())
 }
 
-/// The whole `tonk migrate --legacy` command, credentials included.
+/// The whole `tonk migrate space` command, credentials included.
 ///
 /// The test above drives the pieces directly; this one runs the command a
 /// person would run, against a fixture that has an account attached. That
@@ -519,15 +519,15 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     // `space new` below refuses outright with "A Tonk account is required".
     // That refusal is why the account step has to lead.
     let migrated_account = Command::new(env!("CARGO_BIN_EXE_tonk"))
-        .args(["account", "migrate"])
+        .args(["migrate", "account"])
         .current_dir(&work)
         .env("HOME", &home)
         .env("DO_NOT_TRACK", "1")
         .output()
-        .context("running tonk account migrate failed")?;
+        .context("running tonk migrate account failed")?;
     if !migrated_account.status.success() {
         bail!(
-            "tonk account migrate failed: {}",
+            "tonk migrate account failed: {}",
             String::from_utf8_lossy(&migrated_account.stderr)
         );
     }
@@ -568,7 +568,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
         );
     }
     let output = Command::new(env!("CARGO_BIN_EXE_tonk"))
-        .args(["migrate", "--legacy", "--site", "linked"])
+        .args(["migrate", "space", "linked"])
         .current_dir(&work)
         .env("HOME", &home)
         .env("DO_NOT_TRACK", "1")
@@ -578,7 +578,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),
-        "tonk migrate --legacy failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "tonk migrate space failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     // Credentials first: the run must say so, and it must say so before it

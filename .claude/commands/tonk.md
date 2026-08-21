@@ -99,5 +99,5 @@ tonk spot new <name> --site <path>  # adopt an existing .tonk directory as a spo
 tonk spot list                    # registered spots, with the resolved current
 tonk space use <name>                   # set the global current spot
 tonk identity                     # show the local profile DID
-tonk migrate                      # convert a .carry/ site to .tonk/
+tonk migrate carry                # convert a .carry/ site to .tonk/
 ```

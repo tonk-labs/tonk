@@ -419,57 +419,14 @@ enum Command {
         branch: String,
     },
 
-    /// Migrate a .carry/ directory to .tonk/
+    /// One-time conversions: carry directories, spaces, delegations
     ///
-    /// Walks up from `$PWD` to find the source unless `--from` is
-    /// supplied; the destination is always a sibling `.tonk/` of
-    /// the source. Hidden from the command list: a one-time
-    /// converter for pre-tonk carry sites.
-    #[command(
-        hide = true,
-        after_help = "Examples:\n  tonk migrate\n  tonk migrate --from ../old --move"
-    )]
+    /// Hidden from the command list. Each subcommand is run once, from
+    /// written instructions, and then never again.
+    #[command(hide = true)]
     Migrate {
-        /// Explicit source `.carry/` directory. Default: walk up
-        /// from `$PWD`.
-        #[arg(long, value_name = "PATH")]
-        from: Option<PathBuf>,
-
-        /// Move instead of copy. Atomic rename on the same
-        /// filesystem; copy + delete fallback otherwise.
-        #[arg(long = "move")]
-        do_move: bool,
-
-        /// Upgrade a space written before the dialog format change.
-        ///
-        /// Downloads the last build that can read it, exports each
-        /// branch, rewrites the schema namespace, and imports the
-        /// result here. Unrelated to the `.carry/` move above.
-        ///
-        /// Scheduled for removal once one stable release has carried
-        /// it: only a handful of spaces predate the format change, and
-        /// this is the one path that still drives a build spelling
-        /// `spot`. Upgrade them before it goes — see
-        /// plan/cli-consistency.md.
-        #[arg(long, conflicts_with_all = ["from", "do_move"])]
-        legacy: bool,
-
-        /// Name of the registered legacy space to upgrade. Required with
-        /// `--legacy`.
-        ///
-        /// A name rather than a path: the build that reads it resolves
-        /// spaces through the registry, so one that is not registered
-        /// cannot be exported by it at all.
-        #[arg(long, value_name = "NAME", requires = "legacy")]
-        site: Option<String>,
-
-        /// Branches to upgrade. Repeatable; defaults to `main`.
-        ///
-        /// Branches are not discoverable on a legacy space — listing them
-        /// needs an open branch, which is what fails — so any beyond
-        /// `main` must be named.
-        #[arg(long, value_name = "NAME", requires = "legacy")]
-        branch: Vec<String>,
+        #[command(subcommand)]
+        command: MigrateCommand,
     },
 
     /// Show or toggle anonymous usage telemetry
@@ -589,14 +546,6 @@ enum AccountCommand {
         #[command(subcommand)]
         command: Option<AccountSpacesCommand>,
     },
-
-    /// Move stored delegations into their durable homes
-    ///
-    /// Drains the legacy certificate store into the profile's access branch
-    /// and retains each space's authority into the account space, so another
-    /// device regains access by pulling the account. Safe to re-run.
-    #[command(after_help = "Examples:\n  tonk account migrate")]
-    Migrate,
 
     /// List the devices linked to this profile's account
     #[command(after_help = "Examples:\n  tonk account devices\n  tonk account devices --json")]
@@ -832,6 +781,77 @@ enum SpaceCommand {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
+}
+
+/// The one-time conversions.
+///
+/// Three operations shared the name `migrate` and nothing else: a
+/// pre-tonk directory move, a pre-dialog-format space upgrade, and a
+/// delegation-store drain. Two of them lived on one command, the second
+/// bolted onto the first as `--legacy` with `conflicts_with_all` and two
+/// more flags gated on `requires = "legacy"` — a subcommand wearing a
+/// flag's clothes, whose own doc comment had to say it was unrelated to
+/// the command it was attached to. Naming each for what it converts is
+/// what the flags were approximating.
+#[derive(Subcommand, Debug)]
+enum MigrateCommand {
+    /// Move a pre-tonk .carry/ directory to .tonk/
+    ///
+    /// Walks up from `$PWD` to find the source unless `--from` is
+    /// supplied; the destination is always a sibling `.tonk/` of
+    /// the source.
+    #[command(
+        after_help = "Examples:\n  tonk migrate carry\n  tonk migrate carry --from ../old --move"
+    )]
+    Carry {
+        /// Explicit source `.carry/` directory. Default: walk up
+        /// from `$PWD`.
+        #[arg(long, value_name = "PATH")]
+        from: Option<PathBuf>,
+
+        /// Move instead of copy. Atomic rename on the same
+        /// filesystem; copy + delete fallback otherwise.
+        #[arg(long = "move")]
+        do_move: bool,
+    },
+
+    /// Upgrade a space written before the dialog format change
+    ///
+    /// Downloads the last build that can read it, exports each branch,
+    /// rewrites the schema namespace, and imports the result here.
+    ///
+    /// Scheduled for removal once one release has carried a working
+    /// copy: only a handful of spaces predate the format change, and
+    /// this is the one path that still drives a build spelling `spot`.
+    /// Upgrade them before it goes — see plan/cli-consistency.md.
+    #[command(
+        after_help = "Examples:\n  tonk migrate space garden\n  tonk migrate space garden --branch main --branch notes"
+    )]
+    Space {
+        /// Name of the registered legacy space to upgrade.
+        ///
+        /// A name rather than a path: the build that reads it resolves
+        /// spaces through the registry, so one that is not registered
+        /// cannot be exported by it at all.
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Branches to upgrade. Repeatable; defaults to `main`.
+        ///
+        /// Branches are not discoverable on a legacy space — listing them
+        /// needs an open branch, which is what fails — so any beyond
+        /// `main` must be named.
+        #[arg(long, value_name = "NAME")]
+        branch: Vec<String>,
+    },
+
+    /// Move stored delegations into their durable homes
+    ///
+    /// Drains the legacy certificate store into the profile's access branch
+    /// and retains each space's authority into the account space, so another
+    /// device regains access by pulling the account. Safe to re-run.
+    #[command(after_help = "Examples:\n  tonk migrate account")]
+    Account,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1092,7 +1112,6 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                     Some(AccountSpacesCommand::Pull { .. }) => "spaces-pull",
                     Some(AccountSpacesCommand::Delete { .. }) => "spaces-delete",
                 },
-                AccountCommand::Migrate => "migrate",
                 AccountCommand::Sync => "sync",
                 AccountCommand::Devices { .. } => "devices",
                 AccountCommand::Revoke { .. } => "revoke",
@@ -1104,7 +1123,14 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Query { .. } => ("query", None),
         Command::Assert { .. } => ("assert", None),
         Command::Retract { .. } => ("retract", None),
-        Command::Migrate { .. } => ("migrate", None),
+        Command::Migrate { command } => (
+            "migrate",
+            Some(match command {
+                MigrateCommand::Carry { .. } => "carry",
+                MigrateCommand::Space { .. } => "space",
+                MigrateCommand::Account => "account",
+            }),
+        ),
         Command::Export { .. } => ("export", None),
         Command::Render { .. } => ("render", None),
         Command::Import { .. } => ("import", None),
@@ -1262,19 +1288,13 @@ async fn main() {
             field,
             write,
         } => retract_op(concept, entity, field, write, space.as_deref()).await,
-        Command::Migrate {
-            from,
-            do_move,
-            legacy,
-            site,
-            branch,
-        } => {
-            if legacy {
-                legacy_migrate(site, branch, space.as_deref()).await
-            } else {
-                migrate(from, do_move).await
+        Command::Migrate { command } => match command {
+            MigrateCommand::Carry { from, do_move } => migrate(from, do_move).await,
+            MigrateCommand::Space { name, branch } => {
+                legacy_migrate(name, branch, space.as_deref()).await
             }
-        }
+            MigrateCommand::Account => migrate_account().await,
+        },
         Command::Export { out, branch } => export_op(out, &branch, space.as_deref()).await,
         Command::Render { route, out } => render_op(route, out, space.as_deref()).await,
         Command::Import { file, branch } => import_op(file, &branch, space.as_deref()).await,
@@ -1790,31 +1810,6 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
-        AccountCommand::Migrate => {
-            match tonk_cli::account_state::migrate_delegations_here().await {
-                Ok(outcome) => {
-                    println!(
-                        "migrated {} certificate{} into access facts",
-                        outcome.certificates,
-                        if outcome.certificates == 1 { "" } else { "s" }
-                    );
-                    println!(
-                        "retained {} space{} into the account space ({} already there)",
-                        outcome.spaces,
-                        if outcome.spaces == 1 { "" } else { "s" },
-                        outcome.already
-                    );
-                    if outcome.account_legacy {
-                        eprintln!(
-                            "warning: the account repository is still in the legacy format; \
-                             certificate migration completed, but space retention was skipped"
-                        );
-                    }
-                    ExitCode::Success
-                }
-                Err(error) => print_failure(error),
-            }
-        }
         AccountCommand::Logout => match account::logout_in(&profile, &store).await {
             Ok(()) => {
                 // The spaces themselves keep their account tag: logging out
@@ -2551,16 +2546,7 @@ async fn sync_op(op: SyncOp, space: Option<&str>) -> ExitCode {
 /// import the result into the active space. Reports per branch rather than
 /// as one number, because branches migrate separately and a partial result
 /// should say which parts landed.
-async fn legacy_migrate(
-    site: Option<String>,
-    branches: Vec<String>,
-    space: Option<&str>,
-) -> ExitCode {
-    let Some(site) = site else {
-        return print_failure(anyhow::anyhow!(
-            "--legacy needs --site <NAME>, the registered space to upgrade"
-        ));
-    };
+async fn legacy_migrate(site: String, branches: Vec<String>, space: Option<&str>) -> ExitCode {
     let branches = if branches.is_empty() {
         vec![tonk_cli::site::BRANCH_NAME.to_owned()]
     } else {
@@ -3335,6 +3321,33 @@ fn print_claim_outcome(
     println!("next: tonk context");
 }
 
+/// `tonk migrate account` — drain the legacy certificate store.
+async fn migrate_account() -> ExitCode {
+    match tonk_cli::account_state::migrate_delegations_here().await {
+        Ok(outcome) => {
+            println!(
+                "migrated {} certificate{} into access facts",
+                outcome.certificates,
+                if outcome.certificates == 1 { "" } else { "s" }
+            );
+            println!(
+                "retained {} space{} into the account space ({} already there)",
+                outcome.spaces,
+                if outcome.spaces == 1 { "" } else { "s" },
+                outcome.already
+            );
+            if outcome.account_legacy {
+                eprintln!(
+                    "warning: the account repository is still in the legacy format; \
+                     certificate migration completed, but space retention was skipped"
+                );
+            }
+            ExitCode::Success
+        }
+        Err(error) => print_failure(error),
+    }
+}
+
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
@@ -3949,6 +3962,50 @@ mod account_spaces_parser_tests {
         assert!(Cli::try_parse_from(["tonk", "account", "add", "--label", "work"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "account", "use", "work"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "account", "list"]).is_err());
+    }
+
+    #[test]
+    fn each_migration_is_named_for_what_it_converts() {
+        let cli = Cli::try_parse_from(["tonk", "migrate", "carry", "--move"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Migrate {
+                command: MigrateCommand::Carry {
+                    from: None,
+                    do_move: true
+                }
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["tonk", "migrate", "space", "garden", "--branch", "notes"])
+            .unwrap();
+        let Some(Command::Migrate {
+            command: MigrateCommand::Space { name, branch },
+        }) = cli.command
+        else {
+            panic!("expected migrate space");
+        };
+        assert_eq!(name, "garden");
+        assert_eq!(branch, vec!["notes".to_string()]);
+
+        assert!(matches!(
+            Cli::try_parse_from(["tonk", "migrate", "account"])
+                .unwrap()
+                .command,
+            Some(Command::Migrate {
+                command: MigrateCommand::Account
+            })
+        ));
+
+        // The space upgrade named its target with `--site` and gated two more
+        // flags on `requires = "legacy"`. A positional on its own subcommand
+        // is what those were approximating, so the flag spellings are gone.
+        assert!(Cli::try_parse_from(["tonk", "migrate", "--legacy", "--site", "garden"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "migrate", "--from", "../old"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "account", "migrate"]).is_err());
+
+        // Bare `tonk migrate` names no conversion, so it cannot pick one.
+        assert!(Cli::try_parse_from(["tonk", "migrate"]).is_err());
     }
 
     #[test]

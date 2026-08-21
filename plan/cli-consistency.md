@@ -166,16 +166,19 @@ tonk migrate space <name> [--branch <name>]   # pre-dialog-upgrade space
 tonk migrate account                          # certificate store -> access facts
 ```
 
-`tonk migrate` with no subcommand lists the three and what each is for. The
-existing spellings stay as hidden aliases; all three are one-time operations
-whose users are following written instructions, so the aliases can be dropped
-after a release.
+`tonk migrate` with no subcommand names no conversion, so clap's help lists
+the three rather than picking one.
 
-`migrate space` is temporary either way — item 4b deletes it. If 4b lands
-first, this item is a two-way split and simpler for it.
+No aliases for the old spellings. `--legacy`/`--site`/`--branch` cannot become
+one anyway — a flag set is not a subcommand — and all three are one-time
+operations run from written instructions, which is the case where a loud
+failure costs least and a silent wrong default costs most.
 
-**Cost.** Breaking for `tonk migrate --legacy`, which is only ever run from
-the upgrade instructions. `tonk account migrate` keeps working as an alias.
+`migrate space` is temporary either way: item 4b deletes it once a release
+carries a working copy.
+
+**Cost.** Breaking for `tonk migrate --legacy`, `tonk migrate --from`, and
+`tonk account migrate`. All three fail loudly.
 
 ## 4b. Delete the pre-dialog-upgrade migration
 

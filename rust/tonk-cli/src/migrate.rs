@@ -1,4 +1,4 @@
-//! `tonk migrate` — copy a `.carry/` directory into `.tonk/`.
+//! `tonk migrate carry` — copy a `.carry/` directory into `.tonk/`.
 //!
 //! Carry and tonk share the same on-disk layout (a single
 //! dialog repository named `main`, two branches, identity in the

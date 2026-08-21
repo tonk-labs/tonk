@@ -383,10 +383,10 @@ pub fn is_legacy_format(error: &str) -> bool {
 pub const LEGACY_FORMAT_REMEDY: &str = "\
 this space was written by an older tonk and cannot be opened by this one.
 
-Upgrade it with `tonk migrate --legacy`, which installs the last compatible
-build, exports the data, and imports it here. That command is scheduled for
-removal once a stable release has carried it, so upgrade before then — see
-plan/cli-consistency.md.";
+Upgrade it with `tonk migrate space <name>`, which installs the last
+compatible build, exports the data, and imports it here. That command is
+scheduled for removal once a release has carried a working copy, so upgrade
+before then — see plan/cli-consistency.md.";
 
 #[cfg(test)]
 mod tests {
