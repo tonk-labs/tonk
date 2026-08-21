@@ -173,6 +173,8 @@ tonk migrate space <name> [--branch <name>]   # pre-dialog-upgrade space
 tonk migrate account                          # certificate store -> access facts
 ```
 
+*`migrate space` landed and was then removed by item 4b, leaving two.*
+
 `tonk migrate` with no subcommand names no conversion, so clap's help lists
 the three rather than picking one.
 
@@ -194,6 +196,10 @@ old build spelled `spot`. It downloads `v0.6.7`, hands it a `spots.json` in a
 throwaway directory, drives `export` through it with `--spot`, and imports the
 result. Only a handful of spaces ever predated the dialog format change, and
 they are believed migrated.
+
+**Done** on `refactor/cli-drop-legacy-migration`, stacked on the branch that
+provides the working migration. The gating condition below is why it is
+stacked rather than folded in: it must not merge before its base.
 
 **Gating condition: a staging release carrying a *working* migration.**
 Stable is not required — the spaces that needed this are believed migrated
@@ -388,9 +394,10 @@ Landed on `feat/cli-simplify`, in this order:
 
 Not landed:
 
-- **Item 4b** (delete the legacy migration) — gated on a staging release
-  carrying a *working* copy, which means publishing this branch first. See
-  the item for why the published one does not work.
+- **Item 4b** (delete the legacy migration) — written, on
+  `refactor/cli-drop-legacy-migration`, stacked on `feat/cli-simplify`. It
+  must not merge before its base: that base is what makes a published
+  migration work at all. See the item.
 
 The two open questions are answered in their items: `context` stays offline
 and reports `not-fetched`; `tonk query --json` keeps its `EvaluateResponse`.
