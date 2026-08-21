@@ -858,9 +858,16 @@ enum MigrateCommand {
 enum BlobCommand {
     /// Ingest a file and print its blob:<hash> reference
     ///
-    /// Asserts content-type (and file name) facts.
+    /// Asserts content-type (and file name) facts. Like every other
+    /// write verb, pulls before and pushes after when an upstream is
+    /// configured.
+    ///
+    /// `--dry-run` reports the type, size, and name that would be
+    /// asserted, and no `blob:<hash>`: the hash is a property of the
+    /// imported bytes, so producing one would mean importing them and
+    /// then declining to commit the metadata that finds them again.
     #[command(
-        after_help = "Examples:\n  tonk blob add photo.png\n  tonk blob add data.bin --type application/octet-stream"
+        after_help = "Examples:\n  tonk blob add photo.png\n  tonk blob add data.bin --type application/octet-stream\n  tonk blob add photo.png --dry-run"
     )]
     Add {
         /// File to ingest.
@@ -869,6 +876,8 @@ enum BlobCommand {
         /// Override the MIME type (default: inferred from extension).
         #[arg(long = "type", value_name = "MIME")]
         content_type: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
     },
     /// Write a blob's bytes to stdout
     #[command(after_help = "Examples:\n  tonk blob cat blob:zAbc...")]
@@ -2988,10 +2997,25 @@ async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
     };
 
     match command {
-        BlobCommand::Add { file, content_type } => {
-            match blob::add(&site, &file, content_type).await {
+        BlobCommand::Add {
+            file,
+            content_type,
+            write,
+        } => {
+            if write.dry_run {
+                return match blob::plan(&file, content_type).await {
+                    Ok(plan) => {
+                        print_blob_add_plan(&plan, write.quiet);
+                        ExitCode::Success
+                    }
+                    Err(err) => print_coded(err),
+                };
+            }
+            let sync = auto_sync::enabled(write.no_sync);
+            match auto_sync::around_commit(&site, sync, blob::add(&site, &file, content_type)).await
+            {
                 Ok(outcome) => {
-                    print_blob_add_outcome(&outcome);
+                    print_blob_add_outcome(&outcome, write.quiet);
                     ExitCode::Success
                 }
                 Err(err) => print_coded(err),
@@ -3030,12 +3054,28 @@ fn print_blob_ls(rows: &[blob::LsRow]) {
     println!("{}", listing.render());
 }
 
-fn print_blob_add_outcome(outcome: &BlobAddOutcome) {
+fn print_blob_add_outcome(outcome: &BlobAddOutcome, quiet: bool) {
     println!("{}", outcome.entity.as_str());
-    eprintln!(
-        "  content-type: {}, size: {} bytes",
-        outcome.content_type, outcome.size
-    );
+    if !quiet {
+        eprintln!(
+            "  content-type: {}, size: {} bytes",
+            outcome.content_type, outcome.size
+        );
+    }
+}
+
+/// Report a `--dry-run` add on stderr, leaving stdout empty.
+///
+/// Stdout carries the `blob:<hash>` reference on a real add, and a dry
+/// run has none to give — printing anything there would hand a pipeline
+/// a value that does not name a stored blob.
+fn print_blob_add_plan(plan: &blob::AddPlan, quiet: bool) {
+    if !quiet {
+        eprintln!(
+            "would add {} ({}, {} bytes); nothing written",
+            plan.name, plan.content_type, plan.size
+        );
+    }
 }
 
 fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {

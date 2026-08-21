@@ -258,6 +258,17 @@ metadata transaction, so a dry run must skip the import too, not just the
 commit — otherwise it writes to the blob store while claiming to write
 nothing.
 
+That constraint decides the output. Skipping the import means there is no
+hash, because the hash *is* the imported bytes — so a dry run reports type,
+size, and name on stderr and leaves stdout empty rather than printing a
+`blob:<hash>` that names nothing stored. It is a separate `blob::plan`
+function rather than a flag threaded through `add`, so the type makes the
+absence of a reference structural instead of a runtime promise.
+
+`auto_sync` also grows `around_commit`, the sync wrapper for any committing
+write. `run_eval` had this sequence inlined for the one write path that
+always had it.
+
 **Cost.** Behavioural. A `blob add` in a synced space starts pushing.
 
 ## 6. Two JSON envelope conventions

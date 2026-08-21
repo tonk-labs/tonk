@@ -75,6 +75,34 @@ pub async fn run_eval(
     Ok(outcome)
 }
 
+/// Sync around any committing write, not just an eval.
+///
+/// [`run_eval`] wraps the one write path that had this from the start.
+/// `blob add` commits its metadata transaction the same way and wants the
+/// same wrapping, so the pull / push / record-in-the-account-directory
+/// sequence lives here rather than being copied.
+///
+/// `write` is a future rather than a closure so it can borrow `site`
+/// alongside the pull that precedes it; it is created before the pull but
+/// only polled after it, so the write still sees the pulled branch.
+pub async fn around_commit<T, E>(
+    site: &TonkSite,
+    sync: bool,
+    write: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    if sync {
+        pull_before(site).await;
+    }
+    let outcome = write.await?;
+    if sync {
+        push_after(site).await;
+    }
+    if let Err(error) = crate::account_spaces::record_current(site).await {
+        eprintln!("warning: account directory update failed: {error:#}");
+    }
+    Ok(outcome)
+}
+
 /// Pull the upstream into the local branch before a write. A
 /// missing upstream is a silent skip; any other failure is a
 /// warning — the command proceeds either way.
