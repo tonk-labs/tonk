@@ -154,9 +154,21 @@ light-DOM and are slotted, exactly as `fabb.js` slots `<tonk-menu>`.
    - **No keyboard lift.** The bar seats bottom-right on a phone, which is
      where the keyboard goes. Ported from the reference's `_initLift`.
 
-9. **Next** — `profile.yaml`: drop the `template` field from `space/create`,
-   and the Hub itself.
-10. **Then** — the templates teardown (its own commit; see Decisions).
+9. **Done** — the templates teardown (`949aebb10`). Libraries, Trunk rules,
+   `template_from_facts`, `seed_library_urls`, the field on `space/create` /
+   `CreateSpaceRequest` / `PendingIntent`, and the Hub's create wizard, which
+   is now a direct submit. A space always seeds `core.yaml` alone.
+
+   `PendingIntent` is persisted across an account round trip, so an intent
+   parked before this still carries `template`; serde ignores unknown fields,
+   and the wire-shape test keeps sending it to prove the upgrade is safe.
+
+10. **Next** — the Hub itself: `profile.yaml`'s `view/directory!:
+    id:tonk:space/directory`, conformed to `hub.html`. Scope is the hub page
+    only (masthead, hubbar, the 432px spaces stack with hover verbs, the
+    remove-confirm cluster); the settings overlay, account stack and usage
+    banner stay out. Tokens are settled — reuse the bar's, which `hub.html`
+    restates verbatim.
 
 ## Knowingly not conformant
 
