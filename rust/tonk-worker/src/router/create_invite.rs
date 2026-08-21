@@ -195,6 +195,8 @@ pub async fn create_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
 
+    retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
+
     let url_str = invite
         .to_url(base_url.as_str())
         .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
@@ -236,6 +238,67 @@ pub async fn create_invite(
         },
     };
     Ok(Json(response))
+}
+
+/// Retain an invite's delegation chain, plus the profile-to-account union,
+/// into the repository's content branch.
+///
+/// Retaining is what makes the invite revocable: it decomposes every
+/// certificate on the chain into `dialog.ucan/*` facts and an envelope blob,
+/// which is what a later [`prove`] search walks to rebuild the exact path
+/// through the invite hop. A chain that is only serialized into a URL leaves
+/// nothing on the branch, so revocation has nothing to find.
+///
+/// The union edge (`profile -> account`) rides along because the branch is a
+/// shared, synced surface: without it a second device of the same account can
+/// walk only as far as this device's profile key and stops, so the minting
+/// device would be the only one that could ever revoke. It is subject-open,
+/// so retaining it once per mint is content-addressed and free after the
+/// first.
+///
+/// Best effort on the union half only: a profile with no account root has no
+/// union to mint, and that must not fail a mint that is otherwise complete.
+///
+/// [`prove`]: dialog_repository::Delegations::prove
+pub(super) async fn retain_invite_authority(
+    tonk: &crate::TonkState,
+    repo_name: &str,
+    chain: &dialog_ucan_core::DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    // The reactor's cached handle, for the same stale-head reason the
+    // invitation transaction above routes through it.
+    let session = tonk
+        .reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to open '{repo_name}' content branch: {e}"))
+        })?;
+
+    let mut chains = vec![UcanDelegation(chain.clone())];
+    match super::identity::local_root(tonk).await {
+        Ok(root) => {
+            let signer = tonk.profile.signer().signer().clone();
+            match tonk_account::delegations::mint_account_union(&signer, &root.root_did).await {
+                Ok(union) => chains.push(UcanDelegation(union)),
+                Err(e) => log!("invite union edge was not minted: {e}"),
+            }
+        }
+        Err(e) => log!("no account root on this profile, minting invite without a union: {e}"),
+    }
+
+    session
+        .handle()
+        .delegations()
+        .retain_all(chains)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to retain the invite delegation: {e}"))
+        })?;
+    Ok(())
 }
 
 /// Shorten a minted invite URL via the shortcut service on its own

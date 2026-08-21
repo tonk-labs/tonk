@@ -1149,6 +1149,8 @@ async fn run_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
 
+    super::create_invite::retain_invite_authority(&tonk, repo_name, &chain).await?;
+
     log!("Minted invitation for repo '{}'", repo_name);
     Ok(())
 }
@@ -3967,8 +3969,6 @@ where
                     subject: Term::from(repository.did().this()),
                     inviter: Term::var("inviter"),
                     audience: Term::var("audience"),
-                    target_cid: Term::var("target_cid"),
-                    path_hex: Term::var("path_hex"),
                 })
                 .perform(&tonk.operator)
                 .try_vec()
