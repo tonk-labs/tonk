@@ -1002,6 +1002,16 @@ fn read_link_field(row: &JsValue) -> Option<String> {
 /// stylesheet owns the appearance.
 fn set_state(host: &HtmlElement, state: ShareState) {
     let _ = host.set_attribute("data-share-state", state.as_str());
+    // The row the user actually sees is a sibling in the bar's share stack —
+    // this element is headless there. Stamp the state onto it too so the row
+    // can answer in place ("copy link" → "copying…" → "copied"), which is the
+    // same word-answers grammar the Hub's rows use. Absent (a fixture, or the
+    // element used standalone) this simply finds nothing.
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten()
+        && let Ok(Some(row)) = bar.query_selector("[data-share-link]")
+    {
+        let _ = row.set_attribute("data-share-state", state.as_str());
+    }
 }
 
 fn read_state(host: &HtmlElement) -> ShareState {
@@ -1393,12 +1403,15 @@ mod tests {
             .create_element("tonk-fab")
             .expect("create host")
             .unchecked_into();
-        host.set_inner_html(&crate::markup::fab_html("did:key:zShareFixture"));
+        let _ = host.set_attribute("space", "did:key:zShareFixture");
         document
             .body()
             .expect("body")
             .append_child(&host)
             .expect("mount");
+        // The refusal prompts are mounted on <body> by the bar, not authored
+        // inside it — see `element::mount_refusal_dialogs`.
+        crate::element::mount_refusal_dialogs();
         host
     }
 

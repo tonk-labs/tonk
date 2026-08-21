@@ -99,7 +99,7 @@ async fn it_dispatches_a_subscribe_carrying_the_raw_attribute_query() {
     let cb = Closure::<dyn FnMut(CustomEvent)>::new(move |ev: CustomEvent| {
         let detail = ev.detail();
         let json = js_sys::JSON::stringify(&detail)
-            .map(|s| String::from(s))
+            .map(String::from)
             .unwrap_or_default();
         *sink.borrow_mut() = Some(json);
     });

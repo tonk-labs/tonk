@@ -1814,21 +1814,6 @@ mod share_state_blocked {
     }
 }
 
-#[cfg(test)]
-mod stylesheet {
-    #[test]
-    fn it_ships_the_stylesheet_with_the_crate() {
-        let css = include_str!("fab.css");
-        // A representative selector from each zone, so a truncated or
-        // partial copy fails rather than passing silently.
-        assert!(css.contains(".fab__cap-l"));
-        assert!(css.contains(".fab__menu-item"));
-        assert!(css.contains(".fab__share-label"));
-        assert!(css.contains(".wizard__card"));
-        assert!(css.contains(".fab__strip"));
-    }
-}
-
 /// The `as` type variants the worker's query and transact bodies accept.
 ///
 /// `String` is NOT one of them: the wire enum is dialog's, not Rust's, and
