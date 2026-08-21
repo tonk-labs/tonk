@@ -1064,7 +1064,14 @@ mod when_listing_views {
         let test = common::TestSite::new().await?;
         test.eval_inline(common::ATTRIBUTE_DECL).await?;
         test.eval_inline(common::CONCEPT_DECL).await?;
-        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "task",
+            None,
+            "<b>{title}</b>",
+            Default::default(),
+        )
+        .await?;
 
         let listed = views::list(&test.site).await?;
         let row = listed
@@ -1086,7 +1093,14 @@ mod when_listing_views {
 
         test.eval_inline(common::ATTRIBUTE_DECL).await?;
         test.eval_inline(common::CONCEPT_DECL).await?;
-        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "task",
+            None,
+            "<b>{title}</b>",
+            Default::default(),
+        )
+        .await?;
 
         let listed = views::list(&test.site).await?;
         assert!(

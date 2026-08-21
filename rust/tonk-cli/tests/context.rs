@@ -79,7 +79,9 @@ async fn it_emits_a_versioned_complete_contract() -> Result<()> {
 async fn it_exposes_claim_backed_agent_context_with_source_revision() -> Result<()> {
     let test = TestSite::new().await?;
     let expected = "# Space context\n\n1. Run `tonk query task --json`.\n";
-    let claim = agents::set(&test.site, expected, false).await?;
+    let claim = agents::set(&test.site, expected, Default::default())
+        .await?
+        .expect("committed");
     let resolved = Resolved {
         name: "bench".to_string(),
         site: test.site.root.clone(),

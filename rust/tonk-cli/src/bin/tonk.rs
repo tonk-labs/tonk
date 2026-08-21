@@ -158,6 +158,8 @@ enum Command {
         /// Concept name(s) to surface, in order.
         #[arg(value_name = "CONCEPT", required = true)]
         models: Vec<String>,
+        #[command(flatten)]
+        write: WriteArgs,
     },
 
     // -- data ---------------------------------------------------------
@@ -236,6 +238,8 @@ enum Command {
         /// Retract just this field instead of the whole instance.
         #[arg(long)]
         field: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
     },
 
     // -- power --------------------------------------------------------
@@ -501,9 +505,8 @@ enum AgentsCommand {
         /// Markdown file to assert, or `-` for stdin.
         #[arg(value_name = "PATH", default_value = "AGENTS.md")]
         path: PathBuf,
-        /// Skip automatic pull-before and push-after.
-        #[arg(long)]
-        no_sync: bool,
+        #[command(flatten)]
+        write: WriteArgs,
     },
 }
 
@@ -852,6 +855,8 @@ enum ConceptCommand {
         /// Human description for the concept.
         #[arg(long, value_name = "TEXT")]
         description: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
     },
 
     /// List the concepts this space defines
@@ -892,6 +897,8 @@ enum ViewCommand {
         /// Anchor name for the view (default: <concept>-view).
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
     },
 
     /// List renderable entities (those carrying a template claim)
@@ -903,6 +910,42 @@ enum ViewCommand {
     /// views are omitted.
     #[command(after_help = "Examples:\n  tonk view ls")]
     Ls,
+}
+
+/// The switches every write verb takes, matching `tonk eval`'s.
+///
+/// Flattened rather than repeated so the three stay spelled, defaulted, and
+/// documented identically wherever they appear. `tonk assert` is the one
+/// write verb that cannot use this: everything after `<CONCEPT>` reaches it
+/// raw, so its copies are built by `data_ops::flags`.
+#[derive(Args, Debug, Default, Clone, Copy)]
+struct WriteArgs {
+    /// Analyze, query, and plan the write, then drop the transaction
+    /// instead of committing. The branch is left untouched. Implies
+    /// `--no-sync`: a preview never touches the remote.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+
+    /// Skip the automatic pull-before / push-after that wraps a
+    /// committing write when an upstream is configured. The manual
+    /// `tonk pull` / `tonk push` flow stays available. Also settable via
+    /// the `TONK_NO_SYNC` environment variable.
+    #[arg(long = "no-sync")]
+    no_sync: bool,
+
+    /// Print the envelope without the matched rows.
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
+}
+
+impl From<WriteArgs> for tonk_cli::data_ops::WriteOptions {
+    fn from(args: WriteArgs) -> Self {
+        Self {
+            dry_run: args.dry_run,
+            no_sync: args.no_sync,
+            quiet: args.quiet,
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -1172,7 +1215,8 @@ async fn main() {
             concept,
             entity,
             field,
-        } => retract_op(concept, entity, field, space.as_deref()).await,
+            write,
+        } => retract_op(concept, entity, field, write, space.as_deref()).await,
         Command::Migrate {
             from,
             do_move,
@@ -1214,7 +1258,7 @@ async fn main() {
         Command::Blob { command } => blob_op(command, space.as_deref()).await,
         Command::Concept { command } => concept_op(command, space.as_deref()).await,
         Command::View { command } => view_op(command, space.as_deref()).await,
-        Command::Home { models } => home_op(models, space.as_deref()).await,
+        Command::Home { models, write } => home_op(models, write, space.as_deref()).await,
         Command::Telemetry { action } => telemetry_op(action),
         Command::Update {
             disable_check,
@@ -1337,7 +1381,7 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, space: Option<&st
             }
             ExitCode::Success
         }
-        Some(AgentsCommand::Set { path, no_sync }) => {
+        Some(AgentsCommand::Set { path, write }) => {
             if json {
                 return print_error("`--json` reads a claim and cannot be combined with `set`");
             }
@@ -1355,11 +1399,17 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, space: Option<&st
                     }
                 }
             };
-            match agents::set(&site, &markdown, auto_sync::enabled(no_sync)).await {
-                Ok(claim) => {
+            match agents::set(&site, &markdown, write.into()).await {
+                Ok(Some(claim)) => {
                     println!(
                         "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk agents --json",
                         claim.source, claim.attribute, claim.entity, claim.revision
+                    );
+                    ExitCode::Success
+                }
+                Ok(None) => {
+                    println!(
+                        "dry run — nothing committed\nwould have asserted the AGENTS.md claim"
                     );
                     ExitCode::Success
                 }
@@ -3226,6 +3276,7 @@ async fn retract_op(
     concept: String,
     entity: String,
     field: Option<String>,
+    write: WriteArgs,
     space: Option<&str>,
 ) -> ExitCode {
     let (_, site) = match open_selected(space).await {
@@ -3233,7 +3284,7 @@ async fn retract_op(
         Err(code) => return code,
     };
 
-    match data_ops::retract(&site, &concept, &entity, field.as_deref()).await {
+    match data_ops::retract(&site, &concept, &entity, field.as_deref(), write.into()).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -3260,19 +3311,24 @@ async fn concept_op(command: ConceptCommand, space: Option<&str>) -> ExitCode {
             name,
             attrs,
             description,
-        } => match data_ops::concept_add(&site, &name, &attrs, description.as_deref()).await {
-            Ok(text) => {
-                let mut stdout = std::io::stdout().lock();
-                if let Err(e) = stdout.write_all(text.as_bytes()) {
-                    return print_error(format!("failed to write stdout: {e}"));
+            write,
+        } => {
+            match data_ops::concept_add(&site, &name, &attrs, description.as_deref(), write.into())
+                .await
+            {
+                Ok(text) => {
+                    let mut stdout = std::io::stdout().lock();
+                    if let Err(e) = stdout.write_all(text.as_bytes()) {
+                        return print_error(format!("failed to write stdout: {e}"));
+                    }
+                    ExitCode::Success
                 }
-                ExitCode::Success
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
             }
-            Err(err) => {
-                eprintln!("error: {err}");
-                err.exit_code()
-            }
-        },
+        }
         ConceptCommand::Ls => list_concepts_op(&site).await,
     }
 }
@@ -3294,6 +3350,7 @@ async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
             template,
             template_file,
             name,
+            write,
         } => {
             let template = match (template, template_file) {
                 (Some(inline), _) => inline,
@@ -3312,7 +3369,8 @@ async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
                     );
                 }
             };
-            match data_ops::view_add(&site, &model, name.as_deref(), &template).await {
+            match data_ops::view_add(&site, &model, name.as_deref(), &template, write.into()).await
+            {
                 Ok(text) => {
                     let mut stdout = std::io::stdout().lock();
                     if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -3332,13 +3390,13 @@ async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
 
 /// Put one or more concepts' directories on the space home, as
 /// rendered by [`data_ops::home`].
-async fn home_op(models: Vec<String>, space: Option<&str>) -> ExitCode {
+async fn home_op(models: Vec<String>, write: WriteArgs, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
-    match data_ops::home(&site, &models).await {
+    match data_ops::home(&site, &models, write.into()).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {

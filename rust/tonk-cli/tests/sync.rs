@@ -158,7 +158,9 @@ mod when_asserting_with_an_upstream {
         wire_sibling_upstream(&test).await?;
         let expected = "# Shared space context\n";
 
-        let stored = agents::set(&test.site, expected, true).await?;
+        let stored = agents::set(&test.site, expected, Default::default())
+            .await?
+            .expect("committed");
         let upstream = test
             .site
             .repository

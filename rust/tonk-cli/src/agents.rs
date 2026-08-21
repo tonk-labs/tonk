@@ -120,7 +120,16 @@ pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpaceAgents>>
 /// Assert Markdown on the repository subject, defining the schema first so the
 /// command also works for spaces created before `tonk/agents` entered the
 /// standard library.
-pub async fn set(site: &TonkSite, markdown: &str, sync: bool) -> Result<SpaceAgents> {
+///
+/// `None` means the write was a dry run: the document was analyzed and
+/// dropped, so there is no claim to read back. Reading one anyway would
+/// report whatever was already on the branch as though this call had
+/// written it.
+pub async fn set(
+    site: &TonkSite,
+    markdown: &str,
+    write: crate::data_ops::WriteOptions,
+) -> Result<Option<SpaceAgents>> {
     if markdown.trim().is_empty() {
         bail!("AGENTS.md is empty");
     }
@@ -145,10 +154,14 @@ tonk/agents!:
   markdown: {encoded}
 "#
     );
-    auto_sync::run_eval(site, Source::Inline(doc), Options::default(), sync)
+    let outcome = auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync())
         .await
         .context("assert space AGENTS.md claim")?;
+    if !outcome.committed {
+        return Ok(None);
+    }
     get_declared(site)
         .await?
+        .map(Some)
         .ok_or_else(|| anyhow!("AGENTS.md write committed but no claim was readable"))
 }
