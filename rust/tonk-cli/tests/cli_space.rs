@@ -1510,8 +1510,22 @@ mod when_reading {
             let out = run(state.path(), &args, &[("TONK_SPACE", "demo")]);
             assert!(out.status.success(), "{args:?} failed: {}", stderr_of(&out));
             let stdout = stdout_of(&out);
-            serde_json::from_str::<serde_json::Value>(&stdout)
+            let document: serde_json::Value = serde_json::from_str(&stdout)
                 .unwrap_or_else(|e| panic!("{args:?} did not emit JSON ({e}):\n{stdout}"));
+
+            // One envelope for every read. `tonk query` is the exception
+            // and says so: it emits an EvaluateResponse, the same shape
+            // `tonk eval --format json` emits, which is a transaction
+            // envelope rather than a listing.
+            if args[0] != "query" {
+                let version = document["schemaVersion"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{args:?} carries no schemaVersion:\n{stdout}"));
+                assert!(
+                    version.starts_with("tonk.") && version.contains(".v"),
+                    "{args:?} schemaVersion {version:?} is not tonk.<command>.v<n>"
+                );
+            }
         }
 
         // Separate state: registering a remote wires the upstream, which
@@ -1525,8 +1539,12 @@ mod when_reading {
         );
         assert!(out.status.success(), "{}", stderr_of(&out));
         let stdout = stdout_of(&out);
-        let rows: serde_json::Value = serde_json::from_str(&stdout)
+        let document: serde_json::Value = serde_json::from_str(&stdout)
             .unwrap_or_else(|e| panic!("remote list --json ({e}):\n{stdout}"));
-        assert_eq!(rows[0]["name"], "origin", "{stdout}");
+        assert_eq!(document["schemaVersion"], "tonk.remote-list.v1", "{stdout}");
+        assert_eq!(document["rows"][0]["name"], "origin", "{stdout}");
+        // The version used to be repeated on every row, saying something
+        // true of the whole response once per element.
+        assert!(document["rows"][0]["version"].is_null(), "{stdout}");
     }
 }

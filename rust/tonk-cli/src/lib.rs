@@ -98,6 +98,36 @@ impl ExitCode {
     }
 }
 
+/// The envelope every `--json` listing carries.
+///
+/// There used to be two conventions. `tonk context --json` carried a
+/// top-level string `schemaVersion`; every listing emitted a bare array
+/// whose rows each repeated a numeric `version: 1`. Both were versioned
+/// and neither could be recognised from the other, and the per-row form
+/// spent a field on every row to say something true of the whole
+/// response.
+///
+/// One shape, named for the command that produced it, so a reader can
+/// tell what it is holding from the document alone.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rows<T> {
+    /// `tonk.<command>.v<n>`.
+    pub schema_version: &'static str,
+    /// The listed rows, empty rather than absent when there are none.
+    pub rows: Vec<T>,
+}
+
+impl<T> Rows<T> {
+    /// Wrap `rows` in the envelope for `schema_version`.
+    pub fn new(schema_version: &'static str, rows: Vec<T>) -> Self {
+        Self {
+            schema_version,
+            rows,
+        }
+    }
+}
+
 /// An error that knows which [`ExitCode`] it should produce.
 ///
 /// One trait rather than an inherent method per error enum, so the binary

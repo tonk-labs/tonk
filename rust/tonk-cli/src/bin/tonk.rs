@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use tonk_cli::Coded;
+use tonk_cli::Rows;
 use tonk_cli::auto_sync;
 use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
 use tonk_cli::context::SpaceContext;
@@ -1624,65 +1625,36 @@ async fn print_customer_line(
 /// a discriminant to find out.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AccountStatusV1 {
-    version: u8,
-    signed_in: bool,
-    account: Option<String>,
-    device: String,
-    account_service: Option<String>,
-    /// Hydration state of the account repository; `None` when signed out.
-    account_state: Option<String>,
+struct AccountStatusReport {
+    schema_version: &'static str,
+    /// Flattened rather than nested: this command's whole subject is the
+    /// account, so a `account.signedIn` path would only repeat the name of
+    /// the command. Inside `tonk context` the same section is nested,
+    /// where it sits beside `space` and `sync` and the name distinguishes.
+    #[serde(flatten)]
+    account: context::AccountContext,
     /// Access-service registration, or `None` when it could not be read.
+    /// Beyond the shared section: only this command reads it.
     access_service: Option<String>,
 }
 
-/// The same facts [`render_account_status`] and [`print_customer_line`]
+const ACCOUNT_STATUS_SCHEMA_VERSION: &str = "tonk.account-status.v1";
+
+/// The same facts the account section and [`print_customer_line`]
 /// print, as one structured record.
 async fn account_status_json(
     profile: &dialog_operator::Profile,
     store: &tonk_cli::space::SpaceStore,
     status: &account::AccountStatus,
-) -> AccountStatusV1 {
+) -> AccountStatusReport {
     let access_service = match status {
         account::AccountStatus::Registered { .. } => customer_state(profile, store).await,
         _ => None,
     };
-    match status {
-        account::AccountStatus::MissingRoot { device_did } => AccountStatusV1 {
-            version: 1,
-            signed_in: false,
-            account: None,
-            device: device_did.clone(),
-            account_service: None,
-            account_state: None,
-            access_service,
-        },
-        account::AccountStatus::Unregistered {
-            root_did,
-            device_did,
-        } => AccountStatusV1 {
-            version: 1,
-            signed_in: false,
-            account: Some(root_did.clone()),
-            device: device_did.clone(),
-            account_service: None,
-            account_state: None,
-            access_service,
-        },
-        account::AccountStatus::Registered {
-            root_did,
-            device_did,
-            provider,
-            account_state,
-        } => AccountStatusV1 {
-            version: 1,
-            signed_in: true,
-            account: Some(root_did.clone()),
-            device: device_did.clone(),
-            account_service: Some(provider.clone()),
-            account_state: Some(account_state_label(*account_state).to_owned()),
-            access_service,
-        },
+    AccountStatusReport {
+        schema_version: ACCOUNT_STATUS_SCHEMA_VERSION,
+        account: account_context(status),
+        access_service,
     }
 }
 
@@ -1907,7 +1879,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             match command.unwrap_or(AccountSpacesCommand::List { json: false }) {
                 AccountSpacesCommand::List { json } => {
                     match account_spaces::list(&profile, &store).await {
-                        Ok(rows) if json => print_json(&rows),
+                        Ok(rows) if json => print_json(&Rows::new("tonk.account-spaces.v1", rows)),
                         Ok(rows) => {
                             let mut listing = Listing::new(
                                 &["STATE", "NAME", "SUBJECT"],
@@ -1977,15 +1949,14 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     if json {
                         let rows: Vec<_> = rows
                             .into_iter()
-                            .map(|row| DeviceRowV1 {
-                                version: 1,
+                            .map(|row| DeviceRow {
                                 status: "active".to_owned(),
                                 name: row.name,
                                 did: row.did.clone(),
                                 this_device: row.did == own,
                             })
                             .collect();
-                        return print_json(&rows);
+                        return print_json(&Rows::new("tonk.account-devices.v1", rows));
                     }
                     let mut listing = Listing::new(
                         &["STATUS", "NAME", "DID", "THIS"],
@@ -2217,13 +2188,7 @@ async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
                 eprintln!("warning: {diagnostic}");
             }
             if json {
-                return match serde_json::to_string_pretty(&report.rows) {
-                    Ok(encoded) => {
-                        println!("{encoded}");
-                        ExitCode::Success
-                    }
-                    Err(error) => print_failure(error),
-                };
+                return print_json(&Rows::new("tonk.space-list.v1", report.rows));
             }
             println!("{}", tonk_cli::inventory::render(&report.rows));
             let registry = match store.load() {
@@ -2871,8 +2836,7 @@ const STATUS_SCHEMA_VERSION: &str = "tonk.status.v1";
 /// One row of `tonk account devices --json`.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DeviceRowV1 {
-    version: u8,
+struct DeviceRow {
     status: String,
     name: String,
     did: String,
@@ -2993,7 +2957,7 @@ async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
             }
         }
         RemoteCommand::List { json } => match remote::list(&site).await {
-            Ok(records) if json => print_json(&records),
+            Ok(records) if json => print_json(&Rows::new("tonk.remote-list.v1", records)),
             Ok(records) => {
                 print_remote_list(&records);
                 ExitCode::Success
@@ -3077,7 +3041,7 @@ async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
             }
         }
         BlobCommand::Ls { json } => match blob::ls(&site).await {
-            Ok(rows) if json => print_json(&rows),
+            Ok(rows) if json => print_json(&Rows::new("tonk.blob-ls.v1", rows)),
             Ok(rows) => {
                 print_blob_ls(&rows);
                 ExitCode::Success
@@ -3477,7 +3441,7 @@ async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
         Err(err) => return print_failure(err),
     };
     if json {
-        return print_json(&concepts);
+        return print_json(&Rows::new("tonk.concept-ls.v1", concepts));
     }
     let mut listing = Listing::new(
         &["NAME", "DESCRIPTION"],
@@ -3735,7 +3699,7 @@ async fn list_views_op(site: &site::TonkSite, json: bool) -> ExitCode {
         Err(err) => return print_failure(err),
     };
     if json {
-        return print_json(&listed);
+        return print_json(&Rows::new("tonk.view-ls.v1", listed));
     }
     let mut listing = Listing::new(
         &["NAME", "ENTITY", "MODEL", "BYTES"],

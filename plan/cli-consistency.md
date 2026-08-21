@@ -299,6 +299,15 @@ different thing again: a transaction envelope, not a listing. It may be right
 to leave it alone and say so, since it is the read that shares its shape with
 `tonk eval --format json`.
 
+*Resolved: left alone, and said so. `tonk query` is `tonk eval` with a query
+and no writes, and the two emitting the same document is the useful property.
+Wrapping one and not the other would break that to gain a version string the
+response already carries. The guard test names it as the one exception.*
+
+*Single documents — `context`, `status`, `space use`, `account status` — carry
+`schemaVersion` beside their fields rather than a `rows` array they have no
+rows for. The convention is the version string, not the array.*
+
 ## 7. Two error printers, and you have to pick which half to lose
 
 Errors leave the binary two ways:

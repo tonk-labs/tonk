@@ -8,14 +8,14 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::listing::Listing;
+use crate::site::SiteConfig;
+use crate::space::SpaceStore;
 use anyhow::{Context as _, Result};
 use dialog_query::{Output as _, Query, Term};
 use serde::Serialize;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{MemberName, MemberRole, Membership};
-use crate::listing::Listing;
-use crate::site::SiteConfig;
-use crate::space::SpaceStore;
 
 /// Shortest DID abbreviation a listing starts from. The first four
 /// characters of a `did:key` identifier are the shared ed25519 multibase
@@ -128,17 +128,13 @@ impl Roster {
     }
 }
 
-/// Version-two local-replica row.
+/// One local-replica row.
 ///
-/// Version two is where ownership stopped being a registry tag: `account`
-/// and `access` are gone, and `owner` / `ownerName` / `ownerIsYou` — read
-/// from the space's own roster — take their place. A reader written against
-/// version one cannot be fed this, so the number moves with the shape.
+/// Ownership is read from the space's own roster through `owner`,
+/// `ownerName`, and `ownerIsYou`, rather than from a registry tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LocalSpaceInventoryRowV2 {
-    /// Schema version, exactly two.
-    pub version: u8,
+pub struct LocalSpaceInventoryRow {
     /// Registered space name.
     pub name: String,
     /// Repository subject DID.
@@ -162,7 +158,7 @@ pub struct LocalSpaceInventoryRowV2 {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocalSpaceInventory {
     /// Every valid local replica.
-    pub rows: Vec<LocalSpaceInventoryRowV2>,
+    pub rows: Vec<LocalSpaceInventoryRow>,
     /// One space-qualified message per skipped replica.
     pub diagnostics: Vec<String>,
 }
@@ -236,7 +232,7 @@ fn sanitize(name: &str) -> String {
 ///
 /// Lives here rather than in the binary so the text a person actually reads
 /// can be pinned by a test that builds real replicas.
-pub fn render(rows: &[LocalSpaceInventoryRowV2]) -> String {
+pub fn render(rows: &[LocalSpaceInventoryRow]) -> String {
     let length = abbreviation_length(
         rows.iter()
             .map(|row| row.subject.as_str())
@@ -294,7 +290,7 @@ async fn inspect_replica(
     name: &str,
     entry: &crate::space::SpaceEntry,
     identity: &mut Option<crate::site::Identity>,
-) -> Result<(LocalSpaceInventoryRowV2, Option<String>)> {
+) -> Result<(LocalSpaceInventoryRow, Option<String>)> {
     let mut config = config.clone();
     config.require_account = false;
     let site = crate::site::TonkSite::open_with(&entry.site, config)
@@ -325,8 +321,7 @@ async fn inspect_replica(
         Some(roster) => classify(roster, identity),
     };
     Ok((
-        LocalSpaceInventoryRowV2 {
-            version: 2,
+        LocalSpaceInventoryRow {
             name: name.to_owned(),
             subject,
             // The account slot, not every identity this device holds: the

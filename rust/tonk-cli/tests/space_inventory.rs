@@ -140,9 +140,8 @@ async fn it_reads_owner_and_role_from_each_space_s_own_roster() -> Result<()> {
     // No per-space account tag survives anywhere, including the JSON.
     assert!(json[0].get("access").is_none(), "{json}");
     assert!(json[0].get("account").is_none(), "{json}");
-    // The row dropped two fields and gained three, so a reader written
-    // against version one must be told, not handed the new shape.
-    assert_eq!(json[0]["version"], 2);
+    // Versioning belongs to the outer read envelope, not each row.
+    assert!(json[0].get("version").is_none(), "{json}");
     Ok(())
 }
 
@@ -331,8 +330,7 @@ async fn it_retains_other_rows_when_one_site_is_unreadable() -> Result<()> {
 
 mod rendering {
     use super::*;
-    use tonk_cli::inventory::LocalSpaceInventoryRowV2;
-    use unicode_width::UnicodeWidthStr as _;
+    use tonk_cli::inventory::LocalSpaceInventoryRow;
 
     fn row(
         name: &str,
@@ -341,9 +339,8 @@ mod rendering {
         owner_name: Option<&str>,
         owner_is_you: bool,
         role: SpaceRole,
-    ) -> LocalSpaceInventoryRowV2 {
-        LocalSpaceInventoryRowV2 {
-            version: 2,
+    ) -> LocalSpaceInventoryRow {
+        LocalSpaceInventoryRow {
             name: name.to_owned(),
             subject: subject.to_owned(),
             owner: owner.map(str::to_owned),
@@ -388,10 +385,10 @@ mod rendering {
 
         assert_eq!(
             rendered,
-            "NAME                 OWNER                     ROLE\n\
-             scratch (z6Mkq7vp)   -                         local\n\
-             garden (z6Mk4e2b)    you (z6Mkccc1)            owner\n\
-             roadmap (z6Mkf0aa)   Ada Lovelace (z6Mkbbb9)   member"
+            "NAME\tOWNER\tROLE\n\
+             scratch (z6Mkq7vp)\t-\tlocal\n\
+             garden (z6Mk4e2b)\tyou (z6Mkccc1)\towner\n\
+             roadmap (z6Mkf0aa)\tAda Lovelace (z6Mkbbb9)\tmember"
         );
     }
 
@@ -446,19 +443,19 @@ mod rendering {
         ]);
 
         assert!(
-            rendered.contains("outside (z6Mkaaa1)   z6Mkbbb2   -"),
+            rendered.contains("outside (z6Mkaaa1)\tz6Mkbbb2\t-"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("broken (z6Mkccc3)    -          unknown"),
+            rendered.contains("broken (z6Mkccc3)\t-\tunknown"),
             "{rendered}"
         );
     }
 
     /// A display name is the one cell this device does not author: it is
-    /// written by another member and arrives over sync. Wide characters must
-    /// not skew the columns after it, and control characters must not reach
-    /// the terminal at all.
+    /// written by another member and arrives over sync. Tabs keep it inside
+    /// one machine-splittable cell, and control characters must not reach the
+    /// terminal at all.
     #[test]
     fn it_keeps_a_hostile_display_name_inside_its_own_cell() {
         let rendered = render(&[
@@ -489,26 +486,15 @@ mod rendering {
             ),
         ]);
 
-        for line in rendered.lines() {
-            assert!(
-                line.ends_with("member") || line.ends_with("ROLE"),
-                "every row ends in its own ROLE cell: {line:?}"
-            );
+        for line in rendered.lines().skip(1) {
+            let cells: Vec<_> = line.split('\t').collect();
+            assert_eq!(cells.len(), 3, "each row has three cells: {line:?}");
+            assert_eq!(cells[2], "member", "the role stays in its own cell");
         }
         // One line per row plus the header — a newline in a name would add
         // another, and the escape would repaint the terminal.
         assert_eq!(rendered.lines().count(), 4, "{rendered}");
         assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
         assert!(rendered.contains("Eve[31mroot (z6Mkfff6)"), "{rendered}");
-
-        // The ROLE cells line up, which counting characters would not give:
-        // the CJK name is four characters wide and eight columns wide.
-        let starts: Vec<usize> = rendered
-            .lines()
-            .skip(1)
-            .map(|line| line.width() - "member".width())
-            .collect();
-        assert_eq!(starts[0], starts[1], "{rendered}");
-        assert_eq!(starts[1], starts[2], "{rendered}");
     }
 }
