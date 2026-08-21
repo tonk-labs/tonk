@@ -246,14 +246,18 @@ view/directory!:
            differently, and the mode cap came out a rounded slab instead of
            an 18px pill. Unlayered author rules outrank layered ones, so this
            wins without `!important`. */
-        .hub-page button {
+        /* `:where()` so the reset contributes NO specificity: a plain
+           `.hub-page button` is (0,1,1) and silently outranks every (0,1,0)
+           cell rule below — which stripped `.hcell`'s padding and left "new
+           space" flush against the corner while the anchor cell next to it
+           sat correctly. A reset must lose every tie it takes part in. */
+        .hub-page :where(button) {
           font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
           background:none; border:0; border-radius:0; margin:0; padding:0;
           min-width:0; min-height:0; block-size:auto; inline-size:auto;
           box-shadow:none; appearance:none; -webkit-appearance:none;
           cursor:pointer; }
-        /* the anchor cells match the button cells exactly — same seat, same ink */
-        .hub-page a { color:inherit; text-decoration:none; }
+        .hub-page :where(a) { color:inherit; text-decoration:none; }
 
         /* the block: 36px, frost + ink ring. every cell derives from it. */
         .blk { height:36px; background:var(--frost);

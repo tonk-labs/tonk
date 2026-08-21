@@ -30,6 +30,8 @@
 // the wasm-side host. The event-name constants are likewise pure
 // data.
 pub mod error;
+/// Light/dark across the whole frame tree.
+pub mod theme;
 // Target-independent — the `branch@repo` / `allow` grammar for the
 // routing attributes. Pure data + parsing, natively testable.
 pub mod location;

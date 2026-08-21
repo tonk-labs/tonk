@@ -63,15 +63,20 @@ const CSS: &str = r#"
 ::slotted(.g){ font-weight:500; color:var(--_ink); }
 :host([muted]) ::slotted(.g){ color:var(--_soft); }
 :host([current]) ::slotted(.g), :host([current]) ::slotted(.sub), :host([current]) ::slotted(.when){ color:var(--_on); }
-/* the flyout — a stack one gap to the right; flips left when clipped */
+/* the flyout — a stack one gap to the right; flips left when clipped, and
+   grows UP instead of down when there is no room below (a bar docked at the
+   bottom opens its stack upward, so its flyout has to follow) */
 .fly{ display:none; position:absolute; left:calc(100% + 7px); top:0; z-index:6; }
 .fly.flip{ left:auto; right:calc(100% + 7px); }
+.fly.up{ top:auto; bottom:0; }
 /* a connected flyout bridges its gap — the parent row's surface spans the
    7px so the pair reads as one piece, not neighbours */
 .fly.sub::before{ content:""; position:absolute; top:-1px; left:-8px; width:9px; height:38px;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   border-top:1px solid var(--_ringc); border-bottom:1px solid var(--_ringc); }
 .fly.flip.sub::before{ left:auto; right:-8px; }
+/* the bridge joins the row it came from, so it moves to the other end too */
+.fly.up.sub::before{ top:auto; bottom:-1px; }
 @media (hover:hover) and (pointer:fine){
   :host(:hover) .fly, :host(:focus-within) .fly{ display:block; }
 }
@@ -223,7 +228,9 @@ fn aim_flyout(this: &HtmlElement) {
     // hover, and a hidden element measures zero.
     let style = fly.unchecked_ref::<HtmlElement>().style();
     let _ = style.set_property("display", "block");
-    let width = sub.unchecked_ref::<HtmlElement>().offset_width() as f64;
+    let measured = sub.unchecked_ref::<HtmlElement>();
+    let width = measured.offset_width() as f64;
+    let height = measured.offset_height() as f64;
     let _ = style.remove_property("display");
     let width = if width > 0.0 {
         width
@@ -267,6 +274,23 @@ fn aim_flyout(this: &HtmlElement) {
     let roomier_left = (rect.left() - clip_left) > (clip_right - rect.right());
     let flip = !fits_right && (fits_left || roomier_left);
     let _ = fly.class_list().toggle_with_force("flip", flip);
+
+    // Vertically the flyout hangs from the row's top by default. That runs
+    // off the bottom of the screen for a bar docked low — whose own stack
+    // already opens upward — so when the list does not fit below, anchor its
+    // BOTTOM to the row instead and let it grow up. Decided from measured
+    // height rather than from the bar's `up` attribute, so an unusually long
+    // list near the bottom is handled the same way.
+    let viewport_bottom = win
+        .inner_height()
+        .ok()
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0)
+        - CLIP_MARGIN_PX;
+    let fits_below = rect.top() + height <= viewport_bottom;
+    let fits_above = rect.bottom() - height >= CLIP_MARGIN_PX;
+    let up = !fits_below && fits_above;
+    let _ = fly.class_list().toggle_with_force("up", up);
 }
 
 /// Register `<tonk-mi>`. Idempotent.

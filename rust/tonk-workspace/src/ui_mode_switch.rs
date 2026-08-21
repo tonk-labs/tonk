@@ -12,6 +12,10 @@
 //! guest from the page's own snapshot. Introducing a second theme signal for
 //! the Hub alone would leave the two free to disagree.
 //!
+//! It goes through [`tonk_host::theme`] rather than setting the class here,
+//! so the change also reaches guests nested below this one — the theme is one
+//! property of the app, and each frame owns only its own root element.
+//!
 //! ## The choice does not survive a reload, and cannot yet
 //!
 //! Views render inside a sealed guest — `sandbox="allow-scripts"`, an opaque
@@ -88,8 +92,7 @@ impl CustomElement for UiModeSwitch {
         }
         let host = this.clone();
         let click: ClickClosure = Closure::wrap(Box::new(move |_: web_sys::Event| {
-            let next = !is_dark();
-            apply(next);
+            tonk_host::theme::set_mode(!tonk_host::theme::is_dark());
             reflect(&host);
         }));
         if let Some(button) = button_of(this) {
@@ -117,28 +120,10 @@ fn button_of(this: &HtmlElement) -> Option<Element> {
     this.query_selector(&format!(".{CAP_CLASS}")).ok().flatten()
 }
 
-/// The root element carrying the theme classes.
-fn root() -> Option<Element> {
-    window()?.document()?.document_element()
-}
-
-/// Whether the document is currently painting dark.
-fn is_dark() -> bool {
-    root().is_some_and(|root| root.class_list().contains("wa-dark"))
-}
-
-/// Paint the document in `dark`.
-fn apply(dark: bool) {
-    let Some(root) = root() else { return };
-    let classes = root.class_list();
-    let _ = classes.toggle_with_force("wa-dark", dark);
-    let _ = classes.toggle_with_force("wa-light", !dark);
-}
-
 /// Report the current state on the control.
 fn reflect(this: &HtmlElement) {
     if let Some(button) = button_of(this) {
-        let _ = button.set_attribute("aria-checked", &is_dark().to_string());
+        let _ = button.set_attribute("aria-checked", &tonk_host::theme::is_dark().to_string());
     }
 }
 

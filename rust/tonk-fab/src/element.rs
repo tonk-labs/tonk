@@ -74,6 +74,11 @@ const UNKNOWN_SPACE_ATTR: &str = "data-unknown-space";
 /// Marks the bar while share has nothing local to act on.
 const SHARE_UNAVAILABLE_ATTR: &str = "data-share-unavailable";
 
+/// Where the bar sits until it is dragged: bottom-right, under the thumb on
+/// a phone and out of the way of page content on a desktop. A persisted dock
+/// overrides it.
+const DEFAULT_DOCK: Dock = Dock::BottomRight;
+
 /// The class marking a right-anchored bar mid-drag. The `flip` ATTRIBUTE is
 /// the resting truth (it reorders the bookends); this class is what survives
 /// while the dock classes are dropped during a drag.
@@ -901,7 +906,7 @@ fn persist_dock(dock: Dock) {
 /// The default is applied immediately so the bar is seated on first paint;
 /// the async query swaps in the stored corner if there is one.
 fn restore_position(this: &HtmlElement) {
-    apply_dock(this, Dock::BottomRight);
+    apply_dock(this, DEFAULT_DOCK);
 
     let query_body = serde_json::json!({
         "terms": {
@@ -942,12 +947,14 @@ fn restore_position(this: &HtmlElement) {
     };
     let host = this.clone();
     spawn_local(async move {
-        let Ok(rows) = JsFuture::from(promise).await else {
-            return;
+        // Fall back explicitly rather than by omission: a query that answers
+        // with nothing, or fails, must still land the bar in its default
+        // corner instead of wherever a half-applied earlier state left it.
+        let dock = match JsFuture::from(promise).await {
+            Ok(rows) => read_dock_from_rows(&rows).unwrap_or(DEFAULT_DOCK),
+            Err(_) => DEFAULT_DOCK,
         };
-        if let Some(dock) = read_dock_from_rows(&rows) {
-            apply_dock(&host, dock);
-        }
+        apply_dock(&host, dock);
     });
 }
 

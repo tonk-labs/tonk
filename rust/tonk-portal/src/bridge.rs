@@ -515,6 +515,22 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
   // every submit regardless of whether the form has an app handler.
   document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
 
+  // A light/dark change made in some ancestor frame, relayed down. The
+  // theme is a whole-app property, but each guest is its own document with
+  // its own root element, so the only way a toggle reaches nested content is
+  // to walk the frame tree. Each guest applies it and passes it on, so one
+  // message reaches every depth.
+  window.addEventListener("message", function(e){
+    var d=e.data; if(!d||d.__tonkRuntime!=="mode") return;
+    var isDark=d.mode==="dark";
+    var cls=document.documentElement.classList;
+    cls.toggle("wa-dark",isDark); cls.toggle("wa-light",!isDark);
+    var frames=document.querySelectorAll("iframe");
+    for(var i=0;i<frames.length;i++){
+      try{ frames[i].contentWindow.postMessage({__tonkRuntime:"mode",mode:d.mode},"*"); }catch(_){}
+    }
+  });
+
   window.addEventListener("message", async function(e){
     var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
     try {

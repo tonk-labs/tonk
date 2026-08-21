@@ -27,11 +27,12 @@
 //!   alerted rung washes. Never a colour (law 5).
 //! - `collapsed` `up` `flip` `responsive` `static`.
 //!
-//! The mode pill overrides the system preference for this bar, and the
-//! override lasts the session. It cannot yet be remembered: the bar renders
-//! inside a sealed guest (`sandbox="allow-scripts"`, an opaque origin) where
-//! `localStorage` throws. See `tonk-workspace::ui_mode_switch` for the two
-//! routes that would fix it — both belong in their own change.
+//! The mode pill switches the whole app, not only this bar: it paints the
+//! bar's own tokens and then calls [`tonk_host::theme`], which relays the
+//! change down the frame tree to the space behind it. The override lasts the
+//! session — it cannot yet be remembered, because the bar renders inside a
+//! sealed guest (`sandbox="allow-scripts"`, an opaque origin) where
+//! `localStorage` throws. See `plan/fabb-conformance.md` for the fix.
 //!
 //! ## Stacks
 //!
@@ -94,13 +95,14 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
     if let Ok(Some(toggle)) = root.query_selector("[data-cell=toggle]") {
         let host = this.clone();
         listeners.push(shadow::on_click(&toggle, move || {
-            let next = if shadow::is_dark(&host) {
-                "light"
-            } else {
-                "dark"
-            };
+            let dark = !shadow::is_dark(&host);
+            let next = if dark { "dark" } else { "light" };
             let _ = host.set_attribute("mode", next);
             shadow::apply_mode(&host);
+            // The pill is the app's light/dark switch, not just the bar's:
+            // toggling only the sealed chrome left the space behind it in
+            // the other mode, which reads as broken rather than as law 6.
+            tonk_host::theme::set_mode(dark);
             propagate(&host);
             let detail = Object::new();
             let _ = Reflect::set(&detail, &"mode".into(), &next.into());
