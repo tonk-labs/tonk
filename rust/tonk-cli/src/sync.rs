@@ -337,6 +337,32 @@ pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> Stri
     )
 }
 
+/// Read the local branch without touching the network.
+///
+/// `tonk context` is what bare `tonk` runs, and orientation should not
+/// wait on a round trip to answer. Without a fetch there is no upstream
+/// head to classify against — dialog caches none — so this reports the
+/// one thing it can know locally: whether an upstream is configured at
+/// all. The `not-fetched` state says so rather than implying `synced`.
+pub async fn status_offline(site: &TonkSite) -> Result<crate::context::SyncContext, SyncError> {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
+    let branch = session.handle();
+    let hash = branch.revision().map(|revision| revision.tree.to_string());
+    let state = if branch.upstream().is_none() {
+        "no-upstream"
+    } else {
+        "not-fetched"
+    };
+    Ok(crate::context::SyncContext {
+        state: state.to_string(),
+        hash,
+        fetched: false,
+    })
+}
+
 fn map_fetch_error(error: FetchError) -> SyncError {
     match error {
         FetchError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },

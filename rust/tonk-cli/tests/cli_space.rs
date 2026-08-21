@@ -487,7 +487,7 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["space", "use"], &[("TONK_SPACE", "a")]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("current space: a"), "{stdout}");
+        assert!(stdout.contains("space: a\n"), "{stdout}");
         assert!(stdout.contains("selected via: env"), "{stdout}");
         assert!(stdout.contains("next: tonk context"), "{stdout}");
     }
@@ -1025,7 +1025,7 @@ mod when_status_is_synced {
         .await
         .expect("blocking tonk invocations join");
 
-        assert!(status.contains("\nsynced\n"), "{status}");
+        assert!(status.contains("sync: synced\n"), "{status}");
         assert!(
             status.contains(&format!("hash: {expected_hash}")),
             "current hash {expected_hash} missing from status output:\n{status}"
@@ -1234,7 +1234,8 @@ mod when_a_directory_is_bound {
         let status = run_in(state.path(), &work, &["status"], &[]);
         assert!(status.status.success(), "{}", stderr_of(&status));
         let stdout = stdout_of(&status);
-        assert!(stdout.contains("space: c (directory"), "{stdout}");
+        assert!(stdout.contains("space: c\n"), "{stdout}");
+        assert!(stdout.contains("selected via: directory"), "{stdout}");
     }
 }
 

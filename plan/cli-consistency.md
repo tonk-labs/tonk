@@ -100,6 +100,13 @@ into `context` would make bare `tonk` do so too. Suggested answer: `context`
 reports the last-known sync state without fetching, and `status` keeps the
 fetch as the thing that distinguishes it.
 
+*Resolved that way, with one correction: there is no last-known state to
+report. Dialog caches no upstream revision, so without a fetch the only thing
+knowable locally is whether an upstream is configured at all. `context` says
+exactly that — a `not-fetched` state rendering as "upstream configured, not
+checked (run `tonk status`)" — rather than implying `synced`. The JSON carries
+`fetched: false` alongside, so a reader acting on `state` knows which it got.*
+
 ## 2. `use` and `unbind` are inverses in different groups
 
 `tonk use <name>` binds the current directory to a space. `tonk space unbind`

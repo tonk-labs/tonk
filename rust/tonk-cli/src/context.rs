@@ -18,9 +18,13 @@ use crate::space::Resolved;
 ///
 /// v2 renamed every `spot` key to `space` and moved the whole document to
 /// camelCase, which is what `tonk space list --json` and the registry's own
-/// account record already emit. Both are breaking for a reader that pinned
-/// v1, which is why the version moved rather than the keys alone.
-pub const SCHEMA_VERSION: &str = "tonk.context.v2";
+/// account record already emit.
+///
+/// v3 absorbed the sync and account sections. Four commands used to answer
+/// "where am I" in four layouts, naming the same field three ways in the
+/// same breath (`space:` / `current space:` / ``space: `demo` ``). They are
+/// now projections of this one document, so the vocabulary is defined once.
+pub const SCHEMA_VERSION: &str = "tonk.context.v3";
 
 /// Maximum number of concepts expanded in the default text response.
 const DEFAULT_CONCEPT_LIMIT: usize = 12;
@@ -33,6 +37,10 @@ pub struct ContextReport {
     pub schema_version: &'static str,
     /// Exact selected store.
     pub space: SpaceContext,
+    /// Where the branch stands against its upstream.
+    pub sync: SyncContext,
+    /// Whether this device is signed in, and to what.
+    pub account: AccountContext,
     /// Synced space-specific agent context, when asserted.
     pub agents: Option<SpaceAgents>,
     /// User/application concepts with command-shaped examples.
@@ -55,6 +63,39 @@ pub struct SpaceContext {
     pub branch: &'static str,
     /// Explicit reminder that changing directory cannot change Tonk data.
     pub cwd_selects_space: bool,
+}
+
+/// Where the branch stands against its upstream.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncContext {
+    /// `no-upstream`, `synced`, `ahead`, `behind`, or `diverged`.
+    pub state: String,
+    /// Local tree hash, absent on a branch with no commits.
+    pub hash: Option<String>,
+    /// Whether the upstream head was fetched to reach this verdict.
+    ///
+    /// `tonk status` fetches; `tonk context` does not, so bare `tonk`
+    /// stays offline. A reader that acts on `state` needs to know which
+    /// it got, because an unfetched `synced` only means "nothing local
+    /// has happened since the last fetch".
+    pub fetched: bool,
+}
+
+/// Whether this device is signed in, and to what.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountContext {
+    /// Whether an account is registered on this device.
+    pub signed_in: bool,
+    /// Root DID, absent before one is provisioned.
+    pub account: Option<String>,
+    /// Account service base URL, absent when unregistered.
+    pub account_service: Option<String>,
+    /// This device's DID. Always present: the identity is local.
+    pub device: String,
+    /// Service-side account state, absent when unregistered.
+    pub state: Option<String>,
 }
 
 /// One live application concept and its direct workflows.
@@ -118,7 +159,17 @@ impl From<FieldSummary> for FieldContext {
 }
 
 /// Read the selected space and derive direct workflows from its live schema.
-pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextReport> {
+///
+/// `sync` and `account` are passed in rather than gathered here: the caller
+/// already holds the profile and store they need, and how the sync state was
+/// reached is the caller's decision — `tonk status` fetches, `tonk context`
+/// does not.
+pub async fn inspect(
+    resolved: &Resolved,
+    site: &TonkSite,
+    sync: SyncContext,
+    account: AccountContext,
+) -> Result<ContextReport> {
     // One enumeration answers both questions: whether the branch
     // declares the standard library's `tonk/agents` concept, and which
     // concepts this space's author defined. `is_system_concept` is the
@@ -202,6 +253,8 @@ pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextRepo
 
     Ok(ContextReport {
         schema_version: SCHEMA_VERSION,
+        sync,
+        account,
         space: SpaceContext {
             name: resolved.name.clone(),
             site: resolved.site.display().to_string(),
@@ -249,17 +302,90 @@ fn example_value(field: &FieldSummary) -> &'static str {
     }
 }
 
+/// One-line rendering of a sync state token: the token plus a short
+/// gloss of what to do about it.
+///
+/// Takes the token rather than the enum so the text and JSON forms
+/// cannot drift into naming the same state differently.
+pub fn sync_state_gloss(state: &str) -> &'static str {
+    match state {
+        "no-upstream" => "no-upstream (set one with `tonk remote set-upstream <name>`)",
+        "synced" => "synced",
+        "ahead" => "ahead (local has unpushed commits; run `tonk push`)",
+        "behind" => "behind (upstream has new commits; run `tonk pull`)",
+        "diverged" => "diverged (run `tonk pull` to merge, then `tonk push`)",
+        // `tonk context` does not fetch, so bare `tonk` stays offline. It
+        // can see that an upstream is configured but not where the branch
+        // stands against it, and says which.
+        "not-fetched" => "upstream configured, not checked (run `tonk status`)",
+        _ => "unknown",
+    }
+}
+
+impl SpaceContext {
+    /// What `tonk space use` prints with no name.
+    ///
+    /// One vocabulary for all four "where am I" commands. This field was
+    /// `current space:` in `tonk space use`, `space:` in `tonk status`,
+    /// and ``space: `demo` `` in `tonk context`, with `selected via:`
+    /// spelled three ways to match.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "space: {}", self.name);
+        let _ = writeln!(out, "site: {}", self.site);
+        let _ = writeln!(out, "selected via: {}", self.selected_via);
+        let _ = writeln!(out, "branch: {}", self.branch);
+        out
+    }
+}
+
+impl SyncContext {
+    /// What `tonk status` prints.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "sync: {}", sync_state_gloss(&self.state));
+        if let Some(hash) = &self.hash {
+            let _ = writeln!(out, "hash: {hash}");
+        }
+        out
+    }
+}
+
+impl AccountContext {
+    /// What `tonk account status` prints.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "signed in: {}",
+            if self.signed_in { "yes" } else { "no" }
+        );
+        let _ = writeln!(
+            out,
+            "account: {}",
+            self.account.as_deref().unwrap_or("missing")
+        );
+        let _ = writeln!(
+            out,
+            "account service: {}",
+            self.account_service.as_deref().unwrap_or("none")
+        );
+        let _ = writeln!(out, "device: {}", self.device);
+        if let Some(state) = &self.state {
+            let _ = writeln!(out, "account status: {state}");
+        }
+        out
+    }
+}
+
 impl ContextReport {
     /// Render the bounded default response.
     pub fn render_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "# Tonk context");
-        let _ = writeln!(
-            out,
-            "space: `{}` · branch: `{}` · selected via: `{}`",
-            self.space.name, self.space.branch, self.space.selected_via
-        );
-        let _ = writeln!(out, "site: `{}`", self.space.site);
+        out.push_str(&self.space.render());
+        out.push_str(&self.sync.render());
+        out.push_str(&self.account.render());
         out.push_str("Changing cwd does not change the selected Tonk data.\n");
 
         if let Some(agents) = &self.agents {

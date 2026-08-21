@@ -15,6 +15,7 @@ use clap::{Args, Parser, Subcommand};
 use tonk_cli::Coded;
 use tonk_cli::auto_sync;
 use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
+use tonk_cli::context::SpaceContext;
 use tonk_cli::data_ops;
 use tonk_cli::eval::{self, Source};
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
@@ -71,7 +72,7 @@ enum Command {
     /// Read-only. This is also what bare `tonk` runs.
     #[command(after_help = "Examples:\n  tonk\n  tonk context\n  tonk context --json")]
     Context {
-        /// Emit the versioned tonk.context.v2 contract.
+        /// Emit the versioned tonk.context.v3 contract.
         #[arg(long)]
         json: bool,
     },
@@ -1406,13 +1407,89 @@ async fn identity(reset: bool) -> ExitCode {
     }
 }
 
+/// The account section of the context report, from a read the caller
+/// already performed.
+///
+/// One function so `tonk account status` and `tonk context` cannot report
+/// the same device differently.
+fn account_context(status: &account::AccountStatus) -> context::AccountContext {
+    match status {
+        account::AccountStatus::MissingRoot { device_did } => context::AccountContext {
+            signed_in: false,
+            account: None,
+            account_service: None,
+            device: device_did.clone(),
+            state: None,
+        },
+        account::AccountStatus::Unregistered {
+            root_did,
+            device_did,
+        } => context::AccountContext {
+            signed_in: false,
+            account: Some(root_did.clone()),
+            account_service: None,
+            device: device_did.clone(),
+            state: None,
+        },
+        account::AccountStatus::Registered {
+            root_did,
+            device_did,
+            provider,
+            account_state,
+        } => context::AccountContext {
+            signed_in: true,
+            account: Some(root_did.clone()),
+            account_service: Some(provider.clone()),
+            device: device_did.clone(),
+            state: Some(account_state_label(*account_state).to_string()),
+        },
+    }
+}
+
+/// The account section when the profile itself cannot be read.
+///
+/// `tonk context` reports orientation and must not fail because the
+/// account is unreadable; the space it is describing works signed out.
+fn account_context_unavailable() -> context::AccountContext {
+    context::AccountContext {
+        signed_in: false,
+        account: None,
+        account_service: None,
+        device: "unavailable".to_string(),
+        state: None,
+    }
+}
+
+/// The sync section, fetching the upstream head to classify against it.
+fn sync_context(status: sync::SyncStatus) -> context::SyncContext {
+    context::SyncContext {
+        state: sync_state_token(status.state).to_owned(),
+        hash: status.hash.map(|hash| hash.to_string()),
+        fetched: true,
+    }
+}
+
 /// `tonk context` (and bare `tonk`) — one bounded, read-only workflow card.
 async fn context_op(json: bool, space: Option<&str>) -> ExitCode {
     let (resolved, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
-    let report = match context::inspect(&resolved, &site).await {
+    // Orientation stays offline: bare `tonk` is the command people run to
+    // find out where they are, and it should not wait on a network round
+    // trip to answer. `tonk status` is the one that fetches.
+    let sync = match sync::status_offline(&site).await {
+        Ok(sync) => sync,
+        Err(err) => return print_coded(err),
+    };
+    let account = match (identity::open().await, tonk_cli::space::SpaceStore::open()) {
+        (Ok(profile), Ok(store)) => match account::status_in(&profile, &store).await {
+            Ok(status) => account_context(&status),
+            Err(_) => account_context_unavailable(),
+        },
+        _ => account_context_unavailable(),
+    };
+    let report = match context::inspect(&resolved, &site, sync, account).await {
         Ok(report) => report,
         Err(err) => return print_error(format!("could not build live context: {err:#}")),
     };
@@ -1505,31 +1582,6 @@ fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str
         tonk_account::AccountStateStatus::Unconfigured => "not set up yet",
         tonk_account::AccountStateStatus::Unhydrated => "waiting for first sync",
         tonk_account::AccountStateStatus::Ready => "synced",
-    }
-}
-
-fn render_account_status(status: account::AccountStatus) -> String {
-    match status {
-        account::AccountStatus::MissingRoot { device_did } => {
-            format!("signed in: no\naccount: missing\naccount service: none\ndevice: {device_did}")
-        }
-        account::AccountStatus::Unregistered {
-            root_did,
-            device_did,
-        } => {
-            format!(
-                "signed in: no\naccount: {root_did}\naccount service: none\ndevice: {device_did}"
-            )
-        }
-        account::AccountStatus::Registered {
-            root_did,
-            device_did,
-            provider,
-            account_state,
-        } => format!(
-            "signed in: yes\naccount: {root_did}\naccount service: {provider}\ndevice: {device_did}\nstatus: {}",
-            account_state_label(account_state)
-        ),
     }
 }
 
@@ -1817,7 +1869,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     return print_json(&account_status_json(&profile, &store, &status).await);
                 }
                 let linked = matches!(status, account::AccountStatus::Registered { .. });
-                println!("{}", render_account_status(status));
+                print!("{}", account_context(&status).render());
                 if linked {
                     print_customer_line(&profile, &store).await;
                 }
@@ -2032,22 +2084,22 @@ async fn use_op(name: Option<String>, json: bool, flag: Option<&str>) -> ExitCod
                 ) => None,
                 Err(error) => return print_failure(error),
             };
+            let section = active.as_ref().map(|active| SpaceContext {
+                name: active.name.clone(),
+                site: active.site.display().to_string(),
+                selected_via: active.source.to_string(),
+                branch: tonk_cli::site::BRANCH_NAME,
+                cwd_selects_space: false,
+            });
             if json {
-                return print_json(&ActiveSpaceV1 {
-                    version: 1,
-                    space: active.as_ref().map(|a| a.name.clone()),
-                    site: active.as_ref().map(|a| a.site.display().to_string()),
-                    selected_via: active.as_ref().map(|a| a.source.to_string()),
+                return print_json(&ActiveSpaceReport {
+                    schema_version: ACTIVE_SPACE_SCHEMA_VERSION,
+                    space: section,
                 });
             }
-            match &active {
-                Some(active) => println!(
-                    "current space: {}\nsite: {}\nselected via: {}",
-                    active.name,
-                    active.site.display(),
-                    active.source,
-                ),
-                None => println!("current space: (none)"),
+            match section {
+                Some(section) => print!("{}", section.render()),
+                None => println!("space: (none)"),
             }
             println!("next: tonk context");
             ExitCode::Success
@@ -2777,41 +2829,44 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
         Ok(status) => status,
         Err(err) => return print_coded(err),
     };
+    let space = space_context(&resolved, &site);
+    let sync = sync_context(status);
     if json {
-        let report = StatusReportV1 {
-            version: 1,
-            space: resolved.name,
-            selected_via: resolved.source.to_string(),
-            site: site.root.display().to_string(),
-            state: sync_state_token(status.state).to_owned(),
-            hash: status.hash.map(|hash| hash.to_string()),
-        };
-        return print_json(&report);
+        return print_json(&StatusReport {
+            schema_version: STATUS_SCHEMA_VERSION,
+            space,
+            sync,
+        });
     }
-    println!(
-        "space: {name} ({source})",
-        name = resolved.name,
-        source = resolved.source,
-    );
-    println!("{}", render_sync_state(status.state));
-    if let Some(hash) = status.hash {
-        println!("hash: {hash}");
-    }
+    print!("{}{}", space.render(), sync.render());
     ExitCode::Success
 }
 
-/// `tonk status --json`.
+/// The space section, from a resolution the caller already performed.
+fn space_context(resolved: &tonk_cli::space::Resolved, site: &site::TonkSite) -> SpaceContext {
+    SpaceContext {
+        name: resolved.name.clone(),
+        site: site.root.display().to_string(),
+        selected_via: resolved.source.to_string(),
+        branch: tonk_cli::site::BRANCH_NAME,
+        cwd_selects_space: false,
+    }
+}
+
+/// `tonk status --json` — the sync section of the context document, with
+/// the space section that says which space it describes.
+///
+/// A projection rather than a separate contract: the keys and their
+/// spellings come from [`context`], so the two commands cannot drift.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StatusReportV1 {
-    version: u8,
-    space: String,
-    selected_via: String,
-    site: String,
-    /// `NoUpstream`, `Synced`, `Ahead`, `Behind`, or `Diverged`.
-    state: String,
-    hash: Option<String>,
+struct StatusReport {
+    schema_version: &'static str,
+    space: SpaceContext,
+    sync: context::SyncContext,
 }
+
+const STATUS_SCHEMA_VERSION: &str = "tonk.status.v1";
 
 /// One row of `tonk account devices --json`.
 #[derive(serde::Serialize)]
@@ -2825,15 +2880,16 @@ struct DeviceRowV1 {
     this_device: bool,
 }
 
-/// `tonk space use --json`, and the no-selection case it has to be able to say.
+/// `tonk space use --json` — the space section, and the no-selection case
+/// it has to be able to say.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ActiveSpaceV1 {
-    version: u8,
-    space: Option<String>,
-    site: Option<String>,
-    selected_via: Option<String>,
+struct ActiveSpaceReport {
+    schema_version: &'static str,
+    space: Option<SpaceContext>,
 }
+
+const ACTIVE_SPACE_SCHEMA_VERSION: &str = "tonk.space-use.v1";
 
 /// Write `value` to stdout as the pretty JSON every `--json` read prints.
 fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
@@ -2847,7 +2903,7 @@ fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
 }
 
 /// The bare kebab-case token for a [`tonk_schema::SyncState`], which is
-/// also the first word [`render_sync_state`] prints. `--json` carries this
+/// also the first word the gloss prints. `--json` carries this
 /// rather than the Rust variant name, so the two forms of `tonk status`
 /// name the same state the same way.
 fn sync_state_token(state: tonk_schema::SyncState) -> &'static str {
@@ -2858,19 +2914,6 @@ fn sync_state_token(state: tonk_schema::SyncState) -> &'static str {
         SyncState::Ahead => "ahead",
         SyncState::Behind => "behind",
         SyncState::Diverged => "diverged",
-    }
-}
-
-/// One-line rendering of a [`tonk_schema::SyncState`]: the
-/// [`sync_state_token`] plus a short gloss of what to do about it.
-fn render_sync_state(state: tonk_schema::SyncState) -> &'static str {
-    use tonk_schema::SyncState;
-    match state {
-        SyncState::NoUpstream => "no-upstream (set one with `tonk remote set-upstream <name>`)",
-        SyncState::Synced => "synced",
-        SyncState::Ahead => "ahead (local has unpushed commits; run `tonk push`)",
-        SyncState::Behind => "behind (upstream has new commits; run `tonk pull`)",
-        SyncState::Diverged => "diverged (run `tonk pull` to merge, then `tonk push`)",
     }
 }
 
@@ -3900,26 +3943,32 @@ mod account_spaces_parser_tests {
     #[test]
     fn account_status_makes_sign_in_state_explicit() {
         assert_eq!(
-            render_account_status(account::AccountStatus::MissingRoot {
+            account_context(&account::AccountStatus::MissingRoot {
                 device_did: "did:device".to_string(),
-            }),
-            "signed in: no\naccount: missing\naccount service: none\ndevice: did:device"
+            })
+            .render(),
+            "signed in: no\naccount: missing\naccount service: none\ndevice: did:device\n"
         );
         assert_eq!(
-            render_account_status(account::AccountStatus::Unregistered {
+            account_context(&account::AccountStatus::Unregistered {
                 root_did: "did:root".to_string(),
                 device_did: "did:device".to_string(),
-            }),
-            "signed in: no\naccount: did:root\naccount service: none\ndevice: did:device"
+            })
+            .render(),
+            "signed in: no\naccount: did:root\naccount service: none\ndevice: did:device\n"
         );
+        // `status:` became `account status:`. Bare `status:` was ambiguous
+        // once this section renders inside `tonk context` next to the sync
+        // section, which has a state of its own.
         assert_eq!(
-            render_account_status(account::AccountStatus::Registered {
+            account_context(&account::AccountStatus::Registered {
                 root_did: "did:root".to_string(),
                 device_did: "did:device".to_string(),
                 provider: "https://accounts.example".to_string(),
                 account_state: tonk_account::AccountStateStatus::Ready,
-            }),
-            "signed in: yes\naccount: did:root\naccount service: https://accounts.example\ndevice: did:device\nstatus: synced"
+            })
+            .render(),
+            "signed in: yes\naccount: did:root\naccount service: https://accounts.example\ndevice: did:device\naccount status: synced\n"
         );
     }
 
