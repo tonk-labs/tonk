@@ -70,9 +70,17 @@ impl CustomElement for TonkInviteLink {
         };
         let host = this.clone();
         let listener = Closure::wrap(Box::new(move |event: Event| {
-            // The sealed guest must never fall back to a native form
-            // navigation, so the default is cancelled unconditionally
-            // and validity only decides whether we navigate.
+            // The submit never reaches the network: this element resolves
+            // the pasted text into a redeemable `/join` URL and hands it
+            // to the bound `tonk:join` command as a `mount` event, the
+            // same shape `<tonk-page>` fires on a real page load. That is
+            // why the form binds `onmount` and not `onsubmit`: `Join`
+            // reads `dom.event.detail/href`, an event-read path a submit
+            // event has no way to satisfy.
+            //
+            // Always cancelled: even an already-complete link has to be
+            // re-delivered as `detail.href`, and resolving a short one is
+            // async besides.
             event.prevent_default();
             let host = host.clone();
             wasm_bindgen_futures::spawn_local(async move { submit(&host).await });
@@ -86,6 +94,16 @@ impl CustomElement for TonkInviteLink {
     }
 }
 
+/// Resolve the pasted text and hand the redeemable URL to the bound
+/// command as a `mount` event.
+///
+/// The invite has to arrive as `detail.href` because that is the single
+/// read path `Join` declares (`dom.event.detail/href`), and a concept's
+/// `the:` is one slot serving as both the event read path and the stored
+/// attribute — there is no second place to say "read it from here, file
+/// it under there". So rather than a second command shaped around the
+/// form, the form speaks the shape the existing command already reads,
+/// and one handler serves both the pasted link and the visited one.
 async fn submit(this: &HtmlElement) {
     let field = this
         .get_attribute("field")
@@ -95,12 +113,60 @@ async fn submit(this: &HtmlElement) {
     match local_join_href(pasted.trim()).await {
         Some(href) => {
             let _ = this.remove_attribute(STATE_ATTR);
-            navigate(&href);
+            dispatch_mount(this, &href);
         }
         None => {
             let _ = this.set_attribute(STATE_ATTR, "invalid");
         }
     }
+}
+
+/// Fire a bubbling `mount` carrying the resolved invite, mirroring the
+/// flat URL-shaped detail `<tonk-page>` builds from a real location so
+/// both paths present the bound command with the same event.
+///
+/// Dispatched from the element itself so it bubbles to the `onmount`
+/// binding on the enclosing form, and on to the display's delegate.
+fn dispatch_mount(this: &HtmlElement, href: &str) {
+    let Ok(url) = web_sys::Url::new_with_base(href, &page_origin()) else {
+        return;
+    };
+    let detail = js_sys::Object::new();
+    let set = |key: &str, value: &str| {
+        let _ = js_sys::Reflect::set(&detail, &JsValue::from_str(key), &JsValue::from_str(value));
+    };
+    set("href", &url.href());
+    set("origin", &url.origin());
+    set("pathname", &url.pathname());
+    set("search", &url.search());
+    set("hash", &url.hash());
+
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    init.set_detail(&detail);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("mount", &init) {
+        let _ = this.dispatch_event(&event);
+    }
+}
+
+/// The origin a relative `/join` URL resolves against. Inside the sealed
+/// guest `window.location` is the guest's own `about:srcdoc`, so prefer
+/// the host-forwarded origin the bridge publishes; the fallback covers
+/// the top-page and test cases.
+fn page_origin() -> String {
+    window()
+        .and_then(|win| {
+            js_sys::Reflect::get(&win, &JsValue::from_str("tonk"))
+                .ok()
+                .and_then(|tonk| js_sys::Reflect::get(&tonk, &JsValue::from_str("context")).ok())
+                .and_then(|context| {
+                    js_sys::Reflect::get(&context, &JsValue::from_str("origin")).ok()
+                })
+                .and_then(|origin| origin.as_string())
+                .filter(|origin| !origin.is_empty())
+                .or_else(|| win.location().origin().ok())
+        })
+        .unwrap_or_default()
 }
 
 /// Read the `value` property of the form control named `field` within the
@@ -163,24 +229,6 @@ async fn resolve_invite(url: &web_sys::Url) -> Option<String> {
     // deployment that served its app shell for an unknown link lands
     // here with nothing, and that is a refusal, not an invite.
     carries_access(&landed).then(|| landed.search())
-}
-
-/// Navigate through the guest's bridge when sealed (`window.tonk.navigate`),
-/// falling back to a plain location assignment at the top-level shell.
-fn navigate(href: &str) {
-    let Some(win) = window() else { return };
-    let bridged = js_sys::Reflect::get(&win, &JsValue::from_str("tonk"))
-        .ok()
-        .and_then(|tonk| js_sys::Reflect::get(&tonk, &JsValue::from_str("navigate")).ok())
-        .and_then(|function| function.dyn_into::<js_sys::Function>().ok())
-        .and_then(|function| {
-            function
-                .call1(&JsValue::NULL, &JsValue::from_str(href))
-                .ok()
-        });
-    if bridged.is_none() {
-        let _ = win.location().assign(href);
-    }
 }
 
 /// Register `<tonk-invite-link>`. Idempotent.
@@ -261,11 +309,9 @@ mod tests {
         form.append_child(&element).unwrap();
         body.append_child(&form).unwrap();
 
-        let event = web_sys::Event::new_with_event_init_dict(
-            "submit",
-            web_sys::EventInit::new().cancelable(true),
-        )
-        .unwrap();
+        let init = web_sys::EventInit::new();
+        init.set_cancelable(true);
+        let event = web_sys::Event::new_with_event_init_dict("submit", &init).unwrap();
         let _ = form.dispatch_event(&event);
 
         assert!(
@@ -283,6 +329,80 @@ mod tests {
             element.get_attribute(STATE_ATTR).as_deref(),
             Some("invalid"),
         );
+
+        form.remove();
+    }
+
+    /// A complete pasted invite reaches the bound command as a `mount`
+    /// event carrying `detail.href` — the one read path `tonk:join`
+    /// declares. This is the whole reason the form binds `onmount`: a
+    /// submit event has no `detail`, so a paste bound to `onsubmit`
+    /// wrote a fact under an attribute no handler triggers on and the
+    /// button did nothing at all.
+    #[dialog_common::test]
+    async fn it_hands_a_pasted_invite_to_the_command_as_a_mount_event() {
+        register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let form = document.create_element("form").unwrap();
+        let input = document.create_element("input").unwrap();
+        input.set_attribute("name", "url").unwrap();
+        input
+            .set_attribute(
+                "value",
+                "https://staging.tonk.xyz/join?access=abc&remote=x#seed",
+            )
+            .unwrap();
+        let element = document.create_element("tonk-invite-link").unwrap();
+        form.append_child(&input).unwrap();
+        form.append_child(&element).unwrap();
+        body.append_child(&form).unwrap();
+
+        // Listen where the binding sits: `mount` must BUBBLE to the form
+        // for the display's delegate to see it.
+        let seen: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let captured = Rc::clone(&seen);
+        let listener = Closure::wrap(Box::new(move |event: Event| {
+            let detail = event
+                .dyn_ref::<web_sys::CustomEvent>()
+                .map(|event| event.detail());
+            if let Some(detail) = detail {
+                let href = js_sys::Reflect::get(&detail, &JsValue::from_str("href"))
+                    .ok()
+                    .and_then(|href| href.as_string());
+                *captured.borrow_mut() = href;
+            }
+        }) as Box<dyn FnMut(Event)>);
+        form.add_event_listener_with_callback("mount", listener.as_ref().unchecked_ref())
+            .unwrap();
+
+        let init = web_sys::EventInit::new();
+        init.set_cancelable(true);
+        let event = web_sys::Event::new_with_event_init_dict("submit", &init).unwrap();
+        let _ = form.dispatch_event(&event);
+
+        assert!(
+            event.default_prevented(),
+            "the paste is delivered as `mount`, never as a native submit"
+        );
+
+        for _ in 0..20 {
+            if seen.borrow().is_some() {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(10).await;
+        }
+
+        let href = seen.borrow().clone().expect("mount carried no detail.href");
+        let url = web_sys::Url::new(&href).unwrap();
+        assert_eq!(url.pathname(), "/join", "redeemed on THIS deployment");
+        assert_eq!(
+            url.search_params().get("access").as_deref(),
+            Some("abc"),
+            "the delegation chain rides across verbatim"
+        );
+        assert_eq!(url.hash(), "#seed", "the seed never leaves the browser");
 
         form.remove();
     }

@@ -830,7 +830,9 @@ concept!: &join/failure
       cardinality: one
       as: text
     kind:
-      description: The failure class, one of malformed, audience-mismatch, or claim-failed.
+      description: >
+        The failure class: malformed, audience-mismatch, revoked,
+        unavailable, refused, or claim-failed.
       the: xyz.tonk.join/kind
       cardinality: one
       as: text
@@ -869,55 +871,27 @@ view/directory!:
   this: id:tonk:join/status/view
   model: tonk:join/status
   display: |
-    <main class="join-view">
+    <div class="join-card-wrap">
       <style>
-        /* The paste form is the route's EMPTY state: the directory chrome
-           renders with zero `tonk:join/status` instances, which is exactly
-           the case where no invite was in the URL (the command asserts no
-           status then). A join in flight or failed has an instance, so the
-           `:has()` rule hides the form and the card below carries the
-           spinner or the failure. */
-        .join-paste { display: flex; flex-direction: column; gap: 14px;
-          width: min(540px, 100%); margin: 0 auto; }
-        .join-paste wa-input { width: 100%; }
-        .join-paste wa-button { align-self: center; min-width: 220px; }
-        .join-paste-error { display: none; color: var(--wa-color-danger-on-quiet); }
-        tonk-invite-link[data-state="invalid"] ~ .join-paste-error { display: block; }
-        .join-view:has(.join-status) .join-paste { display: none; }
-        .join-view:not(:has(.join-status)) .join-card { display: none; }
+        .join-card { display: block; margin: 40px auto; width: min(540px, 100%); }
       </style>
-      <tonk-page onmount=tonk:join>
-      <!-- No invite in the URL: someone arrived holding a link. The same
-           element the Hub uses resolves it (expanding a shortened link on
-           its own origin) and navigates to this route with the invite in
-           place, where the ordinary claim path takes over. -->
-      <form class="join-paste">
-        <h1>Join a spot</h1>
-        <p>Paste the invite link someone shared with you.</p>
-        <wa-input name="url" placeholder="https://&hellip;" autocomplete="off" required></wa-input>
-        <tonk-invite-link field="url"></tonk-invite-link>
-        <p class="join-paste-error">That doesn't look like an invite link.</p>
-        <wa-button type="submit" variant="brand">Join spot</wa-button>
-      </form>
-      <wa-card class="join-card">
-        <div slot="header"><h1>Joining…</h1></div>
-        <wa-spinner></wa-spinner>
-        <!-- `data-id={this}` designates the repeat row without granting a
-             routing context (the status entity is not a repository). -->
-        <div class="join-status" data-id={this}>
+      <!-- Only the in-flight and failed states live here. The resting
+           (paste) state is the ROUTE view's, because this directory is
+           empty until a join starts and an empty nested directory renders
+           nothing. `data-id={this}` marks the repeat row; the card is
+           inside it, so the whole surface is per-status. -->
+      <div class="join-status" data-id={this}>
+        <wa-card class="join-card">
+          <div slot="header"><h1>Joining…</h1></div>
+          <wa-spinner></wa-spinner>
           <tonk-display entity={this} model=tonk:join/failure>
-            <!-- While the join is pending there is a `tonk:join/status` but
-                 no `tonk:join/failure` yet: stay quiet (empty slots) instead
-                 of the built-in "Not found" callout. The failure view only
-                 renders once a failure is actually recorded. -->
             <span slot="no-entity"></span>
             <span slot="no-model"></span>
             <span slot="loading"></span>
           </tonk-display>
-        </div>
-      </wa-card>
-      </tonk-page>
-    </main>
+        </wa-card>
+      </div>
+    </div>
 
 # The failure view — the default view for `tonk:join/failure`, so the join
 # directory's per-instance `<tonk-display model=tonk:join/failure>` renders
@@ -1070,7 +1044,57 @@ view!: &join/route-view
   display: |
     <div class="display-view-slot">
       <tonk-title text="Tonk"></tonk-title>
-      <tonk-display model="tonk:join/status"></tonk-display>
+      <main class="join-view">
+        <style>
+          /* The paste form is this route's RESTING state and renders from
+             the route view itself — an entity view on the site, the same
+             shape the Hub uses. It deliberately does NOT live behind the
+             nested `tonk:join/status` directory: that directory is empty
+             until a join is actually in flight, and an empty nested
+             directory renders nothing at all, which left `/join` on a
+             spinner forever. The status directory below now carries ONLY
+             the in-flight and failed states, and hides the form once it
+             has a row to show. */
+          .join-paste { display: flex; flex-direction: column; gap: 14px;
+            width: min(540px, 100%); margin: 40px auto; }
+          .join-paste wa-input { width: 100%; }
+          .join-paste wa-button { align-self: center; min-width: 220px; }
+          .join-paste-error { display: none; color: var(--wa-color-danger-on-quiet); }
+          tonk-invite-link[data-state="invalid"] ~ .join-paste-error { display: block; }
+          /* A join in flight or failed gives the status display a row;
+             `data-state=ready` is `<tonk-display>`'s own signal for that,
+             so the form steps aside without depending on the row's markup. */
+          .join-view:has(.join-status-slot[data-state="ready"]) .join-paste { display: none; }
+        </style>
+        <tonk-page onmount=tonk:join></tonk-page>
+        <!-- `onmount`, not `onsubmit`: `<tonk-invite-link>` cancels the
+             submit, resolves the pasted text (expanding a short link on
+             its minting origin), and re-fires it as a bubbling `mount`
+             carrying `detail.href` — the one read path `tonk:join`
+             declares. Same command, same handler, whether the invite
+             arrived in the address bar or in this box. -->
+        <form class="join-paste" onmount=tonk:join>
+          <h1>Join a spot</h1>
+          <p>Paste the invite link someone shared with you.</p>
+          <wa-input name="url" placeholder="https://&hellip;" autocomplete="off" required></wa-input>
+          <tonk-invite-link field="url"></tonk-invite-link>
+          <p class="join-paste-error">That doesn't look like an invite link.</p>
+          <wa-button type="submit" variant="brand">Join spot</wa-button>
+        </form>
+        <!-- The `tonk:join` trigger lives INSIDE the status display, not
+             beside the form. `<tonk-page>` waits for its enclosing
+             `<tonk-display>` to mark `data-bound` before firing, and a
+             trigger placed in the route view waits on the ROUTE's display —
+             which does not finish binding until its children render, so the
+             page never painted. Nested here it waits on the status display
+             instead, which binds independently, and the form above it is
+             plain markup that renders regardless of any command. -->
+        <tonk-display class="join-status-slot" model="tonk:join/status">
+          <span slot="empty"></span>
+          <span slot="loading"></span>
+          <span slot="no-entity"></span>
+        </tonk-display>
+      </main>
     </div>
 
 # The /inspector and /diagnose routes: the same query-inspector and
