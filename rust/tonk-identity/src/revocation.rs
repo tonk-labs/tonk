@@ -310,6 +310,22 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         path_delegations.push(delegation);
     }
 
+    // A witness is a delegation PATH, not a bag of delegations. Signatures
+    // alone prove each hop was issued; they prove nothing about reach. So
+    // require the hops to link: every issuer after the first must be the
+    // previous hop's audience. Without this, any principal could staple an
+    // unrelated (validly signed) grant onto a real prefix and claim the
+    // authority the prefix carries.
+    for pair in path_delegations.windows(2) {
+        if pair[0].audience() != pair[1].issuer() {
+            return Err(VerifyError::Unauthorized(format!(
+                "witness hops do not connect: {} does not follow {}",
+                pair[1].issuer(),
+                pair[0].audience()
+            )));
+        }
+    }
+
     let mut matches = path_cids
         .iter()
         .enumerate()
@@ -346,6 +362,21 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
             return Err(VerifyError::Unauthorized(
                 "delegated revocation does not attach the target as a proof".to_string(),
             ));
+        }
+        // Attaching the target is not the same as holding authority over
+        // it. Passing the whole witnessed path as its own proof satisfies
+        // the check above for EVERY hop, which would let any principal on
+        // a chain revoke the hops above its own. So require that the
+        // revoker is a principal of the target hop itself: its issuer
+        // (revoking what it granted) or its audience (declining what it
+        // was granted).
+        let target_delegation = path_delegations
+            .get(target_index)
+            .ok_or_else(|| VerifyError::Malformed("target index out of range".to_string()))?;
+        if target_delegation.issuer() != &issuer && target_delegation.audience() != &issuer {
+            return Err(VerifyError::Unauthorized(format!(
+                "{issuer} is neither issuer nor audience of the revoked delegation"
+            )));
         }
         RevocationAuthority::Delegated
     };
@@ -489,6 +520,48 @@ mod tests {
             if seen.insert(cid) {
                 tokens.push(delegation.encoded().to_vec());
             }
+        }
+        Container::new(tokens).into_bytes().unwrap()
+    }
+
+    /// Build a revocation whose `pth` names an arbitrary list of
+    /// delegations, connected or not.
+    ///
+    /// `DelegationChain::push` refuses a hop that does not follow its
+    /// predecessor, so a disconnected witness cannot be expressed through
+    /// the normal builders — but nothing stops a hostile client from
+    /// emitting the CBOR directly, which is what this reproduces.
+    async fn raw_revocation_with_path(
+        issuer: impl Into<Signer>,
+        subject_did: &Did,
+        witness: &[&Delegation<AnySignature>],
+        named: Promised,
+    ) -> Vec<u8> {
+        let mut args = BTreeMap::new();
+        args.insert(REVOKE_ARGUMENT.into(), named);
+        args.insert(
+            PATH_ARGUMENT.into(),
+            Promised::List(
+                witness
+                    .iter()
+                    .map(|delegation| Promised::Link(delegation.to_cid()))
+                    .collect(),
+            ),
+        );
+        let invocation = InvocationBuilder::new()
+            .issuer(issuer.into())
+            .audience(subject_did)
+            .subject(subject_did)
+            .command(command())
+            .arguments(args)
+            .proofs(Vec::new())
+            .nonce(nonce())
+            .try_build()
+            .await
+            .unwrap();
+        let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation).unwrap()];
+        for delegation in witness {
+            tokens.push(delegation.encoded().to_vec());
         }
         Container::new(tokens).into_bytes().unwrap()
     }
@@ -678,6 +751,50 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_lets_the_audience_revoke_the_hop_granted_to_it() {
+        // "Revoke a delegation made to you." The invite key is the
+        // AUDIENCE of the hop it withdraws, never its issuer, so the
+        // path-issuer branch cannot carry this. It goes through the
+        // delegated branch instead, attaching the grant as proof — which
+        // is the stronger route: the grant is verified rather than
+        // matched by name.
+        //
+        // No separate evidence chain is needed. The witnessed path IS the
+        // proof, so `pth` carries the hop and nothing else has to be
+        // supplied.
+        let (_, _, invite, path) = invite_path().await;
+        let target = path.proof_cids()[1];
+
+        let verified = verify(
+            &mint_self_revocation(invite.clone(), &path, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.issuer, invite.did());
+        assert_eq!(verified.target_cid, target.to_string());
+        assert_eq!(verified.authority, RevocationAuthority::Delegated);
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_an_audience_revoking_a_hop_above_its_own() {
+        // The audience allowance reaches its own hop, not the ones above
+        // it. The invite key received hop 1; hop 0 (space -> member) is
+        // not its to withdraw, and attaching the path as proof does not
+        // make it so.
+        let (_, _, invite, path) = invite_path().await;
+        let above = path.proof_cids()[0];
+
+        let bytes = mint_self_revocation(invite, &path, &above).await.unwrap();
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
     async fn it_refuses_a_revoker_further_down_the_chain_than_the_target() {
         // Authority runs downward only. The member issued the second
         // hop, so it may not revoke the first one above it.
@@ -743,6 +860,56 @@ mod tests {
             verify(&bytes).await,
             Err(VerifyError::Malformed(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_witness_whose_hops_do_not_connect() {
+        // The attack: staple a real prefix onto an unrelated hop and
+        // present the pair as ONE witness. Every signature verifies and
+        // the target is present, but `member` never delegated to
+        // `stranger`, so the second hop hangs off nothing and the space's
+        // authority does not reach it.
+        //
+        // Without a linkage check the stranger's own hop sits at index 1
+        // with `space -> member` in front of it, so the prefix scan finds
+        // the stranger as an issuer and grants authority over a path the
+        // space never authorized.
+        let space = signer(3).await;
+        let member = signer(4).await;
+        let stranger = signer(12).await;
+        let invite = signer(5).await;
+
+        let first = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&member.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let orphan = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(stranger.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let orphan_cid = orphan.to_cid();
+        // `pth` = [space -> member, stranger -> invite]. Both signed,
+        // target at index 1, and the stranger IS an issuer within that
+        // prefix — so the prefix scan alone would grant authority.
+        let bytes = raw_revocation_with_path(
+            stranger,
+            &space.did(),
+            &[&first, &orphan],
+            Promised::Link(orphan_cid),
+        )
+        .await;
+        assert!(
+            verify(&bytes).await.is_err(),
+            "a witness whose hops do not connect must not establish authority"
+        );
     }
 
     #[dialog_common::test]
