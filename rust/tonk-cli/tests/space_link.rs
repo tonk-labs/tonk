@@ -65,6 +65,22 @@ async fn it_links_a_local_space_into_the_signed_in_account(
         tonk_cli::remote::upstream_remote(&site).await?.as_deref(),
         Some(tonk_cli::remote::DEFAULT_REMOTE)
     );
+    let report = tonk_cli::inventory::list_local(&store, &config).await?;
+    let rendered = tonk_cli::inventory::render(&report.rows);
+    println!("{rendered}");
+    assert!(
+        rendered.contains(&format!(
+            "garden\t{}\t{}\towner\tyes",
+            outcome.subject.as_deref().expect("linked subject"),
+            account.root
+        )),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("belong to another account"),
+        "{rendered}"
+    );
+
     let listed = tonk_cli::account_spots::list(&fixture.profile, &store).await?;
     assert!(
         listed
@@ -199,5 +215,52 @@ async fn it_refuses_a_space_that_already_syncs_with_another_remote(
         "{error:#}"
     );
     assert!(store.load()?.spots["garden"].account.is_none());
+    Ok(())
+}
+
+/// The listing after the exact switch a person makes: sign in, link a space,
+/// sign out, sign in as somebody else. What they had is still there, still
+/// named, and marked as not theirs to open right now.
+#[dialog_common::test]
+async fn it_lists_a_previous_accounts_space_as_out_of_reach(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let store = fixture.store.clone();
+    let config = fixture.config.clone();
+    local_space(&store, &config, "scratch").await?;
+    local_space(&store, &config, "garden").await?;
+    store.set_account(Some(signed_in(&fixture, &env)?))?;
+    let linked = tonk_cli::space_link::execute(&store, &config, "garden").await?;
+
+    store.set_account(None)?;
+    store.set_account(Some(AccountRecord::new(OTHER_ACCOUNT)))?;
+
+    let report = tonk_cli::inventory::list_local(&store, &config).await?;
+    let rendered = tonk_cli::inventory::render(&report.rows);
+    println!("{rendered}");
+
+    let owner = linked.account;
+    assert_eq!(
+        rendered,
+        format!(
+            "NAME\tSUBJECT\tACCOUNT\tROLE\tACCESS\n\
+             garden\t{subject}\t{owner}\towner\tno\n\
+             scratch\t{scratch}\t-\tlocal\tyes\n\
+             \n\
+             spaces marked no belong to another account; sign back into it, \
+             or ask its owner for an invite",
+            subject = linked.subject.as_deref().expect("linked subject"),
+            scratch = report
+                .rows
+                .iter()
+                .find(|row| row.name == "scratch")
+                .expect("scratch row")
+                .subject,
+        )
+    );
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     Ok(())
 }

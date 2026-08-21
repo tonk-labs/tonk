@@ -67,6 +67,34 @@ pub struct LocalSpaceInventory {
     pub diagnostics: Vec<String>,
 }
 
+/// Render the listing exactly as `tonk space list` prints it.
+///
+/// Lives here rather than in the binary so the text a person actually reads
+/// can be pinned by a test that builds real replicas.
+pub fn render(rows: &[LocalSpaceInventoryRowV1]) -> String {
+    if rows.is_empty() {
+        return "(no spaces registered; create one with `tonk space new <name>`)".to_owned();
+    }
+    let mut out = String::from("NAME\tSUBJECT\tACCOUNT\tROLE\tACCESS");
+    for row in rows {
+        out.push_str(&format!(
+            "\n{}\t{}\t{}\t{}\t{}",
+            row.name,
+            row.subject,
+            row.account.as_deref().unwrap_or("-"),
+            row.role,
+            if row.access { "yes" } else { "no" },
+        ));
+    }
+    if rows.iter().any(|row| !row.access) {
+        out.push_str(
+            "\n\nspaces marked no belong to another account; sign back into it, \
+             or ask its owner for an invite",
+        );
+    }
+    out
+}
+
 /// Inspect the registry and every replica it names without remote I/O.
 pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalSpaceInventory> {
     let registry = store.load()?;

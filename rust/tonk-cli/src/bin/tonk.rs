@@ -1917,28 +1917,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     Err(error) => print_failure(error),
                 };
             }
-            if report.rows.is_empty() {
-                println!("(no spaces registered; create one with `tonk space new <name>`)");
-            } else {
-                println!("NAME\tSUBJECT\tACCOUNT\tROLE\tACCESS");
-                for row in &report.rows {
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}",
-                        row.name,
-                        row.subject,
-                        row.account.as_deref().unwrap_or("-"),
-                        row.role,
-                        if row.access { "yes" } else { "no" },
-                    );
-                }
-                if report.rows.iter().any(|row| !row.access) {
-                    println!();
-                    println!(
-                        "spaces marked no belong to another account; sign back into it, \
-                         or ask its owner for an invite"
-                    );
-                }
-            }
+            println!("{}", tonk_cli::inventory::render(&report.rows));
             let registry = match store.load() {
                 Ok(registry) => registry,
                 Err(error) => return print_failure(error),
