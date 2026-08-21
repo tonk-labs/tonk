@@ -2717,7 +2717,7 @@ async fn mint_invite(
     no_shorten: bool,
     spot: Option<&str>,
 ) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+    let (selected, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -2732,6 +2732,11 @@ async fn mint_invite(
     // `--no-remote` suppresses only the embedded endpoint. The link
     // still belongs on the remote's origin: moving it to the canonical
     // base is the same split this resolution exists to prevent.
+    // Whether `None` below means "the user waved off a choice between
+    // several remotes" rather than "this space has none". The first
+    // still wants the canonical base; the second has no honest origin
+    // to offer.
+    let mut declined_an_origin = false;
     let resolved = match remote::resolve(&site, remote_name.as_deref()).await {
         Ok(record) => record,
         // `--no-remote` is the documented way out of the ambiguity
@@ -2744,6 +2749,7 @@ async fn mint_invite(
                  {base}\n         name an origin with `--base-url <URL>` if that is wrong",
                 base = invite::DEFAULT_BASE_URL,
             );
+            declined_an_origin = true;
             None
         }
         Err(err) => {
@@ -2785,7 +2791,27 @@ async fn mint_invite(
             Ok(derived) => derived,
             Err(err) => return print_failure(err),
         },
-        (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
+        (None, None) if declined_an_origin => invite::DEFAULT_BASE_URL.to_owned(),
+        // A space with no remote has no deployment serving it, so
+        // there is no origin a recipient could join it from. Minting
+        // against the canonical base would hand them a link to
+        // production, which holds none of this data — a share that
+        // reads as successful and works for nobody. Refuse instead,
+        // and name each way to give the space an origin.
+        (None, None) => {
+            let name = &selected.name;
+            let base = invite::DEFAULT_BASE_URL;
+            return print_error(format!(
+                "'{name}' has no remote, so there is nowhere to invite anyone to\n\
+                 \x20      its data lives only on this device, and a link would point at \
+                 {base}, which serves none of it\n\
+                 \x20      give it a home first: `tonk account link` then \
+                 `tonk space link {name}`, or `tonk remote add <name> <URL> \
+                 --revocation-url <URL>` then `tonk remote set-upstream <name>`\n\
+                 \x20      to mint against a deployment tonk doesn't know about, pass \
+                 `--base-url <URL>`"
+            ));
+        }
     };
 
     // Carried when the remote names one, absent when it does not. A relay is
