@@ -600,6 +600,61 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_rejects_a_delegated_revocation_naming_another_subject() {
+        // Borrowing the right to revoke on one subject does not grant it
+        // on another. ucanto covers the same escape as "with field must
+        // match"; here the delegation names the space, and the
+        // revocation is minted against an unrelated one.
+        let (space, _, invite, path) = invite_path().await;
+        let other_space = signer(9).await;
+        let borrowed = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space))
+            .audience(&invite.did())
+            .subject(Subject::Specific(other_space.did()))
+            .command(command())
+            .try_build()
+            .await
+            .unwrap();
+        let borrowed = DelegationChain::new(borrowed);
+        let target = path.proof_cids()[1];
+
+        // Mint by hand: `mint_delegated_revocation` would refuse before
+        // producing anything, and the point is that a hand-rolled
+        // artifact does not verify either.
+        let bytes = raw_revocation(invite, &path, Promised::Link(target), Some(&borrowed)).await;
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_delegated_revocation_without_the_target_attached() {
+        // The delegation that grants revocation authority pins what may
+        // be revoked. Detaching the target and naming a different one is
+        // ucanto's "nb.delegation field must match".
+        let (space, _, invite, path) = invite_path().await;
+        let granted = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(space.did()))
+            .command(command())
+            .try_build()
+            .await
+            .unwrap();
+        // The grant is attached, but the target delegation is not, so
+        // nothing ties this authority to the delegation being withdrawn.
+        let detached = DelegationChain::new(granted);
+        let target = path.proof_cids()[1];
+
+        let bytes = raw_revocation(invite, &path, Promised::Link(target), Some(&detached)).await;
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
     async fn it_rejects_an_unauthorized_issuer() {
         let (_, _, _, path) = invite_path().await;
         let outsider = signer(8).await;
