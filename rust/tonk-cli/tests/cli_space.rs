@@ -1393,3 +1393,134 @@ mod when_deleting_a_space {
         );
     }
 }
+
+/// Every listing verb speaks the one format, and every read verb has a
+/// machine-readable form.
+///
+/// These are pinned end to end through the binary rather than through
+/// `listing::Listing`, because the thing that regressed before was not the
+/// renderer — it was seven call sites each choosing whether to use one.
+mod when_reading {
+    use super::*;
+
+    /// A space with something in every listing this can populate without
+    /// a network or a file on disk.
+    ///
+    /// `remote` is separate because registering one also wires it as the
+    /// upstream, after which `tonk status` reaches for the wire — and the
+    /// remote here has nothing behind it.
+    fn populated(state: &Path, remote: bool) {
+        let run = |args: &[&str]| {
+            let out = run(state, args, &[("TONK_SPACE", "demo")]);
+            assert!(out.status.success(), "{args:?} failed: {}", stderr_of(&out));
+        };
+        run(&["space", "new", "demo"]);
+        run(&["concept", "add", "task", "--attr", "title:text:one"]);
+        run(&["view", "add", "task", "--template", "<b>{title}</b>"]);
+        if remote {
+            run(&["remote", "add", "origin", DEAD_REMOTE]);
+        }
+    }
+
+    const LISTINGS: [&[&str]; 5] = [
+        &["concept", "ls"],
+        &["view", "ls"],
+        &["blob", "ls"],
+        &["remote", "list"],
+        &["space", "list"],
+    ];
+
+    /// An empty listing is one parenthesised sentence, not silence. The
+    /// silent ones read as a broken command to anyone who ran them before
+    /// there was anything to see.
+    #[dialog_common::test]
+    fn it_says_so_when_a_listing_is_empty() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let created = run(state.path(), &["space", "new", "demo"], &[]);
+        assert!(created.status.success(), "{}", stderr_of(&created));
+
+        for args in LISTINGS {
+            let out = run(state.path(), args, &[("TONK_SPACE", "demo")]);
+            let stdout = stdout_of(&out);
+            if args == ["space", "list"] {
+                // The one listing that is never empty: the space just
+                // created is in it.
+                continue;
+            }
+            assert!(
+                stdout.starts_with('(') && stdout.trim_end().ends_with(')'),
+                "{args:?} should print one parenthesised line when empty, saw:\n{stdout}"
+            );
+        }
+    }
+
+    /// One header row, tab separated, with the same column count on every
+    /// row under it.
+    #[dialog_common::test]
+    fn it_heads_every_populated_listing_with_its_columns() {
+        let state = tempfile::tempdir().expect("tempdir");
+        populated(state.path(), true);
+
+        for args in LISTINGS {
+            if args == ["blob", "ls"] {
+                continue; // nothing ingests a blob without a file to read
+            }
+            let out = run(state.path(), args, &[("TONK_SPACE", "demo")]);
+            let stdout = stdout_of(&out);
+            let mut lines = stdout.lines();
+            let header = lines.next().unwrap_or_default();
+            assert!(
+                header.split('\t').all(|c| c == c.to_uppercase()),
+                "{args:?} should lead with an upper-case header, saw:\n{stdout}"
+            );
+            let columns = header.split('\t').count();
+            for row in lines.take_while(|line| !line.is_empty()) {
+                assert_eq!(
+                    row.split('\t').count(),
+                    columns,
+                    "{args:?} row {row:?} does not match its header {header:?}"
+                );
+            }
+        }
+    }
+
+    /// The gap this closes was four of thirteen reads, so the guard is
+    /// the whole list rather than the ones that happened to get one.
+    #[dialog_common::test]
+    fn it_offers_json_on_every_read() {
+        let state = tempfile::tempdir().expect("tempdir");
+        populated(state.path(), false);
+
+        for args in [
+            vec!["context", "--json"],
+            vec!["status", "--json"],
+            vec!["use", "--json"],
+            vec!["query", "task", "--json"],
+            vec!["concept", "ls", "--json"],
+            vec!["view", "ls", "--json"],
+            vec!["blob", "ls", "--json"],
+            vec!["space", "list", "--json"],
+        ] {
+            let out = run(state.path(), &args, &[("TONK_SPACE", "demo")]);
+            assert!(out.status.success(), "{args:?} failed: {}", stderr_of(&out));
+            let stdout = stdout_of(&out);
+            serde_json::from_str::<serde_json::Value>(&stdout)
+                .unwrap_or_else(|e| panic!("{args:?} did not emit JSON ({e}):\n{stdout}"));
+        }
+
+        // Separate state: registering a remote wires the upstream, which
+        // is what `status` above must not have.
+        let with_remote = tempfile::tempdir().expect("tempdir");
+        populated(with_remote.path(), true);
+        let out = run(
+            with_remote.path(),
+            &["remote", "list", "--json"],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(out.status.success(), "{}", stderr_of(&out));
+        let stdout = stdout_of(&out);
+        let rows: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("remote list --json ({e}):\n{stdout}"));
+        assert_eq!(rows[0]["name"], "origin", "{stdout}");
+    }
+}

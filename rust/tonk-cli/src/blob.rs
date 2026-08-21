@@ -247,6 +247,8 @@ pub async fn cat(
 
 /// One row of [`ls`]: a blob's entity, plus the metadata facts
 /// [`add`] asserted alongside it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LsRow {
     /// The blob's `blob:<hash>` entity.
     pub entity: Entity,

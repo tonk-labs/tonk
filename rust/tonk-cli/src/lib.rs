@@ -55,6 +55,7 @@ pub mod inventory;
 pub mod invite;
 /// Migrating a CSV export written by a pre-dialog-upgrade build.
 pub mod legacy;
+pub mod listing;
 pub mod migrate;
 pub mod output;
 pub mod recovery;

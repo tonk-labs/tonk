@@ -17,13 +17,14 @@ use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
 use tonk_cli::data_ops;
 use tonk_cli::eval::{self, EvalError, Source};
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
+use tonk_cli::listing::{self, Listing};
 use tonk_cli::migrate::{self, Mode as MigrateMode};
 use tonk_cli::output::Format;
 use tonk_cli::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
 use tonk_cli::render::{self, RenderRoute};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
-use tonk_cli::views::{self, ViewSummary};
+use tonk_cli::views;
 use tonk_cli::{ExitCode, account, account_spaces, agents, context, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
@@ -132,8 +133,12 @@ enum Command {
     /// Prints `synced`, `ahead`, `behind`, `diverged`, or
     /// `no-upstream`, followed by the current local tree hash. Read-only —
     /// fetches the upstream head without merging.
-    #[command(after_help = "Examples:\n  tonk status")]
-    Status,
+    #[command(after_help = "Examples:\n  tonk status\n  tonk status --json")]
+    Status {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
 
     // -- author -------------------------------------------------------
     /// Define a concept (schema) with typed attributes
@@ -356,6 +361,9 @@ enum Command {
         /// A registered space name. Omit it to inspect the current selection.
         #[arg(value_name = "NAME")]
         name: Option<String>,
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Manage spaces: named, centrally registered fact stores
@@ -513,7 +521,12 @@ enum AgentsCommand {
 #[derive(Subcommand, Debug)]
 enum AccountCommand {
     /// Show whether this device is signed in, and to which account
-    Status,
+    #[command(after_help = "Examples:\n  tonk account status\n  tonk account status --json")]
+    Status {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Pull the account so devices, spots, and names read current facts
     ///
@@ -595,10 +608,14 @@ enum AccountCommand {
     Migrate,
 
     /// List the devices linked to this profile's account
+    #[command(after_help = "Examples:\n  tonk account devices\n  tonk account devices --json")]
     Devices {
         /// Account service base URL; defaults to the linked provider.
         #[arg(long, value_name = "URL", hide = true)]
         service_url: Option<String>,
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Revoke one of the account's devices by DID
@@ -625,7 +642,12 @@ enum AccountCommand {
 #[derive(Subcommand, Debug)]
 enum AccountSpacesCommand {
     /// List remote account spaces and local registration state
-    List,
+    #[command(after_help = "Examples:\n  tonk account spaces\n  tonk account spaces list --json")]
+    List {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Pull one exact repository subject into canonical local storage
     Pull {
         /// Full repository subject DID.
@@ -687,8 +709,12 @@ enum RemoteCommand {
     },
 
     /// Print every remote registered on the meta branch
-    #[command(after_help = "Examples:\n  tonk remote list")]
-    List,
+    #[command(after_help = "Examples:\n  tonk remote list\n  tonk remote list --json")]
+    List {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Wire local main's upstream to <remote>/main
     #[command(after_help = "Examples:\n  tonk remote set-upstream prod")]
@@ -830,8 +856,12 @@ enum BlobCommand {
     /// facts `tonk blob add` asserts, so bytes attached without
     /// metadata don't appear, and a row means the facts are here, not
     /// necessarily the bytes.
-    #[command(after_help = "Examples:\n  tonk blob ls")]
-    Ls,
+    #[command(after_help = "Examples:\n  tonk blob ls\n  tonk blob ls --json")]
+    Ls {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -866,8 +896,12 @@ enum ConceptCommand {
     /// library, the space-home recipe — is omitted; it resolves
     /// everywhere and would bury what you defined. `tonk schema`
     /// still shows the whole branch.
-    #[command(after_help = "Examples:\n  tonk concept ls")]
-    Ls,
+    #[command(after_help = "Examples:\n  tonk concept ls\n  tonk concept ls --json")]
+    Ls {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -908,8 +942,12 @@ enum ViewCommand {
     /// anything the display stack or the host route would render,
     /// regardless of how the claim was asserted. Standard-library
     /// views are omitted.
-    #[command(after_help = "Examples:\n  tonk view ls")]
-    Ls,
+    #[command(after_help = "Examples:\n  tonk view ls\n  tonk view ls --json")]
+    Ls {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The switches every write verb takes, matching `tonk eval`'s.
@@ -1037,12 +1075,12 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Account { command } => (
             "account",
             Some(match command {
-                AccountCommand::Status => "status",
+                AccountCommand::Status { .. } => "status",
                 AccountCommand::Link { .. } => "link",
                 AccountCommand::Logout => "logout",
                 AccountCommand::Delete { .. } => "delete",
                 AccountCommand::Spaces { command } => match command {
-                    None | Some(AccountSpacesCommand::List) => "spaces-list",
+                    None | Some(AccountSpacesCommand::List { .. }) => "spaces-list",
                     Some(AccountSpacesCommand::Pull { .. }) => "spaces-pull",
                     Some(AccountSpacesCommand::Delete { .. }) => "spaces-delete",
                 },
@@ -1064,14 +1102,14 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Import { .. } => ("import", None),
         Command::Push => ("push", None),
         Command::Pull => ("pull", None),
-        Command::Status => ("status", None),
+        Command::Status { .. } => ("status", None),
         Command::Invite { .. } => ("invite", None),
         Command::Join { .. } => ("join", None),
         Command::Remote { command } => (
             "remote",
             Some(match command {
                 RemoteCommand::Add { .. } => "add",
-                RemoteCommand::List => "list",
+                RemoteCommand::List { .. } => "list",
                 RemoteCommand::SetUpstream { .. } => "set-upstream",
             }),
         ),
@@ -1079,14 +1117,14 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             "concept",
             Some(match command {
                 ConceptCommand::Add { .. } => "add",
-                ConceptCommand::Ls => "ls",
+                ConceptCommand::Ls { .. } => "ls",
             }),
         ),
         Command::View { command } => (
             "view",
             Some(match command {
                 ViewCommand::Add { .. } => "add",
-                ViewCommand::Ls => "ls",
+                ViewCommand::Ls { .. } => "ls",
             }),
         ),
         Command::Home { .. } => ("home", None),
@@ -1097,7 +1135,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             Some(match command {
                 BlobCommand::Add { .. } => "add",
                 BlobCommand::Cat { .. } => "cat",
-                BlobCommand::Ls => "ls",
+                BlobCommand::Ls { .. } => "ls",
             }),
         ),
     }
@@ -1120,7 +1158,7 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Import { .. }
             | Command::Push
             | Command::Pull
-            | Command::Status
+            | Command::Status { .. }
             | Command::Invite { .. }
             | Command::Remote { .. }
             | Command::Blob { .. }
@@ -1195,7 +1233,7 @@ async fn main() {
     let exit = match command {
         Command::Context { json } => context_op(json, space.as_deref()).await,
         Command::Agents { json, command } => agents_op(json, command, space.as_deref()).await,
-        Command::Use { name } => use_op(name, space.as_deref()).await,
+        Command::Use { name, json } => use_op(name, json, space.as_deref()).await,
         Command::Space { command } => space_op(command, space.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
@@ -1235,7 +1273,7 @@ async fn main() {
         Command::Import { file, branch } => import_op(file, &branch, space.as_deref()).await,
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
-        Command::Status => status_op(space.as_deref()).await,
+        Command::Status { json } => status_op(json, space.as_deref()).await,
         Command::Invite {
             base_url,
             remote,
@@ -1485,6 +1523,96 @@ async fn print_customer_line(
     }
 }
 
+/// `tonk account status --json`.
+///
+/// One flat object across all three states rather than a tagged union: a
+/// caller asking "am I signed in, and to what" should not have to branch on
+/// a discriminant to find out.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountStatusV1 {
+    version: u8,
+    signed_in: bool,
+    account: Option<String>,
+    device: String,
+    account_service: Option<String>,
+    /// Hydration state of the account repository; `None` when signed out.
+    account_state: Option<String>,
+    /// Access-service registration, or `None` when it could not be read.
+    access_service: Option<String>,
+}
+
+/// The same facts [`render_account_status`] and [`print_customer_line`]
+/// print, as one structured record.
+async fn account_status_json(
+    profile: &dialog_operator::Profile,
+    store: &tonk_cli::space::SpaceStore,
+    status: &account::AccountStatus,
+) -> AccountStatusV1 {
+    let access_service = match status {
+        account::AccountStatus::Registered { .. } => customer_state(profile, store).await,
+        _ => None,
+    };
+    match status {
+        account::AccountStatus::MissingRoot { device_did } => AccountStatusV1 {
+            version: 1,
+            signed_in: false,
+            account: None,
+            device: device_did.clone(),
+            account_service: None,
+            account_state: None,
+            access_service,
+        },
+        account::AccountStatus::Unregistered {
+            root_did,
+            device_did,
+        } => AccountStatusV1 {
+            version: 1,
+            signed_in: false,
+            account: Some(root_did.clone()),
+            device: device_did.clone(),
+            account_service: None,
+            account_state: None,
+            access_service,
+        },
+        account::AccountStatus::Registered {
+            root_did,
+            device_did,
+            provider,
+            account_state,
+        } => AccountStatusV1 {
+            version: 1,
+            signed_in: true,
+            account: Some(root_did.clone()),
+            device: device_did.clone(),
+            account_service: Some(provider.clone()),
+            account_state: Some(account_state_label(*account_state).to_owned()),
+            access_service,
+        },
+    }
+}
+
+/// Access-service registration as one token, or `None` when the answer
+/// could not be read — which is not the same as "not registered".
+async fn customer_state(
+    profile: &dialog_operator::Profile,
+    store: &tonk_cli::space::SpaceStore,
+) -> Option<String> {
+    use tonk_account::customer::CustomerStatus;
+    match tonk_cli::customer::registration_state_in(profile, store).await {
+        Ok(Some(Some(receipt))) => Some(
+            match receipt.status {
+                CustomerStatus::Active => "registered",
+                CustomerStatus::Registered => "awaiting-email-confirmation",
+                CustomerStatus::Suspended => "suspended",
+            }
+            .to_owned(),
+        ),
+        Ok(Some(None)) => Some("not-registered".to_owned()),
+        Ok(None) | Err(_) => None,
+    }
+}
+
 /// `tonk account link` — run the browser ceremony and record the one account
 /// this installation is signed into.
 ///
@@ -1605,7 +1733,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     };
     match command {
         AccountCommand::Link { .. } => unreachable!("handled above"),
-        AccountCommand::Status => match account::status_in(&profile, &store).await {
+        AccountCommand::Status { json } => match account::status_in(&profile, &store).await {
             Ok(mut status) => {
                 // An unhydrated account retries its first sync right
                 // here, bounded: the status read is the natural moment
@@ -1642,6 +1770,9 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                         Ok(Err(error)) => eprintln!("warning: account sync attempt: {error:#}"),
                         Err(_) => eprintln!("warning: account sync attempt timed out"),
                     }
+                }
+                if json {
+                    return print_json(&account_status_json(&profile, &store, &status).await);
                 }
                 let linked = matches!(status, account::AccountStatus::Registered { .. });
                 println!("{}", render_account_status(status));
@@ -1703,77 +1834,103 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
-        AccountCommand::Spaces { command } => match command.unwrap_or(AccountSpacesCommand::List) {
-            AccountSpacesCommand::List => match account_spaces::list(&profile, &store).await {
-                Ok(rows) => {
-                    if rows.is_empty() {
-                        println!("(no spaces listed in the account directory)");
-                    } else {
-                        for row in rows {
-                            let state = if row.ambiguous {
-                                "ambiguous"
-                            } else if row.local_name.is_some() {
-                                "local"
-                            } else {
-                                "remote"
-                            };
-                            let name = row
-                                .remote_name
-                                .as_deref()
-                                .or(row.local_name.as_deref())
-                                .unwrap_or("-");
-                            println!("{state}\t{name}\t{}", row.subject);
+        AccountCommand::Spaces { command } => {
+            match command.unwrap_or(AccountSpacesCommand::List { json: false }) {
+                AccountSpacesCommand::List { json } => {
+                    match account_spaces::list(&profile, &store).await {
+                        Ok(rows) if json => print_json(&rows),
+                        Ok(rows) => {
+                            let mut listing = Listing::new(
+                                &["STATE", "NAME", "SUBJECT"],
+                                "no spaces listed in the account directory",
+                            );
+                            for row in &rows {
+                                let state = if row.ambiguous {
+                                    "ambiguous"
+                                } else if row.local_name.is_some() {
+                                    "local"
+                                } else {
+                                    "remote"
+                                };
+                                listing.push([
+                                    state.to_owned(),
+                                    listing::cell(
+                                        row.remote_name.as_deref().or(row.local_name.as_deref()),
+                                    ),
+                                    row.subject.clone(),
+                                ]);
+                            }
+                            println!("{}", listing.render());
+                            ExitCode::Success
                         }
+                        Err(error) => print_failure(error),
                     }
-                    ExitCode::Success
                 }
-                Err(error) => print_failure(error),
-            },
-            AccountSpacesCommand::Pull { subject, name } => {
-                match account_spaces::pull(&profile, &store, &subject, name.as_deref()).await {
-                    Ok(outcome) => {
-                        if outcome.already_local {
-                            println!("already local\t{}\t{}", outcome.name, outcome.subject);
-                        } else {
-                            println!("pulled\t{}\t{}", outcome.name, outcome.subject);
-                            println!("site: {}", outcome.site.display());
+                AccountSpacesCommand::Pull { subject, name } => {
+                    match account_spaces::pull(&profile, &store, &subject, name.as_deref()).await {
+                        Ok(outcome) => {
+                            if outcome.already_local {
+                                println!("already local\t{}\t{}", outcome.name, outcome.subject);
+                            } else {
+                                println!("pulled\t{}\t{}", outcome.name, outcome.subject);
+                                println!("site: {}", outcome.site.display());
+                            }
+                            if let Some(warning) = outcome.warning {
+                                eprintln!("warning: {warning}");
+                            }
+                            ExitCode::Success
                         }
-                        if let Some(warning) = outcome.warning {
-                            eprintln!("warning: {warning}");
-                        }
+                        Err(error) => print_failure(error),
+                    }
+                }
+                AccountSpacesCommand::Delete {
+                    subject,
+                    account_url,
+                    no_open,
+                } => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
+                    .await
+                {
+                    Ok(url) => {
+                        println!("Review permanent deletion of {subject} in your browser:\n{url}");
+                        println!(
+                            "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
+                        );
                         ExitCode::Success
                     }
                     Err(error) => print_failure(error),
-                }
+                },
             }
-            AccountSpacesCommand::Delete {
-                subject,
-                account_url,
-                no_open,
-            } => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
-                .await
-            {
-                Ok(url) => {
-                    println!("Review permanent deletion of {subject} in your browser:\n{url}");
-                    println!(
-                        "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
-                    );
-                    ExitCode::Success
-                }
-                Err(error) => print_failure(error),
-            },
-        },
-        AccountCommand::Devices { service_url } => {
+        }
+        AccountCommand::Devices { service_url, json } => {
             match account::devices_in(&profile, &store, service_url.as_deref()).await {
                 Ok(rows) => {
                     let own = profile.did().to_string();
-                    for row in rows {
-                        let marker = if row.did == own { " (this device)" } else { "" };
-                        // Every listed row is a live grant; the fixed
-                        // "active" column keeps the output shape scripts
-                        // and tests already parse.
-                        println!("active\t{}\t{}{}", row.name, row.did, marker);
+                    if json {
+                        let rows: Vec<_> = rows
+                            .into_iter()
+                            .map(|row| DeviceRowV1 {
+                                version: 1,
+                                status: "active".to_owned(),
+                                name: row.name,
+                                did: row.did.clone(),
+                                this_device: row.did == own,
+                            })
+                            .collect();
+                        return print_json(&rows);
                     }
+                    let mut listing = Listing::new(
+                        &["STATUS", "NAME", "DID", "THIS"],
+                        "no devices are linked to this account",
+                    );
+                    for row in &rows {
+                        listing.push([
+                            "active".to_owned(),
+                            row.name.clone(),
+                            row.did.clone(),
+                            if row.did == own { "yes" } else { "no" }.to_owned(),
+                        ]);
+                    }
+                    println!("{}", listing.render());
                     ExitCode::Success
                 }
                 Err(error) => print_failure(error),
@@ -1813,7 +1970,7 @@ async fn record_space_best_effort(name: &str, site: &site::TonkSite) {
 }
 
 /// `tonk use [name]` — inspect the active space or bind this directory.
-async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
+async fn use_op(name: Option<String>, json: bool, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
         Err(err) => return print_failure(err),
@@ -1821,6 +1978,12 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
     let cwd = working_directory();
     match name {
         Some(name) => {
+            if json {
+                return print_error(
+                    "`--json` reports the active space and cannot be combined with a name"
+                        .to_owned(),
+                );
+            }
             let Some(cwd) = cwd else {
                 return print_error("could not read the current directory".to_owned());
             };
@@ -1844,18 +2007,30 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
         }
         None => {
             let env = space_from_environment();
-            match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
-                Ok(active) => println!(
+            let active = match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
+                Ok(active) => Some(active),
+                Err(
+                    tonk_cli::space::SpaceError::NoSelection
+                    | tonk_cli::space::SpaceError::NothingRegistered,
+                ) => None,
+                Err(error) => return print_failure(error),
+            };
+            if json {
+                return print_json(&ActiveSpaceV1 {
+                    version: 1,
+                    space: active.as_ref().map(|a| a.name.clone()),
+                    site: active.as_ref().map(|a| a.site.display().to_string()),
+                    selected_via: active.as_ref().map(|a| a.source.to_string()),
+                });
+            }
+            match &active {
+                Some(active) => println!(
                     "current space: {}\nsite: {}\nselected via: {}",
                     active.name,
                     active.site.display(),
                     active.source,
                 ),
-                Err(
-                    tonk_cli::space::SpaceError::NoSelection
-                    | tonk_cli::space::SpaceError::NothingRegistered,
-                ) => println!("current space: (none)"),
-                Err(error) => return print_failure(error),
+                None => println!("current space: (none)"),
             }
             println!("next: tonk context");
             ExitCode::Success
@@ -2589,34 +2764,104 @@ fn print_sync_outcome(op: SyncOp, outcome: &SyncOutcome) {
     }
 }
 
-async fn status_op(space: Option<&str>) -> ExitCode {
+async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
     let (resolved, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
+    let status = match sync::status_with_hash(&site).await {
+        Ok(status) => status,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return err.exit_code();
+        }
+    };
+    if json {
+        let report = StatusReportV1 {
+            version: 1,
+            space: resolved.name,
+            selected_via: resolved.source.to_string(),
+            site: site.root.display().to_string(),
+            state: sync_state_token(status.state).to_owned(),
+            hash: status.hash.map(|hash| hash.to_string()),
+        };
+        return print_json(&report);
+    }
     println!(
         "space: {name} ({source})",
         name = resolved.name,
         source = resolved.source,
     );
+    println!("{}", render_sync_state(status.state));
+    if let Some(hash) = status.hash {
+        println!("hash: {hash}");
+    }
+    ExitCode::Success
+}
 
-    match sync::status_with_hash(&site).await {
-        Ok(status) => {
-            println!("{}", render_sync_state(status.state));
-            if let Some(hash) = status.hash {
-                println!("hash: {hash}");
-            }
+/// `tonk status --json`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusReportV1 {
+    version: u8,
+    space: String,
+    selected_via: String,
+    site: String,
+    /// `NoUpstream`, `Synced`, `Ahead`, `Behind`, or `Diverged`.
+    state: String,
+    hash: Option<String>,
+}
+
+/// One row of `tonk account devices --json`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceRowV1 {
+    version: u8,
+    status: String,
+    name: String,
+    did: String,
+    /// Whether this row is the device the command ran on.
+    this_device: bool,
+}
+
+/// `tonk use --json`, and the no-selection case it has to be able to say.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveSpaceV1 {
+    version: u8,
+    space: Option<String>,
+    site: Option<String>,
+    selected_via: Option<String>,
+}
+
+/// Write `value` to stdout as the pretty JSON every `--json` read prints.
+fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => {
+            println!("{text}");
             ExitCode::Success
         }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
+        Err(err) => print_error(format!("could not encode JSON: {err}")),
+    }
+}
+
+/// The bare kebab-case token for a [`tonk_schema::SyncState`], which is
+/// also the first word [`render_sync_state`] prints. `--json` carries this
+/// rather than the Rust variant name, so the two forms of `tonk status`
+/// name the same state the same way.
+fn sync_state_token(state: tonk_schema::SyncState) -> &'static str {
+    use tonk_schema::SyncState;
+    match state {
+        SyncState::NoUpstream => "no-upstream",
+        SyncState::Synced => "synced",
+        SyncState::Ahead => "ahead",
+        SyncState::Behind => "behind",
+        SyncState::Diverged => "diverged",
     }
 }
 
 /// One-line rendering of a [`tonk_schema::SyncState`]: the
-/// kebab-case token plus a short gloss of what to do about it.
+/// [`sync_state_token`] plus a short gloss of what to do about it.
 fn render_sync_state(state: tonk_schema::SyncState) -> &'static str {
     use tonk_schema::SyncState;
     match state {
@@ -2706,7 +2951,8 @@ async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
                 }
             }
         }
-        RemoteCommand::List => match remote::list(&site).await {
+        RemoteCommand::List { json } => match remote::list(&site).await {
+            Ok(records) if json => print_json(&records),
             Ok(records) => {
                 print_remote_list(&records);
                 ExitCode::Success
@@ -2742,19 +2988,19 @@ fn print_remote_add_outcome(outcome: &AddOutcome) {
 }
 
 fn print_remote_list(records: &[RemoteRecord]) {
-    if records.is_empty() {
-        println!("(no remotes registered)");
-        return;
-    }
+    let mut listing = Listing::new(
+        &["NAME", "ENDPOINT", "SUBJECT", "REVOCATION"],
+        "no remotes registered; add one with `tonk remote add <name> <url>`",
+    );
     for record in records {
-        println!(
-            "{name}\t{endpoint}\t{subject}\t{revocation}",
-            name = record.name,
-            endpoint = record.endpoint,
-            subject = record.subject,
-            revocation = record.revocation_url.as_deref().unwrap_or("-"),
-        );
+        listing.push([
+            record.name.clone(),
+            record.endpoint.clone(),
+            record.subject.to_string(),
+            listing::cell(record.revocation_url.as_deref()),
+        ]);
     }
+    println!("{}", listing.render());
 }
 
 async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
@@ -2786,7 +3032,8 @@ async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
                 }
             }
         }
-        BlobCommand::Ls => match blob::ls(&site).await {
+        BlobCommand::Ls { json } => match blob::ls(&site).await {
+            Ok(rows) if json => print_json(&rows),
             Ok(rows) => {
                 print_blob_ls(&rows);
                 ExitCode::Success
@@ -2800,14 +3047,18 @@ async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
 }
 
 fn print_blob_ls(rows: &[blob::LsRow]) {
+    let mut listing = Listing::new(
+        &["ENTITY", "CONTENT-TYPE", "NAME"],
+        "no blobs on this branch; add one with `tonk blob add <path>`",
+    );
     for row in rows {
-        println!(
-            "{uri}\t{content_type}\t{name}",
-            uri = row.entity.as_str(),
-            content_type = row.content_type.as_deref().unwrap_or("-"),
-            name = row.name.as_deref().unwrap_or("-"),
-        );
+        listing.push([
+            row.entity.as_str().to_owned(),
+            listing::cell(row.content_type.as_deref()),
+            listing::cell(row.name.as_deref()),
+        ]);
     }
+    println!("{}", listing.render());
 }
 
 fn print_blob_add_outcome(outcome: &BlobAddOutcome) {
@@ -3142,18 +3393,25 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
 
 /// List user-defined concepts (`tonk concept ls`), one
 /// tab-separated `name<TAB>description` row per concept.
-async fn list_concepts_op(site: &site::TonkSite) -> ExitCode {
+async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
     let concepts = match schema::list_concepts(site).await {
         Ok(c) => c,
         Err(err) => return print_failure(err),
     };
-    let mut stdout = std::io::stdout().lock();
-    for concept in &concepts {
-        let description = concept.description.as_deref().unwrap_or("");
-        if let Err(e) = writeln!(stdout, "{}\t{}", concept.name, description) {
-            return print_error(format!("failed to write stdout: {e}"));
-        }
+    if json {
+        return print_json(&concepts);
     }
+    let mut listing = Listing::new(
+        &["NAME", "DESCRIPTION"],
+        "this space defines no concepts; add one with `tonk concept add <name> --attr <field>:<type>:<card>`",
+    );
+    for concept in &concepts {
+        listing.push([
+            concept.name.clone(),
+            listing::cell(concept.description.as_deref()),
+        ]);
+    }
+    println!("{}", listing.render());
     ExitCode::Success
 }
 
@@ -3329,7 +3587,7 @@ async fn concept_op(command: ConceptCommand, space: Option<&str>) -> ExitCode {
                 }
             }
         }
-        ConceptCommand::Ls => list_concepts_op(&site).await,
+        ConceptCommand::Ls { json } => list_concepts_op(&site, json).await,
     }
 }
 
@@ -3384,7 +3642,7 @@ async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
                 }
             }
         }
-        ViewCommand::Ls => list_views_op(&site).await,
+        ViewCommand::Ls { json } => list_views_op(&site, json).await,
     }
 }
 
@@ -3414,29 +3672,28 @@ async fn home_op(models: Vec<String>, write: WriteArgs, space: Option<&str>) -> 
 /// List renderable entities (`tonk view ls`), one tab-separated
 /// `name<TAB>entity<TAB>model<TAB>bytes` row per template-claim
 /// carrier.
-async fn list_views_op(site: &site::TonkSite) -> ExitCode {
+async fn list_views_op(site: &site::TonkSite, json: bool) -> ExitCode {
     let listed = match views::list(site).await {
         Ok(v) => v,
         Err(err) => return print_failure(err),
     };
-    let mut stdout = std::io::stdout().lock();
-    for row in &listed {
-        let result = print_view_row(&mut stdout, row);
-        if let Err(e) = result {
-            return print_error(format!("failed to write stdout: {e}"));
-        }
+    if json {
+        return print_json(&listed);
     }
+    let mut listing = Listing::new(
+        &["NAME", "ENTITY", "MODEL", "BYTES"],
+        "no renderable entities on this branch; author one with `tonk view add <concept> --template <html>`",
+    );
+    for row in &listed {
+        listing.push([
+            listing::cell(row.name.as_deref()),
+            row.entity.to_string(),
+            listing::cell(row.model.as_deref()),
+            row.body_bytes.to_string(),
+        ]);
+    }
+    println!("{}", listing.render());
     ExitCode::Success
-}
-
-fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::Result<()> {
-    let name = row.name.as_deref().unwrap_or("-");
-    let model = row.model.as_deref().unwrap_or("-");
-    writeln!(
-        out,
-        "{}\t{}\t{}\t{}",
-        name, row.entity, model, row.body_bytes
-    )
 }
 
 async fn print_schema(concept: Option<String>, space: Option<&str>) -> ExitCode {
@@ -3711,7 +3968,9 @@ mod account_spaces_parser_tests {
             else {
                 panic!("expected account spaces");
             };
-            assert!(command.is_none() || matches!(command, Some(AccountSpacesCommand::List)));
+            assert!(
+                command.is_none() || matches!(command, Some(AccountSpacesCommand::List { .. }))
+            );
         }
     }
 

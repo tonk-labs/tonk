@@ -23,7 +23,8 @@ use crate::site::TonkSite;
 use crate::space::{self, SpaceStore};
 
 /// One row rendered by `tonk account spaces`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountSpaceRow {
     /// Repository subject DID.
     pub subject: String,
