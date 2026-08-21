@@ -20,7 +20,7 @@ fn binary() -> std::path::PathBuf {
 
 fn spawn_link(home: &std::path::Path) -> Child {
     Command::new(binary())
-        .args(["account", "link", "--no-open"])
+        .args(["account", "login", "--no-open"])
         .current_dir(home)
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join("data"))
@@ -36,7 +36,7 @@ fn spawn_link(home: &std::path::Path) -> Child {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("start tonk account link")
+        .expect("start tonk account login")
 }
 
 /// The approval URL the command prints, without blocking the test forever
@@ -79,7 +79,7 @@ fn interrupt(child: &mut Child) -> String {
     let status = wait_for_exit(child, Duration::from_secs(5)).unwrap_or_else(|| {
         child.kill().expect("kill stuck tonk process");
         child.wait().expect("reap stuck tonk process");
-        panic!("tonk account link stayed alive after SIGINT");
+        panic!("tonk account login stayed alive after SIGINT");
     });
     let mut stderr = String::new();
     child
@@ -121,7 +121,7 @@ fn account_link_can_be_interrupted_during_the_callback_wait() {
     let stderr = interrupt(&mut child);
 
     assert!(
-        stderr.contains("account link cancelled"),
+        stderr.contains("account login cancelled"),
         "stderr: {stderr}"
     );
 }

@@ -250,7 +250,7 @@ async fn stored_provider_for_store(
 /// What to tell a device that has no account when it asks for durable
 /// authority. Names the one command that provisions both the root and the
 /// account it belongs to.
-const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account link`";
+const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account login`";
 
 /// Refuse unless this profile holds an account.
 ///
@@ -445,7 +445,7 @@ async fn link_via_callback(
         result = callback.receive(redirect_origin) => result?,
         signal = &mut ctrl_c => {
             signal.context("failed to listen for Ctrl-C")?;
-            bail!("account link cancelled");
+            bail!("account login cancelled");
         }
     };
     let bytes = match received {
@@ -840,7 +840,7 @@ pub async fn devices_in(
 ) -> Result<Vec<DeviceRow>> {
     let connection = optional_connection_in(profile, store)
         .await?
-        .context("no active account; run `tonk account link`")?;
+        .context("no active account; run `tonk account login`")?;
     if let Some(service_url) = service_url
         && connection.service_url.trim_end_matches('/') != service_url.trim_end_matches('/')
     {
@@ -948,7 +948,7 @@ async fn account_branch(
     )
     .await
     .map_err(|_| anyhow::anyhow!("the account remote did not answer while mounting"))??
-    .context("the account repository is not mounted; run `tonk account link`")
+    .context("the account repository is not mounted; run `tonk account login`")
 }
 
 /// Publish a revocation everywhere it could still be honoured — the
@@ -1042,7 +1042,7 @@ async fn retract_device_rows(
 
 /// The browser URL that asks the account to delegate to this CLI profile.
 ///
-/// The same page `account link` opens, with two query parameters instead of a
+/// The same page `account login` opens, with two query parameters instead of a
 /// fragment secret: `audience` is the profile the account should delegate to,
 /// and `callback` is the loopback URL the page posts the grant back to. Both
 /// are percent-encoded — a callback URL contains `:` and `/`, and an
@@ -1111,7 +1111,7 @@ pub async fn revoke_in(
 ) -> Result<RevokeOutcome> {
     let connection = optional_connection_in(profile, store)
         .await?
-        .context("no active account; run `tonk account link`")?;
+        .context("no active account; run `tonk account login`")?;
     if connection.service_url.trim_end_matches('/') != options.service_url.trim_end_matches('/') {
         bail!("requested provider does not match the active account");
     }

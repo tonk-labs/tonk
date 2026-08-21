@@ -131,16 +131,19 @@ already half-renamed: `login` exists as a `visible_alias`, one hint says
 
 | now | becomes |
 |---|---|
-| `tonk account link` | `tonk account login` (canonical), `link` a hidden alias |
+| `tonk account link` | `tonk account login`, and nothing else |
 | `tonk account logout` | unchanged — it is already the pair for `login` |
-| `tonk space link <name>` | `tonk space adopt <name>`, or keep `link` |
+| `tonk space link <name>` | keeps `link` |
 
-`login`/`logout` is a pair anyone recognises, and it frees `link` to mean
-exactly one thing. Whether the space verb then keeps `link` or becomes
-`adopt` is a taste call; the point is that only one of the two keeps it.
+`login`/`logout` is a pair anyone recognises. No hidden `link` alias: keeping
+one would leave the collision in place, since `tonk account link` and `tonk
+space link` would both still resolve, which is exactly the state being fixed.
+Once the account side gives the word up, the space side can keep it — `link`
+then means one thing, so renaming it to `adopt` would only cost recognition.
 
-**Cost.** Additive if the old spellings stay as hidden aliases. Requires
-sweeping the ~10 hints that say `tonk account link`.
+**Cost.** Breaking on `tonk account link`, which fails loudly. Requires
+sweeping the ~10 hints that say it, plus the ones in tonk-ui and the account
+service that name the command.
 
 ## 4. Three unrelated operations are called `migrate`
 

@@ -84,7 +84,7 @@ impl AccountBoundOperator {
                 detail: error.to_string(),
             })?
             .ok_or_else(|| AuthorizeError::Malformed {
-                detail: "log in with `tonk account link` before accessing a remote".to_string(),
+                detail: "log in with `tonk account login` before accessing a remote".to_string(),
             })
     }
 

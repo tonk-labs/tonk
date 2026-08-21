@@ -137,7 +137,7 @@ async fn local_subjects(
 ///
 /// `tonk account spaces` must not depend on a prior `tonk account
 /// status` run having done the hydration: a linked-but-unhydrated
-/// profile is an ordinary state right after `tonk account link` on a
+/// profile is an ordinary state right after `tonk account login` on a
 /// fresh device, and reporting it as "no account" reads as data loss.
 async fn ready_account_branch(
     profile: &Profile,
@@ -154,7 +154,7 @@ async fn ready_account_branch(
             .await?;
     match outcome.status {
         AccountStateStatus::Unconfigured => {
-            bail!("no account is linked on this profile; run `tonk account link`")
+            bail!("no account is linked on this profile; run `tonk account login`")
         }
         AccountStateStatus::Unhydrated => bail!(
             "the account is linked but its first sync has not succeeded yet{}",

@@ -962,7 +962,7 @@ fn load_status(host: HtmlElement) {
                 });
             }
             // Without callback parameters there is nothing to approve:
-            // `tonk account link` always carries them.
+            // `tonk account login` always carries them.
             None => {
                 set_busy(&host, false, "");
                 set_mode(&host, "handoff");
@@ -1057,7 +1057,7 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
     }
 }
 
-/// The loopback URL a `tonk account link` run is waiting on, if any.
+/// The loopback URL a `tonk account login` run is waiting on, if any.
 ///
 /// The waiting process's audience and callback ride the query, so the
 /// approval never touches the account service.

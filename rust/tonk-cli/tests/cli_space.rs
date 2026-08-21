@@ -708,7 +708,7 @@ mod when_no_remote_is_registered_at_all {
         let output = run(state.path(), &["invite", "--no-shorten"], &[]);
         let stderr = stderr_of(&output);
 
-        assert!(stderr.contains("tonk account link"), "{stderr}");
+        assert!(stderr.contains("tonk account login"), "{stderr}");
         assert!(stderr.contains("tonk space link demo"), "{stderr}");
         assert!(stderr.contains("tonk remote add"), "{stderr}");
         assert!(stderr.contains("--base-url"), "{stderr}");

@@ -366,7 +366,7 @@ enum Command {
     /// ever, mostly when debugging delegation.
     #[command(
         hide = true,
-        after_help = "Examples:\n  tonk identity\n  tonk identity --reset\n\nProvisioning a root is part of `tonk account link`."
+        after_help = "Examples:\n  tonk identity\n  tonk identity --reset\n\nProvisioning a root is part of `tonk account login`."
     )]
     Identity {
         /// Wipe the on-disk profile and create a new one. This removes
@@ -532,10 +532,9 @@ enum AccountCommand {
     /// someone else; spaces that belong to the account you leave stay on
     /// disk and work again when it signs back in.
     #[command(
-        visible_alias = "login",
-        after_help = "Examples:\n  tonk account link\n  tonk account link --name workstation"
+        after_help = "Examples:\n  tonk account login\n  tonk account login --name workstation"
     )]
-    Link {
+    Login {
         /// Override the automatically generated OS/version device name.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
@@ -1085,7 +1084,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             "account",
             Some(match command {
                 AccountCommand::Status { .. } => "status",
-                AccountCommand::Link { .. } => "link",
+                AccountCommand::Login { .. } => "login",
                 AccountCommand::Logout => "logout",
                 AccountCommand::Delete { .. } => "delete",
                 AccountCommand::Spaces { command } => match command {
@@ -1347,7 +1346,7 @@ async fn main() {
 /// `identity link` action opened a provider-free browser ceremony that minted
 /// an anonymous root and printed handoff JSON to paste back. That root looked
 /// like an account to its owner and was not one — nothing could revoke it, and
-/// nothing backed up what it created. `tonk account link` runs the same
+/// nothing backed up what it created. `tonk account login` runs the same
 /// handoff with an account behind it.
 async fn identity(reset: bool) -> ExitCode {
     let result = if reset {
@@ -1360,7 +1359,7 @@ async fn identity(reset: bool) -> ExitCode {
             println!("device: {}", profile.did());
             match identity::local_root(&profile).await {
                 Ok(Some(root)) => println!("account: {}", root.root_did),
-                Ok(None) => println!("account: missing (run `tonk account link`)"),
+                Ok(None) => println!("account: missing (run `tonk account login`)"),
                 Err(error) => return print_failure(error),
             }
             ExitCode::Success
@@ -1621,7 +1620,7 @@ async fn customer_state(
     }
 }
 
-/// `tonk account link` — run the browser ceremony and record the one account
+/// `tonk account login` — run the browser ceremony and record the one account
 /// this installation is signed into.
 ///
 /// Refuses while another account is still signed in: one account at a time is
@@ -1723,7 +1722,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         Ok(store) => store,
         Err(error) => return print_failure(error),
     };
-    if let AccountCommand::Link {
+    if let AccountCommand::Login {
         name,
         service_url,
         no_open,
@@ -1733,14 +1732,14 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         return link_account(&store, name, service_url, no_open, via).await;
     }
     if matches!(command, AccountCommand::Spaces { .. }) && matches!(store.account(), Ok(None)) {
-        return print_error("no account is signed in; run `tonk account link`".to_owned());
+        return print_error("no account is signed in; run `tonk account login`".to_owned());
     }
     let profile = match identity::open().await {
         Ok(profile) => profile,
         Err(error) => return print_failure(error),
     };
     match command {
-        AccountCommand::Link { .. } => unreachable!("handled above"),
+        AccountCommand::Login { .. } => unreachable!("handled above"),
         AccountCommand::Status { json } => match account::status_in(&profile, &store).await {
             Ok(mut status) => {
                 // An unhydrated account retries its first sync right
@@ -3158,7 +3157,7 @@ async fn mint_invite(
                 "'{name}' has no remote, so there is nowhere to invite anyone to\n\
                  \x20      its data lives only on this device, and a link would point at \
                  {base}, which serves none of it\n\
-                 \x20      give it a home first: `tonk account link` then \
+                 \x20      give it a home first: `tonk account login` then \
                  `tonk space link {name}`, or `tonk remote add <name> <URL> \
                  --revocation-url <URL>`\n\
                  \x20      to mint against a deployment tonk doesn't know about, pass \
@@ -3867,26 +3866,26 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn account_link_name_is_none_when_omitted() {
-        let cli = Cli::try_parse_from(["tonk", "account", "link"]).unwrap();
+    fn account_login_name_is_none_when_omitted() {
+        let cli = Cli::try_parse_from(["tonk", "account", "login"]).unwrap();
         let Some(Command::Account {
-            command: AccountCommand::Link { name, .. },
+            command: AccountCommand::Login { name, .. },
         }) = cli.command
         else {
-            panic!("expected account link");
+            panic!("expected account login");
         };
         assert_eq!(name, None);
     }
 
     #[test]
-    fn account_link_name_preserves_an_explicit_override() {
+    fn account_login_name_preserves_an_explicit_override() {
         let cli =
-            Cli::try_parse_from(["tonk", "account", "link", "--name", "workstation"]).unwrap();
+            Cli::try_parse_from(["tonk", "account", "login", "--name", "workstation"]).unwrap();
         let Some(Command::Account {
-            command: AccountCommand::Link { name, .. },
+            command: AccountCommand::Login { name, .. },
         }) = cli.command
         else {
-            panic!("expected account link");
+            panic!("expected account login");
         };
         assert_eq!(name.as_deref(), Some("workstation"));
     }
@@ -3938,17 +3937,14 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn account_login_is_the_same_command_as_account_link() {
-        for verb in ["link", "login"] {
-            let cli = Cli::try_parse_from(["tonk", "account", verb]).unwrap();
-            let Some(Command::Account {
-                command: AccountCommand::Link { name, .. },
-            }) = cli.command
-            else {
-                panic!("expected account link");
-            };
-            assert_eq!(name, None);
-        }
+    fn signing_in_is_spelled_login_and_only_login() {
+        // `link` used to be the canonical spelling, with `login` an alias.
+        // It collided with `tonk space link`, which links a *space* to an
+        // account rather than a *device* — the same word for two different
+        // objects. `login` pairs with the `logout` that was already there.
+        assert!(Cli::try_parse_from(["tonk", "account", "login"]).is_ok());
+        assert!(Cli::try_parse_from(["tonk", "account", "link"]).is_err());
+
         // One account at a time: there is no profile to add or select.
         assert!(Cli::try_parse_from(["tonk", "account", "add", "--label", "work"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "account", "use", "work"]).is_err());

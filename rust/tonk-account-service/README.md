@@ -191,7 +191,7 @@ Exercise the flow against staging by creating an account on
 `GET /.well-known/tonk`—then linking the CLI:
 
 ```
-tonk account link \
+tonk account login \
   --service-url https://accounts-staging.tonk.xyz \
   --account-url https://staging.tonk.xyz/account/link
 ```

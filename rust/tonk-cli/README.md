@@ -23,7 +23,7 @@ tonk space use garden
 tonk space list
 
 # Sign in. Tonk holds one account at a time.
-tonk account link
+tonk account login
 tonk account logout
 
 # A local space can move into your account. Once it belongs to one, it stays.
@@ -79,7 +79,7 @@ tonk status       # synced | ahead | behind | diverged | no-upstream
 
 # Sign in to a passkey-backed account.
 tonk account status
-tonk account link --name workstation
+tonk account login --name workstation
 tonk account logout
 
 # Delegate access to the space.
@@ -170,9 +170,9 @@ pull-before / push-after. `--no-sync` (or `TONK_NO_SYNC`) skips it; manual
 
 ### Accounts
 
-The CLI holds at most one account at a time. `tonk account link` (also spelled
+The CLI holds at most one account at a time. `tonk account login` (also spelled
 `login`) runs a browser/passkey handoff and records that account; signing in as
-someone else is `tonk account logout` followed by `tonk account link`. Linking
+someone else is `tonk account logout` followed by `tonk account login`. Linking
 an account never enrolls the spaces already on this device.
 
 Creating a space while signed out stays offline. Creating while signed in
@@ -209,7 +209,7 @@ used, its local bytes). It does not remove signed account directory facts,
 revoke memberships or invitations, deprovision hosting, delete remote objects,
 or erase a peer's replica.
 
-Interrupting `tonk account link` leaves the handoff recorded so the next run
+Interrupting `tonk account login` leaves the handoff recorded so the next run
 resumes it. A link token is one-time, so a service that refuses to reissue it
 has ended that handoff and not this profile's ability to link: the next run
 takes the completed grant if the browser approved in the meantime, and
@@ -227,7 +227,7 @@ disagrees with, or a service with no detach route can never accept that
 intent, and the CLI drops it rather than retrying forever. Timeouts, rate
 limits, and server errors are retried instead, and while one is still
 queued for a provider, linking to that same provider is refused because its
-one-active-generation rule would reject the activation. `tonk account link
+one-active-generation rule would reject the activation. `tonk account login
 --abandon-detach` drops those undelivered intents and links anyway; the
 earlier device can stay listed until `tonk account revoke` removes it.
 

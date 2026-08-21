@@ -58,7 +58,7 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
     let account = registry
         .account
         .clone()
-        .context("no account is signed in; run `tonk account link` first")?;
+        .context("no account is signed in; run `tonk account login` first")?;
     let entry = registry
         .spaces
         .get(name)

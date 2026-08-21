@@ -116,7 +116,7 @@ impl AccountFixture {
 
     /// A fixture that has linked but never hydrated: the trusted-base
     /// marker is absent, exactly like a fresh device right after
-    /// `tonk account link`.
+    /// `tonk account login`.
     pub async fn unhydrated_with_account_remote(remote: &str) -> Result<Self> {
         Self::build(remote, false).await
     }

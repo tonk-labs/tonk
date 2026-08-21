@@ -469,7 +469,7 @@ mod tests {
             }
             Err(_) => {
                 child.kill().await?;
-                Err(anyhow!("timed out waiting for `tonk account link`"))
+                Err(anyhow!("timed out waiting for `tonk account login`"))
             }
         }
     }
@@ -1366,7 +1366,7 @@ mod tests {
         Ok(())
     }
 
-    /// A listener standing in for a waiting `tonk account link --via`.
+    /// A listener standing in for a waiting `tonk account login --via`.
     ///
     /// The CLI's half is a loopback server that accepts one form POST; a test
     /// needs no CLI process to play that part, only the same contract. It
@@ -1411,7 +1411,7 @@ mod tests {
         Ok((url, receiver))
     }
 
-    /// The browser half of `tonk account link --via`: the page reads the
+    /// The browser half of `tonk account login --via`: the page reads the
     /// waiting profile's DID and callback out of the URL, runs a real passkey
     /// ceremony, and posts the grant back.
     ///
