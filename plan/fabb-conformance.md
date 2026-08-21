@@ -224,6 +224,9 @@ Two viable routes, both their own change:
 - `tonk-field`, `tonk-toggle`, and the spec's standalone `tonk-fab` (a bare
   sync circle) — no consumer. The tag `tonk-fab` is spent on the bar, which is
   the mount contract.
+- The space stack's `settings` row — there are no space settings for it to
+  open, so it reads `new · open ▸ · rename`. Same reasoning as the `changes`
+  rung; it comes back with the surface it leads to.
 - The flip mirrors the cells, departing from law 10's fixed content order —
   a deliberate revision, see `bar::apply_flip`.
 - The resting seat defaults to bottom-right on every device; the reference

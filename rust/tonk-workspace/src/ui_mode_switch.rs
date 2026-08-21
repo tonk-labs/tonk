@@ -56,6 +56,13 @@ impl CustomElement for UiModeSwitch {
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
+        // Reuse an existing control rather than appending a second one:
+        // `inject_children` runs again whenever the element is re-created or
+        // re-parented, and an unguarded append stacks duplicates. Mirrors
+        // `ui_sync_status::paint`.
+        if button_of(this).is_some() {
+            return;
+        }
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
         };

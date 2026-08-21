@@ -542,10 +542,6 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             navigate("/");
             return;
         }
-        if row.has_attribute("data-mi-settings") {
-            navigate("/account");
-            return;
-        }
         if row.has_attribute("data-mi-rename") {
             // Close first: the stack is about to be replaced by a cursor
             // blinking in the cell the stack hangs from.
@@ -589,10 +585,14 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
 }
 
 /// Leave for `path` in the top document.
+///
+/// Through the host, never `location.assign`: the bar renders in a sealed
+/// guest — `sandbox="allow-scripts"`, no `allow-top-navigation` — where
+/// assigning `location` either moves the IFRAME or is blocked outright. The
+/// page effect walks the message up to the real page, which is the only
+/// frame that can navigate. This is why `more ↖` did nothing.
 fn navigate(path: &str) {
-    if let Some(win) = window() {
-        let _ = win.location().assign(path);
-    }
+    tonk_host::navigate_to(path);
 }
 
 /// Create a space and go straight into it.

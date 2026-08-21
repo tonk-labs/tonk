@@ -192,9 +192,14 @@ view/directory!:
   this: id:tonk:space/directory
   model: space
   display: |
-    <div class="hub">
+    <div class="hub-page">
       <style>
         /* ── The Hub — the space directory at `/`.
+           Named `.hub-page`, not `.hub`: `tonk-ui/styles.css` still carries a
+           `.hub` block from an earlier launcher (a 56rem centred column),
+           which clipped this page to a band down the middle of the viewport.
+           That CSS is dead — nothing renders `.hub-card` / `.hub-route` any
+           more — but it is not this change's to delete.
            Chrome, and it runs on the same material as the FAB: a neutral
            page, 36px frost blocks with ink rings, lowercase condensed words
            seated bottom-right, ink only. The bar's tokens are restated here
@@ -207,7 +212,7 @@ view/directory!:
            existing theme signal (set by index.html from the OS, overridden
            by <ui-mode-switch>) — not a second signal of the Hub's own, which
            would be free to disagree with the rest of the page. ── */
-        .hub {
+        .hub-page {
           --page:#ececec; --ink:#131313; --on-ink:#fbfaef; --soft:#55544f;
           --ring:rgba(19,19,19,.85); --sep:rgba(19,19,19,.28);
           /* frost pre-composited over the flat page — a flat page blurs to
@@ -223,19 +228,32 @@ view/directory!:
           position:relative; min-height:100dvh; background:var(--page);
           color:var(--ink); font-family:var(--cond);
         }
-        :root.wa-dark .hub {
+        :root.wa-dark .hub-page {
           --page:#161613; --ink:#e9e6d6; --on-ink:#22221c; --soft:#cdcaba;
           --ring:rgba(233,230,214,.55); --sep:rgba(233,230,214,.28);
           --frost:rgba(32,32,26,.78); --frost-solid:#1e1e19;
           --card:#26251f; --wash:rgba(251,250,239,.09); --wash-2:rgba(251,250,239,.15);
           --wash-p:rgba(19,19,19,.14); --dim:rgba(0,0,0,.45);
         }
-        .hub *, .hub *::before, .hub *::after { box-sizing:border-box; }
+        .hub-page *, .hub *::before, .hub *::after { box-sizing:border-box; }
         /* selection is chrome too — ink, never the browser's blue */
-        .hub ::selection { background:var(--ink); color:var(--on-ink); }
-        .hub :focus-visible { outline:2px solid var(--ink); outline-offset:-2px; }
-        .hub button { font:inherit; letter-spacing:inherit; color:inherit;
-          background:none; border:0; padding:0; cursor:pointer; text-align:inherit; }
+        .hub-page ::selection { background:var(--ink); color:var(--on-ink); }
+        .hub-page :focus-visible { outline:2px solid var(--ink); outline-offset:-2px; }
+        /* A real reset, not a token one. Web Awesome skins NATIVE controls
+           inside `@layer wa-native` — `button` gets `display:inline-flex`,
+           padding, a min-height, a radius and a border — so a cell built on
+           a <button> and one built on an <a> laid their words out
+           differently, and the mode cap came out a rounded slab instead of
+           an 18px pill. Unlayered author rules outrank layered ones, so this
+           wins without `!important`. */
+        .hub-page button {
+          font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
+          background:none; border:0; border-radius:0; margin:0; padding:0;
+          min-width:0; min-height:0; block-size:auto; inline-size:auto;
+          box-shadow:none; appearance:none; -webkit-appearance:none;
+          cursor:pointer; }
+        /* the anchor cells match the button cells exactly — same seat, same ink */
+        .hub-page a { color:inherit; text-decoration:none; }
 
         /* the block: 36px, frost + ink ring. every cell derives from it. */
         .blk { height:36px; background:var(--frost);
@@ -261,8 +279,8 @@ view/directory!:
           box-shadow:0 0 0 1px var(--ring); }
         /* every word sits bottom-right on the 9px seat */
         .hcell { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
-          padding:0 10px 9px 12px; font-size:13px; white-space:nowrap;
-          text-decoration:none; color:inherit; }
+          padding:0 10px 9px 12px; font-size:13px; line-height:1; white-space:nowrap;
+          text-decoration:none; color:inherit; flex:none; }
         .hcell:hover { background:var(--wash); }
         .hcell:active { background:var(--wash-2); }
         .hc-new { width:144px; }
@@ -273,10 +291,10 @@ view/directory!:
         .hub-new-form { display:contents; }
         /* the cap is the mode switch — its ink fill inverts with the tokens,
            so it is lit when dark and dark when light, for free */
-        .hub ui-mode-switch { display:block; }
-        .hub .mode-cap { display:block; width:18px; height:36px; background:var(--ink);
-          border-radius:0 18px 18px 0; cursor:pointer; }
-        .hub .mode-cap:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+        .hub-page ui-mode-switch { display:flex; flex:none; }
+        .hub-page .mode-cap { width:18px; height:36px; flex:none; background:var(--ink);
+          border-radius:0 18px 18px 0; }
+        .hub-page .mode-cap:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
 
         /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
         .stack { width:432px; margin:20vh auto 120px; display:flex;

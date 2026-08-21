@@ -120,15 +120,19 @@ pub const STACK_GAP_PX: i32 = 7;
 /// disc it owns rather than hosting foreign elements inside its cells.
 ///
 /// The space stack IS the bar's information architecture:
-/// `new · open ▸ · rename · settings`. `open`'s sub-stack is filled by
+/// `new · open ▸ · rename`. `open`'s sub-stack is filled by
 /// `<ui-space-switcher>`; the share stack's roster by `<ui-member-roster>`.
+///
+/// The spec's `settings` row is absent for the same reason as the `changes`
+/// rung: there are no space settings for it to open. It comes back with the
+/// surface it leads to.
 ///
 /// ## Glyphs
 ///
 /// Every mark is geometry, not illustration (see the FABB glyph table): `+`
-/// for new, `▸` for open, `↖` for leaving the environment, a 6×12 ink block
-/// for rename — the terminal block cursor again, as a noun — and a bespoke
-/// 9×9 SVG of two hairlines and two knobs for settings. No icon library.
+/// for new, `▸` for open, `↖` for leaving the environment, and a 6×12 ink
+/// block for rename — the terminal block cursor again, as a noun. No icon
+/// library.
 pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></ui-sync-status>
 <ui-space-name headless space="{space}"></ui-space-name>
 <tonk-menu slot="menu" data-for="space">
@@ -140,7 +144,6 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
     </tonk-menu>
   </tonk-mi>
   <tonk-mi chrome data-mi-rename>rename<span class="g rename-mark" aria-hidden="true"></span></tonk-mi>
-  <tonk-mi chrome data-mi-settings>settings<svg class="g" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><g stroke="currentColor" stroke-width="1.2"><line x1="0" y1="2.5" x2="9" y2="2.5"/><line x1="0" y1="6.5" x2="9" y2="6.5"/></g><rect x="5" y="1" width="3" height="3" fill="currentColor"/><rect x="1" y="5" width="3" height="3" fill="currentColor"/></svg></tonk-mi>
 </tonk-menu>
 <tonk-share headless space="{space}"></tonk-share>
 <tonk-menu slot="menu" data-for="share">
@@ -322,21 +325,19 @@ mod tests {
 
     #[test]
     fn it_carries_the_bars_information_architecture() {
-        // The space stack IS the IA: new · open ▸ · rename · settings, in
-        // that order.
+        // The space stack IS the IA: new · open ▸ · rename, in that order.
         let html = stacks_html("did:key:z6Mk");
-        let order: Vec<usize> = [
-            "data-mi-new",
-            "data-mi-open",
-            "data-mi-rename",
-            "data-mi-settings",
-        ]
-        .iter()
-        .map(|hook| html.find(hook).unwrap_or_else(|| panic!("{hook} present")))
-        .collect();
+        let order: Vec<usize> = ["data-mi-new", "data-mi-open", "data-mi-rename"]
+            .iter()
+            .map(|hook| html.find(hook).unwrap_or_else(|| panic!("{hook} present")))
+            .collect();
         assert!(
             order.windows(2).all(|pair| pair[0] < pair[1]),
-            "the space stack must read new · open · rename · settings",
+            "the space stack must read new · open · rename",
+        );
+        assert!(
+            !html.contains("data-mi-settings"),
+            "no settings row until there are settings to open",
         );
     }
 
@@ -415,12 +416,7 @@ mod tests {
         assert!(html.contains("&#9656;"), "open is the ▸ triangle");
         assert!(html.contains("rename-mark"), "rename is the block cursor");
         assert!(!html.contains("<wa-icon"), "no icon library in the chrome");
-        let settings = html.split("data-mi-settings").nth(1).expect("settings row");
-        assert_eq!(
-            settings.matches("currentColor").count(),
-            3,
-            "every stroke and knob must ride the ink token",
-        );
+        assert!(!html.contains("<svg"), "and no illustration either");
     }
 
     #[test]
