@@ -35,6 +35,11 @@ use tonk_schema::meta::{AnonymousAttribute, attribute};
 
 /// The last release that can read pre-upgrade data.
 ///
+/// This whole module is scheduled for deletion once one stable release has
+/// carried it — see plan/cli-consistency.md for what goes with it. Only a
+/// handful of spaces ever predated the format change, and this is the last
+/// code in the tree that has to know how the old build spelled `spot`.
+///
 /// Named rather than resolved: the point of a pinned release is that it does
 /// not move, so an upgrade path that asked for "latest compatible" would be
 /// asking a question with a changing answer.

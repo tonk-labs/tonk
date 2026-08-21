@@ -164,8 +164,73 @@ existing spellings stay as hidden aliases; all three are one-time operations
 whose users are following written instructions, so the aliases can be dropped
 after a release.
 
+`migrate space` is temporary either way — item 4b deletes it. If 4b lands
+first, this item is a two-way split and simpler for it.
+
 **Cost.** Breaking for `tonk migrate --legacy`, which is only ever run from
 the upgrade instructions. `tonk account migrate` keeps working as an alias.
+
+## 4b. Delete the pre-dialog-upgrade migration
+
+`tonk migrate --legacy` is the last code in the tree that has to know how the
+old build spelled `spot`. It downloads `v0.6.7`, hands it a `spots.json` in a
+throwaway directory, drives `export` through it with `--spot`, and imports the
+result. Only a handful of spaces ever predated the dialog format change, and
+they are believed migrated.
+
+**Gating condition: a staging release carrying a *working* migration.**
+Stable is not required — the spaces that needed this are believed migrated
+already, and the pre-release channel is where anyone who still needs it
+would be.
+
+The published `tonk-staging` (2026-08-21, built from `4761f1ac2`) does carry
+the command, but it does not work: its `legacy.rs` is byte-identical to this
+branch's base, where `tonk migrate --legacy` dies with *"failed to initialize
+account-session state: stored account-session state is malformed: missing
+field `pending_detaches`"*. The v0.6.7 child inherits the state directory
+this build wrote and cannot parse it. Item 0.1's throwaway-registry fix is
+what repairs that, by pointing the child at its own store.
+
+So the order is: publish this branch to staging, then delete. The deletion
+is kept as its own commit so it can be dropped if that publish has not
+happened.
+
+**What goes, when it goes:**
+
+```text
+rust/tonk-cli/src/legacy.rs                       whole module
+rust/tonk-cli/tests/legacy_migration.rs           whole file
+rust/tonk-cli/tests/fixtures/                     whole directory
+  legacy-space-v0.6.7.tar.gz, legacy-account-v0.6.7.tar.gz, README.md
+rust/tonk-cli/tests/blob.rs                       the two `migrate_blobs` cases
+rust/tonk-cli/Cargo.toml                          [[test]] legacy_migration,
+                                                  feature `legacy-migration`
+rust/tonk-cli/src/lib.rs                          `pub mod legacy;`
+rust/tonk-cli/src/bin/tonk.rs                     `legacy_migrate()`, and the
+                                                  --legacy/--site/--branch arms
+                                                  of `Command::Migrate`
+```
+
+Two things need a decision rather than a delete:
+
+- **`tonk_account::LEGACY_FORMAT_REMEDY`** is the error a pre-upgrade space
+  produces, and it names the command being removed. It has to keep existing —
+  the failure is still legible and still needs an explanation — but the remedy
+  becomes "install `v0.6.7` yourself and export" rather than a command tonk
+  offers. `tonk_account::readability` and the `Readability::Legacy` arm stay:
+  detecting the format is what makes the failure a sentence instead of
+  `missing field 'branch'`.
+- **`space.rs`'s `LEGACY_REGISTRY_FILE` / `LEGACY_SPACES_DIRNAME`** are the
+  `spot` → `space` on-disk conversion from 0.1, not this. They are unrelated
+  and are covered by item 8.
+
+Doing this also removes the only test in the crate that needs the network
+(`legacy-migration` downloads a real release archive) and the only one
+currently failing: `it_migrates_credentials_before_repositories` dies at its
+final push with *"subject is not provisioned"*, most likely from `26fd3c39b`
+(deny service until the account confirms its email) against a `v0.6.7`-minted
+account. It fails on `staging` too, so it is not worth fixing something that
+is on its way out.
 
 ## 5. `blob add` is the one write that never syncs
 
@@ -266,8 +331,10 @@ nothing in this repo depends on the old ones.
 2. **Item 2** (`space use` / `space unbind`) — additive.
 3. **Item 3** (`login` canonical) — additive.
 4. **Item 4** (`migrate` split) — additive with aliases.
-5. **Item 5** (`blob add` sync) — behavioural, wants its own review.
-6. **Items 1 and 6 together** (fold the four status commands, one JSON
+5. **Item 4b** (delete `--legacy`) — blocked on a stable release carrying it;
+   that promotion is the next release action, the delete the one after.
+6. **Item 5** (`blob add` sync) — behavioural, wants its own review.
+7. **Items 1 and 6 together** (fold the four status commands, one JSON
    envelope) — the breaking pair, best done in one release.
-7. **Item 8** (retire aliases) — a release after 0.1 ships.
-8. **Item 9** — alongside whatever is nearby.
+8. **Item 8** (retire aliases) — a release after 0.1 ships.
+9. **Item 9** — alongside whatever is nearby.

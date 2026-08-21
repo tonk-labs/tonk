@@ -97,3 +97,16 @@ impl ExitCode {
         self as i32
     }
 }
+
+/// An error that knows which [`ExitCode`] it should produce.
+///
+/// One trait rather than an inherent method per error enum, so the binary
+/// can have a single printer that both renders the error the way
+/// `--verbose` calls for and returns the code the error carries. It used to
+/// have to choose: the helper that honoured `--verbose` flattened every
+/// failure to [`ExitCode::IoError`], and the two dozen call sites that
+/// needed a real code printed the error directly and ignored `--verbose`.
+pub trait Coded: std::error::Error + Send + Sync + 'static {
+    /// The exit code this failure should produce.
+    fn exit_code(&self) -> ExitCode;
+}

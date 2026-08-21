@@ -13,7 +13,7 @@ mod descriptor;
 pub mod detach;
 /// Work deferred until the account confirms its email.
 pub mod pending;
-/// Provider-neutral account spot backup artifacts.
+/// Provider-neutral account space backup artifacts.
 pub mod prefix;
 mod provider;
 
@@ -238,7 +238,7 @@ pub enum Readability {
 /// storage. Whoever can produce the bytes can ask the question.
 ///
 /// `None` for the bytes means the record is absent, which for a site that
-/// has committed nothing is ordinary rather than suspicious — a spot with no
+/// has committed nothing is ordinary rather than suspicious — a space with no
 /// revision has no data to migrate.
 pub fn readability(revision: Option<&[u8]>) -> Readability {
     let Some(bytes) = revision else {
@@ -253,7 +253,7 @@ pub fn readability(revision: Option<&[u8]>) -> Readability {
 
 /// Path of a branch's revision record, relative to a site directory.
 ///
-/// Per branch, not per site: branches are migrated independently, so a spot
+/// Per branch, not per site: branches are migrated independently, so a space
 /// can have `main` on the current format while a meta or feature branch is
 /// still legacy. Asking about a site as a whole would answer for whichever
 /// branch happened to be checked and stay silent about the rest.
@@ -312,7 +312,7 @@ pub const SITE_FORMAT: u32 = 1;
 
 /// File recording [`SITE_FORMAT`], written beside a site's data.
 ///
-/// Beside the data rather than in the CLI's spot registry, because the
+/// Beside the data rather than in the CLI's space registry, because the
 /// registry is one adapter's bookkeeping: a site created by the worker, or
 /// copied between machines by hand, carries no registry entry but still has
 /// this file. It also answers before anything opens a branch, which matters
@@ -352,7 +352,7 @@ pub fn read_site_format(bytes: Option<&[u8]>) -> Option<SiteFormat> {
 
 /// Whether an error means the data predates the current on-disk format.
 ///
-/// A spot written before the dialog upgrade fails when its branch is
+/// A space written before the dialog upgrade fails when its branch is
 /// opened, deep inside block decoding:
 ///
 /// ```text
@@ -381,17 +381,19 @@ pub fn is_legacy_format(error: &str) -> bool {
 /// The old binary is the only thing that can read the old format, so the
 /// remedy is to install it, export, and import — not to retry.
 pub const LEGACY_FORMAT_REMEDY: &str = "\
-this spot was written by an older tonk and cannot be opened by this one.
+this space was written by an older tonk and cannot be opened by this one.
 
 Upgrade it with `tonk migrate --legacy`, which installs the last compatible
-build, exports the data, and imports it here.";
+build, exports the data, and imports it here. That command is scheduled for
+removal once a stable release has carried it, so upgrade before then — see
+plan/cli-consistency.md.";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Branches migrate independently, so the path names one rather than
-    /// standing for a whole site. A spot can have `main` current while a
+    /// standing for a whole site. A space can have `main` current while a
     /// meta branch is still legacy, and a site-wide answer would hide that.
     #[test]
     fn it_addresses_a_revision_per_branch() {
@@ -459,7 +461,7 @@ mod tests {
         assert!(read_site_format(Some(b"not json")).is_none());
     }
 
-    /// The signature of a pre-upgrade spot, verbatim from opening the
+    /// The signature of a pre-upgrade space, verbatim from opening the
     /// committed `v0.6.7` fixture with this build.
     #[test]
     fn it_recognizes_the_legacy_format_signature() {

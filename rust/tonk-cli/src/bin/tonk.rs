@@ -459,6 +459,12 @@ enum Command {
         /// Downloads the last build that can read it, exports each
         /// branch, rewrites the schema namespace, and imports the
         /// result here. Unrelated to the `.carry/` move above.
+        ///
+        /// Scheduled for removal once one stable release has carried
+        /// it: only a handful of spaces predate the format change, and
+        /// this is the one path that still drives a build spelling
+        /// `spot`. Upgrade them before it goes — see
+        /// plan/cli-consistency.md.
         #[arg(long, conflicts_with_all = ["from", "do_move"])]
         legacy: bool,
 
