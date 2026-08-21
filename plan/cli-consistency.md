@@ -375,16 +375,26 @@ nothing in this repo depends on the old ones.
 
 ---
 
-## Suggested order
+## Status
 
-1. **Item 7** (`--verbose` on typed errors) — mechanical, no output change.
-2. **Item 2** (`space use` / `space unbind`) — additive.
-3. **Item 3** (`login` canonical) — additive.
-4. **Item 4** (`migrate` split) — additive with aliases.
-5. **Item 4b** (delete `--legacy`) — blocked on a stable release carrying it;
-   that promotion is the next release action, the delete the one after.
-6. **Item 5** (`blob add` sync) — behavioural, wants its own review.
-7. **Items 1 and 6 together** (fold the four status commands, one JSON
-   envelope) — the breaking pair, best done in one release.
-8. **Item 8** (retire aliases) — a release after 0.1 ships.
-9. **Item 9** — alongside whatever is nearby.
+Landed on `feat/cli-simplify`, in this order:
+
+1. **Item 7** — one error printer. *Done.*
+2. **Item 2** — `tonk space use`, no top-level alias. *Done, breaking.*
+3. **Item 3** — `tonk account login`, no `link` alias. *Done, breaking.*
+4. **Item 4** — `migrate carry|space|account`. *Done, breaking.*
+5. **Item 5** — `blob add` syncs and takes the write switches. *Done.*
+6. **Item 9** — the four smaller fixes. *Done, two breaking.*
+7. **Items 1 and 6** — one orientation vocabulary, one JSON envelope.
+   *Done, breaking.*
+
+Not landed:
+
+- **Item 4b** (delete the legacy migration) — gated on a staging release
+  carrying a *working* copy, which means publishing this branch first. See
+  the item for why the published one does not work.
+- **Item 8** (retire the `spot` aliases) — gated on a release after 0.1
+  ships, which has not happened.
+
+The two open questions are answered in their items: `context` stays offline
+and reports `not-fetched`; `tonk query --json` keeps its `EvaluateResponse`.
