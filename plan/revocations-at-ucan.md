@@ -144,9 +144,13 @@ This is why the store cannot be a flat revoked-CID set, and it is the same fact 
 >
 > Our `tonk_identity::revocation::verify` currently returns `issuer`, and reaches the delegated case through a separate branch rather than by subject. That field becomes the subject.
 
-**Reads.** For each CID in the presented chain, `list().prefix("revoked:{cid}/")`, then intersect the returned subjects with the chain's issuer DIDs. The prefix is empty in the common case and holds a handful of keys otherwise, so this is nothing like the R2 listing it replaces, whose cost grew with every revocation ever published.
+**Reads are point gets, not listings.** Both halves of the key are known before reading: the CIDs come from the presented chain, the subjects are the issuers that chain proves. So the exact keys can be computed and fetched.
 
-A tighter variant exists: the chain's issuer DIDs are known before reading, so each `(cid, issuer)` pair could be fetched directly rather than listed. That is `chain_length × issuers` point reads, both small. Listing is simpler and does not need the pairs enumerated up front; switch only if it shows up in practice.
+That is also the sharper question. Listing answers "who revoked this target," and the caller then discards every subject that is not in the chain. Fetching `(cid, subject)` pairs asks "did *this* principal revoke it," which is what the verdict actually turns on.
+
+The product stays small because chains here are short: root to device is 2 CIDs by 2 issuers, so four reads, almost always four misses. That is nothing like the R2 listing it replaces, whose cost grew with every revocation ever published.
+
+`RevocationIndex::subjects` remains for the general case, and `revoked_by_any` is the presign path's query. The default implementation of the latter lists and intersects, which is correct for any backend; the KV implementation overrides it with point reads.
 
 > ucanto stores the same information as an explicit `scope` set per revoked CID. That implementation is what this spec was written from, so the agreement is not a coincidence: `scope` and the spec's `revocation.iss` are the same fact under different names. Where they differ is out-of-chain revokers, which ucanto models with `scope` and the spec models with a delegation of `ucan/revoke`.
 
