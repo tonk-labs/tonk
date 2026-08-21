@@ -7,12 +7,12 @@
 # Blank lines and #-comments are skipped. A failed screenshot is
 # recorded as missing, not fatal — the judge sees what there is.
 #
-# Every `tonk` call here resolves through TONK_SPOT (exported by
+# Every `tonk` call here resolves through TONK_SPACE (exported by
 # run.sh). The CLI never consults the cwd, so there is nothing to
 # `cd` into.
 #
 # Env: ROOT, RUN_DIR, BENCH_URL, SPACE_NAME, SCENARIO (scenario dir),
-#      TONK_SPOT
+#      TONK_SPACE
 set -euo pipefail
 
 ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; BENCH_URL="${BENCH_URL:?}"
@@ -68,7 +68,7 @@ view_model() {
 resolve_display() {
   local view_name="$1"
   local site="$RUN_DIR/site"
-  # Canonical spot storage puts the repository directly under the site
+  # Canonical space storage puts the repository directly under the site
   # directory — there is no `.tonk` level to look for.
   if [ ! -d "$site" ]; then
     echo "shots: no site at $site — skipping display:$view_name" >&2

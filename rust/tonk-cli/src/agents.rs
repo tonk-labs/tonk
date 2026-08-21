@@ -1,4 +1,4 @@
-//! Synced `AGENTS.md` context attached to a spot's stable repository subject.
+//! Synced `AGENTS.md` context attached to a space's stable repository subject.
 //!
 //! The Dialog claim is the source of truth. Agent runtimes that require a
 //! filesystem `AGENTS.md` may materialize this value before launch, but local
@@ -21,7 +21,7 @@ pub const ATTRIBUTE: &str = "xyz.tonk.repo/agents";
 /// Stable source label used by structured output and experiment metadata.
 pub const SOURCE: &str = "dialog-claim";
 
-/// Keep the claim bounded so one spot cannot consume an agent's entire
+/// Keep the claim bounded so one space cannot consume an agent's entire
 /// instruction budget.
 pub const MAX_MARKDOWN_BYTES: usize = 32 * 1024;
 
@@ -41,9 +41,9 @@ concept!: &tonk/agents
     markdown: tonk/agents-markdown
 "#;
 
-/// Current agent context for one spot.
+/// Current agent context for one space.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct SpotAgents {
+pub struct SpaceAgents {
     /// Where the agent context came from.
     pub source: &'static str,
     /// Dialog attribute carrying the Markdown.
@@ -65,9 +65,9 @@ pub async fn is_declared(site: &TonkSite) -> Result<bool> {
     Ok(schema::find_concept(site, CONCEPT_NAME).await?.is_some())
 }
 
-/// Read the current claim, returning `None` for spots that have never defined
+/// Read the current claim, returning `None` for spaces that have never defined
 /// or asserted it.
-pub async fn get(site: &TonkSite) -> Result<Option<SpotAgents>> {
+pub async fn get(site: &TonkSite) -> Result<Option<SpaceAgents>> {
     if !is_declared(site).await? {
         return Ok(None);
     }
@@ -75,18 +75,18 @@ pub async fn get(site: &TonkSite) -> Result<Option<SpotAgents>> {
 }
 
 /// Read the claim when the caller already knows the concept is declared.
-pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpotAgents>> {
+pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpaceAgents>> {
     let entity = site.repository.did().to_string();
     let doc = format!("{CONCEPT_NAME}:\n  this: {entity}\n  markdown: ?markdown\n");
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default())
         .await
-        .context("query spot AGENTS.md claim")?;
+        .context("query space AGENTS.md claim")?;
     let revision = outcome
         .response
         .revision_before
         .as_ref()
         .map(|revision| revision.tree.to_string())
-        .ok_or_else(|| anyhow!("spot AGENTS.md query returned no branch revision"))?;
+        .ok_or_else(|| anyhow!("space AGENTS.md query returned no branch revision"))?;
     let Some(row) = outcome
         .response
         .matches_after
@@ -98,7 +98,7 @@ pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpotAgents>> 
     };
     if row.this != entity {
         return Err(anyhow!(
-            "spot AGENTS.md resolved on {}, expected repository subject {entity}",
+            "space AGENTS.md resolved on {}, expected repository subject {entity}",
             row.this
         ));
     }
@@ -106,9 +106,9 @@ pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpotAgents>> 
         .fields
         .get("markdown")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow!("spot AGENTS.md claim has no text `markdown` field"))?
+        .ok_or_else(|| anyhow!("space AGENTS.md claim has no text `markdown` field"))?
         .to_owned();
-    Ok(Some(SpotAgents {
+    Ok(Some(SpaceAgents {
         source: SOURCE,
         attribute: ATTRIBUTE,
         entity,
@@ -118,9 +118,9 @@ pub(crate) async fn get_declared(site: &TonkSite) -> Result<Option<SpotAgents>> 
 }
 
 /// Assert Markdown on the repository subject, defining the schema first so the
-/// command also works for spots created before `tonk/agents` entered the
+/// command also works for spaces created before `tonk/agents` entered the
 /// standard library.
-pub async fn set(site: &TonkSite, markdown: &str, sync: bool) -> Result<SpotAgents> {
+pub async fn set(site: &TonkSite, markdown: &str, sync: bool) -> Result<SpaceAgents> {
     if markdown.trim().is_empty() {
         bail!("AGENTS.md is empty");
     }
@@ -147,7 +147,7 @@ tonk/agents!:
     );
     auto_sync::run_eval(site, Source::Inline(doc), Options::default(), sync)
         .await
-        .context("assert spot AGENTS.md claim")?;
+        .context("assert space AGENTS.md claim")?;
     get_declared(site)
         .await?
         .ok_or_else(|| anyhow!("AGENTS.md write committed but no claim was readable"))

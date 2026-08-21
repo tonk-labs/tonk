@@ -398,7 +398,7 @@ mod tests {
             .current_dir(profile.path())
             .env("HOME", profile.path())
             .env("XDG_DATA_HOME", profile.path().join("data"))
-            .env("TONK_SPOTS_STATE", profile.path().join("spots"))
+            .env("TONK_SPACES_STATE", profile.path().join("spaces"))
             .env("TONK_TELEMETRY_STATE", profile.path().join("telemetry"))
             .env("TONK_UPDATE_STATE", profile.path().join("update"))
             .env("TONK_NO_UPDATE_CHECK", "1")

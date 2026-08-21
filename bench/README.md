@@ -148,29 +148,29 @@ task.md/rubric.md are frozen.
   log on startup.
 - Caddy: serves `rust/tonk-ui/dist` (trunk-built) with `/ucan/*` proxied to
   the access service — same-origin layout as production.
-- Tonk spot: registered by `site.sh setup` as `tonk spot new "$TONK_SPOT"
+- Tonk space: registered by `site.sh setup` as `tonk space new "$TONK_SPACE"
   --site "$RUN_DIR/site"`, fresh per run. Remote `origin` points at
   `$BENCH_URL/ucan/`.
 
-**Spot pinning** — the CLI resolves a spot by `--spot`, then `TONK_SPOT`, then
+**Space pinning** — the CLI resolves a space by `--space`, then `TONK_SPACE`, then
 a directory attachment (`tonk use <name> --here`), then the `tonk use`
 selection. `cd`-ing into the site directory does nothing on its own — only an
 explicit attachment makes a directory mean anything — and an unpinned `tonk`
-call succeeds against whatever spot the developer happens to have selected
-globally, silently, against the wrong repo. `TONK_SPOT` outranks attachments
+call succeeds against whatever space the developer happens to have selected
+globally, silently, against the wrong repo. `TONK_SPACE` outranks attachments
 precisely so the harness stays authoritative over whatever the developer has
 bound locally. `run.sh` therefore exports both:
 
-- `TONK_SPOTS_STATE="$RUN_DIR/spots-state"` — the registry and its canonical
-  `spots/` root, so runs never see each other or the developer's own spots.
-- `TONK_SPOT=bench` — the spot every harness and scenario `tonk` call resolves.
+- `TONK_SPACES_STATE="$RUN_DIR/spaces-state"` — the registry and its canonical
+  `spaces/` root, so runs never see each other or the developer's own spaces.
+- `TONK_SPACE=bench` — the space every harness and scenario `tonk` call resolves.
 
 `episode.sh` passes both into the agent's environment too, overridable per
-scenario as `EPISODE_SPOT` / `EPISODE_SPOTS_STATE`. A scenario where the agent
-registers its own spot (cold-onboard joins from an invite) sets both — an empty
-spot, which the CLI reads as unset, and a separate empty registry, so a
-pre-join `tonk` reports no spots rather than silently resolving the origin site
-the agent is supposed to be joining. `tonk join` selects the spot it registers,
+scenario as `EPISODE_SPACE` / `EPISODE_SPACES_STATE`. A scenario where the agent
+registers its own space (cold-onboard joins from an invite) sets both — an empty
+space, which the CLI reads as unset, and a separate empty registry, so a
+pre-join `tonk` reports no spaces rather than silently resolving the origin site
+the agent is supposed to be joining. `tonk join` selects the space it registers,
 so the agent's own governs from there.
 
 **Episode** — headless `claude -p`, given only the scenario task and a
@@ -294,7 +294,7 @@ flag. Episodes are bounded by `EPISODE_TIMEOUT` via `timeout(1)` from coreutils.
 repository's subject DID (`did:key:…`), which the auto-join flow returns as
 `repository.name` and the route parser reconstructs from the URL segment
 (`did:key` is a droppable label; the id is re-prefixed). `site.sh setup`
-captures the DID from `tonk spot new` into `$RUN_DIR/space.did`, and `run.sh`
+captures the DID from `tonk space new` into `$RUN_DIR/space.did`, and `run.sh`
 exports it as `SPACE_NAME` for both the bridge pull
 (`/api/repository/<DID>/…`) and the checkpoint shot URLs
 (`/space/<DID>/…`). A hardcoded name like `bench` resolves to

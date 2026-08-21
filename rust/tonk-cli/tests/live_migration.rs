@@ -1,6 +1,6 @@
 //! End-to-end check of the paths the dialog migration rewrote.
 //!
-//! A real spot on real storage: the standard library seeds at repo
+//! A real space on real storage: the standard library seeds at repo
 //! creation, a rule installs and fires at commit time through dialog's
 //! native induction, and the command that triggered it leaves no trace.
 //! This is the headless equivalent of clicking through a running

@@ -1,4 +1,4 @@
-The selected tonk spot contains a small task list. Mark “Draft launch
+The selected tonk space contains a small task list. Mark “Draft launch
 email” done. Change nothing else.
 
 The `tonk` CLI is on PATH. Do not inspect repository source files or

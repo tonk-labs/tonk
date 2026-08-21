@@ -7,13 +7,13 @@
 //! the binary) and a future SDK consumer can drive the same code
 //! paths the CLI does.
 //!
-//! - [`site`] — repo+branch open/init; resolved via the spot registry.
-//! - [`spot`] — spot registry: named spots, canonical storage, selection.
-//! - [`account_spots`] — account inventory, pull, and backup reconciliation.
-//! - [`recovery`] — whether a spot's data exists anywhere but this
+//! - [`site`] — repo+branch open/init; resolved via the space registry.
+//! - [`space`] — space registry: named spaces, canonical storage, selection.
+//! - [`account_spaces`] — account inventory, pull, and backup reconciliation.
+//! - [`recovery`] — whether a space's data exists anywhere but this
 //!   disk, so deleting it can say what it costs.
 //! - [`identity`] — local profile management.
-//! - [`agents`] — claim-backed spot context and `AGENTS.md` projection data.
+//! - [`agents`] — claim-backed space context and `AGENTS.md` projection data.
 //! - [`authoring`] — pure notation builders (concept, view, and the
 //!   space-home recipe) consumed by the noun-first authoring verbs.
 //! - [`data`] — pure notation builders (value rendering + doc
@@ -35,7 +35,7 @@
 pub mod account;
 mod account_authority;
 mod account_session;
-pub mod account_spots;
+pub mod account_spaces;
 pub mod account_state;
 pub mod agents;
 pub mod authoring;
@@ -62,8 +62,8 @@ pub mod remote;
 pub mod render;
 pub mod schema;
 pub mod site;
+pub mod space;
 pub mod space_link;
-pub mod spot;
 pub mod sync;
 pub mod telemetry;
 pub mod transfer;

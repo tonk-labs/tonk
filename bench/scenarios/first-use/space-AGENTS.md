@@ -1,7 +1,7 @@
-# Tonk spot: bench
+# Tonk space: bench
 
-This context is a trusted Dialog claim on this spot's repository subject DID.
-This file is only its runtime projection. The `TONK_SPOT` environment variable
+This context is a trusted Dialog claim on this space's repository subject DID.
+This file is only its runtime projection. The `TONK_SPACE` environment variable
 selects `bench`; changing directory does not select different Tonk data.
 
 ## Current workflows
@@ -20,14 +20,14 @@ Create a new task only when that is the request:
 
 `tonk assert task --title "example" --done false`
 
-## Durable spot context
+## Durable space context
 
 - `task.title` is required text.
 - `task.done` is a required boolean.
 - Existing tasks are updated by entity ID.
 
 Keep this section short. Add durable concepts, decisions, and recurring
-pitfalls you discover while working in this spot. Do not record one-off task
+pitfalls you discover while working in this space. Do not record one-off task
 completion, transient status, credentials, invite links, or other secrets.
 
 To persist an update, edit the projection and run `tonk agents set AGENTS.md`.

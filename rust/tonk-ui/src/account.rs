@@ -1753,7 +1753,7 @@ fn bind(host: &HtmlElement) {
             .map(|window| {
                 window
                     .confirm_with_message(
-                        "Sign out on this device? Your existing spots will stay here, but account syncing will stop until you sign in again.",
+                        "Sign out on this device? Your existing spaces will stay here, but account syncing will stop until you sign in again.",
                     )
                     .unwrap_or(false)
             })

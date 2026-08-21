@@ -6,7 +6,7 @@ mod common;
 use anyhow::Result;
 use tonk_cli::inventory::{SpaceRole, list_local, render};
 use tonk_cli::site::{SiteConfig, TonkSite};
-use tonk_cli::spot::{AccountRecord, SpotStore};
+use tonk_cli::space::{AccountRecord, SpaceStore};
 use tonk_schema::{MemberName, MemberRole, Membership};
 
 const ACCOUNT_A: &str = "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -22,12 +22,12 @@ struct Row<'a> {
 /// Register a space and give it the roster `rows` describes. An empty
 /// `rows` leaves it local-only: no roster at all.
 async fn add_space(
-    store: &SpotStore,
+    store: &SpaceStore,
     config: &SiteConfig,
     name: &str,
     rows: &[Row<'_>],
 ) -> Result<TonkSite> {
-    let outcome = tonk_cli::spot::create(store, name, None, None, config.clone()).await?;
+    let outcome = tonk_cli::space::create(store, name, None, None, config.clone()).await?;
     let site = TonkSite::open_with(&outcome.site, config.clone()).await?;
     if rows.is_empty() {
         return Ok(site);
@@ -51,8 +51,8 @@ async fn add_space(
     Ok(site)
 }
 
-fn fixture(tmp: &std::path::Path) -> Result<(SpotStore, SiteConfig)> {
-    let store = SpotStore::at(tmp.join("state"));
+fn fixture(tmp: &std::path::Path) -> Result<(SpaceStore, SiteConfig)> {
+    let store = SpaceStore::at(tmp.join("state"));
     let mut config = common::isolated_config(tmp)?;
     config.account_store = store.clone();
     Ok((store, config))
@@ -316,8 +316,8 @@ async fn it_retains_other_rows_when_one_site_is_unreadable() -> Result<()> {
     std::fs::create_dir_all(&broken)?;
     let mut registry = store.load()?;
     registry
-        .spots
-        .insert("broken".to_owned(), tonk_cli::spot::SpotEntry::at(broken));
+        .spaces
+        .insert("broken".to_owned(), tonk_cli::space::SpaceEntry::at(broken));
     store.save(&registry)?;
 
     let report = list_local(&store, &config).await?;

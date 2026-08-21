@@ -22,28 +22,28 @@ export TONK_NO_UPDATE_CHECK=1
 # trip entirely.
 export TONK_NO_SHORTEN=1
 
-SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N] [--variant NAME] [--spot-agents]}"; shift
+SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N] [--variant NAME] [--space-agents]}"; shift
 SCRIPTED=0
 RUNS=1
-SPOT_AGENTS=0
+SPACE_AGENTS=0
 BENCH_VARIANT="${BENCH_VARIANT:-unlabelled}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --scripted) SCRIPTED=1 ;;
     --runs) RUNS="$2"; shift ;;
     --variant) BENCH_VARIANT="$2"; shift ;;
-    --spot-agents) SPOT_AGENTS=1 ;;
+    --space-agents) SPACE_AGENTS=1 ;;
     *) echo "unknown flag $1" >&2; exit 2 ;;
   esac
   shift
 done
-export BENCH_SPOT_AGENTS="$SPOT_AGENTS"
-if [ "$SPOT_AGENTS" = 1 ]; then
-  SPOT_AGENTS_JSON=true
-  SPOT_AGENTS_SOURCE=dialog-claim
+export BENCH_SPACE_AGENTS="$SPACE_AGENTS"
+if [ "$SPACE_AGENTS" = 1 ]; then
+  SPACE_AGENTS_JSON=true
+  SPACE_AGENTS_SOURCE=dialog-claim
 else
-  SPOT_AGENTS_JSON=false
-  SPOT_AGENTS_SOURCE=none
+  SPACE_AGENTS_JSON=false
+  SPACE_AGENTS_SOURCE=none
 fi
 
 if [[ ! "$BENCH_VARIANT" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -62,23 +62,23 @@ cleanup() {
 for i in $(seq 1 "$RUNS"); do
   RUN_DIR="$ROOT/bench/runs/$(date +%Y%m%d-%H%M%S)-${i}-$SCENARIO_NAME-$BENCH_VARIANT"
   unset EPISODE_DIR EPISODE_BIN EPISODE_HOME EPISODE_PATH_SANDBOX EPISODE_RUNNER \
-        EPISODE_SANDBOX EPISODE_SPOT EPISODE_SPOTS_STATE
+        EPISODE_SANDBOX EPISODE_SPACE EPISODE_SPACES_STATE
   mkdir -p "$RUN_DIR"
   export RUN_DIR SCENARIO SCENARIO_NAME
   export BENCH_PORT="${BENCH_PORT:-8787}"
   export BENCH_URL="http://127.0.0.1:$BENCH_PORT"
   echo "run: $RUN_DIR" >&2
 
-  # The CLI is spot-based: it resolves a spot by --spot, then TONK_SPOT,
+  # The CLI is space-based: it resolves a space by --space, then TONK_SPACE,
   # then the `tonk use` selection, and never consults the cwd. So a
   # `cd` into the site directory buys nothing — without these two the
-  # harness would silently drive whatever spot the developer happens to
-  # have selected globally. TONK_SPOTS_STATE keeps the registry (and
-  # the canonical spots/ root beneath it) inside the run directory, so
-  # concurrent runs and the developer's own spots never see each other.
-  export TONK_SPOTS_STATE="$RUN_DIR/spots-state"
-  export TONK_SPOT=bench
-  mkdir -p "$TONK_SPOTS_STATE"
+  # harness would silently drive whatever space the developer happens to
+  # have selected globally. TONK_SPACES_STATE keeps the registry (and
+  # the canonical spaces/ root beneath it) inside the run directory, so
+  # concurrent runs and the developer's own spaces never see each other.
+  export TONK_SPACES_STATE="$RUN_DIR/spaces-state"
+  export TONK_SPACE=bench
+  mkdir -p "$TONK_SPACES_STATE"
 
   trap cleanup EXIT
 
@@ -123,8 +123,8 @@ for i in $(seq 1 "$RUNS"); do
     --arg revision "$revision" \
     --arg runner "${EPISODE_RUNNER:-claude}" \
     --arg model "$effective_model" \
-    --arg spot_agents_source "$SPOT_AGENTS_SOURCE" \
-    --argjson spot_agents "$SPOT_AGENTS_JSON" \
+    --arg space_agents_source "$SPACE_AGENTS_SOURCE" \
+    --argjson space_agents "$SPACE_AGENTS_JSON" \
     --argjson dirty "$dirty" \
     '{
       variant: $variant,
@@ -133,8 +133,8 @@ for i in $(seq 1 "$RUNS"); do
       dirty: $dirty,
       runner: $runner,
       model: $model,
-      spot_agents: $spot_agents,
-      spot_agents_source: $spot_agents_source
+      space_agents: $space_agents,
+      space_agents_source: $space_agents_source
     }' > "$RUN_DIR/experiment.json"
   if [ -x "$SCENARIO/prepare.sh" ]; then
     "$SCENARIO/prepare.sh"

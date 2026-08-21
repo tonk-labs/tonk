@@ -1,6 +1,6 @@
-//! Spot registry: named spots, canonical storage, selection.
+//! Space registry: named spaces, canonical storage, selection.
 //!
-//! A *spot* is a named entry in `spots.json` mapping to the *site*
+//! A *space* is a named entry in `spaces.json` mapping to the *site*
 //! directory that backs it (see [`crate::site`]). The registry and
 //! the canonical site directories live under the platform data dir
 //! (`~/Library/Application Support/tonk/` on macOS), next to
@@ -8,22 +8,32 @@
 //!
 //! ```text
 //! tonk/
-//!   spots.json      registry: name → site path plus directory
-//!                   bindings
-//!   spots/<name>/   canonical site dirs
+//!   spaces.json      registry: name → site path plus directory
+//!                    bindings
+//!   spaces/<name>/   canonical site dirs
 //! ```
 //!
-//! Selection resolves `--spot` > `TONK_SPOT` > a directory
+//! Selection resolves `--space` > `TONK_SPACE` > a directory
 //! binding (the nearest bound ancestor of the cwd). The flag and env
 //! forms are per-invocation / per-process; bindings persist that
 //! choice for sessions that live in a directory. A directory is only
-//! ever a key into the registry — it never locates or contains spot
+//! ever a key into the registry — it never locates or contains space
 //! data.
 //!
-//! `spots.json` stores absolute, expanded paths so applications
+//! `spaces.json` stores absolute, expanded paths so applications
 //! built on tonk can resolve a name with zero path logic. Writes
 //! go through a temp file + atomic rename. A corrupt registry is a
 //! hard error naming the file — never silently recreated.
+//!
+//! Both names were `spot` before. An installation written by that
+//! build keeps working: `spots.json`, its `spots` key, the `spots/`
+//! root, `TONK_SPOT`, and `TONK_SPOTS_STATE` are all still read, and
+//! the first command to touch the registry converts the store in
+//! place (see [`SpaceStore::load`]). Nothing writes the old spelling
+//! back, so the conversion happens once. The cost of converting is
+//! that an older `tonk` sharing the same data dir stops seeing these
+//! spaces — it does not destroy them, because its unknown-field sink
+//! round-trips what it cannot read.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,20 +46,34 @@ use tonk_schema::{RepositoryName, prelude::DidExt as _};
 pub const SPACE_ENV: &str = "TONK_SPACE";
 
 /// Compatibility environment variable naming the space to use.
-pub const SPOT_ENV: &str = "TONK_SPOT";
+///
+/// Read only when [`SPACE_ENV`] is unset, so a harness that exports both
+/// gets the canonical one. Kept because scripts predating the rename
+/// export it and cannot be edited from here.
+pub const LEGACY_SPACE_ENV: &str = "TONK_SPOT";
 
 /// Environment variable overriding the directory that holds
-/// `spots.json` and the canonical `spots/` root, so tests can
+/// `spaces.json` and the canonical `spaces/` root, so tests can
 /// isolate state (same pattern as `TONK_TELEMETRY_STATE`).
-pub const STATE_ENV: &str = "TONK_SPOTS_STATE";
+pub const STATE_ENV: &str = "TONK_SPACES_STATE";
+
+/// Compatibility spelling of [`STATE_ENV`], read only when it is unset.
+pub const LEGACY_STATE_ENV: &str = "TONK_SPOTS_STATE";
 
 /// File name of the registry inside the store directory.
-const REGISTRY_FILE: &str = "spots.json";
+const REGISTRY_FILE: &str = "spaces.json";
+
+/// Pre-rename registry filename, read once and migrated away. See
+/// [`SpaceStore::load`].
+const LEGACY_REGISTRY_FILE: &str = "spots.json";
 
 /// Directory name (inside the store) holding canonical site dirs.
-const SPOTS_DIRNAME: &str = "spots";
+const SPACES_DIRNAME: &str = "spaces";
 
-/// On-disk registry: one entry per spot plus directory bindings.
+/// Pre-rename canonical-site directory name, moved once on migration.
+const LEGACY_SPACES_DIRNAME: &str = "spots";
+
+/// On-disk registry: one entry per space plus directory bindings.
 /// `BTreeMap` keeps listing and serialization order stable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Registry {
@@ -59,11 +83,16 @@ pub struct Registry {
     #[serde(default, rename = "current", skip_serializing)]
     legacy_current: Option<String>,
     /// Name → entry. Paths inside are absolute and expanded.
-    #[serde(default)]
-    pub spots: BTreeMap<String, SpotEntry>,
-    /// Directories bound to a spot, keyed by canonicalized absolute
+    ///
+    /// `alias` reads the pre-rename `spots` key. It has to be an alias
+    /// rather than a bare rename because [`Registry::extra`] would
+    /// otherwise swallow `spots` into the unknown-field sink and this
+    /// binary would report a populated installation as empty.
+    #[serde(default, alias = "spots")]
+    pub spaces: BTreeMap<String, SpaceEntry>,
+    /// Directories bound to a space, keyed by canonicalized absolute
     /// path. A top-level map rather than a list inside each entry: a
-    /// key cannot repeat, so "one directory, one spot" is structural
+    /// key cannot repeat, so "one directory, one space" is structural
     /// rather than enforced.
     #[serde(
         default,
@@ -74,7 +103,7 @@ pub struct Registry {
     /// The account this installation is currently signed into, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<AccountRecord>,
-    /// Fields this binary does not recognise. `spots.json` is a public
+    /// Fields this binary does not recognise. `spaces.json` is a public
     /// format other applications read and rewrite directly, and this
     /// binary is not necessarily the newest one touching it — an
     /// older `tonk` (stable channel, pre-`tonk update`) or a
@@ -84,7 +113,7 @@ pub struct Registry {
     extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// One registered spot.
+/// One registered space.
 ///
 /// A binding and nothing else. Which account owns a space is read from the
 /// space's own roster, not recorded beside it: a tag here could drift from
@@ -92,12 +121,12 @@ pub struct Registry {
 /// checking it, and a member device could never learn the owner of a space it
 /// merely joined.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct SpotEntry {
-    /// Absolute path to the site directory backing this spot.
+pub struct SpaceEntry {
+    /// Absolute path to the site directory backing this space.
     pub site: PathBuf,
 }
 
-impl SpotEntry {
+impl SpaceEntry {
     /// An entry for `site`.
     pub fn at(site: impl Into<PathBuf>) -> Self {
         Self { site: site.into() }
@@ -138,14 +167,14 @@ impl AccountRecord {
     }
 }
 
-/// Where a resolution's spot name came from. Surfaced in status
+/// Where a resolution's space name came from. Surfaced in status
 /// and error output so a session can always tell what it is about
 /// to touch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// `--spot` flag.
+    /// `--space` flag.
     Flag,
-    /// [`SPOT_ENV`] environment variable.
+    /// [`SPACE_ENV`] environment variable.
     Env,
     /// A binding on the cwd or one of its ancestors. Carries the
     /// bound directory, so output can say *which* one answered.
@@ -162,11 +191,11 @@ impl std::fmt::Display for Source {
     }
 }
 
-/// A successful resolution: which spot, where its site lives, and
+/// A successful resolution: which space, where its site lives, and
 /// which selection mechanism picked it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resolved {
-    /// The spot's registry name.
+    /// The space's registry name.
     pub name: String,
     /// Absolute path to the site directory.
     pub site: PathBuf,
@@ -176,22 +205,22 @@ pub struct Resolved {
 
 /// Failure modes for registry access and resolution.
 #[derive(Debug, Error)]
-pub enum SpotError {
-    /// Spots exist but neither the process nor cwd selects one.
+pub enum SpaceError {
+    /// Spaces exist but neither the process nor cwd selects one.
     #[error(
-        "no spot active for this directory; run `tonk use <name>`, \
-         pass --spot, or set TONK_SPOT"
+        "no space active for this directory; run `tonk use <name>`, \
+         pass --space, or set TONK_SPACE"
     )]
     NoSelection,
-    /// The registry has zero spots — selection is moot; the fix is
+    /// The registry has zero spaces — selection is moot; the fix is
     /// creating one.
     #[error(
-        "no spots registered; create one with `tonk spot new <name>` \
+        "no spaces registered; create one with `tonk space new <name>` \
          (add --site <path> to adopt an existing .tonk directory)"
     )]
     NothingRegistered,
     /// A name that isn't in the registry.
-    #[error("unknown spot '{name}'{}", unknown_hint(.available, .binding))]
+    #[error("unknown space '{name}'{}", unknown_hint(.available, .binding))]
     Unknown {
         /// The name that failed to resolve.
         name: String,
@@ -203,7 +232,7 @@ pub enum SpotError {
         /// no `unbind` to suggest.
         binding: Option<PathBuf>,
     },
-    /// `spot unbind` against a directory with no binding of its
+    /// `space unbind` against a directory with no binding of its
     /// own. Matching is exact on purpose — unbinding a whole project
     /// because someone typed `unbind` three levels down inside it is
     /// not a recoverable surprise — so the ancestor that *is*
@@ -215,32 +244,32 @@ pub enum SpotError {
         /// The nearest bound ancestor, for the error hint.
         ancestor: Option<(PathBuf, String)>,
     },
-    /// `spot new` against a name that already exists. Re-pointing
+    /// `space new` against a name that already exists. Re-pointing
     /// is an explicit `rm` + `new`, never an overwrite.
     #[error(
-        "spot '{0}' already exists; to re-point the name run \
-         `tonk spot rm {0} --keep-data` first, or `tonk spot rm {0}` \
+        "space '{0}' already exists; to re-point the name run \
+         `tonk space rm {0} --keep-data` first, or `tonk space rm {0}` \
          to delete its data as well"
     )]
     Exists(String),
     /// The registry file exists but doesn't parse. Deliberately
     /// not self-healing: silently recreating it would orphan every
-    /// registered spot.
-    #[error("corrupt spot registry at {path}: {detail}")]
+    /// registered space.
+    #[error("corrupt space registry at {path}: {detail}")]
     Corrupt {
-        /// Path to the offending `spots.json`.
+        /// Path to the offending `spaces.json`.
         path: PathBuf,
         /// The serde error text.
         detail: String,
     },
     /// A name outside the allowed slug. Canonical names become
     /// directory names, so the alphabet is conservative.
-    #[error("invalid spot name '{0}': use [a-z0-9][a-z0-9-_]*")]
+    #[error("invalid space name '{0}': use [a-z0-9][a-z0-9-_]*")]
     InvalidName(String),
     /// The platform reports no data directory (no home).
     #[error("could not determine the platform data directory")]
     NoDataDir,
-    /// Site bootstrap (`spot new`) failed inside the site layer.
+    /// Site bootstrap (`space new`) failed inside the site layer.
     #[error("failed to initialize site: {0}")]
     Init(String),
     /// Registry or site-directory I/O.
@@ -248,27 +277,27 @@ pub enum SpotError {
     Io(String),
 }
 
-/// Hint suffix for [`SpotError::Unknown`]: list what is registered,
-/// or point at `spot new` when nothing is; when the name came from a
-/// directory binding, name the directory too and point at `spot
+/// Hint suffix for [`SpaceError::Unknown`]: list what is registered,
+/// or point at `space new` when nothing is; when the name came from a
+/// directory binding, name the directory too and point at `space
 /// unbind` — otherwise the error reads as coming from nowhere, and
 /// there is no obvious way to clear it.
 fn unknown_hint(available: &[String], binding: &Option<PathBuf>) -> String {
     let registered = if available.is_empty() {
-        "; none registered (create one with `tonk spot new <name>`)".to_string()
+        "; none registered (create one with `tonk space new <name>`)".to_string()
     } else {
         format!("; registered: {}", available.join(", "))
     };
     match binding {
         Some(directory) => format!(
-            "{registered}; via binding at {directory} — clear it with `tonk spot unbind {directory}`",
+            "{registered}; via binding at {directory} — clear it with `tonk space unbind {directory}`",
             directory = directory.display(),
         ),
         None => registered,
     }
 }
 
-/// Hint suffix for [`SpotError::NotBound`]: name the bound ancestor,
+/// Hint suffix for [`SpaceError::NotBound`]: name the bound ancestor,
 /// so the fix is a `cd` away.
 fn unbind_hint(ancestor: &Option<(PathBuf, String)>) -> String {
     match ancestor {
@@ -279,26 +308,28 @@ fn unbind_hint(ancestor: &Option<(PathBuf, String)>) -> String {
     }
 }
 
-/// Handle on the spot state directory. All registry reads and
+/// Handle on the space state directory. All registry reads and
 /// writes go through one of these; tests construct it with
-/// [`SpotStore::at`] over a tempdir so nothing touches the user's
+/// [`SpaceStore::at`] over a tempdir so nothing touches the user's
 /// real data dir and no test ever mutates process-global env.
 #[derive(Debug, Clone)]
-pub struct SpotStore {
+pub struct SpaceStore {
     dir: PathBuf,
 }
 
-impl SpotStore {
+impl SpaceStore {
     /// The real store: [`STATE_ENV`] override, else the platform
     /// data dir (`dirs::data_dir()/tonk`, the same base telemetry
     /// and update state use).
-    pub fn open() -> Result<Self, SpotError> {
-        if let Ok(dir) = std::env::var(STATE_ENV)
-            && !dir.is_empty()
-        {
-            return Ok(Self { dir: dir.into() });
+    pub fn open() -> Result<Self, SpaceError> {
+        for name in [STATE_ENV, LEGACY_STATE_ENV] {
+            if let Ok(dir) = std::env::var(name)
+                && !dir.is_empty()
+            {
+                return Ok(Self { dir: dir.into() });
+            }
         }
-        let base = dirs::data_dir().ok_or(SpotError::NoDataDir)?;
+        let base = dirs::data_dir().ok_or(SpaceError::NoDataDir)?;
         Ok(Self {
             dir: base.join("tonk"),
         })
@@ -314,15 +345,15 @@ impl SpotStore {
         &self.dir
     }
 
-    /// Path to `spots.json` inside this store.
+    /// Path to `spaces.json` inside this store.
     pub fn registry_path(&self) -> PathBuf {
         self.dir.join(REGISTRY_FILE)
     }
 
     /// Dedicated account-system repository directory.
     ///
-    /// It is a sibling of `spots/`, never a registered spot and never written
-    /// to `spots.json`.
+    /// It is a sibling of `spaces/`, never a registered space and never written
+    /// to `spaces.json`.
     pub fn account_dir(&self) -> PathBuf {
         self.dir.join("account")
     }
@@ -330,38 +361,38 @@ impl SpotStore {
     /// Canonical site directory for `name` inside this store.
     /// Purely a path computation — nothing is created.
     pub fn canonical_site(&self, name: &str) -> PathBuf {
-        self.dir.join(SPOTS_DIRNAME).join(name)
+        self.dir.join(SPACES_DIRNAME).join(name)
     }
 
     /// The root holding canonical site directories.
-    pub fn spots_root(&self) -> PathBuf {
-        self.dir.join(SPOTS_DIRNAME)
+    pub fn spaces_root(&self) -> PathBuf {
+        self.dir.join(SPACES_DIRNAME)
     }
 
     /// Canonical site directories that no registry entry names.
     ///
-    /// These are left by `tonk spot rm --keep-data` (and by a
-    /// hand-edited `spots.json`). They are invisible to every other
+    /// These are left by `tonk space rm --keep-data` (and by a
+    /// hand-edited `spaces.json`). They are invisible to every other
     /// command yet still occupy their names: `tonk join --name x` and
-    /// `tonk account spots pull --name x` both refuse to write over
+    /// `tonk account spaces pull --name x` both refuse to write over
     /// one. Listing them is what makes that state recoverable instead
     /// of merely confusing.
     ///
-    /// A store whose `spots/` directory cannot be read has no
+    /// A store whose `spaces/` directory cannot be read has no
     /// orphans to report — this is a diagnostic, never a reason to
     /// fail a command that was otherwise fine.
     pub fn orphaned_sites(&self, registry: &Registry) -> Vec<PathBuf> {
         let registered: Vec<PathBuf> = registry
-            .spots
+            .spaces
             .values()
             .map(|entry| canonical(&entry.site))
             .collect();
-        let Ok(entries) = std::fs::read_dir(self.spots_root()) else {
+        let Ok(entries) = std::fs::read_dir(self.spaces_root()) else {
             return Vec::new();
         };
         // Canonicalized on the way out, not just for the comparison:
         // these paths get printed as `--site` arguments, and a path
-        // that doesn't compare equal to the one `spot new` would
+        // that doesn't compare equal to the one `space new` would
         // register is a path that re-creates this same confusion.
         let mut orphans: Vec<PathBuf> = entries
             .flatten()
@@ -373,60 +404,136 @@ impl SpotStore {
         orphans
     }
 
+    /// Path to the pre-rename registry, read once by [`Self::load`].
+    fn legacy_registry_path(&self) -> PathBuf {
+        self.dir.join(LEGACY_REGISTRY_FILE)
+    }
+
+    /// The pre-rename root of canonical site directories.
+    fn legacy_spaces_root(&self) -> PathBuf {
+        self.dir.join(LEGACY_SPACES_DIRNAME)
+    }
+
     /// Load the registry. A missing file is an empty registry (the
     /// pre-first-use state); an unparseable one is
-    /// [`SpotError::Corrupt`].
-    pub fn load(&self) -> Result<Registry, SpotError> {
+    /// [`SpaceError::Corrupt`].
+    ///
+    /// An installation still on the pre-rename layout is converted here
+    /// first — see [`Self::adopt_legacy_layout`] — because this is the
+    /// first place any command touches the registry, and a store that
+    /// reported itself empty would read as "no spaces registered" to
+    /// someone holding a full one.
+    pub fn load(&self) -> Result<Registry, SpaceError> {
         let path = self.registry_path();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Registry::default());
+                return self.adopt_legacy_layout();
             }
             Err(e) => {
-                return Err(SpotError::Io(format!(
+                return Err(SpaceError::Io(format!(
                     "could not read {}: {e}",
                     path.display()
                 )));
             }
         };
-        serde_json::from_str(&text).map_err(|e| SpotError::Corrupt {
+        serde_json::from_str(&text).map_err(|e| SpaceError::Corrupt {
             path,
             detail: e.to_string(),
         })
     }
 
+    /// Convert a pre-rename store (`spots.json` + `spots/`) to the
+    /// current layout, returning the registry either way.
+    ///
+    /// Only reached when `spaces.json` is absent, so a converted store
+    /// never pays for this again. The order is chosen so every
+    /// interruption converges on a re-run: the site directory moves
+    /// first, the rewritten registry lands atomically second, and the
+    /// legacy registry is removed last. A crash before the write leaves
+    /// `spots.json` naming directories that have moved — which the next
+    /// run fixes, because the rewrite is a prefix substitution that does
+    /// not consult the filesystem.
+    ///
+    /// Failure is an error rather than an empty registry: silently
+    /// reporting zero spaces to someone who has ten is the one outcome
+    /// worse than refusing to run.
+    fn adopt_legacy_layout(&self) -> Result<Registry, SpaceError> {
+        let legacy_path = self.legacy_registry_path();
+        let text = match std::fs::read_to_string(&legacy_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Registry::default());
+            }
+            Err(e) => {
+                return Err(SpaceError::Io(format!(
+                    "could not read {}: {e}",
+                    legacy_path.display()
+                )));
+            }
+        };
+        let mut registry: Registry =
+            serde_json::from_str(&text).map_err(|e| SpaceError::Corrupt {
+                path: legacy_path.clone(),
+                detail: e.to_string(),
+            })?;
+
+        let (legacy_root, root) = (self.legacy_spaces_root(), self.spaces_root());
+        if legacy_root.is_dir() && !root.exists() {
+            std::fs::rename(&legacy_root, &root).map_err(|e| {
+                SpaceError::Io(format!(
+                    "could not move {} to {}: {e}",
+                    legacy_root.display(),
+                    root.display()
+                ))
+            })?;
+        }
+        for entry in registry.spaces.values_mut() {
+            if let Ok(relative) = entry.site.strip_prefix(&legacy_root) {
+                entry.site = root.join(relative);
+            }
+        }
+
+        self.save(&registry)?;
+        // Best-effort: the store is already correct without it, and a
+        // read-only data dir is not a reason to fail every command. What
+        // it costs is a stale file an older `tonk` would still write to.
+        let _ = std::fs::remove_file(&legacy_path);
+        Ok(registry)
+    }
+
     /// Persist the registry atomically: write a sibling temp file,
-    /// then rename over `spots.json` so concurrent readers never
+    /// then rename over `spaces.json` so concurrent readers never
     /// observe a torn write.
-    pub fn save(&self, registry: &Registry) -> Result<(), SpotError> {
+    pub fn save(&self, registry: &Registry) -> Result<(), SpaceError> {
         std::fs::create_dir_all(&self.dir)
-            .map_err(|e| SpotError::Io(format!("could not create {}: {e}", self.dir.display())))?;
+            .map_err(|e| SpaceError::Io(format!("could not create {}: {e}", self.dir.display())))?;
         let path = self.registry_path();
         let tmp = self.dir.join(format!("{REGISTRY_FILE}.tmp"));
         let text = serde_json::to_string_pretty(registry)
-            .map_err(|e| SpotError::Io(format!("could not serialize registry: {e}")))?;
+            .map_err(|e| SpaceError::Io(format!("could not serialize registry: {e}")))?;
         std::fs::write(&tmp, text)
-            .map_err(|e| SpotError::Io(format!("could not write {}: {e}", tmp.display())))?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| SpotError::Io(format!("could not move {} into place: {e}", tmp.display())))
+            .map_err(|e| SpaceError::Io(format!("could not write {}: {e}", tmp.display())))?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            SpaceError::Io(format!("could not move {} into place: {e}", tmp.display()))
+        })
     }
 
     /// The account this installation is signed into, if any.
-    pub fn account(&self) -> Result<Option<AccountRecord>, SpotError> {
+    pub fn account(&self) -> Result<Option<AccountRecord>, SpaceError> {
         Ok(self.load()?.account)
     }
 
     /// Record (or clear) the signed-in account.
-    pub fn set_account(&self, account: Option<AccountRecord>) -> Result<(), SpotError> {
+    pub fn set_account(&self, account: Option<AccountRecord>) -> Result<(), SpaceError> {
         let mut registry = self.load()?;
         registry.account = account;
         self.save(&registry)
     }
 
-    /// Resolve the spot a command should operate on.
+    /// Resolve the space a command should operate on.
     ///
-    /// Strict precedence: `flag` (`--spot`) > `env` ([`SPOT_ENV`],
+    /// Strict precedence: `flag` (`--space`) > `env` ([`SPACE_ENV`],
     /// already read and empty-filtered by the caller) > a directory
     /// binding at or above `cwd`.
     ///
@@ -434,15 +541,15 @@ impl SpotStore {
     /// process-global state, and it is only ever a key into the
     /// registry: the directory never locates site data.
     ///
-    /// `SPOT_ENV` outranks bindings deliberately. A harness that
-    /// pinned a spot for the process must not be overridden by
+    /// `SPACE_ENV` outranks bindings deliberately. A harness that
+    /// pinned a space for the process must not be overridden by
     /// whatever directory it happened to launch in.
     pub fn resolve(
         &self,
         flag: Option<&str>,
         env: Option<&str>,
         cwd: Option<&Path>,
-    ) -> Result<Resolved, SpotError> {
+    ) -> Result<Resolved, SpaceError> {
         let registry = self.load()?;
         let (name, source) = if let Some(name) = flag {
             (name.to_owned(), Source::Flag)
@@ -452,12 +559,12 @@ impl SpotStore {
             cwd.and_then(|cwd| directory_binding(&registry, cwd))
         {
             (name, Source::Directory(directory))
-        } else if registry.spots.is_empty() {
-            return Err(SpotError::NothingRegistered);
+        } else if registry.spaces.is_empty() {
+            return Err(SpaceError::NothingRegistered);
         } else {
-            return Err(SpotError::NoSelection);
+            return Err(SpaceError::NoSelection);
         };
-        match registry.spots.get(&name) {
+        match registry.spaces.get(&name) {
             // Resolution never consults the signed-in account. Editing a
             // replica this device holds is unrestricted; the only enforcement
             // that is real happens at the service boundary, against the
@@ -470,17 +577,17 @@ impl SpotStore {
             None => {
                 // Name the bound directory in the error too, when
                 // that is where the name came from — otherwise an
-                // orphaned binding (the registered spot was
-                // removed by hand or by `spot rm` on another
+                // orphaned binding (the registered space was
+                // removed by hand or by `space rm` on another
                 // machine) reads as an unexplained failure with no
                 // way to clear it.
                 let binding = match &source {
                     Source::Directory(directory) => Some(directory.clone()),
                     _ => None,
                 };
-                Err(SpotError::Unknown {
+                Err(SpaceError::Unknown {
                     name,
-                    available: registry.spots.keys().cloned().collect(),
+                    available: registry.spaces.keys().cloned().collect(),
                     binding,
                 })
             }
@@ -488,10 +595,10 @@ impl SpotStore {
     }
 }
 
-/// Validate a spot name against the canonical slug:
+/// Validate a space name against the canonical slug:
 /// `[a-z0-9][a-z0-9-_]*`. Names become directory names under
-/// `spots/`, so the alphabet stays conservative.
-pub fn validate_name(name: &str) -> Result<(), SpotError> {
+/// `spaces/`, so the alphabet stays conservative.
+pub fn validate_name(name: &str) -> Result<(), SpaceError> {
     let mut chars = name.chars();
     let head_ok = chars
         .next()
@@ -501,7 +608,7 @@ pub fn validate_name(name: &str) -> Result<(), SpotError> {
     if head_ok && tail_ok {
         Ok(())
     } else {
-        Err(SpotError::InvalidName(name.to_owned()))
+        Err(SpaceError::InvalidName(name.to_owned()))
     }
 }
 
@@ -531,7 +638,7 @@ fn directory_binding(registry: &Registry, cwd: &Path) -> Option<(PathBuf, String
     })
 }
 
-/// Outcome of [`create`]: the registered spot and the DID of the
+/// Outcome of [`create`]: the registered space and the DID of the
 /// repository backing it.
 #[derive(Debug, Clone)]
 pub struct CreateOutcome {
@@ -545,14 +652,14 @@ pub struct CreateOutcome {
     /// rather than created.
     ///
     /// Adoption is the point of `--site`, but it also happens
-    /// silently at the canonical path after `tonk spot rm
+    /// silently at the canonical path after `tonk space rm
     /// --keep-data` — the same name picks its old data back up. That
     /// is usually what someone wants and never what they expect, so
     /// the caller says which one happened.
     pub adopted: bool,
 }
 
-/// What [`remove`] should do with the spot's site data.
+/// What [`remove`] should do with the space's site data.
 ///
 /// Explicit rather than a `bool` because the two arms are not
 /// variations on one operation: deleting is irreversible and
@@ -562,7 +669,7 @@ pub enum Data {
     /// Delete the site directory from disk.
     Delete,
     /// Leave the site directory where it is. The data then belongs
-    /// to no registered spot — see [`SpotStore::orphaned_sites`].
+    /// to no registered space — see [`SpaceStore::orphaned_sites`].
     Keep,
 }
 
@@ -590,23 +697,23 @@ pub struct RemoveOutcome {
     pub site: PathBuf,
     /// What became of the site directory.
     pub data: Deletion,
-    /// Directories that were bound to this spot and are no longer
+    /// Directories that were bound to this space and are no longer
     /// bound to anything.
     pub unbound: Vec<PathBuf>,
 }
 
-/// Rows for `tonk spot list` plus the resolved active selection
+/// Rows for `tonk space list` plus the resolved active selection
 /// (None when nothing resolves — empty registry or dangling name).
 #[derive(Debug, Clone)]
 pub struct Listing {
-    /// `(name, site)` per registered spot, in name order.
+    /// `(name, site)` per registered space, in name order.
     pub rows: Vec<(String, PathBuf)>,
-    /// `(directory, spot)` per binding, in path order.
+    /// `(directory, space)` per binding, in path order.
     pub bindings: Vec<(PathBuf, String)>,
-    /// The spot a bare command would hit right now, with source.
+    /// The space a bare command would hit right now, with source.
     pub active: Option<Resolved>,
-    /// Site data under `spots/` that no entry names. See
-    /// [`SpotStore::orphaned_sites`].
+    /// Site data under `spaces/` that no entry names. See
+    /// [`SpaceStore::orphaned_sites`].
     pub orphans: Vec<PathBuf>,
 }
 
@@ -615,54 +722,56 @@ pub struct Listing {
 /// The registry is loaded immediately before the atomic save so a concurrent
 /// name claim is never silently overwritten.
 pub fn register_existing_unbound(
-    store: &SpotStore,
+    store: &SpaceStore,
     name: &str,
     site: &Path,
-) -> Result<(), SpotError> {
+) -> Result<(), SpaceError> {
     validate_name(name)?;
     let site = site.canonicalize().map_err(|error| {
-        SpotError::Io(format!(
+        SpaceError::Io(format!(
             "could not canonicalize {}: {error}",
             site.display()
         ))
     })?;
     let canonical = store.canonical_site(name).canonicalize().map_err(|error| {
-        SpotError::Io(format!(
-            "account spot is not mounted at canonical site {}: {error}",
+        SpaceError::Io(format!(
+            "account space is not mounted at canonical site {}: {error}",
             store.canonical_site(name).display()
         ))
     })?;
     if site != canonical {
-        return Err(SpotError::Io(format!(
-            "account spot must be mounted at canonical site {}",
+        return Err(SpaceError::Io(format!(
+            "account space must be mounted at canonical site {}",
             canonical.display()
         )));
     }
 
     let mut registry = store.load()?;
-    if registry.spots.contains_key(name) {
-        return Err(SpotError::Exists(name.to_owned()));
+    if registry.spaces.contains_key(name) {
+        return Err(SpaceError::Exists(name.to_owned()));
     }
-    registry.spots.insert(name.to_owned(), SpotEntry::at(site));
+    registry
+        .spaces
+        .insert(name.to_owned(), SpaceEntry::at(site));
     store.save(&registry)
 }
 
-/// Create (or adopt) a spot: initialize the site, register the name,
+/// Create (or adopt) a space: initialize the site, register the name,
 /// and optionally bind a directory to it. The site lands in the
-/// store's canonical `spots/<name>/` unless `site_override` names
+/// store's canonical `spaces/<name>/` unless `site_override` names
 /// another directory; because [`crate::site::TonkSite::init_at_with`]
 /// is idempotent, an override pointing at existing site storage adopts it.
 pub async fn create(
-    store: &SpotStore,
+    store: &SpaceStore,
     name: &str,
     site_override: Option<&Path>,
     binding_directory: Option<&Path>,
     config: crate::site::SiteConfig,
-) -> Result<CreateOutcome, SpotError> {
+) -> Result<CreateOutcome, SpaceError> {
     validate_name(name)?;
     let mut registry = store.load()?;
-    if registry.spots.contains_key(name) {
-        return Err(SpotError::Exists(name.to_owned()));
+    if registry.spaces.contains_key(name) {
+        return Err(SpaceError::Exists(name.to_owned()));
     }
 
     let target = site_override
@@ -673,9 +782,9 @@ pub async fn create(
     let adopted = crate::site::has_site_data(&target);
     let site = crate::site::TonkSite::init_at_with(&target, config)
         .await
-        .map_err(|e| SpotError::Init(format!("{e:#}")))?;
+        .map_err(|e| SpaceError::Init(format!("{e:#}")))?;
 
-    // A fresh CLI spot must carry the same self-identifying row the worker's
+    // A fresh CLI space must carry the same self-identifying row the worker's
     // create path writes. Invite validation uses this fact to distinguish a
     // usable repository from an arbitrary branch that happens to have data.
     // Adoption preserves the existing repository's name instead of treating
@@ -683,7 +792,7 @@ pub async fn create(
     if !adopted {
         site.branch()
             .await
-            .map_err(|e| SpotError::Init(format!("failed to open main branch: {e}")))?
+            .map_err(|e| SpaceError::Init(format!("failed to open main branch: {e}")))?
             .handle()
             .transaction()
             .assert(RepositoryName {
@@ -693,7 +802,7 @@ pub async fn create(
             .commit()
             .perform(&site.operator)
             .await
-            .map_err(|e| SpotError::Init(format!("failed to stamp repository identity: {e}")))?;
+            .map_err(|e| SpaceError::Init(format!("failed to stamp repository identity: {e}")))?;
     }
 
     let outcome = CreateOutcome {
@@ -703,8 +812,8 @@ pub async fn create(
         adopted,
     };
     registry
-        .spots
-        .insert(name.to_owned(), SpotEntry::at(outcome.site.clone()));
+        .spaces
+        .insert(name.to_owned(), SpaceEntry::at(outcome.site.clone()));
     if let Some(directory) = binding_directory {
         registry
             .bindings
@@ -719,9 +828,9 @@ pub async fn create(
 pub struct BindOutcome {
     /// The canonicalized directory now bound.
     pub directory: PathBuf,
-    /// The spot it resolves to.
+    /// The space it resolves to.
     pub name: String,
-    /// The spot it was bound to before, when it was already bound.
+    /// The space it was bound to before, when it was already bound.
     pub previous: Option<String>,
 }
 
@@ -730,20 +839,20 @@ pub struct BindOutcome {
 pub struct UnbindOutcome {
     /// The directory that is no longer bound.
     pub directory: PathBuf,
-    /// The spot it used to resolve to.
+    /// The space it used to resolve to.
     pub name: String,
 }
 
 /// Bind `directory` to `name`.
 /// Rebinding an already-bound directory overwrites and reports
-/// what it replaced: unlike `spot new`, nothing is destroyed, so
+/// what it replaced: unlike `space new`, nothing is destroyed, so
 /// there is no reason to demand an unbind first.
-pub fn bind(store: &SpotStore, name: &str, directory: &Path) -> Result<BindOutcome, SpotError> {
+pub fn bind(store: &SpaceStore, name: &str, directory: &Path) -> Result<BindOutcome, SpaceError> {
     let mut registry = store.load()?;
-    if !registry.spots.contains_key(name) {
-        return Err(SpotError::Unknown {
+    if !registry.spaces.contains_key(name) {
+        return Err(SpaceError::Unknown {
             name: name.to_owned(),
-            available: registry.spots.keys().cloned().collect(),
+            available: registry.spaces.keys().cloned().collect(),
             binding: None,
         });
     }
@@ -758,12 +867,12 @@ pub fn bind(store: &SpotStore, name: &str, directory: &Path) -> Result<BindOutco
 }
 
 /// Unbind `directory`. Exact match only — see
-/// [`SpotError::NotBound`].
-pub fn unbind(store: &SpotStore, directory: &Path) -> Result<UnbindOutcome, SpotError> {
+/// [`SpaceError::NotBound`].
+pub fn unbind(store: &SpaceStore, directory: &Path) -> Result<UnbindOutcome, SpaceError> {
     let mut registry = store.load()?;
     let key = canonical(directory);
     let Some(name) = registry.bindings.remove(&key) else {
-        return Err(SpotError::NotBound {
+        return Err(SpaceError::NotBound {
             directory: key.clone(),
             // The exact lookup just missed, so any hit here is a
             // strict ancestor.
@@ -777,19 +886,19 @@ pub fn unbind(store: &SpotStore, directory: &Path) -> Result<UnbindOutcome, Spot
     })
 }
 
-/// Everything `tonk spot list` needs in one read: the rows plus
+/// Everything `tonk space list` needs in one read: the rows plus
 /// what a bare command would currently resolve to (honouring the
-/// same `flag`/`env` precedence, so `tonk --spot x spot list`
+/// same `flag`/`env` precedence, so `tonk --space x space list`
 /// marks `x`).
 pub fn listing(
-    store: &SpotStore,
+    store: &SpaceStore,
     flag: Option<&str>,
     env: Option<&str>,
     cwd: Option<&Path>,
-) -> Result<Listing, SpotError> {
+) -> Result<Listing, SpaceError> {
     let registry = store.load()?;
     let rows = registry
-        .spots
+        .spaces
         .iter()
         .map(|(name, entry)| (name.clone(), entry.site.clone()))
         .collect();
@@ -813,29 +922,29 @@ pub fn listing(
 /// order looks more cautious and is worse: a delete that fails after
 /// the entry is already gone leaves data on disk that nothing names,
 /// which is precisely the state that later blocks `tonk join` and
-/// `tonk account spots pull` on the same name. Deleting first means a
-/// failure leaves the spot fully registered and the command safe to
+/// `tonk account spaces pull` on the same name. Deleting first means a
+/// failure leaves the space fully registered and the command safe to
 /// retry.
 ///
 /// The residual risk runs the other way — data deleted, registry save
 /// fails — and is benign: the entry points at an empty path, `tonk
-/// spot list` shows it, and re-running `rm` clears it.
-pub fn remove(store: &SpotStore, name: &str, data: Data) -> Result<RemoveOutcome, SpotError> {
+/// space list` shows it, and re-running `rm` clears it.
+pub fn remove(store: &SpaceStore, name: &str, data: Data) -> Result<RemoveOutcome, SpaceError> {
     let mut registry = store.load()?;
-    let Some(entry) = registry.spots.remove(name) else {
-        return Err(SpotError::Unknown {
+    let Some(entry) = registry.spaces.remove(name) else {
+        return Err(SpaceError::Unknown {
             name: name.to_owned(),
-            available: registry.spots.keys().cloned().collect(),
+            available: registry.spaces.keys().cloned().collect(),
             binding: None,
         });
     };
-    // A binding naming an unregistered spot would resolve to a
-    // bare "unknown spot" on the next command, so drop them with the
+    // A binding naming an unregistered space would resolve to a
+    // bare "unknown space" on the next command, so drop them with the
     // entry.
     let unbound: Vec<PathBuf> = registry
         .bindings
         .iter()
-        .filter(|(_, spot)| spot.as_str() == name)
+        .filter(|(_, space)| space.as_str() == name)
         .map(|(directory, _)| directory.clone())
         .collect();
     for directory in &unbound {
@@ -851,8 +960,8 @@ pub fn remove(store: &SpotStore, name: &str, data: Data) -> Result<RemoveOutcome
             // dropping the entry is still the right outcome.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Deletion::AlreadyGone,
             Err(e) => {
-                return Err(SpotError::Io(format!(
-                    "could not delete {}: {e}; spot '{name}' is still registered",
+                return Err(SpaceError::Io(format!(
+                    "could not delete {}: {e}; space '{name}' is still registered",
                     entry.site.display()
                 )));
             }
@@ -872,18 +981,18 @@ pub fn remove(store: &SpotStore, name: &str, data: Data) -> Result<RemoveOutcome
 mod tests {
     use super::*;
 
-    fn store() -> (tempfile::TempDir, SpotStore) {
+    fn store() -> (tempfile::TempDir, SpaceStore) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let store = SpotStore::at(tmp.path());
+        let store = SpaceStore::at(tmp.path());
         (tmp, store)
     }
 
     fn registry_with(names: &[(&str, &str)], current: Option<&str>) -> Registry {
         Registry {
             legacy_current: current.map(str::to_owned),
-            spots: names
+            spaces: names
                 .iter()
-                .map(|(name, site)| ((*name).to_owned(), SpotEntry::at(PathBuf::from(site))))
+                .map(|(name, site)| ((*name).to_owned(), SpaceEntry::at(PathBuf::from(site))))
                 .collect(),
             bindings: BTreeMap::new(),
             account: None,
@@ -902,11 +1011,11 @@ mod tests {
         }
 
         #[test]
-        fn it_keeps_account_storage_outside_spots_and_the_registry() {
+        fn it_keeps_account_storage_outside_spaces_and_the_registry() {
             let (tmp, store) = store();
             assert_eq!(store.account_dir(), tmp.path().join("account"));
             assert_ne!(store.account_dir(), store.canonical_site("account"));
-            assert!(store.load().unwrap().spots.is_empty());
+            assert!(store.load().unwrap().spaces.is_empty());
         }
 
         #[test]
@@ -923,7 +1032,7 @@ mod tests {
             std::fs::create_dir_all(store.registry_path().parent().unwrap()).unwrap();
             std::fs::write(store.registry_path(), "not json").unwrap();
             let err = store.load().expect_err("corrupt must not load");
-            assert!(matches!(err, SpotError::Corrupt { .. }), "{err}");
+            assert!(matches!(err, SpaceError::Corrupt { .. }), "{err}");
             // Still corrupt afterwards — load must not have healed it.
             assert_eq!(
                 std::fs::read_to_string(store.registry_path()).unwrap(),
@@ -951,7 +1060,7 @@ mod tests {
                 store.registry_path(),
                 r#"{
                     "current": "garden",
-                    "spots": { "garden": { "site": "/tmp/garden" } },
+                    "spaces": { "garden": { "site": "/tmp/garden" } },
                     "futureField": { "some": "value" }
                 }"#,
             )
@@ -960,7 +1069,7 @@ mod tests {
             let registry = store.load().expect("load");
             assert_eq!(registry.legacy_current.as_deref(), Some("garden"));
             assert_eq!(
-                registry.spots.get("garden").map(|e| &e.site),
+                registry.spaces.get("garden").map(|e| &e.site),
                 Some(&PathBuf::from("/tmp/garden"))
             );
 
@@ -973,7 +1082,7 @@ mod tests {
                     .expect("parse");
             assert_eq!(reloaded["futureField"]["some"], "value");
             assert!(reloaded.get("current").is_none());
-            assert_eq!(reloaded["spots"]["garden"]["site"], "/tmp/garden");
+            assert_eq!(reloaded["spaces"]["garden"]["site"], "/tmp/garden");
         }
 
         #[dialog_common::test]
@@ -985,7 +1094,7 @@ mod tests {
                 r#"{
                     "current": "garden",
                     "attachments": { "/project": "garden" },
-                    "spots": { "garden": { "site": "/tmp/garden" } }
+                    "spaces": { "garden": { "site": "/tmp/garden" } }
                 }"#,
             )
             .unwrap();
@@ -1017,10 +1126,195 @@ mod tests {
             assert!(!object.contains_key("bindings"), "{text}");
             for key in object.keys() {
                 assert!(
-                    matches!(key.as_str(), "spots"),
+                    matches!(key.as_str(), "spaces"),
                     "unexpected key {key}: {text}"
                 );
             }
+        }
+    }
+
+    mod adopting_the_pre_rename_layout {
+        use super::*;
+
+        /// Build the layout a pre-rename `tonk` left behind: a
+        /// `spots.json` keyed on `spots`, and canonical site data under
+        /// `spots/`.
+        fn legacy_store(names: &[&str]) -> (tempfile::TempDir, SpaceStore) {
+            let (tmp, store) = store();
+            let root = tmp.path().join("spots");
+            let mut spots = serde_json::Map::new();
+            for name in names {
+                std::fs::create_dir_all(root.join(name)).unwrap();
+                std::fs::write(root.join(name).join("marker"), name).unwrap();
+                spots.insert(
+                    (*name).to_owned(),
+                    serde_json::json!({ "site": root.join(name) }),
+                );
+            }
+            std::fs::write(
+                tmp.path().join("spots.json"),
+                serde_json::to_string_pretty(&serde_json::json!({ "spots": spots })).unwrap(),
+            )
+            .unwrap();
+            (tmp, store)
+        }
+
+        #[dialog_common::test]
+        fn it_reads_spaces_out_of_a_registry_that_still_says_spots() {
+            let (_tmp, store) = legacy_store(&["garden", "work"]);
+            let registry = store.load().expect("load");
+            assert_eq!(
+                registry.spaces.keys().collect::<Vec<_>>(),
+                vec!["garden", "work"]
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_moves_canonical_site_data_under_the_new_root() {
+            let (tmp, store) = legacy_store(&["garden"]);
+            store.load().expect("load");
+
+            assert!(!tmp.path().join("spots").exists());
+            assert_eq!(
+                std::fs::read_to_string(store.canonical_site("garden").join("marker")).unwrap(),
+                "garden"
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_rewrites_entry_paths_that_pointed_into_the_old_root() {
+            let (_tmp, store) = legacy_store(&["garden"]);
+            let registry = store.load().expect("load");
+            assert_eq!(
+                registry.spaces.get("garden").map(|entry| &entry.site),
+                Some(&store.canonical_site("garden"))
+            );
+        }
+
+        /// A `--site` elsewhere was never under the store's own root, so
+        /// the prefix rewrite must leave it exactly where it is.
+        #[dialog_common::test]
+        fn it_leaves_a_site_outside_the_old_root_alone() {
+            let (tmp, store) = store();
+            let elsewhere = tmp.path().join("project").join(".tonk");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::write(
+                tmp.path().join("spots.json"),
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "spots": { "proj": { "site": elsewhere } }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let registry = store.load().expect("load");
+            assert_eq!(
+                registry.spaces.get("proj").map(|entry| &entry.site),
+                Some(&elsewhere)
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_carries_the_account_slot_and_bindings_across_but_drops_entry_ownership() {
+            let (tmp, store) = store();
+            let bound = tmp.path().join("work");
+            std::fs::create_dir_all(&bound).unwrap();
+            std::fs::write(
+                tmp.path().join("spots.json"),
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "spots": { "garden": { "site": "/tmp/garden", "account": "did:key:owner" } },
+                    "bindings": { bound.to_str().unwrap(): "garden" },
+                    "account": { "root": "did:key:root" }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let registry = store.load().expect("load");
+            assert_eq!(
+                registry.account.as_ref().map(|a| a.root.as_str()),
+                Some("did:key:root")
+            );
+            assert_eq!(
+                registry.bindings.get(&bound).map(String::as_str),
+                Some("garden")
+            );
+            let written: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(store.registry_path()).expect("read converted registry"),
+            )
+            .expect("parse converted registry");
+            assert!(
+                written["spaces"]["garden"].get("account").is_none(),
+                "ownership comes from the roster, not a registry tag: {written}"
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_writes_the_converted_registry_under_the_new_name_and_key() {
+            let (tmp, store) = legacy_store(&["garden"]);
+            store.load().expect("load");
+
+            assert!(!tmp.path().join("spots.json").exists());
+            let written: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store.registry_path()).unwrap())
+                    .expect("parse");
+            assert!(written.get("spots").is_none(), "{written}");
+            assert!(written["spaces"]["garden"].is_object(), "{written}");
+        }
+
+        /// The conversion is only ever reached with no `spaces.json`, so
+        /// a second run must be a plain read that touches nothing.
+        #[dialog_common::test]
+        fn it_converges_when_run_twice() {
+            let (tmp, store) = legacy_store(&["garden"]);
+            let first = store.load().expect("first load");
+            let second = store.load().expect("second load");
+            assert_eq!(first, second);
+            assert!(!tmp.path().join("spots").exists());
+        }
+
+        /// Interrupted between the directory move and the registry
+        /// write: `spots/` is gone, `spots.json` still names it. The
+        /// rewrite is a prefix substitution that never consults the
+        /// filesystem, so the re-run still lands on the right paths.
+        #[dialog_common::test]
+        fn it_recovers_when_the_move_landed_but_the_registry_write_did_not() {
+            let (tmp, store) = legacy_store(&["garden"]);
+            std::fs::rename(tmp.path().join("spots"), tmp.path().join("spaces")).unwrap();
+
+            let registry = store.load().expect("load");
+            assert_eq!(
+                registry.spaces.get("garden").map(|entry| &entry.site),
+                Some(&store.canonical_site("garden"))
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_refuses_to_report_an_unparseable_legacy_registry_as_empty() {
+            let (tmp, store) = store();
+            std::fs::write(tmp.path().join("spots.json"), "{ not json").unwrap();
+
+            let error = store.load().expect_err("corrupt");
+            assert!(
+                matches!(&error, SpaceError::Corrupt { path, .. } if path.ends_with("spots.json")),
+                "{error:?}"
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_ignores_a_legacy_registry_once_the_store_has_been_converted() {
+            let (tmp, store) = store();
+            store
+                .save(&registry_with(&[("garden", "/tmp/garden")], None))
+                .expect("save");
+            std::fs::write(
+                tmp.path().join("spots.json"),
+                r#"{ "spots": { "stale": { "site": "/tmp/stale" } } }"#,
+            )
+            .unwrap();
+
+            let registry = store.load().expect("load");
+            assert_eq!(registry.spaces.keys().collect::<Vec<_>>(), vec!["garden"]);
         }
     }
 
@@ -1042,7 +1336,7 @@ mod tests {
             assert_eq!(env.source, Source::Env);
 
             let err = store.resolve(None, None, None).expect_err("no binding");
-            assert!(matches!(err, SpotError::NoSelection), "{err}");
+            assert!(matches!(err, SpaceError::NoSelection), "{err}");
         }
 
         #[test]
@@ -1052,15 +1346,15 @@ mod tests {
                 .save(&registry_with(&[("a", "/s/a")], None))
                 .expect("save");
             let err = store.resolve(None, None, None).expect_err("no selection");
-            assert!(matches!(err, SpotError::NoSelection), "{err}");
+            assert!(matches!(err, SpaceError::NoSelection), "{err}");
         }
 
         #[test]
-        fn it_hints_spot_new_when_the_registry_is_empty() {
+        fn it_hints_space_new_when_the_registry_is_empty() {
             let (_tmp, store) = store();
             let err = store.resolve(None, None, None).expect_err("empty");
-            assert!(matches!(err, SpotError::NothingRegistered), "{err}");
-            assert!(err.to_string().contains("tonk spot new"), "{err}");
+            assert!(matches!(err, SpaceError::NothingRegistered), "{err}");
+            assert!(err.to_string().contains("tonk space new"), "{err}");
         }
 
         #[test]
@@ -1075,7 +1369,7 @@ mod tests {
             assert!(err.to_string().contains("registered: a"), "{err}");
         }
 
-        /// A registry with two spots and `/proj` bound to `a`.
+        /// A registry with two spaces and `/proj` bound to `a`.
         fn bound_registry() -> Registry {
             let mut registry = registry_with(&[("a", "/s/a"), ("b", "/s/b")], None);
             registry
@@ -1123,7 +1417,7 @@ mod tests {
             let err = store
                 .resolve(None, None, Some(Path::new("/elsewhere")))
                 .expect_err("no binding");
-            assert!(matches!(err, SpotError::NoSelection), "{err}");
+            assert!(matches!(err, SpaceError::NoSelection), "{err}");
         }
 
         #[dialog_common::test]
@@ -1154,7 +1448,7 @@ mod tests {
         fn it_blames_the_binding_for_an_orphaned_name() {
             let (_tmp, store) = store();
             // `a` is bound at `/proj` but was never registered —
-            // the hand-edit-the-file scenario `spot rm` normally
+            // the hand-edit-the-file scenario `space rm` normally
             // prevents by pruning bindings alongside the entry.
             let mut registry = registry_with(&[("b", "/s/b")], Some("b"));
             registry
@@ -1165,12 +1459,12 @@ mod tests {
             let err = store
                 .resolve(None, None, Some(Path::new("/proj")))
                 .expect_err("orphaned binding");
-            let SpotError::Unknown { binding, .. } = &err else {
+            let SpaceError::Unknown { binding, .. } = &err else {
                 panic!("{err}");
             };
             assert_eq!(binding.as_deref(), Some(Path::new("/proj")));
             assert!(err.to_string().contains("/proj"), "{err}");
-            assert!(err.to_string().contains("spot unbind"), "{err}");
+            assert!(err.to_string().contains("space unbind"), "{err}");
         }
 
         #[dialog_common::test]
@@ -1183,11 +1477,11 @@ mod tests {
             let err = store
                 .resolve(Some("nope"), None, None)
                 .expect_err("unknown flag selection");
-            let SpotError::Unknown { binding, .. } = &err else {
+            let SpaceError::Unknown { binding, .. } = &err else {
                 panic!("{err}");
             };
             assert_eq!(*binding, None);
-            assert!(!err.to_string().contains("spot unbind"), "{err}");
+            assert!(!err.to_string().contains("space unbind"), "{err}");
         }
     }
 
@@ -1215,14 +1509,14 @@ mod tests {
         }
 
         #[dialog_common::test]
-        fn it_refuses_to_bind_an_unknown_spot() {
+        fn it_refuses_to_bind_an_unknown_space() {
             let (_tmp, store) = store();
             store
                 .save(&registry_with(&[("a", "/s/a")], None))
                 .expect("save");
 
             let err = bind(&store, "nope", Path::new("/proj")).expect_err("unknown");
-            assert!(matches!(err, SpotError::Unknown { .. }), "{err}");
+            assert!(matches!(err, SpaceError::Unknown { .. }), "{err}");
             assert!(
                 store.load().expect("load").bindings.is_empty(),
                 "a failed bind must not write"
@@ -1250,7 +1544,7 @@ mod tests {
         }
 
         #[dialog_common::test]
-        fn it_prunes_bindings_when_the_spot_is_removed() {
+        fn it_prunes_bindings_when_the_space_is_removed() {
             let (_tmp, store) = store();
             store
                 .save(&registry_with(&[("a", "/s/a"), ("b", "/s/b")], None))
@@ -1270,7 +1564,7 @@ mod tests {
     mod removal {
         use super::*;
 
-        /// A failed delete must leave the spot registered. The
+        /// A failed delete must leave the space registered. The
         /// alternative — name unregistered, data still on disk — is
         /// the exact state this command exists to prevent, and
         /// reaching it by accident is worse than failing loudly.
@@ -1291,7 +1585,7 @@ mod tests {
             let err = remove(&store, "a", Data::Delete).expect_err("delete fails");
             assert!(err.to_string().contains("still registered"), "{err}");
             assert!(
-                store.load().expect("load").spots.contains_key("a"),
+                store.load().expect("load").spaces.contains_key("a"),
                 "the entry survives a failed delete"
             );
         }
@@ -1310,9 +1604,9 @@ mod tests {
                 store.orphaned_sites(&registry),
                 vec![kept.canonicalize().expect("canonicalize kept")]
             );
-            // A store whose `spots/` root does not exist yet has
+            // A store whose `spaces/` root does not exist yet has
             // nothing to report rather than something to fail on.
-            let empty = SpotStore::at(tmp.path().join("nowhere"));
+            let empty = SpaceStore::at(tmp.path().join("nowhere"));
             assert!(empty.orphaned_sites(&registry).is_empty());
         }
     }

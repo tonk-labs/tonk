@@ -17,14 +17,14 @@ use dialog_operator::Profile;
 /// The access service origin for this profile's account: the attached
 /// repository descriptor's remote, with its `/ucan/` path stripped.
 pub async fn access_origin(profile: &Profile) -> Result<Option<Url>> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     access_origin_in(profile, &store).await
 }
 
 /// Resolve the access-service origin for one explicit native profile store.
 pub async fn access_origin_in(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Option<Url>> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     let Some(provider) = crate::account::stored_provider_in(profile, &operator, store).await?
@@ -75,14 +75,14 @@ pub async fn provision(
     consumer: &Did,
     consent: &dialog_ucan_core::DelegationChain,
 ) -> Result<()> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     provision_in(profile, &store, consumer, consent).await
 }
 
 /// Provision a space under one explicit account profile.
 pub async fn provision_in(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
     consumer: &Did,
     consent: &dialog_ucan_core::DelegationChain,
 ) -> Result<()> {
@@ -124,14 +124,14 @@ pub async fn provision_in(
 /// profile is not linked or its account has no located service, and an
 /// inner `None` when the service does not know the customer.
 pub async fn registration_state(profile: &Profile) -> Result<Option<Option<Receipt>>> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     registration_state_in(profile, &store).await
 }
 
 /// The service's view of one profile from its explicit native store.
 pub async fn registration_state_in(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Option<Option<Receipt>>> {
     let Some(origin) = access_origin_in(profile, store).await? else {
         return Ok(None);

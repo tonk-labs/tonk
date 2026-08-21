@@ -156,7 +156,7 @@ mod when_asserting_with_an_upstream {
     async fn it_carries_agent_context_on_the_synced_content_branch() -> Result<()> {
         let test = TestSite::new().await?;
         wire_sibling_upstream(&test).await?;
-        let expected = "# Shared spot context\n";
+        let expected = "# Shared space context\n";
 
         let stored = agents::set(&test.site, expected, true).await?;
         let upstream = test

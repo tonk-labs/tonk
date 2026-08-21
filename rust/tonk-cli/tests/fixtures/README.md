@@ -1,8 +1,8 @@
 # Migration fixtures
 
-## `legacy-spot-v0.6.7.tar.gz`
+## `legacy-space-v0.6.7.tar.gz`
 
-A complete spot **directory** — the on-disk database, not an export — created
+A complete space **directory** — the on-disk database, not an export — created
 and populated by the pre-dialog-upgrade build: tag `v0.6.7` (commit
 `d7074057`), pinning dialog at `rev = e8bbe462`.
 
@@ -31,18 +31,22 @@ that became `db.*`. The application data includes one `note` concept with
 on entity `did:key:z6Mk3VY17HUDh9rW6UpiDdtF9BGmdqfsYC2ZGzk4rAJadk2H`. A
 migration test asserts that exact query still resolves afterwards, to the same
 entity and the same value — data and identity both, which is what makes a
-migrated spot the *same* spot to its peers rather than a copy.
+migrated space the *same* space to its peers rather than a copy.
 
 ## Regenerating
+
+These commands run under `v0.6.7`, which predates the `spot` → `space` rename
+— hence `spot new` and the `spots/` root. The archive keeps the name the
+current build uses, because the current build is what reads it.
 
 ```
 git worktree add /tmp/old-tonk v0.6.7
 cd /tmp/old-tonk && nix build --accept-flake-config .#tonk-cli
 env HOME=/tmp/oldhome TONK_UNSAFE_ALLOW_DEVICE_ROOT=1 ./result/bin/tonk spot new legacy
-# ...seed data, then archive the spot directory:
-tar -czf legacy-spot-v0.6.7.tar.gz -C "/tmp/oldhome/Library/Application Support/tonk/spots" legacy
+# ...seed data, then archive the space directory:
+tar -czf legacy-space-v0.6.7.tar.gz -C "/tmp/oldhome/Library/Application Support/tonk/spots" legacy
 ```
 
-`HOME` is overridden because the spot registry resolves through
+`HOME` is overridden because the space registry resolves through
 `dirs::data_dir()`, which on macOS ignores `TONK_HOME` and would otherwise
 write into the real one.

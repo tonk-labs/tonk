@@ -1,4 +1,4 @@
-//! Native account spot inventory, pull, and directory recording.
+//! Native account space inventory, pull, and directory recording.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -20,11 +20,11 @@ use tonk_schema::prelude::DidExt as _;
 use crate::account;
 use crate::remote::{self, DEFAULT_REMOTE};
 use crate::site::TonkSite;
-use crate::spot::{self, SpotStore};
+use crate::space::{self, SpaceStore};
 
-/// One row rendered by `tonk account spots`.
+/// One row rendered by `tonk account spaces`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountSpotRow {
+pub struct AccountSpaceRow {
     /// Repository subject DID.
     pub subject: String,
     /// Name mirrored in the account directory.
@@ -37,28 +37,28 @@ pub struct AccountSpotRow {
     pub pullable: bool,
 }
 
-/// Result of pulling one account spot.
+/// Result of pulling one account space.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullOutcome {
     /// Repository subject DID.
     pub subject: String,
     /// Local registry name.
     pub name: String,
-    /// Registered site directory (canonical for a newly pulled spot).
+    /// Registered site directory (canonical for a newly pulled space).
     pub site: PathBuf,
     /// Whether the subject was already registered and no work was needed.
     pub already_local: bool,
-    /// Initial-pull diagnostic when the mounted spot was retained for retry.
+    /// Initial-pull diagnostic when the mounted space was retained for retry.
     pub warning: Option<String>,
 }
 
-/// What recording a spot in the account directory did.
+/// What recording a space in the account directory did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordOutcome {
     /// No account is linked (or it has not hydrated yet), so there is
     /// no directory to record into.
     NoAccount,
-    /// The site has no `main` upstream yet — a local-only spot is
+    /// The site has no `main` upstream yet — a local-only space is
     /// deliberately not listed as mountable anywhere else.
     NoUpstream,
     /// The directory already holds exactly this configuration.
@@ -93,35 +93,35 @@ async fn open_site(path: &std::path::Path, profile: &Profile) -> Result<TonkSite
 }
 
 #[derive(Debug, Clone)]
-struct LocalSpot {
+struct LocalSpace {
     name: String,
     site: PathBuf,
 }
 
 async fn local_subjects(
     profile: &Profile,
-    store: &SpotStore,
-) -> Result<HashMap<String, LocalSpot>> {
+    store: &SpaceStore,
+) -> Result<HashMap<String, LocalSpace>> {
     let registry = store.load()?;
-    let mut subjects: HashMap<String, LocalSpot> = HashMap::new();
-    for (name, entry) in registry.spots {
+    let mut subjects: HashMap<String, LocalSpace> = HashMap::new();
+    for (name, entry) in registry.spaces {
         let site = match open_site(&entry.site, profile).await {
             Ok(site) => site,
             Err(error) => {
-                eprintln!("warning: local spot '{name}' could not be inspected: {error:#}");
+                eprintln!("warning: local space '{name}' could not be inspected: {error:#}");
                 continue;
             }
         };
         let subject = site.repository.did().to_string();
         match subjects.entry(subject) {
             Entry::Vacant(slot) => {
-                slot.insert(LocalSpot {
+                slot.insert(LocalSpace {
                     name,
                     site: entry.site,
                 });
             }
             Entry::Occupied(slot) => eprintln!(
-                "warning: local spots '{}' and '{name}' both resolve to {}; using '{}'",
+                "warning: local spaces '{}' and '{name}' both resolve to {}; using '{}'",
                 slot.get().name,
                 slot.key(),
                 slot.get().name
@@ -134,13 +134,13 @@ async fn local_subjects(
 /// Open the account branch, hydrating the link first when this device
 /// has not reached Ready yet.
 ///
-/// `tonk account spots` must not depend on a prior `tonk account
+/// `tonk account spaces` must not depend on a prior `tonk account
 /// status` run having done the hydration: a linked-but-unhydrated
 /// profile is an ordinary state right after `tonk account link` on a
 /// fresh device, and reporting it as "no account" reads as data loss.
 async fn ready_account_branch(
     profile: &Profile,
-    store: &SpotStore,
+    store: &SpaceStore,
 ) -> Result<(Operator<NativeSpace>, Branch)> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     if let Some(branch) =
@@ -171,10 +171,10 @@ async fn ready_account_branch(
     Ok((operator, branch))
 }
 
-/// List the account directory's spots and identify subjects already
+/// List the account directory's spaces and identify subjects already
 /// registered locally. Reads the account DB — the same directory facts
-/// the Hub renders — not the retired spot-backup escrow.
-pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpotRow>> {
+/// the Hub renders — not the retired space-backup escrow.
+pub async fn list(profile: &Profile, store: &SpaceStore) -> Result<Vec<AccountSpaceRow>> {
     let (operator, branch) = ready_account_branch(profile, store).await?;
     // Freshen best-effort: an offline listing still renders the local
     // copy of the directory.
@@ -188,8 +188,8 @@ pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpo
         .into_iter()
         .map(|space| {
             let subject = space.subject.to_string();
-            AccountSpotRow {
-                local_name: local.get(&subject).map(|spot| spot.name.clone()),
+            AccountSpaceRow {
+                local_name: local.get(&subject).map(|space| space.name.clone()),
                 pullable: space.mountable,
                 remote_name: space.name,
                 ambiguous: false,
@@ -202,7 +202,7 @@ pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpo
 
 fn name_error(name: Option<&str>, reason: impl std::fmt::Display) -> anyhow::Error {
     let label = name.unwrap_or("(missing)");
-    anyhow::anyhow!("account spot name '{label}' cannot be used: {reason}; pass --name <slug>")
+    anyhow::anyhow!("account space name '{label}' cannot be used: {reason}; pass --name <slug>")
 }
 
 struct FreshPullTarget {
@@ -230,23 +230,23 @@ impl Drop for FreshPullTarget {
         }
         if let Err(error) = std::fs::remove_dir_all(&self.path) {
             eprintln!(
-                "warning: failed to clean up incomplete account spot at {}: {error}",
+                "warning: failed to clean up incomplete account space at {}: {error}",
                 self.path.display()
             );
         }
     }
 }
 
-/// Pull exactly one account spot into canonical local storage.
+/// Pull exactly one account space into canonical local storage.
 pub async fn pull(
     profile: &Profile,
-    store: &SpotStore,
+    store: &SpaceStore,
     subject: &str,
     requested_name: Option<&str>,
 ) -> Result<PullOutcome> {
     let requested: Did = subject
         .parse()
-        .map_err(|error| anyhow::anyhow!("invalid account spot subject '{subject}': {error:?}"))?;
+        .map_err(|error| anyhow::anyhow!("invalid account space subject '{subject}': {error:?}"))?;
     let (operator, account) = ready_account_branch(profile, store).await?;
     if let Err(error) = account.pull().download().perform(&operator).await {
         eprintln!("warning: account sync failed; pulling from the local copy: {error:#}");
@@ -268,7 +268,7 @@ pub async fn pull(
         .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
         .with_context(|| {
             format!(
-                "the account directory has no mount record for {requested} — the spot                  is local-only on its home device or predates directory records"
+                "the account directory has no mount record for {requested} — the space                  is local-only on its home device or predates directory records"
             )
         })?;
     let directory_name = tonk_schema::directory::spaces(&account, &operator)
@@ -293,9 +293,9 @@ pub async fn pull(
         .map(str::to_string)
         .or(directory_name)
         .ok_or_else(|| name_error(None, "the directory has no stored name"))?;
-    spot::validate_name(&name).map_err(|error| name_error(Some(&name), error))?;
+    space::validate_name(&name).map_err(|error| name_error(Some(&name), error))?;
     let registry = store.load()?;
-    if registry.spots.contains_key(&name) {
+    if registry.spaces.contains_key(&name) {
         return Err(name_error(
             Some(&name),
             "that local name is already occupied",
@@ -303,7 +303,7 @@ pub async fn pull(
     }
     let target = store.canonical_site(&name);
     if target.exists() {
-        // Reached most often after `tonk spot rm --keep-data`: the
+        // Reached most often after `tonk space rm --keep-data`: the
         // registry forgot the name but the data still holds it, so
         // point at both ways to clear the collision rather than
         // reporting it as a bare fact.
@@ -311,7 +311,7 @@ pub async fn pull(
             Some(&name),
             format!(
                 "the canonical site {target} already exists and belongs to no \
-                 registered spot; adopt it with `tonk spot new {name} --site {target}` \
+                 registered space; adopt it with `tonk space new {name} --site {target}` \
                  or delete the directory",
                 target = target.display()
             ),
@@ -351,7 +351,7 @@ pub async fn pull(
     let mut fresh_target = FreshPullTarget::new(target.clone());
     let site = crate::site::mount_delegated_at(&target, chain, site_config(profile)?)
         .await
-        .context("failed to mount account spot")?;
+        .context("failed to mount account space")?;
     remote::add_with_revocation(
         &site,
         DEFAULT_REMOTE,
@@ -360,10 +360,10 @@ pub async fn pull(
         primary.revocation.as_deref(),
     )
     .await
-    .context("failed to configure the account spot remote")?;
+    .context("failed to configure the account space remote")?;
     remote::set_upstream(&site, DEFAULT_REMOTE)
         .await
-        .context("failed to set the account spot upstream")?;
+        .context("failed to set the account space upstream")?;
     crate::sync::pull(&site)
         .await
         .with_context(|| format!("initial pull from '{DEFAULT_REMOTE}' failed"))?;
@@ -382,7 +382,7 @@ pub async fn pull(
     let canonical_target = target
         .canonicalize()
         .context("failed to canonicalize the mounted account space")?;
-    spot::register_existing_unbound(store, &name, &canonical_target)?;
+    space::register_existing_unbound(store, &name, &canonical_target)?;
     fresh_target.commit();
 
     Ok(PullOutcome {
@@ -413,8 +413,8 @@ async fn repository_name(site: &TonkSite) -> Option<String> {
 }
 
 /// Whether the account directory lists `site`'s repository with a
-/// mount record — the claim `tonk spot rm` leans on when it tells
-/// someone their data is recoverable with `tonk account spots pull`.
+/// mount record — the claim `tonk space rm` leans on when it tells
+/// someone their data is recoverable with `tonk account spaces pull`.
 ///
 /// Answered from the account branch's local copy of the directory; an
 /// absent or unhydrated account answers `false` rather than failing
@@ -440,20 +440,20 @@ pub async fn directory_lists(site: &TonkSite) -> Result<bool> {
 /// directory as plain facts — [`tonk_schema::directory::record`], fed
 /// from the site's own upstream configuration. The directory (not any
 /// escrow artifact) is what other devices list and what `tonk account
-/// spots pull` mounts from.
+/// spaces pull` mounts from.
 ///
 /// Idempotent and quiet: when the directory already says exactly this,
 /// nothing commits, so routine `tonk eval` runs do not churn the
 /// account head.
 pub async fn record_site(registry_name: &str, site: &TonkSite) -> Result<RecordOutcome> {
-    record_site_in(registry_name, site, &SpotStore::open()?).await
+    record_site_in(registry_name, site, &SpaceStore::open()?).await
 }
 
 /// [`record_site`] against a caller-supplied store.
 pub async fn record_site_in(
     registry_name: &str,
     site: &TonkSite,
-    store: &SpotStore,
+    store: &SpaceStore,
 ) -> Result<RecordOutcome> {
     record_site_for_profile(registry_name, site, &site.profile, store, false).await
 }
@@ -467,7 +467,7 @@ pub async fn record_site_in(
 pub async fn record_site_pushed(
     registry_name: &str,
     site: &TonkSite,
-    store: &SpotStore,
+    store: &SpaceStore,
 ) -> Result<RecordOutcome> {
     record_site_for_profile(registry_name, site, &site.profile, store, true).await
 }
@@ -476,7 +476,7 @@ async fn record_site_for_profile(
     registry_name: &str,
     site: &TonkSite,
     account_profile: &Profile,
-    store: &SpotStore,
+    store: &SpaceStore,
     require_push: bool,
 ) -> Result<RecordOutcome> {
     let Some(upstream) = remote::upstream_remote(site).await? else {
@@ -533,7 +533,7 @@ async fn record_site_for_profile(
 
     tonk_schema::directory::record(&account, &subject, Some(&name), &desired, &operator)
         .await
-        .context("failed to record the spot in the account directory")?;
+        .context("failed to record the space in the account directory")?;
     if let Err(error) = account.push().perform(&operator).await {
         if require_push {
             return Err(error).context("failed to push the account directory");
@@ -557,7 +557,7 @@ pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
     let store = &site.account_store;
     let registry = store.load()?;
     let candidates: Vec<_> = registry
-        .spots
+        .spaces
         .iter()
         .filter_map(|(name, entry)| {
             entry
@@ -573,12 +573,12 @@ pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
             .map(|(name, path)| (*name, path.as_path())),
         &site.root,
     )
-    .context("the evaluated site is not registered as a spot")?;
+    .context("the evaluated site is not registered as a space")?;
     record_site_in(name, site, store).await
 }
 
-/// Best-effort directory sweep of every registered spot.
-pub async fn record_registered(profile: &Profile, store: &SpotStore) -> Vec<RecordWarning> {
+/// Best-effort directory sweep of every registered space.
+pub async fn record_registered(profile: &Profile, store: &SpaceStore) -> Vec<RecordWarning> {
     let registry = match store.load() {
         Ok(registry) => registry,
         Err(error) => {
@@ -590,7 +590,7 @@ pub async fn record_registered(profile: &Profile, store: &SpotStore) -> Vec<Reco
     };
     let mut warnings = Vec::new();
     let mut inspected_subjects = HashSet::new();
-    for (name, entry) in registry.spots {
+    for (name, entry) in registry.spaces {
         let site = match open_site(&entry.site, profile).await {
             Ok(site) => site,
             Err(error) => {

@@ -1,7 +1,7 @@
 //! Live, workflow-shaped orientation for agents.
 //!
 //! This surface intentionally avoids a product essay. It reads the selected
-//! spot and turns its application concepts into commands an agent can execute
+//! space and turns its application concepts into commands an agent can execute
 //! and verify immediately.
 
 use std::fmt::Write as _;
@@ -9,35 +9,42 @@ use std::fmt::Write as _;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::agents::{self, SpotAgents};
+use crate::agents::{self, SpaceAgents};
 use crate::schema::{self, FieldSummary};
 use crate::site::TonkSite;
-use crate::spot::Resolved;
+use crate::space::Resolved;
 
 /// Version of the structured `tonk context --json` contract.
-pub const SCHEMA_VERSION: &str = "tonk.context.v1";
+///
+/// v2 renamed every `spot` key to `space` and moved the whole document to
+/// camelCase, which is what `tonk space list --json` and the registry's own
+/// account record already emit. Both are breaking for a reader that pinned
+/// v1, which is why the version moved rather than the keys alone.
+pub const SCHEMA_VERSION: &str = "tonk.context.v2";
 
 /// Maximum number of concepts expanded in the default text response.
 const DEFAULT_CONCEPT_LIMIT: usize = 12;
 
-/// A versioned snapshot of the selected spot's executable workflows.
+/// A versioned snapshot of the selected space's executable workflows.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContextReport {
     /// Structured-output contract version.
     pub schema_version: &'static str,
     /// Exact selected store.
-    pub spot: SpotContext,
-    /// Synced spot-specific agent context, when asserted.
-    pub agents: Option<SpotAgents>,
+    pub space: SpaceContext,
+    /// Synced space-specific agent context, when asserted.
+    pub agents: Option<SpaceAgents>,
     /// User/application concepts with command-shaped examples.
     pub concepts: Vec<ConceptContext>,
     /// Commands for an empty application vocabulary.
-    pub empty_spot_workflow: Vec<WorkflowStep>,
+    pub empty_space_workflow: Vec<WorkflowStep>,
 }
 
-/// Selected spot information.
+/// Selected space information.
 #[derive(Debug, Serialize)]
-pub struct SpotContext {
+#[serde(rename_all = "camelCase")]
+pub struct SpaceContext {
     /// Registry name.
     pub name: String,
     /// Absolute site path.
@@ -47,11 +54,12 @@ pub struct SpotContext {
     /// Tonk's writable branch.
     pub branch: &'static str,
     /// Explicit reminder that changing directory cannot change Tonk data.
-    pub cwd_selects_spot: bool,
+    pub cwd_selects_space: bool,
 }
 
 /// One live application concept and its direct workflows.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConceptContext {
     /// Published concept name.
     pub name: String,
@@ -71,6 +79,7 @@ pub struct ConceptContext {
 
 /// One typed field.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FieldContext {
     /// Flag name accepted by `tonk assert`.
     pub name: String,
@@ -86,12 +95,13 @@ pub struct FieldContext {
 
 /// One executable step.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkflowStep {
     /// Why to run it.
     pub purpose: &'static str,
     /// Shell command with explicit placeholders where live values are needed.
     pub command: String,
-    /// Whether the command can change spot state.
+    /// Whether the command can change space state.
     pub mutates: bool,
 }
 
@@ -107,7 +117,7 @@ impl From<FieldSummary> for FieldContext {
     }
 }
 
-/// Read the selected spot and derive direct workflows from its live schema.
+/// Read the selected space and derive direct workflows from its live schema.
 pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextReport> {
     // One enumeration answers both questions: whether the branch
     // declares the standard library's `tonk/agents` concept, and which
@@ -117,7 +127,7 @@ pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextRepo
     let agents_declared = live_concepts
         .iter()
         .any(|concept| concept.name == agents::CONCEPT_NAME);
-    let spot_agents = if agents_declared {
+    let space_agents = if agents_declared {
         agents::get_declared(site).await?
     } else {
         None
@@ -192,16 +202,16 @@ pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextRepo
 
     Ok(ContextReport {
         schema_version: SCHEMA_VERSION,
-        spot: SpotContext {
+        space: SpaceContext {
             name: resolved.name.clone(),
             site: resolved.site.display().to_string(),
             selected_via: resolved.source.to_string(),
             branch: "main",
-            cwd_selects_spot: false,
+            cwd_selects_space: false,
         },
-        agents: spot_agents,
+        agents: space_agents,
         concepts,
-        empty_spot_workflow: vec![
+        empty_space_workflow: vec![
             WorkflowStep {
                 purpose: "define a model",
                 command:
@@ -246,16 +256,16 @@ impl ContextReport {
         let _ = writeln!(out, "# Tonk context");
         let _ = writeln!(
             out,
-            "spot: `{}` · branch: `{}` · selected via: `{}`",
-            self.spot.name, self.spot.branch, self.spot.selected_via
+            "space: `{}` · branch: `{}` · selected via: `{}`",
+            self.space.name, self.space.branch, self.space.selected_via
         );
-        let _ = writeln!(out, "site: `{}`", self.spot.site);
+        let _ = writeln!(out, "site: `{}`", self.space.site);
         out.push_str("Changing cwd does not change the selected Tonk data.\n");
 
         if let Some(agents) = &self.agents {
             let _ = writeln!(
                 out,
-                "\n## Spot AGENTS.md\nsource: `{}` `{}` on `{}` at `{}`\n",
+                "\n## Space AGENTS.md\nsource: `{}` `{}` on `{}` at `{}`\n",
                 agents.source, agents.attribute, agents.entity, agents.revision
             );
             out.push_str(agents.markdown.trim_end());
@@ -264,7 +274,7 @@ impl ContextReport {
 
         if self.concepts.is_empty() {
             out.push_str("\n## Build a first visible model\n");
-            render_steps(&mut out, &self.empty_spot_workflow);
+            render_steps(&mut out, &self.empty_space_workflow);
             return out;
         }
 

@@ -68,7 +68,7 @@ pub async fn run_eval(
         push_after(site).await;
     }
     if outcome.committed
-        && let Err(error) = crate::account_spots::record_current(site).await
+        && let Err(error) = crate::account_spaces::record_current(site).await
     {
         eprintln!("warning: account directory update failed: {error:#}");
     }

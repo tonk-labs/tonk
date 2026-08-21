@@ -1,4 +1,4 @@
-//! Behavioural tests for claim-backed spot agent context.
+//! Behavioural tests for claim-backed space agent context.
 
 mod common;
 
@@ -10,7 +10,7 @@ use crate::common::TestSite;
 #[dialog_common::test]
 async fn it_maps_markdown_to_the_repository_subject() -> Result<()> {
     let test = TestSite::new().await?;
-    let expected = "# Spot context\n\n- Use `task` for launch work.\n";
+    let expected = "# Space context\n\n- Use `task` for launch work.\n";
 
     let stored = agents::set(&test.site, expected, false).await?;
 
@@ -23,7 +23,7 @@ async fn it_maps_markdown_to_the_repository_subject() -> Result<()> {
 }
 
 #[dialog_common::test]
-async fn it_supersedes_the_document_on_the_same_spot_entity() -> Result<()> {
+async fn it_supersedes_the_document_on_the_same_space_entity() -> Result<()> {
     let test = TestSite::new().await?;
     let first = agents::set(&test.site, "# First\n", false).await?;
     let second = agents::set(&test.site, "# Second\n", false).await?;

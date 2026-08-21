@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Paired two-episode experiment for claim-backed spot agent context.
+# Paired two-episode experiment for claim-backed space agent context.
 #
 # For each pair:
 #   A completes a normal task and records one opaque durable convention.
 #   B-control sees the frozen pre-A AGENTS.md projection.
 #   B-treatment sees the live post-A projection.
-# Both B arms use identical copies of the post-A spot and can discover the
+# Both B arms use identical copies of the post-A space and can discover the
 # current claim through the CLI. Only automatic pre-launch orientation differs.
 set -euo pipefail
 
@@ -87,18 +87,18 @@ jq -n \
 
 run_tonk() {
   local profile_home="$1"
-  local spots_state="$2"
+  local spaces_state="$2"
   shift 2
-  mkdir -p "$profile_home" "$spots_state"
+  mkdir -p "$profile_home" "$spaces_state"
   env \
     HOME="$profile_home" \
     DO_NOT_TRACK=1 \
     TONK_NO_UPDATE_CHECK=1 \
     TONK_NO_SYNC=1 \
-    TONK_SPOTS_STATE="$spots_state" \
-    TONK_TELEMETRY_STATE="$spots_state" \
-    TONK_UPDATE_STATE="$spots_state" \
-    TONK_SPOT=bench \
+    TONK_SPACES_STATE="$spaces_state" \
+    TONK_TELEMETRY_STATE="$spaces_state" \
+    TONK_UPDATE_STATE="$spaces_state" \
+    TONK_SPACE=bench \
     "$TONK" "$@"
 }
 
@@ -106,23 +106,23 @@ write_a_prompt() {
   local destination="$1"
   local owner_label="$2"
   printf '%s\n' \
-    'The selected Tonk spot contains one launch task. Mark “Draft launch email” done. Change no other task data.' \
+    'The selected Tonk space contains one launch task. Mark “Draft launch email” done. Change no other task data.' \
     '' \
-    "The product owner has also established a durable spot convention: future security-review tasks are owned by \`$owner_label\`." \
-    'Preserve that convention in the spot agent context so a fresh agent can use it later. Do not record this task’s completion status or copy the prompt into that context.' \
+    "The product owner has also established a durable space convention: future security-review tasks are owned by \`$owner_label\`." \
+    'Preserve that convention in the space agent context so a fresh agent can use it later. Do not record this task’s completion status or copy the prompt into that context.' \
     '' \
-    'The `tonk` CLI is on PATH. Do not inspect repository source files or search the filesystem for documentation; use the installed CLI and the projected spot context. Stop when both changes are persisted.' \
+    'The `tonk` CLI is on PATH. Do not inspect repository source files or search the filesystem for documentation; use the installed CLI and the projected space context. Stop when both changes are persisted.' \
     > "$destination"
 }
 
 write_b_prompt() {
   local destination="$1"
   printf '%s\n' \
-    'A teammate needs the established owner label for future security-review tasks in the selected Tonk spot.' \
+    'A teammate needs the established owner label for future security-review tasks in the selected Tonk space.' \
     '' \
-    'Write only the exact owner label to `answer.txt`, with no explanation. Do not change the spot.' \
+    'Write only the exact owner label to `answer.txt`, with no explanation. Do not change the space.' \
     '' \
-    'The `tonk` CLI is on PATH. Do not inspect repository source files or search the filesystem for documentation; use the installed CLI and the projected spot context. Stop after writing the answer.' \
+    'The `tonk` CLI is on PATH. Do not inspect repository source files or search the filesystem for documentation; use the installed CLI and the projected space context. Stop after writing the answer.' \
     > "$destination"
 }
 
@@ -149,7 +149,7 @@ episodes_run=0
 run_episode() {
   local role="$1"
   local episode_dir="$2"
-  local spots_state="$3"
+  local spaces_state="$3"
   local site_dir="$4"
   local prompt="$5"
   local projection="$6"
@@ -179,7 +179,7 @@ run_episode() {
     case "$role" in
       a)
         local query entity
-        query="$(run_tonk "$episode_dir/home" "$spots_state" query task --json)"
+        query="$(run_tonk "$episode_dir/home" "$spaces_state" query task --json)"
         entity="$(
           jq -r '
             [
@@ -194,16 +194,16 @@ run_episode() {
           status=1
         }
         if [ "$status" = 0 ]; then
-          run_tonk "$episode_dir/home" "$spots_state" \
+          run_tonk "$episode_dir/home" "$spaces_state" \
             assert task "$entity" --done true > "$episode_dir/scripted-a.out"
           printf '\n## Durable conventions\n\n- Future security-review tasks are owned by `%s`.\n' \
             "$owner_label" >> "$episode_dir/cwd/AGENTS.md"
-          run_tonk "$episode_dir/home" "$spots_state" \
+          run_tonk "$episode_dir/home" "$spaces_state" \
             agents set "$episode_dir/cwd/AGENTS.md" >> "$episode_dir/scripted-a.out"
         fi
         ;;
       b-control|b-treatment)
-        run_tonk "$episode_dir/home" "$spots_state" agents --json \
+        run_tonk "$episode_dir/home" "$spaces_state" agents --json \
           > "$episode_dir/scripted-b-claim.json"
         printf '%s\n' "$owner_label" > "$episode_dir/cwd/answer.txt"
         ;;
@@ -225,8 +225,8 @@ run_episode() {
       export EPISODE_HOME="$episode_dir/home"
       export EPISODE_RUNNER=codex
       export EPISODE_TIMEOUT=600
-      export EPISODE_SPOT=bench
-      export EPISODE_SPOTS_STATE="$spots_state"
+      export EPISODE_SPACE=bench
+      export EPISODE_SPACES_STATE="$spaces_state"
       export EPISODE_SITE_DIR="$site_dir"
       export CODEX_HOME="$CODEX_AUTH_HOME"
       export CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"
@@ -246,12 +246,12 @@ run_episode() {
 verify_a() {
   local pair_dir="$1"
   local profile_home="$2"
-  local spots_state="$3"
+  local spaces_state="$3"
   local owner_label="$4"
   local repository_did="$5"
   local response
   response="$(
-    run_tonk "$profile_home" "$spots_state" eval -c 'task:
+    run_tonk "$profile_home" "$spaces_state" eval -c 'task:
   this: ?task
   title: ?title
   done: ?done' --format json --no-sync
@@ -366,9 +366,9 @@ for pair_index in $(seq 1 "$PAIRS"); do
 
   new_output="$(
     run_tonk "$ORIGIN_HOME" "$ORIGIN_STATE" \
-      spot new bench --site "$ORIGIN_SITE"
+      space new bench --site "$ORIGIN_SITE"
   )"
-  printf '%s\n' "$new_output" > "$PAIR_DIR/spot-new.txt"
+  printf '%s\n' "$new_output" > "$PAIR_DIR/space-new.txt"
   repository_did="$(printf '%s\n' "$new_output" | sed -n 's/^DID: //p' | head -1)"
   [ -n "$repository_did" ] || {
     echo "handoff: could not parse repository DID for pair $pair_index" >&2
@@ -412,7 +412,7 @@ for pair_index in $(seq 1 "$PAIRS"); do
     arm_home="$PAIR_DIR/$arm-harness-home"
     cp -R "$ORIGIN_SITE" "$arm_site"
     run_tonk "$arm_home" "$arm_state" \
-      spot new bench --site "$arm_site" > "$PAIR_DIR/$arm-spot-new.txt"
+      space new bench --site "$arm_site" > "$PAIR_DIR/$arm-space-new.txt"
   done
 
   write_b_prompt "$PAIR_DIR/b-prompt.md"

@@ -55,7 +55,7 @@ pub enum Destination {
 /// [`export`] for a named branch.
 ///
 /// Branches carry separate data and migrate separately, so an upgrade walks
-/// them one at a time rather than assuming `main` is the whole spot.
+/// them one at a time rather than assuming `main` is the whole space.
 pub async fn export_branch(
     site: &TonkSite,
     branch: &str,

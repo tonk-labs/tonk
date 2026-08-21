@@ -30,20 +30,20 @@ nix develop -c bench/bin/bench compare first-use baseline treatment
 Keep the runner and model fixed. If confirmation runs cannot be interleaved,
 finish both arms close together and record the timing limitation.
 
-## Trusted spot AGENTS.md pilot
+## Trusted space AGENTS.md pilot
 
-`--spot-agents` asserts scenario-owned Markdown as a Dialog claim on the spot's
+`--space-agents` asserts scenario-owned Markdown as a Dialog claim on the space's
 repository subject DID. The harness reads the claim back, verifies its entity,
 and projects it into the episode cwd as `AGENTS.md` before launch. The claim is
 the source of truth; the file is a runtime adapter. Both exposure and source are
 recorded in `experiment.json`.
 
-This is a best-case test of whether automatically loaded spot-specific examples
+This is a best-case test of whether automatically loaded space-specific examples
 remove the remaining context call:
 
 ```sh
 nix develop -c bench/bin/bench run first-use --runs 3 \
-  --variant spot-agents-pilot --spot-agents
+  --variant space-agents-pilot --space-agents
 ```
 
 Compare it to the graduated `workflow-context-pilot` arm. The expected direct
@@ -53,16 +53,16 @@ commands before the write to one.
 This pilot validates pre-launch projection, not automatic placement in every
 runtime. Codex searches from the project root down to its current working
 directory, not into child directories, so a launcher must project the selected
-spot's claim into a path Codex will read. Cwd still does not select the spot.
+space's claim into a path Codex will read. Cwd still does not select the space.
 
-The fixture is trusted. In collaboration, an authorized spot writer can change
+The fixture is trusted. In collaboration, an authorized space writer can change
 the claim, so automatic instruction loading needs an explicit trust decision
 and must show the repository subject and revision. A projection must also avoid
 silently overwriting unimported local edits.
 
 A later durable-memory experiment must use two episodes: one agent records a
 bounded durable fact with `tonk agents set`, then the harness projects the new
-claim for a fresh agent using the same spot. Score correct retention, entity and
+claim for a fresh agent using the same space. Score correct retention, entity and
 revision continuity, and the absence of secrets, transient status, instruction
 drift, or lost concurrent edits.
 
@@ -70,7 +70,7 @@ drift, or lost concurrent edits.
 
 Use three independent paired runs. Each pair costs three external episodes:
 
-1. Episode A receives a normal spot task plus one durable, unguessable
+1. Episode A receives a normal space task plus one durable, unguessable
    convention: future security-review tasks are owned by a scenario-generated
    opaque team label. It must complete the task and preserve the convention for
    future agents.
@@ -78,12 +78,12 @@ Use three independent paired runs. Each pair costs three external episodes:
    revision changed, still maps the repository DID, contains the exact
    convention, and does not contain the completed task's status, credentials,
    invite links, or unrelated prompt text.
-3. Start two fresh episode-B agents against the same read-only post-A spot. The
+3. Start two fresh episode-B agents against the same read-only post-A space. The
    treatment cwd receives a projection of the live updated claim; the control
    cwd receives the frozen pre-A projection. Randomize their order.
 4. Ask each B agent to write only the opaque owner label to `answer.txt`. The
    control may still discover the live claim through `tonk context` or `tonk
-   agents`; it is not denied access to spot data.
+   agents`; it is not denied access to space data.
 
 The primary outcome is exact answer success. Among successes, compare tool
 calls, Tonk orientation calls, output tokens, and wall time. The pilot advances
@@ -113,7 +113,7 @@ The three-pair `claim-handoff-pilot` passed every exact verifier:
   repository DID, retained the opaque owner convention, and passed the hygiene
   checks;
 - all three treatment and all three control B agents returned the exact label;
-- no B agent changed its copied post-A spot.
+- no B agent changed its copied post-A space.
 
 Treatment reduced median total actions from `5` to `2` (`60%`), Tonk calls from
 `4` to `1` (`75%`), orientation calls from `2` to `1` (`50%`), wall time from
@@ -135,7 +135,7 @@ fixtures, model, metrics, or verification rules during the batch.
 The treatment confirms only when all of these hold:
 
 1. All ten A episodes pass the task, claim-identity, revision, retention, and
-   hygiene checks, and every B spot remains unchanged.
+   hygiene checks, and every B space remains unchanged.
 2. At least nine treatment B episodes return the exact opaque owner label, and
    treatment exact-answer success is no worse than control.
 3. At least eight pairs have exact answers in both arms and can be compared for
@@ -153,7 +153,7 @@ metrics. Report all episodes and protocol deviations even if the gate fails.
 The clean-revision `claim-handoff-confirmation` batch ran exactly thirty
 episodes with no replacements. All ten A episodes passed every task, claim,
 revision, retention, and hygiene check. All ten control B and all ten treatment
-B episodes returned the exact opaque label, and every copied B spot remained
+B episodes returned the exact opaque label, and every copied B space remained
 unchanged.
 
 In numeric pair order, total-action savings were

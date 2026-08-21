@@ -16,7 +16,7 @@ use tonk_schema::{MemberName, MemberRole, Membership};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::site::SiteConfig;
-use crate::spot::SpotStore;
+use crate::space::SpaceStore;
 
 /// Shortest DID abbreviation a listing starts from. The first four
 /// characters of a `did:key` identifier are the shared ed25519 multibase
@@ -302,14 +302,14 @@ fn push_cell(out: &mut String, cell: &str, width: usize, last: bool) {
 }
 
 /// Inspect the registry and every replica it names without remote I/O.
-pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalSpaceInventory> {
+pub async fn list_local(store: &SpaceStore, config: &SiteConfig) -> Result<LocalSpaceInventory> {
     let registry = store.load()?;
     // Resolved from the first replica that opens and reused for the rest:
     // the account and the local root belong to the installation, not to any
     // one space, and a listing must not answer "who are we" per row.
     let mut identity = None;
     let mut report = LocalSpaceInventory::default();
-    for (name, entry) in &registry.spots {
+    for (name, entry) in &registry.spaces {
         match inspect_replica(config, name, entry, &mut identity).await {
             Ok((row, note)) => {
                 report.rows.push(row);
@@ -333,7 +333,7 @@ pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalS
 async fn inspect_replica(
     config: &SiteConfig,
     name: &str,
-    entry: &crate::spot::SpotEntry,
+    entry: &crate::space::SpaceEntry,
     identity: &mut Option<crate::site::Identity>,
 ) -> Result<(LocalSpaceInventoryRowV2, Option<String>)> {
     let mut config = config.clone();

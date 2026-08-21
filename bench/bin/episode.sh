@@ -4,10 +4,10 @@
 # it away) and nothing else from this repo — its struggles with the CLI
 # are the benchmark signal.
 #
-# Env: ROOT, RUN_DIR, SCENARIO, TONK_SPOTS_STATE, TONK_SPOT
+# Env: ROOT, RUN_DIR, SCENARIO, TONK_SPACES_STATE, TONK_SPACE
 # Optional (from scenario.env): EPISODE_DIR, EPISODE_BIN,
 #   EPISODE_PATH_SANDBOX, EPISODE_RUNNER, EPISODE_SANDBOX, CODEX_MODEL,
-#   EPISODE_HOME, EPISODE_SPOT, EPISODE_SPOTS_STATE, EPISODE_SITE_DIR
+#   EPISODE_HOME, EPISODE_SPACE, EPISODE_SPACES_STATE, EPISODE_SITE_DIR
 set -euo pipefail
 
 ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; SCENARIO="${SCENARIO:?}"
@@ -16,24 +16,24 @@ EPISODE_TIMEOUT="${EPISODE_TIMEOUT:-1200}"   # seconds
 EPISODE_RUNNER="${EPISODE_RUNNER:-claude}"
 REAL_HOME="$HOME"
 
-# Which spot the agent's own `tonk` calls resolve to, and which
+# Which space the agent's own `tonk` calls resolve to, and which
 # registry they resolve against. The CLI never consults the cwd, so
-# without these the agent would drive whichever spot the developer has
+# without these the agent would drive whichever space the developer has
 # selected globally — succeeding against the wrong repo, silently.
 #
 # Both default to the harness's, which is what a scenario handing the
 # agent a ready-made site wants. A scenario where the agent stands up
-# its own spot (cold-onboard joins from an invite) overrides both: an
-# empty EPISODE_SPOT (the CLI reads an empty TONK_SPOT as unset) plus
+# its own space (cold-onboard joins from an invite) overrides both: an
+# empty EPISODE_SPACE (the CLI reads an empty TONK_SPACE as unset) plus
 # its own registry directory, so before the join `tonk` honestly
-# reports no spots rather than silently resolving the origin site the
+# reports no spaces rather than silently resolving the origin site the
 # agent is supposed to be joining. `tonk join` selects what it
-# registers, so afterwards the agent's own spot governs.
+# registers, so afterwards the agent's own space governs.
 #
 # `-` rather than `:-` so a deliberately-empty override wins.
-EPISODE_SPOT="${EPISODE_SPOT-${TONK_SPOT:?}}"
-EPISODE_SPOTS_STATE="${EPISODE_SPOTS_STATE-${TONK_SPOTS_STATE:?}}"
-mkdir -p "$EPISODE_SPOTS_STATE"
+EPISODE_SPACE="${EPISODE_SPACE-${TONK_SPACE:?}}"
+EPISODE_SPACES_STATE="${EPISODE_SPACES_STATE-${TONK_SPACES_STATE:?}}"
+mkdir -p "$EPISODE_SPACES_STATE"
 
 # EPISODE_HOME isolates the episode's HOME (keeps it from touching the
 # real ~/.claude, ~/.codex, ~/.cargo state or shell history). Unset by
@@ -146,8 +146,8 @@ run_claude() {
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
     TONK_NO_UPDATE_CHECK=1 \
-    TONK_SPOTS_STATE="$EPISODE_SPOTS_STATE" \
-    TONK_SPOT="$EPISODE_SPOT" \
+    TONK_SPACES_STATE="$EPISODE_SPACES_STATE" \
+    TONK_SPACE="$EPISODE_SPACE" \
     "$TIMEOUT_BIN" -k 30 "$EPISODE_TIMEOUT" "$CLAUDE_BIN" -p "$(cat "$PROMPT_FILE")" \
       --output-format stream-json --verbose \
       --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
@@ -178,15 +178,15 @@ run_codex() {
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
     TONK_NO_UPDATE_CHECK=1 \
-    TONK_SPOTS_STATE="$EPISODE_SPOTS_STATE" \
-    TONK_SPOT="$EPISODE_SPOT" \
+    TONK_SPACES_STATE="$EPISODE_SPACES_STATE" \
+    TONK_SPACE="$EPISODE_SPACE" \
     "$TIMEOUT_BIN" -k 30 "$EPISODE_TIMEOUT" "$CODEX_BIN" exec --json \
       -m "${CODEX_MODEL:-gpt-5.5}" \
       --skip-git-repo-check --ephemeral \
       -s "${EPISODE_SANDBOX:-workspace-write}" \
       -c sandbox_workspace_write.network_access=true \
       --add-dir "$RUN_DIR" \
-      --add-dir "$EPISODE_SPOTS_STATE" \
+      --add-dir "$EPISODE_SPACES_STATE" \
       ${SITE_DIR_ARGS[@]:+"${SITE_DIR_ARGS[@]}"} \
       --add-dir "$EP_PROFILE_DIR" \
       - < "$PROMPT_FILE" \

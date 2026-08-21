@@ -80,8 +80,8 @@ pub fn account_record(
     root_did: &str,
     ceremony_page: &str,
     defaults: Option<&DeploymentDefaults>,
-) -> crate::spot::AccountRecord {
-    let mut record = crate::spot::AccountRecord::new(root_did);
+) -> crate::space::AccountRecord {
+    let mut record = crate::space::AccountRecord::new(root_did);
     match defaults {
         Some(defaults) => {
             record.ceremony_origin = Some(defaults.ceremony_origin.to_string());

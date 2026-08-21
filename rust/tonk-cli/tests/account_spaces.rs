@@ -1,14 +1,14 @@
-//! Account-spots coverage against the account directory — the plain
-//! facts in the account DB that replaced the spot-backup escrow.
+//! Account-spaces coverage against the account directory — the plain
+//! facts in the account DB that replaced the space-backup escrow.
 
 mod common;
 
 use anyhow::Result;
 use dialog_query::{Output as _, Query, Term};
 use tonk_access_service::helpers::AccessServiceAddress;
-use tonk_cli::account_spots;
+use tonk_cli::account_spaces;
 use tonk_cli::site::TonkSite;
-use tonk_cli::spot::SpotEntry;
+use tonk_cli::space::SpaceEntry;
 use tonk_schema::RepositoryName;
 use tonk_schema::prelude::DidExt as _;
 
@@ -20,7 +20,7 @@ async fn list_reports_named_unnamed_and_pullable_rows() -> Result<()> {
         .await?;
     let unnamed_subject = fixture.record_directory_space(82, None, None).await?;
 
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 2);
     let named = rows
         .iter()
@@ -51,20 +51,20 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
     let mut registry = fixture.store.load()?;
     for name in ["zeta", "alpha"] {
         registry
-            .spots
-            .insert(name.to_string(), SpotEntry::at(canonical.clone()));
+            .spaces
+            .insert(name.to_string(), SpaceEntry::at(canonical.clone()));
     }
     fixture.store.save(&registry)?;
     assert_eq!(
-        account_spots::record_site_in("alpha", &site, &fixture.store).await?,
-        account_spots::RecordOutcome::Recorded
+        account_spaces::record_site_in("alpha", &site, &fixture.store).await?,
+        account_spaces::RecordOutcome::Recorded
     );
 
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].local_name.as_deref(), Some("alpha"));
 
-    let outcome = account_spots::pull(
+    let outcome = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         site.repository.did().as_ref(),
@@ -83,7 +83,7 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     let unnamed_subject = fixture
         .record_directory_space(83, None, Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    let error = account_spots::pull(
+    let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         unnamed_subject.as_ref(),
@@ -93,12 +93,12 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     .expect_err("nameless directory rows require --name");
     assert!(error.to_string().contains("pass --name"), "{error:#}");
     assert!(!fixture.store.canonical_site("garden").exists());
-    assert!(fixture.store.load()?.spots.is_empty());
+    assert!(fixture.store.load()?.spaces.is_empty());
 
     let invalid_subject = fixture
         .record_directory_space(84, Some("My Garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    let error = account_spots::pull(
+    let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         invalid_subject.as_ref(),
@@ -108,7 +108,7 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     .expect_err("UI labels are not slugified");
     assert!(error.to_string().contains("pass --name"), "{error:#}");
 
-    let error = account_spots::pull(
+    let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         invalid_subject.as_ref(),
@@ -120,12 +120,12 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
 
     let occupied = fixture.store.canonical_site("occupied");
     let mut registry = fixture.store.load()?;
-    registry.spots.insert(
+    registry.spaces.insert(
         "occupied".to_string(),
-        SpotEntry::at(fixture.tmp.path().join("broken-local-entry")),
+        SpaceEntry::at(fixture.tmp.path().join("broken-local-entry")),
     );
     fixture.store.save(&registry)?;
-    let error = account_spots::pull(
+    let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         invalid_subject.as_ref(),
@@ -138,7 +138,7 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     let colliding_subject = fixture
         .record_directory_space(89, Some("occupied"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
-    let error = account_spots::pull(
+    let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         colliding_subject.as_ref(),
@@ -158,12 +158,12 @@ async fn pull_cleans_up_an_unverified_replica_when_initial_sync_is_offline() -> 
         .record_directory_space(85, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
 
-    let error = account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None)
+    let error = account_spaces::pull(&fixture.profile, &fixture.store, subject.as_ref(), None)
         .await
         .expect_err("an offline initial pull cannot be verified or registered");
     assert!(error.to_string().contains("initial pull"), "{error:#}");
     assert!(!fixture.store.canonical_site("garden").exists());
-    assert!(fixture.store.load()?.spots.is_empty());
+    assert!(fixture.store.load()?.spaces.is_empty());
     Ok(())
 }
 
@@ -177,15 +177,15 @@ async fn pull_requires_a_directory_row_and_returns_an_adopted_site() -> Result<(
     configure_upstream(&adopted, "http://127.0.0.1:9/ucan/").await?;
     let mut registry = fixture.store.load()?;
     registry
-        .spots
-        .insert("adopted".to_string(), SpotEntry::at(adopted.root.clone()));
+        .spaces
+        .insert("adopted".to_string(), SpaceEntry::at(adopted.root.clone()));
     fixture.store.save(&registry)?;
     assert_eq!(
-        account_spots::record_site_in("adopted", &adopted, &fixture.store).await?,
-        account_spots::RecordOutcome::Recorded
+        account_spaces::record_site_in("adopted", &adopted, &fixture.store).await?,
+        account_spaces::RecordOutcome::Recorded
     );
 
-    let outcome = account_spots::pull(
+    let outcome = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         adopted_subject.as_ref(),
@@ -201,17 +201,17 @@ async fn pull_requires_a_directory_row_and_returns_an_adopted_site() -> Result<(
     let local = TonkSite::init_at_with(&local_root, fixture.config.clone()).await?;
     let mut registry = fixture.store.load()?;
     registry
-        .spots
-        .insert("unlisted".to_string(), SpotEntry::at(local.root.clone()));
+        .spaces
+        .insert("unlisted".to_string(), SpaceEntry::at(local.root.clone()));
     fixture.store.save(&registry)?;
-    let error = account_spots::pull(
+    let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
         local.repository.did().as_ref(),
         None,
     )
     .await
-    .expect_err("an unlisted local subject is not an account spot");
+    .expect_err("an unlisted local subject is not an account space");
     assert!(error.to_string().contains("no mount record"), "{error:#}");
     Ok(())
 }
@@ -260,12 +260,12 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
     // in the account directory, exactly as `tonk remote add` would have
     // written it.
     assert_eq!(
-        account_spots::record_site_in("garden", &source, &fixture.store).await?,
-        account_spots::RecordOutcome::Recorded
+        account_spaces::record_site_in("garden", &source, &fixture.store).await?,
+        account_spaces::RecordOutcome::Recorded
     );
 
     let outcome =
-        account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
+        account_spaces::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
     assert!(outcome.warning.is_none(), "{:?}", outcome.warning);
     assert_eq!(
         outcome.site,
@@ -306,8 +306,8 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
         Some("origin")
     );
     let registry = fixture.store.load()?;
-    assert_eq!(registry.spots.len(), 1);
-    assert_eq!(registry.spots["garden"].site, outcome.site);
+    assert_eq!(registry.spaces.len(), 1);
+    assert_eq!(registry.spaces["garden"].site, outcome.site);
     assert!(registry.bindings.is_empty());
     Ok(())
 }
@@ -336,7 +336,7 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
 
 #[tokio::test]
 async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
-    use tonk_cli::account_spots::RecordOutcome;
+    use tonk_cli::account_spaces::RecordOutcome;
 
     let fixture = common::AccountFixture::new().await?;
     let dead_remote = "http://127.0.0.1:9/ucan/";
@@ -348,13 +348,13 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     .await?;
     name_repository(&owned, "synced-owned").await?;
     configure_upstream(&owned, dead_remote).await?;
-    tonk_cli::spot::register_existing_unbound(&fixture.store, "owned-alias", &owned.root)?;
+    tonk_cli::space::register_existing_unbound(&fixture.store, "owned-alias", &owned.root)?;
     assert_eq!(
-        account_spots::record_site_in("owned-alias", &owned, &fixture.store).await?,
+        account_spaces::record_site_in("owned-alias", &owned, &fixture.store).await?,
         RecordOutcome::Recorded
     );
     assert_eq!(
-        account_spots::record_site_in("owned-alias", &owned, &fixture.store).await?,
+        account_spaces::record_site_in("owned-alias", &owned, &fixture.store).await?,
         RecordOutcome::Unchanged,
         "an unchanged configuration must not commit to the account"
     );
@@ -367,9 +367,9 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     )
     .await?;
     configure_upstream(&joined, dead_remote).await?;
-    tonk_cli::spot::register_existing_unbound(&fixture.store, "joined-alias", &joined.root)?;
+    tonk_cli::space::register_existing_unbound(&fixture.store, "joined-alias", &joined.root)?;
     assert_eq!(
-        account_spots::record_site_in("joined-alias", &joined, &fixture.store).await?,
+        account_spaces::record_site_in("joined-alias", &joined, &fixture.store).await?,
         RecordOutcome::Recorded
     );
 
@@ -378,12 +378,12 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
         fixture.config.clone(),
     )
     .await?;
-    tonk_cli::spot::register_existing_unbound(&fixture.store, "local-fallback", &local_only.root)?;
+    tonk_cli::space::register_existing_unbound(&fixture.store, "local-fallback", &local_only.root)?;
     assert_eq!(
-        account_spots::record_site_in("local-fallback", &local_only, &fixture.store).await?,
+        account_spaces::record_site_in("local-fallback", &local_only, &fixture.store).await?,
         RecordOutcome::NoUpstream
     );
-    let before = account_spots::list(&fixture.profile, &fixture.store).await?;
+    let before = account_spaces::list(&fixture.profile, &fixture.store).await?;
     assert!(
         !before
             .iter()
@@ -391,11 +391,11 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     );
     configure_upstream(&local_only, dead_remote).await?;
     assert_eq!(
-        account_spots::record_site_in("local-fallback", &local_only, &fixture.store).await?,
+        account_spaces::record_site_in("local-fallback", &local_only, &fixture.store).await?,
         RecordOutcome::Recorded
     );
 
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 3);
     assert_eq!(
         rows.iter()
@@ -440,29 +440,29 @@ async fn record_sweep_uses_the_first_alias_once() -> Result<()> {
     let mut registry = fixture.store.load()?;
     for name in ["zeta", "alpha"] {
         registry
-            .spots
-            .insert(name.to_string(), SpotEntry::at(canonical.clone()));
+            .spaces
+            .insert(name.to_string(), SpaceEntry::at(canonical.clone()));
     }
     fixture.store.save(&registry)?;
 
-    let warnings = account_spots::record_registered(&fixture.profile, &fixture.store).await;
+    let warnings = account_spaces::record_registered(&fixture.profile, &fixture.store).await;
     assert!(warnings.is_empty(), "{warnings:?}");
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].subject, site.repository.did().to_string());
     assert_eq!(rows[0].remote_name.as_deref(), Some("alpha"));
 
-    let warnings = account_spots::record_registered(&fixture.profile, &fixture.store).await;
+    let warnings = account_spaces::record_registered(&fixture.profile, &fixture.store).await;
     assert!(warnings.is_empty(), "{warnings:?}");
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].remote_name.as_deref(), Some("alpha"));
     Ok(())
 }
 
-/// The regression `tonk account spots` shipped with: `account status`
-/// reported "signed in: yes" while `spots` claimed no account was
-/// configured, because the spots commands required a prior command to
+/// The regression `tonk account spaces` shipped with: `account status`
+/// reported "signed in: yes" while `spaces` claimed no account was
+/// configured, because the spaces commands required a prior command to
 /// have hydrated the link. They hydrate on demand now.
 #[dialog_common::test]
 async fn list_hydrates_a_linked_but_unhydrated_profile(env: AccessServiceAddress) -> Result<()> {
@@ -484,7 +484,7 @@ async fn list_hydrates_a_linked_but_unhydrated_profile(env: AccessServiceAddress
         "the fixture must start unhydrated for this pin to mean anything"
     );
 
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
     assert!(rows.is_empty());
 
     let operator = fixture.operator().await?;

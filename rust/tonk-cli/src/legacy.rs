@@ -16,7 +16,7 @@
 //! native `dialog.rule/*` facts and current boolean transient markers.
 //!
 //! Remapping is preferred over re-deriving the schema from
-//! `tonk schema` output. Both work, but this carries the data the spot
+//! `tonk schema` output. Both work, but this carries the data the space
 //! actually had — a schema that drifted from the standard library keeps its
 //! drift — and a table cannot fail halfway through a re-evaluation.
 
@@ -39,6 +39,40 @@ use tonk_schema::meta::{AnonymousAttribute, attribute};
 /// not move, so an upgrade path that asked for "latest compatible" would be
 /// asking a question with a changing answer.
 pub const LEGACY_RELEASE: &str = "v0.6.7";
+
+/// How [`LEGACY_RELEASE`] spells `--space`.
+///
+/// That build predates the rename and knows only `--spot`, so this is the
+/// argument of an external program rather than a name this crate is free to
+/// keep in step with its own vocabulary.
+const LEGACY_SPACE_FLAG: &str = "--spot";
+
+/// How [`LEGACY_RELEASE`] spells `TONK_SPACES_STATE`.
+const LEGACY_STATE_ENV: &str = "TONK_SPOTS_STATE";
+
+/// The throwaway registry directory inside a migration workspace.
+fn legacy_state(workspace: &Path) -> PathBuf {
+    workspace.join("legacy-state")
+}
+
+/// Give [`LEGACY_RELEASE`] a registry it can resolve `space` through.
+///
+/// That build reads `spots.json` keyed on `spots`, which a store converted to
+/// the current layout no longer has. Rather than keep the old file around for
+/// it, this writes a registry naming exactly the one space being migrated
+/// into the workspace and points the child at it — so the child resolves the
+/// name it was given without reading, or being able to damage, the real
+/// store.
+pub fn prepare_legacy_registry(workspace: &Path, space: &str, site: &Path) -> Result<()> {
+    let dir = legacy_state(workspace);
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let registry = serde_json::json!({ "spots": { space: { "site": site } } });
+    std::fs::write(
+        dir.join("spots.json"),
+        serde_json::to_string_pretty(&registry).context("failed to encode the legacy registry")?,
+    )
+    .with_context(|| format!("failed to write the legacy registry in {}", dir.display()))
+}
 
 /// Download and unpack the legacy CLI into `into`, returning its path.
 ///
@@ -78,18 +112,25 @@ pub fn fetch_legacy_cli(into: &Path) -> Result<PathBuf> {
 /// Export a branch using the legacy CLI, which is the only build that can
 /// read pre-upgrade data.
 ///
-/// `site` is the spot's own directory. The legacy CLI resolves a spot
+/// `site` is the space's own directory. The legacy CLI resolves a space
 /// through its registry rather than from the working directory, so it is
-/// named explicitly with `--spot` — a caller holding a directory should not
-/// have to register it first just to read it.
-pub fn legacy_export(cli: &Path, spot: &str, branch: &str, out: &Path) -> Result<()> {
+/// named explicitly with [`LEGACY_SPACE_FLAG`] — a caller holding a directory
+/// should not have to register it first just to read it.
+pub fn legacy_export(
+    cli: &Path,
+    space: &str,
+    branch: &str,
+    out: &Path,
+    workspace: &Path,
+) -> Result<()> {
     let mut command = Command::new(cli);
     command
         .arg("export")
-        .arg("--spot")
-        .arg(spot)
+        .arg(LEGACY_SPACE_FLAG)
+        .arg(space)
         .arg("--out")
-        .arg(out);
+        .arg(out)
+        .env(LEGACY_STATE_ENV, legacy_state(workspace));
     // `--branch` is newer than the build being driven here: the legacy CLI
     // exports `main` and knows no flag for anything else. Passing it would
     // fail outright, so a non-default branch is refused with an explanation
@@ -164,9 +205,9 @@ pub fn blob_references<R: BufRead>(mut source: R) -> Result<Vec<Entity>> {
 /// Stops short of importing: the caller owns the destination, and a
 /// migration that both reads and writes in one step gives no chance to
 /// inspect what is about to land.
-pub fn upgrade_branch(cli: &Path, spot: &str, branch: &str, workspace: &Path) -> Result<Upgraded> {
+pub fn upgrade_branch(cli: &Path, space: &str, branch: &str, workspace: &Path) -> Result<Upgraded> {
     let exported = workspace.join(format!("{branch}-legacy.csv"));
-    legacy_export(cli, spot, branch, &exported)?;
+    legacy_export(cli, space, branch, &exported, workspace)?;
 
     let migrated = workspace.join(format!("{branch}-migrated.csv"));
     let source = std::fs::File::open(&exported)
@@ -204,7 +245,7 @@ pub struct BlobMigration {
 /// exactly the entity referenced by the migrated facts.
 pub async fn migrate_blobs(
     cli: &Path,
-    spot: &str,
+    space: &str,
     branch: &str,
     blobs: &[Entity],
     destination: &crate::site::TonkSite,
@@ -219,8 +260,9 @@ pub async fn migrate_blobs(
             .arg("blob")
             .arg("cat")
             .arg(expected.as_str())
-            .arg("--spot")
-            .arg(spot)
+            .arg(LEGACY_SPACE_FLAG)
+            .arg(space)
+            .env(LEGACY_STATE_ENV, legacy_state(workspace))
             .env("DO_NOT_TRACK", "1")
             .stdout(Stdio::from(output))
             .status()
@@ -651,7 +693,7 @@ pub struct Migration {
 
 /// Rewrite a legacy CSV export into one the current build can import.
 ///
-/// Streams rather than buffering: an export of a real spot is arbitrarily
+/// Streams rather than buffering: an export of a real space is arbitrarily
 /// large, and there is no reason to hold it in memory to rewrite one column.
 pub fn migrate_export<R: BufRead, W: Write>(source: R, mut out: W) -> Result<Migration> {
     let mut migration = Migration::default();
