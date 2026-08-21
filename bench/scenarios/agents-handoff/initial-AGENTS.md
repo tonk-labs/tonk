@@ -27,4 +27,4 @@ To persist an update, edit this projection and run:
 
 Inspect the live source, repository subject, and revision with:
 
-`tonk agents --json`
+`tonk agents get --json`

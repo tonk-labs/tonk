@@ -74,7 +74,7 @@ Use three independent paired runs. Each pair costs three external episodes:
    convention: future security-review tasks are owned by a scenario-generated
    opaque team label. It must complete the task and preserve the convention for
    future agents.
-2. Verify the task separately, then verify that the live `tonk agents --json`
+2. Verify the task separately, then verify that the live `tonk agents get --json`
    revision changed, still maps the repository DID, contains the exact
    convention, and does not contain the completed task's status, credentials,
    invite links, or unrelated prompt text.

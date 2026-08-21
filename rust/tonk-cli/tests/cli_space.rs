@@ -545,7 +545,7 @@ mod when_using_space_agent_context {
         assert!(output.status.success(), "{}", stderr_of(&output));
         assert_eq!(stdout_of(&output), expected);
 
-        let output = run(state.path(), &["agents", "--json"], &[]);
+        let output = run(state.path(), &["agents", "get", "--json"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let value: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("valid claim JSON");

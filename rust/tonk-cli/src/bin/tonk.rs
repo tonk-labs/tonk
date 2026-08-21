@@ -78,16 +78,13 @@ enum Command {
 
     /// Read or update the AGENTS.md claim carried by this space
     ///
-    /// With no subcommand, writes the raw Markdown to stdout so it can be
-    /// projected with `tonk agents > AGENTS.md`. The claim on the repository
-    /// subject DID remains the source of truth.
+    /// Bare `tonk agents` means `get`, so the raw Markdown can be
+    /// projected with `tonk agents > AGENTS.md`. The claim on the
+    /// repository subject DID remains the source of truth.
     #[command(
-        after_help = "Examples:\n  tonk agents\n  tonk agents --json\n  tonk agents > AGENTS.md\n  tonk agents set AGENTS.md\n  tonk agents set - < AGENTS.md"
+        after_help = "Examples:\n  tonk agents\n  tonk agents get --json\n  tonk agents > AGENTS.md\n  tonk agents set AGENTS.md\n  tonk agents set - < AGENTS.md"
     )]
     Agents {
-        /// Include the repository subject and observed revision.
-        #[arg(long)]
-        json: bool,
         #[command(subcommand)]
         command: Option<AgentsCommand>,
     },
@@ -118,6 +115,11 @@ enum Command {
     /// Every named attribute and concept, or just one concept's
     /// subset when `<CONCEPT>` is given. The human field/type view
     /// lives in `tonk assert <concept> --help`.
+    ///
+    /// No `--json`, deliberately: the output is already a machine
+    /// format, and one you can feed straight back to `tonk eval`. A
+    /// JSON transcription would be a second machine format that
+    /// nothing accepts as input.
     #[command(
         after_help = "Examples:\n  tonk schema\n  tonk schema task\n  tonk schema > schema.notation"
     )]
@@ -389,12 +391,10 @@ enum Command {
 
     /// Export local main's artifacts as CSV
     ///
-    /// Writes to stdout unless `--out <file>` is given. Hidden
-    /// from the command list: bulk-transfer plumbing.
-    #[command(
-        hide = true,
-        after_help = "Examples:\n  tonk export\n  tonk export --out data.csv"
-    )]
+    /// Writes to stdout unless `--out <file>` is given. One row per
+    /// artifact, which is the bulk path out of a space: `tonk query`
+    /// answers a question, this copies everything.
+    #[command(after_help = "Examples:\n  tonk export\n  tonk export --out data.csv")]
     Export {
         /// Write the CSV to this file instead of stdout.
         #[arg(long, value_name = "PATH")]
@@ -407,9 +407,9 @@ enum Command {
 
     /// Import artifacts from a CSV file onto local main
     ///
-    /// Commits each row as an assertion. Hidden from the command
-    /// list: bulk-transfer plumbing.
-    #[command(hide = true, after_help = "Examples:\n  tonk import data.csv")]
+    /// Commits each row as an assertion. The inverse of `tonk export`,
+    /// and the bulk path in.
+    #[command(after_help = "Examples:\n  tonk import data.csv")]
     Import {
         /// The CSV file to read (`the,of,as,is,cause` columns).
         #[arg(value_name = "PATH")]
@@ -457,6 +457,18 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum AgentsCommand {
+    /// Write the claim's Markdown to stdout
+    ///
+    /// What bare `tonk agents` runs. `--json` lives here rather than on
+    /// the parent because on the parent it could be passed alongside
+    /// `set`, where it meant nothing and had to be rejected at runtime.
+    #[command(after_help = "Examples:\n  tonk agents get\n  tonk agents get --json")]
+    Get {
+        /// Include the repository subject and observed revision.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Assert a Markdown document on the selected space's repository subject
     Set {
         /// Markdown file to assert, or `-` for stdin.
@@ -754,15 +766,11 @@ enum SpaceCommand {
         /// it, `tonk space new <name> --site <path>` adopts it back,
         /// and it keeps its canonical name reserved against `tonk
         /// join` and `tonk account spaces pull`.
-        #[arg(long, conflicts_with = "delete")]
+        #[arg(long)]
         keep_data: bool,
         /// Delete without asking for confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Accepted for compatibility — deleting the data is now the
-        /// default, so this flag does nothing.
-        #[arg(long, hide = true)]
-        delete: bool,
     },
 
     /// Unbind a directory from its space (see `tonk space use`)
@@ -1091,10 +1099,11 @@ enum TelemetryAction {
 fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     match command {
         Command::Context { .. } => ("context", None),
-        Command::Agents { command, .. } => (
+        Command::Agents { command } => (
             "agents",
-            command.as_ref().map(|command| match command {
-                AgentsCommand::Set { .. } => "set",
+            Some(match command {
+                None | Some(AgentsCommand::Get { .. }) => "get",
+                Some(AgentsCommand::Set { .. }) => "set",
             }),
         ),
         Command::Space { command } => (
@@ -1275,7 +1284,7 @@ async fn main() {
     let space = cli.space;
     let exit = match command {
         Command::Context { json } => context_op(json, space.as_deref()).await,
-        Command::Agents { json, command } => agents_op(json, command, space.as_deref()).await,
+        Command::Agents { command } => agents_op(command, space.as_deref()).await,
         Command::Space { command } => space_op(command, space.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
@@ -1423,13 +1432,13 @@ async fn context_op(json: bool, space: Option<&str>) -> ExitCode {
 }
 
 /// `tonk agents` — read or update claim-backed space instructions.
-async fn agents_op(json: bool, command: Option<AgentsCommand>, space: Option<&str>) -> ExitCode {
+async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
-    match command {
-        None => {
+    match command.unwrap_or(AgentsCommand::Get { json: false }) {
+        AgentsCommand::Get { json } => {
             let claim = match agents::get(&site).await {
                 Ok(Some(claim)) => claim,
                 Ok(None) => {
@@ -1455,10 +1464,7 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, space: Option<&st
             }
             ExitCode::Success
         }
-        Some(AgentsCommand::Set { path, write }) => {
-            if json {
-                return print_error("`--json` reads a claim and cannot be combined with `set`");
-            }
+        AgentsCommand::Set { path, write } => {
             let markdown = if path.as_os_str() == "-" {
                 let mut markdown = String::new();
                 if let Err(err) = std::io::stdin().read_to_string(&mut markdown) {
@@ -1476,7 +1482,7 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, space: Option<&st
             match agents::set(&site, &markdown, write.into()).await {
                 Ok(Some(claim)) => {
                     println!(
-                        "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk agents --json",
+                        "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk agents get --json",
                         claim.source, claim.attribute, claim.entity, claim.revision
                     );
                     ExitCode::Success
@@ -2204,7 +2210,6 @@ async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
             name,
             keep_data,
             yes,
-            delete: _,
         } => space_rm(&store, &config, &name, keep_data, yes).await,
         SpaceCommand::Unbind { path } => {
             let directory = match path.or_else(working_directory) {
@@ -4002,6 +4007,49 @@ mod account_spaces_parser_tests {
         assert!(Cli::try_parse_from(["tonk", "account", "add", "--label", "work"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "account", "use", "work"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "account", "list"]).is_err());
+    }
+
+    #[test]
+    fn reading_the_agents_claim_is_a_subcommand_that_owns_its_json_flag() {
+        // `--json` used to sit on the parent, where `tonk agents --json set
+        // AGENTS.md` parsed fine and then had to be refused at runtime. On
+        // `get` the combination cannot be spelled.
+        assert!(matches!(
+            Cli::try_parse_from(["tonk", "agents", "get", "--json"])
+                .unwrap()
+                .command,
+            Some(Command::Agents {
+                command: Some(AgentsCommand::Get { json: true })
+            })
+        ));
+
+        // Bare `tonk agents` still projects the Markdown.
+        assert!(matches!(
+            Cli::try_parse_from(["tonk", "agents"]).unwrap().command,
+            Some(Command::Agents { command: None })
+        ));
+
+        assert!(Cli::try_parse_from(["tonk", "agents", "--json"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "agents", "--json", "set", "AGENTS.md"]).is_err());
+    }
+
+    #[test]
+    fn space_rm_no_longer_accepts_the_flag_that_did_nothing() {
+        // `--delete` was hidden and inert: deleting the data is the default,
+        // so a script still passing it was passing a flag with no effect.
+        assert!(Cli::try_parse_from(["tonk", "space", "rm", "garden", "--delete"]).is_err());
+
+        let cli = Cli::try_parse_from(["tonk", "space", "rm", "garden", "--keep-data"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Space {
+                command: SpaceCommand::Rm {
+                    keep_data: true,
+                    yes: false,
+                    ..
+                }
+            })
+        ));
     }
 
     #[test]

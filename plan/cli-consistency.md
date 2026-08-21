@@ -353,7 +353,9 @@ nothing in this repo depends on the old ones.
   absence reads as a decision rather than a gap.
 - **`tonk export` / `tonk import` are `hide = true`** but are the only bulk
   path in or out. If they are supported, unhide them; if they are not,
-  say so in their help.
+  say so in their help. *Resolved: unhidden. They work, they are tested, and
+  the legacy space migration is built on them — "plumbing" described who
+  wrote them, not who can use them.*
 
 ---
 

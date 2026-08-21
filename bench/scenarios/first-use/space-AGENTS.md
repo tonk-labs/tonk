@@ -31,4 +31,4 @@ pitfalls you discover while working in this space. Do not record one-off task
 completion, transient status, credentials, invite links, or other secrets.
 
 To persist an update, edit the projection and run `tonk agents set AGENTS.md`.
-Inspect the current claim and revision with `tonk agents --json`.
+Inspect the current claim and revision with `tonk agents get --json`.
