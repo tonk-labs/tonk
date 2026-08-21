@@ -159,22 +159,49 @@ async fn it_cats_a_blob_back() -> Result<()> {
     Ok(())
 }
 
-/// `ls` is deferred: the current dialog-db pin's entity-keyed blob
-/// API offers no way to enumerate a branch's blobs, so `tonk blob ls`
-/// reports `Unsupported` rather than listing. When the pin advances to
-/// a dialog-db with a blob-enumeration API, restore the listing test:
-/// add a blob, then assert `ls` returns one row matching the added
-/// entity, its size, and its `image/png` content type.
+/// `ls` reads the metadata `add` asserted, so a freshly added blob is
+/// listed with the content type and file name it was ingested under.
 #[tokio::test]
-async fn it_reports_ls_unsupported_on_the_current_pin() -> Result<()> {
+async fn it_lists_an_added_blob_with_its_metadata() -> Result<()> {
     let test = TestSite::new().await?;
     let file = test.parent.join("pic.png");
     tokio::fs::write(&file, b"\x89PNG bytes").await?;
-    blob::add(&test.site, &file, None).await?;
+    let added = blob::add(&test.site, &file, None).await?;
 
-    assert!(matches!(
-        blob::ls(&test.site).await,
-        Err(blob::BlobError::Unsupported(_))
-    ));
+    let rows = blob::ls(&test.site).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].entity, added.entity);
+    assert_eq!(rows[0].content_type.as_deref(), Some("image/png"));
+    assert_eq!(rows[0].name.as_deref(), Some("pic.png"));
+    Ok(())
+}
+
+/// Re-adding the same bytes is idempotent all the way through the
+/// listing: one entity, one row.
+#[tokio::test]
+async fn it_lists_one_row_per_distinct_blob() -> Result<()> {
+    let test = TestSite::new().await?;
+    let first = test.parent.join("a.png");
+    let second = test.parent.join("b.txt");
+    tokio::fs::write(&first, b"\x89PNG bytes").await?;
+    tokio::fs::write(&second, b"plain").await?;
+    blob::add(&test.site, &first, None).await?;
+    blob::add(&test.site, &first, None).await?;
+    blob::add(&test.site, &second, None).await?;
+
+    let rows = blob::ls(&test.site).await?;
+    assert_eq!(rows.len(), 2);
+    let mut types: Vec<_> = rows.iter().filter_map(|r| r.content_type.clone()).collect();
+    types.sort();
+    assert_eq!(types, vec!["image/png", "text/plain"]);
+    Ok(())
+}
+
+/// A branch that has ingested nothing lists nothing — an empty
+/// listing, not an error.
+#[tokio::test]
+async fn it_lists_nothing_on_a_branch_with_no_blobs() -> Result<()> {
+    let test = TestSite::new().await?;
+    assert!(blob::ls(&test.site).await?.is_empty());
     Ok(())
 }

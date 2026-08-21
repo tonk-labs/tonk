@@ -824,7 +824,13 @@ enum BlobCommand {
         #[arg(value_name = "BLOB_URI")]
         reference: String,
     },
-    /// List blobs in the index with size and content type
+    /// List ingested blobs with their content type and file name
+    ///
+    /// One row per blob, tab-separated
+    /// `entity<TAB>content-type<TAB>name`. Read from the metadata
+    /// facts `tonk blob add` asserts, so bytes attached without
+    /// metadata don't appear, and a row means the facts are here, not
+    /// necessarily the bytes.
     #[command(after_help = "Examples:\n  tonk blob ls")]
     Ls,
 }
@@ -2684,10 +2690,10 @@ async fn blob_op(command: BlobCommand, spot: Option<&str>) -> ExitCode {
 fn print_blob_ls(rows: &[blob::LsRow]) {
     for row in rows {
         println!(
-            "{uri}  {size}  {content_type}",
+            "{uri}\t{content_type}\t{name}",
             uri = row.entity.as_str(),
-            size = row.size,
             content_type = row.content_type.as_deref().unwrap_or("-"),
+            name = row.name.as_deref().unwrap_or("-"),
         );
     }
 }
