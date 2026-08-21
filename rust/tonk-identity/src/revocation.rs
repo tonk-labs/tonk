@@ -29,10 +29,15 @@ fn nonce() -> Nonce {
 }
 
 /// The argument naming the withdrawn delegation.
-pub const REVOKE_ARGUMENT: &str = "revoke";
+///
+/// `rev`, not `revoke`: the spec's IPLD schema is normative and uses the
+/// abbreviated wire names, matching `cmd` / `nnc` / `prf` elsewhere in
+/// the envelope. The prose in the spec README spells them out, which is
+/// where the longer names came from.
+pub const REVOKE_ARGUMENT: &str = "rev";
 
-/// The argument carrying the hex-encoded canonical delegation path.
-pub const PATH_ARGUMENT: &str = "path";
+/// The argument carrying the delegation-path witness.
+pub const PATH_ARGUMENT: &str = "pth";
 
 /// Authority established by a verified revocation artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
