@@ -316,6 +316,23 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
     // previous hop's audience. Without this, any principal could staple an
     // unrelated (validly signed) grant onto a real prefix and claim the
     // authority the prefix carries.
+    // Linkage says the hops connect; it does not say where they start. A
+    // connected chain rooted in an arbitrary principal is a well-formed
+    // statement about somebody else's authority, so bind the root to the
+    // revocation's subject: the first hop must be issued BY the subject.
+    // This is the `sub -> iss` evidence rule, and it is what keeps the
+    // index from being writable by anyone holding a keypair.
+    let revocation_subject = chain.subject().clone();
+    if let Some(root) = path_delegations.first()
+        && root.issuer() != &revocation_subject
+    {
+        return Err(VerifyError::Unauthorized(format!(
+            "witness is rooted in {} rather than the revocation subject \
+             {revocation_subject}",
+            root.issuer()
+        )));
+    }
+
     for pair in path_delegations.windows(2) {
         if pair[0].audience() != pair[1].issuer() {
             return Err(VerifyError::Unauthorized(format!(
@@ -909,6 +926,52 @@ mod tests {
         assert!(
             verify(&bytes).await.is_err(),
             "a witness whose hops do not connect must not establish authority"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_witness_that_does_not_start_at_the_subject() {
+        // Linkage makes the hops connect; it does not say WHERE they
+        // start. A witness rooted in a principal the subject never
+        // delegated to is a well-formed chain about somebody else's
+        // authority, so it must not authorize a revocation whose subject
+        // is this space.
+        let space = signer(3).await;
+        let stranger = signer(13).await;
+        let accomplice = signer(14).await;
+        let victim = signer(5).await;
+
+        // stranger -> accomplice -> victim: connected, every signature
+        // valid, and it names the space as subject. But the space never
+        // issued into it.
+        let first = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(stranger.clone()))
+            .audience(&accomplice.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let second = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(accomplice.clone()))
+            .audience(&victim.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let target = second.to_cid();
+        let bytes = raw_revocation_with_path(
+            accomplice,
+            &space.did(),
+            &[&first, &second],
+            Promised::Link(target),
+        )
+        .await;
+        assert!(
+            verify(&bytes).await.is_err(),
+            "a witness that does not start at the subject must not authorize \
+             a revocation against that subject"
         );
     }
 
