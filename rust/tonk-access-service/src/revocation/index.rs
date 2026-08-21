@@ -14,6 +14,9 @@
 //! applied, so it binds on the subject rather than the invocation's
 //! issuer.
 
+#[cfg(target_arch = "wasm32")]
+pub mod kv;
+
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
