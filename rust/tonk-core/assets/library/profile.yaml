@@ -369,9 +369,7 @@ view/directory!:
         /* Start-screen choices + template grid are Web Awesome cards wrapped
            in a <label> so a click toggles the driving radio. The card carries
            the surface/border/hover; the label only forwards the click. */
-        .onb-choices { display: grid; grid-template-columns: repeat(3, minmax(0,280px)); gap: 18px; }
-        .onb-art--invite { background: var(--wa-color-surface-lowered);
-          font-size: 30px; color: var(--wa-color-text-quiet); }
+        .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,280px)); gap: 18px; }
         /* The template picker: a grid of card <label>s (2x2 at four
            templates), shown once the template path is chosen. */
         .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,280px));
@@ -605,16 +603,6 @@ view/directory!:
                   <div class="onb-card__cta">start blank &rsaquo;</div>
                 </wa-card>
               </label>
-              <a class="onb-card" href="/join">
-                <wa-card appearance="outlined">
-                  <div class="onb-art onb-art--invite">
-                    <wa-icon name="link"></wa-icon>
-                  </div>
-                  <div class="onb-card__name">From an invite link</div>
-                  <div class="onb-card__desc">Join a spot shared with you, wherever it is hosted.</div>
-                  <div class="onb-card__cta">paste a link &rsaquo;</div>
-                </wa-card>
-              </a>
             </div>
           </div>
 
