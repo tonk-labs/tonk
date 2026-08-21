@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, Result};
 use dialog_credentials::{DidKeyResolver, Signer};
+use dialog_ucan_core::crypto::nonce::Nonce;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::{
     Container, Delegation, DelegationChain, InvocationBuilder, InvocationChain,
@@ -18,6 +19,14 @@ use ipld_core::cid::Cid;
 
 /// The command a revocation invokes.
 pub const REVOKE_COMMAND: [&str; 2] = ["ucan", "revoke"];
+
+/// The spec sets `nonce` to the empty byte string, because revocation is
+/// idempotent: revoking the same delegation twice is one fact, so the
+/// two invocations share a CID rather than being distinct acts. A random
+/// nonce would make every replay a new invocation to store and bill.
+fn nonce() -> Nonce {
+    Nonce::Custom(Vec::new())
+}
 
 /// The argument naming the withdrawn delegation.
 pub const REVOKE_ARGUMENT: &str = "revoke";
@@ -44,7 +53,19 @@ pub struct VerifiedRevocation {
     /// Expiration of the target delegation, if it has one.
     pub target_expires_at: Option<u64>,
     /// DID that signed the revocation invocation.
+    ///
+    /// Who performed the act. Distinct from [`subject`](Self::subject)
+    /// when the revocation was minted under delegated authority.
     pub issuer: Did,
+    /// DID whose authority the revocation exercises.
+    ///
+    /// What a validator matches against the issuers of a presented
+    /// chain: the spec's pseudocode tests the invocation's issuer, which
+    /// contradicts its own delegated-revocation section, since a
+    /// delegate is never in the chain whose authority they borrowed.
+    /// Fixed upstream in ucan-wg/revocation#4; we implement the
+    /// corrected form.
+    pub subject: Did,
     /// How the signer proved revocation authority.
     pub authority: RevocationAuthority,
 }
@@ -138,6 +159,7 @@ async fn mint(
         .command(command())
         .arguments(arguments(target, path)?)
         .proofs(proof_cids)
+        .nonce(nonce())
         .try_build()
         .await
         .map_err(|err| anyhow::anyhow!("failed to mint the revocation: {err}"))?;
@@ -364,6 +386,7 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         artifact_cid: chain.invocation.to_cid().to_string(),
         target_expires_at,
         issuer,
+        subject: chain.subject().clone(),
         authority,
     })
 }
@@ -582,6 +605,66 @@ mod tests {
             verify(&bytes).await,
             Err(VerifyError::Unauthorized(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_encodes_arguments_as_native_dag_cbor_links() {
+        // The spec types `revoke` as `&Delegation` and `path` as
+        // `[&Delegation]`. Decoding the invocation straight to Ipld is
+        // what proves they are real links: a stringified or hex-encoded
+        // CID would surface as Ipld::String here, not Ipld::Link.
+        use ipld_core::ipld::Ipld;
+
+        let (root, _, path) = root_grant().await;
+        let target = path.proof_cids()[0];
+        let bytes = mint_root_revocation(root, &path, &target).await.unwrap();
+
+        let tokens = Container::from_bytes(&bytes).unwrap().into_tokens();
+        let invocation: Ipld = serde_ipld_dagcbor::from_slice(&tokens[0]).unwrap();
+
+        // Walk to the arguments without assuming the envelope's shape.
+        fn find<'a>(node: &'a Ipld, key: &str) -> Option<&'a Ipld> {
+            match node {
+                Ipld::Map(map) => map
+                    .get(key)
+                    .or_else(|| map.values().find_map(|v| find(v, key))),
+                Ipld::List(items) => items.iter().find_map(|v| find(v, key)),
+                _ => None,
+            }
+        }
+
+        let args = find(&invocation, "args").expect("invocation carries arguments");
+        match find(args, REVOKE_ARGUMENT).expect("revoke argument is present") {
+            Ipld::Link(cid) => assert_eq!(cid, &target),
+            other => panic!("revoke must be a link, got {other:?}"),
+        }
+        match find(args, PATH_ARGUMENT).expect("path argument is present") {
+            Ipld::List(items) => {
+                assert!(!items.is_empty(), "path must not be empty");
+                for item in items {
+                    assert!(
+                        matches!(item, Ipld::Link(_)),
+                        "path must contain only links, got {item:?}"
+                    );
+                }
+            }
+            other => panic!("path must be a list, got {other:?}"),
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_mints_the_same_bytes_for_a_repeated_revocation() {
+        // The empty nonce is what makes revocation idempotent: the same
+        // revoker withdrawing the same delegation twice produces one
+        // artifact, so a replay is recognizably the same fact rather
+        // than a second one to store and bill.
+        let (root, _, path) = root_grant().await;
+        let target = path.proof_cids()[0];
+        let first = mint_root_revocation(root.clone(), &path, &target)
+            .await
+            .unwrap();
+        let second = mint_root_revocation(root, &path, &target).await.unwrap();
+        assert_eq!(first, second);
     }
 
     #[dialog_common::test]
