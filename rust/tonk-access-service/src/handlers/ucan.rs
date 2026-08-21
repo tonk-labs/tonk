@@ -69,6 +69,14 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .await
             .map(with_cors_headers);
     }
+    // Revocation writes to the index rather than reading it, so it is
+    // answered here rather than on the presign path that consults it.
+    #[cfg(target_arch = "wasm32")]
+    if crate::revoke::is_revocation(&body_bytes) {
+        return crate::handlers::revoke::handle(&body_bytes, &env)
+            .await
+            .map(with_cors_headers);
+    }
     #[cfg(target_arch = "wasm32")]
     if registration_command(&body_bytes).is_some() {
         return handle_registration(&body_bytes, &req, &env)

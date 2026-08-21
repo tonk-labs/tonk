@@ -51,8 +51,8 @@ mod handlers;
 pub mod metering;
 pub mod provisioning;
 pub mod registration;
-#[cfg(any(target_arch = "wasm32", test))]
-mod revocation;
+pub mod revocation;
+pub mod revoke;
 pub mod service;
 pub mod shortcut;
 pub mod store;
