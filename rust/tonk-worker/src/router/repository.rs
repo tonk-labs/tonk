@@ -2722,15 +2722,41 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository<SignerCredential>, RepositoryError> {
-    // A space can be created before any account exists: it delegates to
-    // the most durable key the client holds — the passkey-derived root
-    // when one is persisted, else the profile's own device key
-    // (plan/Account model.md §2). Such a space is local-only and
-    // un-backed-up until linking redelegates it to the account and
-    // provisions it; see [`adopt_profile_spaces`].
+    // A space always delegates to an ACCOUNT: the passkey-derived root
+    // once one is persisted, else this device's onboarding account,
+    // which is a real account custodied locally rather than by WebAuthn
+    // (`plan/onboarding-accreditation.md`).
+    //
+    // It used to fall back to the profile's own device key, which made a
+    // pre-account space differ in shape from every other one and left
+    // `adopt_profile_spaces` to reconcile the difference at sign-in.
+    // Delegating to an account from the start means enrolling a passkey
+    // is an account key ROTATION, the same operation a compromised
+    // passkey needs, rather than a bespoke migration.
     let owner = match super::identity::local_root(tonk).await {
         Ok(root) => root.root_did,
-        Err(TonkWorkerError::RootRequired) => tonk.profile.did(),
+        Err(TonkWorkerError::RootRequired) => {
+            // Minting the grant here as well as the account: the device
+            // signs on the account's behalf, so a space delegated to an
+            // account this device cannot prove for would be unusable.
+            crate::onboarding::grant_device(tonk)
+                .await
+                .map_err(|error| {
+                    RepositoryError::Internal(format!("failed to grant the device: {error}"))
+                })?;
+            crate::onboarding::did(tonk)
+                .await
+                .map_err(|error| {
+                    RepositoryError::Internal(format!(
+                        "failed to open the onboarding account: {error}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    RepositoryError::Internal(
+                        "the onboarding account did not materialise".to_string(),
+                    )
+                })?
+        }
         Err(error) => {
             return Err(RepositoryError::Internal(format!(
                 "failed to load local root: {error}"
@@ -2877,7 +2903,16 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
     let Ok(root) = super::identity::local_root(tonk).await else {
         return;
     };
+    // Spaces created before accreditation are rooted at this device's
+    // ONBOARDING account, not at the profile. Older spaces predating that
+    // change are still profile-rooted, so both count as "mine to
+    // re-issue"; anything else reaches this device through someone
+    // else's chain and is left alone.
     let profile_did = tonk.profile.did();
+    let onboarding_did = crate::onboarding::did(tonk).await.unwrap_or(None);
+    let reissuable = |audience: &Did| {
+        audience == &profile_did || onboarding_did.as_ref().is_some_and(|did| audience == did)
+    };
     for key in super::profile_name::real_space_keys(tonk).await {
         let Ok(repository) = tonk
             .profile
@@ -2892,7 +2927,7 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
         let Ok(prefix) = space_root_prefix(tonk, &subject).await else {
             continue;
         };
-        let chain = if prefix.audience() == &profile_did {
+        let chain = if reissuable(prefix.audience()) {
             // Joined replicas carry a verifier-only credential: nothing
             // to redelegate from, their authority is the inviter's.
             let Some(access) = repository.try_access() else {

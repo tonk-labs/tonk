@@ -161,6 +161,8 @@ pub use router::*;
 
 mod credential;
 
+mod onboarding;
+
 mod error;
 pub use error::*;
 

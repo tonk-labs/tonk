@@ -5396,6 +5396,7 @@ dependencies = [
  "wasm-streams 0.6.0",
  "web-sys",
  "web-time",
+ "zeroize",
 ]
 
 [[package]]
