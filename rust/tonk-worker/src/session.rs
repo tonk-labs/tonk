@@ -65,6 +65,15 @@ struct PersistedSession {
 /// instead of the exceptional one.
 pub use tonk_identity::session::SESSION_TTL_SECONDS;
 
+/// Derivation context for the device's operator key.
+///
+/// Constant, so the operator DID is stable for the life of the profile:
+/// `derive` is a KDF over (profile seed, context), and renewal re-mints
+/// the delegation rather than the key. Anything addressed to the
+/// operator — notably a guest's invite chain — therefore stays valid
+/// across a renewal.
+const OPERATOR_CONTEXT: &[u8] = b"worker";
+
 /// How long before expiry a session is rotated.
 ///
 /// Wide enough that rotation lands during ordinary sync activity rather
@@ -129,15 +138,22 @@ where
     rotate(profile, storage).await
 }
 
-/// Mint a FRESH session unconditionally: a new random derivation
-/// context, so the operator gets its own audience and the delegation
-/// it retires stays behind rather than beside it.
+/// Mint a fresh `profile → operator` delegation for the device's
+/// operator key.
 ///
-/// [`open`] reuses the persisted session while it is fresh — right for
-/// boot, wrong for renewal: guest rotation replays leases onto a NEW
-/// operator, and reusing the current one would hand back the same
-/// audience with the lapsed chain still provable next to the
-/// replacement.
+/// The KEY is stable — [`OPERATOR_CONTEXT`] is constant, and derivation
+/// is deterministic over (seed, context) — so renewal replaces the
+/// delegation, not the audience.
+///
+/// It used to derive a new key from a random context every time. That
+/// bought nothing the expiry did not already buy: revocation withholds
+/// authority by refusing to renew the DELEGATION, and a chain is revoked
+/// by CID, so nothing needs the audience to move. What it cost was
+/// substantial — a guest's chain is addressed to the operator, so every
+/// rotation invalidated it, and the only way to re-mint one was to
+/// replay the invite. That is the sole reason a guest's invite URL, a
+/// bearer secret, had to be kept on disk at all, and why a guest nearing
+/// expiry could force a rotation that was not otherwise due.
 pub async fn rotate<S>(
     profile: &Profile,
     storage: &Storage<S>,
@@ -149,18 +165,11 @@ where
         + Provider<dialog_effects::blob::Import>,
     S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
 {
-    // A random derivation context is what makes the operator key
-    // session-scoped: `derive` is a KDF over the profile seed and this
-    // context, so a fixed context would hand every session the same
-    // audience and file a rotated delegation in the same bucket as the
-    // one it replaces.
-    let context: [u8; 16] = rand::random();
-
     // No `.allow(...)`: that mints an *unexpiring* profile → operator
     // delegation, which is the thing this module exists to replace. The
     // bounded equivalent is minted below.
     let operator = profile
-        .derive(context.to_vec())
+        .derive(OPERATOR_CONTEXT.to_vec())
         .build(storage.clone())
         .await
         .map_err(|error| {
@@ -200,7 +209,7 @@ where
         storage,
         &PersistedSession {
             version: 1,
-            context: context.to_vec(),
+            context: OPERATOR_CONTEXT.to_vec(),
             expires_at: expiration.to_unix(),
         },
     )

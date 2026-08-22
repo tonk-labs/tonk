@@ -1348,26 +1348,22 @@ pub(crate) fn guest_needs_renewal(lease: &GuestLease, current_audience: &Did, no
 /// previous operator reads as due on the next attempt.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
     let now = crate::session::now();
-    let (profile, storage, expires_at, audience, leases) = {
+    let (profile, storage, expires_at) = {
         let tonk = state.read().await;
         (
             tonk.profile.clone(),
             tonk.storage.clone(),
             tonk.session_expires_at,
-            tonk.operator.did(),
-            crate::router::join::guest_leases(&tonk).await?,
         )
     };
 
-    if !crate::session::needs_renewal(expires_at, now)
-        && !any_guest_renewable(&leases, &audience, now).await?
-    {
+    if !crate::session::needs_renewal(expires_at, now) {
         return Ok(());
     }
 
     // Mint outside the lock — nothing else may proceed while a write
-    // lock is held, and this signs. Rotate, never reuse: renewal is
-    // only reached when something needs a NEW audience.
+    // lock is held, and this signs. The operator KEY is stable, so this
+    // replaces the delegation authorizing it, not the audience.
     let session = crate::session::rotate(&profile, &storage).await?;
 
     let mut tonk = state.write().await;
@@ -1378,58 +1374,13 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
         return Ok(());
     }
 
-    // Re-read under the exclusive lock: a visit that committed after the
-    // check above holds a chain for the operator we are about to retire,
-    // and would silently lose its access if the batch were built from
-    // the earlier snapshot.
-    let leases = crate::router::join::guest_leases(&tonk).await?;
-    let candidate = session.operator.did();
-    let mut grants = Vec::with_capacity(leases.len());
-    for lease in &leases {
-        let Some(invite) = crate::router::join::renewable_invite(lease, now).await? else {
-            continue;
-        };
-        grants.push((
-            lease,
-            crate::router::join::mint_guest_grant(invite, &candidate).await?,
-        ));
-    }
-
-    for (_, grant) in &grants {
-        crate::router::join::retain_guest_grant(&tonk, &tonk.operator, grant).await?;
-    }
-    for (lease, grant) in &grants {
-        crate::router::join::save_guest(&tonk, &tonk.operator, &lease.subject, &lease.url, grant)
-            .await?;
-    }
-
+    // No guest replay: a guest's chain is addressed to the operator, and
+    // the operator's DID no longer moves, so a renewed delegation leaves
+    // every guest chain exactly as valid as it was. Replaying invites
+    // here was the only consumer of a guest's retained invite URL.
     tonk.operator = session.operator;
     tonk.session_expires_at = session.expires_at;
     Ok(())
-}
-
-/// Whether any guest is both due and still replayable.
-///
-/// Being due is not enough on its own: a guest whose invite has itself
-/// expired can never be renewed, and rotating for it would only produce
-/// another dead chain — on every sync boundary, forever, since the
-/// record would stay inside the margin. So the decision to rotate needs
-/// the invite, not just the record.
-async fn any_guest_renewable(
-    leases: &[GuestLease],
-    audience: &Did,
-    now: u64,
-) -> Result<bool, TonkWorkerError> {
-    for lease in leases {
-        if guest_needs_renewal(lease, audience, now)
-            && crate::router::join::renewable_invite(lease, now)
-                .await?
-                .is_some()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// `POST /api/sync` — an external sync poke.
