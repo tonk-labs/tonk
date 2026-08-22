@@ -153,6 +153,28 @@ fn schedule_resubscribe(state: &Rc<RefCell<HostState>>, entry_id: EntryId, delay
     });
 }
 
+/// Re-issue after a transport error.
+///
+/// Every retry path funnels through here rather than deciding
+/// individually — the initial `open_sse` rejection, the mid-stream error
+/// callback, and the refresh path each hit a different arm.
+///
+/// There is no "give up" case. An absent repository or branch is no
+/// longer an error at all: the worker answers it with an open stream
+/// carrying the empty set and parks the subscription in its waiting
+/// room, so a repo that arrives later delivers into the stream the page
+/// already holds. An earlier version of this retired the entry on a
+/// `404`, which destroyed the subscription outright — a space joined in
+/// another tab could never reach a tab already sitting on the page,
+/// because nothing was left listening.
+fn resubscribe_after_error(
+    state: &Rc<RefCell<HostState>>,
+    entry_id: EntryId,
+    _error: &ErrorDetail,
+) {
+    schedule_resubscribe(state, entry_id, retry_error_ms());
+}
+
 /// Re-issue EVERY live subscription. Called on `controllerchange`: a new
 /// service worker just took over, the old worker's streams are gone (or
 /// serving their final frame), and an immediate refresh beats waiting out
@@ -543,7 +565,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 // Keep the entry and retry: a transport error usually means
                 // the SW is restarting/updating, and a successful reconnect
                 // heals the consumer with its next `reset`.
-                schedule_resubscribe(&state_err, entry_id, retry_error_ms());
+                resubscribe_after_error(&state_err, entry_id, &err);
             },
             move || {
                 // Clean server close (the SW releasing in-flight streams on
@@ -569,7 +591,10 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                         tag_for_spawn.as_ref(),
                     );
                 }
-                schedule_resubscribe(&state_for_spawn, entry_id, retry_error_ms());
+                // The 404 path: a missing repo/branch fails the initial
+                // POST, so the stream never opens and `on_error` above
+                // never runs — this arm is the one that looped.
+                resubscribe_after_error(&state_for_spawn, entry_id, &err);
             }
         }
     });
@@ -763,7 +788,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             if consumer_err.is_connected() {
                 invoke_method(&consumer_err, "error", &error_to_js(&err), tag_err.as_ref());
             }
-            schedule_resubscribe(&state_err, entry_id, retry_error_ms());
+            resubscribe_after_error(&state_err, entry_id, &err);
         },
         move || {
             let delay = close_delay_ms(&state_close, entry_id);
@@ -780,7 +805,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             if consumer.is_connected() {
                 invoke_method(&consumer, "error", &error_to_js(&err), tag.as_ref());
             }
-            schedule_resubscribe(state, entry_id, retry_error_ms());
+            resubscribe_after_error(state, entry_id, &err);
         }
     }
 }

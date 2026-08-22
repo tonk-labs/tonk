@@ -629,7 +629,17 @@ fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts:
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_else(|| format!("{payload:?}"));
-    let err = ErrorDetail::new(ErrorKind::Network, message);
+    // Carry the HTTP status across the boundary when the producer set
+    // one: it is what separates a retryable hiccup from a settled
+    // answer, and rebuilding the detail from `message` alone would
+    // discard it and read every failure as `offline`.
+    let err = match Reflect::get(&payload, &"status".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+    {
+        Some(status) => ErrorDetail::http(status as u16, message),
+        None => ErrorDetail::new(ErrorKind::Network, message),
+    };
     if loud_state(&err) == State::Offline {
         state::set(host, State::Offline);
         dispatch_error(host, err);
@@ -690,25 +700,31 @@ fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
         let mut inner = state.borrow_mut();
         clear_host(host, &mut inner);
     }
-    state::set_error(
-        host,
-        loud_state(&err),
-        state::error_title(err.kind),
-        &err.message,
-    );
+    let loud = loud_state(&err);
+    state::set_error(host, loud, state::state_title(loud, err.kind), &err.message);
     dispatch_error(host, err);
 }
 
 /// Classify an `ErrorDetail` into the loud state it drives. A network
-/// error is `offline` unless its message carries an HTTP 403 (the
-/// worker formats access denials as `HTTP 403: …`, see
-/// `tonk-host/src/http.rs`), in which case it is `unauthorized` — a
-/// real wire signal, not a guess.
+/// error carries the HTTP status when one was reported, and the status
+/// says which failure this is: `403` is `unauthorized` (the branch
+/// exists, this device may not read it) and `404` is `unknown` (there
+/// is no such repository here at all). Anything else — a dropped
+/// connection, a restarting worker, a `500` — is `offline`, the
+/// state that keeps retrying.
+///
+/// Falls back to matching the message for a status-less `403` so an
+/// error minted before the status was carried still classifies.
 fn loud_state(err: &ErrorDetail) -> State {
-    if err.kind == ErrorKind::Network && err.message.contains("HTTP 403") {
-        State::Unauthorized
-    } else {
-        state::state_for(err.kind)
+    if err.kind != ErrorKind::Network {
+        return state::state_for(err.kind);
+    }
+    match err.status {
+        Some(403) => State::Unauthorized,
+        Some(404) => State::Unknown,
+        Some(_) => State::Offline,
+        None if err.message.contains("HTTP 403") => State::Unauthorized,
+        None => State::Offline,
     }
 }
 
@@ -2851,6 +2867,34 @@ mod tests {
         assert_eq!(loud_state(&err), State::Offline);
         let dropped = ErrorDetail::new(ErrorKind::Network, "connection reset");
         assert_eq!(loud_state(&dropped), State::Offline);
+    }
+
+    /// A `404` is a settled answer, not a transport hiccup: landing on
+    /// a space this device never joined must read as `unknown` so the
+    /// page can say so, rather than as `offline`, which claims the
+    /// network is down and keeps retrying.
+    #[dialog_common::test]
+    fn it_maps_a_404_to_unknown_rather_than_offline() {
+        let err = ErrorDetail::http(404, "HTTP 404: repository not found");
+        assert_eq!(loud_state(&err), State::Unknown);
+    }
+
+    /// The status is read structurally, so a `403` classifies without
+    /// the message having to spell it out.
+    #[dialog_common::test]
+    fn it_maps_a_403_status_to_unauthorized_without_reading_the_message() {
+        let err = ErrorDetail::http(403, "nope");
+        assert_eq!(loud_state(&err), State::Unauthorized);
+    }
+
+    /// Every other status stays `offline` — the retrying state.
+    #[dialog_common::test]
+    fn it_maps_other_statuses_to_offline() {
+        assert_eq!(loud_state(&ErrorDetail::http(500, "boom")), State::Offline);
+        assert_eq!(
+            loud_state(&ErrorDetail::http(502, "gateway")),
+            State::Offline
+        );
     }
 
     #[dialog_common::test]
