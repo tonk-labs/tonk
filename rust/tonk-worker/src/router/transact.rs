@@ -226,10 +226,44 @@ async fn transact_on_branch<'a>(
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
-    let session = tonk_branch
-        .acquire(&tonk_state.operator)
-        .await
-        .map_err(reactor_to_error)?;
+    // A transact carrying ONLY transients writes nothing durable — the
+    // canonical case is `tonk:load`, the site stamp, which lands in the
+    // session overlay (device-local, dies with the worker) and never
+    // touches the branch. Failing it because the repository has not been
+    // replicated yet is wrong twice over: there is no write to reject,
+    // and the page that needs the stamp is exactly the page sitting on a
+    // space it has just asked to join. Its claim was lost, so the site
+    // was never stamped and the view sat on a spinner even after the
+    // repo arrived.
+    //
+    // Durable claims still require the branch: a write to a repository
+    // this device does not hold is a genuine error, not an absence.
+    let all_transient = request
+        .claims
+        .iter()
+        .all(|claim| claim.application().is_transient());
+
+    let session = match tonk_branch.acquire(&tonk_state.operator).await {
+        Ok(session) => session,
+        Err(error) if all_transient && !request.claims.is_empty() && is_absence(&error) => {
+            // Emit the transients WITHOUT a branch: they are the payload
+            // the dispatcher needs (this is how `tonk:load` reaches its
+            // handler), and none of them writes to storage. Returning an
+            // empty `Changes` here instead would answer 200 and still
+            // drop the command, which is the same silent loss with a
+            // friendlier status code.
+            let transients = transient_changes(request.claims)?;
+            return Ok((
+                Json(TransactResponse {
+                    revision_before: None,
+                    revision_after: None,
+                    commits: CommitSummary::default(),
+                }),
+                (!transients.is_empty()).then_some(transients),
+            ));
+        }
+        Err(error) => return Err(reactor_to_error(error)),
+    };
 
     let revision_before = session.handle().revision();
     let claim_count = request.claims.len();
@@ -353,6 +387,47 @@ mod profile_write_boundary {
             result,
         );
     }
+}
+
+/// Bucket an all-transient claim list into a [`dialog_artifacts::Changes`]
+/// without a branch.
+///
+/// Mirrors what `TransactionBuilder::apply` does for the transient case,
+/// minus the branch it has no need for: transients are dispatched to
+/// command handlers and swept, never written to storage. This is what
+/// lets a `tonk:load` site stamp reach its handler while the repository
+/// is still absent.
+fn transient_changes(
+    claims: Vec<tonk_schema::claim::SourceClaim>,
+) -> Result<dialog_artifacts::Changes, TonkWorkerError> {
+    // `Statement` carries the `assert`/`retract` methods on the plan.
+    use dialog_artifacts::Statement as _;
+    use tonk_schema::transact::application_plan_from_predicate;
+
+    let mut changes = dialog_artifacts::Changes::new();
+    for source in claims {
+        let claim = Claim::try_from(source)
+            .map_err(|e| TonkWorkerError::Router(format!("invalid claim: {e}")))?;
+        match claim {
+            Claim::Assert(application) => {
+                application_plan_from_predicate(application).assert(&mut changes);
+            }
+            Claim::Retract(application) => {
+                application_plan_from_predicate(application).retract(&mut changes);
+            }
+        }
+    }
+    Ok(changes)
+}
+
+/// Whether this failure means "there is nothing here" rather than
+/// "something went wrong". Mirrors the query router's classifier: an
+/// unreplicated repository or an uncreated branch is an absence.
+fn is_absence(err: &ReactorError) -> bool {
+    matches!(
+        err,
+        ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. }
+    )
 }
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {

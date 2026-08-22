@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use dialog_artifacts::Statement;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
@@ -146,6 +147,25 @@ impl BranchState {
     /// the hash is the right move here. Track the upstream fix
     /// in dialog-db (make `NamedAttributes::PartialEq`
     /// order-insensitive, or serialize in sorted order).
+    /// Attach a subscriber that already owns its channel.
+    ///
+    /// The adoption path for a subscription registered before this
+    /// branch existed: its sender is already wired to a stream the page
+    /// is holding open, so re-minting a channel here would deliver
+    /// frames nowhere. Otherwise identical to [`Self::subscribe`] —
+    /// same plan, same dedup by query hash — so an adopted subscriber
+    /// joins whatever subscription its peers are already on.
+    pub fn adopt_subscriber(
+        &self,
+        query: ConceptQuery,
+        client: Option<String>,
+        sender: mpsc::UnboundedSender<Bytes>,
+    ) -> QueryHash {
+        let hash = QueryHash::from(&query);
+        self.install_subscriber(query, client, sender);
+        hash
+    }
+
     pub fn subscribe(
         &self,
         query: ConceptQuery,
@@ -153,6 +173,21 @@ impl BranchState {
     ) -> Result<Subscriber, ReactorError> {
         let hash = QueryHash::from(&query);
         let (sender, receiver) = mpsc::unbounded_channel();
+        self.install_subscriber(query, client, sender);
+        Ok(Subscriber { hash, receiver })
+    }
+
+    /// Register `sender` against `query`'s subscription, creating the
+    /// subscription (and its engine) if this is the first subscriber.
+    /// Shared by [`Self::subscribe`] and [`Self::adopt_subscriber`] so
+    /// the two cannot drift.
+    fn install_subscriber(
+        &self,
+        query: ConceptQuery,
+        client: Option<String>,
+        sender: mpsc::UnboundedSender<Bytes>,
+    ) {
+        let hash = QueryHash::from(&query);
 
         let terms = query.terms.clone();
 
@@ -178,8 +213,6 @@ impl BranchState {
             status: Status::Pending,
             client,
         });
-
-        Ok(Subscriber { hash, receiver })
     }
 
     /// Drop every subscriber whose `client` tag fails `keep`; an

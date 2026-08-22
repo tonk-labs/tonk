@@ -45,6 +45,8 @@ pub use env::{
     SelectProvider,
 };
 pub use error::ReactorError;
+// `PendingSubscription` is declared in this module; re-exported here for
+// symmetry with the other public reactor types.
 pub use export::{Export, ExportError};
 pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
@@ -83,6 +85,35 @@ pub struct Reactor {
     /// poll. Pointer identity (`Arc::ptr_eq`) dedups, so the same
     /// branch scheduled twice polls once.
     pending_polls: Mutex<Vec<Arc<BranchState>>>,
+    /// Subscriptions registered against a branch that does not exist
+    /// yet, keyed by `(repository, branch)`.
+    ///
+    /// A repo this device has not replicated, or a branch not created
+    /// yet, is an ABSENCE — the empty set — not an error. The subscriber
+    /// is registered here and answered with an empty frame, and when
+    /// [`BranchReference::acquire`] later materializes that exact
+    /// `(repo, branch)` it adopts every pending subscription onto the
+    /// real [`BranchState`] and polls once, so the standing query
+    /// delivers its first real frame.
+    ///
+    /// Nothing polls or retries: registration is passive, and the
+    /// hand-off is driven by the branch coming into existence. Both
+    /// absences behave identically — a space joined in another tab and a
+    /// branch created later both arrive through `acquire`.
+    pending_subscriptions: Mutex<HashMap<(String, String), Vec<PendingSubscription>>>,
+}
+
+/// A subscription waiting for its branch to exist. Holds everything
+/// needed to attach it to the real [`BranchState`] once one appears.
+pub struct PendingSubscription {
+    /// The query to install when the branch materializes.
+    pub query: dialog_query::ConceptQuery,
+    /// The client this subscriber serves, for stale-client pruning.
+    pub client: Option<String>,
+    /// Sender the adopted subscription broadcasts into — already wired
+    /// to the consumer's open SSE stream, which is why the hand-off is
+    /// invisible to the page: it just starts receiving frames.
+    pub sender: tokio::sync::mpsc::UnboundedSender<bytes::Bytes>,
 }
 
 impl Reactor {
@@ -95,7 +126,45 @@ impl Reactor {
             repos: RwLock::new(HashMap::new()),
             profile_repo: RwLock::new(None),
             pending_polls: Mutex::new(Vec::new()),
+            pending_subscriptions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Register a subscription against a branch that does not exist yet.
+    ///
+    /// Passive: nothing polls, nothing retries. The entry sits until
+    /// [`Self::adopt_pending`] is called with a matching `(repo, branch)`
+    /// — which [`BranchReference::acquire`] does the moment that branch
+    /// materializes, whether because a space was joined elsewhere or a
+    /// branch was created.
+    pub fn register_pending(&self, repo: &str, branch: &str, pending: PendingSubscription) {
+        self.pending_subscriptions
+            .lock()
+            .entry((repo.to_owned(), branch.to_owned()))
+            .or_default()
+            .push(pending);
+    }
+
+    /// Take every subscription registered against `(repo, branch)`.
+    ///
+    /// Called from [`BranchReference::acquire`] once the branch exists.
+    /// Draining (rather than copying) means each pending subscription is
+    /// adopted exactly once; a consumer that has since gone away is
+    /// pruned by the ordinary dead-subscriber sweep after adoption.
+    pub fn take_pending(&self, repo: &str, branch: &str) -> Vec<PendingSubscription> {
+        self.pending_subscriptions
+            .lock()
+            .remove(&(repo.to_owned(), branch.to_owned()))
+            .unwrap_or_default()
+    }
+
+    /// Whether any subscription is waiting on `(repo, branch)`. Lets
+    /// `acquire` skip the drain entirely in the overwhelmingly common
+    /// case where nothing was waiting.
+    pub fn has_pending(&self, repo: &str, branch: &str) -> bool {
+        self.pending_subscriptions
+            .lock()
+            .contains_key(&(repo.to_owned(), branch.to_owned()))
     }
 
     /// Schedule a poll of `state`'s subscriptions. Called by mutating
