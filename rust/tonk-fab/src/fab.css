@@ -781,6 +781,15 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
    on the `<tonk-fab>` host by element.rs from the membership answer. */
 [data-share-unavailable] .fab__share-trigger,
 [data-share-unavailable] .fab__share-trigger:hover { opacity: .45; }
+/* A space this device does not hold: the bar stays so the page has a way
+   out, but the controls that ACT on the missing space go. Share and the
+   member roster both address a replica that is not here, so they are
+   hidden outright rather than dimmed — unlike the guest case above, there
+   is no refusal to explain and no offer to join, because there is nothing
+   to join. The space switcher (`.fab__page--main`) deliberately stays: it
+   is the way to somewhere real. `[data-unknown-space]` is set on the
+   `<tonk-fab>` host by element.rs when the membership probe 404s. */
+[data-unknown-space] .fab__tele--share { display: none; }
 /* One label per state, exactly one shown. `<tonk-share>` stamps
    `data-share-state` on itself; these rules reach down into the button's
    labels, which live in a light-DOM view (core.yaml's `tonk:repository`
@@ -910,3 +919,4 @@ tonk-fab:has(.is-open) .fab__scrim { pointer-events: auto; }
 .fab-mirror .fab--anim .fab__tele { justify-content: flex-start; }
 /* Member cards: right-aligned names, matching the wireframe roster. */
 .fab__menu-item--member { text-align: right; }
+
