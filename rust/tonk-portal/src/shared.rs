@@ -5,29 +5,32 @@
 //! iframe. This module provides the common setup path, parameterised by a
 //! caller-supplied style function.
 //!
-//! # How the guest document reaches its iframe
+//! # How the guest document gets into its iframe
 //!
-//! A guest is normally loaded through `srcdoc`, so its document URL is
-//! `about:srcdoc`. WebKit refuses to load a frame when TWO of its ancestors
-//! already carry the requested URL (`HTMLFrameOwnerElement::
-//! isProhibitedSelfReference` — "we allow one level of self-reference"), and
-//! every sealed guest is `about:srcdoc`, so the THIRD nested guest never
-//! loads on Safari: the frame silently stays at its blank initial document.
-//! The chain is exactly that deep in practice — the shell's `<tonk-site>`
-//! guest, the space chrome's nested `<tonk-site>`, then a text/html view's
-//! `<tonk-portal>` — which is why portal views render empty on Safari and
-//! iOS while `<tonk-view>` content renders fine. WebKit fixed this upstream
-//! (bugs.webkit.org/305276, 2026-01), but shipping Safari still refuses it.
+//! In the usual case the `srcdoc` attribute loads a guest. The document URL
+//! is then `about:srcdoc`. WebKit does not load a frame when two of its
+//! ancestors already have the requested URL. (See WebKit's
+//! `HTMLFrameOwnerElement::isProhibitedSelfReference`. It permits one level
+//! of self-reference, not two.) Each sealed guest is `about:srcdoc`. The
+//! third nested guest then does not load on Safari. The frame stays at its
+//! blank initial document and shows no error.
 //!
-//! So a guest created by a document that is itself nested below the top
-//! document ([`GuestSource::DataUrl`]) is loaded from a unique
-//! `data:text/html` URL instead. Same sandbox, same opaque origin, same
-//! bridge; only the document URL differs, and no two frames in one chain can
-//! share it. The top document and its direct guests keep `srcdoc`
-//! ([`GuestSource::Srcdoc`]), which is the path every other browser has
-//! always run. The one thing `srcdoc` gives a guest that a `data:` document
-//! lacks is the creator's base URL, so [`guest_document`] writes that out as
-//! an explicit `<base>` when the portal has no space base of its own.
+//! The chain in this app has exactly that depth. Level 1 is the shell's
+//! `<tonk-site>` guest. Level 2 is the space chrome's nested `<tonk-site>`.
+//! Level 3 is the `<tonk-portal>` of a text/html view. That is why portal
+//! views are empty on Safari and iOS while `<tonk-view>` content is correct.
+//! WebKit fixed the rule in January 2026 (bugs.webkit.org/305276). Released
+//! Safari still has the old rule.
+//!
+//! The fix: a document that is nested below the top document loads its
+//! guests from a unique `data:text/html` URL ([`GuestSource::DataUrl`]). The
+//! sandbox, the opaque origin, and the bridge do not change. Only the
+//! document URL changes, and no two frames in one chain can have the same
+//! URL. The top document and its direct guests keep `srcdoc`
+//! ([`GuestSource::Srcdoc`]). That is the path all other browsers have
+//! always used. A `srcdoc` guest inherits the creator's base URL. A `data:`
+//! document does not. For that reason [`guest_document`] writes an explicit
+//! `<base>` when the portal has no space base of its own.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -41,18 +44,18 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
 
-/// How a guest document is handed to its iframe. See the module docs for
-/// why two sources exist.
+/// How the guest document gets into its iframe. The module docs explain why
+/// there are two sources.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GuestSource {
-    /// The `srcdoc` attribute: the guest's document URL is `about:srcdoc`
-    /// and it inherits the creator's base URL. Used by the top document and
-    /// by guests that are its direct children.
+    /// The `srcdoc` attribute. The guest's document URL is `about:srcdoc`,
+    /// and the guest inherits the creator's base URL. The top document and
+    /// its direct guests use this source.
     Srcdoc,
-    /// A unique `data:text/html;charset=utf-8,…` URL in `src`: sidesteps
-    /// WebKit's self-reference refusal for the third (and any deeper) nested
-    /// `about:srcdoc` frame. Used by any creator that is itself nested below
-    /// the top document.
+    /// A unique `data:text/html;charset=utf-8,…` URL in `src`. WebKit
+    /// refuses the third nested `about:srcdoc` frame and all deeper ones.
+    /// This URL does not have that problem. A creator that is nested below
+    /// the top document uses this source.
     DataUrl,
 }
 
@@ -120,9 +123,9 @@ pub(crate) fn connect_portal(
     bridge::register_portal(&iframe, &host, &state);
     install_method_delegates(&host, &state);
 
-    // Append before loading the document so `contentWindow` exists;
-    // the `hello` listener matches the live `contentWindow`, so the
-    // bootstrap script resolves this portal when it posts `hello`.
+    // Append the iframe before you load the document. Then `contentWindow`
+    // exists, and the `hello` listener can match the live `contentWindow`
+    // to this portal when the bootstrap posts `hello`.
     let _ = host.append_child(&iframe);
     let source = guest_source(&host);
     let html = guest_document(&host, &state.borrow(), source);
@@ -147,12 +150,11 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
     }
 }
 
-/// The document that will own a guest mounted under `host`, and its window
-/// — the guest's CREATOR. In production that is the document this runtime
-/// runs in (the host lives there), so this equals the global `window`;
-/// resolving it through the host keeps the decision attached to the element
-/// rather than the global, which is also what lets a test hand in a host
-/// adopted into a nested frame.
+/// The document that will own a guest mounted under `host`, and the window
+/// of that document. That document is the guest's CREATOR. In production it
+/// is the document this runtime runs in, because the host lives there. It is
+/// then equal to the global `window`. We resolve it through the host for one
+/// reason: a test can then give us a host that lives in a nested frame.
 fn creator_document(host: &Element) -> Option<web_sys::Document> {
     host.owner_document()
         .or_else(|| window().and_then(|w| w.document()))
@@ -164,13 +166,13 @@ fn creator_window(host: &Element) -> Option<web_sys::Window> {
         .or_else(window)
 }
 
-/// Which [`GuestSource`] a guest mounted under `host` gets.
+/// The [`GuestSource`] for a guest mounted under `host`.
 ///
-/// `window.parent !== window.top` in the creator means it is at least two
-/// frames deep, so a `srcdoc` child would be the third `about:srcdoc` in
-/// the chain — the one WebKit refuses. `parent` and `top` are readable
-/// across the sandbox boundary (identity only), so a sealed guest can
-/// answer this for itself.
+/// If `window.parent !== window.top` in the creator, the creator is two or
+/// more frames deep. A `srcdoc` child would then be the third `about:srcdoc`
+/// frame in the chain, and WebKit refuses that one. A sealed guest can read
+/// `parent` and `top` across the sandbox boundary (identity only). It can
+/// make this decision itself.
 fn guest_source(host: &Element) -> GuestSource {
     let Some(win) = creator_window(host) else {
         return GuestSource::Srcdoc;
@@ -194,16 +196,17 @@ fn guest_source(host: &Element) -> GuestSource {
     }
 }
 
-/// The complete guest document for `host`: the bridge bootstrap (plus the
-/// runtime bootstrap in `runtime` mode), the author `content`, and the
-/// `<base>` the guest resolves URLs against.
+/// The complete guest document for `host`. It contains the bridge
+/// bootstrap, the author `content`, and the `<base>` that the guest
+/// resolves URLs against. In `runtime` mode it also contains the runtime
+/// bootstrap.
 ///
-/// The base is the portal's per-space synthetic origin when it has one
-/// (see [`space_base`]). Without one, a `srcdoc` guest inherits the
-/// creator's base URL from the browser, but a `data:` document's base is the
-/// data URL itself — so for [`GuestSource::DataUrl`] the inherited value
-/// (the creator's `document.baseURI`) is written out explicitly, keeping
-/// link and request resolution identical between the two sources.
+/// The base is the portal's per-space synthetic origin when the portal has
+/// one (see [`space_base`]). When it has none, a `srcdoc` guest inherits the
+/// creator's base URL from the browser. A `data:` document does not: its
+/// base is the data URL itself. For [`GuestSource::DataUrl`] this function
+/// writes the inherited value (the creator's `document.baseURI`) explicitly.
+/// Link and request resolution are then identical for the two sources.
 fn guest_document(host: &Element, state: &PortalState, source: GuestSource) -> String {
     let content = host.get_attribute("content").unwrap_or_default();
     let mut base = space_base(state);
@@ -213,8 +216,8 @@ fn guest_document(host: &Element, state: &PortalState, source: GuestSource) -> S
             .unwrap_or_default();
     }
     // In `runtime` mode the guest renders OUR elements (a real
-    // `<tonk-display>`): the bootstrap additionally pulls in the
-    // injected element runtime + CSS before `content` upgrades.
+    // `<tonk-display>`). The bootstrap then also loads the injected element
+    // runtime and CSS before `content` upgrades.
     if host.has_attribute("runtime") {
         bridge::bootstrap_srcdoc_with_runtime(&content, &base)
     } else {
@@ -222,9 +225,10 @@ fn guest_document(host: &Element, state: &PortalState, source: GuestSource) -> S
     }
 }
 
-/// First load of `html` into a freshly appended `iframe`. Either source
-/// navigates the frame away from its initial blank document, which the
-/// browser treats as a replacement — no joint-session-history entry.
+/// The first load of `html` into an `iframe` that was just appended. With
+/// either source the frame navigates away from its initial blank document.
+/// The browser treats that as a replacement. It adds no
+/// joint-session-history entry.
 fn mount_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
     match source {
         GuestSource::Srcdoc => {
@@ -236,16 +240,16 @@ fn mount_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
     }
 }
 
-/// Reload a live `iframe` with new `html` (a `content` change).
+/// Reload a live `iframe` with new `html` (after a `content` change).
 ///
-/// A `srcdoc` guest is reloaded by reassigning the attribute, as before. A
-/// `data:` guest goes through the frame's own `location.replace()` rather
-/// than a fresh `src`: setting `src` on a live frame NAVIGATES it and a
-/// frame navigation appends a joint-session-history entry (see the
-/// teardown notes in `element.rs`), whereas `replace` swaps the entry in
-/// place. `location.replace()` is permitted across the sandbox boundary. The
-/// `src` attribute is left as the URL of the first load; the live document
-/// is the truth.
+/// A `srcdoc` guest reloads when we assign the attribute again, as before.
+/// A `data:` guest reloads through the frame's own `location.replace()`,
+/// not through a new `src`. A new `src` on a live frame NAVIGATES the frame,
+/// and a frame navigation adds a joint-session-history entry (see the
+/// teardown notes in `element.rs`). `replace` changes the entry in place.
+/// `location.replace()` is permitted across the sandbox boundary. The `src`
+/// attribute keeps the URL of the first load. The live document is the
+/// truth.
 fn reload_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
     match source {
         GuestSource::Srcdoc => {
@@ -257,7 +261,8 @@ fn reload_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
                 Some(frame_window) => {
                     let _ = frame_window.location().replace(&url);
                 }
-                // No live window (never mounted): fall back to a first load.
+                // There is no live window (the frame was never mounted). Do
+                // a first load.
                 None => {
                     let _ = iframe.set_attribute("src", &url);
                 }
@@ -266,16 +271,18 @@ fn reload_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
     }
 }
 
-/// Wrap a guest document in a `data:text/html;charset=utf-8,…` URL that
-/// is unique to this load.
+/// Wrap a guest document in a `data:text/html;charset=utf-8,…` URL that is
+/// unique to this load.
 ///
-/// Unique, because WebKit's self-reference rule compares frame URLs: two
-/// guests with byte-identical documents in one ancestor chain would share
-/// a URL and trip it again. The marker is a trailing HTML comment — inert
-/// for the parser and invisible to the content. Percent-encoding (not
-/// base64) so the document decodes to exactly the string we built; it
-/// roughly doubles the size, well inside what browsers accept for a frame
-/// `src` (Chromium caps URLs at 2 MB; guest documents are tens of KB).
+/// The URL must be unique because WebKit's self-reference rule compares
+/// frame URLs. Two guests with byte-identical documents in one ancestor
+/// chain would have the same URL, and the rule would refuse the second one.
+/// The marker is an HTML comment at the end. The parser ignores it, and the
+/// content cannot see it. We use percent-encoding, not base64. The document
+/// then decodes to exactly the string we built. The encoding makes the
+/// document about two times larger. That is well inside what browsers
+/// accept for a frame `src` (Chromium limits URLs to 2 MB; guest documents
+/// are tens of KB).
 pub(crate) fn guest_data_url(html: &str) -> String {
     let nonce = format!(
         "{:08x}{:08x}",
@@ -377,8 +384,8 @@ mod tests {
         window().expect("window").document().expect("document")
     }
 
-    /// A fresh sealed iframe appended to the body, exactly as
-    /// `connect_portal` sets one up (sandbox first, then attached).
+    /// A new sealed iframe appended to the body, set up as `connect_portal`
+    /// does it: sandbox first, then attached.
     fn sealed_iframe() -> HtmlIFrameElement {
         let iframe = document()
             .create_element("iframe")
@@ -396,9 +403,10 @@ mod tests {
         iframe
     }
 
-    /// Resolve to `true` when the bridge bootstrap inside `iframe` posts its
-    /// `hello` to this (parent) window, or `false` after a timeout. Install
-    /// BEFORE loading the guest — the bootstrap posts synchronously on load.
+    /// Resolves to `true` when the bridge bootstrap in `iframe` posts its
+    /// `hello` to this (parent) window. Resolves to `false` after a timeout.
+    /// Install it BEFORE you load the guest: the bootstrap posts `hello` as
+    /// soon as the document loads.
     fn hello_from(iframe: &HtmlIFrameElement) -> JsFuture {
         let target: JsValue = iframe.content_window().expect("contentWindow").into();
         let promise = js_sys::Promise::new(&mut |resolve, _reject| {
@@ -432,8 +440,8 @@ mod tests {
 
     #[dialog_common::test]
     fn a_top_level_document_loads_its_guests_through_srcdoc() {
-        // The test page is the top document: its guests are the first nested
-        // `about:srcdoc` level, which every engine allows.
+        // The test page is the top document. Its guests are the first nested
+        // `about:srcdoc` level. All engines permit that level.
         let host: Element = document().body().expect("body").into();
         assert_eq!(guest_source(&host), GuestSource::Srcdoc);
     }
@@ -468,8 +476,8 @@ mod tests {
     fn a_data_url_guest_writes_its_inherited_base_explicitly() {
         let host = document().create_element("tonk-portal").expect("host");
         host.set_attribute("content", "<p>hi</p>").expect("content");
-        // No `with`, so no space base — the case that used to rely on the
-        // browser's srcdoc base-URL inheritance.
+        // No `with` means no space base. This is the case that depended on
+        // the browser's srcdoc base-URL inheritance.
         let state = PortalState::new();
 
         let as_srcdoc = guest_document(&host, &state, GuestSource::Srcdoc);
@@ -488,9 +496,10 @@ mod tests {
         assert!(as_data.contains("<p>hi</p>"), "content survives");
     }
 
-    /// The load path WebKit needs: a sealed guest handed over as a `data:`
-    /// URL still runs the bridge bootstrap (it posts `hello` to its parent),
-    /// and a reload through `location.replace()` runs it again.
+    /// The load path that WebKit needs. A sealed guest that we load as a
+    /// `data:` URL still runs the bridge bootstrap: it posts `hello` to its
+    /// parent. A reload through `location.replace()` runs the bootstrap
+    /// again.
     #[dialog_common::test]
     async fn a_data_url_guest_boots_the_bridge_and_reloads_in_place() {
         let iframe = sealed_iframe();
@@ -528,16 +537,17 @@ mod tests {
     }
 }
 
-/// The WebKit case, end to end, through the production mount path: a guest
-/// created from a document that is already TWO frames below the top must
-/// still boot. Safari refuses a third `about:srcdoc` frame outright (see the
-/// module docs), so without the `data:` source this test times out there and
-/// passes with it; Chrome loads either. Self-contained on purpose — it uses
-/// only `connect_portal`, so the very same test runs against the pre-fix
-/// code to show the red.
+/// The WebKit case from end to end, through the production mount path. A
+/// guest created from a document that is already TWO frames below the top
+/// must still boot. Safari refuses a third `about:srcdoc` frame (see the
+/// module docs). Without the `data:` source this test times out there. With
+/// it, the test passes. Chrome loads both. The test uses only
+/// `connect_portal` on purpose. The same test then runs against the code
+/// before the fix and shows the failure.
 ///
-/// CI runs this in headless Chrome like every other test here. To see the
-/// Safari red/green locally (Safari ▸ Develop ▸ Allow Remote Automation):
+/// CI runs this test in headless Chrome, as it runs all tests here. To see
+/// the Safari failure and pass on your machine, enable Safari ▸ Develop ▸
+/// Allow Remote Automation, then run:
 ///
 /// ```text
 /// SAFARIDRIVER=/usr/bin/safaridriver \
@@ -557,14 +567,15 @@ mod nested_tests {
         window().expect("window").document().expect("document")
     }
 
-    /// Append a `srcdoc` frame under `parent`'s body and wait for it to
-    /// load. Same-origin (`allow-same-origin`) so the test can reach inside
-    /// it; its URL is still `about:srcdoc`, which is all WebKit's
-    /// self-reference rule looks at.
+    /// Append a `srcdoc` frame under the body of `parent` and wait until it
+    /// loads. The frame is same-origin (`allow-same-origin`), so the test
+    /// can reach into it. Its URL is still `about:srcdoc`. WebKit's
+    /// self-reference rule looks only at the URL.
     async fn srcdoc_frame(parent: &Document) -> HtmlIFrameElement {
-        // `unchecked_into`, not `dyn_into`: an element created in a nested
-        // document belongs to that realm, and `dyn_into`'s `instanceof`
-        // checks against THIS realm's constructor — false across realms.
+        // Use `unchecked_into`, not `dyn_into`. An element created in a
+        // nested document belongs to that realm. `dyn_into` does an
+        // `instanceof` check against the constructor of THIS realm, and that
+        // check is false across realms.
         let iframe = parent
             .create_element("iframe")
             .expect("create iframe")
@@ -572,9 +583,10 @@ mod nested_tests {
         iframe
             .set_attribute("sandbox", "allow-scripts allow-same-origin")
             .expect("sandbox");
-        // `srcdoc` BEFORE insertion: an iframe inserted without one fires
-        // `load` for its initial about:blank, which would resolve this too
-        // early — before the srcdoc document (the one we hand back) exists.
+        // Set `srcdoc` BEFORE insertion. An iframe inserted without it fires
+        // `load` for its initial about:blank. That would resolve the promise
+        // too early, before the srcdoc document exists. The srcdoc document
+        // is the one we return.
         iframe
             .set_attribute("srcdoc", "<!doctype html><body></body>")
             .expect("srcdoc");
@@ -590,8 +602,8 @@ mod nested_tests {
         iframe
     }
 
-    /// Resolve to `true` when a `hello` from the window `from` reaches
-    /// `on` (the guest's parent), or `false` after a timeout.
+    /// Resolves to `true` when a `hello` from the window `from` reaches the
+    /// window `on` (the guest's parent). Resolves to `false` after a timeout.
     fn hello_on(on: &Window, from: &JsValue) -> JsFuture {
         let from = from.clone();
         let on = on.clone();
@@ -625,15 +637,16 @@ mod nested_tests {
 
     #[dialog_common::test]
     async fn a_guest_created_two_frames_deep_still_boots() {
-        // top → A → B, both `about:srcdoc`: the real shape (shell site
-        // guest → space chrome's nested site) minus the element runtime.
+        // top → A → B, both `about:srcdoc`. This is the real shape (shell
+        // site guest → nested site of the space chrome) without the element
+        // runtime.
         let a = srcdoc_frame(&document()).await;
         let a_doc = a.content_document().expect("A is same-origin");
         let b = srcdoc_frame(&a_doc).await;
         let b_doc = b.content_document().expect("B is same-origin");
         let b_win = b.content_window().expect("B window");
 
-        // The portal host lives in B, so B is the guest's creator.
+        // The portal host lives in B. B is then the guest's creator.
         let host = b_doc
             .create_element("div")
             .expect("host")
@@ -646,7 +659,7 @@ mod nested_tests {
             .append_child(&host)
             .expect("attach host");
 
-        // The production mount path, exactly as `<tonk-portal>` calls it.
+        // The production mount path, called as `<tonk-portal>` calls it.
         let cell: RefCell<Option<Rc<RefCell<PortalState>>>> = RefCell::new(None);
         connect_portal(&host, &cell, None, Allow::none(), |_| {});
         let guest = host
@@ -656,8 +669,8 @@ mod nested_tests {
             .unchecked_into::<HtmlIFrameElement>();
         let guest_window: JsValue = guest.content_window().expect("guest window").into();
 
-        // The bootstrap posts `hello` to its parent — B's window — as its
-        // first act. No `hello` means the frame never loaded.
+        // The bootstrap posts `hello` to its parent (the window of B) as its
+        // first action. If no `hello` arrives, the frame did not load.
         let booted = hello_on(&b_win, &guest_window).await;
         assert_eq!(
             booted.ok().and_then(|v| v.as_bool()),
