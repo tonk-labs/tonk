@@ -2513,8 +2513,9 @@ async fn seed_and_initialize(
 /// URL of the served standard-library notation asset, copied into
 /// the dist from `tonk-core/assets/library/core.yaml` by trunk. Seeded
 /// onto each space's content branch. Only referenced from the
-/// SW-scoped background seed path.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+/// SW-scoped background seed path, so it is wasm-only: the native tests
+/// that also read it went with the template libraries.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 
 /// URL of the lean profile library — only the `space` concept and the
@@ -4438,9 +4439,9 @@ mod space_config_tests {
     }
 }
 
-/// The create form and this handler must name one attribute per control.
+/// The create form and this handler must name the same remote attribute.
 ///
-/// The handler reads these raw (not through the typed `CreateSpace`
+/// The handler reads it raw (not through the typed `CreateSpace`
 /// decode) so an older, frozen profile descriptor still triggers it. That
 /// tolerance cuts both ways: a renamed attribute on either side doesn't
 /// fail — the fact simply never matches, the field reads as absent, and
@@ -4456,7 +4457,7 @@ mod form_attribute_tests {
     const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
     #[test]
-    fn it_reads_the_attributes_the_create_form_declares() {
+    fn it_reads_the_attribute_the_create_form_declares() {
         assert!(
             PROFILE_LIBRARY.contains(REMOTE_ATTR),
             "profile.yaml declares no `the: {REMOTE_ATTR}` — the handler \
