@@ -512,7 +512,7 @@ mod tests {
         let mut command = tonk_command_in(env, &profile);
         command.args([
             "account",
-            "link",
+            "login",
             "--name",
             "e2e terminal",
             "--no-open",
@@ -788,8 +788,7 @@ mod tests {
     fn did_for_device<'a>(output: &'a str, name: &str) -> Option<&'a str> {
         output.lines().find_map(|line| {
             let fields: Vec<_> = line.split('\t').collect();
-            (fields.len() == 3 && fields[1] == name)
-                .then(|| fields[2].trim_end_matches(" (this device)"))
+            (fields.len() == 4 && fields[1] == name).then_some(fields[2])
         })
     }
 
@@ -945,14 +944,14 @@ mod tests {
         // cross-device path, not a service-side artifact store.
         let second_device = link_cli_with(&claimer, &env, false).await?;
         // Two things have to land before this reads: the freshly linked
-        // device's first account sync (until then `spots` exits non-zero
+        // device's first account sync (until then `spaces` exits non-zero
         // with "not yet hydrated"), and the browser's push of the
         // directory facts, which happens on its next sync drain. Both
         // are timing, not behaviour, so poll on the outcome under test —
         // that promotion recorded the spot — rather than asserting on
         // whichever intermediate state the first run happened to catch.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut last_seen = String::from("<spots never completed a run>");
+        let mut last_seen = String::from("<spaces never completed a run>");
         let recorded = loop {
             // Drive the browser's sync drain rather than waiting for
             // incidental traffic to trigger one. Promotion writes the
@@ -963,7 +962,7 @@ mod tests {
             let run = run_cli(
                 &env,
                 &second_device.profile,
-                &["account".to_string(), "spots".to_string()],
+                &["account".to_string(), "spaces".to_string()],
             )
             .await?;
             if run.status.success() {
@@ -989,7 +988,7 @@ mod tests {
             } else {
                 // Any other non-zero exit is a real error; failing here
                 // beats burning the deadline on it.
-                return Err(anyhow!("spots failed: {}", run.stderr));
+                return Err(anyhow!("spaces failed: {}", run.stderr));
             }
             if tokio::time::Instant::now() >= deadline {
                 break false;
@@ -999,7 +998,7 @@ mod tests {
         assert!(
             recorded,
             "promotion completed without recording the claimed spot in the account \
-             directory; last `spots` output was: {last_seen}"
+             directory; last `spaces` output was: {last_seen}"
         );
 
         let devtools = ChromeDevTools::new(claimer.handle.clone());
@@ -1280,7 +1279,14 @@ mod tests {
             devices.stdout
         );
         assert!(devices.stdout.contains("active\te2e terminal\t"));
-        assert!(devices.stdout.contains(" (this device)"));
+        assert!(
+            devices.stdout.lines().any(|line| {
+                let fields: Vec<_> = line.split('\t').collect();
+                fields.len() == 4 && fields[1] == "e2e terminal" && fields[3] == "yes"
+            }),
+            "the linked terminal must be the row marked as this device: {}",
+            devices.stdout
+        );
 
         driver.quit().await?;
         Ok(())
@@ -1305,10 +1311,13 @@ mod tests {
         .await?;
         assert!(status.status.success(), "status failed: {}", status.stderr);
         assert!(status.stdout.contains("signed in: yes"));
+        // `login` prints the sign-in itself; the registration the signup
+        // performed is reported by `status`, which is the one command that
+        // reads the access service.
         assert!(
-            linked.link.stdout.contains("access service:"),
-            "the link reports the registration the signup performed: {}",
-            linked.link.stdout
+            status.stdout.contains("access service:"),
+            "status reports the registration the signup performed: {}",
+            status.stdout
         );
 
         driver.quit().await?;
