@@ -206,11 +206,16 @@ Verified:
 
 - `cargo test -p tonk-cli --features integration-tests` — all suites pass,
   including live account/access-service coverage of linking, relinking, the
-  account switch, and every refusal. Two separate whole-suite runs each saw a
-  single failure somewhere in `tests/site.rs`, which then passed in every
-  isolated run of that suite and in six later whole-suite runs — long enough
-  to swallow the failing test's name both times. Treat it as load flakiness
-  under full parallelism until a run captures which test it is.
+  account switch, and every refusal. A third whole-suite run finally caught
+  the `tests/site.rs` flake with its name attached:
+  `when_migrating_from_carry::it_copies_the_directory_and_verifies_the_repository_loads`
+  failed on "failed to save the native signing session … Concurrent write in
+  progress (lock held by pid N)", and passed in the isolated rerun. It is not
+  load flakiness: `migrate::run` verifies by calling `TonkSite::open`, which
+  takes `default_config()` and therefore the *real* platform profile
+  directory, so every parallel test binary that opens a site contends for one
+  profile lock. Pre-existing on `staging` — `migrate::run` has no config seam
+  to inject an isolated profile through — and left alone here.
 - `cargo clippy --workspace --all-targets --all-features` — clean.
 - `cargo fmt --all --check` — clean.
 
