@@ -7,20 +7,21 @@
 //!
 //! Nothing here is destructive, so a failed attempt leaves a usable local
 //! space and a retry converges: every step is either idempotent or guarded by
-//! the state the previous run left behind. The registry is tagged last, so a
-//! space counts as the account's only once its content, authority, and
-//! directory record are all in place.
+//! the state the previous run left behind. Ownership is settled by the founder
+//! row on the space's own content branch, confirmed against the retained
+//! `subject → … → account root` chain, so an interrupted run is visible as
+//! exactly what it is — a half-finished link, not a finished one.
 
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, bail};
 use dialog_capability::Subject;
 use dialog_query::{Output as _, Query, Term};
+use dialog_repository::Branch;
 use dialog_varsig::Did;
-use tonk_schema::prelude::DidExt as _;
-use tonk_schema::{Invitation, MemberRole, Membership};
+use tonk_schema::Invitation;
 
-use crate::inventory::SpaceRole;
+use crate::inventory::{Roster, SpaceRole};
 use crate::remote::DEFAULT_REMOTE;
 use crate::site::SiteConfig;
 use crate::spot::SpotStore;
@@ -28,9 +29,8 @@ use crate::spot::SpotStore;
 /// Successful link result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkOutcome {
-    /// Repository subject, unchanged by the link. Absent when the space
-    /// already belonged to this account and no site was opened to read it.
-    pub subject: Option<String>,
+    /// Repository subject, unchanged by the link.
+    pub subject: String,
     /// Registered space name, unchanged by the link.
     pub name: String,
     /// Local site directory, unchanged by the link.
@@ -64,18 +64,6 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
         .get(name)
         .with_context(|| format!("unknown space '{name}'"))?
         .clone();
-    if let Some(owner) = entry.account.as_deref() {
-        if owner == account.root {
-            return Ok(LinkOutcome {
-                subject: None,
-                name: name.to_owned(),
-                site: entry.site.clone(),
-                account: account.root,
-                already_linked: true,
-            });
-        }
-        bail!(already_owned_message(name, owner));
-    }
     if crate::account::sign_in_phase(store)? != crate::account::SignInPhase::Active {
         bail!("this account is signed out; run `tonk account login` first");
     }
@@ -83,6 +71,34 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
         .root
         .parse()
         .context("the signed-in account root is invalid")?;
+
+    let mut site_config = config.clone();
+    site_config.require_account = false;
+    let site = crate::site::TonkSite::open_with(&entry.site, site_config).await?;
+    let subject = site.repository.did();
+
+    // Ownership is the space's own answer, not the registry's, and it is
+    // settled before anything about this account's hosting is consulted: who
+    // a space belongs to does not depend on where we would have put it. A
+    // founder row for somebody else is final; a founder row for us is only
+    // finished once the chain behind it is here too, so an interrupted run
+    // resumes instead of reporting a link that never completed.
+    let roster = crate::inventory::read_roster(&site).await?;
+    if let Some(founder) = roster.founder() {
+        if founder.did != account.root {
+            bail!(already_owned_message(name, &founder.did));
+        }
+        if holds_account_chain(&site, &subject, &account_root).await {
+            return Ok(LinkOutcome {
+                subject: subject.to_string(),
+                name: name.to_owned(),
+                site: site.root,
+                account: account.root,
+                already_linked: true,
+            });
+        }
+    }
+
     let access = account
         .access_remote
         .as_deref()
@@ -91,12 +107,7 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
         .revocation_relay
         .as_deref()
         .context("the account has no revocation relay; sign in again")?;
-
-    let mut site_config = config.clone();
-    site_config.require_account = false;
-    let site = crate::site::TonkSite::open_with(&entry.site, site_config).await?;
-    let subject = site.repository.did();
-    preflight(&site, access).await?;
+    preflight(&site, &roster, access).await?;
 
     // Authority first: the account root can only host what it can prove it
     // was given, and this is the one boundary allowed to mint that grant.
@@ -138,9 +149,8 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
     if crate::inventory::role_for_site(&site).await? != SpaceRole::Owner {
         bail!("the space is not signed as owned by this device after linking");
     }
-    store.set_space_account(name, Some(&account.root))?;
     Ok(LinkOutcome {
-        subject: Some(subject.to_string()),
+        subject: subject.to_string(),
         name: name.to_owned(),
         site: site.root,
         account: account.root,
@@ -148,12 +158,34 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
     })
 }
 
+/// Whether the retained `subject → … → account root` chain is on this device.
+///
+/// The chain is what the access service validates and the roster is its
+/// legible, synced mirror, so a founder row with no chain behind it is an
+/// unfinished link rather than an ownership claim. This reads only what the
+/// profile already holds — it never mints, so it cannot answer yes by
+/// establishing the ownership it was asked to confirm.
+async fn holds_account_chain(
+    site: &crate::site::TonkSite,
+    subject: &Did,
+    account_root: &Did,
+) -> bool {
+    crate::site::load_account_root_prefix_for(
+        &site.profile,
+        site.operator.local(),
+        subject,
+        account_root,
+    )
+    .await
+    .is_ok()
+}
+
 /// Refuse anything that is not genuinely local-only.
 ///
 /// An upstream already pointing at this account's own content service is the
 /// one exception: that is what a half-finished link leaves behind, and a
 /// retry has to be able to get past it.
-async fn preflight(site: &crate::site::TonkSite, access: &str) -> Result<()> {
+async fn preflight(site: &crate::site::TonkSite, roster: &Roster, access: &str) -> Result<()> {
     if let Some(name) = crate::remote::upstream_remote(site).await? {
         let endpoint = crate::remote::find(site, &name)
             .await?
@@ -168,6 +200,35 @@ async fn preflight(site: &crate::site::TonkSite, access: &str) -> Result<()> {
         .perform(site.operator.local())
         .await
         .context("this device cannot prove authority over this space")?;
+    if has_invitations(site).await? {
+        bail!("a space with recorded shares cannot be linked to an account");
+    }
+    let ours = [
+        crate::site::member_did(site)?.to_string(),
+        site.profile.did().to_string(),
+    ];
+    if roster
+        .members
+        .iter()
+        .any(|member| !ours.contains(&member.did))
+    {
+        bail!("a space with another durable member cannot be linked to an account");
+    }
+    Ok(())
+}
+
+/// Whether the space records any share it has already handed out.
+///
+/// Reads the content branch, where the worker writes invitations, and the
+/// meta branch, where CLI releases through this one wrote them.
+async fn has_invitations(site: &crate::site::TonkSite) -> Result<bool> {
+    let content = site
+        .branch()
+        .await
+        .context("failed to inspect the space's shares")?;
+    if !invitations_on(site, content.handle()).await?.is_empty() {
+        return Ok(true);
+    }
     let meta = site
         .repository
         .branch(crate::remote::META_BRANCH)
@@ -175,7 +236,11 @@ async fn preflight(site: &crate::site::TonkSite, access: &str) -> Result<()> {
         .perform(&site.operator)
         .await
         .context("failed to inspect local-space metadata")?;
-    let invitations: Vec<Invitation> = meta
+    Ok(!invitations_on(site, &meta).await?.is_empty())
+}
+
+async fn invitations_on(site: &crate::site::TonkSite, branch: &Branch) -> Result<Vec<Invitation>> {
+    Ok(branch
         .query()
         .select(Query::<Invitation> {
             this: Term::var("this"),
@@ -185,43 +250,5 @@ async fn preflight(site: &crate::site::TonkSite, access: &str) -> Result<()> {
         })
         .perform(&site.operator)
         .try_vec()
-        .await?;
-    if !invitations.is_empty() {
-        bail!("a space with recorded shares cannot be linked to an account");
-    }
-    let memberships: Vec<Membership> = meta
-        .query()
-        .select(Query::<Membership> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            member: Term::var("member"),
-        })
-        .perform(&site.operator)
-        .try_vec()
-        .await?;
-    if memberships
-        .iter()
-        .any(|membership| membership.member.0 != site.profile.did().this())
-    {
-        bail!("a space with another durable member cannot be linked to an account");
-    }
-    let roles: Vec<MemberRole> = meta
-        .query()
-        .select(Query::<MemberRole> {
-            this: Term::var("this"),
-            role: Term::var("role"),
-        })
-        .perform(&site.operator)
-        .try_vec()
-        .await?;
-    if memberships.iter().any(|membership| {
-        let matching: Vec<_> = roles
-            .iter()
-            .filter(|role| role.this == membership.this)
-            .collect();
-        matching.len() != 1 || matching[0].role.0.to_string() != MemberRole::FOUNDER
-    }) {
-        bail!("only a genuinely local-only space can be linked to an account");
-    }
-    Ok(())
+        .await?)
 }

@@ -1,27 +1,43 @@
 //! Aggregate, offline inventory of every locally mounted space replica.
+//!
+//! Ownership is read, never recorded: the founder row of the roster the space
+//! itself carries on its content branch names the owner, so a member device
+//! knows the owner of a space it merely joined, and nothing beside the space
+//! can drift out of step with the chains the access service validates.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, bail};
 use dialog_query::{Output as _, Query, Term};
 use serde::Serialize;
 use tonk_schema::prelude::DidExt as _;
-use tonk_schema::{MemberRole, Membership};
+use tonk_schema::{MemberName, MemberRole, Membership};
 
 use crate::site::SiteConfig;
 use crate::spot::SpotStore;
 
-/// One replica's relationship to the account that owns it.
+/// Shortest DID abbreviation a listing starts from. The first four
+/// characters of a `did:key` identifier are the shared ed25519 multibase
+/// prefix, so anything shorter renders every row identically.
+const ABBREVIATION: usize = 8;
+
+/// The gutter between rendered columns.
+const GUTTER: usize = 3;
+
+/// One replica's relationship to the roster its space carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpaceRole {
-    /// Account-independent local-only replica.
+    /// The space carries no roster at all: nobody has hosted it yet.
     Local,
-    /// Replica whose account founded the space.
+    /// The roster names this installation as the space's founder.
     Owner,
-    /// Replica whose account joined through a share.
+    /// The roster names this installation as a member.
     Member,
-    /// Account-owned replica whose signed membership could not be read.
+    /// The space carries a roster, and no row in it is ours.
+    Unlisted,
+    /// The replica or its roster could not be read.
     Unknown,
 }
 
@@ -31,8 +47,53 @@ impl std::fmt::Display for SpaceRole {
             Self::Local => "local",
             Self::Owner => "owner",
             Self::Member => "member",
+            Self::Unlisted => "-",
             Self::Unknown => "unknown",
         })
+    }
+}
+
+/// One row of the roster a space carries on its content branch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterMember {
+    /// The member's DID — an account root for a linked profile, a device
+    /// profile otherwise.
+    pub did: String,
+    /// The member's self-chosen display name, when one was written.
+    pub name: Option<String>,
+    /// The role URI stamped on the membership, when one was written.
+    pub role: Option<String>,
+}
+
+impl RosterMember {
+    /// Whether this row carries the founder stamp.
+    pub fn is_founder(&self) -> bool {
+        self.role.as_deref() == Some(MemberRole::FOUNDER)
+    }
+}
+
+/// The roster a space carries, in the order the query returned it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roster {
+    /// Every membership row scoped to this repository.
+    pub members: Vec<RosterMember>,
+}
+
+impl Roster {
+    /// Whether the space has been hosted at all.
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    /// The founder row, which names the owning account.
+    pub fn founder(&self) -> Option<&RosterMember> {
+        self.members.iter().find(|member| member.is_founder())
+    }
+
+    /// The row `did` holds, if any.
+    pub fn row_for(&self, did: &str) -> Option<&RosterMember> {
+        self.members.iter().find(|member| member.did == did)
     }
 }
 
@@ -46,14 +107,17 @@ pub struct LocalSpaceInventoryRowV1 {
     pub name: String,
     /// Repository subject DID.
     pub subject: String,
-    /// Root DID of the owning account, absent for a local-only space.
-    pub account: Option<String>,
-    /// Local, owner, or member relationship.
+    /// Account root of the space's founder, read from its roster. Absent
+    /// until the space is linked or hosted.
+    pub owner: Option<String>,
+    /// The founder's display name, when the roster carries one.
+    pub owner_name: Option<String>,
+    /// Whether the founder is the account signed in here.
+    pub owner_is_you: bool,
+    /// This installation's own role in the roster.
     pub role: SpaceRole,
     /// Local site directory.
     pub site: PathBuf,
-    /// Whether the signed-in account may use this replica.
-    pub access: bool,
     /// Always true in this local-replica inventory.
     pub local: bool,
 }
@@ -67,6 +131,56 @@ pub struct LocalSpaceInventory {
     pub diagnostics: Vec<String>,
 }
 
+/// The method-specific identifier of a DID — everything after `did:<method>:`.
+///
+/// Anything that does not parse is returned whole rather than truncated at a
+/// boundary that might not exist.
+fn identifier(did: &str) -> &str {
+    did.strip_prefix("did:")
+        .and_then(|rest| rest.split_once(':'))
+        .map_or(did, |(_, identifier)| identifier)
+}
+
+/// A true prefix of `did`'s identifier, `length` characters long.
+pub fn abbreviate(did: &str, length: usize) -> String {
+    identifier(did).chars().take(length).collect()
+}
+
+/// The shortest abbreviation that tells every DID in `dids` apart.
+///
+/// Git's short-hash discipline: eight characters unless this particular piece
+/// of output contains an ambiguous prefix, and then as many as it takes. One
+/// length is used throughout, so two abbreviations that render the same
+/// always name the same identifier.
+pub fn abbreviation_length<'a>(dids: impl IntoIterator<Item = &'a str>) -> usize {
+    let distinct: BTreeSet<&str> = dids.into_iter().collect();
+    let longest = distinct
+        .iter()
+        .map(|did| identifier(did).chars().count())
+        .max()
+        .unwrap_or(ABBREVIATION);
+    let mut length = ABBREVIATION;
+    while length < longest {
+        let abbreviated: BTreeSet<String> =
+            distinct.iter().map(|did| abbreviate(did, length)).collect();
+        if abbreviated.len() == distinct.len() {
+            break;
+        }
+        length += 1;
+    }
+    length
+}
+
+/// A human name paired with an abbreviation of its stable identifier — git's
+/// `Name <email>` discipline. Names orient; only the identifier decides.
+pub fn describe(did: &str, name: Option<&str>, length: usize) -> String {
+    let abbreviated = abbreviate(did, length);
+    match name {
+        Some(name) => format!("{name} ({abbreviated})"),
+        None => abbreviated,
+    }
+}
+
 /// Render the listing exactly as `tonk space list` prints it.
 ///
 /// Lives here rather than in the binary so the text a person actually reads
@@ -75,24 +189,57 @@ pub fn render(rows: &[LocalSpaceInventoryRowV1]) -> String {
     if rows.is_empty() {
         return "(no spaces registered; create one with `tonk space new <name>`)".to_owned();
     }
-    let mut out = String::from("NAME\tSUBJECT\tACCOUNT\tROLE\tACCESS");
-    for row in rows {
-        out.push_str(&format!(
-            "\n{}\t{}\t{}\t{}\t{}",
-            row.name,
-            row.subject,
-            row.account.as_deref().unwrap_or("-"),
-            row.role,
-            if row.access { "yes" } else { "no" },
-        ));
+    let length = abbreviation_length(
+        rows.iter()
+            .map(|row| row.subject.as_str())
+            .chain(rows.iter().filter_map(|row| row.owner.as_deref())),
+    );
+    let cells: Vec<[String; 3]> = rows
+        .iter()
+        .map(|row| {
+            [
+                format!("{} ({})", row.name, abbreviate(&row.subject, length)),
+                match &row.owner {
+                    None => "-".to_owned(),
+                    Some(owner) if row.owner_is_you => describe(owner, Some("you"), length),
+                    Some(owner) => describe(owner, row.owner_name.as_deref(), length),
+                },
+                row.role.to_string(),
+            ]
+        })
+        .collect();
+    let headers = ["NAME", "OWNER", "ROLE"];
+    let widths: Vec<usize> = (0..headers.len())
+        .map(|column| {
+            cells
+                .iter()
+                .map(|row| row[column].chars().count())
+                .chain(std::iter::once(headers[column].len()))
+                .max()
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut out = String::new();
+    for (index, header) in headers.iter().enumerate() {
+        push_cell(&mut out, header, widths[index], index + 1 == headers.len());
     }
-    if rows.iter().any(|row| !row.access) {
-        out.push_str(
-            "\n\nspaces marked no belong to another account; sign back into it, \
-             or ask its owner for an invite",
-        );
+    for row in &cells {
+        out.push('\n');
+        for (index, cell) in row.iter().enumerate() {
+            push_cell(&mut out, cell, widths[index], index + 1 == row.len());
+        }
     }
     out
+}
+
+/// Append one cell, padded to `width` plus the gutter unless it ends the row.
+fn push_cell(out: &mut String, cell: &str, width: usize, last: bool) {
+    out.push_str(cell);
+    if last {
+        return;
+    }
+    let pad = width - cell.chars().count() + GUTTER;
+    out.extend(std::iter::repeat_n(' ', pad));
 }
 
 /// Inspect the registry and every replica it names without remote I/O.
@@ -104,12 +251,8 @@ pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalS
         .map(|account| account.root.clone());
     let mut report = LocalSpaceInventory::default();
     for (name, entry) in &registry.spots {
-        match inspect_replica(config, name, entry).await {
-            Ok((mut row, note)) => {
-                row.access = match (&row.account, &active) {
-                    (Some(owner), Some(active)) => owner == active,
-                    _ => true,
-                };
+        match inspect_replica(config, name, entry, active.as_deref()).await {
+            Ok((row, note)) => {
                 report.rows.push(row);
                 if let Some(note) = note {
                     report.diagnostics.push(format!("{name}: {note}"));
@@ -125,13 +268,14 @@ pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalS
 }
 
 /// Returns the row, plus a diagnostic when the replica is listed with an
-/// unresolved role. A space whose role cannot be read still belongs on
+/// unresolved role. A space whose roster cannot be read still belongs on
 /// screen: it is registered, it occupies its name, and hiding it would make
 /// the listing disagree with every other command.
 async fn inspect_replica(
     config: &SiteConfig,
     name: &str,
     entry: &crate::spot::SpotEntry,
+    active: Option<&str>,
 ) -> Result<(LocalSpaceInventoryRowV1, Option<String>)> {
     let mut config = config.clone();
     config.require_account = false;
@@ -139,42 +283,75 @@ async fn inspect_replica(
         .await
         .with_context(|| format!("could not open {}", entry.site.display()))?;
     let subject = site.repository.did().to_string();
-    // The registry says which account a replica belongs to; the repository's
-    // own signed membership says whether that account founded it or joined
-    // it. Neither is guessed from the other.
-    let (role, note) = match entry.account {
-        None => (SpaceRole::Local, None),
-        Some(_) => match role_for_site(&site).await {
-            Ok(role) => (role, None),
-            Err(error) => (SpaceRole::Unknown, Some(format!("{error:#}"))),
-        },
+    let (roster, note) = match read_roster(&site).await {
+        Ok(roster) => (Some(roster), None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
+    let founder = roster
+        .as_ref()
+        .and_then(Roster::founder)
+        .map(|member| (member.did.clone(), member.name.clone()));
+    let role = match &roster {
+        None => SpaceRole::Unknown,
+        Some(roster) => classify(roster, &site)?,
     };
     Ok((
         LocalSpaceInventoryRowV1 {
             version: 1,
             name: name.to_owned(),
             subject,
-            account: entry.account.clone(),
+            owner_is_you: match (&founder, active) {
+                (Some((owner, _)), Some(active)) => owner == active,
+                _ => false,
+            },
+            owner: founder.as_ref().map(|(did, _)| did.clone()),
+            owner_name: founder.and_then(|(_, name)| name),
             role,
             site: site.root,
-            access: true,
             local: true,
         },
         note,
     ))
 }
 
-/// Classify one replica from the signed membership the repository itself
-/// carries, rather than from anything the registry claims.
+/// Which roster row this installation can claim: the signed-in account root
+/// first, the device profile second.
+fn classify(roster: &Roster, site: &crate::site::TonkSite) -> Result<SpaceRole> {
+    if roster.is_empty() {
+        return Ok(SpaceRole::Local);
+    }
+    let account = crate::site::member_did(site)?.to_string();
+    let profile = site.profile.did().to_string();
+    let Some(row) = roster
+        .row_for(&account)
+        .or_else(|| roster.row_for(&profile))
+    else {
+        return Ok(SpaceRole::Unlisted);
+    };
+    Ok(match row.role.as_deref() {
+        Some(MemberRole::FOUNDER) => SpaceRole::Owner,
+        Some(MemberRole::MEMBER) => SpaceRole::Member,
+        _ => SpaceRole::Unknown,
+    })
+}
+
+/// Classify one replica from the roster the space itself carries.
 pub async fn role_for_site(site: &crate::site::TonkSite) -> Result<SpaceRole> {
-    let meta = site
-        .repository
-        .branch(crate::remote::META_BRANCH)
-        .open()
-        .perform(&site.operator)
+    classify(&read_roster(site).await?, site)
+}
+
+/// Read the roster from the replica's content branch.
+///
+/// The content branch, not the meta branch: only upstreamed branches sync, so
+/// a roster on `meta` would never converge across the devices and members it
+/// exists to describe.
+pub async fn read_roster(site: &crate::site::TonkSite) -> Result<Roster> {
+    let session = site
+        .branch()
         .await
-        .context("could not open membership facts")?;
-    let memberships: Vec<Membership> = meta
+        .context("could not open the roster branch")?;
+    let branch = session.handle();
+    let memberships: Vec<Membership> = branch
         .query()
         .select(Query::<Membership> {
             this: Term::var("this"),
@@ -183,15 +360,17 @@ pub async fn role_for_site(site: &crate::site::TonkSite) -> Result<SpaceRole> {
         })
         .perform(&site.operator)
         .try_vec()
-        .await?;
-    let membership = memberships
+        .await
+        .context("could not read membership facts")?;
+    let subject = site.repository.did().this();
+    let memberships: Vec<Membership> = memberships
         .into_iter()
-        .find(|membership| {
-            membership.subject.0 == site.repository.did().this()
-                && membership.member.0 == site.profile.did().this()
-        })
-        .context("this device has no signed membership in the space")?;
-    let roles: Vec<MemberRole> = meta
+        .filter(|membership| membership.subject.0 == subject)
+        .collect();
+    if memberships.is_empty() {
+        return Ok(Roster::default());
+    }
+    let roles: Vec<MemberRole> = branch
         .query()
         .select(Query::<MemberRole> {
             this: Term::var("this"),
@@ -199,18 +378,38 @@ pub async fn role_for_site(site: &crate::site::TonkSite) -> Result<SpaceRole> {
         })
         .perform(&site.operator)
         .try_vec()
-        .await?;
-    let mut matching = roles
-        .into_iter()
-        .filter(|role| role.this == membership.this)
-        .map(|role| role.role.0.to_string());
-    let role = matching.next().context("membership has no signed role")?;
-    if matching.any(|candidate| candidate != role) {
-        bail!("membership has conflicting signed roles");
+        .await
+        .context("could not read membership roles")?;
+    let names: Vec<MemberName> = branch
+        .query()
+        .select(Query::<MemberName> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+        })
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .context("could not read membership names")?;
+    let mut members = Vec::with_capacity(memberships.len());
+    for membership in memberships {
+        let mut matching = roles
+            .iter()
+            .filter(|role| role.this == membership.this)
+            .map(|role| role.role.0.to_string());
+        let role = matching.next();
+        if let Some(role) = &role
+            && matching.any(|candidate| &candidate != role)
+        {
+            bail!("membership has conflicting signed roles");
+        }
+        members.push(RosterMember {
+            did: membership.member.0.to_string(),
+            name: names
+                .iter()
+                .find(|name| name.this == membership.this)
+                .map(|name| name.name.0.clone()),
+            role,
+        });
     }
-    match role.as_str() {
-        MemberRole::FOUNDER => Ok(SpaceRole::Owner),
-        MemberRole::MEMBER => Ok(SpaceRole::Member),
-        _ => bail!("membership has unknown role '{role}'"),
-    }
+    Ok(Roster { members })
 }

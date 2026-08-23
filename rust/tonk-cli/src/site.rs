@@ -352,28 +352,49 @@ impl TonkSite {
     }
 }
 
-/// Stamp the creating profile as this space's founder.
+/// The DID a roster row for this installation is keyed on: the signed-in
+/// account root when there is one, else this device's profile.
 ///
-/// Account-owned creation calls this once after repository bootstrap. The
-/// content-derived membership entity makes retries idempotent.
-pub async fn record_founder_membership(site: &TonkSite) -> Result<()> {
-    record_founder_membership_for(site, site.profile.did()).await
+/// Matches the worker's `member_did`, so a founder row written here and one
+/// written by the browser converge to the same content-derived entity across
+/// every device on the same account.
+pub fn member_did(site: &TonkSite) -> Result<Did> {
+    let Some(account) = site.account_store.account()? else {
+        return Ok(site.profile.did());
+    };
+    account
+        .root
+        .parse()
+        .context("the signed-in account root is invalid")
 }
 
-/// Stamp an explicit account profile as founder while the source still owns
-/// the repository authority. Used by the local-to-account adoption boundary.
+/// Stamp this installation as the space's founder.
+///
+/// Account-owned creation and `tonk space link` each call this once. The
+/// content-derived membership entity makes retries idempotent.
+pub async fn record_founder_membership(site: &TonkSite) -> Result<()> {
+    record_founder_membership_for(site, member_did(site)?).await
+}
+
+/// Stamp an explicit member DID as founder.
+///
+/// The roster lives on the content branch, because only upstreamed branches
+/// sync: a roster written to the local-only meta branch never reaches the
+/// account's other devices or the people it is shared with. The write goes
+/// through the reactor's cached `main` handle for the same reason the worker's
+/// does — a commit through a separate handle leaves the cached one pinned at
+/// its old head and wedges later sync.
 pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Result<()> {
     use tonk_schema::{MemberRole, Membership};
 
     let membership = Membership::new(member, site.repository.did());
-    let meta = site
-        .repository
-        .branch(crate::remote::META_BRANCH)
-        .open()
-        .perform(&site.operator)
+    let session = site
+        .branch()
         .await
         .context("failed to open the membership branch")?;
-    meta.transaction()
+    session
+        .handle()
+        .transaction()
         .assert(membership.clone())
         .assert(MemberRole::founder(membership.this().clone()))
         .commit()

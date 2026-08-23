@@ -19,7 +19,7 @@ tonk space new garden
 # Use an existing space in another project directory:
 tonk use garden
 
-# Every local replica, with the account it belongs to.
+# Every local replica, with the owner each space names.
 tonk space list
 
 # Sign in. Tonk holds one account at a time.
@@ -109,22 +109,29 @@ repository (`main`, opened on the `main` branch — multi-branch and multi-repo
 workflows are intentionally not exposed). Sites live canonically under
 `spots/<name>/`, or anywhere you like via `tonk space new --site <path>`.
 
-A space either belongs to no account, or to exactly one. `tonk space list`
-shows which, alongside the role its signed membership proves and whether the
-account signed in here can reach it:
+A space either belongs to no account, or to exactly one. Which one is read
+from the space itself — the founder row of the roster it carries on `main` —
+so `tonk space list` can name the owner of a space you merely joined, and no
+record beside the space can drift out of step with it:
 
 ```text
-NAME      SUBJECT         ACCOUNT      ROLE     ACCESS
-scratch   did:key:...     -            local    yes
-garden    did:key:...     did:key:aa   owner    yes
-roadmap   did:key:...     did:key:bb   owner    no
+NAME                 OWNER                     ROLE
+scratch (z6Mkq7vp)   -                         local
+garden (z6Mk4e2b)    you (z6Mkccc1)            owner
+roadmap (z6Mkf0aa)   Ada Lovelace (z6Mkbbb9)   member
 ```
 
-`local` means account-independent, `owner` means the account created or
-adopted the space, and `member` means it joined through a share. The two
-ownership rules are: a local space can move into your account; once a space
-belongs to an account it stays there, and reaches other people through
-`tonk invite`.
+Every name is paired with an abbreviation of its stable identifier, git's
+`Name <email>` discipline: `NAME` carries the space's subject so the same
+space is recognizable across devices that named it differently, and `OWNER`
+carries the founder's account root. Like git's short hashes the abbreviation
+lengthens when a listing holds an ambiguous prefix; `--json` prints the full
+DIDs. `ROLE` is the roster row this installation can claim — `local` when the
+space carries no roster at all, `owner` for a founder row, `member` for a
+member row, `-` when the roster names somebody else, `unknown` when it cannot
+be read. The two ownership rules are: a local space can move into your
+account; once a space belongs to an account it stays there, and reaches other
+people through `tonk invite`.
 
 Commands resolve `--space` > `TONK_SPACE` > the visible `--spot` / `TONK_SPOT`
 compatibility aliases > the nearest directory bound by `tonk use <name>`.
@@ -169,11 +176,20 @@ and gains hosting, retained authority, and a row in the account directory your
 other devices pull from. Nothing is deleted along the way, so an interrupted
 link leaves a working local space and can simply be re-run.
 
-Spaces that belong to another account stay on disk when you switch accounts.
-They are listed with `ACCESS no`, and a command that would open one is refused,
-naming the account that owns it — sign that account back in, or ask its owner
-for an invite. Signed out entirely, every replica on this device stays
-readable and writable; only account services stop.
+The signed-in account parameterizes account-service operations and nothing
+else: creating a hosted space, linking, pulling the directory, listing and
+revoking devices, deletion. Editing is unrestricted — every replica this
+device holds opens, reads, and writes whether you are signed out, signed in,
+or signed into an account other than the space's owner. Spaces that belong to
+another account stay on disk and stay listed across a switch; the `OWNER`
+column, not a refusal, is what says whose they are.
+
+Enforcement happens where it is real: at the service boundary. Push and pull
+present the space's own delegation chain and the access service accepts or
+rejects it, so a sync you cannot do fails there rather than being pre-judged
+here. The CLI relays that refusal with the fix — signing into the owning
+account when the space is somebody else's, `tonk account devices` when it is
+yours and this device may have been revoked.
 
 `tonk account spaces list` reads the signed remote directory of the account you
 are signed in to, and `tonk account spaces pull <subject>` mounts one of those
@@ -216,7 +232,7 @@ rotation.
 | --- | --- | --- |
 | Logged out | allowed | denied before HTTP |
 | Signed in, space owned by or shared with that account | allowed | allowed with only that account's grant |
-| Signed in, space belonging to another account | refused with an invite hint | denied before HTTP |
+| Signed in, space belonging to another account | allowed | rejected at the service boundary, with the sign-in fix named |
 
 ### Sync and sharing
 

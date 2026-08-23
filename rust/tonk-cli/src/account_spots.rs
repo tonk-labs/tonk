@@ -367,16 +367,22 @@ pub async fn pull(
     crate::sync::pull(&site)
         .await
         .with_context(|| format!("initial pull from '{DEFAULT_REMOTE}' failed"))?;
-    crate::inventory::role_for_site(&site)
+    // The pulled replica must carry a roster row this account can claim —
+    // that row, on the space's own content branch, is the only record of who
+    // owns it, and nothing beside the space is written to stand in for it.
+    let role = crate::inventory::role_for_site(&site)
         .await
-        .context("pulled space has no signed membership for this account profile")?;
+        .context("could not read the pulled space's roster")?;
+    if !matches!(
+        role,
+        crate::inventory::SpaceRole::Owner | crate::inventory::SpaceRole::Member
+    ) {
+        bail!("pulled space has no signed membership for this account profile");
+    }
     let canonical_target = target
         .canonicalize()
         .context("failed to canonicalize the mounted account space")?;
     spot::register_existing_unbound(store, &name, &canonical_target)?;
-    // A pulled replica is the account's from the moment it lands: it exists
-    // only because that account's directory listed it.
-    store.set_space_account(&name, Some(account_root.as_ref()))?;
     fresh_target.commit();
 
     Ok(PullOutcome {

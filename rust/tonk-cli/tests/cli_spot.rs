@@ -80,122 +80,70 @@ const OTHER_DEAD_REMOTE: &str = "http://127.0.0.1:9/other/";
 mod when_one_account_is_signed_in {
     use super::*;
 
-    /// A registry with one space owned by `owner` and one signed-in
-    /// account, written directly so these stay offline: the refusal under
-    /// test happens during resolution, before any site is opened.
-    fn registry_with_accounts(state: &Path, space_account: Option<&str>, signed_in: Option<&str>) {
-        let site = state.join("site-garden");
-        std::fs::create_dir_all(&site).expect("mkdir site");
-        let account = match space_account {
-            Some(root) => format!(",\"account\":\"{root}\""),
-            None => String::new(),
-        };
-        let signed_in = match signed_in {
-            Some(root) => format!(",\"account\":{{\"root\":\"{root}\"}}"),
-            None => String::new(),
-        };
-        let json = format!(
-            "{{\"spots\":{{\"garden\":{{\"site\":{site:?}{account}}}}}{signed_in}}}",
-            site = site.display().to_string(),
+    const ACCOUNT_A: &str = "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    /// Create a space through the CLI, then record `signed_in` as the
+    /// account this installation is signed into.
+    fn space_and_account(state: &Path, name: &str, signed_in: Option<&str>) {
+        let site = state.join(format!("{name}-site"));
+        let created = run(
+            state,
+            &[
+                "space",
+                "new",
+                name,
+                "--site",
+                site.to_str().expect("utf-8 site"),
+            ],
+            &[],
         );
-        std::fs::write(state.join("spots.json"), json).expect("write spots.json");
+        assert!(created.status.success(), "{}", stderr_of(&created));
+        let Some(signed_in) = signed_in else {
+            return;
+        };
+        let path = state.join("spots.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("registry"))
+                .expect("registry JSON");
+        registry["account"] = serde_json::json!({ "root": signed_in });
+        std::fs::write(&path, serde_json::to_vec_pretty(&registry).expect("encode"))
+            .expect("write registry");
     }
 
-    const ACCOUNT_A: &str = "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    const ACCOUNT_B: &str = "did:key:z6MkAccountBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
-
+    /// The account slot parameterizes account-service operations and nothing
+    /// else. A replica this device holds opens under any account, because the
+    /// only enforcement that is real happens at the service boundary.
     #[dialog_common::test]
-    fn another_accounts_space_is_refused_with_an_invite_hint() {
+    fn a_space_this_account_did_not_create_still_opens() {
         let state = tempfile::tempdir().expect("tempdir");
-        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_B));
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
         let output = run(state.path(), &["--space", "garden", "status"], &[]);
 
-        assert!(!output.status.success());
+        assert!(output.status.success(), "{}", stderr_of(&output));
         let stderr = stderr_of(&output);
-        assert!(
-            stderr.contains("this account doesn't have access to 'garden'"),
-            "{stderr}"
-        );
-        assert!(stderr.contains(ACCOUNT_A), "{stderr}");
-        assert!(stderr.contains("ask its owner for an invite"), "{stderr}");
-        assert!(stderr.contains("tonk join"), "{stderr}");
+        assert!(!stderr.contains("doesn't have access"), "{stderr}");
     }
 
+    /// …and it can still be written to. Editing is unrestricted.
     #[dialog_common::test]
-    fn a_mutating_command_is_refused_before_it_reaches_the_space() {
+    fn a_mutating_command_reaches_the_space_whatever_the_account() {
         let state = tempfile::tempdir().expect("tempdir");
-        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_B));
-        let before = std::fs::read(state.path().join("spots.json")).expect("registry");
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
         let output = run(
             state.path(),
-            &["--space", "garden", "assert", "task", "--title", "x"],
+            &["--space", "garden", "eval", "-c", "blank:"],
             &[],
         );
 
-        assert!(!output.status.success());
-        assert!(
-            stderr_of(&output).contains("this account doesn't have access to 'garden'"),
-            "{}",
-            stderr_of(&output)
-        );
-        assert_eq!(
-            std::fs::read(state.path().join("spots.json")).expect("registry"),
-            before,
-            "a refused command must not rewrite the registry"
-        );
-    }
-
-    #[dialog_common::test]
-    fn the_owning_account_reaches_its_own_space() {
-        let state = tempfile::tempdir().expect("tempdir");
-        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_A));
-
-        let output = run(state.path(), &["--space", "garden", "status"], &[]);
-
-        // The empty site directory still fails to open — but on its own
-        // terms, not on account access.
-        let stderr = stderr_of(&output);
-        assert!(!stderr.contains("doesn't have access"), "{stderr}");
-    }
-
-    #[dialog_common::test]
-    fn signing_out_leaves_every_local_replica_reachable() {
-        let state = tempfile::tempdir().expect("tempdir");
-        registry_with_accounts(state.path(), Some(ACCOUNT_A), None);
-
-        let output = run(state.path(), &["--space", "garden", "status"], &[]);
-
-        let stderr = stderr_of(&output);
-        assert!(!stderr.contains("doesn't have access"), "{stderr}");
-    }
-
-    #[dialog_common::test]
-    fn linking_a_space_that_already_belongs_to_an_account_explains_why_not() {
-        let state = tempfile::tempdir().expect("tempdir");
-        registry_with_accounts(state.path(), Some(ACCOUNT_A), Some(ACCOUNT_B));
-        let before = std::fs::read(state.path().join("spots.json")).expect("registry");
-
-        let output = run(state.path(), &["space", "link", "garden"], &[]);
-
-        assert!(!output.status.success());
-        let stderr = stderr_of(&output);
-        assert!(
-            stderr.contains("\"garden\" already belongs to an account"),
-            "{stderr}"
-        );
-        assert!(stderr.contains("tonk invite"), "{stderr}");
-        assert_eq!(
-            std::fs::read(state.path().join("spots.json")).expect("registry"),
-            before
-        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
     }
 
     #[dialog_common::test]
     fn linking_without_an_account_says_to_sign_in_first() {
         let state = tempfile::tempdir().expect("tempdir");
-        registry_with_accounts(state.path(), None, None);
+        space_and_account(state.path(), "garden", None);
 
         let output = run(state.path(), &["space", "link", "garden"], &[]);
 
@@ -207,46 +155,24 @@ mod when_one_account_is_signed_in {
         );
     }
 
-    /// Patch an existing registry so its one space belongs to `owner` while
-    /// `signed_in` is the account signed in here.
-    fn tag_registry(state: &Path, space: &str, owner: &str, signed_in: &str) {
-        let path = state.join("spots.json");
-        let mut registry: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).expect("registry"))
-                .expect("registry JSON");
-        registry["spots"][space]["account"] = serde_json::json!(owner);
-        registry["account"] = serde_json::json!({ "root": signed_in });
-        std::fs::write(&path, serde_json::to_vec_pretty(&registry).expect("encode"))
-            .expect("write registry");
-    }
-
+    /// The listing names the space and its owner, and has no access column:
+    /// there is nothing for it to report, because nothing is refused.
     #[dialog_common::test]
-    fn the_space_listing_marks_what_this_account_cannot_reach() {
+    fn the_space_listing_carries_an_owner_and_no_access_column() {
         let state = tempfile::tempdir().expect("tempdir");
-        let site = state.path().join("garden-site");
-        let created = run(
-            state.path(),
-            &[
-                "space",
-                "new",
-                "garden",
-                "--site",
-                site.to_str().expect("utf-8 site"),
-            ],
-            &[],
-        );
-        assert!(created.status.success(), "{}", stderr_of(&created));
-        tag_registry(state.path(), "garden", ACCOUNT_A, ACCOUNT_B);
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
         let output = run(state.path(), &["space", "list"], &[]);
 
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(
-            stdout.contains("NAME\tSUBJECT\tACCOUNT\tROLE\tACCESS"),
-            "{stdout}"
-        );
-        assert!(stdout.contains("belong to another account"), "{stdout}");
+        assert!(stdout.contains("NAME"), "{stdout}");
+        assert!(stdout.contains("OWNER"), "{stdout}");
+        assert!(stdout.contains("ROLE"), "{stdout}");
+        assert!(!stdout.contains("ACCESS"), "{stdout}");
+        assert!(!stdout.contains("another account"), "{stdout}");
+        // Local-only until it is linked: no roster, so no owner.
+        assert!(stdout.contains("local"), "{stdout}");
     }
 }
 
@@ -285,10 +211,11 @@ mod when_no_account_is_signed_in {
             &std::fs::read(state.path().join("spots.json")).expect("space registry"),
         )
         .expect("spots JSON");
-        assert!(spots["spots"]["scratch"].is_object());
-        assert!(
-            spots["spots"]["scratch"]["account"].is_null(),
-            "a space created signed out belongs to no account: {spots}"
+        let entry = spots["spots"]["scratch"].as_object().expect("space entry");
+        assert_eq!(
+            entry.keys().collect::<Vec<_>>(),
+            vec!["site"],
+            "the registry records a binding and nothing more: {spots}"
         );
         assert!(
             spots["account"].is_null(),

@@ -85,33 +85,31 @@ pub struct Registry {
 }
 
 /// One registered spot.
+///
+/// A binding and nothing else. Which account owns a space is read from the
+/// space's own roster, not recorded beside it: a tag here could drift from
+/// the delegation chains the access service actually validates, with nothing
+/// checking it, and a member device could never learn the owner of a space it
+/// merely joined.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SpotEntry {
     /// Absolute path to the site directory backing this spot.
     pub site: PathBuf,
-    /// Root DID of the account this space belongs to, absent while the
-    /// space is local-only. Set by `tonk space link`, by creation under a
-    /// signed-in account, and by `tonk account spaces pull`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account: Option<String>,
 }
 
 impl SpotEntry {
-    /// A local-only entry for `site`.
+    /// An entry for `site`.
     pub fn at(site: impl Into<PathBuf>) -> Self {
-        Self {
-            site: site.into(),
-            account: None,
-        }
+        Self { site: site.into() }
     }
 }
 
 /// The one account this installation is signed into.
 ///
 /// Tonk is signed into at most one account at a time: linking replaces this
-/// record, logout clears it. Spaces keep their own [`SpotEntry::account`], so
-/// a replica pulled under an earlier account survives the switch and becomes
-/// usable again when that account signs back in.
+/// record, logout clears it. Signing out touches nothing else — not replicas,
+/// not the profile, not retained delegations — so every registered space
+/// stays open, and the account only parameterizes account-service operations.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountRecord {
@@ -243,20 +241,6 @@ pub enum SpotError {
     /// directory names, so the alphabet is conservative.
     #[error("invalid spot name '{0}': use [a-z0-9][a-z0-9-_]*")]
     InvalidName(String),
-    /// The signed-in account is not the account this space belongs to.
-    #[error(
-        "this account doesn't have access to '{name}'\n\
-         '{name}' belongs to another account ({owner}); ask its owner for an \
-         invite and claim it with `tonk join <URL>`"
-    )]
-    ForeignAccount {
-        /// The space that was selected.
-        name: String,
-        /// Root DID of the account that owns it.
-        owner: String,
-        /// Root DID of the account currently signed in.
-        active: String,
-    },
     /// The platform reports no data directory (no home).
     #[error("could not determine the platform data directory")]
     NoDataDir,
@@ -444,22 +428,6 @@ impl SpotStore {
         self.save(&registry)
     }
 
-    /// Record (or clear) the account one registered space belongs to.
-    pub fn set_space_account(&self, name: &str, account: Option<&str>) -> Result<(), SpotError> {
-        let mut registry = self.load()?;
-        let available: Vec<String> = registry.spots.keys().cloned().collect();
-        let entry = registry
-            .spots
-            .get_mut(name)
-            .ok_or_else(|| SpotError::Unknown {
-                name: name.to_owned(),
-                available,
-                binding: None,
-            })?;
-        entry.account = account.map(str::to_owned);
-        self.save(&registry)
-    }
-
     /// Resolve the spot a command should operate on.
     ///
     /// Strict precedence: `flag` (`--spot`) > `env` ([`SPOT_ENV`],
@@ -494,14 +462,15 @@ impl SpotStore {
             return Err(SpotError::NoSelection);
         };
         match registry.spots.get(&name) {
-            Some(entry) => {
-                access(&registry, &name, entry)?;
-                Ok(Resolved {
-                    name,
-                    site: entry.site.clone(),
-                    source,
-                })
-            }
+            // Resolution never consults the signed-in account. Editing a
+            // replica this device holds is unrestricted; the only enforcement
+            // that is real happens at the service boundary, against the
+            // space's own delegation chain.
+            Some(entry) => Ok(Resolved {
+                name,
+                site: entry.site.clone(),
+                source,
+            }),
             None => {
                 // Name the bound directory in the error too, when
                 // that is where the name came from — otherwise an
@@ -521,27 +490,6 @@ impl SpotStore {
             }
         }
     }
-}
-
-/// Refuse a space that belongs to an account other than the signed-in one.
-///
-/// Signing out does not revoke what this device already holds, so a
-/// signed-out installation keeps working offline on every replica it has;
-/// only a *different* signed-in account is a mismatch, and that is the case
-/// worth naming before a command reaches the site and fails on authority it
-/// was never going to have.
-pub fn access(registry: &Registry, name: &str, entry: &SpotEntry) -> Result<(), SpotError> {
-    let (Some(active), Some(owner)) = (registry.account.as_ref(), entry.account.as_deref()) else {
-        return Ok(());
-    };
-    if active.root == owner {
-        return Ok(());
-    }
-    Err(SpotError::ForeignAccount {
-        name: name.to_owned(),
-        owner: owner.to_owned(),
-        active: active.root.clone(),
-    })
 }
 
 /// Validate a spot name against the canonical slug:

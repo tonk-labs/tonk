@@ -1487,37 +1487,9 @@ async fn link_account(
                 eprintln!("warning: account repository is not synchronized: {warning}");
             }
             print_customer_line(&profile, store).await;
-            print_foreign_space_notice(store);
             ExitCode::Success
         }
         Err(error) => print_failure(error),
-    }
-}
-
-/// Say once, at sign-in, that replicas belonging to another account are on
-/// this device — otherwise their first refusal reads as a bug.
-fn print_foreign_space_notice(store: &tonk_cli::spot::SpotStore) {
-    let (Ok(registry), Ok(Some(active))) = (store.load(), store.account()) else {
-        return;
-    };
-    let foreign: Vec<&String> = registry
-        .spots
-        .iter()
-        .filter(|(_, entry)| {
-            entry
-                .account
-                .as_deref()
-                .is_some_and(|owner| owner != active.root)
-        })
-        .map(|(name, _)| name)
-        .collect();
-    if foreign.is_empty() {
-        return;
-    }
-    println!();
-    println!("still here, and unavailable until their own account signs in:");
-    for name in foreign {
-        println!("  {name}");
     }
 }
 
@@ -1887,11 +1859,6 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                             {
                                 return print_failure(error);
                             }
-                            if let Err(error) =
-                                store.set_space_account(&outcome.name, Some(&account.root))
-                            {
-                                return print_failure(error);
-                            }
                             println!("account: {}", account.root);
                             ExitCode::Success
                         }
@@ -1943,11 +1910,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     ExitCode::Success
                 }
                 Ok(outcome) => {
-                    println!(
-                        "linked\t{}\t{}",
-                        outcome.name,
-                        outcome.subject.as_deref().unwrap_or("-")
-                    );
+                    println!("linked\t{}\t{}", outcome.name, outcome.subject);
                     println!("account: {}", outcome.account);
                     println!("site: {}", outcome.site.display());
                     ExitCode::Success
@@ -2284,6 +2247,16 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
             print_sync_outcome(op, &outcome);
             record_spot_best_effort(&resolved.name, &site).await;
             ExitCode::Success
+        }
+        // The service boundary is where access is decided, so its refusal is
+        // relayed here rather than pre-empted at resolution, with the fix
+        // read from the roster the replica already holds.
+        Err(err @ sync::SyncError::Rejected { .. }) => {
+            eprintln!(
+                "error: {}",
+                sync::rejection_report(&site, &resolved.name).await
+            );
+            err.exit_code()
         }
         Err(err) => {
             eprintln!("error: {err}");
@@ -2953,14 +2926,6 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
                      re-register with `tonk spot new {name} --site {root}`",
                     root = root.display(),
                 ));
-            }
-            // A claimed space belongs to whichever account is signed in
-            // here: it exists on this device because that account accepted
-            // the invitation, and its directory is where it gets listed.
-            if let Ok(Some(account)) = store.account()
-                && let Err(err) = store.set_space_account(&name, Some(&account.root))
-            {
-                return print_failure(err);
             }
             if let Err(error) = tonk_cli::spot::bind(store, &name, &cwd) {
                 return print_failure(error);
