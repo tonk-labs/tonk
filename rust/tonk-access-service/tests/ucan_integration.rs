@@ -592,3 +592,116 @@ async fn it_cuts_off_a_holder_whose_grant_was_revoked(
 
     Ok(())
 }
+
+/// A device that revokes its own grant loses storage access.
+///
+/// This is the shape the account panel produces: a device signs a
+/// revocation of the `root -> device` grant it holds, which is what
+/// "revoke this device" means to a user looking at their device list.
+///
+/// Worth asserting here rather than only in the account service, whose
+/// device list is a projection: it records that a device was revoked but
+/// is never consulted when a presign is authorized. Only the artifact
+/// reaching this index withdraws anything, so a revocation that stops at
+/// the device list leaves the revoked device fully able to read and write.
+#[dialog_common::test]
+async fn it_cuts_off_a_device_that_revoked_its_own_grant(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+
+    let root = Ed25519Signer::generate().await.expect("root key");
+    let device = Ed25519Signer::generate().await.expect("device key");
+    env.provision_subject(root.did().as_str()).await?;
+
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(root.clone()))
+        .audience(&device.did())
+        .subject(Subject::Specific(root.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("a grant");
+    let chain = DelegationChain::new(grant.clone());
+
+    let presented = || {
+        let chain = chain.clone();
+        let device = device.clone();
+        let root = root.clone();
+        async move {
+            let mut arguments = std::collections::BTreeMap::new();
+            arguments.insert(
+                "catalog".to_string(),
+                dialog_ucan_core::promise::Promised::String("blobs".to_string()),
+            );
+            arguments.insert(
+                "digest".to_string(),
+                dialog_ucan_core::promise::Promised::Bytes(vec![9u8; 32]),
+            );
+            let invocation = InvocationBuilder::new()
+                .issuer(Signer::from(device))
+                .audience(&root.did())
+                .subject(&root.did())
+                .command(vec!["archive".to_string(), "get".to_string()])
+                .arguments(arguments)
+                .proofs(chain.proof_cids().to_vec())
+                .try_build()
+                .await
+                .expect("an invocation");
+            let mut tokens =
+                vec![serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes")];
+            for (_, delegation) in chain.export() {
+                tokens.push(delegation.encoded().to_vec());
+            }
+            Container::new(tokens).into_bytes().expect("a container")
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let post = |body: Vec<u8>| {
+        client
+            .post(env.ucan_endpoint())
+            .header("Content-Type", "application/cbor")
+            .body(body)
+            .send()
+    };
+
+    let before = post(presented().await).await?;
+    assert!(
+        before.status().is_success(),
+        "the device must reach storage before revoking itself, got {}: {}",
+        before.status(),
+        before.text().await.unwrap_or_default()
+    );
+
+    // The device withdraws its own grant, exactly as the panel does.
+    let artifact =
+        tonk_identity::revocation::mint_self_revocation(device.clone(), &chain, &grant.to_cid())
+            .await?;
+    let recorded = post(artifact).await?;
+    assert!(
+        recorded.status().is_success(),
+        "the self-revocation must be accepted, got {}: {}",
+        recorded.status(),
+        recorded.text().await.unwrap_or_default()
+    );
+
+    let after = post(presented().await).await?;
+    assert_eq!(
+        after.status().as_u16(),
+        403,
+        "a device that revoked its own grant must lose storage access"
+    );
+    let body = after.bytes().await?;
+    let reason: AuthorizeError = serde_json::from_slice(&body)
+        .with_context(|| format!("a client must be able to read the refusal: {body:?}"))?;
+    assert!(
+        matches!(reason, AuthorizeError::Revoked { .. }),
+        "the refusal must say the authority was withdrawn, got: {reason:?}"
+    );
+
+    Ok(())
+}
