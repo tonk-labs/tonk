@@ -6019,52 +6019,48 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
-    /// A synced spot whose remote carries no relay refuses the mint, and a
-    /// second attach naming the relay repairs it — the path the share
-    /// prompt's confirm drives for every spot created before in-band
-    /// revocation landed.
+    /// A second attach does not repoint a remote that is already there.
     ///
-    /// The repair names a DIFFERENT endpoint on purpose. The prompt builds it
-    /// from the page's origin, which need not be the origin the spot actually
-    /// syncs through, and an existing remote is left as-is at the dialog
-    /// layer — so the meta mirror has to keep describing the remote that is
-    /// really there rather than adopting the caller's.
+    /// The share prompt builds its endpoint from the page's origin, which
+    /// need not be the origin the spot actually syncs through, and dialog
+    /// leaves an existing remote as-is — so the meta mirror has to keep
+    /// describing the remote that is really there rather than adopting the
+    /// caller's.
+    ///
+    /// This used to also assert that a remote carrying no revocation relay
+    /// refused the mint. Revocations travel in-band on `/ucan/` now, so
+    /// there is no relay to be missing and nothing produces that refusal;
+    /// minting without one is the ordinary case, asserted here.
     #[dialog_common::test]
-    async fn it_repairs_a_remote_that_carries_no_revocation_relay() {
+    async fn it_does_not_repoint_a_remote_that_is_already_attached() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let key = put_repo(&app, "test-relay-repair").await;
         let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
 
         run_invite_with_time(&state, &key, 11.0).await;
 
-        let blocked = share_blocked_rows(&state, &key).await;
-        assert_eq!(blocked.len(), 1, "one refusal recorded");
-        assert_eq!(blocked[0].0, "missing-revocation-relay");
         assert!(
-            content_invitations(&state, &key).await.is_empty(),
-            "a refused mint records no invitation",
+            share_blocked_rows(&state, &key).await.is_empty(),
+            "a remote without a relay is no longer a refusal",
+        );
+        assert_eq!(
+            content_invitations(&state, &key).await.len(),
+            1,
+            "so the mint records its invitation",
         );
 
         let info = post_remote(
             &app,
             &key,
             "https://a-different-origin.example.test/ucan/",
-            Some("https://relay.example.test/revocations"),
+            None,
         )
         .await;
-
-        run_invite_with_time(&state, &key, 12.0).await;
-
-        assert_eq!(
-            content_invitations(&state, &key).await.len(),
-            1,
-            "the repaired spot mints",
-        );
 
         let address = serde_json::to_string(&info.remote["origin"].address).unwrap();
         assert!(
             address.contains("https://access.example.test/ucan/"),
-            "the repair must not repoint the remote, got {address}",
+            "a second attach must not repoint the remote, got {address}",
         );
     }
 
