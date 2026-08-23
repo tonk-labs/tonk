@@ -161,11 +161,6 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
         .await
         .map_err(map_access_error)?;
 
-    // Screen the window the presented credentials claim. Runs only
-    // after cryptographic authorization succeeded, and fails closed: a
-    // presign the screen cannot clear is refused.
-    #[cfg(target_arch = "wasm32")]
-    screen_window(body_bytes)?;
     #[cfg(target_arch = "wasm32")]
     screen_consumer_state(body_bytes, env).await?;
     #[cfg(target_arch = "wasm32")]
@@ -254,50 +249,6 @@ fn provisioning_unavailable() -> Refusal {
         detail: "provisioning registry unavailable, retry shortly".to_string(),
     }
     .into()
-}
-
-/// Refuse a presign whose presented chain is outside its own validity
-/// window.
-///
-/// Revocation is no longer asked here: the authorizer carries a checker
-/// and answers it per link during verification. This is only the clock
-/// question, which no part of the chain walk asks.
-#[cfg(target_arch = "wasm32")]
-fn screen_window(body_bytes: &[u8]) -> std::result::Result<(), Refusal> {
-    use crate::expiry::{WindowVerdict, check_window, collect_window};
-
-    let presented = match collect_window(body_bytes) {
-        Ok(presented) => presented,
-        Err(err) => {
-            // The authorizer already accepted this container, so a parse
-            // failure here is shape drift between two parsers of the same
-            // bytes. There is no window to read and no cached verdict to
-            // fall back on, so the request cannot be cleared.
-            console_error!("window screen unavailable, container unparseable: {err}");
-            return Err(unavailable());
-        }
-    };
-
-    let now_s = Date::now().as_millis() / 1_000;
-    match check_window(&presented, now_s) {
-        WindowVerdict::Valid => Ok(()),
-        WindowVerdict::Expired => {
-            worker::console_log!("presign rejected: presented chain has expired");
-            Err(AuthorizeError::Expired {
-                expiration: presented.expires_at.unwrap_or_default(),
-                at: now_s,
-            }
-            .into())
-        }
-        WindowVerdict::NotYetValid => {
-            worker::console_log!("presign rejected: presented chain is not yet valid");
-            Err(AuthorizeError::NotValidBefore {
-                not_before: presented.not_before.unwrap_or_default(),
-                at: now_s,
-            }
-            .into())
-        }
-    }
 }
 
 /// The client-facing 503. The reason stays in the logs: it names

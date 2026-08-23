@@ -45,8 +45,6 @@ pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 pub mod deletion;
 pub mod email;
 mod error;
-#[cfg(any(target_arch = "wasm32", test))]
-mod expiry;
 mod handlers;
 pub mod metering;
 pub mod provisioning;

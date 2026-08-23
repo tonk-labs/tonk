@@ -43,13 +43,7 @@ On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error
 
 ## Credential screening
 
-Revocation is checked inside the chain walk: the authorizer carries a `RevocationChecker` backed by `REVOCATIONS_KV`, so each link is measured against the principals entitled to revoke that link. One screen remains outside it, for the question the walk does not ask: the window the chain claims.
-
-### Time window
-
-The chain verifier computes the intersection of every hop's time bounds and hands it back as a `TimeRange`, but `InvocationChain::verify` discards it — so nothing on this path ever compared it to the clock. `src/expiry.rs` closes that: `collect_window` carries the latest `not_before` and earliest `expiration` across the invocation and every delegation, and a presign outside that window returns `401 INVOCATION_EXPIRED`.
-
-Unbounded chains are unaffected. A `root → device` grant carries no expiration, so its window is open and every check passes; only a chain that bounds itself can fall outside one. That is what makes this safe ahead of the clients that will start presenting short-lived session delegations — and it is the enforcement those sessions depend on, since an expiry nothing checks buys nothing.
+Revocation is checked inside the chain walk: the authorizer carries a `RevocationChecker` backed by `REVOCATIONS_KV`, so each link is measured against the principals entitled to revoke that link. The walk also judges the validity window, intersecting every hop's bounds with the invocation's and comparing the result to the clock, and names the refusal `Expired` / `NotValidBefore` with the bound that failed.
 
 ### Revocation
 
