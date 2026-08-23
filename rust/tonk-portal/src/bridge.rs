@@ -742,8 +742,10 @@ fn base_tag(base: &str) -> String {
     if base.is_empty() {
         String::new()
     } else {
-        // `base` is a same-origin literal we built (`https://{label}.tonk.network/`),
-        // so there is nothing to escape, but keep it minimal and attribute-safe.
+        // `base` is a URL we built (`https://{label}.tonk.network/`) or the
+        // creator's serialized `document.baseURI`. A serialized URL never
+        // holds a raw `"` or `>`, so there is nothing to escape. Keep it
+        // minimal and attribute-safe.
         format!("<base href=\"{base}\">")
     }
 }
@@ -2387,26 +2389,39 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // nesting level; it falls back to `location.origin` at the top document
     // (no parent portal, so `window.tonk` is absent).
     let origin = tonk_host::bridge::context_origin().unwrap_or_default();
-    // The guest's own `window.location` is `about:srcdoc`; its REAL location is
-    // the parent's. Pass the parent's path + search + hash so the guest stamps
-    // them on its requests (the SW reads them to route/contain) and so a
-    // location-reading guest control (e.g. `<tonk-page>`, which couriers an
-    // invite's `?access` + `#seed` into the join command) sees the real URL.
-    // `search`/`hash` especially: browsers strip the query only from the
-    // fragment, but the guest can't read EITHER off `about:srcdoc`, and the SW
-    // never sees the fragment on a network request.
-    let path = location
-        .as_ref()
-        .and_then(|l| l.pathname().ok())
-        .unwrap_or_default();
-    let search = location
-        .as_ref()
-        .and_then(|l| l.search().ok())
-        .unwrap_or_default();
-    let hash = location
-        .as_ref()
-        .and_then(|l| l.hash().ok())
-        .unwrap_or_default();
+    // The guest's own `window.location` is `about:srcdoc`. Its real location
+    // is the top page's. Pass the real path, search, and hash. The guest
+    // stamps them on its requests, and the SW reads them to route and
+    // contain. A guest control that reads the location also sees the real
+    // URL. For example, `<tonk-page>` couriers an invite's `?access` and
+    // `#seed` into the join command. The guest cannot read the query or the
+    // fragment off `about:srcdoc`. The SW never sees the fragment on a
+    // network request.
+    //
+    // Read them the same way as `origin`. A nested host forwards the values
+    // that its own parent gave it in `window.tonk.context`. Only the top
+    // document reads `window.location`. A nested host must not read its own
+    // location. That location is `about:srcdoc` (pathname `srcdoc`) or, for a
+    // host two or more frames deep, a `blob:` URL (see `shared::GuestSource`).
+    // Neither is the page the user is on.
+    let path = tonk_host::bridge::context_field("path").unwrap_or_else(|| {
+        location
+            .as_ref()
+            .and_then(|l| l.pathname().ok())
+            .unwrap_or_default()
+    });
+    let search = tonk_host::bridge::context_field("search").unwrap_or_else(|| {
+        location
+            .as_ref()
+            .and_then(|l| l.search().ok())
+            .unwrap_or_default()
+    });
+    let hash = tonk_host::bridge::context_field("hash").unwrap_or_else(|| {
+        location
+            .as_ref()
+            .and_then(|l| l.hash().ok())
+            .unwrap_or_default()
+    });
     let (repo, branch, with) = state
         .borrow()
         .with
@@ -3075,6 +3090,52 @@ mod tests {
             get_str(&context, "origin").as_deref(),
             Some("https://forwarded.test"),
             "a nested portal forwards the parent context origin, not `about:srcdoc`'s null",
+        );
+    }
+
+    /// The same rule for `path`, `search`, and `hash`. A nested host's own
+    /// location is `about:srcdoc` or a `blob:` URL. Neither is the page the
+    /// user is on. The host must forward what its parent gave it. The real
+    /// location then reaches every nesting level. The SW routes by
+    /// `x-tonk-path`, and `<tonk-page>` couriers `?access` and `#seed`.
+    #[dialog_common::test]
+    async fn it_forwards_the_parent_context_path_search_and_hash() {
+        let win = window().expect("window");
+        let tonk = Object::new();
+        let ctx = Object::new();
+        let _ = Reflect::set(&ctx, &"origin".into(), &"https://forwarded.test".into());
+        let _ = Reflect::set(&ctx, &"path".into(), &"/forwarded/path".into());
+        let _ = Reflect::set(&ctx, &"search".into(), &"?access=abc".into());
+        let _ = Reflect::set(&ctx, &"hash".into(), &"#seed".into());
+        let _ = Reflect::set(&tonk, &"context".into(), &ctx);
+        let _ = Reflect::set(&win, &"tonk".into(), &tonk);
+
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"), None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, _port) = bind(&consumer, &state);
+
+        let ready = listener.wait_for("ready").await;
+        let context = Reflect::get(&ready, &"context".into()).expect("context");
+
+        // Restore before asserting so a failure doesn't leak `window.tonk`
+        // into a later test running in the same page.
+        let _ = Reflect::set(&win, &"tonk".into(), &JsValue::UNDEFINED);
+
+        assert_eq!(
+            get_str(&context, "path").as_deref(),
+            Some("/forwarded/path"),
+            "a nested portal forwards the parent context path, not its own pathname",
+        );
+        assert_eq!(
+            get_str(&context, "search").as_deref(),
+            Some("?access=abc"),
+            "a nested portal forwards the parent context search",
+        );
+        assert_eq!(
+            get_str(&context, "hash").as_deref(),
+            Some("#seed"),
+            "a nested portal forwards the parent context hash",
         );
     }
 

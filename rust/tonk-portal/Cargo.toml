@@ -24,6 +24,8 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
+    "Blob",
+    "BlobPropertyBag",
     "CssStyleDeclaration",
     "CustomElementRegistry",
     "Document",
@@ -46,6 +48,7 @@ web-sys = { workspace = true, features = [
     "RequestCache",
     "Response",
     "ResponseInit",
+    "Url",
     "Window",
 ] }
 

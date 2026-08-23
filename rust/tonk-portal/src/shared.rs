@@ -23,14 +23,34 @@
 //! Safari still has the old rule.
 //!
 //! The fix: a document that is nested below the top document loads its
-//! guests from a unique `data:text/html` URL ([`GuestSource::DataUrl`]). The
-//! sandbox, the opaque origin, and the bridge do not change. Only the
-//! document URL changes, and no two frames in one chain can have the same
-//! URL. The top document and its direct guests keep `srcdoc`
-//! ([`GuestSource::Srcdoc`]). That is the path all other browsers have
-//! always used. A `srcdoc` guest inherits the creator's base URL. A `data:`
-//! document does not. For that reason [`guest_document`] writes an explicit
-//! `<base>` when the portal has no space base of its own.
+//! guests from a `blob:` URL ([`GuestSource::BlobUrl`]). The browser mints
+//! a unique URL for each load, so no two frames in one chain can have the
+//! same URL. The sandbox, the opaque origin, and the bridge do not change.
+//! Only the document URL changes. The top document and its direct guests
+//! keep `srcdoc` ([`GuestSource::Srcdoc`]). That is the path all other
+//! browsers have always used. A `srcdoc` guest inherits the creator's base
+//! URL. A `blob:` document does not. For that reason [`guest_document`]
+//! writes an explicit `<base>` when the portal has no space base of its own.
+//!
+//! Why `blob:` and not `data:`: a `data:` URL carries the whole document in
+//! the URL. Chromium rejects a URL above 2 MB, Firefox above 32 MB, and every
+//! engine must percent-encode and parse it. A portal document can be very
+//! large. A `blob:` URL is 46 characters, has no size limit, and needs no
+//! encoding. The code revokes each `blob:` URL as soon as it has started the
+//! navigation; see [`guest_blob_url`].
+//!
+//! # Known limits
+//!
+//! - The gate counts frames from the browser's top document, not from the
+//!   tonk shell. If another page embeds the tonk shell in an iframe, the
+//!   shell's level-2 guests (the space chrome's nested `<tonk-site>`) also
+//!   change to `blob:`. Those guests run the element runtime. That path has
+//!   no test. If you embed tonk as an iframe, expect problems.
+//! - WebKit's rule also applies to author content. Levels 1 and 2 are
+//!   `about:srcdoc`. An author `<iframe srcdoc>` inside a level-3 guest is
+//!   the third `about:srcdoc` in the chain, and Safari does not load it.
+//!   Author content below level 2 must use `src=` (a `blob:`, `data:`, or
+//!   http URL), not `srcdoc`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -52,11 +72,11 @@ pub(crate) enum GuestSource {
     /// and the guest inherits the creator's base URL. The top document and
     /// its direct guests use this source.
     Srcdoc,
-    /// A unique `data:text/html;charset=utf-8,…` URL in `src`. WebKit
-    /// refuses the third nested `about:srcdoc` frame and all deeper ones.
-    /// This URL does not have that problem. A creator that is nested below
-    /// the top document uses this source.
-    DataUrl,
+    /// A `blob:` URL in `src`. The browser mints a unique URL for each load,
+    /// so WebKit's self-reference rule never matches. WebKit refuses the
+    /// third nested `about:srcdoc` frame and all deeper ones. A creator
+    /// below the top document uses this source.
+    BlobUrl,
 }
 
 /// Create and wire up the portal iframe, then store the resulting state.
@@ -192,7 +212,7 @@ fn guest_source(host: &Element) -> GuestSource {
     if parent == top {
         GuestSource::Srcdoc
     } else {
-        GuestSource::DataUrl
+        GuestSource::BlobUrl
     }
 }
 
@@ -203,14 +223,14 @@ fn guest_source(host: &Element) -> GuestSource {
 ///
 /// The base is the portal's per-space synthetic origin when the portal has
 /// one (see [`space_base`]). When it has none, a `srcdoc` guest inherits the
-/// creator's base URL from the browser. A `data:` document does not: its
-/// base is the data URL itself. For [`GuestSource::DataUrl`] this function
-/// writes the inherited value (the creator's `document.baseURI`) explicitly.
-/// Link and request resolution are then identical for the two sources.
+/// creator's base URL from the browser. A `blob:` document does not: its URL
+/// cannot be a base. For [`GuestSource::BlobUrl`] this function writes the
+/// inherited value (the creator's `document.baseURI`) explicitly. Link and
+/// request resolution are then identical for the two sources.
 fn guest_document(host: &Element, state: &PortalState, source: GuestSource) -> String {
     let content = host.get_attribute("content").unwrap_or_default();
     let mut base = space_base(state);
-    if base.is_empty() && source == GuestSource::DataUrl {
+    if base.is_empty() && source == GuestSource::BlobUrl {
         base = creator_document(host)
             .and_then(|d| d.base_uri().ok().flatten())
             .unwrap_or_default();
@@ -234,16 +254,25 @@ fn mount_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
         GuestSource::Srcdoc => {
             let _ = iframe.set_attribute("srcdoc", html);
         }
-        GuestSource::DataUrl => {
-            let _ = iframe.set_attribute("src", &guest_data_url(html));
-        }
+        GuestSource::BlobUrl => match guest_blob_url(html) {
+            Some(url) => {
+                let _ = iframe.set_attribute("src", &url);
+                revoke_guest_url(&url);
+            }
+            // The browser could not mint a URL. Use `srcdoc` instead of
+            // nothing. That works everywhere except in deep chains on WebKit.
+            None => {
+                tonk_common::log!("tonk-portal: createObjectURL failed; falling back to srcdoc");
+                let _ = iframe.set_attribute("srcdoc", html);
+            }
+        },
     }
 }
 
 /// Reload a live `iframe` with new `html` (after a `content` change).
 ///
 /// A `srcdoc` guest reloads when we assign the attribute again, as before.
-/// A `data:` guest reloads through the frame's own `location.replace()`,
+/// A `blob:` guest reloads through the frame's own `location.replace()`,
 /// not through a new `src`. A new `src` on a live frame NAVIGATES the frame,
 /// and a frame navigation adds a joint-session-history entry (see the
 /// teardown notes in `element.rs`). `replace` changes the entry in place.
@@ -255,11 +284,23 @@ fn reload_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
         GuestSource::Srcdoc => {
             let _ = iframe.set_attribute("srcdoc", html);
         }
-        GuestSource::DataUrl => {
-            let url = guest_data_url(html);
+        GuestSource::BlobUrl => {
+            let Some(url) = guest_blob_url(html) else {
+                tonk_common::log!("tonk-portal: createObjectURL failed; falling back to srcdoc");
+                let _ = iframe.set_attribute("srcdoc", html);
+                return;
+            };
             match iframe.content_window() {
                 Some(frame_window) => {
-                    let _ = frame_window.location().replace(&url);
+                    if let Err(error) = frame_window.location().replace(&url) {
+                        // The browser refused the in-place navigation. Load
+                        // through `src`, so that the new content still shows.
+                        // This adds one history entry. The log says so.
+                        tonk_common::log!(
+                            "tonk-portal: location.replace failed ({error:?}); reloading via src"
+                        );
+                        let _ = iframe.set_attribute("src", &url);
+                    }
                 }
                 // There is no live window (the frame was never mounted). Do
                 // a first load.
@@ -267,33 +308,45 @@ fn reload_guest(iframe: &HtmlIFrameElement, html: &str, source: GuestSource) {
                     let _ = iframe.set_attribute("src", &url);
                 }
             }
+            revoke_guest_url(&url);
         }
     }
 }
 
-/// Wrap a guest document in a `data:text/html;charset=utf-8,…` URL that is
-/// unique to this load.
+/// Put a guest document into a `blob:` URL that the frame can load.
 ///
-/// The URL must be unique because WebKit's self-reference rule compares
-/// frame URLs. Two guests with byte-identical documents in one ancestor
-/// chain would have the same URL, and the rule would refuse the second one.
-/// The marker is an HTML comment at the end. The parser ignores it, and the
-/// content cannot see it. We use percent-encoding, not base64. The document
-/// then decodes to exactly the string we built. The encoding makes the
-/// document about two times larger. That is well inside what browsers
-/// accept for a frame `src` (Chromium limits URLs to 2 MB; guest documents
-/// are tens of KB).
-pub(crate) fn guest_data_url(html: &str) -> String {
-    let nonce = format!(
-        "{:08x}{:08x}",
-        (js_sys::Math::random() * 4_294_967_296.0) as u32,
-        (js_sys::Math::random() * 4_294_967_296.0) as u32,
-    );
-    let marked = format!("{html}<!--tonk-guest:{nonce}-->");
-    format!(
-        "data:text/html;charset=utf-8,{}",
-        String::from(js_sys::encode_uri_component(&marked))
-    )
+/// The browser mints a unique URL for each call. WebKit's self-reference
+/// rule compares frame URLs, so it never matches an ancestor. The blob holds
+/// the document bytes as they are: no encoding, no size limit, and a
+/// 46-character URL. Returns `None` when the browser cannot make the URL.
+///
+/// The caller must call [`revoke_guest_url`] after it has started the
+/// navigation. A `blob:` URL keeps its bytes in memory until the code
+/// revokes it.
+pub(crate) fn guest_blob_url(html: &str) -> Option<String> {
+    let parts = js_sys::Array::of1(&JsValue::from_str(html));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("text/html;charset=utf-8");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options).ok()?;
+    web_sys::Url::create_object_url_with_blob(&blob).ok()
+}
+
+/// Revoke a guest `blob:` URL directly after the navigation to it has
+/// started.
+///
+/// This is safe. The HTML "navigate" algorithm resolves a `blob:` URL when
+/// the navigation starts. The browser then keeps the bytes alive until the
+/// load completes. Chromium takes a blob token at navigation start. WebKit
+/// keeps a scheduled blob navigation alive since bug 243936 (2022). We
+/// confirmed both with a 24 MB document three frames deep: a first load
+/// through `src`, and a reload through `location.replace()`.
+///
+/// Because the code revokes at once, it holds no URL state and needs no
+/// `load` listener. The iframe's `load` event is not a usable signal. An
+/// iframe appended without `src` fires `load` for its initial blank
+/// document. A "revoke on next load" would then revoke too early.
+pub(crate) fn revoke_guest_url(url: &str) {
+    let _ = web_sys::Url::revoke_object_url(url);
 }
 
 /// The per-space synthetic origin (`https://{label}.tonk.network/`) for this
@@ -378,10 +431,19 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    const DATA_PREFIX: &str = "data:text/html;charset=utf-8,";
+    const BLOB_PREFIX: &str = "blob:";
 
     fn document() -> Document {
         window().expect("window").document().expect("document")
+    }
+
+    /// Fetch `url` from this page and return the body as text. Returns `Err`
+    /// when the fetch fails. For a `blob:` URL that means the URL is revoked.
+    async fn fetch_text(url: &str) -> Result<String, JsValue> {
+        let response = JsFuture::from(window().expect("window").fetch_with_str(url)).await?;
+        let response: web_sys::Response = response.dyn_into()?;
+        let text = JsFuture::from(response.text()?).await?;
+        Ok(text.as_string().unwrap_or_default())
     }
 
     /// A new sealed iframe appended to the body, set up as `connect_portal`
@@ -447,33 +509,32 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn a_guest_data_url_round_trips_the_document_and_is_unique_per_load() {
+    async fn a_guest_blob_url_serves_the_document_and_is_unique_per_load() {
         let html = "<base href=\"https://x.tonk.network/\"><script>1<2</script>\
-                    <p>hi &amp; <b>\"q\"</b> 100% #frag</p>";
-        let first = guest_data_url(html);
-        let second = guest_data_url(html);
-        assert!(first.starts_with(DATA_PREFIX), "got: {first}");
+                    <p>hi &amp; <b>\"q\"</b> 100% #frag ünïcödé</p>";
+        let first = guest_blob_url(html).expect("a blob URL");
+        let second = guest_blob_url(html).expect("a blob URL");
+        assert!(first.starts_with(BLOB_PREFIX), "got: {first}");
         assert_ne!(
             first, second,
             "two loads of one document must never share a URL — WebKit's \
              self-reference rule compares ancestor URLs"
         );
-        let decoded = String::from(
-            js_sys::decode_uri_component(&first[DATA_PREFIX.len()..]).expect("decodes"),
-        );
+        let served = fetch_text(&first)
+            .await
+            .expect("the blob URL serves the document");
+        assert_eq!(served, html, "the document must arrive byte-for-byte");
+
+        revoke_guest_url(&first);
+        revoke_guest_url(&second);
         assert!(
-            decoded.starts_with(html),
-            "the document must decode byte-for-byte; got: {decoded}"
-        );
-        assert!(
-            decoded[html.len()..].starts_with("<!--tonk-guest:"),
-            "the uniqueness marker is a trailing comment; got: {}",
-            &decoded[html.len()..]
+            fetch_text(&first).await.is_err(),
+            "a revoked URL serves nothing; the bytes are free"
         );
     }
 
     #[dialog_common::test]
-    fn a_data_url_guest_writes_its_inherited_base_explicitly() {
+    fn a_blob_url_guest_writes_its_inherited_base_explicitly() {
         let host = document().create_element("tonk-portal").expect("host");
         host.set_attribute("content", "<p>hi</p>").expect("content");
         // No `with` means no space base. This is the case that depended on
@@ -486,53 +547,60 @@ mod tests {
             "a srcdoc guest inherits its base from the browser; got: {as_srcdoc}"
         );
 
-        let as_data = guest_document(&host, &state, GuestSource::DataUrl);
+        let as_blob = guest_document(&host, &state, GuestSource::BlobUrl);
         let inherited = document().base_uri().expect("baseURI").expect("set");
         assert!(
-            as_data.starts_with(&format!("<base href=\"{inherited}\">")),
-            "a data: guest must carry the creator's base URL explicitly; got: {}",
-            &as_data[..as_data.len().min(160)]
+            as_blob.starts_with(&format!("<base href=\"{inherited}\">")),
+            "a blob: guest must carry the creator's base URL explicitly; got: {}",
+            &as_blob[..as_blob.len().min(160)]
         );
-        assert!(as_data.contains("<p>hi</p>"), "content survives");
+        assert!(as_blob.contains("<p>hi</p>"), "content survives");
     }
 
-    /// The load path that WebKit needs. A sealed guest that we load as a
-    /// `data:` URL still runs the bridge bootstrap: it posts `hello` to its
+    /// The load path that WebKit needs. A sealed guest that we load from a
+    /// `blob:` URL still runs the bridge bootstrap: it posts `hello` to its
     /// parent. A reload through `location.replace()` runs the bootstrap
-    /// again.
+    /// again. The code revokes each URL as soon as the navigation has
+    /// started. Both loads still succeed. After the load, the URL serves
+    /// nothing.
     #[dialog_common::test]
-    async fn a_data_url_guest_boots_the_bridge_and_reloads_in_place() {
+    async fn a_blob_url_guest_boots_the_bridge_reloads_in_place_and_revokes_its_url() {
         let iframe = sealed_iframe();
         let first = hello_from(&iframe);
         mount_guest(
             &iframe,
             &bridge::bootstrap_srcdoc("<p>one</p>", ""),
-            GuestSource::DataUrl,
+            GuestSource::BlobUrl,
         );
         assert_eq!(
             first.await.ok().and_then(|v| v.as_bool()),
             Some(true),
-            "the data: guest must boot and greet its parent"
+            "the blob: guest must boot and greet its parent"
         );
-        assert!(
-            iframe
-                .get_attribute("src")
-                .is_some_and(|src| src.starts_with(DATA_PREFIX)),
-            "the first load is the frame's `src`"
-        );
+        let src = iframe
+            .get_attribute("src")
+            .expect("the first load is the frame's `src`");
+        assert!(src.starts_with(BLOB_PREFIX), "got: {src}");
         assert_eq!(iframe.get_attribute("srcdoc"), None);
+        assert!(
+            fetch_text(&src).await.is_err(),
+            "the URL is revoked once the navigation has started"
+        );
 
         let again = hello_from(&iframe);
         reload_guest(
             &iframe,
             &bridge::bootstrap_srcdoc("<p>two</p>", ""),
-            GuestSource::DataUrl,
+            GuestSource::BlobUrl,
         );
         assert_eq!(
             again.await.ok().and_then(|v| v.as_bool()),
             Some(true),
             "a reload must bring the guest back up"
         );
+        // `replace` keeps `src` at the first URL. The live document is the
+        // truth.
+        assert_eq!(iframe.get_attribute("src").as_deref(), Some(src.as_str()));
         iframe.remove();
     }
 }
@@ -540,14 +608,17 @@ mod tests {
 /// The WebKit case from end to end, through the production mount path. A
 /// guest created from a document that is already TWO frames below the top
 /// must still boot. Safari refuses a third `about:srcdoc` frame (see the
-/// module docs). Without the `data:` source this test times out there. With
+/// module docs). Without the `blob:` source this test times out there. With
 /// it, the test passes. Chrome loads both. The test uses only
 /// `connect_portal` on purpose. The same test then runs against the code
 /// before the fix and shows the failure.
 ///
-/// CI runs this test in headless Chrome, as it runs all tests here. To see
-/// the Safari failure and pass on your machine, enable Safari ▸ Develop ▸
-/// Allow Remote Automation, then run:
+/// CI runs this test in headless Chrome, as it runs all tests here. Chrome
+/// loads a third `about:srcdoc` frame, so the boot alone cannot catch a
+/// broken gate there. For that reason the test also asserts the mechanism:
+/// a guest created two frames deep has a `blob:` `src`. To see the Safari
+/// failure and pass on your machine, enable Safari ▸ Develop ▸ Allow Remote
+/// Automation, then run:
 ///
 /// ```text
 /// SAFARIDRIVER=/usr/bin/safaridriver \
@@ -668,6 +739,18 @@ mod nested_tests {
             .expect("guest iframe mounted")
             .unchecked_into::<HtmlIFrameElement>();
         let guest_window: JsValue = guest.content_window().expect("guest window").into();
+
+        // The mechanism. This assertion fails on every engine if the gate
+        // breaks, so CI (Chrome) catches that too.
+        assert!(
+            guest
+                .get_attribute("src")
+                .is_some_and(|src| src.starts_with("blob:")),
+            "a guest created two frames deep must load from a blob: URL, not srcdoc; \
+             got src={:?} srcdoc={:?}",
+            guest.get_attribute("src"),
+            guest.get_attribute("srcdoc").map(|s| s.len())
+        );
 
         // The bootstrap posts `hello` to its parent (the window of B) as its
         // first action. If no `hello` arrives, the frame did not load.
