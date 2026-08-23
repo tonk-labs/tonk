@@ -635,6 +635,64 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_reports_the_issuer_as_the_revoked_subject_of_a_powerline() {
+        // `Subject::Any` names no subject of its own, so the field falls
+        // back to the principal that issued the grant — the authority it
+        // actually conveys. Device grants are powerlines, so this is the
+        // ordinary case rather than an edge one, and the access service
+        // keys its "do we hold data this protects" lookup on it.
+        let space = signer(41).await;
+        let device = signer(42).await;
+        let grant = crate::delegation::mint_device_delegation(space.clone(), &device.did())
+            .await
+            .unwrap();
+        let target = grant.proof_cids()[0];
+
+        let verified = verify(
+            &mint_self_revocation(device.clone(), &grant, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            verified.subject,
+            device.did(),
+            "the device is the one revoking"
+        );
+        assert_eq!(
+            verified.revoked_subject,
+            space.did(),
+            "and the space is what the withdrawn grant was about"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_a_named_subject_as_the_revoked_subject() {
+        // The other half: a grant scoped to a specific subject reports
+        // that subject, not its issuer. Without this the powerline
+        // fallback could be applied everywhere and nothing would notice.
+        let (space, member, _, path) = invite_path().await;
+        let target = path.proof_cids()[1];
+
+        let verified = verify(
+            &mint_root_revocation(member.clone(), &path, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.subject, member.did(), "the member is revoking");
+        assert_eq!(
+            verified.revoked_subject,
+            space.did(),
+            "the invite hop names the space outright"
+        );
+    }
+
+    #[dialog_common::test]
     async fn it_records_the_revoker_as_subject() {
         // `sub` is WHO IS REVOKING, not what the revoked delegation was
         // about. Those are different questions, and filling the field from
