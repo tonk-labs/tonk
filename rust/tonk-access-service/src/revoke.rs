@@ -67,8 +67,17 @@ pub async fn revoke<S: Store, I: RevocationIndex>(
         VerifyError::Unauthorized(message) => RegistrationError::Unauthorized { message },
     })?;
 
+    // The consumer question is about the capability being withdrawn, not
+    // about who is withdrawing it: "do we hold data this revocation could
+    // protect". Those became different DIDs once `sub` started naming the
+    // revoker, and asking the old one would look up a device rather than
+    // the space whose data is at stake.
     let subject = verified.subject.to_string();
-    match store.consumer(&subject).await.map_err(internal)? {
+    match store
+        .consumer(&verified.revoked_subject.to_string())
+        .await
+        .map_err(internal)?
+    {
         // Nothing here to protect, and an unbounded write surface if we
         // accepted it.
         None => return Err(RegistrationError::UnknownConsumer),
@@ -177,6 +186,52 @@ mod tests {
 
         assert!(revoke(&store, &index, &bytes).await.unwrap().recorded);
         assert!(!revoke(&store, &index, &bytes).await.unwrap().recorded);
+    }
+
+    #[dialog_common::test]
+    async fn it_asks_the_consumer_question_about_the_revoked_capability() {
+        // `sub` names the revoker, so the consumer lookup cannot use it:
+        // that would ask whether a DEVICE is a paying consumer, when the
+        // question is whether we hold data for the SPACE whose grant is
+        // being withdrawn. The two were one field until recently, and the
+        // lookup silently followed the wrong one.
+        //
+        // Here the space is a registered consumer and the revoker is not,
+        // so a lookup keyed on the revoker would refuse a revocation that
+        // must be accepted.
+        // The DEVICE revokes its own grant, so revoker and revoked subject
+        // are different principals — which is what makes this able to tell
+        // the two lookups apart at all.
+        let space = Ed25519Signer::import(&[31u8; 32]).await.expect("space key");
+        let device = Ed25519Signer::import(&[32u8; 32])
+            .await
+            .expect("device key");
+        let grant = tonk_identity::delegation::mint_device_delegation(space.clone(), &device.did())
+            .await
+            .expect("grant");
+        let target = grant.proof_cids()[0];
+        let bytes =
+            tonk_identity::revocation::mint_self_revocation(device.clone(), &grant, &target)
+                .await
+                .expect("revocation");
+
+        let verified = tonk_identity::revocation::verify(&bytes)
+            .await
+            .expect("the artifact verifies");
+        assert_eq!(verified.subject, device.did(), "the device is revoking");
+        assert_eq!(
+            verified.revoked_subject,
+            space.did(),
+            "a device grant is a powerline, so its subject is its issuer"
+        );
+
+        // Only the space is a consumer. A lookup keyed on the revoker
+        // would refuse this.
+        let store = store_holding(space.did().as_ref(), ConsumerDeletionState::Active).await;
+        let index = MemoryRevocationIndex::default();
+        revoke(&store, &index, &bytes)
+            .await
+            .expect("the space is a consumer, so this must be accepted");
     }
 
     #[dialog_common::test]

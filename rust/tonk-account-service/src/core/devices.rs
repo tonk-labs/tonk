@@ -1,6 +1,6 @@
 //! Device registry operations: list, register, and record revocations.
 
-use tonk_identity::revocation::{RevocationAuthority, VerifyError, verify};
+use tonk_identity::revocation::{VerifyError, verify};
 
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
@@ -268,15 +268,13 @@ pub async fn revoke_device<S: DeviceRevocationProjection>(
     }
 
     let revoking_self = caller_did == target_did;
-    let attestation = if revoking_self
-        && verified.issuer.to_string() == device.device_did
-        && verified.authority == RevocationAuthority::Delegated
-    {
+    // Who signed is the whole question: the device itself for a
+    // self-revocation, the account root otherwise. `verify` has already
+    // established that the signer was entitled to withdraw the delegation it
+    // names, so the shape of that entitlement adds nothing here.
+    let attestation = if revoking_self && verified.issuer.to_string() == device.device_did {
         Attestation::Device
-    } else if !revoking_self
-        && verified.issuer.to_string() == account.root_did
-        && verified.authority == RevocationAuthority::PathIssuer
-    {
+    } else if !revoking_self && verified.issuer.to_string() == account.root_did {
         Attestation::Root
     } else {
         return Err(CeremonyError::Forbidden(if revoking_self {
