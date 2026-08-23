@@ -224,6 +224,52 @@ where
     Ok(spaces)
 }
 
+/// Every distinct access-service endpoint the directory's remotes point
+/// at.
+///
+/// One query across the whole account branch rather than a walk per
+/// space: a revocation has to reach each service that could still serve
+/// the withdrawn authority, and several spaces usually share one.
+///
+/// Remotes whose address is unreadable or not a UCAN site are skipped —
+/// nothing can be published to them, and one bad row must not stop the
+/// rest from being told.
+pub async fn access_endpoints<Env>(
+    account: &Branch,
+    env: &Env,
+) -> Result<std::collections::BTreeSet<String>, EvaluationError>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<Identify>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static,
+{
+    let remotes: Vec<Remote> = account
+        .query()
+        .select(Query::<Remote> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+
+    Ok(remotes
+        .into_iter()
+        .filter_map(|row| match RemoteAddress::decode(&row.address) {
+            Ok(SiteAddress::Ucan(ucan)) => Some(ucan.endpoint().to_string()),
+            _ => None,
+        })
+        .collect())
+}
+
 /// The full mount record for one space, or `None` when the directory
 /// holds no remotes for it.
 pub async fn mount_record<Env>(

@@ -705,3 +705,138 @@ async fn it_cuts_off_a_device_that_revoked_its_own_grant(
 
     Ok(())
 }
+
+/// Two spaces on two different access services, one revocation, both
+/// deny.
+///
+/// A device grant is `Subject::Any`: it is not scoped to a space, so it
+/// is not scoped to one access service either. Each service keeps its
+/// own revocation index and knows nothing of the others, so an artifact
+/// published to one leaves every other still serving the withdrawn
+/// device.
+///
+/// The failure this pins is a partial revocation, which is worse than an
+/// obvious one: the user is told the device is gone while a space synced
+/// elsewhere keeps answering it. So both services are checked working
+/// first, then told, then checked denying.
+#[dialog_common::test]
+async fn it_denies_a_revoked_device_at_every_service_it_reaches(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+    use tonk_access_service::helpers::{AccessServiceSettings, access_service};
+
+    // A second, wholly independent service: its own S3, its own
+    // revocation index.
+    let elsewhere = access_service(AccessServiceSettings::default()).await?;
+    let second = elsewhere.address.clone();
+    assert_ne!(
+        env.access_service_url, second.access_service_url,
+        "the two services must be distinct for this to prove anything"
+    );
+
+    let root = Ed25519Signer::generate().await.expect("root key");
+    let device = Ed25519Signer::generate().await.expect("device key");
+    env.provision_subject(root.did().as_str()).await?;
+    second.provision_subject(root.did().as_str()).await?;
+
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(root.clone()))
+        .audience(&device.did())
+        .subject(Subject::Specific(root.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("a grant");
+    let chain = DelegationChain::new(grant.clone());
+
+    let presented = || {
+        let chain = chain.clone();
+        let device = device.clone();
+        let root = root.clone();
+        async move {
+            let mut arguments = std::collections::BTreeMap::new();
+            arguments.insert(
+                "catalog".to_string(),
+                dialog_ucan_core::promise::Promised::String("blobs".to_string()),
+            );
+            arguments.insert(
+                "digest".to_string(),
+                dialog_ucan_core::promise::Promised::Bytes(vec![11u8; 32]),
+            );
+            let invocation = InvocationBuilder::new()
+                .issuer(Signer::from(device))
+                .audience(&root.did())
+                .subject(&root.did())
+                .command(vec!["archive".to_string(), "get".to_string()])
+                .arguments(arguments)
+                .proofs(chain.proof_cids().to_vec())
+                .try_build()
+                .await
+                .expect("an invocation");
+            let mut tokens =
+                vec![serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes")];
+            for (_, delegation) in chain.export() {
+                tokens.push(delegation.encoded().to_vec());
+            }
+            Container::new(tokens).into_bytes().expect("a container")
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let post = |endpoint: String, body: Vec<u8>| {
+        client
+            .post(endpoint)
+            .header("Content-Type", "application/cbor")
+            .body(body)
+            .send()
+    };
+
+    // Both serve the device to begin with, or a later refusal proves
+    // nothing about revocation.
+    for endpoint in [env.ucan_endpoint(), second.ucan_endpoint()] {
+        let response = post(endpoint.clone(), presented().await).await?;
+        assert!(
+            response.status().is_success(),
+            "{endpoint} must serve the device before revocation, got {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        );
+    }
+
+    // One artifact, published to every service the device could reach.
+    let artifact =
+        tonk_identity::revocation::mint_self_revocation(device.clone(), &chain, &grant.to_cid())
+            .await?;
+    for endpoint in [env.ucan_endpoint(), second.ucan_endpoint()] {
+        let recorded = post(endpoint.clone(), artifact.clone()).await?;
+        assert!(
+            recorded.status().is_success(),
+            "{endpoint} must accept the revocation, got {}: {}",
+            recorded.status(),
+            recorded.text().await.unwrap_or_default()
+        );
+    }
+
+    // And now neither serves it.
+    for endpoint in [env.ucan_endpoint(), second.ucan_endpoint()] {
+        let response = post(endpoint.clone(), presented().await).await?;
+        assert_eq!(
+            response.status().as_u16(),
+            403,
+            "{endpoint} still serves a revoked device"
+        );
+        let body = response.bytes().await?;
+        let reason: AuthorizeError = serde_json::from_slice(&body)
+            .with_context(|| format!("{endpoint} sent an unreadable refusal: {body:?}"))?;
+        assert!(
+            matches!(reason, AuthorizeError::Revoked { .. }),
+            "{endpoint} must say the authority was withdrawn, got: {reason:?}"
+        );
+    }
+
+    Ok(())
+}
