@@ -1486,6 +1486,7 @@ async fn link_account(
             if let Some(warning) = outcome.warning {
                 eprintln!("warning: account repository is not synchronized: {warning}");
             }
+            print_customer_line(&profile, store).await;
             print_foreign_space_notice(store);
             ExitCode::Success
         }

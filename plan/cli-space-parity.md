@@ -197,6 +197,10 @@ Delivered on `feat/cli-space-parity-build` over `origin/staging`:
   a row it cannot reach.
 - Resolution refuses another account's space with the invite copy, in one
   place, so every space-opening command inherits it.
+- `tonk account link` reports `signed in`, leaving `linked` to mean what
+  `tonk space link` does. The browser account e2e in `rust/tonk-ui` asserts
+  that copy, so it moves with it; the same path also kept the `access service:`
+  registration line it prints after signing in.
 
 Verified:
 
