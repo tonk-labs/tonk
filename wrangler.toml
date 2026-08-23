@@ -61,7 +61,7 @@ migrations_dir = "rust/tonk-access-service/migrations-ingest"
 # REVOCATIONS_KV` and filled in here.
 [[kv_namespaces]]
 binding = "REVOCATIONS_KV"
-id = "REPLACED-AT-BOOTSTRAP"
+id = "04f72780ec4541318e768ec26d9cc5e4"
 
 [vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
@@ -92,7 +92,7 @@ migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
 [[env.staging.kv_namespaces]]
 binding = "REVOCATIONS_KV"
-id = "REPLACED-AT-BOOTSTRAP"
+id = "02b830113c7f47879b3a839a52f643df"
 
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
