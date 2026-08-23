@@ -272,7 +272,7 @@ pub async fn revoke_device<S: DeviceRevocationProjection>(
     // self-revocation, the account root otherwise. `verify` has already
     // established that the signer was entitled to withdraw the delegation it
     // names, so the shape of that entitlement adds nothing here.
-    let attestation = if revoking_self && verified.issuer.to_string() == device.device_did {
+    let attestation = if revoking_self {
         Attestation::Device
     } else if !revoking_self && verified.issuer.to_string() == account.root_did {
         Attestation::Root

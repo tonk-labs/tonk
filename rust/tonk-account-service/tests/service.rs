@@ -402,7 +402,14 @@ async fn it_rejects_an_expired_invocation() {
     assert_eq!(response.status(), 401);
     let error: serde_json::Value = response.json().await.unwrap();
     assert_eq!(error["error"]["code"], "UNAUTHORIZED");
-    assert_eq!(error["error"]["message"], "invocation has expired");
+    // Expiry is dialog's finding now, judged against the verification
+    // context's clock rather than a bound compared here, so the wording is
+    // theirs. The refusal and its code are what this pins.
+    let message = error["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.to_lowercase().contains("expired"),
+        "expected an expiry refusal, got: {message}"
+    );
 
     server.stop().await;
 }
