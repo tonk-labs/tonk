@@ -179,15 +179,21 @@ jobs:
           # would refuse every request rather than degrade quietly.
           resolve_kv() {
             namespace="$1"
-            id="$({
-              nix --accept-flake-config develop .#ci --command wrangler kv namespace list
-            } | jq -r --arg title "$namespace" '.[] | select(.title == $title) | .id' | head -n 1)"
+            # `kv namespace list` emits JSON on stdout but takes no --json
+            # flag, unlike `d1 list`. Strip anything ahead of the array so a
+            # banner line cannot break the parse.
+            lookup() {
+              nix --accept-flake-config develop .#ci --command \
+                wrangler kv namespace list 2>/dev/null \
+                | sed -n '/^[[:space:]]*\[/,$p' \
+                | jq -r --arg title "$1" '.[] | select(.title == $title) | .id' \
+                | head -n 1
+            }
+            id="$(lookup "$namespace")"
             if [ -z "$id" ]; then
               nix --accept-flake-config develop .#ci --command \
                 wrangler kv namespace create "$namespace" >&2
-              id="$({
-                nix --accept-flake-config develop .#ci --command wrangler kv namespace list
-              } | jq -r --arg title "$namespace" '.[] | select(.title == $title) | .id' | head -n 1)"
+              id="$(lookup "$namespace")"
             fi
             if [ -z "$id" ]; then
               echo "::error::Could not resolve the KV namespace id for $namespace" >&2
