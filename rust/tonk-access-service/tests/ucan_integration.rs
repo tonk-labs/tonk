@@ -11,7 +11,9 @@
 
 #![cfg(feature = "integration-tests")]
 
+use anyhow::Context as _;
 use dialog_artifacts::{ArtifactSelector, Entity};
+use dialog_capability::access::AuthorizeError;
 use dialog_operator::helpers::{test_operator_with_profile, unique_name};
 use dialog_query::Attribute;
 use dialog_remote_ucan_s3::UcanAddress;
@@ -448,16 +450,25 @@ async fn it_answers_a_refusal_with_its_typed_reason(
         401,
         "an expired proof is an authentication-shaped refusal, not a bad request"
     );
-    let body: serde_json::Value = response.json().await?;
-    assert_eq!(
-        body["kind"], "Expired",
-        "the refusal must name itself so a client can act on it; body was: {body}"
-    );
-    assert_eq!(
-        body["expiration"].as_u64(),
-        Some(expired_at.to_unix()),
-        "and carry the bound that lapsed"
-    );
+    // Asserted through the client's own parser rather than on the JSON
+    // shape: `read_rejection` deserializes `AuthorizeError` straight from
+    // the body, so this is what a real caller sees. A body it cannot read
+    // falls through to `Unclassified`, which is what every denial through
+    // this server used to become.
+    let body = response.bytes().await?;
+    let reason: AuthorizeError = serde_json::from_slice(&body)
+        .with_context(|| format!("a client must be able to read the refusal: {body:?}"))?;
+    match reason {
+        AuthorizeError::Expired { expiration, at } => {
+            assert_eq!(
+                expiration,
+                expired_at.to_unix(),
+                "the refusal must carry the bound that lapsed"
+            );
+            assert!(at >= expiration, "and the instant it was judged at");
+        }
+        other => panic!("expected an expiry refusal, got: {other:?}"),
+    }
 
     Ok(())
 }
