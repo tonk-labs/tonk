@@ -446,6 +446,17 @@ mod tests {
         link: CliOutput,
     }
 
+    /// Where the CLI learns which account service the link belongs to.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum AccountService {
+        /// Named on the command line, as staging and local development do.
+        Named,
+        /// Left to the ceremony page. The hidden flag then keeps its
+        /// production default, so anything matched against it instead of
+        /// against what the page delivered names the wrong deployment.
+        FromThePage,
+    }
+
     async fn link_cli(driver: &WebDriver, env: &TestEnvironment) -> Result<LinkedCli> {
         link_cli_with(driver, env, false).await
     }
@@ -455,20 +466,30 @@ mod tests {
         env: &TestEnvironment,
         register_first: bool,
     ) -> Result<LinkedCli> {
+        link_cli_using(driver, env, register_first, AccountService::Named).await
+    }
+
+    async fn link_cli_using(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        register_first: bool,
+        service: AccountService,
+    ) -> Result<LinkedCli> {
         let profile = tempfile::tempdir()?;
         let mut command = tonk_command_in(env, &profile);
+        command.args([
+            "account",
+            "link",
+            "--name",
+            "e2e terminal",
+            "--no-open",
+            "--via",
+            env.tonk_web.join("account/link")?.as_str(),
+        ]);
+        if service == AccountService::Named {
+            command.args(["--service-url", env.account_service.as_str()]);
+        }
         command
-            .args([
-                "account",
-                "link",
-                "--name",
-                "e2e terminal",
-                "--no-open",
-                "--service-url",
-                env.account_service.as_str(),
-                "--via",
-                env.tonk_web.join("account/link")?.as_str(),
-            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -1245,6 +1266,58 @@ mod tests {
             "the link reports the registration the signup performed: {}",
             linked.link.stdout
         );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Linking without naming the account service records the deployment
+    /// the ceremony actually ran on.
+    ///
+    /// The page delivers its own service URL and the CLI attaches to that,
+    /// so the endpoints it discovers must be matched against the same
+    /// value. Matched against the flag instead, every ceremony outside
+    /// production disagrees with its own deployment, because the flag is
+    /// hidden and defaults to production.
+    #[dialog_common::test]
+    async fn it_links_without_being_told_the_account_service(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+        let linked = link_cli_using(&driver, &env, false, AccountService::FromThePage).await?;
+
+        let status = run_cli(
+            &env,
+            &linked.profile,
+            &["account".to_string(), "status".to_string()],
+        )
+        .await?;
+        let provider = status
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("account service: "))
+            .context("status output omitted the account service")?;
+        assert_eq!(url::Url::parse(provider)?, env.account_service);
+
+        // The endpoints are what `space new` and `space link` need; the
+        // registry is where they are read from, and status does not print
+        // them.
+        let registry: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            linked.profile.path().join("spots").join("spots.json"),
+        )?)?;
+        let account = registry
+            .get("account")
+            .context("the registry recorded no account")?;
+        let endpoint = |field: &str| -> Result<url::Url> {
+            let value = account
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .with_context(|| format!("the account record omitted {field}"))?;
+            Ok(url::Url::parse(value)?)
+        };
+        let origin = url::Url::parse(&format!("{}/", env.tonk_web.origin().ascii_serialization()))?;
+        assert_eq!(endpoint("ceremonyOrigin")?, origin);
+        assert_eq!(endpoint("accessRemote")?, origin.join("/ucan/")?);
+        endpoint("revocationRelay")?;
 
         driver.quit().await?;
         Ok(())
