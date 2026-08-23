@@ -986,7 +986,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1025,7 +1025,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "base58",
@@ -1048,7 +1048,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1076,7 +1076,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "base58",
@@ -1097,7 +1097,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "base58",
@@ -1112,7 +1112,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "base58",
@@ -1135,7 +1135,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "base58",
@@ -1150,7 +1150,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1167,7 +1167,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1179,7 +1179,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1194,7 +1194,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1232,7 +1232,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1292,7 +1292,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1309,7 +1309,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1348,7 +1348,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1385,7 +1385,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1424,7 +1424,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1454,7 +1454,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1501,7 +1501,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "async-trait",
  "base58",
@@ -1522,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1548,7 +1548,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-revoke#9b031aca91f50dd75e2628acdecd5dd9132a0547"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-22#2fd9042fe4acd66fac035c2f274e3c23c9550649"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",

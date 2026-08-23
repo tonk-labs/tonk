@@ -173,23 +173,49 @@ jobs:
             fi
             echo "$id"
           }
+          # The revocation index, resolved the same way. The presign path
+          # fails CLOSED without this binding — an index it cannot read says
+          # nothing about what was revoked — so an unsubstituted placeholder
+          # would refuse every request rather than degrade quietly.
+          resolve_kv() {
+            namespace="$1"
+            id="$({
+              nix --accept-flake-config develop .#ci --command wrangler kv namespace list
+            } | jq -r --arg title "$namespace" '.[] | select(.title == $title) | .id' | head -n 1)"
+            if [ -z "$id" ]; then
+              nix --accept-flake-config develop .#ci --command \
+                wrangler kv namespace create "$namespace" >&2
+              id="$({
+                nix --accept-flake-config develop .#ci --command wrangler kv namespace list
+              } | jq -r --arg title "$namespace" '.[] | select(.title == $title) | .id' | head -n 1)"
+            fi
+            if [ -z "$id" ]; then
+              echo "::error::Could not resolve the KV namespace id for $namespace" >&2
+              exit 1
+            fi
+            echo "$id"
+          }
           control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
+          revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control")"
           ingest_id="$(resolve "$ingest")"
+          revocations_id="$(resolve_kv "$revocations")"
           cp wrangler.toml "$config"
           sed -i \
             -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$control\"/" \
             -e "s/database_id = \"REPLACED-PER-PULL-REQUEST\"/database_id = \"$control_id\"/" \
             -e "s/database_name = \"tonk-access-ingest-preview\"/database_name = \"$ingest\"/" \
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
+            -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             "$config"
           if ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
-            || ! grep -Fq "database_id = \"$ingest_id\"" "$config"; then
-            echo "::error::Could not bind the access preview config to $control/$ingest"
+            || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
+            || ! grep -Fq "id = \"$revocations_id\"" "$config"; then
+            echo "::error::Could not bind the access preview config to $control/$ingest/$revocations"
             exit 1
           fi
           echo "database=$control" >> "$GITHUB_OUTPUT"

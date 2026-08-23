@@ -74,7 +74,7 @@ pub async fn revoke<S: Store, I: RevocationIndex>(
     // the space whose data is at stake.
     let subject = verified.subject.to_string();
     match store
-        .consumer(&verified.revoked_subject.to_string())
+        .consumer(verified.revoked_subject.as_ref())
         .await
         .map_err(internal)?
     {
