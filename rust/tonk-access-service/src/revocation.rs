@@ -253,6 +253,75 @@ mod tests {
         );
     }
 
+    /// A session is revocable, on its own and through the hop above it.
+    ///
+    /// This is the shape `tonk-worker`'s `session::open` actually mints:
+    /// a `space -> profile` powerline, then a bounded `profile ->
+    /// operator` hop with `Subject::Any`, which the operator presents
+    /// for twelve hours. The session hop is registered nowhere — it is
+    /// derived offline and known only by its CID in the chain it travels
+    /// in — so it is worth pinning that revocation reaches it at all.
+    ///
+    /// Both directions hold. The profile that issued the hop can
+    /// withdraw that one session without disturbing its others, and
+    /// withdrawing the powerline severs every session descended from it.
+    #[dialog_common::test]
+    async fn it_revokes_a_session_on_its_own_or_through_the_hop_above_it() {
+        let space = signer(150).await;
+        let profile = signer(151).await;
+        let operator = signer(152).await;
+
+        let powerline = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&profile.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .expect("a powerline");
+        let session_hop = DelegationBuilder::new()
+            .issuer(Signer::from(profile.clone()))
+            .audience(&operator.did())
+            .subject(UcanSubject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .expect("a session hop");
+        let chain = DelegationChain::new(powerline.clone())
+            .push(session_hop.clone())
+            .expect("the hops connect");
+        let container = present(&chain, &operator, &space).await;
+
+        assert!(
+            accepted(&MemoryRevocationIndex::default(), &container)
+                .await
+                .unwrap(),
+            "the session must work before anything is revoked"
+        );
+
+        // The issuing profile withdraws this one session.
+        let by_profile = MemoryRevocationIndex::default();
+        by_profile
+            .record(&session_hop.to_cid().to_string(), profile.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            !accepted(&by_profile, &container).await.unwrap(),
+            "a profile must be able to withdraw a session it minted"
+        );
+
+        // And withdrawing the powerline takes every session with it.
+        let by_space = MemoryRevocationIndex::default();
+        by_space
+            .record(&powerline.to_cid().to_string(), space.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            !accepted(&by_space, &container).await.unwrap(),
+            "revoking the hop a session rests on must sever it"
+        );
+    }
+
     /// Revoking a hop the chain never presents leaves it alone.
     #[dialog_common::test]
     async fn it_passes_a_chain_nothing_it_presents_was_revoked_in() {
