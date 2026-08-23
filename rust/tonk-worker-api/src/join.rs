@@ -16,6 +16,13 @@ pub enum JoinFailureKind {
     Revoked,
     /// The remote could not be reached, or could not serve the space.
     Unavailable,
+    /// The remote evaluated the invite's authority and declined it on
+    /// policy grounds — the delegation is well-formed and unexpired, but
+    /// its conditions do not hold for this space (an unprovisioned
+    /// subject, a lapsed plan). Distinct from [`Self::ClaimFailed`],
+    /// which means something on THIS device went wrong: retrying or
+    /// re-inviting changes nothing here, the space's owner has to act.
+    Refused,
     /// A local failure stopped the join.
     ClaimFailed,
 }
@@ -28,6 +35,7 @@ impl JoinFailureKind {
             Self::AudienceMismatch => "audience-mismatch",
             Self::Revoked => "revoked",
             Self::Unavailable => "unavailable",
+            Self::Refused => "refused",
             Self::ClaimFailed => "claim-failed",
         }
     }
@@ -39,6 +47,9 @@ impl JoinFailureKind {
             Self::AudienceMismatch => "This invite was issued to a different identity.",
             Self::Revoked => "This invite has been revoked.",
             Self::Unavailable => "Tonk could not reach this spot. Try again.",
+            Self::Refused => {
+                "This spot's host declined the invite. Its owner needs to check the spot's plan."
+            }
             Self::ClaimFailed => "Tonk could not join this spot.",
         }
     }

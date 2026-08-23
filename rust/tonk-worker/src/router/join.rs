@@ -275,10 +275,14 @@ impl std::fmt::Debug for JoinFailure {
 
 impl JoinFailure {
     fn new(kind: JoinFailureKind, detail: impl Into<String>) -> Self {
-        Self {
-            kind,
-            detail: detail.into(),
-        }
+        let detail = detail.into();
+        // The only place the detail is ever emitted. Every recipient-facing
+        // surface shows the kind's fixed copy so an upstream body cannot
+        // leak, which leaves a failed join otherwise undiagnosable: one
+        // sentence on screen standing for any of a dozen causes. Logged at
+        // construction so every constructor is covered by one line.
+        log!("join failed ({}): {detail}", kind.as_str());
+        Self { kind, detail }
     }
 
     /// The classification, for the caller that renders a terminal state.
@@ -300,6 +304,10 @@ impl JoinFailure {
 
     fn unavailable(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::Unavailable, detail)
+    }
+
+    fn refused(detail: impl Into<String>) -> Self {
+        Self::new(JoinFailureKind::Refused, detail)
     }
 
     pub(crate) fn claim_failed(detail: impl Into<String>) -> Self {
@@ -324,6 +332,11 @@ impl From<JoinFailure> for TonkWorkerError {
                 code: Some("JOIN_UNAVAILABLE".to_string()),
                 message,
             },
+            JoinFailureKind::Refused => TonkWorkerError::Upstream {
+                status: 403,
+                code: Some("JOIN_REFUSED".to_string()),
+                message,
+            },
             JoinFailureKind::ClaimFailed => TonkWorkerError::Internal(message),
         }
     }
@@ -338,14 +351,15 @@ mod failure_vocabulary {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use super::{JoinFailure, JoinFailureKind, JoinRejection};
+    use super::{AuthorizeError, JoinFailure, JoinFailureKind, JoinRejection};
     use crate::TonkWorkerError;
 
-    const KINDS: [JoinFailureKind; 5] = [
+    const KINDS: [JoinFailureKind; 6] = [
         JoinFailureKind::Malformed,
         JoinFailureKind::AudienceMismatch,
         JoinFailureKind::Revoked,
         JoinFailureKind::Unavailable,
+        JoinFailureKind::Refused,
         JoinFailureKind::ClaimFailed,
     ];
 
@@ -359,6 +373,7 @@ mod failure_vocabulary {
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
                 "Tonk could not reach this spot. Try again.",
+                "This spot's host declined the invite. Its owner needs to check the spot's plan.",
                 "Tonk could not join this spot.",
             ],
         );
@@ -374,6 +389,7 @@ mod failure_vocabulary {
                 "audience-mismatch",
                 "revoked",
                 "unavailable",
+                "refused",
                 "claim-failed",
             ],
         );
@@ -419,6 +435,31 @@ mod failure_vocabulary {
         };
         assert_eq!(status, 503);
         assert_eq!(code.as_deref(), Some("JOIN_UNAVAILABLE"));
+    }
+
+    /// A policy refusal is the REMOTE's verdict on a chain that proved
+    /// out, not a local breakage. It landed in the `_` catch-all and was
+    /// reported as `claim-failed` ("Tonk could not join this spot"),
+    /// which blames this device for a decision taken on the server —
+    /// the real one being an unprovisioned subject, which no amount of
+    /// retrying or re-inviting fixes.
+    #[dialog_common::test]
+    fn it_reports_a_policy_refusal_as_the_remotes_verdict() {
+        let failure = super::classify_authorization(&AuthorizeError::PolicyViolation {
+            predicate: "subject is provisioned by an active customer".to_string(),
+        });
+
+        assert_eq!(failure.kind(), JoinFailureKind::Refused);
+        assert!(
+            !failure.kind().retryable(),
+            "the same request will be refused again until the owner acts"
+        );
+
+        let TonkWorkerError::Upstream { status, code, .. } = TonkWorkerError::from(failure) else {
+            panic!("a refusal is the upstream's answer, not an internal fault");
+        };
+        assert_eq!(status, 403);
+        assert_eq!(code.as_deref(), Some("JOIN_REFUSED"));
     }
 
     #[dialog_common::test]
@@ -1932,23 +1973,40 @@ fn classify_pull(error: &PullError) -> JoinFailure {
     // `AuthorizeError` / `Rejection` intact from the service boundary),
     // so classification is a match, not a code-table lookup.
     if let Some(authorization) = crate::router::sync::authorization_reason(error) {
-        return match authorization {
-            AuthorizeError::Revoked { .. } => {
-                JoinFailure::revoked("remote access has been revoked")
-            }
-            AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
-                JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
-            }
-            AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
-                JoinFailure::unavailable(format!("remote answered: {authorization}"))
-            }
-            _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
-        };
+        return classify_authorization(authorization);
     }
     if let Some(rejection) = crate::router::sync::rejection_reason(error) {
         return JoinFailure::unavailable(format!("remote answered: {rejection}"));
     }
     JoinFailure::unavailable("the remote could not be reached")
+}
+
+/// Map one authorization verdict to the failure the user is shown.
+///
+/// Split from [`classify_pull`] so it can be tested without building a
+/// `PullError`: the mapping is the part that decides what the page says,
+/// and one arm landing in the wrong bucket is invisible until someone
+/// reads a log.
+fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
+    match authorization {
+        AuthorizeError::Revoked { .. } => JoinFailure::revoked("remote access has been revoked"),
+        AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
+            JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
+        }
+        AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
+            JoinFailure::unavailable(format!("remote answered: {authorization}"))
+        }
+        // The chain proved out and the remote evaluated it; a policy
+        // predicate on the delegation said no (an unprovisioned subject
+        // is the common one). Nothing on this device is wrong, so
+        // `claim-failed` — which says the local claim broke, and reads
+        // as "Tonk could not join this spot" — pointed the user at the
+        // wrong thing entirely.
+        AuthorizeError::PolicyViolation { .. } => {
+            JoinFailure::refused(format!("remote refused: {authorization}"))
+        }
+        _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
+    }
 }
 
 /// Check that a branch carries what navigating into the space needs: the
@@ -2349,7 +2407,7 @@ pub(crate) async fn find_replica_for_subject(
 /// The fixed entity the in-flight join status lives at. Both the handler
 /// (writes overlay status) and the `/join` view (`entity=tonk:join/status`)
 /// agree on this URI, so there's no per-attempt id to thread.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const JOIN_STATUS_URI: &str = "tonk:join/status";
 
 /// Post-commit handler for the [`Join`] command.
@@ -2416,6 +2474,53 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
     }
 }
 
+/// Whether a `/join` URL carries an invite at all.
+///
+/// The delegation chain rides in `access`, so its presence is what
+/// separates "redeem this" from "someone opened /join to paste a link".
+/// Deliberately a query test and not a parse: a malformed or truncated
+/// invite IS an attempt and must still fail loudly with its reason,
+/// rather than being silently treated as an empty visit.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn carries_invite(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| {
+        parsed
+            .query_pairs()
+            .any(|(key, value)| key == "access" && !value.is_empty())
+    })
+}
+
+/// Drop this join's own overlay facts, and only those (scoped clear).
+///
+/// The branch overlay is SHARED: the tab's `tonk:site` facts (path,
+/// route, concept) live there too, and they are what every view on the
+/// page resolves through. A blanket `clear_overlay()` therefore wiped
+/// the site out from under the page on every `/join` mount — the site
+/// display lost its entity, fell back to its pending spinner, and
+/// nothing downstream ever rendered. Scope the clear to the join's own
+/// entities, exactly as the site re-stamp does with its own.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_artifacts::Entity) {
+    let status = status.clone();
+    session
+        .state
+        .retain_overlay_entities(move |overlaid| retains_overlay_entity(overlaid, &status));
+}
+
+/// Whether an overlaid entity SURVIVES a join's scoped clear.
+///
+/// Everything but the join's own status entity does. Split out from
+/// [`clear_join_overlay`] so the rule can be tested off-wasm: it is the
+/// whole contract, and getting it backwards is invisible until a page
+/// silently stops rendering.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn retains_overlay_entity(
+    overlaid: &dialog_artifacts::Entity,
+    status: &dialog_artifacts::Entity,
+) -> bool {
+    overlaid != status
+}
+
 /// Run the join operation from the command's full URL and drive the
 /// overlay-only join status. Always leaves the overlay in a terminal state
 /// (status retracted on success, `failed` on error).
@@ -2451,9 +2556,24 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
         }
     };
 
+    // A `/join` opened with no invite in its URL is not a failed attempt
+    // — it is someone who arrived holding a link they have not pasted
+    // yet. Asserting `pending` here is what made the paste form flash
+    // and vanish behind a spinner that waited on nothing. Claiming
+    // nothing leaves the view in its own inviteless state rather than
+    // flashing a spinner for an invite that will never arrive. A URL
+    // that carries an invite is untouched by this and proceeds exactly
+    // as before.
+    if !carries_invite(&command.url.0) {
+        clear_join_overlay(&session, &status_entity);
+        tonk.reactor.schedule_poll(Arc::clone(&session.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        return;
+    }
+
     // Pending: a fresh attempt clears any prior status, then marks
     // pending. Schedule a poll so the view shows "Joining…".
-    session.state.clear_overlay();
+    clear_join_overlay(&session, &status_entity);
     session.state.assert_overlay(JoinStatus {
         this: status_entity.clone(),
         status: Status(
@@ -2496,7 +2616,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             // the page that asked is a `postMessage` to its client. We post
             // `{ type: "navigate", href }`; the page's `<tonk-host>` performs
             // the navigation.
-            session.state.clear_overlay();
+            clear_join_overlay(&session, &status_entity);
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             let href = format!("/space/{key}", key = outcome.key);
@@ -2593,6 +2713,66 @@ pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
             log!("notify_sync: post_message(sync) failed: {e:?}");
         }
     });
+}
+
+/// The inviteless-`/join` guard, pinned on every target: it decides
+/// whether the route claims or offers its paste form, and getting it
+/// wrong flashes the form before a spinner for an invite that will
+/// never arrive.
+#[cfg(test)]
+mod invite_presence_tests {
+    use super::carries_invite;
+
+    #[test]
+    fn it_separates_a_redeemable_invite_from_an_empty_visit() {
+        assert!(carries_invite(
+            "https://tonk.spot/join?access=chain&remote=https%3A%2F%2Fs#seed"
+        ));
+        // A malformed chain is still an ATTEMPT: it must reach the claim
+        // path and fail with its reason, not be mistaken for an empty visit.
+        assert!(carries_invite("https://tonk.spot/join?access=not-a-chain"));
+
+        assert!(!carries_invite("https://tonk.spot/join"));
+        assert!(!carries_invite("https://tonk.spot/join#seed"));
+        assert!(
+            !carries_invite("https://tonk.spot/join?access="),
+            "an empty access parameter carries no chain"
+        );
+        assert!(!carries_invite(
+            "https://tonk.spot/join?remote=https%3A%2F%2Fs"
+        ));
+        assert!(!carries_invite("not a url"));
+    }
+}
+
+/// The join's overlay clear must be SCOPED. The branch overlay is
+/// shared: the tab's `tonk:site` facts (path, route, concept) live
+/// there too, and every view on the page resolves through them. A
+/// blanket clear wiped the site out from under the page on each
+/// `/join` mount, so the site display lost its entity and fell back to
+/// its spinner forever. Pinned here because the failure is silent —
+/// nothing errors, the page just stops rendering.
+#[cfg(test)]
+mod overlay_scope_tests {
+    use super::{JOIN_STATUS_URI, retains_overlay_entity};
+    use dialog_artifacts::Entity;
+
+    #[test]
+    fn it_clears_only_the_joins_own_overlay_entity() {
+        let status: Entity = JOIN_STATUS_URI.parse().expect("status URI parses");
+
+        assert!(
+            !retains_overlay_entity(&status, &status),
+            "the join's own status is what the clear is for"
+        );
+
+        for foreign in ["tonk:site", "tonk:join/route", "tonk:replica"] {
+            assert!(
+                retains_overlay_entity(&foreign.parse::<Entity>().expect("URI parses"), &status),
+                "{foreign} belongs to the page, not to this join"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
