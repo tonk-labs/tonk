@@ -1,19 +1,19 @@
 //! Time-window enforcement for presented UCAN containers.
 //!
-//! The chain verifier computes the window a chain is valid in and hands
-//! it back as a `TimeRange`; `InvocationChain::verify` discards it, so
-//! nothing on the presign path ever compared it to the clock. A chain
-//! that expired last year verifies exactly like a fresh one, and only a
-//! chain that can *never* be valid is rejected upstream.
+//! The chain walk refuses an expired chain on its own: it intersects
+//! every hop's bounds with the invocation's and compares the result to
+//! the clock, so an expired chain never reaches a permit. This screen
+//! is not what makes expiry enforced.
 //!
-//! This screen closes that. It reads the window off the container and
-//! refuses a presign outside it.
+//! What it does is name the refusal. The walk reports a time bound as a
+//! generic verification failure, which reaches a client as
+//! `CHAIN_INVALID`; running the same question here first turns it into
+//! `401 INVOCATION_EXPIRED`, which clients distinguish from a chain
+//! that never held up. Deleting this module would keep the enforcement
+//! and lose the code, so it stays until clients stop reading it.
 //!
 //! Unbounded chains are unaffected: a `root -> device` grant carries no
-//! expiration, so its window is open and every check passes. That is
-//! what makes this safe to turn on ahead of the clients that will start
-//! bounding themselves, and it is the enforcement short-lived session
-//! delegations depend on, since an expiry nothing checks buys nothing.
+//! expiration, so its window is open and every check passes.
 
 use dialog_ucan_core::container::{Container, ContainerError};
 use dialog_ucan_core::delegation::Delegation;
