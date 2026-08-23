@@ -91,6 +91,56 @@ pub trait RevocationIndex {
     }
 }
 
+/// A borrowed index is itself an index.
+///
+/// Lets a holder lend its index to a checker for the length of one
+/// verification rather than give it away.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for &I {
+    async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
+        (*self).record(target, subject).await
+    }
+
+    async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
+        (*self).subjects(target).await
+    }
+
+    async fn revoked_by_any(
+        &self,
+        target: &str,
+        subjects: &BTreeSet<String>,
+    ) -> Result<bool, IndexError> {
+        (*self).revoked_by_any(target, subjects).await
+    }
+}
+
+/// Shared ownership of an index is itself an index.
+///
+/// The native server hands one index to two holders at once: the
+/// revoke handler that writes it, and the authorizer that reads it
+/// while verifying. Neither can own it outright, and copying would
+/// give them separate sets.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for std::sync::Arc<I> {
+    async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
+        self.as_ref().record(target, subject).await
+    }
+
+    async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
+        self.as_ref().subjects(target).await
+    }
+
+    async fn revoked_by_any(
+        &self,
+        target: &str,
+        subjects: &BTreeSet<String>,
+    ) -> Result<bool, IndexError> {
+        self.as_ref().revoked_by_any(target, subjects).await
+    }
+}
+
 /// An in-memory index, for tests and the native server.
 #[cfg(any(test, feature = "helpers"))]
 #[derive(Default)]

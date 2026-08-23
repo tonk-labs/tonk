@@ -3,21 +3,71 @@
 //! The chain verifier computes the window a chain is valid in and hands
 //! it back as a `TimeRange`; `InvocationChain::verify` discards it, so
 //! nothing on the presign path ever compared it to the clock. A chain
-//! that expired last year verifies exactly like a fresh one — only a
+//! that expired last year verifies exactly like a fresh one, and only a
 //! chain that can *never* be valid is rejected upstream.
 //!
-//! This screen closes that. It reads the window off the same parse the
-//! revocation screen already does
-//! ([`PresentedCredentials`](super::revocation::PresentedCredentials))
-//! and refuses a presign outside it.
+//! This screen closes that. It reads the window off the container and
+//! refuses a presign outside it.
 //!
-//! Unbounded chains are unaffected: a `root → device` grant carries no
+//! Unbounded chains are unaffected: a `root -> device` grant carries no
 //! expiration, so its window is open and every check passes. That is
 //! what makes this safe to turn on ahead of the clients that will start
 //! bounding themselves, and it is the enforcement short-lived session
-//! delegations depend on — an expiry nothing checks buys nothing.
+//! delegations depend on, since an expiry nothing checks buys nothing.
 
-use crate::revocation::PresentedCredentials;
+use dialog_ucan_core::container::{Container, ContainerError};
+use dialog_ucan_core::delegation::Delegation;
+use dialog_ucan_core::invocation::Invocation;
+use dialog_varsig::AnySignature;
+
+/// The window every hop of a presented chain agrees on.
+///
+/// Each bound is the tightest any hop declares: the latest start and the
+/// earliest expiration, so the window is the intersection rather than
+/// any one hop's claim. `None` means unbounded on that side.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PresentedWindow {
+    /// Latest start bound in unix seconds.
+    pub not_before: Option<u64>,
+    /// Earliest expiration bound in unix seconds.
+    pub expires_at: Option<u64>,
+}
+
+/// Read the validity window off a presented container.
+///
+/// Revocation is not read here: the authorizer carries a checker and
+/// answers that per link while verifying. This is only the clock
+/// question, which no part of the chain walk asks.
+pub fn collect_window(container_bytes: &[u8]) -> Result<PresentedWindow, ContainerError> {
+    let tokens = Container::from_bytes(container_bytes)?.into_tokens();
+    let Some(invocation_bytes) = tokens.first() else {
+        return Err(ContainerError::Invocation(
+            "container must contain at least an invocation".to_string(),
+        ));
+    };
+    let invocation: Invocation<AnySignature> = serde_ipld_dagcbor::from_slice(invocation_bytes)
+        .map_err(|error| {
+            ContainerError::Invocation(format!("failed to decode invocation: {error}"))
+        })?;
+    let mut not_before: Option<u64> = None;
+    let mut expires_at = invocation.expiration().map(|stamp| stamp.to_unix());
+    for (index, bytes) in tokens.iter().skip(1).enumerate() {
+        let delegation: Delegation<AnySignature> =
+            serde_ipld_dagcbor::from_slice(bytes).map_err(|error| {
+                ContainerError::Invocation(format!("failed to decode delegation {index}: {error}"))
+            })?;
+        if let Some(stamp) = delegation.not_before() {
+            not_before = Some(not_before.map_or(stamp.to_unix(), |seen| seen.max(stamp.to_unix())));
+        }
+        if let Some(stamp) = delegation.expiration() {
+            expires_at = Some(expires_at.map_or(stamp.to_unix(), |seen| seen.min(stamp.to_unix())));
+        }
+    }
+    Ok(PresentedWindow {
+        not_before,
+        expires_at,
+    })
+}
 
 /// Whether the presented chain is valid at a given moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +87,7 @@ pub enum WindowVerdict {
 /// The bounds are inclusive: a chain expiring exactly now is still
 /// valid, matching how the intersection is computed upstream and
 /// avoiding a one-second cliff for clients that stamp `now + ttl`.
-pub fn check_window(presented: &PresentedCredentials, now_s: u64) -> WindowVerdict {
+pub fn check_window(presented: &PresentedWindow, now_s: u64) -> WindowVerdict {
     if let Some(not_before) = presented.not_before
         && now_s < not_before
     {
@@ -55,13 +105,8 @@ pub fn check_window(presented: &PresentedCredentials, now_s: u64) -> WindowVerdi
 mod tests {
     use super::*;
 
-    fn bounded(not_before: Option<u64>, expires_at: Option<u64>) -> PresentedCredentials {
-        PresentedCredentials {
-            delegators: Default::default(),
-            subject: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
-                .parse()
-                .expect("test DID parses"),
-            delegation_cids: vec!["bafycid".to_string()],
+    fn bounded(not_before: Option<u64>, expires_at: Option<u64>) -> PresentedWindow {
+        PresentedWindow {
             not_before,
             expires_at,
         }
@@ -97,6 +142,92 @@ mod tests {
         let verdict = check_window(&bounded(Some(1_001), None), 1_000);
 
         assert_eq!(verdict, WindowVerdict::NotYetValid);
+    }
+
+    /// The window is the intersection, not any one hop's claim.
+    ///
+    /// Built from real delegations: a root expiring late and a leaf
+    /// expiring early, plus a `not_before` on the leaf. What must come
+    /// back is the tightest of each, since a chain is only usable where
+    /// every hop agrees it is.
+    #[dialog_common::test]
+    async fn it_reads_the_tightest_bound_each_hop_declares() {
+        use dialog_credentials::{Ed25519Signer, Signer};
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_ucan_core::time::Timestamp;
+        use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder};
+
+        let at = |seconds: u64| {
+            Timestamp::new(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .expect("a representable timestamp")
+        };
+        use dialog_varsig::Principal as _;
+
+        let space = Ed25519Signer::import(&[110u8; 32]).await.expect("a signer");
+        let profile = Ed25519Signer::import(&[111u8; 32]).await.expect("a signer");
+        let device = Ed25519Signer::import(&[112u8; 32]).await.expect("a signer");
+
+        let root = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&profile.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .expiration(at(9_000))
+            .try_build()
+            .await
+            .expect("a delegation");
+        let leaf = DelegationBuilder::new()
+            .issuer(Signer::from(profile.clone()))
+            .audience(&device.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .not_before(at(1_000))
+            .expiration(at(5_000))
+            .try_build()
+            .await
+            .expect("a delegation");
+        let chain = DelegationChain::new(root)
+            .push(leaf)
+            .expect("the hops connect");
+
+        let invocation = InvocationBuilder::new()
+            .issuer(Signer::from(device.clone()))
+            .audience(&space.did())
+            .subject(&space.did())
+            .command(vec!["test".to_string()])
+            .arguments(std::collections::BTreeMap::new())
+            .proofs(chain.proof_cids().to_vec())
+            .try_build()
+            .await
+            .expect("an invocation");
+        let mut tokens =
+            vec![serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes")];
+        for (_, delegation) in chain.export() {
+            tokens.push(delegation.encoded().to_vec());
+        }
+        let bytes = dialog_ucan_core::Container::new(tokens)
+            .into_bytes()
+            .expect("a container");
+
+        let window = collect_window(&bytes).expect("the container parses");
+        assert_eq!(
+            window,
+            PresentedWindow {
+                not_before: Some(1_000),
+                expires_at: Some(5_000),
+            },
+            "the earliest expiration and the latest start bound the chain"
+        );
+        assert_eq!(check_window(&window, 6_000), WindowVerdict::Expired);
+        assert_eq!(check_window(&window, 3_000), WindowVerdict::Valid);
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_container_it_cannot_read() {
+        assert!(
+            collect_window(b"not a container").is_err(),
+            "an unreadable container yields no window to screen against"
+        );
     }
 
     #[dialog_common::test]

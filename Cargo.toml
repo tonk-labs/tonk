@@ -186,22 +186,22 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-22" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
 
 [profile.dev]
 opt-level = 1
@@ -220,5 +220,6 @@ inherits = "release"
 opt-level = "s"
 debug = 0
 strip = "debuginfo"
+
 
 

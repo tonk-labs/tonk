@@ -17,6 +17,14 @@ use dialog_credentials::Ed25519Signer;
 use dialog_remote_s3::helpers::LocalS3;
 use dialog_remote_s3::{Address, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
+
+/// The authorizer this server runs, revocation checking included.
+type ServerAuthorizer = UcanAuthorizer<
+    dialog_remote_ucan_s3::DefaultResolver,
+    crate::revocation::checker::IndexedRevocations<
+        Arc<crate::revocation::index::MemoryRevocationIndex>,
+    >,
+>;
 use dialog_varsig::Principal;
 use hyper::body::Incoming;
 use hyper::header::{
@@ -60,9 +68,10 @@ struct RegistrationState {
     service: Ed25519Signer,
     origin: String,
     purger: crate::deletion::NativeSpacePurger,
-    /// Revocations recorded by `/ucan/revoke`, read back by the presign
-    /// screen. In memory, as the worker's KV namespace is.
-    revocations: crate::revocation::index::MemoryRevocationIndex,
+    /// Revocations recorded by `/ucan/revoke`. In memory, as the
+    /// worker's KV namespace is. Shared with the authorizer, which
+    /// reads it back while verifying every presented chain.
+    revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
 }
 
 /// Captures activation emails and announces them on stdout, so a human
@@ -107,7 +116,15 @@ impl AccessServer {
 
         // Create UcanAuthorizer - the core of our service
         let purger = crate::deletion::NativeSpacePurger::new(address.clone(), credential.clone());
-        let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(address, Some(credential))));
+        // The authorizer checks revocation itself, per link, during the
+        // chain walk. It reads the same index `/ucan/revoke` writes, so
+        // a revocation recorded by one request governs the next.
+        let revocations: Arc<crate::revocation::index::MemoryRevocationIndex> = Default::default();
+        let authorizer = Arc::new(RwLock::new(
+            UcanAuthorizer::new(address, Some(credential)).with_revocations(
+                crate::revocation::checker::IndexedRevocations(revocations.clone()),
+            ),
+        ));
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -148,7 +165,7 @@ impl AccessServer {
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
             purger,
-            revocations: Default::default(),
+            revocations,
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -206,7 +223,7 @@ impl AccessServer {
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
-    authorizer: Arc<RwLock<UcanAuthorizer>>,
+    authorizer: Arc<RwLock<ServerAuthorizer>>,
     shortcuts: Shortcuts,
     deployment: Arc<Option<tonk_worker_api::DeploymentConfig>>,
     registration: Arc<RegistrationState>,
@@ -586,41 +603,6 @@ async fn handle_request(
             _ => {}
         }
     }
-    // The revocation screen, mirroring the worker: a chain resting on a
-    // delegation one of its own issuers withdrew is refused.
-    if outcome.is_ok() {
-        match crate::revocation::collect_presented(&body_bytes) {
-            Ok(presented) => {
-                match crate::revocation::screen_revoked(&registration.revocations, &presented).await
-                {
-                    Ok(None) => {}
-                    Ok(Some(_)) => {
-                        return Ok(cors_response(authorize_error_response(
-                            StatusCode::FORBIDDEN,
-                            &dialog_capability::access::AuthorizeError::Revoked {
-                                subject: presented.subject.clone(),
-                            },
-                        )));
-                    }
-                    Err(error) => {
-                        eprintln!("presign refused, revocation index unreachable: {error}");
-                        return Ok(cors_response(authorize_error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            &unavailable_provisioning(),
-                        )));
-                    }
-                }
-            }
-            Err(error) => {
-                eprintln!("revocation screen unavailable, container unparseable: {error}");
-                return Ok(cors_response(authorize_error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &unavailable_provisioning(),
-                )));
-            }
-        }
-    }
-
     // The provisioning gate, mirroring the worker: a subject is served
     // only while an active customer pays for it. Registration commands
     // returned above, so enrolling and activating stay possible while
