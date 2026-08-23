@@ -380,3 +380,84 @@ async fn it_caches_the_ucan_preflight(env: AccessServiceAddress) -> anyhow::Resu
 
     Ok(())
 }
+
+/// A refused presign answers with the reason itself, not prose.
+///
+/// The chain walk knows exactly which question failed, and the worker
+/// has always answered with that. The native server rendered every
+/// denial into `Authorization failed: {e}`, which no client can parse,
+/// so a caller talking to it could not tell an expired proof from a
+/// revoked one — the distinction its retry logic turns on.
+///
+/// Expiry is the case used here because it is the one a client is
+/// expected to act on: fetch a fresh delegation rather than give up.
+#[dialog_common::test]
+async fn it_answers_a_refusal_with_its_typed_reason(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::time::Timestamp;
+    use dialog_ucan_core::{Container, DelegationBuilder, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+
+    let space = Ed25519Signer::generate().await.expect("space key");
+    let device = Ed25519Signer::generate().await.expect("device key");
+    env.provision_subject(space.did().as_str()).await?;
+
+    let expired_at =
+        Timestamp::new(std::time::SystemTime::now() - std::time::Duration::from_secs(3_600))
+            .expect("a representable timestamp");
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(space.clone()))
+        .audience(&device.did())
+        .subject(Subject::Specific(space.did()))
+        .command(vec![])
+        .expiration(expired_at)
+        .try_build()
+        .await
+        .expect("a delegation");
+
+    let invocation = InvocationBuilder::new()
+        .issuer(Signer::from(device.clone()))
+        .audience(&space.did())
+        .subject(&space.did())
+        .command(vec!["archive".to_string(), "get".to_string()])
+        .arguments(std::collections::BTreeMap::new())
+        .proofs(vec![grant.to_cid()])
+        .try_build()
+        .await
+        .expect("an invocation");
+
+    let container = Container::new(vec![
+        serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes"),
+        grant.encoded().to_vec(),
+    ])
+    .into_bytes()
+    .expect("a container");
+
+    let response = reqwest::Client::new()
+        .post(env.ucan_endpoint())
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "an expired proof is an authentication-shaped refusal, not a bad request"
+    );
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(
+        body["kind"], "Expired",
+        "the refusal must name itself so a client can act on it; body was: {body}"
+    );
+    assert_eq!(
+        body["expiration"].as_u64(),
+        Some(expired_at.to_unix()),
+        "and carry the bound that lapsed"
+    );
+
+    Ok(())
+}

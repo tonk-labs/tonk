@@ -682,16 +682,32 @@ async fn handle_request(
                 )),
             }
         }
-        Err(e) => Ok(cors_response(
+        // The refusal travels as itself. Rendering it into prose here
+        // would undo the point of the authorizer naming what failed: a
+        // client parsing the body could no longer tell an expired proof
+        // from a revoked one, and every denial through this server
+        // would arrive unclassified.
+        Err(dialog_remote_s3::S3Error::Authorization(reason)) => Ok(cors_response(
+            authorize_error_response(authorize_status(&reason), &reason),
+        )),
+        Err(other) => Ok(cors_response(
             Response::builder()
                 .status(StatusCode::FORBIDDEN)
                 .body(Full::new(Bytes::from(format!(
-                    "Authorization failed: {}",
-                    e
+                    "Authorization failed: {other}"
                 ))))
                 .unwrap(),
         )),
     }
+}
+
+/// The status an authorization refusal answers with.
+///
+/// Shares the worker's mapping rather than restating it, so the two
+/// deployments cannot answer the same refusal differently.
+fn authorize_status(reason: &dialog_capability::access::AuthorizeError) -> StatusCode {
+    StatusCode::from_u16(crate::error::Refusal::Authorization(reason.clone()).status())
+        .unwrap_or(StatusCode::FORBIDDEN)
 }
 
 /// Current time as unix seconds.

@@ -186,22 +186,22 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/authorizer-revocations" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/typed-authorize-refusals" }
 
 [profile.dev]
 opt-level = 1
