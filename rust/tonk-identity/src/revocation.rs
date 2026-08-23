@@ -47,6 +47,12 @@ pub struct VerifiedRevocation {
     /// Canonical CID of the signed invocation artifact.
     pub artifact_cid: String,
     /// Expiration of the target delegation, if it has one.
+    ///
+    /// Reported, not acted on. It is tempting to bound the recorded
+    /// revocation by this — a chain past its expiry is refused on time
+    /// anyway — but the delegations most worth revoking are unexpiring,
+    /// so this is `None` for exactly those, and a revocation that stops
+    /// applying is a revocation that silently un-revokes.
     pub target_expires_at: Option<u64>,
     /// DID that signed the revocation invocation.
     ///

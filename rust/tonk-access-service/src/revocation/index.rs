@@ -13,6 +13,19 @@
 //! [ucan-wg/revocation#4](https://github.com/ucan-wg/revocation/pull/4)
 //! applied, so it binds on the subject rather than the invocation's
 //! issuer.
+//!
+//! Keys are written without an expiry and are never pruned. A
+//! revocation is permanent: it says an authority was withdrawn, and
+//! that does not stop being true. Expiring the key would silently flip
+//! the answer back to "not revoked", which is the one wrong answer this
+//! index must never give.
+//!
+//! Bounding the key by the revoked delegation's own expiration looks
+//! free — a chain past its expiry is refused on time anyway — but it is
+//! not. The delegations most worth revoking are unexpiring (a device
+//! grant carries no `exp`), so there is no bound to use for exactly the
+//! cases that matter. The storage is a key per withdrawn delegation,
+//! which is bounded by how many delegations were ever revoked.
 
 #[cfg(target_arch = "wasm32")]
 pub mod kv;
