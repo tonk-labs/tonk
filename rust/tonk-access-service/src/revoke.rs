@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(receipt.subject, space.did());
         assert!(receipt.recorded);
 
-        // And it is the fact the presign screen will find.
+        // And it is the fact the chain walk will find on the next presign.
         assert!(
             index
                 .revoked_by_any(&receipt.revoked.to_string(), &BTreeSet::from([subject]))

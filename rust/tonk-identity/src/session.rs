@@ -34,9 +34,9 @@ pub const SESSION_TTL_SECONDS: u64 = 12 * 60 * 60;
 ///
 /// The device signs this itself from the `root → device` grant it
 /// already holds — no network, no renewal endpoint, nothing to be
-/// unreachable. Withdrawal works by the grant's registry row, which is
-/// what the presign screen already checks; the expiry is what bounds
-/// the damage between a revoke and the next screen.
+/// unreachable. Withdrawal works by the grant's registry row, which the
+/// chain walk already checks; the expiry is what bounds the damage
+/// between a revoke and the next presign.
 pub async fn mint_session_delegation(
     device: Ed25519Signer,
     session: &Did,
@@ -63,9 +63,9 @@ pub async fn mint_session_delegation(
 /// producing the chain a session key presents.
 ///
 /// The composed chain still carries the grant's subject and every hop's
-/// CID, so the presign screen sees the device's identity as well as the
+/// CID, so the chain walk sees the device's identity as well as the
 /// session's — revoking the device severs the session on its next
-/// screen without the session itself being known to the registry.
+/// presign without the session itself being known to the registry.
 pub async fn extend_with_session(
     grant: &DelegationChain,
     device: Ed25519Signer,

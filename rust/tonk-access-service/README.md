@@ -43,11 +43,11 @@ On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error
 
 ## Credential screening
 
-After cryptographic authorization succeeds, `POST /ucan/` re-parses the presented container once and runs two screens off that parse: the window the chain claims, and whether any credential in it belongs to a revoked device.
+Revocation is checked inside the chain walk: the authorizer carries a `RevocationChecker` backed by `REVOCATIONS_KV`, so each link is measured against the principals entitled to revoke that link. One screen remains outside it, for the question the walk does not ask: the window the chain claims.
 
 ### Time window
 
-The chain verifier computes the intersection of every hop's time bounds and hands it back as a `TimeRange`, but `InvocationChain::verify` discards it — so nothing on this path ever compared it to the clock. `src/expiry.rs` closes that: `collect_presented` carries the latest `not_before` and earliest `expiration` across the invocation and every delegation, and a presign outside that window returns `401 INVOCATION_EXPIRED`.
+The chain verifier computes the intersection of every hop's time bounds and hands it back as a `TimeRange`, but `InvocationChain::verify` discards it — so nothing on this path ever compared it to the clock. `src/expiry.rs` closes that: `collect_window` carries the latest `not_before` and earliest `expiration` across the invocation and every delegation, and a presign outside that window returns `401 INVOCATION_EXPIRED`.
 
 Unbounded chains are unaffected. A `root → device` grant carries no expiration, so its window is open and every check passes; only a chain that bounds itself can fall outside one. That is what makes this safe ahead of the clients that will start presenting short-lived session delegations — and it is the enforcement those sessions depend on, since an expiry nothing checks buys nothing.
 
@@ -55,7 +55,9 @@ Unbounded chains are unaffected. A `root → device` grant carries no expiration
 
 A revocation is an ordinary `ucan/revoke` invocation, so it arrives at `POST /ucan/` like everything else and is answered before the presign path: it writes the index rather than reading it. The service verifies the artifact, refuses a subject it holds nothing for, and records one `REVOCATIONS_KV` key per `(revoked delegation, revoking subject)` pair. The key is the fact, so concurrent revokers cannot clobber each other the way a shared set value would.
 
-After authorization, a presign looks the presented delegation CIDs up in that index by point read. A match returns `403 CREDENTIAL_REVOKED`; clients accept the legacy `DEVICE_REVOKED` code during rollout. A failed index read is kept distinct from a denial and answers retryable `503 REVOCATION_UNAVAILABLE`, since a store outage is the service's fault rather than the caller's. Mutable account rows and issuer DID strings are not enforcement inputs.
+A presign reads that index during verification rather than after it. `UcanAuthorizer::with_revocations` supplies the checker, and the chain walk asks per link: *did any principal entitled to revoke THIS link do so?* The candidates are the issuers at or above the link plus the link's own audience, who may always disclaim what it was given. Scoping matters — one flat set of issuers applied to every hop would let a principal revoke the grant its own authority rests on.
+
+A match returns `403 CREDENTIAL_REVOKED`; clients accept the legacy `DEVICE_REVOKED` code during rollout. A failed index read is kept distinct from a denial and answers retryable `503`, since a store outage is the service's fault rather than the caller's. Mutable account rows and issuer DID strings are not enforcement inputs.
 
 ## Configuration
 

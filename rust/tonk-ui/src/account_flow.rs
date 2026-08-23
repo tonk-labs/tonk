@@ -1393,7 +1393,7 @@ mod tests {
     /// account-service device list cannot show: after revocation the
     /// claimed credential no longer reaches storage. That runs the whole
     /// path, from minting the artifact through `/ucan/revoke` recording
-    /// it to the presign screen refusing a chain that rests on it.
+    /// it to the chain walk refusing a chain that rests on it.
     #[dialog_common::test]
     async fn it_cuts_off_storage_access_when_an_invite_is_revoked(
         env: TestEnvironment,

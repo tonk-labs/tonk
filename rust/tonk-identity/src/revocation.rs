@@ -195,8 +195,8 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
     //
     // `UnverifiedRevocations` because this entry point answers "is this
     // artifact sound", not "does the revoker's own authority still stand" —
-    // the latter needs an index, which the access service supplies where it
-    // screens.
+    // the latter needs an index, which the access service hands to its
+    // authorizer.
     let environment = Environment::new(
         revocation.chain().proof_store(),
         DidKeyResolver,
