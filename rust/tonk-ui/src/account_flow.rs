@@ -636,18 +636,29 @@ mod tests {
         Ok(LinkedCli { profile, link })
     }
 
+    /// The one CLI call the suite has seen stall in CI: it runs traced,
+    /// so a failure's stderr carries every connection, request, and
+    /// response with timestamps instead of a bounded "did not answer".
     async fn devices(profile: &TempDir, env: &TestEnvironment) -> Result<CliOutput> {
-        run_cli(
-            env,
-            profile,
-            &[
-                "account".to_string(),
-                "devices".to_string(),
-                "--service-url".to_string(),
-                env.account_service.to_string(),
-            ],
+        let output = tokio::time::timeout(
+            Duration::from_secs(120),
+            tonk_command_in(env, profile)
+                .args(["account", "devices", "--service-url", env.account_service.as_str()])
+                .env("TONK_TRACE", "1")
+                .env(
+                    "RUST_LOG",
+                    "debug,hyper=debug,reqwest=debug,rustls=info,h2=info,dialog_remote_ucan_s3=trace,dialog_remote_s3=trace,dialog_operator=debug",
+                )
+                .kill_on_drop(true)
+                .output(),
         )
         .await
+        .map_err(|_| anyhow!("timed out waiting for `tonk account devices`"))??;
+        Ok(CliOutput {
+            status: output.status,
+            stdout: String::from_utf8(output.stdout)?,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 
     async fn post_json(

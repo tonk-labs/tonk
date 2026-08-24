@@ -1091,6 +1091,19 @@ fn uses_active_spot(command: &Command) -> bool {
 async fn main() {
     let cli = Cli::parse();
     VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
+    // `TONK_TRACE=1` turns on the tracing subscriber, filtered by
+    // `RUST_LOG`, on stderr. This is the diagnostic for "the remote did
+    // not answer": hyper, reqwest, and dialog's remote layer all emit
+    // at debug, so a stalled command explains itself in a log rather
+    // than in a bounded timeout.
+    if std::env::var_os("TONK_TRACE").is_some_and(|value| !value.is_empty() && value != "0") {
+        let _ = tracing_log::LogTracer::init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .with_target(true)
+            .try_init();
+    }
     let command = cli.command.unwrap_or(Command::Context { json: false });
     if let (Ok(space), Ok(spot)) = (
         std::env::var(tonk_cli::spot::SPACE_ENV),

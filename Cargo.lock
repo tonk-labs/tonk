@@ -4856,6 +4856,8 @@ dependencies = [
  "tonk-render",
  "tonk-schema",
  "tonk-worker-api",
+ "tracing-log",
+ "tracing-subscriber",
  "unicode-width",
  "url",
  "urlencoding",

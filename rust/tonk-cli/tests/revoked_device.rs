@@ -125,3 +125,62 @@ async fn it_lists_devices_promptly_after_another_principal_revokes_this_one(
     );
     Ok(())
 }
+
+/// The e2e shape exactly: the revocation is DELEGATED — minted by
+/// another device under its own powerline, the way the browser panel
+/// revokes — rather than signed by the root. The list must still answer
+/// within a bound afterwards.
+#[dialog_common::test]
+async fn it_lists_devices_promptly_after_a_delegated_revocation(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    use dialog_varsig::Principal as _;
+
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let operator =
+        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
+            .await?;
+    tonk_cli::account_state::ensure_with_operator_and_store(
+        &fixture.profile,
+        operator.clone(),
+        fixture.store.clone(),
+    )
+    .await?;
+
+    // A second device of the same account: the root grants it a
+    // powerline, and it revokes this one under that powerline.
+    let browser = dialog_credentials::Ed25519Signer::generate().await?;
+    let browser_link = tonk_identity::delegation::mint_device_delegation(
+        fixture.root_signer().await?,
+        &browser.did(),
+    )
+    .await?;
+    let target = fixture.link.proof_cids()[0];
+    let artifact = tonk_identity::revocation::mint_delegated_revocation(
+        browser,
+        &fixture.link,
+        &target,
+        &browser_link,
+    )
+    .await
+    .context("failed to mint the delegated revocation")?;
+    publish(&env, artifact).await?;
+
+    let started = std::time::Instant::now();
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tonk_cli::account::devices_in(&fixture.profile, &fixture.store, None),
+    )
+    .await;
+    eprintln!(
+        "devices after delegated revocation took {:?}",
+        started.elapsed()
+    );
+    anyhow::ensure!(
+        listed.is_ok(),
+        "a revoked device's list parked instead of answering"
+    );
+    Ok(())
+}
