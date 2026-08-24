@@ -224,6 +224,95 @@ mod when_minting_an_invite {
     }
 }
 
+mod when_claiming_an_invite {
+    use super::*;
+    use tonk_cli::inventory::{self, SpaceRole};
+    use tonk_cli::invite;
+    use tonk_cli::site::TonkSite;
+
+    /// The claim's roster row has to land where the roster is read: on the
+    /// content branch. On `meta` it would never sync — the owner would never
+    /// see the member, and this device's own listing would show a space it
+    /// legitimately joined as one whose roster holds no row of ours.
+    #[dialog_common::test]
+    async fn it_records_the_membership_where_the_roster_is_read() -> Result<()> {
+        let inviter = TestSite::new().await?;
+        let url = invite::mint(&inviter.site, None, None).await?.url;
+
+        // A separate parent means a separate profile: claiming with the
+        // inviter's own profile would be a self-claim, which is a different
+        // path.
+        let joiner = tempfile::tempdir()?;
+        let joiner_parent = joiner.path().canonicalize()?;
+        let joiner_config = common::isolated_config(&joiner_parent)?;
+        let root = joiner_parent.join("joined");
+        invite::claim(&root, &url, joiner_config.clone()).await?;
+
+        let joined = TonkSite::open_with(&root, joiner_config).await?;
+        let roster = inventory::read_roster(&joined).await?;
+
+        assert!(roster.notes.is_empty(), "{:?}", roster.notes);
+        let row = roster
+            .members
+            .first()
+            .expect("the claim writes this member's roster row");
+        assert_eq!(row.role.as_deref(), Some(tonk_schema::MemberRole::MEMBER));
+        assert_eq!(
+            inventory::role_for_site(&joined).await?,
+            SpaceRole::Member,
+            "a joined space reads as one this device is a member of"
+        );
+        Ok(())
+    }
+
+    /// `MemberRole` is cardinality-one on the membership entity, so a claim
+    /// that asserted `member` unconditionally would demote whoever the row
+    /// already names — including a founder claiming an invite to their own
+    /// space, which is reachable because one profile is shared across every
+    /// site on a machine.
+    #[dialog_common::test]
+    async fn it_leaves_an_existing_role_alone() -> Result<()> {
+        let inviter = TestSite::new().await?;
+        let url = invite::mint(&inviter.site, None, None).await?.url;
+
+        let joiner = tempfile::tempdir()?;
+        let joiner_parent = joiner.path().canonicalize()?;
+        let joiner_config = common::isolated_config(&joiner_parent)?;
+        let root = joiner_parent.join("joined");
+        invite::claim(&root, &url, joiner_config.clone()).await?;
+
+        // Promote the claimed row, then claim the same invite again into a
+        // second site backed by the same profile.
+        let joined = TonkSite::open_with(&root, joiner_config.clone()).await?;
+        let membership = tonk_schema::Membership::new(
+            inventory::read_roster(&joined).await?.members[0]
+                .did
+                .parse()?,
+            joined.repository.did(),
+        );
+        let session = joined.branch().await?;
+        session
+            .handle()
+            .transaction()
+            .assert(tonk_schema::MemberRole::founder(membership.this().clone()))
+            .commit()
+            .perform(&joined.operator)
+            .await?;
+        drop(session);
+
+        let again = joiner_parent.join("rejoined");
+        invite::claim(&again, &url, joiner_config).await?;
+
+        let roster = inventory::read_roster(&joined).await?;
+        assert_eq!(
+            roster.members[0].role.as_deref(),
+            Some(tonk_schema::MemberRole::FOUNDER),
+            "a second claim must not overwrite the role already on the row"
+        );
+        Ok(())
+    }
+}
+
 mod when_reporting_status {
     use super::*;
 

@@ -109,7 +109,11 @@ impl From<FieldSummary> for FieldContext {
 
 /// Read the selected spot and derive direct workflows from its live schema.
 pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextReport> {
-    let live_concepts = schema::list_concepts(site).await?;
+    // One enumeration answers both questions: whether the branch
+    // declares the standard library's `tonk/agents` concept, and which
+    // concepts this space's author defined. `is_system_concept` is the
+    // same filter `tonk concept ls` applies.
+    let live_concepts = schema::list_all_concepts(site).await?;
     let agents_declared = live_concepts
         .iter()
         .any(|concept| concept.name == agents::CONCEPT_NAME);
@@ -120,11 +124,7 @@ pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextRepo
     };
     let concepts = live_concepts
         .into_iter()
-        .filter(|concept| {
-            concept.name != "command"
-                && concept.name != "space-home"
-                && !crate::site::standard_library_has_name(&concept.name)
-        })
+        .filter(|concept| !schema::is_system_concept(&concept.name))
         .map(|concept| {
             let name = concept.name;
             let update_field = concept

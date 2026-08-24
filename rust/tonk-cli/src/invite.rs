@@ -20,7 +20,7 @@ use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
-use tonk_schema::{Invitation, InvitationExecution, InvitedVia, Membership};
+use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership};
 use url::Url;
 
 use crate::ExitCode;
@@ -243,17 +243,15 @@ async fn mint_for(
         None => None,
     };
 
+    // A remote with no relay configured is no longer a reason to refuse: a
+    // revocation is an ordinary `ucan/revoke` invocation, so it goes to the
+    // access service like everything else, and a separate relay is something
+    // a deployment may still name but no longer has to.
     let relay = match revocation_url {
         Some(raw) => Some(
             Url::parse(raw)
                 .map_err(|error| InviteError::Io(format!("invalid revocation URL: {error}")))?,
         ),
-        None if parsed_remote.is_some() => {
-            return Err(InviteError::Io(
-                "the selected remote has no revocation relay; configure it with `tonk remote add --revocation-url <URL>`"
-                    .to_string(),
-            ));
-        }
         None => None,
     };
     let invite = Invite::new(delegation.into_chain(), invite_audience, parsed_remote)
@@ -438,44 +436,6 @@ pub async fn claim(
         .await
         .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
 
-    // Roster facts on the joined repo's meta branch: the invitation
-    // (idempotent if the minter recorded it; self-healing otherwise),
-    // this profile's membership, and — unless this is a self-claim —
-    // the provenance stamp. A fresh site has no prior stamp, so no
-    // first-wins check is needed; but the tonk profile is shared
-    // across this machine's sites, so a member claiming their own
-    // invite would otherwise stamp their own founder membership.
-    // Mirror the worker's self-invite skip: provenance answers "how
-    // did this member first get in", and that is meaningless when the
-    // inviter is the claimer.
-    use tonk_schema::prelude::DidExt as _;
-    let membership = Membership::new(member.clone(), subject.clone());
-    let invitation_entity = invitation.this().clone();
-    let self_invite = invitation.inviter.0 == member.this();
-    let meta = joined
-        .repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&joined.operator)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
-    let mut transaction = meta
-        .transaction()
-        .assert(invitation)
-        .assert(membership.clone());
-    transaction = transaction.assert(invitation_execution);
-    if !self_invite {
-        transaction = transaction.assert(InvitedVia::new(
-            membership.this().clone(),
-            invitation_entity,
-        ));
-    }
-    transaction
-        .commit()
-        .perform(&joined.operator)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to record membership: {e}")))?;
-
     // Wire the embedded remote (if any) onto the freshly
     // bootstrapped site. Match the worker's `DEFAULT_REMOTE` so
     // a single human-readable label flows across both
@@ -514,12 +474,112 @@ pub async fn claim(
         }
     }
 
+    record_claim_roster(&joined, &member, &subject, invitation, invitation_execution).await?;
+
+    // A roster row that never leaves this device converges with nobody, so
+    // the join is only finished once it is published. Best-effort for the
+    // same reason the pull is: an unreachable remote must not fail a join
+    // that otherwise completed, and the next `tonk push` carries the row.
+    // Only when the pull succeeded — pushing onto an upstream this replica
+    // never reconciled with is how a joiner diverges.
+    if synced && let Err(e) = sync::push(&joined).await {
+        eprintln!(
+            "warning: joined, but publishing this device's roster row failed: {e}\n\
+             run `tonk push` so the space's other members can see you"
+        );
+    }
+
     Ok(ClaimOutcome {
         subject,
         remote_url,
         auto_configured_remote,
         synced,
     })
+}
+
+/// Record the claim on the joined space's content branch: the invitation it
+/// came through, this member's roster row, and the provenance stamp.
+///
+/// The content branch, not `meta`. Only upstreamed branches sync, so a
+/// membership written to `meta` never reaches the space's owner or its other
+/// members — and, since the roster is now what names a space's owner and this
+/// device's role in it, would leave `tonk space list` showing a space this
+/// device legitimately joined as one whose roster holds no row of ours. The
+/// worker's claim path writes the same facts to the same branch.
+///
+/// Runs after the initial pull, never before: the join provisions `main`
+/// deliberately empty so that pull is a clean fast-forward, and a row
+/// committed ahead of it would make the joiner's first sync a merge. The
+/// caller publishes the commit afterwards.
+///
+/// Both stamps are first-wins, mirroring the worker. The role is the one that
+/// matters: `MemberRole` is cardinality-one on the membership entity, so
+/// asserting `member` over a row the pull just brought down would demote
+/// whoever it names — including a founder claiming an invite to their own
+/// space, whose profile is shared with every other site on this machine.
+async fn record_claim_roster(
+    joined: &TonkSite,
+    member: &Did,
+    subject: &Did,
+    invitation: Invitation,
+    invitation_execution: InvitationExecution,
+) -> Result<(), InviteError> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::prelude::DidExt as _;
+
+    let membership = Membership::new(member.clone(), subject.clone());
+    let session = joined
+        .branch()
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to open the roster branch: {e}")))?;
+    let branch = session.handle();
+
+    let roles: Vec<MemberRole> = branch
+        .query()
+        .select(Query::<MemberRole> {
+            this: Term::from(membership.this().clone()),
+            role: Term::var("role"),
+        })
+        .perform(&joined.operator)
+        .try_vec()
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to read membership roles: {e:?}")))?;
+    let stamps: Vec<InvitedVia> = branch
+        .query()
+        .select(Query::<InvitedVia> {
+            this: Term::from(membership.this().clone()),
+            invitation: Term::var("invitation"),
+        })
+        .perform(&joined.operator)
+        .try_vec()
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to read membership provenance: {e:?}")))?;
+
+    // A member claiming their own invite is not provenance: it answers "how
+    // did this member first get in", which is meaningless when the inviter is
+    // the claimer.
+    let self_invite = invitation.inviter.0 == member.this();
+    let invitation_entity = invitation.this().clone();
+    let mut transaction = branch
+        .transaction()
+        .assert(invitation)
+        .assert(invitation_execution)
+        .assert(membership.clone());
+    if roles.is_empty() {
+        transaction = transaction.assert(MemberRole::member(membership.this().clone()));
+    }
+    if stamps.is_empty() && !self_invite {
+        transaction = transaction.assert(InvitedVia::new(
+            membership.this().clone(),
+            invitation_entity,
+        ));
+    }
+    transaction
+        .commit()
+        .perform(&joined.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to record membership: {e}")))?;
+    Ok(())
 }
 
 /// Shorten a minted invite URL via the shortcut service on its own

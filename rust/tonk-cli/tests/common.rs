@@ -79,6 +79,8 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
         profile_name: format!("tonk-test-{suffix:x}"),
         profile_directory: Directory::At(profile_dir.to_string_lossy().into_owned()),
         require_account: false,
+        provision_account_spaces: false,
+        account_store: tonk_cli::spot::SpotStore::at(parent.join("_state")),
     })
 }
 
@@ -122,7 +124,10 @@ impl AccountFixture {
     async fn build(remote: &str, hydrated: bool) -> Result<Self> {
         let test = TestSite::new().await?;
         let profile = test.site.profile.clone();
-        let store = tonk_cli::spot::SpotStore::at(test.parent.join("state"));
+        // One installation, one store: session state, the account repository,
+        // and the space registry all live in the same place the site config
+        // opens sites through.
+        let store = test.config.account_store.clone();
         let server = tonk_account_service::helpers::AccountServer::start().await;
         let root_prf = [77; 32];
         let root = dialog_credentials::Ed25519Signer::import(&root_prf).await?;

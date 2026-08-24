@@ -1196,6 +1196,43 @@ async fn prepare_join(
     let remote_url = invite.remote_url.as_ref().map(url::Url::to_string);
     let revocation_url = invite.revocation_url.as_ref().map(url::Url::to_string);
 
+    let existing = find_replica_for_subject(tonk, &subject)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to look up the local replica: {error}"))
+        })?;
+    let guest = guest_url(tonk, &subject)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to read the guest record: {error}"))
+        })?
+        .is_some();
+
+    // A spot this profile already holds durably is never re-entered as a
+    // guest, however the invite arrives. A visit mints its authority
+    // bounded to [`VISIT_TTL_SECONDS`] and files it under the same
+    // audience the durable route already resolves to; the proof walk
+    // chooses between the two without consulting the clock (see
+    // [`crate::session`]), so once the visit's hour is up, every walk
+    // that picks the bounded one presents a lapsed chain and the remote
+    // refuses it. Re-opening a link the recipient has already redeemed
+    // is a renewal, which is what [`JoinResponse::Renewed`] has always
+    // described.
+    //
+    // Conditioned on an account, because that is what a durable claim
+    // terminates at: a profile without one has nowhere to root a
+    // membership, and refusing its visit outright would be a worse
+    // answer than the bounded access it asked for.
+    let mode = if mode == JoinMode::GuestVisit
+        && existing
+        && !guest
+        && crate::router::account::require_account(tonk).await.is_ok()
+    {
+        JoinMode::Durable
+    } else {
+        mode
+    };
+
     // Audience: an open invite redelegates to whoever redeems it; a
     // targeted one only ever redeems for the DID it names.
     let (member, chain) = match mode {
@@ -1239,18 +1276,6 @@ async fn prepare_join(
             (Some(member), Some(claimed.chain))
         }
     };
-
-    let existing = find_replica_for_subject(tonk, &subject)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to look up the local replica: {error}"))
-        })?;
-    let guest = guest_url(tonk, &subject)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to read the guest record: {error}"))
-        })?
-        .is_some();
 
     Ok(PreparedJoin {
         mode,
@@ -3705,6 +3730,57 @@ mod tests {
             Some(tonk_schema::Replica::INITIALIZED),
             "the visibility commit stamps initialized, never blank",
         );
+    }
+
+    /// Re-opening an invite link for a spot this profile already holds
+    /// durably must not re-route the authority its sync presigns with.
+    ///
+    /// The `/join` route runs every open invite as a guest visit, and a
+    /// guest visit installs an `invite -> operator` grant bounded to
+    /// [`VISIT_TTL_SECONDS`](tonk_invite::VISIT_TTL_SECONDS) under the
+    /// same audience the durable route already resolves to. The
+    /// certificate walk never consults the clock (see
+    /// [`crate::session`]), so from then on it picks between a live
+    /// 12-hour route and one that lapses in an hour — and once that hour
+    /// is up, the pulls that pick the lapsed one fail with
+    /// `Authorization(Expired)`.
+    #[dialog_common::test]
+    async fn it_keeps_a_durable_members_authority_when_the_invite_is_reopened() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(90, 91).await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        let durable = proof_window(&state, &subject).await;
+
+        assert_eq!(post_visit(&app, &url).await, StatusCode::OK);
+
+        assert_eq!(
+            proof_window(&state, &subject).await,
+            durable,
+            "re-opening the invite bounded the durable member's own authority",
+        );
+        assert!(
+            !snapshot(&state, &key).await.guest,
+            "re-opening the invite demoted a durable member to a guest",
+        );
+    }
+
+    /// When the presign path's proof for `subject` lapses, if ever.
+    async fn proof_window(
+        state: &crate::router::AppState,
+        subject: &dialog_varsig::Did,
+    ) -> Option<u64> {
+        let tonk = state.read().await;
+        tonk.profile
+            .access()
+            .prove(dialog_capability::Subject::from(subject.clone()))
+            .audience(&tonk.operator)
+            .perform(&tonk.operator)
+            .await
+            .expect("the durable member stays authorized")
+            .duration
+            .expiration
     }
 
     /// The second attempt at the same invite renews rather than

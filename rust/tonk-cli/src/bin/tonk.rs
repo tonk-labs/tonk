@@ -35,11 +35,17 @@ use tonk_cli::{ExitCode, account, account_spots, agents, context, guide, identit
     after_help = "Start with live state, not documentation:\n  tonk context\n  tonk query <CONCEPT> --json\n  tonk assert <CONCEPT> <ENTITY> --<field> <value>\n  tonk query <CONCEPT> <ENTITY> --json\n\nBare `tonk` runs `tonk context`. Use `tonk help <COMMAND>` for more workflows."
 )]
 struct Cli {
-    /// Operate on this spot instead of the active directory binding.
-    /// Precedence: --spot > TONK_SPOT > `tonk use` in the nearest
+    /// Operate on this space instead of the active directory binding.
+    /// Precedence: --space > TONK_SPACE > compatibility aliases > `tonk use`
+    /// in the nearest
     /// ancestor directory.
-    #[arg(long, global = true, value_name = "NAME")]
-    spot: Option<String>,
+    #[arg(
+        long = "space",
+        visible_alias = "spot",
+        global = true,
+        value_name = "NAME"
+    )]
+    space: Option<String>,
 
     /// Print full error chains: every layer of context down to the
     /// root cause, not just the outermost message.
@@ -348,7 +354,8 @@ enum Command {
         name: Option<String>,
     },
 
-    /// Manage spots: named, centrally registered fact stores
+    /// Manage spaces: named, centrally registered fact stores
+    #[command(name = "space", visible_alias = "spot")]
     Spot {
         #[command(subcommand)]
         command: SpotCommand,
@@ -370,7 +377,7 @@ enum Command {
         reset: bool,
     },
 
-    /// Link this machine's profile to a Tonk account
+    /// Sign in to a Tonk account on this device, and manage it
     Account {
         #[command(subcommand)]
         command: AccountCommand,
@@ -502,11 +509,16 @@ enum AgentsCommand {
 
 #[derive(Subcommand, Debug)]
 enum AccountCommand {
-    /// Show whether this native profile is linked to an account
+    /// Show whether this device is signed in, and to which account
     Status,
 
-    /// Approve this native profile with a synced passkey in the browser
+    /// Sign in to your account with a synced passkey in the browser
+    ///
+    /// Tonk holds one account at a time. Sign out before signing in as
+    /// someone else; spaces that belong to the account you leave stay on
+    /// disk and work again when it signs back in.
     #[command(
+        visible_alias = "login",
         after_help = "Examples:\n  tonk account link\n  tonk account link --name workstation"
     )]
     Link {
@@ -530,10 +542,12 @@ enum AccountCommand {
         via: Option<String>,
     },
 
-    /// Disconnect account services on this device
+    /// Sign out of the account on this device
     ///
-    /// Preserves the local identity, root, and spots without revoking this
+    /// Preserves the local identity, root, and spaces without revoking this
     /// device. Use `tonk account revoke <DID>` to revoke a device instead.
+    /// Signed out, every local replica stays readable and writable here;
+    /// only account services stop.
     Logout,
 
     /// Review and permanently delete this account in the browser
@@ -556,8 +570,9 @@ enum AccountCommand {
         no_open: bool,
     },
 
-    /// List or pull the spots your account directory lists
-    Spots {
+    /// List or pull the spaces your account directory lists
+    #[command(name = "spaces", visible_alias = "spots")]
+    Spaces {
         #[command(subcommand)]
         command: Option<AccountSpotsCommand>,
     },
@@ -677,7 +692,12 @@ enum RemoteCommand {
 
 #[derive(Subcommand, Debug)]
 enum SpotCommand {
-    /// Create (or adopt) a spot, register it, and use it here
+    /// Create (or adopt) a space, register it, and use it here
+    ///
+    /// Signed out, the space is local-only until `tonk space link`
+    /// hands it to an account. Signed in, it belongs to that account
+    /// from the start: hosted, synced, and listed for your other
+    /// devices.
     ///
     /// The site lands in the canonical store
     /// (`~/Library/Application Support/tonk/spots/<name>` on macOS)
@@ -685,7 +705,7 @@ enum SpotCommand {
     /// site directory adopts it instead of creating fresh — the
     /// migration path for pre-registry `.tonk/` dirs.
     #[command(
-        after_help = "Examples:\n  tonk spot new garden\n  tonk spot new work --site ~/work/site\n  tonk spot new proj --site ~/proj/.tonk"
+        after_help = "Examples:\n  tonk space new garden\n  tonk space new work --site ~/work/site\n  tonk space new proj --site ~/proj/.tonk"
     )]
     New {
         /// Spot name ([a-z0-9][a-z0-9-_]*).
@@ -697,9 +717,27 @@ enum SpotCommand {
         site: Option<PathBuf>,
     },
 
-    /// List registered spots, directory bindings, and what is active here
-    #[command(after_help = "Examples:\n  tonk spot list")]
-    List,
+    /// List every local replica with its account, role, and access
+    #[command(after_help = "Examples:\n  tonk space list\n  tonk space list --json")]
+    List {
+        /// Emit versioned camelCase JSON rows.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Link a local-only space to the account you are signed in to
+    ///
+    /// The space keeps its name, its data, and its directory binding; what
+    /// changes is that the account now owns it, hosts it, and lists it for
+    /// your other devices. This is the only ownership move tonk makes: a
+    /// space that already belongs to an account stays with it, and reaches
+    /// other people through `tonk invite`.
+    #[command(after_help = "Examples:\n  tonk space link garden")]
+    Link {
+        /// Registered space name.
+        #[arg(value_name = "SPACE")]
+        name: String,
+    },
 
     /// Delete a spot and its data from disk
     ///
@@ -776,7 +814,13 @@ enum BlobCommand {
         #[arg(value_name = "BLOB_URI")]
         reference: String,
     },
-    /// List blobs in the index with size and content type
+    /// List ingested blobs with their content type and file name
+    ///
+    /// One row per blob, tab-separated
+    /// `entity<TAB>content-type<TAB>name`. Read from the metadata
+    /// facts `tonk blob add` asserts, so bytes attached without
+    /// metadata don't appear, and a row means the facts are here, not
+    /// necessarily the bytes.
     #[command(after_help = "Examples:\n  tonk blob ls")]
     Ls,
 }
@@ -804,11 +848,13 @@ enum ConceptCommand {
         description: Option<String>,
     },
 
-    /// List user-defined concepts on the branch
+    /// List the concepts this space defines
     ///
     /// One row per concept, tab-separated `name<TAB>description`.
-    /// Built-in concepts (`attribute`, `concept`, …) are omitted —
-    /// they're resolvable everywhere and would just be noise.
+    /// The runtime vocabulary — analyzer built-ins, the standard
+    /// library, the space-home recipe — is omitted; it resolves
+    /// everywhere and would bury what you defined. `tonk schema`
+    /// still shows the whole branch.
     #[command(after_help = "Examples:\n  tonk concept ls")]
     Ls,
 }
@@ -842,11 +888,13 @@ enum ViewCommand {
         name: Option<String>,
     },
 
-    /// List renderable entities (those carrying a text/html claim)
+    /// List renderable entities (those carrying a template claim)
     ///
-    /// One row per entity, tab-separated `name<TAB>entity<TAB>bytes`.
-    /// Claim-driven: surfaces anything the host route would serve,
-    /// regardless of how the claim was asserted.
+    /// One row per entity, tab-separated
+    /// `name<TAB>entity<TAB>model<TAB>bytes`. Claim-driven: surfaces
+    /// anything the display stack or the host route would render,
+    /// regardless of how the claim was asserted. Standard-library
+    /// views are omitted.
     #[command(after_help = "Examples:\n  tonk view ls")]
     Ls,
 }
@@ -927,10 +975,11 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         ),
         Command::Use { .. } => ("use", None),
         Command::Spot { command } => (
-            "spot",
+            "space",
             Some(match command {
                 SpotCommand::New { .. } => "new",
-                SpotCommand::List => "list",
+                SpotCommand::List { .. } => "list",
+                SpotCommand::Link { .. } => "link",
                 SpotCommand::Rm { .. } => "rm",
                 SpotCommand::Unbind { .. } => "unbind",
             }),
@@ -943,7 +992,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 AccountCommand::Link { .. } => "link",
                 AccountCommand::Logout => "logout",
                 AccountCommand::Delete { .. } => "delete",
-                AccountCommand::Spots { command } => match command {
+                AccountCommand::Spaces { command } => match command {
                     None | Some(AccountSpotsCommand::List) => "spots-list",
                     Some(AccountSpotsCommand::Pull { .. }) => "spots-pull",
                     Some(AccountSpotsCommand::Delete { .. }) => "spots-delete",
@@ -1036,6 +1085,20 @@ async fn main() {
     let cli = Cli::parse();
     VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
     let command = cli.command.unwrap_or(Command::Context { json: false });
+    if let (Ok(space), Ok(spot)) = (
+        std::env::var(tonk_cli::spot::SPACE_ENV),
+        std::env::var(tonk_cli::spot::SPOT_ENV),
+    ) && !space.is_empty()
+        && !spot.is_empty()
+        && space != spot
+    {
+        let exit = print_error(format!(
+            "{} and {} select different spaces; unset one or make them match",
+            tonk_cli::spot::SPACE_ENV,
+            tonk_cli::spot::SPOT_ENV
+        ));
+        std::process::exit(exit.into_raw());
+    }
 
     // The telemetry subcommand itself is never tracked — toggling
     // must not race its own event, and opt-out should be silent.
@@ -1065,7 +1128,7 @@ async fn main() {
     // `command` is moved by the dispatch below, so ask now.
     let is_update = matches!(&command, Command::Update { .. });
     let report_active_spot = uses_active_spot(&command);
-    let spot = cli.spot;
+    let spot = cli.space;
     let exit = match command {
         Command::Context { json } => context_op(json, spot.as_deref()).await,
         Command::Agents { json, command } => agents_op(json, command, spot.as_deref()).await,
@@ -1325,9 +1388,12 @@ fn render_account_status(status: account::AccountStatus) -> String {
 /// the browser enrolls during its passkey ceremonies, which is where
 /// the account-signed deposits come from — so this only reads state
 /// and points at the account page when something is missing.
-async fn print_customer_line(profile: &dialog_operator::Profile) {
+async fn print_customer_line(
+    profile: &dialog_operator::Profile,
+    store: &tonk_cli::spot::SpotStore,
+) {
     use tonk_account::customer::CustomerStatus;
-    match tonk_cli::customer::registration_state(profile).await {
+    match tonk_cli::customer::registration_state_in(profile, store).await {
         Ok(Some(Some(receipt))) => match receipt.status {
             CustomerStatus::Active => println!("access service: registered"),
             CustomerStatus::Registered => {
@@ -1336,7 +1402,7 @@ async fn print_customer_line(profile: &dialog_operator::Profile) {
             CustomerStatus::Suspended => println!("access service: suspended"),
         },
         Ok(Some(None)) => {
-            let page = tonk_cli::customer::access_origin(profile)
+            let page = tonk_cli::customer::access_origin_in(profile, store)
                 .await
                 .ok()
                 .flatten()
@@ -1349,13 +1415,127 @@ async fn print_customer_line(profile: &dialog_operator::Profile) {
     }
 }
 
+/// `tonk account link` — run the browser ceremony and record the one account
+/// this installation is signed into.
+///
+/// Refuses while another account is still signed in: one account at a time is
+/// the whole model, and silently swapping would leave the spaces of the
+/// account being replaced looking broken rather than simply not-yours.
+///
+/// The registry row is written whether or not the deployment answers with
+/// its content endpoints. By the time they are asked for, the grant is
+/// installed and the session active, so refusing to record the account
+/// would leave `status` and the registry disagreeing about whether this
+/// device is signed in.
+async fn link_account(
+    store: &tonk_cli::spot::SpotStore,
+    name: Option<String>,
+    service_url: String,
+    no_open: bool,
+    via: Option<String>,
+) -> ExitCode {
+    let signed_in = match store.account() {
+        Ok(account) => account,
+        Err(error) => return print_failure(error),
+    };
+    if let Some(account) = &signed_in
+        && matches!(
+            tonk_cli::account::sign_in_phase(store),
+            Ok(tonk_cli::account::SignInPhase::Active)
+        )
+    {
+        return print_error(format!(
+            "already signed in as {}\nrun `tonk account logout` first to sign in as another account",
+            account.root
+        ));
+    }
+    let profile = match identity::open().await {
+        Ok(profile) => profile,
+        Err(error) => return print_failure(error),
+    };
+    let ceremony_page = via
+        .clone()
+        .unwrap_or_else(|| account::DEFAULT_LINK_PAGE.to_owned());
+    match account::link_in(
+        &profile,
+        store,
+        &account::LinkOptions {
+            service_url: service_url.clone(),
+            device_name: name.unwrap_or_else(account::default_device_name),
+            open_browser: !no_open,
+            via,
+            announce: None,
+            store: Some(store.clone()),
+        },
+    )
+    .await
+    {
+        Ok(outcome) => {
+            // Matched against the provider the page delivered rather than
+            // the flag: the ceremony records whichever service its own
+            // deployment named, while the flag's default says production
+            // wherever it ran.
+            let discovery =
+                tonk_cli::deployment::discover(&ceremony_page, &outcome.service_url).await;
+            let record = tonk_cli::deployment::account_record(
+                &outcome.root_did,
+                &ceremony_page,
+                discovery.as_ref().ok(),
+            );
+            if let Err(error) = store.set_account(Some(record)) {
+                return print_failure(error);
+            }
+            println!(
+                "signed in\naccount: {}\ndevice: {}\nstatus: {}",
+                outcome.root_did,
+                outcome.device_did,
+                account_state_label(outcome.account_state)
+            );
+            if let Some(warning) = outcome.warning {
+                eprintln!("warning: account repository is not synchronized: {warning}");
+            }
+            // The device is signed in either way. Say what is missing and
+            // what restores it, rather than reporting a failure for a link
+            // the account service has already granted.
+            if let Err(error) = discovery {
+                eprintln!(
+                    "warning: {ceremony_page} did not answer with its content endpoints: {error:#}"
+                );
+                eprintln!(
+                    "spaces stay local-only until `tonk account logout` and `tonk account link` reach it"
+                );
+            }
+            print_customer_line(&profile, store).await;
+            ExitCode::Success
+        }
+        Err(error) => print_failure(error),
+    }
+}
+
 async fn account_op(command: AccountCommand) -> ExitCode {
+    let store = match tonk_cli::spot::SpotStore::open() {
+        Ok(store) => store,
+        Err(error) => return print_failure(error),
+    };
+    if let AccountCommand::Link {
+        name,
+        service_url,
+        no_open,
+        via,
+    } = command
+    {
+        return link_account(&store, name, service_url, no_open, via).await;
+    }
+    if matches!(command, AccountCommand::Spaces { .. }) && matches!(store.account(), Ok(None)) {
+        return print_error("no account is signed in; run `tonk account link`".to_owned());
+    }
     let profile = match identity::open().await {
         Ok(profile) => profile,
         Err(error) => return print_failure(error),
     };
     match command {
-        AccountCommand::Status => match account::status(&profile).await {
+        AccountCommand::Link { .. } => unreachable!("handled above"),
+        AccountCommand::Status => match account::status_in(&profile, &store).await {
             Ok(mut status) => {
                 // An unhydrated account retries its first sync right
                 // here, bounded: the status read is the natural moment
@@ -1369,17 +1549,23 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                         ..
                     }
                 ) {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        tonk_cli::account_state::ensure(&profile),
-                    )
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                        let operator =
+                            tonk_cli::account_state::operator_for_store(&profile, &store).await?;
+                        tonk_cli::account_state::ensure_with_operator_and_store(
+                            &profile,
+                            operator,
+                            store.clone(),
+                        )
+                        .await
+                    })
                     .await
                     {
                         Ok(Ok(outcome)) => {
                             if let Some(warning) = outcome.warning {
                                 eprintln!("warning: account sync attempt: {warning}");
                             }
-                            if let Ok(fresh) = account::status(&profile).await {
+                            if let Ok(fresh) = account::status_in(&profile, &store).await {
                                 status = fresh;
                             }
                         }
@@ -1390,7 +1576,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 let linked = matches!(status, account::AccountStatus::Registered { .. });
                 println!("{}", render_account_status(status));
                 if linked {
-                    print_customer_line(&profile).await;
+                    print_customer_line(&profile, &store).await;
                 }
                 ExitCode::Success
             }
@@ -1421,43 +1607,15 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 Err(error) => print_failure(error),
             }
         }
-        AccountCommand::Link {
-            name,
-            service_url,
-            no_open,
-            via,
-        } => match account::link(
-            &profile,
-            &account::LinkOptions {
-                service_url,
-                device_name: name.unwrap_or_else(account::default_device_name),
-                open_browser: !no_open,
-                via,
-                announce: None,
-                store: None,
-            },
-        )
-        .await
-        {
-            Ok(outcome) => {
-                println!(
-                    "linked\naccount: {}\ndevice: {}\nstatus: {}",
-                    outcome.root_did,
-                    outcome.device_did,
-                    account_state_label(outcome.account_state)
-                );
-                if let Some(warning) = outcome.warning {
-                    eprintln!("warning: account repository is not synchronized: {warning}");
-                }
-                print_customer_line(&profile).await;
-                record_all_spots_best_effort(&profile).await;
-                ExitCode::Success
-            }
-            Err(error) => print_failure(error),
-        },
-        AccountCommand::Logout => match account::logout(&profile).await {
+        AccountCommand::Logout => match account::logout_in(&profile, &store).await {
             Ok(()) => {
-                println!("logged out\ndevice: {}", profile.did());
+                // The spaces themselves keep their account tag: logging out
+                // is not disowning them, and this device stays able to work
+                // on every replica it already holds.
+                if let Err(error) = store.set_account(None) {
+                    return print_failure(error);
+                }
+                println!("signed out\ndevice: {}", profile.did());
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
@@ -1475,74 +1633,68 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
-        AccountCommand::Spots { command } => {
-            let store = match tonk_cli::spot::SpotStore::open() {
-                Ok(store) => store,
-                Err(error) => return print_failure(error),
-            };
-            match command.unwrap_or(AccountSpotsCommand::List) {
-                AccountSpotsCommand::List => match account_spots::list(&profile, &store).await {
-                    Ok(rows) => {
-                        if rows.is_empty() {
-                            println!("(no spots listed in the account directory)");
-                        } else {
-                            for row in rows {
-                                let state = if row.ambiguous {
-                                    "ambiguous"
-                                } else if row.local_name.is_some() {
-                                    "local"
-                                } else {
-                                    "remote"
-                                };
-                                let name = row
-                                    .remote_name
-                                    .as_deref()
-                                    .or(row.local_name.as_deref())
-                                    .unwrap_or("-");
-                                println!("{state}\t{name}\t{}", row.subject);
-                            }
-                        }
-                        ExitCode::Success
-                    }
-                    Err(error) => print_failure(error),
-                },
-                AccountSpotsCommand::Pull { subject, name } => {
-                    match account_spots::pull(&profile, &store, &subject, name.as_deref()).await {
-                        Ok(outcome) => {
-                            if outcome.already_local {
-                                println!("already local\t{}\t{}", outcome.name, outcome.subject);
+        AccountCommand::Spaces { command } => match command.unwrap_or(AccountSpotsCommand::List) {
+            AccountSpotsCommand::List => match account_spots::list(&profile, &store).await {
+                Ok(rows) => {
+                    if rows.is_empty() {
+                        println!("(no spaces listed in the account directory)");
+                    } else {
+                        for row in rows {
+                            let state = if row.ambiguous {
+                                "ambiguous"
+                            } else if row.local_name.is_some() {
+                                "local"
                             } else {
-                                println!("pulled\t{}\t{}", outcome.name, outcome.subject);
-                                println!("site: {}", outcome.site.display());
-                            }
-                            if let Some(warning) = outcome.warning {
-                                eprintln!("warning: {warning}");
-                            }
-                            ExitCode::Success
+                                "remote"
+                            };
+                            let name = row
+                                .remote_name
+                                .as_deref()
+                                .or(row.local_name.as_deref())
+                                .unwrap_or("-");
+                            println!("{state}\t{name}\t{}", row.subject);
                         }
-                        Err(error) => print_failure(error),
                     }
+                    ExitCode::Success
                 }
-                AccountSpotsCommand::Delete {
-                    subject,
-                    account_url,
-                    no_open,
-                } => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
-                    .await
-                {
-                    Ok(url) => {
-                        println!("Review permanent deletion of {subject} in your browser:\n{url}");
-                        println!(
-                            "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
-                        );
+                Err(error) => print_failure(error),
+            },
+            AccountSpotsCommand::Pull { subject, name } => {
+                match account_spots::pull(&profile, &store, &subject, name.as_deref()).await {
+                    Ok(outcome) => {
+                        if outcome.already_local {
+                            println!("already local\t{}\t{}", outcome.name, outcome.subject);
+                        } else {
+                            println!("pulled\t{}\t{}", outcome.name, outcome.subject);
+                            println!("site: {}", outcome.site.display());
+                        }
+                        if let Some(warning) = outcome.warning {
+                            eprintln!("warning: {warning}");
+                        }
                         ExitCode::Success
                     }
                     Err(error) => print_failure(error),
-                },
+                }
             }
-        }
+            AccountSpotsCommand::Delete {
+                subject,
+                account_url,
+                no_open,
+            } => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
+                .await
+            {
+                Ok(url) => {
+                    println!("Review permanent deletion of {subject} in your browser:\n{url}");
+                    println!(
+                        "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
+                    );
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            },
+        },
         AccountCommand::Devices { service_url } => {
-            match account::devices(&profile, service_url.as_deref()).await {
+            match account::devices_in(&profile, &store, service_url.as_deref()).await {
                 Ok(rows) => {
                     let own = profile.did().to_string();
                     for row in rows {
@@ -1559,7 +1711,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         }
         AccountCommand::Revoke { did, service_url } => {
             let options = account::RevokeOptions { service_url };
-            match account::revoke(&profile, &options, &did).await {
+            match account::revoke_in(&profile, &store, &options, &did).await {
                 Ok(account::RevokeOutcome::Revoked) => {
                     println!("revoked\ndevice: {did}");
                     ExitCode::Success
@@ -1574,24 +1726,8 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     }
 }
 
-async fn record_all_spots_best_effort(profile: &dialog_operator::Profile) {
-    let store = match tonk_cli::spot::SpotStore::open() {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("warning: account directory update skipped: {error}");
-            return;
-        }
-    };
-    for warning in account_spots::record_registered(profile, &store).await {
-        eprintln!(
-            "warning: account directory update for '{}' failed: {}",
-            warning.name, warning.message
-        );
-    }
-}
-
 async fn record_spot_best_effort(name: &str, site: &site::TonkSite) {
-    if let Err(error) = account_spots::record_site(name, site).await {
+    if let Err(error) = account_spots::record_site_in(name, site, &site.account_store).await {
         eprintln!("warning: account directory update failed: {error:#}");
     }
 }
@@ -1610,18 +1746,16 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
             };
             match tonk_cli::spot::bind(&store, &name, &cwd) {
                 Ok(outcome) => {
-                    let was = match &outcome.previous {
-                        Some(previous) if previous != &outcome.name => {
-                            format!(" (was {previous})")
-                        }
-                        _ => String::new(),
-                    };
+                    let was = outcome
+                        .previous
+                        .filter(|previous| previous != &name)
+                        .map(|previous| format!(" (was {previous})"))
+                        .unwrap_or_default();
                     println!(
                         "binding: {name}{was}\ndirectory: {directory}",
-                        name = outcome.name,
                         directory = outcome.directory.display(),
                     );
-                    print_active_resolution(&store, flag, Some(&cwd));
+                    print_active_space_resolution(&store, flag, Some(&cwd));
                     println!("next: tonk context");
                     ExitCode::Success
                 }
@@ -1630,25 +1764,18 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
         }
         None => {
             let env = spot_from_environment();
-            let listing =
-                match tonk_cli::spot::listing(&store, flag, env.as_deref(), cwd.as_deref()) {
-                    Ok(listing) => listing,
-                    Err(err) => return print_failure(err),
-                };
-            match listing.active {
-                Some(active) => println!(
-                    "current spot: {} ({})\nselected via: {}",
+            match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
+                Ok(active) => println!(
+                    "current space: {}\nsite: {}\nselected via: {}",
                     active.name,
                     active.site.display(),
-                    active.source
+                    active.source,
                 ),
-                None => println!("current spot: (none)"),
-            }
-            if !listing.rows.is_empty() {
-                println!("registered:");
-                for (registered, site) in listing.rows {
-                    println!("  {registered}\t{}", site.display());
-                }
+                Err(
+                    tonk_cli::spot::SpotError::NoSelection
+                    | tonk_cli::spot::SpotError::NothingRegistered,
+                ) => println!("current space: (none)"),
+                Err(error) => return print_failure(error),
             }
             println!("next: tonk context");
             ExitCode::Success
@@ -1656,89 +1783,149 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
     }
 }
 
-/// `tonk spot new|list|rm` — registry management.
+/// `tonk space new|list|link|rm` — registry management.
 async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return print_failure(err),
     };
+    let config = match site::default_config() {
+        Ok(config) => config,
+        Err(error) => return print_failure(error),
+    };
     match command {
         SpotCommand::New { name, site } => {
+            // Signed in, a new space is the account's from birth: it is
+            // provisioned, pushed, and listed for the account's other
+            // devices. Signed out, it is local-only until `tonk space link`
+            // says otherwise.
+            let account = match account_for_new_space(&store) {
+                Ok(account) => account,
+                Err(exit) => return exit,
+            };
             let Some(cwd) = working_directory() else {
                 return print_error("could not read the current directory".to_owned());
             };
+            let mut create_config = config.clone();
+            create_config.require_account =
+                account.is_some() && std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none();
+            create_config.provision_account_spaces = account.is_some();
             match tonk_cli::spot::create(
                 &store,
                 &name,
                 site.as_deref(),
-                Some(&cwd),
-                site::default_config(),
+                None,
+                create_config.clone(),
             )
             .await
             {
                 Ok(outcome) => {
+                    if let Err(error) = tonk_cli::spot::bind(&store, &outcome.name, &cwd) {
+                        return print_failure(error);
+                    }
                     if outcome.adopted {
                         println!(
-                            "Registered spot '{}' on the site data already at that path",
+                            "Registered space '{}' on the site data already at that path",
                             outcome.name
                         );
                     } else {
-                        println!("Registered spot '{}'", outcome.name);
+                        println!("Registered space '{}'", outcome.name);
                     }
                     println!("site: {}", outcome.site.display());
                     println!("DID: {}", outcome.did);
                     println!("binding: {}", cwd.display());
-                    print_active_resolution(&store, flag, Some(&cwd));
-                    match site::TonkSite::open(&outcome.site).await {
-                        Ok(site) => record_spot_best_effort(&outcome.name, &site).await,
-                        Err(error) => {
-                            eprintln!("warning: account directory update skipped: {error:#}")
+                    print_active_space_resolution(&store, flag, Some(&cwd));
+                    let Some(account) = account else {
+                        return ExitCode::Success;
+                    };
+                    let Some(access) = &account.access_remote else {
+                        unreachable!("checked before the space was created");
+                    };
+                    match site::TonkSite::open_with(&outcome.site, create_config).await {
+                        Ok(site) => {
+                            if let Err(error) = site::record_founder_membership(&site).await {
+                                return print_failure(error);
+                            }
+                            if let Err(error) = remote::add(
+                                &site,
+                                remote::DEFAULT_REMOTE,
+                                access,
+                                Some(site.repository.did()),
+                            )
+                            .await
+                            {
+                                return print_failure(error);
+                            }
+                            if let Err(error) =
+                                remote::set_upstream(&site, remote::DEFAULT_REMOTE).await
+                            {
+                                return print_failure(error);
+                            }
+                            if let Err(error) = sync::push(&site).await {
+                                return print_failure(error);
+                            }
+                            if let Err(error) =
+                                account_spots::record_site_in(&outcome.name, &site, &store).await
+                            {
+                                return print_failure(error);
+                            }
+                            println!("account: {}", account.root);
+                            ExitCode::Success
                         }
+                        Err(error) => print_failure(error),
                     }
-                    ExitCode::Success
                 }
                 Err(err) => print_failure(err),
             }
         }
-        SpotCommand::List => {
-            let env = std::env::var(tonk_cli::spot::SPOT_ENV)
-                .ok()
-                .filter(|value| !value.is_empty());
-            let cwd = working_directory();
-            match tonk_cli::spot::listing(&store, flag, env.as_deref(), cwd.as_deref()) {
-                Ok(listing) => {
-                    if listing.rows.is_empty() {
-                        println!("(no spots registered; create one with `tonk spot new <name>`)");
-                        print_orphaned_sites(&listing.orphans);
-                        return ExitCode::Success;
+        SpotCommand::List { json } => {
+            let report = match tonk_cli::inventory::list_local(&store, &config).await {
+                Ok(report) => report,
+                Err(error) => return print_failure(error),
+            };
+            for diagnostic in &report.diagnostics {
+                eprintln!("warning: {diagnostic}");
+            }
+            if json {
+                return match serde_json::to_string_pretty(&report.rows) {
+                    Ok(encoded) => {
+                        println!("{encoded}");
+                        ExitCode::Success
                     }
-                    let active = listing.active.as_ref().map(|c| c.name.as_str());
-                    for (name, site) in &listing.rows {
-                        let marker = if Some(name.as_str()) == active {
-                            '*'
-                        } else {
-                            ' '
-                        };
-                        println!("{marker} {name}\t{site}", site = site.display());
-                    }
-                    if let Some(resolved) = &listing.active {
-                        println!(
-                            "active here: {name} ({source})",
-                            name = resolved.name,
-                            source = resolved.source,
-                        );
-                    }
-                    if !listing.bindings.is_empty() {
-                        println!();
-                        println!("directories:");
-                        for (directory, name) in &listing.bindings {
-                            println!("  {directory}\t{name}", directory = directory.display());
-                        }
-                    }
-                    print_orphaned_sites(&listing.orphans);
+                    Err(error) => print_failure(error),
+                };
+            }
+            println!("{}", tonk_cli::inventory::render(&report.rows));
+            let registry = match store.load() {
+                Ok(registry) => registry,
+                Err(error) => return print_failure(error),
+            };
+            if !registry.bindings.is_empty() {
+                println!();
+                println!("directories:");
+                for (directory, name) in &registry.bindings {
+                    println!("  {}\t{name}", directory.display());
+                }
+            }
+            print_orphaned_sites(&store.orphaned_sites(&registry));
+            ExitCode::Success
+        }
+        SpotCommand::Link { name } => {
+            match tonk_cli::space_link::execute(&store, &config, &name).await {
+                Ok(outcome) if outcome.already_linked => {
+                    println!(
+                        "already linked\t{}\naccount: {}",
+                        outcome.name, outcome.account
+                    );
                     ExitCode::Success
                 }
-                Err(err) => print_failure(err),
+                Ok(outcome) => {
+                    println!("linked\t{}\t{}", outcome.name, outcome.subject);
+                    println!("account: {}", outcome.account);
+                    println!("site: {}", outcome.site.display());
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
             }
         }
         SpotCommand::Rm {
@@ -1746,7 +1933,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
             keep_data,
             yes,
             delete: _,
-        } => spot_rm(&store, &name, keep_data, yes).await,
+        } => spot_rm(&store, &config, &name, keep_data, yes).await,
         SpotCommand::Unbind { path } => {
             let directory = match path.or_else(working_directory) {
                 Some(directory) => directory,
@@ -1763,6 +1950,61 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 }
                 Err(err) => print_failure(err),
             }
+        }
+    }
+}
+
+/// The account a fresh `tonk space new` should belong to.
+///
+/// A recorded account that is not actually signed in is an error rather than
+/// a quiet fallback to local-only: creating a local space when the user
+/// expects an account-owned one is exactly the surprise `tonk space link`
+/// exists to undo.
+fn account_for_new_space(
+    store: &tonk_cli::spot::SpotStore,
+) -> Result<Option<tonk_cli::spot::AccountRecord>, ExitCode> {
+    let account = match store.account() {
+        Ok(account) => account,
+        Err(error) => return Err(print_failure(error)),
+    };
+    let Some(account) = account else {
+        return Ok(None);
+    };
+    match tonk_cli::account::sign_in_phase(store) {
+        Ok(tonk_cli::account::SignInPhase::Active) => {}
+        Ok(_) => {
+            return Err(print_error(format!(
+                "this device is signed out of {}; run `tonk account login`",
+                account.root
+            )));
+        }
+        Err(error) => return Err(print_failure(error)),
+    }
+    // Checked before the space exists: creating one and only then finding
+    // out it cannot be hosted leaves a half-made thing to explain.
+    if account.access_remote.is_none() {
+        return Err(print_error(
+            "the account has no content endpoint; sign in again".to_owned(),
+        ));
+    }
+    Ok(Some(account))
+}
+
+fn print_active_space_resolution(
+    store: &tonk_cli::spot::SpotStore,
+    flag: Option<&str>,
+    cwd: Option<&std::path::Path>,
+) {
+    let env = spot_from_environment();
+    match store.resolve(flag, env.as_deref(), cwd) {
+        Ok(resolved) => println!(
+            "active space: {name} ({source})\nsite: {site}",
+            name = resolved.name,
+            source = resolved.source,
+            site = resolved.site.display(),
+        ),
+        Err(err) => {
+            eprintln!("warning: binding saved, but the active space does not resolve: {err}")
         }
     }
 }
@@ -1796,6 +2038,7 @@ fn print_orphaned_sites(orphans: &[PathBuf]) {
 /// what this command is for.
 async fn spot_rm(
     store: &tonk_cli::spot::SpotStore,
+    config: &site::SiteConfig,
     name: &str,
     keep_data: bool,
     yes: bool,
@@ -1850,7 +2093,7 @@ async fn spot_rm(
                  confirming, or --keep-data to unregister without deleting."
             ));
         }
-        let recovery = tonk_cli::recovery::inspect(&site, site::default_config()).await;
+        let recovery = tonk_cli::recovery::inspect(&site, config.clone()).await;
         println!();
         println!("This permanently deletes the spot's data from disk:");
         println!("  {}", site.display());
@@ -2014,6 +2257,20 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
             print_sync_outcome(op, &outcome);
             record_spot_best_effort(&resolved.name, &site).await;
             ExitCode::Success
+        }
+        // The service boundary is where access is decided, so its refusal is
+        // relayed here rather than pre-empted at resolution: the reason it
+        // gave, verbatim, wrapped in a fix read from the roster the replica
+        // already holds.
+        Err(err @ sync::SyncError::Rejected { .. }) => {
+            let sync::SyncError::Rejected { reason } = &err else {
+                unreachable!("matched one line above")
+            };
+            eprintln!(
+                "error: {}",
+                sync::rejection_report(&site, &resolved.name, reason).await
+            );
+            err.exit_code()
         }
         Err(err) => {
             eprintln!("error: {err}");
@@ -2441,10 +2698,10 @@ async fn blob_op(command: BlobCommand, spot: Option<&str>) -> ExitCode {
 fn print_blob_ls(rows: &[blob::LsRow]) {
     for row in rows {
         println!(
-            "{uri}  {size}  {content_type}",
+            "{uri}\t{content_type}\t{name}",
             uri = row.entity.as_str(),
-            size = row.size,
             content_type = row.content_type.as_deref().unwrap_or("-"),
+            name = row.name.as_deref().unwrap_or("-"),
         );
     }
 }
@@ -2474,7 +2731,7 @@ async fn mint_invite(
     no_shorten: bool,
     spot: Option<&str>,
 ) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+    let (selected, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -2489,6 +2746,11 @@ async fn mint_invite(
     // `--no-remote` suppresses only the embedded endpoint. The link
     // still belongs on the remote's origin: moving it to the canonical
     // base is the same split this resolution exists to prevent.
+    // Whether `None` below means "the user waved off a choice between
+    // several remotes" rather than "this space has none". The first
+    // still wants the canonical base; the second has no honest origin
+    // to offer.
+    let mut declined_an_origin = false;
     let resolved = match remote::resolve(&site, remote_name.as_deref()).await {
         Ok(record) => record,
         // `--no-remote` is the documented way out of the ambiguity
@@ -2501,6 +2763,7 @@ async fn mint_invite(
                  {base}\n         name an origin with `--base-url <URL>` if that is wrong",
                 base = invite::DEFAULT_BASE_URL,
             );
+            declined_an_origin = true;
             None
         }
         Err(err) => {
@@ -2542,19 +2805,35 @@ async fn mint_invite(
             Ok(derived) => derived,
             Err(err) => return print_failure(err),
         },
-        (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
+        (None, None) if declined_an_origin => invite::DEFAULT_BASE_URL.to_owned(),
+        // A space with no remote has no deployment serving it, so
+        // there is no origin a recipient could join it from. Minting
+        // against the canonical base would hand them a link to
+        // production, which holds none of this data — a share that
+        // reads as successful and works for nobody. Refuse instead,
+        // and name each way to give the space an origin.
+        (None, None) => {
+            let name = &selected.name;
+            let base = invite::DEFAULT_BASE_URL;
+            return print_error(format!(
+                "'{name}' has no remote, so there is nowhere to invite anyone to\n\
+                 \x20      its data lives only on this device, and a link would point at \
+                 {base}, which serves none of it\n\
+                 \x20      give it a home first: `tonk account link` then \
+                 `tonk space link {name}`, or `tonk remote add <name> <URL> \
+                 --revocation-url <URL>`\n\
+                 \x20      to mint against a deployment tonk doesn't know about, pass \
+                 `--base-url <URL>`"
+            ));
+        }
     };
 
+    // Carried when the remote names one, absent when it does not. A relay is
+    // no longer required to mint: revocations are invocations now, addressed
+    // to the access service the invite already carries.
     let revocation_url = resolved
         .as_ref()
         .and_then(|record| record.revocation_url.clone());
-    if embedded.is_some() && revocation_url.is_none() {
-        return print_error(
-            "the selected remote has no revocation relay; re-add it with \
-             `tonk remote add --revocation-url <URL>`"
-                .to_string(),
-        );
-    }
     let remote_url = embedded.map(|record| record.endpoint);
 
     let minted = match recipient_root {
@@ -2627,6 +2906,7 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
         Ok(store) => store,
         Err(err) => return print_failure(err),
     };
+    let store = &store;
     let cwd = match working_directory().and_then(|path| path.canonicalize().ok()) {
         Some(cwd) => cwd,
         None => return print_error("could not read the current directory".to_owned()),
@@ -2642,7 +2922,11 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
 
     // Same default site config `tonk spot new` writes against, so
     // the joined site picks up the user's normal profile.
-    match invite::claim(&root, &url, site::default_config()).await {
+    let config = match site::default_config() {
+        Ok(config) => config,
+        Err(error) => return print_failure(error),
+    };
+    match invite::claim(&root, &url, config.clone()).await {
         Ok(outcome) => {
             // Match `spot new`'s canonicalized form, so registered
             // paths compare equal regardless of how they were added.
@@ -2669,11 +2953,9 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
                 ));
             }
 
-            registry.spots.insert(
-                name.clone(),
-                tonk_cli::spot::SpotEntry { site: root.clone() },
-            );
-            registry.bindings.insert(cwd.clone(), name.clone());
+            registry
+                .spots
+                .insert(name.clone(), tonk_cli::spot::SpotEntry::at(root.clone()));
             if let Err(err) = store.save(&registry) {
                 return print_error(format!(
                     "joined, but registering spot '{name}' failed: {err}\n\
@@ -2681,9 +2963,12 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
                     root = root.display(),
                 ));
             }
+            if let Err(error) = tonk_cli::spot::bind(store, &name, &cwd) {
+                return print_failure(error);
+            }
             print_claim_outcome(&name, &root, &cwd, &outcome);
-            print_active_resolution(&store, flag, Some(&cwd));
-            match site::TonkSite::open(&root).await {
+            print_active_space_resolution(store, flag, Some(&cwd));
+            match site::TonkSite::open_with(&root, config).await {
                 Ok(site) => record_spot_best_effort(&name, &site).await,
                 Err(error) => eprintln!("warning: account directory update skipped: {error:#}"),
             }
@@ -3015,7 +3300,8 @@ async fn home_op(models: Vec<String>, spot: Option<&str>) -> ExitCode {
 }
 
 /// List renderable entities (`tonk view ls`), one tab-separated
-/// `name<TAB>entity<TAB>bytes` row per `text/html` claim carrier.
+/// `name<TAB>entity<TAB>model<TAB>bytes` row per template-claim
+/// carrier.
 async fn list_views_op(site: &site::TonkSite) -> ExitCode {
     let listed = match views::list(site).await {
         Ok(v) => v,
@@ -3033,7 +3319,12 @@ async fn list_views_op(site: &site::TonkSite) -> ExitCode {
 
 fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::Result<()> {
     let name = row.name.as_deref().unwrap_or("-");
-    writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
+    let model = row.model.as_deref().unwrap_or("-");
+    writeln!(
+        out,
+        "{}\t{}\t{}\t{}",
+        name, row.entity, model, row.body_bytes
+    )
 }
 
 async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {
@@ -3145,30 +3436,14 @@ fn working_directory() -> Option<PathBuf> {
 }
 
 fn spot_from_environment() -> Option<String> {
-    std::env::var(tonk_cli::spot::SPOT_ENV)
+    std::env::var(tonk_cli::spot::SPACE_ENV)
         .ok()
         .filter(|value| !value.is_empty())
-}
-
-/// Report the spot that would actually answer a data command after a
-/// binding write, including any flag or environment override.
-fn print_active_resolution(
-    store: &tonk_cli::spot::SpotStore,
-    flag: Option<&str>,
-    cwd: Option<&std::path::Path>,
-) {
-    let env = spot_from_environment();
-    match store.resolve(flag, env.as_deref(), cwd) {
-        Ok(resolved) => println!(
-            "active spot: {name} ({source})\nsite: {site}",
-            name = resolved.name,
-            source = resolved.source,
-            site = resolved.site.display(),
-        ),
-        Err(err) => {
-            eprintln!("warning: binding saved, but the active spot does not resolve: {err}")
-        }
-    }
+        .or_else(|| {
+            std::env::var(tonk_cli::spot::SPOT_ENV)
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
 }
 
 /// Print stable local context after a spot-scoped command fails. This
@@ -3200,15 +3475,20 @@ async fn open_selected(
         Ok(store) => store,
         Err(err) => return Err(print_failure(err)),
     };
-    let env = std::env::var(tonk_cli::spot::SPOT_ENV)
-        .ok()
-        .filter(|value| !value.is_empty());
+    let env = spot_from_environment();
     let cwd = working_directory();
+    // `resolve` is also where a space belonging to a different account is
+    // refused, so every command that opens a site inherits that check
+    // without asking for it.
     let resolved = match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
         Ok(resolved) => resolved,
         Err(err) => return Err(print_failure(err)),
     };
-    match site::TonkSite::open(&resolved.site).await {
+    let config = match site::default_config() {
+        Ok(config) => config,
+        Err(err) => return Err(print_failure(err)),
+    };
+    match site::TonkSite::open_with(&resolved.site, config).await {
         Ok(site) => Ok((resolved, site)),
         Err(err) => Err(print_error(format!(
             "could not open the active spot: {err:#}"
@@ -3308,18 +3588,37 @@ mod account_spots_parser_tests {
     #[test]
     fn account_spots_bare_and_list_are_the_same_operation() {
         for args in [
+            vec!["tonk", "account", "spaces"],
+            vec!["tonk", "account", "spaces", "list"],
             vec!["tonk", "account", "spots"],
-            vec!["tonk", "account", "spots", "list"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
             let Some(Command::Account {
-                command: AccountCommand::Spots { command },
+                command: AccountCommand::Spaces { command },
             }) = cli.command
             else {
                 panic!("expected account spots");
             };
             assert!(command.is_none() || matches!(command, Some(AccountSpotsCommand::List)));
         }
+    }
+
+    #[test]
+    fn account_login_is_the_same_command_as_account_link() {
+        for verb in ["link", "login"] {
+            let cli = Cli::try_parse_from(["tonk", "account", verb]).unwrap();
+            let Some(Command::Account {
+                command: AccountCommand::Link { name, .. },
+            }) = cli.command
+            else {
+                panic!("expected account link");
+            };
+            assert_eq!(name, None);
+        }
+        // One account at a time: there is no profile to add or select.
+        assert!(Cli::try_parse_from(["tonk", "account", "add", "--label", "work"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "account", "use", "work"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "account", "list"]).is_err());
     }
 
     #[test]
@@ -3330,7 +3629,7 @@ mod account_spots_parser_tests {
                 .unwrap();
         let Some(Command::Account {
             command:
-                AccountCommand::Spots {
+                AccountCommand::Spaces {
                     command: Some(AccountSpotsCommand::Pull { subject, name }),
                 },
         }) = cli.command
@@ -3348,7 +3647,7 @@ mod account_spots_parser_tests {
             Cli::try_parse_from(["tonk", "account", "spots", "delete", did, "--no-open"]).unwrap();
         let Some(Command::Account {
             command:
-                AccountCommand::Spots {
+                AccountCommand::Spaces {
                     command:
                         Some(AccountSpotsCommand::Delete {
                             subject, no_open, ..
@@ -3360,5 +3659,29 @@ mod account_spots_parser_tests {
         };
         assert_eq!(subject, did);
         assert!(no_open);
+    }
+
+    #[test]
+    fn canonical_and_compatibility_space_commands_parse_identically() {
+        for noun in ["space", "spot"] {
+            let cli = Cli::try_parse_from(["tonk", noun, "link", "garden"]).unwrap();
+            let command = cli.command.as_ref().expect("space command");
+            let Command::Spot {
+                command: SpotCommand::Link { name },
+            } = command
+            else {
+                panic!("expected space link");
+            };
+            assert_eq!(name, "garden");
+            assert_eq!(descriptor(command), ("space", Some("link")));
+        }
+
+        // Linking is about this installation's one account, so it takes no
+        // target; sharing with someone else is `tonk invite`.
+        assert!(Cli::try_parse_from(["tonk", "space", "link", "garden", "--to", "work"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "space", "move", "garden"]).is_err());
+        assert!(
+            Cli::try_parse_from(["tonk", "space", "share", "garden", "--with", "work"]).is_err()
+        );
     }
 }

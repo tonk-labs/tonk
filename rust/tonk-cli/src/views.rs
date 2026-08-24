@@ -1,17 +1,31 @@
-//! `tonk view ls` — enumerate every entity holding a `text/html`
-//! claim on the local branch.
+//! `tonk view ls` — enumerate every entity on the local branch that
+//! carries a renderable claim.
 //!
-//! Claim-driven, not concept-driven: we don't care whether an
-//! entity is a member of the `view` concept or got its
-//! `text/html` claim some other way. The host route at
-//! `/api/repository/{repo}/branch/{branch}/host/{host}/{entity}`
-//! ultimately selects on `(the=text/html, of=<entity>)`, so
-//! anything that satisfies that selector is a candidate view
-//! and should surface here.
+//! Claim-driven, not concept-driven: we don't care whether an entity
+//! is a member of the `view` concept or picked its claim up some
+//! other way. What counts is the attribute the renderer selects on,
+//! and there are five of them:
+//!
+//! - the four template attributes the display stack resolves —
+//!   `xyz.tonk.view/display` (what `tonk view add` writes), plus the
+//!   `/directory`, `/label`, and `/title` view kinds;
+//! - `text/html`, which the host route at
+//!   `/api/repository/{repo}/branch/{branch}/host/{host}/{entity}`
+//!   selects on for a one-off page.
+//!
+//! Listing only `text/html` — as this module once did — meant
+//! `tonk view ls` came back empty right after `tonk view add`
+//! succeeded, because the two were looking at different claims.
+//!
+//! The standard library seeds twenty-five views of its own. Those are
+//! filtered out for the same reason `tonk concept ls` drops the
+//! runtime vocabulary: they resolve everywhere, and listing them
+//! buries the view the author just wrote.
 //!
 //! Used by `tonk view ls`, the only caller.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use anyhow::{Context, Result, anyhow};
 use dialog_artifacts::{Attribute, Entity, Value};
@@ -26,36 +40,65 @@ pub struct ViewSummary {
     /// asserted. The same name might be reused across the
     /// branch's history; we surface the current binding only.
     pub name: Option<String>,
-    /// Entity URI carrying the `text/html` claim — what the
-    /// host route's trailing `{entity}` segment takes.
+    /// Entity URI carrying the renderable claim — what a route's
+    /// trailing `{entity}` segment takes.
     pub entity: Entity,
+    /// What the view renders: the published name of the concept its
+    /// `xyz.tonk.view/model` points at, or that entity's URI when the
+    /// model publishes no name. `None` for a bare `text/html` page,
+    /// which binds no model.
+    pub model: Option<String>,
     /// Byte length of the body claim. Lets the listing show a
     /// rough "is this empty / huge?" without dumping the HTML.
-    /// When an entity holds more than one `text/html` claim
-    /// (which the seed schema's cardinality-many allows in
-    /// theory but git-tag semantics make uncommon), this is the
-    /// longest one — the most likely candidate for "the current
+    /// When an entity holds more than one renderable claim, this is
+    /// the longest one — the most likely candidate for "the current
     /// view body."
     pub body_bytes: usize,
 }
 
-/// Enumerate every distinct entity on the branch holding a
-/// `text/html` claim.
+/// The attributes a renderable claim can land under. The four view
+/// kinds the display stack resolves, then the host route's raw page
+/// body. Kept in one place so the listing and its documentation
+/// cannot drift apart.
+const RENDERABLE_ATTRIBUTES: &[&str] = &[
+    "xyz.tonk.view/display",
+    "xyz.tonk.view/directory",
+    "xyz.tonk.view/label",
+    "xyz.tonk.view/title",
+    "text/html",
+];
+
+/// The attribute binding a view to the concept it renders.
+const MODEL_ATTRIBUTE: &str = "xyz.tonk.view/model";
+
+/// Enumerate every distinct entity on the branch holding a renderable
+/// claim, minus the ones the standard library seeded.
 ///
-/// One row per entity. When an entity carries multiple
-/// `text/html` claims, the [`ViewSummary::body_bytes`] field
-/// records the longest; the name lookup is unaffected (each
-/// entity has at most one `db.meta/name` claim).
+/// One row per entity. When an entity carries several renderable
+/// claims — a model with both a detail and a directory template, say —
+/// the [`ViewSummary::body_bytes`] field records the longest; the name
+/// and model lookups are unaffected (each entity has at most one of
+/// each).
 pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
     let entities_with_lengths = enumerate_view_claims(site).await?;
     if entities_with_lengths.is_empty() {
         return Ok(Vec::new());
     }
     let names = name_claims_by_entity(site).await?;
+    let models = model_claims_by_entity(site).await?;
     let mut out: Vec<ViewSummary> = entities_with_lengths
         .into_iter()
         .map(|(entity, body_bytes)| ViewSummary {
             name: names.get(&entity).cloned(),
+            // A model is an entity reference; show the concept name it
+            // publishes, since that is the name `tonk view add` took
+            // and `tonk query` will take back.
+            model: models.get(&entity).map(|model| {
+                names
+                    .get(model)
+                    .cloned()
+                    .unwrap_or_else(|| model.to_string())
+            }),
             entity,
             body_bytes,
         })
@@ -92,17 +135,56 @@ pub async fn entity_has_text_html(site: &TonkSite, entity: &Entity) -> Result<bo
     Ok(!rows.is_empty())
 }
 
-/// Run the `(text/html, ?of, ?is)` query and reduce each entity
-/// to (entity, max body length). String, symbol, and bytes
-/// payloads are all counted by their on-disk byte length; other
-/// value flavours surface as zero — they shouldn't appear under
-/// `text/html` in practice, but ignoring them keeps the listing
-/// from panicking if something weird sneaks in.
+/// Run one `(<attribute>, ?of, ?is)` query per entry of
+/// [`RENDERABLE_ATTRIBUTES`] and reduce each entity to (entity, max
+/// body length), dropping the entities the standard library pinned.
+/// String, symbol, and bytes payloads are all counted by their
+/// on-disk byte length; other value flavours surface as zero — they
+/// shouldn't appear under a template attribute in practice, but
+/// ignoring them keeps the listing from panicking if something weird
+/// sneaks in.
 async fn enumerate_view_claims(site: &TonkSite) -> Result<Vec<(Entity, usize)>> {
-    let the = text_html_attribute()?;
+    let mut by_entity: HashMap<Entity, usize> = HashMap::new();
+    for uri in RENDERABLE_ATTRIBUTES {
+        for row in claims_for_attribute(site, uri).await? {
+            if crate::site::standard_library_pins_entity(&row.of.to_string()) {
+                continue;
+            }
+            let len = body_byte_len(&row.is);
+            by_entity
+                .entry(row.of)
+                .and_modify(|current| {
+                    if len > *current {
+                        *current = len;
+                    }
+                })
+                .or_insert(len);
+        }
+    }
+    Ok(by_entity.into_iter().collect())
+}
+
+/// Pull every `xyz.tonk.view/model` claim and return a
+/// `view entity → model entity` map. One branch query, for the same
+/// reason [`name_claims_by_entity`] is one.
+async fn model_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, Entity>> {
+    let mut out = HashMap::new();
+    for claim in claims_for_attribute(site, MODEL_ATTRIBUTE).await? {
+        if let Value::Entity(model) = claim.is {
+            out.insert(claim.of, model);
+        }
+    }
+    Ok(out)
+}
+
+/// Select every current claim under one attribute URI.
+async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_query::Claim>> {
+    let the: Attribute = uri
+        .parse()
+        .map_err(|e| anyhow!("{uri} should be a valid attribute URI: {e:?}"))?;
     let the_term: attribute::The = the.into();
     let session = site.branch().await?;
-    let rows: Vec<dialog_query::Claim> = session
+    session
         .handle()
         .query()
         .select(AttributeQuery::new(
@@ -115,21 +197,7 @@ async fn enumerate_view_claims(site: &TonkSite) -> Result<Vec<(Entity, usize)>> 
         .perform(&site.operator)
         .try_vec()
         .await
-        .map_err(|e| anyhow!("text/html enumeration failed: {e:?}"))?;
-
-    let mut by_entity: HashMap<Entity, usize> = HashMap::new();
-    for row in rows {
-        let len = body_byte_len(&row.is);
-        by_entity
-            .entry(row.of)
-            .and_modify(|current| {
-                if len > *current {
-                    *current = len;
-                }
-            })
-            .or_insert(len);
-    }
-    Ok(by_entity.into_iter().collect())
+        .map_err(|e| anyhow!("{uri} enumeration failed: {e:?}"))
 }
 
 fn body_byte_len(value: &Value) -> usize {
@@ -179,7 +247,20 @@ async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String
             continue;
         };
         if let Value::Entity(target) = claim.is {
-            out.insert(target, name);
+            // The relation is many-to-one — `space:home`, for one,
+            // answers to both `space-home` and the `tonk/space` alias —
+            // so inverting it has to pick. Take the lexicographically
+            // first, which at least makes the listing reproducible
+            // instead of leaving it to claim order.
+            match out.entry(target) {
+                Entry::Occupied(mut held) if name < *held.get() => {
+                    held.insert(name);
+                }
+                Entry::Occupied(_) => {}
+                Entry::Vacant(slot) => {
+                    slot.insert(name);
+                }
+            }
         }
     }
     Ok(out)

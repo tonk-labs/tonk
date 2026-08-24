@@ -31,7 +31,8 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
 async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
     env: AccessServiceAddress,
 ) -> Result<()> {
-    let fixture = common::AccountFixture::new().await?;
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
     // The access service serves nothing for an account that has not
     // confirmed its email.
     fixture.activate_with(&env).await?;
@@ -77,8 +78,27 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
 /// the CLI's half of that wiring; `it_recovers_space_access_on_a_second_device`
 /// proves the retained facts actually travel.
 #[dialog_common::test]
-async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
-    let fixture = common::AccountFixture::new().await?;
+async fn it_retains_a_created_spot_into_the_account_space(env: AccessServiceAddress) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    assert_eq!(
+        tonk_cli::account_state::status_in(&fixture.profile, &fixture.config.account_store).await?,
+        tonk_account::AccountStateStatus::Ready
+    );
+    let account_operator = tonk_cli::account_state::credential_operator_for_store(
+        &fixture.profile,
+        &fixture.config.account_store,
+    )
+    .await?;
+    assert!(
+        tonk_cli::account_state::open_account_branch_in(
+            &fixture.profile,
+            &account_operator,
+            &fixture.config.account_store,
+        )
+        .await?
+        .is_some()
+    );
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("retained"),
         account_config(&fixture),
@@ -610,11 +630,11 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     Ok(())
 }
 
-/// A spot created before the account existed chains to the device root this
-/// profile held at the time and reaches no account root at all. Linking an
-/// account must adopt it rather than strand it offline.
+/// A space created before the account existed reaches no account root.
+/// Ordinary sync must not silently turn account linking into ownership
+/// adoption; `tonk space move` is the explicit boundary that does so.
 #[dialog_common::test]
-async fn it_pushes_a_spot_created_before_the_account_existed(
+async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
@@ -627,10 +647,12 @@ async fn it_pushes_a_spot_created_before_the_account_existed(
     env.provision_subject(site.repository.did().as_str())
         .await?;
 
-    tonk_cli::sync::push(&site).await?;
-
-    let prefix = tonk_cli::site::account_root_prefix(&site, fixture.link.issuer()).await?;
-    assert_eq!(prefix.subject(), Some(&site.repository.did()));
-    assert_eq!(prefix.audience(), fixture.link.issuer());
+    let error = tonk_cli::sync::push(&site)
+        .await
+        .expect_err("ordinary sync cannot adopt a local-only space");
+    assert!(
+        error.to_string().contains("No delegation chain proves"),
+        "{error}"
+    );
     Ok(())
 }

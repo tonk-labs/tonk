@@ -50,12 +50,9 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
     let canonical = site.root.canonicalize()?;
     let mut registry = fixture.store.load()?;
     for name in ["zeta", "alpha"] {
-        registry.spots.insert(
-            name.to_string(),
-            SpotEntry {
-                site: canonical.clone(),
-            },
-        );
+        registry
+            .spots
+            .insert(name.to_string(), SpotEntry::at(canonical.clone()));
     }
     fixture.store.save(&registry)?;
     assert_eq!(
@@ -125,9 +122,7 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     let mut registry = fixture.store.load()?;
     registry.spots.insert(
         "occupied".to_string(),
-        SpotEntry {
-            site: fixture.tmp.path().join("broken-local-entry"),
-        },
+        SpotEntry::at(fixture.tmp.path().join("broken-local-entry")),
     );
     fixture.store.save(&registry)?;
     let error = account_spots::pull(
@@ -157,36 +152,18 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
 }
 
 #[tokio::test]
-async fn pull_retains_an_unbound_canonical_spot_when_initial_sync_is_offline() -> Result<()> {
+async fn pull_cleans_up_an_unverified_replica_when_initial_sync_is_offline() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let subject = fixture
         .record_directory_space(85, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
 
-    let outcome =
-        account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
-    assert!(!outcome.already_local);
-    assert!(
-        outcome
-            .warning
-            .as_deref()
-            .is_some_and(|warning| { warning.contains("run `tonk pull`") })
-    );
-    assert_eq!(
-        outcome.site,
-        fixture.store.canonical_site("garden").canonicalize()?
-    );
-    let registry = fixture.store.load()?;
-    assert_eq!(registry.spots["garden"].site, outcome.site);
-    assert!(registry.bindings.is_empty());
-
-    let second =
-        account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
-    assert!(second.already_local);
-    assert_eq!(second.name, "garden");
-
-    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
-    assert_eq!(rows[0].local_name.as_deref(), Some("garden"));
+    let error = account_spots::pull(&fixture.profile, &fixture.store, subject.as_ref(), None)
+        .await
+        .expect_err("an offline initial pull cannot be verified or registered");
+    assert!(error.to_string().contains("initial pull"), "{error:#}");
+    assert!(!fixture.store.canonical_site("garden").exists());
+    assert!(fixture.store.load()?.spots.is_empty());
     Ok(())
 }
 
@@ -199,12 +176,9 @@ async fn pull_requires_a_directory_row_and_returns_an_adopted_site() -> Result<(
     let adopted_subject = adopted.repository.did();
     configure_upstream(&adopted, "http://127.0.0.1:9/ucan/").await?;
     let mut registry = fixture.store.load()?;
-    registry.spots.insert(
-        "adopted".to_string(),
-        SpotEntry {
-            site: adopted.root.clone(),
-        },
-    );
+    registry
+        .spots
+        .insert("adopted".to_string(), SpotEntry::at(adopted.root.clone()));
     fixture.store.save(&registry)?;
     assert_eq!(
         account_spots::record_site_in("adopted", &adopted, &fixture.store).await?,
@@ -226,12 +200,9 @@ async fn pull_requires_a_directory_row_and_returns_an_adopted_site() -> Result<(
     let local_root = fixture.tmp.path().join("unlisted-local-site");
     let local = TonkSite::init_at_with(&local_root, fixture.config.clone()).await?;
     let mut registry = fixture.store.load()?;
-    registry.spots.insert(
-        "unlisted".to_string(),
-        SpotEntry {
-            site: local.root.clone(),
-        },
-    );
+    registry
+        .spots
+        .insert("unlisted".to_string(), SpotEntry::at(local.root.clone()));
     fixture.store.save(&registry)?;
     let error = account_spots::pull(
         &fixture.profile,
@@ -267,6 +238,7 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
         .commit()
         .perform(&source.operator)
         .await?;
+    tonk_cli::site::record_founder_membership(&source).await?;
     tonk_cli::remote::add(
         &source,
         "origin",
@@ -467,12 +439,9 @@ async fn record_sweep_uses_the_first_alias_once() -> Result<()> {
     let canonical = site.root.canonicalize()?;
     let mut registry = fixture.store.load()?;
     for name in ["zeta", "alpha"] {
-        registry.spots.insert(
-            name.to_string(),
-            SpotEntry {
-                site: canonical.clone(),
-            },
-        );
+        registry
+            .spots
+            .insert(name.to_string(), SpotEntry::at(canonical.clone()));
     }
     fixture.store.save(&registry)?;
 
