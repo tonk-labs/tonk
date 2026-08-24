@@ -4,7 +4,11 @@ use std::collections::BTreeMap;
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
+use dialog_ucan::{Parameters, Scope};
+use dialog_ucan_core::command::Command;
+use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationChain, promise::Promised};
+use dialog_varsig::Did;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -17,19 +21,6 @@ use tonk_worker_api::{
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
-
-/// A device row as the account service serializes it.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceDevice {
-    attachment_id: String,
-    did: String,
-    name: String,
-    status: String,
-    created_at: u64,
-    delegation_cid: String,
-    delegation_hex: Option<String>,
-}
 
 /// The linked account provider's base URL, when an account is attached.
 pub(crate) async fn account_service_url(tonk: &TonkState) -> Option<String> {
@@ -49,51 +40,111 @@ pub(super) async fn linked_service(
     Ok((link, service))
 }
 
-async fn fetch_devices(
+/// The audience DID dialog recorded for a retained delegation.
+///
+/// `dialog.ucan/audience` is written onto the delegation's own entity
+/// when the chain is retained, so this reads the device's identity from
+/// the same record that carries its label — no second source to drift.
+async fn delegation_audience(
+    branch: &dialog_repository::Branch,
     state: &TonkState,
-    link: &dialog_ucan_core::DelegationChain,
-    service: &str,
-) -> Result<Vec<AccountDevice>, TonkWorkerError> {
-    let device = state.profile.signer().signer().clone();
-    let body = tonk_identity::request::build_device_invocation(
-        device,
-        link,
-        vec!["account".into(), "device".into(), "list".into()],
-        BTreeMap::new(),
-    )
-    .await
-    .map_err(|e| TonkWorkerError::Internal(format!("build device-list invocation: {e}")))?;
-    let endpoint = url::Url::parse(&format!("{}/devices/list", service.trim_end_matches('/')))
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("invalid account provider URL: {error}"))
-        })?;
-    let response = super::http::post_cbor(&endpoint, &body).await?;
-    let rows: Vec<ServiceDevice> = serde_json::from_slice(&response.body)
-        .map_err(|e| TonkWorkerError::Internal(format!("parse device list: {e}")))?;
-    let this_did = state.profile.did().to_string();
-    Ok(rows
-        .into_iter()
-        .map(|row| AccountDevice {
-            this_device: row.did == this_did,
-            attachment_id: row.attachment_id,
-            did: row.did,
-            name: row.name,
-            status: row.status,
-            created_at: row.created_at,
-            delegation_cid: row.delegation_cid,
-            delegation_hex: row.delegation_hex,
-        })
-        .collect())
+    entity: &dialog_artifacts::Entity,
+) -> Option<String> {
+    use dialog_artifacts::{ArtifactSelector, Value};
+    use futures_util::StreamExt as _;
+
+    let selector = ArtifactSelector::new()
+        .the(dialog_repository::DELEGATION_AUDIENCE.parse().ok()?)
+        .of(entity.clone());
+    let facts = branch
+        .claims()
+        .select(selector)
+        .perform(&state.operator)
+        .await
+        .ok()?
+        .collect::<Vec<_>>()
+        .await;
+    for fact in facts.into_iter().flatten() {
+        if let Ok(Value::String(did)) = fact.value() {
+            return Some(did.to_string());
+        }
+    }
+    None
 }
 
-/// List the devices registered under this profile's account.
+/// This account's device links, from local facts.
+///
+/// Every field the account service returned is derivable here: dialog
+/// decomposes issuer/audience onto each retained delegation's entity,
+/// and [`DeviceLink`] adds the label and creation time. That makes the
+/// list render offline, and removes the drift a projection invites —
+/// the service's row could say "revoked" over a device that still
+/// reaches storage, because nothing consulted it when authorizing.
+///
+/// Revoked devices are absent rather than listed as revoked: revoking
+/// retracts the delegation, so the row goes with the authority it
+/// described.
+async fn local_devices(state: &TonkState) -> Result<Vec<AccountDevice>, TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("open account branch to list devices: {error}"))
+        })?;
+    let links: Vec<tonk_schema::DeviceLink> = branch
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::DeviceLink> {
+            this: Term::var("this"),
+            created_at: Term::var("created_at"),
+            title: Term::var("title"),
+            reason: Term::var("reason"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("query device links: {error}")))?;
+
+    let this_device = state.profile.did().to_string();
+    let mut devices = Vec::with_capacity(links.len());
+    for link in links {
+        // The audience is the device; dialog wrote it onto the same
+        // entity when the chain was retained.
+        let Some(did) = delegation_audience(branch.handle(), state, &link.this).await else {
+            continue;
+        };
+        devices.push(AccountDevice {
+            attachment_id: link.this.to_string(),
+            this_device: did == this_device,
+            did,
+            name: link.title.0,
+            status: "active".to_string(),
+            created_at: link.created_at.0,
+            delegation_cid: link.this.to_string(),
+            delegation_hex: None,
+        });
+    }
+    Ok(devices)
+}
+
+/// List the devices authorized under this profile's account.
+///
+/// Read from local delegation facts rather than the account service: a
+/// device IS its `account -> profile` delegation, and dialog retains
+/// that with issuer/audience decomposed onto its entity. Serving the
+/// list locally makes it work offline and removes a projection that
+/// could disagree with the authority it described.
 #[wasm_compat]
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AccountDevice>>, TonkWorkerError> {
     let state = state.read().await;
-    let (link, service) = linked_service(&state).await?;
-    Ok(Json(fetch_devices(&state, &link, &service).await?))
+    Ok(Json(local_devices(&state).await?))
 }
 
 /// `POST /api/account/devices/register` request: a device the approving
@@ -233,6 +284,84 @@ pub async fn summary(
     Ok(Json(account_summary(&state).await?))
 }
 
+/// Mint a revocation for ANOTHER device, under this device's own
+/// account grant.
+///
+/// No passkey is involved. A device link is a powerline — subject-open
+/// and command-open — so any authorized device can prove for the account
+/// subject, and that is exactly the authority a revocation of an
+/// account-issued grant requires. The passkey requirement this replaces
+/// was a workaround from before revocations were enforced, not a
+/// property of the model.
+///
+/// `path` answers "why may this be revoked" — the target's own grant,
+/// reconstructed from retained `dialog.ucan/*` facts rather than a
+/// stored copy, so it cannot drift from what the proof search reads.
+/// `proofs` answers "may this principal invoke at all" — our own link.
+/// The scope a device grant proves: the account subject, root command.
+///
+/// A device link is a powerline, so its subject is the account rather
+/// than any one space, and `/` is the command it carries.
+fn account_scope(link: &DelegationChain) -> Scope {
+    let account = link
+        .subject()
+        .cloned()
+        .unwrap_or_else(|| link.issuer().clone());
+    Scope {
+        subject: UcanSubject::Specific(account),
+        command: Command::parse("/").expect("the root command always parses"),
+        parameters: Parameters::default(),
+    }
+}
+
+async fn delegated_revocation(
+    state: &TonkState,
+    link: &DelegationChain,
+    target_did: &Did,
+) -> Result<String, TonkWorkerError> {
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("open account branch to revoke: {error}"))
+        })?;
+    let proof = branch
+        .handle()
+        .delegations()
+        .prove(target_did.clone(), account_scope(link))
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::NotFound(format!("no retained grant reaches {target_did}: {error}"))
+        })?;
+    let mut certificates = proof.proofs.into_iter();
+    let first = certificates
+        .next()
+        .ok_or_else(|| TonkWorkerError::NotFound(format!("the grant for {target_did} is empty")))?;
+    let mut path = DelegationChain::new(first.0);
+    for certificate in certificates {
+        path = path.push(certificate.0).map_err(|error| {
+            TonkWorkerError::Internal(format!("proved certificates do not chain: {error}"))
+        })?;
+    }
+    let target = path.proof_cids()[0];
+    Ok(hex::encode(
+        tonk_identity::revocation::mint_delegated_revocation(
+            state.profile.signer().signer().clone(),
+            &path,
+            &target,
+            link,
+        )
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Forbidden(format!("cannot revoke {target_did}: {error}"))
+        })?,
+    ))
+}
+
 async fn self_revocation(
     state: &TonkState,
     link: &DelegationChain,
@@ -348,12 +477,17 @@ pub async fn revoke(
     let (link, service) = linked_service(&state).await?;
     let revocation = if own {
         self_revocation(&state, &link).await?
+    } else if request.revocation.is_empty() {
+        // A caller-supplied artifact is no longer required: this device's
+        // own account grant is a powerline, so it can prove for the
+        // account subject and mint the revocation itself.
+        let target: Did = target_did.parse().map_err(|error| {
+            TonkWorkerError::Conflict(format!("'{target_did}' is not a did:key: {error:?}"))
+        })?;
+        delegated_revocation(&state, &link, &target).await?
     } else {
-        if request.revocation.is_empty() {
-            return Err(TonkWorkerError::Conflict(
-                "revoking another device needs a passkey-signed revocation".to_string(),
-            ));
-        }
+        // Still honoured when supplied, so a passkey-signed artifact
+        // minted elsewhere keeps working.
         request.revocation
     };
     // Publish first: the account service's row is a projection of this,

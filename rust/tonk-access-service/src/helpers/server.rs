@@ -551,6 +551,11 @@ async fn handle_request(
             activation_ttl: 24 * 60 * 60,
             now: unix_now(),
             container: &body_bytes,
+            // The same index the authorizer reads, so a revocation
+            // recorded by `/ucan/revoke` governs registration too.
+            revocations: &crate::revocation::checker::IndexedRevocations(
+                registration.revocations.clone(),
+            ),
         };
         let response = match env.handle().await {
             Ok(receipt) => Response::builder()
