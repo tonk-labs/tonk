@@ -512,6 +512,12 @@ enum AccountCommand {
     /// Show whether this device is signed in, and to which account
     Status,
 
+    /// Pull the account so devices, spots, and names read current facts
+    ///
+    /// Read commands answer instantly from what this device already
+    /// knows; this is the one that fetches what other devices changed.
+    Sync,
+
     /// Sign in to your account with a synced passkey in the browser
     ///
     /// Tonk holds one account at a time. Sign out before signing in as
@@ -998,6 +1004,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                     Some(AccountSpotsCommand::Delete { .. }) => "spots-delete",
                 },
                 AccountCommand::Migrate => "migrate",
+                AccountCommand::Sync => "sync",
                 AccountCommand::Devices { .. } => "devices",
                 AccountCommand::Revoke { .. } => "revoke",
             }),
@@ -1709,6 +1716,16 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 Err(error) => print_failure(error),
             }
         }
+        AccountCommand::Sync => match account::sync(&profile).await {
+            Ok(outcome) => {
+                if let Some(warning) = outcome.warning {
+                    eprintln!("warning: {warning}");
+                }
+                println!("account: {:?}", outcome.status);
+                ExitCode::Success
+            }
+            Err(error) => print_failure(error),
+        },
         AccountCommand::Revoke { did, service_url } => {
             let options = account::RevokeOptions { service_url };
             match account::revoke_in(&profile, &store, &options, &did).await {

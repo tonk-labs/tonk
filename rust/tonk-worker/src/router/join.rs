@@ -2707,7 +2707,7 @@ mod tests {
     use crate::router::repository::build_repository_info;
     use crate::router::tests::{
         attach_remote, content_invitations, content_invited_via, content_member_roles,
-        content_memberships, put_repo, test_state,
+        content_memberships, put_repo, test_state, test_state_without_root,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
@@ -3806,6 +3806,24 @@ mod tests {
             1,
             "exactly one replica in the profile index",
         );
+    }
+
+    /// Durable membership requires a REGISTERED account. A device
+    /// holding only its onboarding account can create local spaces, not
+    /// join shared ones: the onboarding account has no provider
+    /// attachment, so the claim refuses before any authority is minted.
+    /// The guest visit stays open to it — guests are not members.
+    #[dialog_common::test]
+    async fn it_refuses_a_durable_join_for_an_onboarding_only_device() {
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        // Holding an onboarding account is not enough to count.
+        crate::onboarding::account(&*state.read().await)
+            .await
+            .expect("the onboarding account mints");
+        let (url, _key) = handcrafted_invite_url(84, 85).await;
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CONFLICT);
+        assert_eq!(post_visit(&app, &url).await, StatusCode::CREATED);
     }
 
     /// A local-only invite has no remote to prove, so it commits on
