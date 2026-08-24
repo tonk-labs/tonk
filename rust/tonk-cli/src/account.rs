@@ -842,15 +842,7 @@ pub async fn devices_in(
         bail!("requested provider does not match the active account");
     }
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    if let Err(error) = crate::account_state::ensure_with_operator_and_store(
-        profile,
-        operator.clone(),
-        store.clone(),
-    )
-    .await
-    {
-        eprintln!("warning: account sync failed; listing local facts: {error:#}");
-    }
+    freshen_account(profile, &operator, store, "listing local facts").await;
     let branch = account_branch(profile, &operator, store).await?;
     let links = tonk_schema::device_link::device_links(&branch, &operator)
         .await
@@ -873,6 +865,32 @@ pub async fn devices_in(
     let mut devices: Vec<DeviceRow> = rows.into_values().collect();
     devices.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     Ok(devices)
+}
+
+/// Sync the account best-effort, under the same hard deadline the link
+/// flow uses: reads that follow serve local facts either way, so a slow
+/// or unreachable remote must degrade to slightly stale rather than
+/// hang the command. Reachable remotes answer well inside the bound.
+async fn freshen_account(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+    doing: &str,
+) {
+    match tokio::time::timeout(
+        HYDRATION_DEADLINE,
+        crate::account_state::ensure_with_operator_and_store(
+            profile,
+            operator.clone(),
+            store.clone(),
+        ),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => eprintln!("warning: account sync failed; {doing}: {error:#}"),
+        Err(_) => eprintln!("warning: the account remote did not answer in time; {doing}"),
+    }
 }
 
 /// The mounted account branch, or what to run when there is none.
@@ -1078,15 +1096,7 @@ pub async fn revoke_in(
 
     // Sync first: revoking another device needs its grant retained here,
     // to rebuild the path that says why it may be revoked.
-    if let Err(error) = crate::account_state::ensure_with_operator_and_store(
-        profile,
-        operator.clone(),
-        store.clone(),
-    )
-    .await
-    {
-        eprintln!("warning: account sync failed; revoking from local facts: {error:#}");
-    }
+    freshen_account(profile, &operator, store, "revoking from local facts").await;
     let branch = account_branch(profile, &operator, store).await?;
     let target: Did = did.parse().context("device DID is invalid")?;
     let listed = tonk_schema::device_link::device_links(&branch, &operator)

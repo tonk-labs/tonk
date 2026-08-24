@@ -421,7 +421,20 @@ mod tests {
         profile: &TempDir,
         args: &[String],
     ) -> Result<CliOutput> {
-        let output = tonk_command_in(env, profile).args(args).output().await?;
+        // Bounded like `finish_link`: a CLI that hangs must fail the
+        // test that ran it, not hold the suite until the job timeout.
+        // `kill_on_drop` is what actually reaps the child when the
+        // timeout drops the future — `output()` alone would leave it
+        // running.
+        let output = tokio::time::timeout(
+            Duration::from_secs(120),
+            tonk_command_in(env, profile)
+                .args(args)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow!("timed out waiting for `tonk {}`", args.join(" ")))??;
         Ok(CliOutput {
             status: output.status,
             stdout: String::from_utf8(output.stdout)?,
