@@ -111,8 +111,8 @@ pub async fn list(
 }
 
 /// `POST /api/account/devices/register` request: a device the approving
-/// page just authorized, to be recorded in the account service's
-/// registry under this profile's account.
+/// page just authorized, to be described in the account space under
+/// this profile's account.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterDeviceRequest {
