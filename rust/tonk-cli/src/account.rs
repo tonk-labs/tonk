@@ -818,13 +818,11 @@ pub async fn attach_for_integration_test(
 /// `service_url` names one only to cross-check it against the active
 /// account.
 ///
-/// Deliberately no sync: the list is local facts, and rows described on
-/// other devices arrive with the pulls the link flow and ordinary sync
-/// already perform. Reading through the remote here made the list
-/// hostage to it — a slow or unanswering service (CI congestion, a
-/// revoked device) turned "show me what this device knows" into a hang.
-/// One row per device — a device described more than once keeps its
-/// earliest link time.
+/// Fresh by default, never hostage to the remote: a tightly bounded
+/// account pull runs first, and a remote that is slow or unanswering
+/// degrades to a stderr note over local facts rather than a hang. Set
+/// `TONK_OFFLINE=1` to skip the pull entirely. One row per device — a
+/// device described more than once keeps its earliest link time.
 pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
     let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
     devices_in(profile, &store, service_url).await
@@ -845,6 +843,7 @@ pub async fn devices_in(
         bail!("requested provider does not match the active account");
     }
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    freshen_account(profile, &operator, store, "listing local facts").await;
     let branch = account_branch(profile, &operator, store).await?;
     let links = tonk_schema::device_link::device_links(&branch, &operator)
         .await
@@ -899,12 +898,18 @@ pub async fn sync_in(
 /// flow uses: reads that follow serve local facts either way, so a slow
 /// or unreachable remote must degrade to slightly stale rather than
 /// hang the command. Reachable remotes answer well inside the bound.
+///
+/// `TONK_OFFLINE=1` skips the attempt: the opt-out for air-gapped work
+/// and scripts that want local answers with no network at all.
 async fn freshen_account(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
     store: &crate::spot::SpotStore,
     doing: &str,
 ) {
+    if std::env::var_os("TONK_OFFLINE").is_some_and(|value| !value.is_empty() && value != "0") {
+        return;
+    }
     match tokio::time::timeout(
         HYDRATION_DEADLINE,
         crate::account_state::ensure_with_operator_and_store(

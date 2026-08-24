@@ -610,12 +610,6 @@ async fn mount(
         .perform(operator)
         .await
         .context("failed to open profile main branch")?;
-    let remote_branch = remote
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(operator)
-        .await
-        .context("failed to open account remote main")?;
     match branch.upstream() {
         Some(Upstream::Remote { remote, branch, .. })
             if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
@@ -624,11 +618,24 @@ async fn mount(
         // account, the account IS profile main's upstream by
         // definition, and set_upstream promotes over an existing
         // tracking target.
-        _ => branch
-            .set_upstream(&remote_branch)
-            .perform(operator)
-            .await
-            .context("failed to set account upstream")?,
+        //
+        // The remote branch is opened only on this arm: opening it
+        // resolves the remote head, and a mount on the steady path —
+        // every local read runs one — must not wait on the network for
+        // a value only repointing consumes.
+        _ => {
+            let remote_branch = remote
+                .branch(tonk_account::MAIN_BRANCH)
+                .open()
+                .perform(operator)
+                .await
+                .context("failed to open account remote main")?;
+            branch
+                .set_upstream(&remote_branch)
+                .perform(operator)
+                .await
+                .context("failed to set account upstream")?
+        }
     }
 
     let replica = Replica::account(profile.did(), subject);
