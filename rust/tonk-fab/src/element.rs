@@ -479,6 +479,7 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
     // The click the press resolves to, when it never became a drag.
     {
         let host = this.clone();
+        let shared = state.clone();
         listeners.push(crate::shadow::bind(this, "click", move |event| {
             let Some(mouse) = event.dyn_ref::<web_sys::MouseEvent>() else {
                 return;
@@ -512,6 +513,7 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
                 } else {
                     let _ = host.set_attribute("collapsed", "");
                 }
+                bar::close(&host, &shared);
                 let detail = Object::new();
                 let _ = Reflect::set(&detail, &"collapsed".into(), &(!collapsed).into());
                 crate::shadow::emit(&host, "fabb-collapse", &detail);
