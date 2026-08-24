@@ -243,7 +243,7 @@ async fn existing_grant(state: &TonkState, account: &Did) -> Option<DelegationCh
 /// The service worker has `WorkerNavigator` rather than `window`, and no
 /// `platform` or touch-point count, so the label is coarser than the
 /// page's — browser and OS families still come out of the user agent.
-fn device_title() -> String {
+pub(crate) fn device_title() -> String {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         use wasm_bindgen::JsCast as _;
