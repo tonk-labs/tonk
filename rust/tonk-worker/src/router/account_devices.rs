@@ -22,6 +22,19 @@ use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
+/// A device row as the account service serializes it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceDevice {
+    attachment_id: String,
+    did: String,
+    name: String,
+    status: String,
+    created_at: u64,
+    delegation_cid: String,
+    delegation_hex: Option<String>,
+}
+
 /// The linked account provider's base URL, when an account is attached.
 pub(crate) async fn account_service_url(tonk: &TonkState) -> Option<String> {
     crate::router::account::provider(tonk).await
@@ -40,111 +53,62 @@ pub(super) async fn linked_service(
     Ok((link, service))
 }
 
-/// The audience DID dialog recorded for a retained delegation.
-///
-/// `dialog.ucan/audience` is written onto the delegation's own entity
-/// when the chain is retained, so this reads the device's identity from
-/// the same record that carries its label — no second source to drift.
-async fn delegation_audience(
-    branch: &dialog_repository::Branch,
+async fn fetch_devices(
     state: &TonkState,
-    entity: &dialog_artifacts::Entity,
-) -> Option<String> {
-    use dialog_artifacts::{ArtifactSelector, Value};
-    use futures_util::StreamExt as _;
-
-    let selector = ArtifactSelector::new()
-        .the(dialog_repository::DELEGATION_AUDIENCE.parse().ok()?)
-        .of(entity.clone());
-    let facts = branch
-        .claims()
-        .select(selector)
-        .perform(&state.operator)
-        .await
-        .ok()?
-        .collect::<Vec<_>>()
-        .await;
-    for fact in facts.into_iter().flatten() {
-        if let Ok(Value::String(did)) = fact.value() {
-            return Some(did.to_string());
-        }
-    }
-    None
-}
-
-/// This account's device links, from local facts.
-///
-/// Every field the account service returned is derivable here: dialog
-/// decomposes issuer/audience onto each retained delegation's entity,
-/// and [`DeviceLink`] adds the label and creation time. That makes the
-/// list render offline, and removes the drift a projection invites —
-/// the service's row could say "revoked" over a device that still
-/// reaches storage, because nothing consulted it when authorizing.
-///
-/// Revoked devices are absent rather than listed as revoked: revoking
-/// retracts the delegation, so the row goes with the authority it
-/// described.
-async fn local_devices(state: &TonkState) -> Result<Vec<AccountDevice>, TonkWorkerError> {
-    use dialog_query::{Output as _, Query, Term};
-
-    let branch = state
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&state.operator)
-        .await
+    link: &dialog_ucan_core::DelegationChain,
+    service: &str,
+) -> Result<Vec<AccountDevice>, TonkWorkerError> {
+    let device = state.profile.signer().signer().clone();
+    let body = tonk_identity::request::build_device_invocation(
+        device,
+        link,
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("build device-list invocation: {e}")))?;
+    let endpoint = url::Url::parse(&format!("{}/devices/list", service.trim_end_matches('/')))
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("open account branch to list devices: {error}"))
+            TonkWorkerError::Internal(format!("invalid account provider URL: {error}"))
         })?;
-    let links: Vec<tonk_schema::DeviceLink> = branch
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::DeviceLink> {
-            this: Term::var("this"),
-            created_at: Term::var("created_at"),
-            title: Term::var("title"),
-            reason: Term::var("reason"),
+    let response = super::http::post_cbor(&endpoint, &body).await?;
+    let rows: Vec<ServiceDevice> = serde_json::from_slice(&response.body)
+        .map_err(|e| TonkWorkerError::Internal(format!("parse device list: {e}")))?;
+    let this_did = state.profile.did().to_string();
+    Ok(rows
+        .into_iter()
+        .map(|row| AccountDevice {
+            this_device: row.did == this_did,
+            attachment_id: row.attachment_id,
+            did: row.did,
+            name: row.name,
+            status: row.status,
+            created_at: row.created_at,
+            delegation_cid: row.delegation_cid,
+            delegation_hex: row.delegation_hex,
         })
-        .perform(&state.operator)
-        .try_vec()
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("query device links: {error}")))?;
-
-    let this_device = state.profile.did().to_string();
-    let mut devices = Vec::with_capacity(links.len());
-    for link in links {
-        // The audience is the device; dialog wrote it onto the same
-        // entity when the chain was retained.
-        let Some(did) = delegation_audience(branch.handle(), state, &link.this).await else {
-            continue;
-        };
-        devices.push(AccountDevice {
-            attachment_id: link.this.to_string(),
-            this_device: did == this_device,
-            did,
-            name: link.title.0,
-            status: "active".to_string(),
-            created_at: link.created_at.0,
-            delegation_cid: link.this.to_string(),
-            delegation_hex: None,
-        });
-    }
-    Ok(devices)
+        .collect())
 }
 
-/// List the devices authorized under this profile's account.
+/// List the devices registered under this profile's account.
 ///
-/// Read from local delegation facts rather than the account service: a
-/// device IS its `account -> profile` delegation, and dialog retains
-/// that with issuer/audience decomposed onto its entity. Serving the
-/// list locally makes it work offline and removes a projection that
-/// could disagree with the authority it described.
+/// Served by the account service rather than local facts. A device list
+/// is inherently cross-device: another machine mints its own
+/// `account -> profile` link on that machine, so this profile never
+/// asserts a [`DeviceLink`] for it, and devices linked before those
+/// facts existed have none at all. Local facts would therefore show a
+/// subset — this device and whatever happened to replicate — which is
+/// worse than a round trip, because a missing row reads as "that device
+/// is gone".
+///
+/// [`DeviceLink`]: tonk_schema::DeviceLink
 #[wasm_compat]
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AccountDevice>>, TonkWorkerError> {
     let state = state.read().await;
-    Ok(Json(local_devices(&state).await?))
+    let (link, service) = linked_service(&state).await?;
+    Ok(Json(fetch_devices(&state, &link, &service).await?))
 }
 
 /// `POST /api/account/devices/register` request: a device the approving
@@ -481,6 +445,13 @@ pub async fn revoke(
         // A caller-supplied artifact is no longer required: this device's
         // own account grant is a powerline, so it can prove for the
         // account subject and mint the revocation itself.
+        //
+        // This needs the TARGET's grant retained here, to rebuild the
+        // path that says why it may be revoked. A device linked on
+        // another machine may not have replicated its grant to this one,
+        // so a caller that can supply the artifact should still do so —
+        // the branch above takes it when present, and the error here
+        // says which case was missing rather than reporting a refusal.
         let target: Did = target_did.parse().map_err(|error| {
             TonkWorkerError::Conflict(format!("'{target_did}' is not a did:key: {error:?}"))
         })?;
