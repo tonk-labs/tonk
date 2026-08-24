@@ -303,7 +303,7 @@ mod tests {
             unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
-                endpoint: "https://tonk.spot/ucan/".into(),
+                endpoint: "https://tonk.space/ucan/".into(),
                 service_did: None,
             })
             .await
@@ -316,7 +316,7 @@ mod tests {
             unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
-                endpoint: "https://tonk.spot/ucan/".into(),
+                endpoint: "https://tonk.space/ucan/".into(),
                 service_did: None,
             })
             .await
@@ -331,7 +331,7 @@ mod tests {
             unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
-                endpoint: "https://tonk.spot/ucan/".into(),
+                endpoint: "https://tonk.space/ucan/".into(),
                 service_did: None,
             })
             .await
@@ -344,7 +344,7 @@ mod tests {
             unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
-                endpoint: "https://tonk.spot/ucan/".into(),
+                endpoint: "https://tonk.space/ucan/".into(),
                 service_did: None,
             })
             .await
@@ -360,7 +360,7 @@ mod tests {
             unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
-                endpoint: "https://tonk.spot/ucan/".into(),
+                endpoint: "https://tonk.space/ucan/".into(),
                 service_did: None,
             })
             .await
@@ -378,7 +378,7 @@ mod tests {
             unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
-                endpoint: "https://tonk.spot/ucan/".into(),
+                endpoint: "https://tonk.space/ucan/".into(),
                 service_did: None,
             })
             .await
@@ -391,7 +391,7 @@ mod tests {
             unlock_with_passkey(UnlockWithPasskeyInput {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
-                endpoint: "https://tonk.spot/ucan/".into(),
+                endpoint: "https://tonk.space/ucan/".into(),
                 service_did: None,
             })
             .await

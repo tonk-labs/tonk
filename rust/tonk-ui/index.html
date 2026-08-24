@@ -94,7 +94,7 @@
                     opacity 400ms ease 300ms,
                     visibility 0s 700ms;
             }
-            /* Header replica — token-for-token the Hub's `.spot-brand`
+            /* Header replica — token-for-token with the Hub brand
                row (profile.yaml), so the real header takes over in
                place. */
             .tonk-boot-brand {
@@ -573,7 +573,7 @@
         <!-- Static boot shell: the ONLY body content until the wasm mounts
          `<tonk-site>` — the async-stylesheet strategy in <head> depends on
          that staying true. It replicates the Hub header (wordmark + badge,
-         same tokens as `.spot` in profile.yaml) so the app's own header
+         same tokens as the profile card) so the app's own header
          appears to simply take over, and shows live wasm download progress
          via the Trunk initializer (assets/boot-progress.mjs). Styled by the
          inline critical CSS in <head>; hidden purely by CSS
@@ -581,7 +581,7 @@
         <div id="tonk-boot" aria-live="polite">
             <div class="tonk-boot-brand">
                 <span class="tonk-boot-logo">tonk</span>
-                <span class="tonk-boot-badge">spot</span>
+                <span class="tonk-boot-badge">space</span>
             </div>
             <div class="tonk-boot-center">
                 <div class="tonk-boot-bar">

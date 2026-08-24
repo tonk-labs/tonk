@@ -546,7 +546,7 @@ fn settle(host: &HtmlElement) {
 ///
 /// Same shape as [`settle`], minus the return-to-`next` step. A gated user who
 /// signed in on another tab still gets their interrupted operation replayed;
-/// someone who opened their account settings from a spot — the FAB's account
+/// someone who opened their account settings from a space — the FAB's account
 /// link carries `next` so its Back goes home — stays on the page they asked
 /// for instead of being bounced straight back out of it.
 fn settle_on_load(host: &HtmlElement) {
@@ -979,7 +979,7 @@ fn load_status(host: HtmlElement) {
     let link_outcome = query_value("link").map(|status| (status, query_value("message")));
     // The gate always arrives with a `next`. Without one the user came here
     // themselves, so anything parked belongs to an attempt they walked away
-    // from — replaying it on this sign-in would create a spot nobody asked
+    // from — replaying it on this sign-in would create a space nobody asked
     // for. Drop it before any ceremony can pick it up.
     if crate::account_gate::requested_next().is_none() {
         crate::account_gate::discard_pending();
@@ -1362,7 +1362,7 @@ fn prevent_form_navigation(host: &HtmlElement) {
 ///
 /// They read `/` in the markup because that is where someone who opened
 /// `/account` themselves belongs. Arriving through the gate, `/` is the one
-/// place the user was NOT — leaving means abandoning the spot they were
+/// place the user was NOT — leaving means abandoning the space they were
 /// looking at — so the `next` the gate carried wins.
 fn bind_return_links(host: &HtmlElement) {
     let Some(next) = crate::account_gate::requested_next() else {
@@ -1379,7 +1379,7 @@ fn bind_return_links(host: &HtmlElement) {
             continue;
         };
         let _ = link.set_attribute("href", &next);
-        // "Back to Tonk" is the truth for `/`, and a lie for a spot. The
+        // "Back to Tonk" is the truth for `/`, and a lie for a space. The
         // destination changed, so the label has to.
         if link.text_content().as_deref() == Some("Back to Tonk") {
             link.set_text_content(Some("Back"));

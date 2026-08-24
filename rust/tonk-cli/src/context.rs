@@ -57,7 +57,7 @@ pub struct SpaceContext {
     pub name: String,
     /// Absolute site path.
     pub site: String,
-    /// `flag`, `env`, or `global`.
+    /// `flag`, `env`, or `directory <path>`.
     pub selected_via: String,
     /// Tonk's writable branch.
     pub branch: &'static str,
@@ -69,8 +69,8 @@ pub struct SpaceContext {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncContext {
-    /// `no-upstream`, `synced`, `ahead`, `behind`, or `diverged`.
-    pub state: String,
+    /// Exact local/upstream relationship, including an offline inspection.
+    pub state: ContextSyncState,
     /// Local tree hash, absent on a branch with no commits.
     pub hash: Option<String>,
     /// Whether the upstream head was fetched to reach this verdict.
@@ -80,6 +80,36 @@ pub struct SyncContext {
     /// it got, because an unfetched `synced` only means "nothing local
     /// has happened since the last fetch".
     pub fetched: bool,
+}
+
+/// Stable token shared by text and JSON sync reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContextSyncState {
+    /// No upstream is configured.
+    NoUpstream,
+    /// Local and upstream revisions match.
+    Synced,
+    /// Local has commits the upstream does not.
+    Ahead,
+    /// Upstream has commits local does not.
+    Behind,
+    /// Both sides have unique commits.
+    Diverged,
+    /// An upstream exists but this report deliberately stayed offline.
+    NotFetched,
+}
+
+impl From<tonk_schema::SyncState> for ContextSyncState {
+    fn from(state: tonk_schema::SyncState) -> Self {
+        match state {
+            tonk_schema::SyncState::NoUpstream => Self::NoUpstream,
+            tonk_schema::SyncState::Synced => Self::Synced,
+            tonk_schema::SyncState::Ahead => Self::Ahead,
+            tonk_schema::SyncState::Behind => Self::Behind,
+            tonk_schema::SyncState::Diverged => Self::Diverged,
+        }
+    }
 }
 
 /// Whether this device is signed in, and to what.
@@ -92,8 +122,8 @@ pub struct AccountContext {
     pub account: Option<String>,
     /// Account service base URL, absent when unregistered.
     pub account_service: Option<String>,
-    /// This device's DID. Always present: the identity is local.
-    pub device: String,
+    /// This device's DID, absent when the local identity could not be read.
+    pub device: Option<String>,
     /// Service-side account state, absent when unregistered.
     pub state: Option<String>,
 }
@@ -255,13 +285,7 @@ pub async fn inspect(
         schema_version: SCHEMA_VERSION,
         sync,
         account,
-        space: SpaceContext {
-            name: resolved.name.clone(),
-            site: resolved.site.display().to_string(),
-            selected_via: resolved.source.to_string(),
-            branch: "main",
-            cwd_selects_space: false,
-        },
+        space: SpaceContext::new(resolved),
         agents: space_agents,
         concepts,
         empty_space_workflow: vec![
@@ -307,22 +331,34 @@ fn example_value(field: &FieldSummary) -> &'static str {
 ///
 /// Takes the token rather than the enum so the text and JSON forms
 /// cannot drift into naming the same state differently.
-pub fn sync_state_gloss(state: &str) -> &'static str {
+pub fn sync_state_gloss(state: ContextSyncState) -> &'static str {
     match state {
-        "no-upstream" => "no-upstream (set one with `tonk remote set-upstream <name>`)",
-        "synced" => "synced",
-        "ahead" => "ahead (local has unpushed commits; run `tonk push`)",
-        "behind" => "behind (upstream has new commits; run `tonk pull`)",
-        "diverged" => "diverged (run `tonk pull` to merge, then `tonk push`)",
+        ContextSyncState::NoUpstream => {
+            "no-upstream (set one with `tonk remote set-upstream <name>`)"
+        }
+        ContextSyncState::Synced => "synced",
+        ContextSyncState::Ahead => "ahead (local has unpushed commits; run `tonk push`)",
+        ContextSyncState::Behind => "behind (upstream has new commits; run `tonk pull`)",
+        ContextSyncState::Diverged => "diverged (run `tonk pull` to merge, then `tonk push`)",
         // `tonk context` does not fetch, so bare `tonk` stays offline. It
         // can see that an upstream is configured but not where the branch
         // stands against it, and says which.
-        "not-fetched" => "upstream configured, not checked (run `tonk status`)",
-        _ => "unknown",
+        ContextSyncState::NotFetched => "upstream configured, not checked (run `tonk status`)",
     }
 }
 
 impl SpaceContext {
+    /// Build the selected-space section from one resolution.
+    pub fn new(resolved: &Resolved) -> Self {
+        Self {
+            name: resolved.name.clone(),
+            site: resolved.site.display().to_string(),
+            selected_via: resolved.source.to_string(),
+            branch: crate::site::BRANCH_NAME,
+            cwd_selects_space: false,
+        }
+    }
+
     /// What `tonk space use` prints with no name.
     ///
     /// One vocabulary for all four "where am I" commands. This field was
@@ -340,10 +376,32 @@ impl SpaceContext {
 }
 
 impl SyncContext {
+    /// A live sync classification reached after fetching the upstream.
+    pub fn fetched(state: tonk_schema::SyncState, hash: Option<String>) -> Self {
+        Self {
+            state: state.into(),
+            hash,
+            fetched: true,
+        }
+    }
+
+    /// The bounded local-only classification used by `tonk context`.
+    pub fn offline(upstream_configured: bool, hash: Option<String>) -> Self {
+        Self {
+            state: if upstream_configured {
+                ContextSyncState::NotFetched
+            } else {
+                ContextSyncState::NoUpstream
+            },
+            hash,
+            fetched: false,
+        }
+    }
+
     /// What `tonk status` prints.
     pub fn render(&self) -> String {
         let mut out = String::new();
-        let _ = writeln!(out, "sync: {}", sync_state_gloss(&self.state));
+        let _ = writeln!(out, "sync: {}", sync_state_gloss(self.state));
         if let Some(hash) = &self.hash {
             let _ = writeln!(out, "hash: {hash}");
         }
@@ -370,7 +428,11 @@ impl AccountContext {
             "account service: {}",
             self.account_service.as_deref().unwrap_or("none")
         );
-        let _ = writeln!(out, "device: {}", self.device);
+        let _ = writeln!(
+            out,
+            "device: {}",
+            self.device.as_deref().unwrap_or("unavailable")
+        );
         if let Some(state) = &self.state {
             let _ = writeln!(out, "account status: {state}");
         }

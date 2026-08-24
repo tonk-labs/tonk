@@ -671,7 +671,6 @@ pub(crate) struct AccountConnection {
     pub(crate) service_url: String,
     pub(crate) root_did: Did,
     pub(crate) link: DelegationChain,
-    store: crate::space::SpaceStore,
 }
 
 async fn connection_from_provider(
@@ -874,20 +873,20 @@ pub async fn devices_in(
 
 /// Explicitly pull the account so every local view reads current facts.
 ///
-/// The read verbs (`devices`, `status`, `spots`) deliberately never
+/// The read verbs (`devices`, `status`, `spaces`) deliberately never
 /// touch the remote — local answers stay instant and a sick remote
 /// cannot hang them. This is the verb that freshens what they read,
 /// bounded and honest: a remote that does not answer is an error naming
 /// it, not a wait.
 pub async fn sync(profile: &Profile) -> Result<crate::account_state::EnsureOutcome> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     sync_in(profile, &store).await
 }
 
 /// [`sync`] through one explicit account profile store.
 pub async fn sync_in(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<crate::account_state::EnsureOutcome> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     tokio::time::timeout(
@@ -908,7 +907,7 @@ pub async fn sync_in(
 async fn freshen_account(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
     doing: &str,
 ) {
     if std::env::var_os("TONK_OFFLINE").is_some_and(|value| !value.is_empty() && value != "0") {
@@ -940,7 +939,7 @@ async fn freshen_account(
 async fn account_branch(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<dialog_repository::Branch> {
     tokio::time::timeout(
         Duration::from_secs(30),
@@ -960,7 +959,7 @@ async fn publish_revocation(
     profile: &Profile,
     branch: &dialog_repository::Branch,
     operator: &dialog_operator::Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
     artifact: &[u8],
 ) -> Result<()> {
     use dialog_remote_ucan_s3::UcanAddress;

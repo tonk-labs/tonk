@@ -8,7 +8,7 @@ from the space, never recorded beside it.
 
 **Approach:** Build on `staging` after merged PR #726 (`53821ebe3`), using its
 account-as-profile-main upstream, signed account directory, membership roles,
-and `/provider/add` protocol. One installation store (`spots.json`), one
+and `/provider/add` protocol. One installation store (`spaces.json`), one
 Dialog identity, one account slot. This revises the 2026-08-20 direction: the
 per-space account tag and the resolution-time account comparison are removed
 (see Rejected alternatives). Ownership derives from the roster the space
@@ -46,7 +46,7 @@ this plan exists to avoid.
 
 **Constraints:**
 
-- One account at a time. `tonk account link` (alias `login`) refuses while
+- One account at a time. `tonk account login` refuses while
   another account is signed in; `tonk account logout` clears the slot,
   notifies the provider best-effort, and touches nothing else — not replicas,
   not the profile, not retained delegations. Signing out is not disowning;
@@ -72,11 +72,11 @@ this plan exists to avoid.
 - Local removal, account ownership, provider hosting, membership, authority,
   and remote bytes stay separate. `tonk space rm` removes a local replica and
   nothing else.
-- `spots.json` records name → site bindings and the one signed-in account,
+- `spaces.json` records name → site bindings and the one signed-in account,
   nothing per-space. A registry written by another tool round-trips
   byte-for-byte.
-- Canonical vocabulary `space`, `--space`, `TONK_SPACE`, `account spaces`,
-  with visible `spot`, `--spot`, `TONK_SPOT`, `account spots` aliases.
+- Canonical vocabulary only: `space`, `--space`, `TONK_SPACE`, and
+  `account spaces`.
 - Out of scope: browser profile UX, account-to-account ownership transfer,
   delegation-chain rebasing, rotating existing bearer links, provider billing
   transfer, multiple simultaneous accounts, and warnings on writes to a
@@ -149,7 +149,7 @@ Linking is one word and no target, because there is only one account:
 $ tonk space link garden
 linked	garden	did:key:...
 account: did:key:aa
-site: /…/spots/garden
+site: /…/spaces/garden
 ```
 
 An account-owned space explains itself rather than moving, from its own
@@ -170,7 +170,7 @@ owner account: did:key:aa
 
 ## Durable data model
 
-`spots.json` shrinks to bindings plus the one signed-in account:
+`spaces.json` shrinks to bindings plus the one signed-in account:
 
 ```rust
 pub struct SpotEntry {
@@ -184,7 +184,7 @@ pub struct AccountRecord {
 }
 
 pub struct Registry {
-    pub spots: BTreeMap<String, SpotEntry>,
+    pub spaces: BTreeMap<String, SpotEntry>,
     pub bindings: BTreeMap<PathBuf, String>,
     /// The account signed in here, if any.
     pub account: Option<AccountRecord>,
@@ -238,7 +238,7 @@ converges.
 ## File map
 
 - `plan/cli-space-parity.md`: this contract and its verification state.
-- `rust/tonk-cli/src/spot.rs`: the bindings-only registry and account slot;
+- `rust/tonk-cli/src/space.rs`: the bindings-only registry and account slot;
   the account gate and per-space tag removed.
 - `rust/tonk-cli/src/inventory.rs`: the listing; owner and role derived from
   the content-branch roster.
@@ -252,13 +252,13 @@ converges.
   the signed directory, unchanged in role.
 - `rust/tonk-cli/src/bin/tonk.rs`: command surface and the copy above.
 - `rust/tonk-cli/tests/`: `space_inventory.rs`, `space_link.rs`,
-  `cli_spot.rs` updated; `space_access.rs` replaced by coverage that every
+  `cli_space.rs` updated; `space_access.rs` replaced by coverage that every
   registered replica opens regardless of account state, and that a revoked
   chain fails at sync with the copy above.
 
 ## Upgrading
 
-A `spots.json` written by PR #726 has no per-space fields and reads
+A `spaces.json` written by PR #726 has no per-space fields and reads
 unchanged. One written by the pre-revision build of this branch (never
 released) carries `account` tags: they are ignored on read and dropped on
 the next registry write; its meta-branch founder rows are ignored, and

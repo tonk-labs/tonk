@@ -158,6 +158,15 @@ mod when_adding_a_view {
     async fn it_asserts_the_view_and_auto_surfaces_an_unset_home() -> Result<()> {
         let test = TestSite::new().await?;
         super::seed_habit(&test).await?;
+        let before = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("seed revision")
+            .edition
+            .value();
         let out = tonk_cli::data_ops::view_add(
             &test.site,
             "habit",
@@ -169,6 +178,20 @@ mod when_adding_a_view {
         assert!(
             out.contains("/space/"),
             "auto-surface should print the live path:\n{out}"
+        );
+        let after = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("view revision")
+            .edition
+            .value();
+        assert_eq!(
+            after,
+            before + 1,
+            "the view and automatic home update should commit together"
         );
         Ok(())
     }

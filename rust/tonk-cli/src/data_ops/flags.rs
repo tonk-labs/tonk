@@ -105,7 +105,7 @@ pub fn parse_field_flags(
             .long(long)
             .help(help)
             .action(clap::ArgAction::SetTrue);
-        if short != '\0' && !field_names.iter().any(|field| field.starts_with(short)) {
+        if short != '\0' {
             arg = arg.short(short);
         }
         cmd = cmd.arg(arg);

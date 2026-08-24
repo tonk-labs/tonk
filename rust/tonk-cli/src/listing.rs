@@ -51,7 +51,11 @@ impl Listing {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let row: Vec<String> = cells.into_iter().map(Into::into).collect();
+        let row: Vec<String> = cells
+            .into_iter()
+            .map(Into::into)
+            .map(|cell: String| escape_cell(&cell))
+            .collect();
         debug_assert_eq!(
             row.len(),
             self.columns.len(),
@@ -89,6 +93,15 @@ impl Listing {
 /// A cell for a value that may be absent.
 pub fn cell(value: Option<&str>) -> String {
     value.unwrap_or(ABSENT).to_owned()
+}
+
+/// Keep one logical value inside one physical TSV cell.
+fn escape_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
 }
 
 #[cfg(test)]
@@ -137,5 +150,15 @@ mod tests {
         let mut listing = Listing::new(&["NAME", "ACCOUNT"], "nothing here");
         listing.push([cell(Some("garden")), cell(None)]);
         assert_eq!(listing.render(), "NAME\tACCOUNT\ngarden\t-");
+    }
+
+    #[dialog_common::test]
+    fn it_escapes_control_characters_inside_cells() {
+        let mut listing = Listing::new(&["NAME", "DID"], "nothing here");
+        listing.push(["work\tstation\nupstairs", "did:key:device"]);
+        assert_eq!(
+            listing.render(),
+            "NAME\tDID\nwork\\tstation\\nupstairs\tdid:key:device"
+        );
     }
 }

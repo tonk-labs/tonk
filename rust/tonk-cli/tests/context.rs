@@ -15,16 +15,12 @@ use tonk_cli::{agents, context};
 /// network round trip.
 fn offline_sections() -> (context::SyncContext, context::AccountContext) {
     (
-        context::SyncContext {
-            state: "no-upstream".to_string(),
-            hash: None,
-            fetched: false,
-        },
+        context::SyncContext::offline(false, None),
         context::AccountContext {
             signed_in: false,
             account: None,
             account_service: None,
-            device: "did:device".to_string(),
+            device: Some("did:device".to_string()),
             state: None,
         },
     )
@@ -95,7 +91,7 @@ async fn it_emits_a_versioned_complete_contract() -> Result<()> {
         "tonk concept add note --attr title:text:one --attr body:text:one"
     );
 
-    // v2 is camelCase throughout: a v1 reader must miss, not silently
+    // v3 is camelCase throughout: a v1 reader must miss, not silently
     // half-match on the keys that happen to be one word.
     for retired in ["schema_version", "empty_space_workflow"] {
         assert!(value.get(retired).is_none(), "{retired} survived the bump");
@@ -164,7 +160,7 @@ mod when_reporting_where_i_am {
         // branch stands against it. Reporting `synced` there would be a
         // claim it has not checked.
         let sync = context::SyncContext {
-            state: "not-fetched".to_string(),
+            state: context::ContextSyncState::NotFetched,
             hash: None,
             fetched: false,
         };
@@ -174,7 +170,7 @@ mod when_reporting_where_i_am {
         );
 
         let fetched = context::SyncContext {
-            state: "synced".to_string(),
+            state: context::ContextSyncState::Synced,
             hash: Some("#abc".to_string()),
             fetched: true,
         };
@@ -216,7 +212,7 @@ mod when_reporting_where_i_am {
         let json: serde_json::Value = serde_json::from_str(&report.render_json()?)?;
 
         // Absorbing the two sections is breaking for a reader that pinned
-        // v2, so the version moves with them.
+        // v2, so the v3 version moves with them.
         assert_eq!(json["schemaVersion"], "tonk.context.v3");
         assert_eq!(json["sync"]["fetched"], false);
         assert_eq!(json["account"]["signedIn"], false);

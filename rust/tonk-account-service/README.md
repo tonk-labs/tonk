@@ -193,7 +193,7 @@ Exercise the flow against staging by creating an account on
 ```
 tonk account login \
   --service-url https://accounts-staging.tonk.xyz \
-  --account-url https://staging.tonk.xyz/account/link
+  --via https://staging.tonk.xyz/account/link
 ```
 
 ### Preview

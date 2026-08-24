@@ -413,6 +413,8 @@ enum Command {
         /// Branch to import onto.
         #[arg(long, value_name = "NAME", default_value = tonk_cli::site::BRANCH_NAME)]
         branch: String,
+        #[command(flatten)]
+        write: WriteArgs,
     },
 
     /// One-time conversions: carry directories, spaces, delegations
@@ -1219,6 +1221,15 @@ fn uses_active_space(command: &Command) -> bool {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
+    for (retired, replacement) in [
+        ("TONK_SPOT", "TONK_SPACE"),
+        ("TONK_SPOTS_STATE", "TONK_SPACES_STATE"),
+    ] {
+        if std::env::var_os(retired).is_some() {
+            eprintln!("error: {retired} was removed; use {replacement}");
+            std::process::exit(ExitCode::ParseError.into_raw());
+        }
+    }
     VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
     // `TONK_TRACE=1` turns on the tracing subscriber, filtered by
     // `RUST_LOG`, on stderr. This is the diagnostic for "the remote did
@@ -1296,7 +1307,11 @@ async fn main() {
         },
         Command::Export { out, branch } => export_op(out, &branch, space.as_deref()).await,
         Command::Render { route, out } => render_op(route, out, space.as_deref()).await,
-        Command::Import { file, branch } => import_op(file, &branch, space.as_deref()).await,
+        Command::Import {
+            file,
+            branch,
+            write,
+        } => import_op(file, &branch, write, space.as_deref()).await,
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
         Command::Status { json } => status_op(json, space.as_deref()).await,
@@ -1398,7 +1413,7 @@ fn account_context(status: &account::AccountStatus) -> context::AccountContext {
             signed_in: false,
             account: None,
             account_service: None,
-            device: device_did.clone(),
+            device: Some(device_did.clone()),
             state: None,
         },
         account::AccountStatus::Unregistered {
@@ -1408,7 +1423,7 @@ fn account_context(status: &account::AccountStatus) -> context::AccountContext {
             signed_in: false,
             account: Some(root_did.clone()),
             account_service: None,
-            device: device_did.clone(),
+            device: Some(device_did.clone()),
             state: None,
         },
         account::AccountStatus::Registered {
@@ -1420,7 +1435,7 @@ fn account_context(status: &account::AccountStatus) -> context::AccountContext {
             signed_in: true,
             account: Some(root_did.clone()),
             account_service: Some(provider.clone()),
-            device: device_did.clone(),
+            device: Some(device_did.clone()),
             state: Some(account_state_label(*account_state).to_string()),
         },
     }
@@ -1435,18 +1450,14 @@ fn account_context_unavailable() -> context::AccountContext {
         signed_in: false,
         account: None,
         account_service: None,
-        device: "unavailable".to_string(),
+        device: None,
         state: None,
     }
 }
 
 /// The sync section, fetching the upstream head to classify against it.
 fn sync_context(status: sync::SyncStatus) -> context::SyncContext {
-    context::SyncContext {
-        state: sync_state_token(status.state).to_owned(),
-        hash: status.hash.map(|hash| hash.to_string()),
-        fetched: true,
-    }
+    context::SyncContext::fetched(status.state, status.hash.map(|hash| hash.to_string()))
 }
 
 /// `tonk context` (and bare `tonk`) — one bounded, read-only workflow card.
@@ -1462,12 +1473,24 @@ async fn context_op(json: bool, space: Option<&str>) -> ExitCode {
         Ok(sync) => sync,
         Err(err) => return print_coded(err),
     };
-    let account = match (identity::open().await, tonk_cli::space::SpaceStore::open()) {
-        (Ok(profile), Ok(store)) => match account::status_in(&profile, &store).await {
-            Ok(status) => account_context(&status),
-            Err(_) => account_context_unavailable(),
+    let account = match identity::open().await {
+        Ok(profile) => match tonk_cli::space::SpaceStore::open() {
+            Ok(store) => match account::status_in(&profile, &store).await {
+                Ok(status) => account_context(&status),
+                Err(err) => {
+                    eprintln!("warning: account context unavailable: {err:#}");
+                    account_context_unavailable()
+                }
+            },
+            Err(err) => {
+                eprintln!("warning: account context unavailable: {err:#}");
+                account_context_unavailable()
+            }
         },
-        _ => account_context_unavailable(),
+        Err(err) => {
+            eprintln!("warning: account context unavailable: {err:#}");
+            account_context_unavailable()
+        }
     };
     let report = match context::inspect(&resolved, &site, sync, account).await {
         Ok(report) => report,
@@ -1506,7 +1529,7 @@ async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitC
                 Err(err) => return print_error(format!("could not read AGENTS.md claim: {err:#}")),
             };
             let rendered = if json {
-                match serde_json::to_string_pretty(&claim) {
+                match serde_json::to_string_pretty(&Rows::new("tonk.agents-get.v1", vec![claim])) {
                     Ok(json) => format!("{json}\n"),
                     Err(err) => {
                         return print_error(format!("could not encode AGENTS.md JSON: {err}"));
@@ -1538,10 +1561,14 @@ async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitC
             };
             match agents::set(&site, &markdown, write.into()).await {
                 Ok(Some(claim)) => {
-                    println!(
-                        "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk agents get --json",
-                        claim.source, claim.attribute, claim.entity, claim.revision
-                    );
+                    if write.quiet {
+                        println!("asserted AGENTS.md claim");
+                    } else {
+                        println!(
+                            "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk agents get --json",
+                            claim.source, claim.attribute, claim.entity, claim.revision
+                        );
+                    }
                     ExitCode::Success
                 }
                 Ok(None) => {
@@ -1574,26 +1601,8 @@ async fn print_customer_line(
     profile: &dialog_operator::Profile,
     store: &tonk_cli::space::SpaceStore,
 ) {
-    use tonk_account::customer::CustomerStatus;
-    match tonk_cli::customer::registration_state_in(profile, store).await {
-        Ok(Some(Some(receipt))) => match receipt.status {
-            CustomerStatus::Active => println!("access service: registered"),
-            CustomerStatus::Registered => {
-                println!("access service: waiting for email confirmation (check your inbox)")
-            }
-            CustomerStatus::Suspended => println!("access service: suspended"),
-        },
-        Ok(Some(None)) => {
-            let page = tonk_cli::customer::access_origin_in(profile, store)
-                .await
-                .ok()
-                .flatten()
-                .map(|origin| format!("{origin}account"))
-                .unwrap_or_else(|| "the account page".to_string());
-            println!("access service: not registered (open {page} in your browser to finish setup)")
-        }
-        Ok(None) => {}
-        Err(_) => println!("access service: unreachable"),
+    if let Some(line) = customer_state(profile, store).await.line() {
+        println!("access service: {line}");
     }
 }
 
@@ -1627,7 +1636,7 @@ async fn account_status_json(
     status: &account::AccountStatus,
 ) -> AccountStatusReport {
     let access_service = match status {
-        account::AccountStatus::Registered { .. } => customer_state(profile, store).await,
+        account::AccountStatus::Registered { .. } => customer_state(profile, store).await.token(),
         _ => None,
     };
     AccountStatusReport {
@@ -1642,19 +1651,62 @@ async fn account_status_json(
 async fn customer_state(
     profile: &dialog_operator::Profile,
     store: &tonk_cli::space::SpaceStore,
-) -> Option<String> {
+) -> CustomerState {
     use tonk_account::customer::CustomerStatus;
     match tonk_cli::customer::registration_state_in(profile, store).await {
-        Ok(Some(Some(receipt))) => Some(
-            match receipt.status {
-                CustomerStatus::Active => "registered",
-                CustomerStatus::Registered => "awaiting-email-confirmation",
-                CustomerStatus::Suspended => "suspended",
+        Ok(Some(Some(receipt))) => match receipt.status {
+            CustomerStatus::Active => CustomerState::Registered,
+            CustomerStatus::Registered => CustomerState::AwaitingEmailConfirmation,
+            CustomerStatus::Suspended => CustomerState::Suspended,
+        },
+        Ok(Some(None)) => {
+            let page = tonk_cli::customer::access_origin_in(profile, store)
+                .await
+                .ok()
+                .flatten()
+                .map(|origin| format!("{origin}account"))
+                .unwrap_or_else(|| "the account page".to_string());
+            CustomerState::NotRegistered { page }
+        }
+        Ok(None) => CustomerState::Absent,
+        Err(_) => CustomerState::Unreachable,
+    }
+}
+
+/// One access-service state with both its stable JSON token and text copy.
+enum CustomerState {
+    Registered,
+    AwaitingEmailConfirmation,
+    Suspended,
+    NotRegistered { page: String },
+    Absent,
+    Unreachable,
+}
+
+impl CustomerState {
+    fn token(&self) -> Option<String> {
+        match self {
+            Self::Registered => Some("registered".to_owned()),
+            Self::AwaitingEmailConfirmation => Some("awaiting-email-confirmation".to_owned()),
+            Self::Suspended => Some("suspended".to_owned()),
+            Self::NotRegistered { .. } => Some("not-registered".to_owned()),
+            Self::Absent | Self::Unreachable => None,
+        }
+    }
+
+    fn line(&self) -> Option<String> {
+        match self {
+            Self::Registered => Some("registered".to_owned()),
+            Self::AwaitingEmailConfirmation => {
+                Some("waiting for email confirmation (check your inbox)".to_owned())
             }
-            .to_owned(),
-        ),
-        Ok(Some(None)) => Some("not-registered".to_owned()),
-        Ok(None) | Err(_) => None,
+            Self::Suspended => Some("suspended".to_owned()),
+            Self::NotRegistered { page } => Some(format!(
+                "not registered (open {page} in your browser to finish setup)"
+            )),
+            Self::Absent => None,
+            Self::Unreachable => Some("unreachable".to_owned()),
+        }
     }
 }
 
@@ -1745,7 +1797,7 @@ async fn link_account(
                     "warning: {ceremony_page} did not answer with its content endpoints: {error:#}"
                 );
                 eprintln!(
-                    "spaces stay local-only until `tonk account logout` and `tonk account link` reach it"
+                    "spaces stay local-only until `tonk account logout` and `tonk account login` reach it"
                 );
             }
             print_customer_line(&profile, store).await;
@@ -1858,7 +1910,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             match command.unwrap_or(AccountSpacesCommand::List { json: false }) {
                 AccountSpacesCommand::List { json } => {
                     match account_spaces::list(&profile, &store).await {
-                        Ok(rows) if json => print_json(&Rows::new("tonk.account-spaces.v1", rows)),
+                        Ok(rows) if json => print_json(&account_spaces_report(rows)),
                         Ok(rows) => {
                             let mut listing = Listing::new(
                                 &["STATE", "NAME", "SUBJECT"],
@@ -1935,7 +1987,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                                 this_device: row.did == own,
                             })
                             .collect();
-                        return print_json(&Rows::new("tonk.account-devices.v1", rows));
+                        return print_json(&account_devices_report(rows));
                     }
                     let mut listing = Listing::new(
                         &["STATUS", "NAME", "DID", "THIS"],
@@ -2034,13 +2086,7 @@ async fn use_op(name: Option<String>, json: bool, flag: Option<&str>) -> ExitCod
                 ) => None,
                 Err(error) => return print_failure(error),
             };
-            let section = active.as_ref().map(|active| SpaceContext {
-                name: active.name.clone(),
-                site: active.site.display().to_string(),
-                selected_via: active.source.to_string(),
-                branch: tonk_cli::site::BRANCH_NAME,
-                cwd_selects_space: false,
-            });
+            let section = active.as_ref().map(SpaceContext::new);
             if json {
                 return print_json(&ActiveSpaceReport {
                     schema_version: ACTIVE_SPACE_SCHEMA_VERSION,
@@ -2580,7 +2626,7 @@ async fn legacy_migrate(site: String, branches: Vec<String>, space: Option<&str>
             Some(entry) => entry.site.clone(),
             None => {
                 return print_failure(anyhow::anyhow!(
-                    "unknown space {site:?}; --site names a registered space to upgrade"
+                    "unknown space {site:?}; pass a registered name to `tonk migrate space <NAME>`"
                 ));
             }
         },
@@ -2727,19 +2773,43 @@ async fn render_op(route: String, out: Option<PathBuf>, space: Option<&str>) -> 
     }
 }
 
-async fn import_op(file: PathBuf, branch: &str, space: Option<&str>) -> ExitCode {
+async fn import_op(file: PathBuf, branch: &str, write: WriteArgs, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
-    match transfer::import_branch(&site, branch, &file).await {
+    if write.dry_run {
+        return match transfer::plan_import(&file).await {
+            Ok(plan) => {
+                println!("dry run — nothing committed");
+                if !write.quiet {
+                    println!(
+                        "would import {} artifact(s) from {} ({} incompatible row(s) skipped)",
+                        plan.artifacts,
+                        file.display(),
+                        plan.skipped
+                    );
+                }
+                ExitCode::Success
+            }
+            Err(err) => print_coded(err),
+        };
+    }
+
+    let sync = branch == tonk_cli::site::BRANCH_NAME && auto_sync::enabled(write.no_sync);
+    match auto_sync::around_commit(&site, sync, transfer::import_branch(&site, branch, &file)).await
+    {
         Ok(revision) => {
-            println!(
-                "imported {} -> revision {}",
-                file.display(),
-                revision.edition.value(),
-            );
+            if write.quiet {
+                println!("imported");
+            } else {
+                println!(
+                    "imported {} -> revision {}",
+                    file.display(),
+                    revision.edition.value(),
+                );
+            }
             ExitCode::Success
         }
         Err(err) => print_coded(err),
@@ -2773,7 +2843,7 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
         Ok(status) => status,
         Err(err) => return print_coded(err),
     };
-    let space = space_context(&resolved, &site);
+    let space = SpaceContext::new(&resolved);
     let sync = sync_context(status);
     if json {
         return print_json(&StatusReport {
@@ -2784,17 +2854,6 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
     }
     print!("{}{}", space.render(), sync.render());
     ExitCode::Success
-}
-
-/// The space section, from a resolution the caller already performed.
-fn space_context(resolved: &tonk_cli::space::Resolved, site: &site::TonkSite) -> SpaceContext {
-    SpaceContext {
-        name: resolved.name.clone(),
-        site: site.root.display().to_string(),
-        selected_via: resolved.source.to_string(),
-        branch: tonk_cli::site::BRANCH_NAME,
-        cwd_selects_space: false,
-    }
 }
 
 /// `tonk status --json` — the sync section of the context document, with
@@ -2823,6 +2882,16 @@ struct DeviceRow {
     this_device: bool,
 }
 
+fn account_spaces_report(
+    rows: Vec<account_spaces::AccountSpaceRow>,
+) -> Rows<account_spaces::AccountSpaceRow> {
+    Rows::new("tonk.account-spaces.v1", rows)
+}
+
+fn account_devices_report(rows: Vec<DeviceRow>) -> Rows<DeviceRow> {
+    Rows::new("tonk.account-devices.v1", rows)
+}
+
 /// `tonk space use --json` — the space section, and the no-selection case
 /// it has to be able to say.
 #[derive(serde::Serialize)]
@@ -2842,21 +2911,6 @@ fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
             ExitCode::Success
         }
         Err(err) => print_error(format!("could not encode JSON: {err}")),
-    }
-}
-
-/// The bare kebab-case token for a [`tonk_schema::SyncState`], which is
-/// also the first word the gloss prints. `--json` carries this
-/// rather than the Rust variant name, so the two forms of `tonk status`
-/// name the same state the same way.
-fn sync_state_token(state: tonk_schema::SyncState) -> &'static str {
-    use tonk_schema::SyncState;
-    match state {
-        SyncState::NoUpstream => "no-upstream",
-        SyncState::Synced => "synced",
-        SyncState::Ahead => "ahead",
-        SyncState::Behind => "behind",
-        SyncState::Diverged => "diverged",
     }
 }
 
@@ -3877,6 +3931,94 @@ async fn open_selected(
 #[cfg(test)]
 mod account_spaces_parser_tests {
     use super::*;
+
+    #[test]
+    fn unavailable_account_context_does_not_invent_a_device_identifier() {
+        let account = account_context_unavailable();
+        let json = serde_json::to_value(&account).expect("account context JSON");
+        assert!(json["device"].is_null(), "{json}");
+        assert!(account.render().contains("device: unavailable"));
+    }
+
+    #[test]
+    fn customer_text_and_json_share_one_state_mapping() {
+        for (state, token, line) in [
+            (
+                CustomerState::Registered,
+                Some("registered"),
+                Some("registered"),
+            ),
+            (
+                CustomerState::AwaitingEmailConfirmation,
+                Some("awaiting-email-confirmation"),
+                Some("waiting for email confirmation (check your inbox)"),
+            ),
+            (
+                CustomerState::Suspended,
+                Some("suspended"),
+                Some("suspended"),
+            ),
+            (CustomerState::Absent, None, None),
+            (CustomerState::Unreachable, None, Some("unreachable")),
+        ] {
+            assert_eq!(state.token().as_deref(), token);
+            assert_eq!(state.line().as_deref(), line);
+        }
+    }
+
+    #[test]
+    fn every_data_write_parser_accepts_the_shared_switches() {
+        for args in [
+            vec!["tonk", "agents", "set", "AGENTS.md"],
+            vec!["tonk", "concept", "add", "note", "--attr", "title:text:one"],
+            vec![
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--template",
+                "<p>{title}</p>",
+            ],
+            vec!["tonk", "home", "note"],
+            vec!["tonk", "retract", "note", "id:note"],
+            vec!["tonk", "blob", "add", "note.txt"],
+            vec!["tonk", "import", "data.csv"],
+        ] {
+            let mut invocation = args.clone();
+            invocation.extend(["--dry-run", "--no-sync", "--quiet"]);
+            assert!(
+                Cli::try_parse_from(&invocation).is_ok(),
+                "shared write switches rejected for {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_account_read_parser_owns_a_json_form() {
+        for args in [
+            &["tonk", "account", "status", "--json"][..],
+            &["tonk", "account", "spaces", "list", "--json"],
+            &["tonk", "account", "devices", "--json"],
+            &["tonk", "agents", "get", "--json"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "JSON rejected for {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_listing_json_keeps_the_shared_rows_envelope() {
+        let spaces = serde_json::to_value(account_spaces_report(Vec::new())).expect("spaces JSON");
+        assert_eq!(spaces["schemaVersion"], "tonk.account-spaces.v1");
+        assert!(spaces["rows"].is_array());
+
+        let devices =
+            serde_json::to_value(account_devices_report(Vec::new())).expect("devices JSON");
+        assert_eq!(devices["schemaVersion"], "tonk.account-devices.v1");
+        assert!(devices["rows"].is_array());
+    }
 
     #[test]
     fn account_status_makes_sign_in_state_explicit() {

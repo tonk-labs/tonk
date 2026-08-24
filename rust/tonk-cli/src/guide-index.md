@@ -35,7 +35,7 @@ registry. Resolution order: `--space <name>` > `TONK_SPACE` env > a
 binding created by `tonk space use <name>`. There is no global fallback.
 In automation, pin the space per-process (`TONK_SPACE=x tonk ...` or
 `--space x`), or bind a dedicated working directory once with `tonk
-use <name>`. `tonk space unbind` removes an exact binding. `tonk space
+space use <name>`. `tonk space unbind` removes an exact binding. `tonk space
 list` shows what is registered, every bound directory, and what is
 active for this invocation.
 

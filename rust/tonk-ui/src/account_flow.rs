@@ -405,7 +405,7 @@ mod tests {
             .env("DO_NOT_TRACK", "1")
             .env("NO_PROXY", "127.0.0.1,localhost,tonk.network")
             .env_remove("TONK_TELEMETRY")
-            .env_remove("TONK_SPOT")
+            .env_remove("TONK_SPACE")
             .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");
         command
     }
@@ -827,7 +827,7 @@ mod tests {
         .await?;
         let key = successful_body("create space before activation", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
 
         // Pushing it now must fail: nobody is paying for this subject.
@@ -898,9 +898,9 @@ mod tests {
             }),
         )
         .await?;
-        let key = successful_body("create synced spot", &created)["key"]
+        let key = successful_body("create synced space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         let pushed = post_json(
             &creator,
@@ -908,7 +908,7 @@ mod tests {
             serde_json::json!({}),
         )
         .await?;
-        successful_body("push synced spot", &pushed);
+        successful_body("push synced space", &pushed);
         let invited = post_json(
             &creator,
             &format!("/api/repository/{key}/invite"),
@@ -929,7 +929,7 @@ mod tests {
             serde_json::json!({ "url": invite_url }),
         )
         .await?;
-        successful_body("visit shared spot", &visited);
+        successful_body("visit shared space", &visited);
         let promoted = post_json(
             &claimer,
             &format!("/api/repository/{key}/membership"),
@@ -940,7 +940,7 @@ mod tests {
 
         // The account directory is the backup now: link a CLI as a
         // second device of the claimer's account and read the claimed
-        // spot back out of the synced account DB — the real
+        // space back out of the synced account DB — the real
         // cross-device path, not a service-side artifact store.
         let second_device = link_cli_with(&claimer, &env, false).await?;
         // Two things have to land before this reads: the freshly linked
@@ -948,7 +948,7 @@ mod tests {
         // with "not yet hydrated"), and the browser's push of the
         // directory facts, which happens on its next sync drain. Both
         // are timing, not behaviour, so poll on the outcome under test —
-        // that promotion recorded the spot — rather than asserting on
+        // that promotion recorded the space — rather than asserting on
         // whichever intermediate state the first run happened to catch.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut last_seen = String::from("<spaces never completed a run>");
@@ -997,7 +997,7 @@ mod tests {
         };
         assert!(
             recorded,
-            "promotion completed without recording the claimed spot in the account \
+            "promotion completed without recording the claimed space in the account \
              directory; last `spaces` output was: {last_seen}"
         );
 
@@ -1063,7 +1063,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
         }
-        let restored = successful_body("load claimed spot on second device", &restored);
+        let restored = successful_body("load claimed space on second device", &restored);
         assert_eq!(restored["subject"], key);
 
         let pulled = post_json(
@@ -1072,10 +1072,10 @@ mod tests {
             serde_json::json!({}),
         )
         .await?;
-        successful_body("pull claimed spot on second device", &pulled);
+        successful_body("pull claimed space on second device", &pulled);
         let hydrated = get_json(&claimer, &format!("/api/repository/{key}")).await?;
         assert_eq!(
-            successful_body("load pulled spot on second device", &hydrated)["label"],
+            successful_body("load pulled space on second device", &hydrated)["label"],
             "Shared Garden"
         );
 
@@ -1105,9 +1105,9 @@ mod tests {
             }),
         )
         .await?;
-        let key = successful_body("create synced spot", &created)["key"]
+        let key = successful_body("create synced space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         let pushed = post_json(
             &driver,
@@ -1115,7 +1115,7 @@ mod tests {
             serde_json::json!({}),
         )
         .await?;
-        successful_body("push synced spot", &pushed);
+        successful_body("push synced space", &pushed);
 
         let plan = get_json(&driver, "/api/account/deletion/plan").await?;
         let plan = successful_body("review the deletion plan", &plan);
@@ -1176,7 +1176,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, "first@example.com").await?;
 
-        // First account creates a spot; its Hub lists it.
+        // First account creates a space; its Hub lists it.
         let created = post_json(
             &driver,
             "/api/spaces",
@@ -1188,9 +1188,9 @@ mod tests {
             }),
         )
         .await?;
-        let key = successful_body("create first account's spot", &created)["key"]
+        let key = successful_body("create first account's space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         let listed = get_json(&driver, "/api/profile").await?;
         let space_keys = |body: &serde_json::Value| -> Vec<String> {
@@ -1222,11 +1222,11 @@ mod tests {
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         sign_up(&driver, &env, "second@example.com").await?;
 
-        // The second account sees none of the first account's spots.
+        // The second account sees none of the first account's spaces.
         let listed = get_json(&driver, "/api/profile").await?;
         assert!(
             space_keys(successful_body("list second account's spaces", &listed)).is_empty(),
-            "a fresh account must not see the other account's spots"
+            "a fresh account must not see the other account's spaces"
         );
         wait_for_text_containing(&driver, "#account-profile-list", "first@example.com").await?;
 
@@ -1238,7 +1238,7 @@ mod tests {
         let listed = get_json(&driver, "/api/profile").await?;
         assert!(
             space_keys(successful_body("relist first account's spaces", &listed)).contains(&key),
-            "switching back must restore the first account's spot list"
+            "switching back must restore the first account's space list"
         );
 
         driver.quit().await?;
@@ -1538,7 +1538,7 @@ mod tests {
         .await?;
         let key = successful_body("create space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         successful_body(
             "push space",

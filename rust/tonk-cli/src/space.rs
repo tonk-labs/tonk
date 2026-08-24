@@ -264,6 +264,16 @@ pub enum SpaceError {
     /// Registry or site-directory I/O.
     #[error("{0}")]
     Io(String),
+    /// Both the pre-rename and current canonical roots contain data.
+    #[error(
+        "cannot convert the legacy space store because both {legacy} and {current} exist; move or merge one root explicitly"
+    )]
+    ConflictingRoots {
+        /// Pre-rename canonical-site root.
+        legacy: PathBuf,
+        /// Current canonical-site root.
+        current: PathBuf,
+    },
 }
 
 /// Hint suffix for [`SpaceError::Unknown`]: list what is registered,
@@ -450,7 +460,18 @@ impl SpaceStore {
         let text = match std::fs::read_to_string(&legacy_path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Registry::default());
+                let current = self.registry_path();
+                return match std::fs::read_to_string(&current) {
+                    Ok(text) => serde_json::from_str(&text).map_err(|e| SpaceError::Corrupt {
+                        path: current,
+                        detail: e.to_string(),
+                    }),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Registry::default()),
+                    Err(e) => Err(SpaceError::Io(format!(
+                        "could not read {}: {e}",
+                        current.display()
+                    ))),
+                };
             }
             Err(e) => {
                 return Err(SpaceError::Io(format!(
@@ -465,7 +486,23 @@ impl SpaceStore {
                 detail: e.to_string(),
             })?;
 
+        // Reading remains useful on a mounted or permissioned read-only
+        // data directory. Leave the legacy paths intact and retry the
+        // conversion on a later writable invocation.
+        if std::fs::metadata(&self.dir)
+            .map(|metadata| metadata.permissions().readonly())
+            .unwrap_or(false)
+        {
+            return Ok(registry);
+        }
+
         let (legacy_root, root) = (self.legacy_spaces_root(), self.spaces_root());
+        if legacy_root.is_dir() && root.exists() {
+            return Err(SpaceError::ConflictingRoots {
+                legacy: legacy_root,
+                current: root,
+            });
+        }
         if legacy_root.is_dir() && !root.exists() {
             std::fs::rename(&legacy_root, &root).map_err(|e| {
                 SpaceError::Io(format!(
@@ -1277,6 +1314,18 @@ mod tests {
         }
 
         #[dialog_common::test]
+        fn it_refuses_to_guess_when_both_site_roots_exist() {
+            let (tmp, store) = legacy_store(&["garden"]);
+            std::fs::create_dir_all(tmp.path().join("spaces").join("other")).unwrap();
+
+            let error = store.load().expect_err("conflicting roots");
+            assert!(format!("{error}").contains("both"), "{error}");
+            assert!(tmp.path().join("spots").join("garden").exists());
+            assert!(tmp.path().join("spaces").join("other").exists());
+            assert!(!tmp.path().join("spaces.json").exists());
+        }
+
+        #[dialog_common::test]
         fn it_refuses_to_report_an_unparseable_legacy_registry_as_empty() {
             let (tmp, store) = store();
             std::fs::write(tmp.path().join("spots.json"), "{ not json").unwrap();
@@ -1302,6 +1351,42 @@ mod tests {
 
             let registry = store.load().expect("load");
             assert_eq!(registry.spaces.keys().collect::<Vec<_>>(), vec!["garden"]);
+        }
+
+        /// A second process can enter conversion after observing no
+        /// `spaces.json`, then lose the race while the first process writes
+        /// it and removes `spots.json`. It must read the winner's registry,
+        /// not return an empty baseline that a subsequent write can save.
+        #[dialog_common::test]
+        fn it_rechecks_the_current_registry_when_the_legacy_file_disappears() {
+            let (_tmp, store) = store();
+            store
+                .save(&registry_with(&[("garden", "/tmp/garden")], None))
+                .expect("save winner");
+
+            let registry = store.adopt_legacy_layout().expect("losing converter");
+            assert_eq!(registry.spaces.keys().collect::<Vec<_>>(), vec!["garden"]);
+        }
+
+        #[cfg(unix)]
+        #[dialog_common::test]
+        fn it_reads_a_legacy_store_when_the_data_directory_is_read_only() {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let (tmp, store) = legacy_store(&["garden"]);
+            let mut writable = std::fs::metadata(tmp.path()).unwrap().permissions();
+            let mut read_only = writable.clone();
+            read_only.set_mode(0o555);
+            std::fs::set_permissions(tmp.path(), read_only).unwrap();
+
+            let loaded = store.load();
+
+            writable.set_mode(0o755);
+            std::fs::set_permissions(tmp.path(), writable).unwrap();
+            let registry = loaded.expect("read-only legacy store remains readable");
+            assert_eq!(registry.spaces.keys().collect::<Vec<_>>(), vec!["garden"]);
+            assert!(tmp.path().join("spots.json").exists());
+            assert!(!tmp.path().join("spaces.json").exists());
         }
     }
 

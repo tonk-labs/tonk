@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use dialog_csv::{CsvExporter, CsvImporter};
 use dialog_repository::Revision;
+use futures_util::StreamExt as _;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
@@ -48,6 +49,32 @@ pub enum Destination {
     File(PathBuf),
     /// Write to stdout.
     Stdout,
+}
+
+/// What a CSV import would feed to the branch without committing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportPlan {
+    /// Compatible artifacts that would be asserted.
+    pub artifacts: usize,
+    /// Incompatible rows the committing importer would skip.
+    pub skipped: usize,
+}
+
+/// Read and validate a CSV import without opening or changing a branch.
+pub async fn plan_import(path: &PathBuf) -> Result<ImportPlan, TransferError> {
+    let file = tokio::fs::File::open(path).await?;
+    let mut importer = CsvImporter::from(file);
+    let mut plan = ImportPlan {
+        artifacts: 0,
+        skipped: 0,
+    };
+    while let Some(row) = importer.next().await {
+        match row {
+            Ok(_) => plan.artifacts += 1,
+            Err(_) => plan.skipped += 1,
+        }
+    }
+    Ok(plan)
 }
 
 /// Export every artifact on the site's `main` branch as CSV to

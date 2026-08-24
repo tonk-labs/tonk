@@ -351,16 +351,10 @@ pub async fn status_offline(site: &TonkSite) -> Result<crate::context::SyncConte
         .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
     let hash = branch.revision().map(|revision| revision.tree.to_string());
-    let state = if branch.upstream().is_none() {
-        "no-upstream"
-    } else {
-        "not-fetched"
-    };
-    Ok(crate::context::SyncContext {
-        state: state.to_string(),
+    Ok(crate::context::SyncContext::offline(
+        branch.upstream().is_some(),
         hash,
-        fetched: false,
-    })
+    ))
 }
 
 fn map_fetch_error(error: FetchError) -> SyncError {

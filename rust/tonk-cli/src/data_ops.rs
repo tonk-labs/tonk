@@ -607,7 +607,12 @@ pub async fn view_add(
     let anchor = name
         .map(str::to_string)
         .unwrap_or_else(|| format!("{model}-view"));
-    let doc = build_view_decl(&anchor, model, template);
+    let auto_surface = home_is_unset(site).await?;
+    let mut doc = build_view_decl(&anchor, model, template);
+    if auto_surface {
+        doc.push('\n');
+        doc.push_str(&build_home_recipe(&[model.to_string()]));
+    }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let mut out = format!(
@@ -618,9 +623,12 @@ pub async fn view_add(
         out.push_str(&format!("warning: {warning}\n"));
     }
     out.push_str(&outcome.stdout);
-    if home_is_unset(site).await? {
-        out.push('\n');
-        out.push_str(&home(site, &[model.to_string()], write).await?);
+    if auto_surface {
+        let did = site.repository.did();
+        out.push_str(&format!(
+            "\n{}\nlive at /space/{did}/\n",
+            write.summarize(format_args!("set the home to {model}"))
+        ));
     } else {
         out.push_str("home already set; re-point it explicitly with `tonk home <concept>`\n");
     }

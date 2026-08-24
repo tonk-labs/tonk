@@ -410,7 +410,7 @@ mod when_resolving_with_precedence {
     }
 
     #[dialog_common::test]
-    fn it_rejects_the_pre_rename_flag_and_ignores_its_environment_name() {
+    fn it_rejects_the_pre_rename_flag_and_environment_name() {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
@@ -421,14 +421,14 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
         assert!(!output.status.success());
         assert!(
-            stderr_of(&output).contains("no space active for this directory"),
+            stderr_of(&output).contains("TONK_SPOT was removed; use TONK_SPACE"),
             "{}",
             stderr_of(&output)
         );
     }
 
     #[dialog_common::test]
-    fn it_ignores_the_pre_rename_state_directory_variable() {
+    fn it_rejects_the_pre_rename_state_directory_variable() {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
@@ -445,14 +445,14 @@ mod when_resolving_with_precedence {
         let output = cmd.output().expect("run tonk");
         assert!(!output.status.success());
         assert!(
-            stderr_of(&output).contains("unknown space 'a'; none registered"),
+            stderr_of(&output).contains("TONK_SPOTS_STATE was removed; use TONK_SPACES_STATE"),
             "{}",
             stderr_of(&output)
         );
     }
 
     #[dialog_common::test]
-    fn tonk_space_ignores_the_pre_rename_environment_name() {
+    fn canonical_and_pre_rename_environment_names_do_not_compete_silently() {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
@@ -463,8 +463,10 @@ mod when_resolving_with_precedence {
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active space: a (env)"), "{stderr}");
-        assert!(!stderr.contains("TONK_SPACE and TONK_SPOT"), "{stderr}");
+        assert!(
+            stderr.contains("TONK_SPOT was removed; use TONK_SPACE"),
+            "{stderr}"
+        );
     }
 
     #[dialog_common::test]
@@ -551,20 +553,167 @@ mod when_using_space_agent_context {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let value: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("valid claim JSON");
-        assert_eq!(value["source"], "dialog-claim");
-        assert_eq!(value["attribute"], "xyz.tonk.repo/agents");
-        assert_eq!(value["markdown"], expected);
+        assert_eq!(value["schemaVersion"], "tonk.agents-get.v1");
+        assert_eq!(value["rows"][0]["source"], "dialog-claim");
+        assert_eq!(value["rows"][0]["attribute"], "xyz.tonk.repo/agents");
+        assert_eq!(value["rows"][0]["markdown"], expected);
         assert!(
-            value["entity"]
+            value["rows"][0]["entity"]
                 .as_str()
                 .is_some_and(|entity| entity.starts_with("did:key:"))
         );
         assert!(
-            value["revision"]
+            value["rows"][0]["revision"]
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
         );
     }
+
+    #[dialog_common::test]
+    fn quiet_agents_set_suppresses_the_claim_rows() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_with_remotes(state.path(), &[]);
+        let source = state.path().join("source.md");
+        std::fs::write(&source, "# Demo space\n").expect("write source");
+
+        let output = run(
+            state.path(),
+            &[
+                "agents",
+                "set",
+                source.to_str().expect("utf-8 path"),
+                "--quiet",
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert_eq!(stdout_of(&output), "asserted AGENTS.md claim\n");
+    }
+
+    #[dialog_common::test]
+    fn no_sync_on_a_noun_write_does_not_touch_the_remote() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
+        let source = state.path().join("source.md");
+        std::fs::write(&source, "# Demo space\n").expect("write source");
+
+        let output = run(
+            state.path(),
+            &[
+                "agents",
+                "set",
+                source.to_str().expect("utf-8 path"),
+                "--no-sync",
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert!(
+            !stderr_of(&output).contains("auto-sync"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+}
+
+mod when_importing {
+    use super::*;
+
+    #[dialog_common::test]
+    fn dry_run_reads_the_csv_without_committing_it() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let created = run(state.path(), &["space", "new", "demo"], &[]);
+        assert!(created.status.success(), "{}", stderr_of(&created));
+        let csv = state.path().join("export.csv");
+        let exported = run(
+            state.path(),
+            &["export", "--out", csv.to_str().expect("utf-8 export path")],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(exported.status.success(), "{}", stderr_of(&exported));
+        let before = run(
+            state.path(),
+            &["status", "--json"],
+            &[("TONK_SPACE", "demo")],
+        );
+        let before: serde_json::Value =
+            serde_json::from_slice(&before.stdout).expect("status JSON before");
+
+        let imported = run(
+            state.path(),
+            &[
+                "import",
+                csv.to_str().expect("utf-8 export path"),
+                "--dry-run",
+            ],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(imported.status.success(), "{}", stderr_of(&imported));
+        assert!(stdout_of(&imported).contains("dry run"));
+
+        let after = run(
+            state.path(),
+            &["status", "--json"],
+            &[("TONK_SPACE", "demo")],
+        );
+        let after: serde_json::Value =
+            serde_json::from_slice(&after.stdout).expect("status JSON after");
+        assert_eq!(before["sync"]["hash"], after["sync"]["hash"]);
+    }
+
+    #[dialog_common::test]
+    fn no_sync_import_does_not_touch_the_configured_remote() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let created = run(state.path(), &["space", "new", "demo"], &[]);
+        assert!(created.status.success(), "{}", stderr_of(&created));
+        let csv = state.path().join("export.csv");
+        let exported = run(
+            state.path(),
+            &["export", "--out", csv.to_str().expect("utf-8 path")],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(exported.status.success(), "{}", stderr_of(&exported));
+        let remote = run(
+            state.path(),
+            &["remote", "add", "origin", DEAD_REMOTE],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(remote.status.success(), "{}", stderr_of(&remote));
+
+        let imported = run(
+            state.path(),
+            &["import", csv.to_str().expect("utf-8 path"), "--no-sync"],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(imported.status.success(), "{}", stderr_of(&imported));
+        assert!(
+            !stderr_of(&imported).contains("auto-sync"),
+            "{}",
+            stderr_of(&imported)
+        );
+    }
+}
+
+#[dialog_common::test]
+fn context_reports_a_configured_dead_remote_without_fetching_it() {
+    let state = tempfile::tempdir().expect("tempdir");
+    space_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
+
+    let started = std::time::Instant::now();
+    let output = run(
+        state.path(),
+        &["context", "--json"],
+        &[("TONK_SPACE", "demo")],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "offline context took {:?}",
+        started.elapsed()
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("context JSON");
+    assert_eq!(value["sync"]["state"], "not-fetched");
+    assert_eq!(value["sync"]["fetched"], false);
 }
 
 mod when_joining {
@@ -1425,6 +1574,9 @@ mod when_reading {
         run(&["space", "new", "demo"]);
         run(&["concept", "add", "task", "--attr", "title:text:one"]);
         run(&["view", "add", "task", "--template", "<b>{title}</b>"]);
+        let agents = state.join("AGENTS.md");
+        std::fs::write(&agents, "# Demo space\n").expect("write AGENTS.md");
+        run(&["agents", "set", agents.to_str().expect("utf-8 path")]);
         if remote {
             run(&["remote", "add", "origin", DEAD_REMOTE]);
         }
@@ -1502,7 +1654,9 @@ mod when_reading {
         for args in [
             vec!["context", "--json"],
             vec!["status", "--json"],
+            vec!["account", "status", "--json"],
             vec!["space", "use", "--json"],
+            vec!["agents", "get", "--json"],
             vec!["query", "task", "--json"],
             vec!["concept", "ls", "--json"],
             vec!["view", "ls", "--json"],
@@ -1526,6 +1680,19 @@ mod when_reading {
                 assert!(
                     version.starts_with("tonk.") && version.contains(".v"),
                     "{args:?} schemaVersion {version:?} is not tonk.<command>.v<n>"
+                );
+            }
+            if matches!(
+                args.as_slice(),
+                ["agents", "get", "--json"]
+                    | ["concept", "ls", "--json"]
+                    | ["view", "ls", "--json"]
+                    | ["blob", "ls", "--json"]
+                    | ["space", "list", "--json"]
+            ) {
+                assert!(
+                    document["rows"].is_array(),
+                    "{args:?} carries no rows: {stdout}"
                 );
             }
         }

@@ -717,4 +717,32 @@ mod when_previewing_a_write {
         assert!(listed.contains("yes"), "{listed}");
         Ok(())
     }
+
+    #[dialog_common::test]
+    async fn a_field_beginning_with_q_does_not_steal_the_quiet_short_flag() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "survey",
+            &["question:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+
+        tonk_cli::data_ops::assert_op(
+            &test.site,
+            "survey",
+            None,
+            &[
+                "--question".into(),
+                "yes".into(),
+                "--dry-run".into(),
+                "--no-sync".into(),
+                "-q".into(),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
 }

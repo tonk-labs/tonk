@@ -9,9 +9,8 @@ from any other command they have already used.
 where two parts of the CLI do the same thing two ways, and the fix is to pick
 one. Items are ordered by what a caller hits first.
 
-**Status:** items 0.1 – 0.5 are done on `fix/cli-simplify`. The rest are
-specified here and not implemented; several are breaking and want a decision
-before they land.
+**Status:** every consistency item below is landed on `feat/cli-simplify`
+except the separately gated legacy-migration deletion in 4b.
 
 ---
 
@@ -27,12 +26,13 @@ one with `tonk spot new`"*, naming a command that no longer existed, in the
 first line anyone read. Module and type names, every error and help string,
 the guide index, and the on-disk layout now say space. The store moved from
 `spots.json` + `spots/` to `spaces.json` + `spaces/`, converted in place the
-first time a command reads the registry. `TONK_SPOT`, `TONK_SPOTS_STATE`, the
-registry's `spots` key, `--spot`, `tonk spot` and `tonk account spots` are all
-still read.
+first time a command reads the registry. The old command, flag, and environment
+spellings are removed; only the on-disk reader remains so an existing store can
+convert without data loss.
 
-**0.2 `tonk context --json` is `tonk.context.v2`** — `spot` keys are now
-`space`, and the document is camelCase like the CLI's other JSON.
+**0.2 `tonk context --json` moved to camelCase and `space` keys in v2.**
+Item 1 subsequently added account and sync sections and moved the current
+contract to `tonk.context.v3`.
 
 **0.3 Every write verb takes `--dry-run`, `--no-sync` and `--quiet`.**
 They existed only on `tonk eval`; the noun verbs hardcoded
@@ -340,19 +340,15 @@ first.
 
 ## 8. Retire the compatibility aliases
 
-`--spot`, `TONK_SPOT`, `tonk spot`, `tonk account spots`, the `spots` registry
-key, `spots.json` and `spots/` all still work, and `space.rs` converts the
-on-disk half automatically on first read. The env and flag halves cost
-nothing to keep; the visible aliases cost a line each in `--help`, where they
-teach a vocabulary the rest of the CLI no longer uses.
+`--spot`, `TONK_SPOT`, `TONK_SPOTS_STATE`, `tonk spot`, and `tonk account spots`
+are removed. Keeping an invisible flag or environment alias is not free: an
+old harness can silently select no space and continue against a different
+binding. A loud parser failure is safer than that wrong-space fallback.
 
-**Proposal.** Move `visible_alias` to `alias` (hidden) for `spot` and `spots`
-one release after 0.1 ships, and drop `LEGACY_REGISTRY_FILE` /
-`LEGACY_SPACES_DIRNAME` a release after that — by then every store that a
-current `tonk` has touched has been converted.
-
-`bench/bin/*.sh` was moved to the canonical spellings alongside 0.1, so
-nothing in this repo depends on the old ones.
+The on-disk compatibility reader is intentionally separate. `spots.json`, its
+`spots` key, and the `spots/` root are still recognized once and converted to
+the canonical layout. This preserves existing data without keeping two CLI
+vocabularies alive.
 
 ## 9. Smaller things
 
@@ -387,14 +383,14 @@ Landed on `feat/cli-simplify`, in this order:
 6. **Item 9** — the four smaller fixes. *Done, two breaking.*
 7. **Items 1 and 6** — one orientation vocabulary, one JSON envelope.
    *Done, breaking.*
+8. **Item 8** — remove every `spot` command, flag, and environment alias while
+   retaining one-way on-disk conversion. *Done, breaking.*
 
 Not landed:
 
 - **Item 4b** (delete the legacy migration) — gated on a staging release
   carrying a *working* copy, which means publishing this branch first. See
   the item for why the published one does not work.
-- **Item 8** (retire the `spot` aliases) — gated on a release after 0.1
-  ships, which has not happened.
 
 The two open questions are answered in their items: `context` stays offline
 and reports `not-fetched`; `tonk query --json` keeps its `EvaluateResponse`.
