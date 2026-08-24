@@ -574,17 +574,15 @@ command!: &tonk/pause-sync
       the: dom.event.current-target.dataset/pause-sync
       as: entity
 
-# The FAB dock — which corner the bar rests in (tonk:top-left or
-# tonk:bottom-left), stored as a transient (overlay-only) claim on
-# `state:fab`. Not durable: the dock is not committed to the branch tree.
-# Updated on every pointer-up drop; element.rs applies the matching
-# `fab-dock-*` class and the stylesheet below positions it.
+# The FAB fallback seat — the nearest corner restored on the next page load,
+# stored on `state:fab`. The live page keeps the exact point along the nearest
+# edge; element.rs persists this compatible corner after every pointer-up drop.
 concept!: &fab/dock
   this: tonk:fab/dock
   description: Persisted FAB dock (profile-meta claim).
   with:
     dock:
-      description: The resting corner — tonk:top-left or tonk:bottom-left.
+      description: The fallback corner restored on the next page load.
       the: xyz.tonk.fab/dock
       cardinality: one
       as: entity

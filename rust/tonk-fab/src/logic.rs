@@ -132,22 +132,104 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     }
 }
 
-/// The four corners the FAB is allowed to rest in. A drop snaps to the nearest
-/// one: the vertical half of the viewport picks top vs bottom, the horizontal
-/// half picks left vs right.
+/// The four fallback seats the FAB can restore on a subsequent page load.
+/// A drop persists the nearest one: the vertical half of the viewport picks
+/// top vs bottom, the horizontal half picks left vs right.
 ///
 /// The resting spot is expressed as two CSS classes on `<tonk-fab>` — a vertical
 /// one (`fab-dock-top` / `fab-dock-bottom`) and a horizontal one
 /// (`fab-dock-left` / `fab-dock-right`) — and the actual pixel placement + the
 /// submenu open-direction live in the view's stylesheet (profile.yaml). This
-/// enum is only the small decision Rust still owns — which corner a drop lands
-/// in — plus its persisted symbol.
+/// enum owns only the persisted fallback seat; the live page keeps the exact
+/// point selected by [`snap_to_nearest_edge`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dock {
     TopLeft,
     TopRight,
     BottomLeft,
     BottomRight,
+}
+
+/// The viewport edge a released FAB settles against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Edge {
+    /// The public event value used by the reference FABB.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Edge::Left => "left",
+            Edge::Right => "right",
+            Edge::Top => "top",
+            Edge::Bottom => "bottom",
+        }
+    }
+}
+
+/// The safe resting inset on each viewport edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeInsets {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+/// The resting top-left position selected for a released FAB.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeSnap {
+    pub edge: Edge,
+    pub left: f64,
+    pub top: f64,
+}
+
+/// Settle a released FAB against its nearest viewport edge while preserving
+/// the free coordinate along that edge.
+pub fn snap_to_nearest_edge(
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    vw: f64,
+    vh: f64,
+    insets: EdgeInsets,
+) -> EdgeSnap {
+    let mut x = left.min(vw - width - insets.right).max(insets.left);
+    let mut y = top.min(vh - height - insets.bottom).max(insets.top);
+    let distances = [
+        (Edge::Left, x),
+        (Edge::Right, vw - (x + width)),
+        (Edge::Top, y),
+        (Edge::Bottom, vh - (y + height)),
+    ];
+    let edge = distances
+        .into_iter()
+        .reduce(|nearest, candidate| {
+            if nearest.1 <= candidate.1 {
+                nearest
+            } else {
+                candidate
+            }
+        })
+        .map_or(Edge::Left, |(edge, _)| edge);
+
+    match edge {
+        Edge::Left => x = insets.left,
+        Edge::Right => x = vw - width - insets.right,
+        Edge::Top => y = insets.top,
+        Edge::Bottom => y = vh - height - insets.bottom,
+    }
+
+    EdgeSnap {
+        edge,
+        left: x.max(insets.left),
+        top: y.max(insets.top),
+    }
 }
 
 /// Every dock axis class the view stylesheet defines, for clearing the element
@@ -216,7 +298,7 @@ pub fn dock_from_conclusions(rows: &Value) -> Option<Dock> {
     Dock::from_symbol(symbol)
 }
 
-/// Pick the corner nearest a drop. The vertical half of the viewport (height
+/// Pick the fallback corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
 /// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
 /// handle's center, the same anchor `mirrored` reads. The exact midlines fall
@@ -617,6 +699,54 @@ mod dock {
     fn an_unknown_symbol_has_no_dock() {
         assert_eq!(Dock::from_symbol("tonk:middle"), None);
         assert_eq!(Dock::from_symbol(""), None);
+    }
+}
+
+#[cfg(test)]
+mod edge_snap {
+    use super::*;
+
+    const INSETS: EdgeInsets = EdgeInsets {
+        top: 16.0,
+        right: 16.0,
+        bottom: 16.0,
+        left: 16.0,
+    };
+
+    #[test]
+    fn a_left_edge_drop_keeps_its_vertical_position() {
+        assert_eq!(
+            snap_to_nearest_edge(120.0, 300.0, 200.0, 36.0, 1000.0, 800.0, INSETS),
+            EdgeSnap {
+                edge: Edge::Left,
+                left: 16.0,
+                top: 300.0,
+            }
+        );
+    }
+
+    #[test]
+    fn a_bottom_edge_drop_keeps_its_horizontal_position() {
+        assert_eq!(
+            snap_to_nearest_edge(420.0, 690.0, 200.0, 36.0, 1000.0, 800.0, INSETS),
+            EdgeSnap {
+                edge: Edge::Bottom,
+                left: 420.0,
+                top: 748.0,
+            }
+        );
+    }
+
+    #[test]
+    fn a_release_is_clamped_inside_the_safe_insets_before_it_snaps() {
+        assert_eq!(
+            snap_to_nearest_edge(-40.0, -20.0, 200.0, 36.0, 1000.0, 800.0, INSETS),
+            EdgeSnap {
+                edge: Edge::Left,
+                left: 16.0,
+                top: 16.0,
+            }
+        );
     }
 }
 

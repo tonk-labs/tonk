@@ -2,8 +2,8 @@
 //!
 //! The element is the FABB bar (see [`crate::bar`] for the cells and
 //! [`crate::markup`] for their geometry) plus the float: a `position: fixed`
-//! box on a high z-index that docks to a viewport corner and can be dragged
-//! between them.
+//! box on a high z-index that can be dragged to any point along a viewport
+//! edge.
 //!
 //! It keeps the tag `<tonk-fab>` because that is the mount contract — the
 //! space route in `profile.yaml` renders `<tonk-fab with="main@profile:tonk"
@@ -23,12 +23,11 @@
 //! ## Drag and dock
 //!
 //! A press on the circle that travels past the dead zone becomes a drag: the
-//! bar tracks the pointer 1:1 on inline `left`/`top`, and on release snaps to
-//! the corner nearest the CIRCLE'S centre — the same anchor the live mirror
-//! preview keys on, so the drop always matches what was being shown. The
-//! resting position is owned by the `fab-dock-*` classes rather than a pixel
-//! offset, so the bar stays pinned to its corner across a viewport resize,
-//! and the dock is persisted as a profile claim.
+//! bar tracks the pointer 1:1 on inline `left`/`top`, and on release eases to
+//! the nearest edge while preserving its position along that edge. A
+//! right-edge landing becomes right-anchored after the glide, so later
+//! telescope changes still grow leftward. The nearest corner remains the
+//! persisted fallback seat used on a subsequent page load.
 //!
 //! A press that never travels is a click: plain toggles the telescope,
 //! alt/option toggles sync pause.
@@ -46,8 +45,9 @@ use web_sys::{Element, HtmlElement, PointerEvent, Response, VisibilityState, win
 
 use crate::bar;
 use crate::logic::{
-    DOCK_CLASSES, Dock, clamp_position, dock_claim_json, dock_from_conclusions, nearest_dock,
-    pause_claim_json, repository_endpoint,
+    DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position, dock_claim_json,
+    dock_from_conclusions, nearest_dock, pause_claim_json, repository_endpoint,
+    snap_to_nearest_edge,
 };
 use crate::shadow::Bound;
 
@@ -65,6 +65,9 @@ const DRAG_THRESHOLD_PX: f64 = 4.0;
 /// would eat the tap-to-toggle gesture.
 const TOUCH_DRAG_THRESHOLD_PX: f64 = 8.0;
 
+/// The reference snap duration is 400ms; the right anchor is swapped in just
+/// after it settles so changing from `left` to `right` cannot cancel the glide.
+const EDGE_ANCHOR_DELAY_MS: i32 = 440;
 /// Marks the bar when this device does not hold the addressed space.
 ///
 /// The bar stays mounted because its space switcher is the way out, but the
@@ -367,6 +370,7 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             let Some(circle) = pressed_the_circle(&host, event) else {
                 return;
             };
+            invalidate_edge_anchor(&host);
             bar::commit_edit(&host, &shared);
 
             // Touch presses capture IMMEDIATELY, and on the circle rather
@@ -618,7 +622,7 @@ fn create_space() {
 }
 
 /// Finish a press: clear the flags and, if it had been promoted to a drag,
-/// release capture and snap to the corner nearest the circle's centre.
+/// release capture and glide to the nearest viewport edge.
 fn finish_drag(this: &HtmlElement, pointer_id: i32) {
     let dataset = this.dataset();
     dataset.delete("fabPressing");
@@ -644,15 +648,33 @@ fn finish_drag(this: &HtmlElement, pointer_id: i32) {
     let _ = this.remove_attribute("dragging");
 
     let rect = this.get_bounding_client_rect();
-    let (center_x, center_y) = handle_center(this).unwrap_or((
-        rect.left() + rect.width() / 2.0,
-        rect.top() + rect.height() / 2.0,
-    ));
-    let dock = nearest_dock(center_x, center_y, viewport_width(), viewport_height());
-    apply_dock(this, dock);
+    let (vw, vh) = (viewport_width(), viewport_height());
+    let snap = snap_to_nearest_edge(
+        rect.left(),
+        rect.top(),
+        rect.width(),
+        rect.height(),
+        vw,
+        vh,
+        float_insets(this),
+    );
+    apply_edge_snap(this, snap, rect.width(), rect.height(), vw, vh);
+
+    // Persistence intentionally stays compatible with the Hub wireframe: the
+    // exact along-edge point lasts for this page, while the nearest corner is
+    // the stable seat restored on the next load.
+    let dock = nearest_dock(
+        snap.left + rect.width() / 2.0,
+        snap.top + rect.height() / 2.0,
+        vw,
+        vh,
+    );
     persist_dock(dock);
     let detail = Object::new();
     let _ = Reflect::set(&detail, &"dock".into(), &dock.symbol().into());
+    let _ = Reflect::set(&detail, &"edge".into(), &snap.edge.symbol().into());
+    let _ = Reflect::set(&detail, &"left".into(), &snap.left.into());
+    let _ = Reflect::set(&detail, &"top".into(), &snap.top.into());
     crate::shadow::emit(this, "fabb-snap", &detail);
 }
 
@@ -836,6 +858,122 @@ fn track_position(this: &HtmlElement, left: f64, top: f64) {
     let _ = style.remove_property("bottom");
     let _ = style.set_property("left", &format!("{left}px"));
     let _ = style.set_property("top", &format!("{top}px"));
+}
+
+/// Read the safe-area-aware float margins from the shadow skin.
+fn float_insets(this: &HtmlElement) -> EdgeInsets {
+    let fallback = EdgeInsets {
+        top: 16.0,
+        right: 16.0,
+        bottom: 16.0,
+        left: 16.0,
+    };
+    let Some(wrapper) = this
+        .shadow_root()
+        .and_then(|root| root.query_selector(".w").ok().flatten())
+    else {
+        return fallback;
+    };
+    let Some(style) = window().and_then(|win| win.get_computed_style(&wrapper).ok().flatten())
+    else {
+        return fallback;
+    };
+    let inset = |property: &str| {
+        style
+            .get_property_value(property)
+            .ok()
+            .and_then(|value| value.trim().trim_end_matches("px").parse::<f64>().ok())
+            .map_or(16.0, |safe_area| (safe_area + 8.0).max(16.0))
+    };
+    EdgeInsets {
+        top: inset("--_sat"),
+        right: inset("--_sar"),
+        bottom: inset("--_sab"),
+        left: inset("--_sal"),
+    }
+}
+
+/// Move to an edge point with the reference 400ms position transition.
+///
+/// Right-edge landings become `right`-anchored only after that transition,
+/// otherwise replacing `left` immediately would skip the visible glide.
+fn apply_edge_snap(this: &HtmlElement, snap: EdgeSnap, width: f64, height: f64, vw: f64, vh: f64) {
+    invalidate_edge_anchor(this);
+    let classes = this.class_list();
+    for class in DOCK_CLASSES {
+        let _ = classes.remove_1(class);
+    }
+
+    let style = this.style();
+    let _ = style.remove_property("right");
+    let _ = style.remove_property("bottom");
+    let _ = style.set_property("left", &format!("{}px", snap.left));
+    let _ = style.set_property("top", &format!("{}px", snap.top));
+
+    let flipped = if width >= vw {
+        false
+    } else {
+        match snap.edge {
+            Edge::Right => true,
+            Edge::Left => false,
+            Edge::Top | Edge::Bottom => snap.left + width / 2.0 >= vw / 2.0,
+        }
+    };
+    let _ = classes.toggle_with_force(MIRROR_CLASS, flipped);
+    set_flip(this, flipped);
+
+    let opens_up = match snap.edge {
+        Edge::Bottom => true,
+        Edge::Top => false,
+        Edge::Left | Edge::Right => snap.top + height / 2.0 >= vh / 2.0,
+    };
+    if opens_up {
+        let _ = this.set_attribute("up", "");
+    } else {
+        let _ = this.remove_attribute("up");
+    }
+
+    if snap.edge == Edge::Right {
+        schedule_right_anchor(this, (vw - (snap.left + width)).max(0.0));
+    }
+}
+
+/// Invalidate any pending post-glide anchor without cancelling its callback.
+/// Letting an obsolete one fire and no-op allows its one-shot closure to be
+/// reclaimed instead of leaking every time a new drag interrupts the glide.
+fn invalidate_edge_anchor(this: &HtmlElement) -> u32 {
+    let next = this
+        .dataset()
+        .get("fabAnchorVersion")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or_default()
+        .wrapping_add(1);
+    let _ = this.dataset().set("fabAnchorVersion", &next.to_string());
+    next
+}
+
+/// Convert a settled right-edge point from `left` positioning to a stable
+/// right anchor so telescope changes continue to grow away from the handle.
+fn schedule_right_anchor(this: &HtmlElement, right: f64) {
+    let Some(win) = window() else { return };
+    let version = invalidate_edge_anchor(this);
+    let host = this.clone();
+    let anchor = Closure::once_into_js(move || {
+        let current = host
+            .dataset()
+            .get("fabAnchorVersion")
+            .and_then(|value| value.parse::<u32>().ok());
+        if current != Some(version) || host.has_attribute("dragging") {
+            return;
+        }
+        let style = host.style();
+        let _ = style.set_property("right", &format!("{right}px"));
+        let _ = style.set_property("left", "auto");
+    });
+    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+        anchor.unchecked_ref(),
+        EDGE_ANCHOR_DELAY_MS,
+    );
 }
 
 /// Dock the bar by swapping its `fab-dock-*` classes and clearing drag-time

@@ -37,12 +37,11 @@ right-snap.
 
 ## What is already in place
 
-- **Four-corner docking**: `logic.rs::Dock` (`TopLeft`/`TopRight`/`BottomLeft`/
-  `BottomRight`), `nearest_dock`, and the `fab-mirror` class already implement
-  snap-to-nearest-corner and the right-anchored mirror. The spec's `flip` law
-  is largely this, already built and persisted as a profile claim. (The
-  comment in `profile.yaml` naming only `tonk:top-left`/`tonk:bottom-left` is
-  stale.)
+- **Edge docking**: release now glides to the nearest edge while keeping its
+  free coordinate along that edge, matching `fabb.js::_snap`. `logic.rs::Dock`
+  (`TopLeft`/`TopRight`/`BottomLeft`/`BottomRight`) remains the persisted
+  fallback seat restored on the next page load, matching `hub.html`; the live
+  page is no longer pinned to those four corners.
 - **Drag + threshold**: `DRAG_THRESHOLD_PX` / `TOUCH_DRAG_THRESHOLD_PX`,
   pointer capture, click-vs-drag suppression.
 - **Telescope collapse**: `.fab__tele` wrappers, `max-width` animation.
