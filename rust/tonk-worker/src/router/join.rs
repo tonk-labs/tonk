@@ -4150,33 +4150,72 @@ name!:
             .expect("content carrying a declared space model is joinable");
     }
 
+    /// What installing one claim costs on a space of `filler` facts.
+    struct ClaimInstallCost {
+        /// Nodes copied when the diff keeps the base the remote served —
+        /// what a join actually pays.
+        based: usize,
+        /// Nodes copied by the same install once that base is thrown
+        /// away: the space itself.
+        baseless: usize,
+    }
+
     /// Build a branch holding `filler` facts, snapshot it, commit one more
-    /// fact on top, and report how many nodes
+    /// fact on top, and report what
     /// [`install_claim_nodes`](super::install_claim_nodes) copies to carry
-    /// that last commit.
+    /// that last commit — against the snapshot, and against a head from
+    /// before the filler was written.
     ///
     /// The snapshot stands in for the head a remote served, and the commit
     /// on top for the roster facts a claim stages — the two revisions the
-    /// real install diffs.
-    async fn claim_install_cost(filler: usize) -> usize {
-        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+    /// real install diffs. The pre-filler head stands in for the base the
+    /// regression loses, and prices the same install as a full copy of the
+    /// space.
+    async fn claim_install_cost(filler: usize) -> ClaimInstallCost {
+        use dialog_repository::{Branch, RepositoryExt as _};
 
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let repo = put_repo(&app, &format!("cost-{filler}")).await;
-        let tonk = state.read().await;
-        let repository: Repository = tonk
+        let tonk = test_state().await;
+
+        // Tree shape is a pure function of its keys, and history keys carry
+        // the repository issuer. `put_repo` deliberately generates a fresh
+        // signer, which made this cost fixture sample a different tree on
+        // every run and occasionally turn one insert into a near-total
+        // rechunk. Pin the issuer so this test measures the install
+        // algorithm rather than key-distribution luck.
+        let signer = Ed25519Signer::import(&[65u8; 32])
+            .await
+            .expect("the fixture signer imports");
+        let repo = signer.did().repo_key().to_owned();
+        let repository = tonk
             .profile
-            .repository(&repo)
-            .load()
+            .repository(repo)
+            .create()
+            .with_credential(signer)
             .perform(&tonk.operator)
             .await
-            .expect("repo loads");
+            .expect("the fixture repository creates");
         let content: Branch = repository
             .branch(DEFAULT_BRANCH)
             .open()
             .perform(&tonk.operator)
             .await
             .expect("content branch opens");
+
+        // A head that predates the filler, so a diff against it has to
+        // carry the whole space. Committed rather than read off the fresh
+        // branch, which need not have a revision until something is
+        // written to it.
+        content
+            .transaction()
+            .assert(tonk_schema::RepositoryName {
+                this: "id:filler/origin".parse().expect("entity parses"),
+                name: tonk_schema::domain::repo::Name("the origin".to_string()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the origin commits");
+        let origin = content.revision().expect("the origin produced a head");
 
         // Enough distinct entities to give the tree real depth. One
         // transaction: the cost under test is the diff between two
@@ -4206,13 +4245,18 @@ name!:
             .expect("the claim commits");
         let target = content.revision().expect("the claim produced a head");
 
-        super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &base)
-            .await
-            .expect("the claim installs")
+        ClaimInstallCost {
+            based: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &base)
+                .await
+                .expect("the claim installs"),
+            baseless: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &origin)
+                .await
+                .expect("the space copies"),
+        }
     }
 
     /// A claim install carries what the claim wrote, not what the space
-    /// holds — so its cost does not grow with the size of the space.
+    /// holds — so it stays a fraction of what copying the space costs.
     ///
     /// This is the regression that shipped: dialog's `Branch::install`
     /// diffs against `Index::empty()`, which makes every node in the tree
@@ -4221,29 +4265,36 @@ name!:
     /// before the recipient saw anything, against ~40 and ~9s once the diff
     /// had a real base.
     ///
-    /// Asserted as a ratio rather than an absolute: node counts depend on
-    /// the tree's fan-out, but the whole point is that the big tree costs
-    /// about what the small one does. A correct diff copies a handful of
-    /// nodes either way while a baseless one copies the tree, so the bound
-    /// discriminates with room to spare, and the 375x size gap is what buys
-    /// that room. The large side is sized to discriminate, not to impress:
-    /// in the browser harness this test runs against Chrome's 30-second
-    /// renderer-liveness check, and a bigger fixture proves nothing more
-    /// while drifting toward that cliff on a loaded runner.
+    /// Both counts are taken on the same tree, because losing the base is
+    /// precisely what makes them converge. Pricing the big space against a
+    /// small one instead — the shape this test had first — put a one-node
+    /// tree in the denominator, and left the bound unable to say how bad a
+    /// violation was: a CI run reported 36 nodes against a bound of 3, and
+    /// only measuring the space itself showed that 36 was most of a full
+    /// copy rather than a handful of legitimately rewritten ancestors.
+    /// A correct install copies one node against the low forties for the
+    /// space, so the eighth asserted here carries the tree changing shape
+    /// without letting a near-total copy through.
+    ///
+    /// The fixture is sized to discriminate, not to impress: in the browser
+    /// harness this test runs against Chrome's 30-second renderer-liveness
+    /// check, and a bigger space proves nothing more while drifting toward
+    /// that cliff on a loaded runner.
     #[dialog_common::test]
     async fn it_installs_a_claim_without_copying_the_space() {
-        let small = claim_install_cost(8).await;
-        let large = claim_install_cost(3000).await;
+        let cost = claim_install_cost(3000).await;
 
         assert!(
-            small > 0,
+            cost.based > 0,
             "a claim that wrote a fact must carry at least one node",
         );
         assert!(
-            large <= small * 3,
-            "installing a claim onto a 3000-fact space cost {large} nodes \
-             against {small} for an 8-fact one — the copy is scaling with \
-             the space, so the diff has lost its base",
+            cost.based * 8 <= cost.baseless,
+            "installing a claim onto a 3000-fact space copied {} nodes, \
+             against {} for the space itself — the copy is scaling with the \
+             space, so the diff has lost its base",
+            cost.based,
+            cost.baseless,
         );
     }
 
