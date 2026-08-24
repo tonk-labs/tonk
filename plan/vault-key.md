@@ -64,31 +64,40 @@ anything that cannot open the vault.
 
 ## Wrappings
 
-One wrapping per principal that should be able to open the vault:
+A wrapping is a sealed copy addressed to a DID — dialog's `conceal`/`reveal`
+(dialog#463) seals to the X25519 key derived from a `did:key`'s Ed25519 key, so
+a copy can be minted for a principal that has published nothing and has never
+been online. Sealed copies are facts on the account branch (see
+`plan/profile-db.md`: ciphertext is data, and replicating is the point).
 
-- **per profile** — the device's own key, so ordinary use needs nothing else
-- **per passkey** — so a new device can open the vault at login
-- **under the account root** — so rotation can re-wrap for principals the
-  rotating device cannot otherwise reach
+Two wrapping kinds cover every flow:
 
-The root wrapping is not optional. Rotation performed from device A can only
-re-wrap for keys A can derive, and A cannot derive passkey B's symmetric key. So
-without a root-held copy, any passkey absent at rotation time is locked out
-permanently by a rotation it had no part in.
+- **per profile** — sealed to the profile's DID, so ordinary use needs nothing
+  but the device's own signer
+- **under the account** — sealed to the account DID, revealed by the account
+  secret's signer; this is the bootstrap and rotation copy
 
-> [!caution]
-> The account root is described as an ephemeral genesis keypair, destroyed after
-> signing its two delegations — its DID names the account, but nobody holds the
-> key. A wrapping literally under the root would therefore be unopenable. It has
-> to sit under something durable standing in for the root, and the **recovery
-> anchor** is the candidate: a real keypair with visibly delegated authority,
-> already mandatory at genesis for the same reason (no direct root delegation can
-> be minted later). That makes vault recovery email-OTP-gated, matching passkey
-> enrolment.
->
-> The alternative — retaining the root key — avoids the service dependency but
-> reintroduces a durable stealable secret. That is the trade to decide, not an
-> implementation detail.
+There is deliberately **no per-passkey wrapping**. A passkey never opens the
+vault directly — it opens the ACCOUNT: under the custody-envelope model the
+passkey's PRF output derives the KEK that unwraps the account secret, so by the
+time any passkey login has happened the device holds the account's signer, and
+that signer reveals the account-sealed copy. Login then conceals a fresh copy
+for the new profile's DID — the same dance the flows above already perform. A
+passkey wrapping would be a second door into a room the login is already
+standing in.
+
+Dropping it also dissolves the lockout this section used to caution about.
+Wrappings addressed to DIDs are re-minted from PUBLIC keys, all enumerable from
+the account space, so rotation performed from any one device can include every
+principal — present or not. Nothing needs to be online at rotation time to stay
+included.
+
+> [!note]
+> The trade this makes is coupling vault access to account custody: a passkey
+> alone, without the account-sealed copy, opens nothing. That copy is a fact on
+> the branch a device must pull to be a device at all — if you can join, the
+> copy came with you. And account-compromise-implies-vault-compromise was
+> already true: the account KEK wraps the space and invite seeds.
 
 ## Rotation and revocation
 
@@ -97,10 +106,11 @@ receiving *future* secrets, but it already knows the current vault key — so
 genuine removal means re-keying and re-encrypting everything stored under the
 old key.
 
-Rotation needs authority to re-wrap for every remaining principal, so it needs a
-passkey (or the anchor path). The natural shape is: revoking a device **offers**
-rotation, stated honestly — without it, the revoked device keeps what it already
-has; with it, that access dies too, at the cost of a re-wrap per principal.
+Rotation re-seals the new vault key to the account DID and each remaining
+profile DID — public keys, so any device holding the account may perform it.
+The natural shape is: revoking a device **offers** rotation, stated honestly —
+without it, the revoked device keeps what it already has; with it, that access
+dies too, at the cost of a re-seal per principal and a re-encrypt per secret.
 
 - **Key id.** Even before rotation is built, stored ciphertext should carry the
   id of the vault key it was encrypted under, so rotation can be added without a
