@@ -269,11 +269,14 @@ pub(crate) fn device_title() -> String {
 /// a creation time, so a device list renders without asking an account
 /// service.
 ///
-/// The entity is derived the way dialog derives it — from the digest of
-/// the certificate's encoded envelope — rather than from what `retain`
-/// returns, which is only the entities it NEWLY wrote. A link chain is
-/// often retained long before it is described: saving a grant into the
-/// access store retains it as a side effect.
+/// The link's entity is inferred from those facts: the retained
+/// certificates whose `dialog.ucan/audience` is the chain's audience and
+/// whose subject is the powerline wildcard, since a device IS its
+/// powerline. Inference rather than re-deriving the blob hash on the
+/// side keeps this reading the same record the list reads, works for a
+/// chain retained long before it is described (saving a grant into the
+/// access store retains it as a side effect), and heals historical
+/// duplicate grants by describing each of them.
 ///
 /// An existing row wins. `created_at` is history, so re-describing an
 /// already-described link changes nothing rather than asserting a
@@ -288,7 +291,6 @@ pub(crate) async fn describe_device_link(
     chain: &DelegationChain,
     title: String,
 ) -> Result<(), String> {
-    use dialog_capability::access::{Certificate as _, Delegation as _};
     use dialog_query::{Output as _, Query, Term};
 
     let branch = state
@@ -305,50 +307,128 @@ pub(crate) async fn describe_device_link(
         .perform(&state.operator)
         .await
         .map_err(|error| format!("retain: {error}"))?;
-    // The chain's certificates each get an entity; the link itself is
-    // the last one, the hop that names this device as the audience.
-    let certificate = UcanDelegation(chain.clone())
-        .certificates()
-        .into_iter()
-        .last()
-        .ok_or_else(|| "the chain has no certificates".to_string())?;
-    let bytes = certificate
-        .encode()
-        .map_err(|error| format!("encode the link certificate: {error:?}"))?;
-    let entity = Entity::from_blob(blake3::hash(&bytes).as_bytes())
-        .map_err(|error| format!("derive the link entity: {error}"))?;
-    let existing: Vec<tonk_schema::DeviceLink> = branch
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::DeviceLink> {
-            this: Term::from(entity.clone()),
-            created_at: Term::var("created_at"),
-            title: Term::var("title"),
-            reason: Term::var("reason"),
-        })
-        .perform(&state.operator)
-        .try_vec()
-        .await
-        .map_err(|error| format!("query the link row: {error}"))?;
-    if !existing.is_empty() {
-        return Ok(());
+    let audience = chain.audience().to_string();
+    let entities = link_entities(state, branch.handle(), &audience).await?;
+    if entities.is_empty() {
+        return Err(format!("no retained powerline names {audience}"));
     }
     let at = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let transaction = state
+    let mut transaction = state
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
-        .transaction()
-        .assert(tonk_schema::DeviceLink::new(entity, title, at));
+        .transaction();
+    let mut asserting = false;
+    for entity in entities {
+        let existing: Vec<tonk_schema::DeviceLink> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::DeviceLink> {
+                this: Term::from(entity.clone()),
+                created_at: Term::var("created_at"),
+                title: Term::var("title"),
+                reason: Term::var("reason"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .map_err(|error| format!("query the link row: {error}"))?;
+        if !existing.is_empty() {
+            continue;
+        }
+        transaction = transaction.assert(tonk_schema::DeviceLink::new(entity, title.clone(), at));
+        asserting = true;
+    }
+    if !asserting {
+        return Ok(());
+    }
     transaction
         .commit()
         .perform(&state.operator)
         .await
         .map(|_| ())
         .map_err(|error| format!("commit: {error}"))
+}
+
+/// Entities of every retained powerline addressed to `audience`.
+///
+/// Both facts are dialog's own decomposition, written when the chain was
+/// retained: `dialog.ucan/audience` names the device, and a subject of
+/// [`ANY_SUBJECT`] is what makes the certificate a powerline rather than
+/// a grant scoped to one space.
+///
+/// [`ANY_SUBJECT`]: dialog_capability::ANY_SUBJECT
+async fn link_entities(
+    state: &TonkState,
+    branch: &dialog_repository::Branch,
+    audience: &str,
+) -> Result<Vec<Entity>, String> {
+    use dialog_artifacts::{ArtifactSelector, Value};
+    use futures_util::StreamExt as _;
+
+    let selector = ArtifactSelector::new()
+        .the(
+            dialog_repository::DELEGATION_AUDIENCE
+                .parse()
+                .map_err(|error| format!("audience attribute: {error:?}"))?,
+        )
+        .is(Value::String(audience.into()));
+    let facts = branch
+        .claims()
+        .select(selector)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| format!("select link facts: {error}"))?
+        .collect::<Vec<_>>()
+        .await;
+    let mut entities = Vec::new();
+    for fact in facts.into_iter().flatten() {
+        let bytes = fact
+            .of_bytes()
+            .map_err(|error| format!("read a link fact's entity: {error}"))?;
+        let entity: Entity = String::from_utf8_lossy(&bytes)
+            .parse()
+            .map_err(|error| format!("parse a link fact's entity: {error:?}"))?;
+        if is_powerline(state, branch, &entity).await? {
+            entities.push(entity);
+        }
+    }
+    Ok(entities)
+}
+
+/// Whether the retained certificate at `entity` is subject-open.
+async fn is_powerline(
+    state: &TonkState,
+    branch: &dialog_repository::Branch,
+    entity: &Entity,
+) -> Result<bool, String> {
+    use dialog_artifacts::{ArtifactSelector, Value};
+    use futures_util::StreamExt as _;
+
+    let selector = ArtifactSelector::new()
+        .the(
+            dialog_repository::DELEGATION_SUBJECT
+                .parse()
+                .map_err(|error| format!("subject attribute: {error:?}"))?,
+        )
+        .of(entity.clone());
+    let facts = branch
+        .claims()
+        .select(selector)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| format!("select the link's subject: {error}"))?
+        .collect::<Vec<_>>()
+        .await;
+    for fact in facts.into_iter().flatten() {
+        if let Ok(Value::String(subject)) = fact.value() {
+            return Ok(subject == dialog_capability::ANY_SUBJECT);
+        }
+    }
+    Ok(false)
 }
 
 /// The recovery-clearance KEK this custodian derives, via a signature
@@ -467,7 +547,10 @@ mod tests {
     async fn it_describes_the_device_link() {
         use dialog_query::{Output as _, Query, Term};
 
-        let tonk = crate::router::tests::test_state_without_account().await;
+        // The pre-root state is where `grant_device` runs for real: with a
+        // root persisted, its grant is a second powerline to this profile
+        // and would be described as well.
+        let tonk = crate::router::tests::test_state_without_root().await;
 
         grant_device(&tonk).await.expect("the grant mints");
 
@@ -507,7 +590,10 @@ mod tests {
     async fn it_grants_the_device_once() {
         use dialog_query::{Output as _, Query, Term};
 
-        let tonk = crate::router::tests::test_state_without_account().await;
+        // The pre-root state is where `grant_device` runs for real: with a
+        // root persisted, its grant is a second powerline to this profile
+        // and would be described as well.
+        let tonk = crate::router::tests::test_state_without_root().await;
 
         let first = grant_device(&tonk).await.expect("the grant mints");
         let second = grant_device(&tonk).await.expect("the grant re-proves");

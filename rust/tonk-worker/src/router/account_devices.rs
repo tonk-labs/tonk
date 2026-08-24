@@ -93,11 +93,9 @@ pub async fn list(
     // before the account has ever hydrated. Local-only and idempotent:
     // an already-described link is one query and no commit.
     super::account_state::describe_own_device(&state).await;
-    let this_device = state.profile.did().to_string();
     let mut rows: DeviceIndex<String, AccountDevice> = DeviceIndex::new();
     for (link, did) in local_devices(&state).await? {
         let row = AccountDevice {
-            this_device: did == this_device,
             did,
             name: link.title.0,
             created_at: link.created_at.0,
@@ -566,7 +564,6 @@ mod tests {
         let devices = list(State(state)).await.unwrap();
         assert_eq!(devices.0.len(), 1);
         assert_eq!(devices.0[0].did, own);
-        assert!(devices.0[0].this_device);
     }
 
     #[dialog_common::test]
@@ -679,7 +676,6 @@ mod tests {
             .find(|row| row.did == device.did().to_string())
             .expect("the registered device is listed");
         assert_eq!(registered.name, "e2e terminal");
-        assert!(!registered.this_device);
     }
 
     /// Revoking another device mints from the target's grant retained in

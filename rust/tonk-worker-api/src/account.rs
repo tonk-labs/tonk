@@ -170,6 +170,11 @@ pub struct AccountDisplayNameResponse {
 
 /// One device authorized under this profile's account, read from the
 /// account space's own facts.
+///
+/// Deliberately carries no "this device" flag: the rows are a projection
+/// of shared facts and are identical on every device. Which row is the
+/// caller is presentation, answered by asking who the caller is and
+/// comparing DIDs — the way an active tab is marked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDevice {
@@ -179,8 +184,6 @@ pub struct AccountDevice {
     pub name: String,
     /// Link time, seconds since the epoch.
     pub created_at: u64,
-    /// Whether this row is the profile making the request.
-    pub this_device: bool,
 }
 
 /// Revoke one device authorized under this profile's account.
@@ -292,13 +295,11 @@ mod tests {
             did: "did:key:device".into(),
             name: "laptop".into(),
             created_at: 1_753_300_000,
-            this_device: true,
         })
         .unwrap();
         assert_eq!(json["did"], "did:key:device");
         assert_eq!(json["name"], "laptop");
         assert_eq!(json["createdAt"], 1_753_300_000u64);
-        assert_eq!(json["thisDevice"], true);
     }
 
     #[dialog_common::test]

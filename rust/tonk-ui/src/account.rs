@@ -573,7 +573,10 @@ fn settle_with(
     });
 }
 
-fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]) {
+/// Render the device rows, marking the row whose DID is `own` — the
+/// list itself is the same on every device, so "this device" is a
+/// presentation attribute, the way an active tab is marked.
+fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice], own: &str) {
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
     };
@@ -599,7 +602,9 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         name.set_text_content(Some(&device.name));
         let _ = identity.append_child(&name);
 
-        if device.this_device {
+        let this_device = device.did == own;
+        if this_device {
+            let _ = item.set_attribute("data-this-device", "true");
             let Ok(marker) = document.create_element("span") else {
                 continue;
             };
@@ -629,7 +634,7 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         let _ = button.set_attribute("class", "account__button account__button--remove");
         let _ = button.set_attribute("data-revoke", &device.did);
         let _ = button.set_attribute("aria-label", &format!("Remove access for {}", device.name));
-        if device.this_device {
+        if this_device {
             let _ = button.set_attribute("data-self-revoke", "true");
         }
         button.set_text_content(Some("Remove access"));
@@ -860,15 +865,26 @@ fn load_devices(host: HtmlElement) {
     set_mode(&host, "success");
     set_busy(&host, true, "Loading devices…");
     spawn_local(async move {
+        // Which row is this device is answered separately from the list:
+        // the rows are shared facts, identical everywhere, and identity
+        // is the one thing only this device can answer for itself.
+        let own = match crate::api::identify().await {
+            Ok(identity) => identity.did,
+            Err(error) => {
+                set_busy(&host, false, "");
+                show_error(&host, error.to_string());
+                return;
+            }
+        };
         match crate::api::account_devices().await {
             Ok(devices) => {
                 set_busy(&host, false, "");
-                render_devices(&host, &devices);
+                render_devices(&host, &devices, &own);
                 if let Some(did) = revoke_target_from_url() {
                     consume_revoke_target();
                     match devices.iter().find(|device| device.did == did) {
                         Some(device) => {
-                            begin_revoke(host.clone(), device.did.clone(), device.this_device)
+                            begin_revoke(host.clone(), device.did.clone(), device.did == own)
                         }
                         None => show_error(
                             &host,
@@ -2060,10 +2076,16 @@ fn begin_revoke(host: HtmlElement, did: String, self_revoke: bool) {
                 }
 
                 // Canonical publication is already complete. Refreshing the
-                // mutable registry is deliberately best-effort and cannot
-                // turn that success into a failure.
-                match crate::api::account_devices().await {
-                    Ok(devices) => render_devices(&host, &devices),
+                // list is deliberately best-effort and cannot turn that
+                // success into a failure — or overwrite its status line.
+                let refreshed = async {
+                    let own = crate::api::identify().await?.did;
+                    let devices = crate::api::account_devices().await?;
+                    Ok::<_, crate::error::TonkUiError>((devices, own))
+                }
+                .await;
+                match refreshed {
+                    Ok((devices, own)) => render_devices(&host, &devices, &own),
                     Err(error) => web_sys::console::warn_1(
                         &format!(
                             "device revocation published; device-list refresh failed: {error}"
@@ -2716,16 +2738,14 @@ mod tests {
                 did: "did:key:zThis".into(),
                 name: "This browser".into(),
                 created_at: 1_753_300_000,
-                this_device: true,
             },
             tonk_worker_api::AccountDevice {
                 did: "did:key:zPhone".into(),
                 name: "Phone".into(),
                 created_at: 1_753_100_000,
-                this_device: false,
             },
         ];
-        render_devices(&host, &devices);
+        render_devices(&host, &devices, "did:key:zThis");
 
         let list = host
             .query_selector("#account-device-list")
