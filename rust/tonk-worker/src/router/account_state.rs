@@ -491,7 +491,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 /// hydration just established. Only these two paths push profile main —
 /// the generic per-branch sync returns before it reaches the account
 /// key — so a sweep that skips this leaves local facts unpublished.
-async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
+pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
     let session = tonk
         .reactor
         .profile_repository()

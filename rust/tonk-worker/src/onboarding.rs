@@ -190,7 +190,9 @@ pub(crate) async fn grant_device(state: &TonkState) -> Result<DelegationChain, T
     // rather than computed on the side. Saving first would retain the
     // chain, leaving nothing for `retain` to return and no entity to
     // hang the description on.
-    describe_device_link(state, &chain).await;
+    if let Err(error) = describe_device_link(state, &chain, device_title()).await {
+        log!("describe device link: {error}");
+    }
     state
         .profile
         .access()
@@ -266,44 +268,41 @@ fn device_title() -> String {
 /// it does not carry — a label and a creation time, so a device list
 /// renders without asking the account service.
 ///
-/// Best effort: the grant is already saved and usable by this point, so
-/// a missing description costs a row's label, not access.
-async fn describe_device_link(state: &TonkState, chain: &DelegationChain) {
-    let branch = match state
+/// A chain the branch already retains describes nothing: `retain`
+/// returns only what it newly wrote, and the existing entity keeps the
+/// row it was given when it first arrived.
+///
+/// The caller decides what a failure means: onboarding treats it as
+/// best-effort (the grant is already saved and usable, so a missing
+/// description costs a row's label, not access), while an approving
+/// page registering another device wants to know the row did not land.
+pub(crate) async fn describe_device_link(
+    state: &TonkState,
+    chain: &DelegationChain,
+    title: String,
+) -> Result<(), String> {
+    let branch = state
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&state.operator)
         .await
-    {
-        Ok(branch) => branch,
-        Err(error) => {
-            log!("describe device link: open profile branch: {error}");
-            return;
-        }
-    };
-    let entities = match branch
+        .map_err(|error| format!("open profile branch: {error}"))?;
+    let entities = branch
         .handle()
         .delegations()
         .retain(UcanDelegation(chain.clone()))
         .perform(&state.operator)
         .await
-    {
-        Ok(entities) => entities,
-        Err(error) => {
-            log!("describe device link: retain: {error}");
-            return;
-        }
-    };
+        .map_err(|error| format!("retain: {error}"))?;
     let at = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let title = device_title();
     // The chain's certificates each get an entity; the link itself is
     // the last one, the hop that names this device as the audience.
     let Some(entity) = entities.last() else {
-        return;
+        return Ok(());
     };
     let transaction = state
         .reactor
@@ -311,9 +310,12 @@ async fn describe_device_link(state: &TonkState, chain: &DelegationChain) {
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
         .assert(tonk_schema::DeviceLink::new(entity.clone(), title, at));
-    if let Err(error) = transaction.commit().perform(&state.operator).await {
-        log!("describe device link: commit: {error}");
-    }
+    transaction
+        .commit()
+        .perform(&state.operator)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("commit: {error}"))
 }
 
 /// The recovery-clearance KEK this custodian derives, via a signature
