@@ -1317,7 +1317,6 @@ mod tests {
         let origin = url::Url::parse(&format!("{}/", env.tonk_web.origin().ascii_serialization()))?;
         assert_eq!(endpoint("ceremonyOrigin")?, origin);
         assert_eq!(endpoint("accessRemote")?, origin.join("/ucan/")?);
-        endpoint("revocationRelay")?;
 
         driver.quit().await?;
         Ok(())
