@@ -22,8 +22,10 @@
 use dialog_credentials::{Credential, Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
 use dialog_effects::credential::prelude::*;
-use dialog_ucan::UcanDelegation;
+use dialog_ucan::{Parameters, Scope, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
+use dialog_ucan_core::command::Command;
+use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_varsig::{Did, Signer as VarsigSigner};
 use tonk_identity::clearance::Recovery;
 use tonk_identity::envelope::{AccountSecret, CUSTODIAN_KEK_CONTEXT, Envelope, Kek, KekMethod};
@@ -155,15 +157,21 @@ async fn create(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
 /// prove. That symmetry is what lets a space delegate to the ACCOUNT
 /// while the device is what actually signs.
 ///
-/// Idempotent by construction — the grant is derived from two stable
-/// keys, so re-minting produces an equivalent delegation rather than a
-/// conflicting one.
+/// Convergent rather than idempotent: minting is NOT repeatable — every
+/// delegation carries a fresh nonce, so a second mint would be a second
+/// grant with its own entity and its own device row. An existing grant
+/// is therefore proven from the retained facts and reused, and only a
+/// device that cannot prove one mints.
 pub(crate) async fn grant_device(state: &TonkState) -> Result<DelegationChain, TonkWorkerError> {
+    use dialog_varsig::Principal as _;
     let secret = account(state).await?;
     let account_signer = secret
         .signer()
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
+    if let Some(chain) = existing_grant(state, &account_signer.did()).await {
+        return Ok(chain);
+    }
     // `mint_account_union` is named for its original direction
     // (`profile -> account`) but is generic over both ends: the first
     // argument signs, the second receives. Here that is
@@ -193,6 +201,39 @@ pub(crate) async fn grant_device(state: &TonkState) -> Result<DelegationChain, T
             TonkWorkerError::Internal(format!("failed to save the onboarding grant: {error}"))
         })?;
     Ok(chain)
+}
+
+/// The powerline this profile already holds from `account`, rebuilt from
+/// the retained facts, or `None` when nothing proves.
+///
+/// Every failure reads as "no grant": proving is an optimisation over
+/// minting, and minting is always safe.
+async fn existing_grant(state: &TonkState, account: &Did) -> Option<DelegationChain> {
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+        .ok()?;
+    let scope = Scope {
+        subject: UcanSubject::Specific(account.clone()),
+        command: Command::parse("/").expect("the root command always parses"),
+        parameters: Parameters::default(),
+    };
+    let proof = branch
+        .handle()
+        .delegations()
+        .prove(state.profile.did(), scope)
+        .perform(&state.operator)
+        .await
+        .ok()?;
+    let mut certificates = proof.proofs.into_iter();
+    let mut chain = DelegationChain::new(certificates.next()?.0);
+    for certificate in certificates {
+        chain = chain.push(certificate.0).ok()?;
+    }
+    Some(chain)
 }
 
 /// This device's label, from the worker's own navigator.
@@ -420,6 +461,48 @@ mod tests {
         assert_eq!(rows[0].reason.0, tonk_schema::DEVICE_LINK);
         assert!(!rows[0].title.0.is_empty(), "a device carries a label");
         assert!(rows[0].created_at.0 > 0, "a real timestamp");
+    }
+
+    /// Granting again reuses the grant already retained. Minting is not
+    /// repeatable — a fresh nonce means a fresh delegation — so without
+    /// the proof check every space creation would add another grant and
+    /// another device row for the same device.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_grants_the_device_once() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let tonk = crate::router::tests::test_state_without_account().await;
+
+        let first = grant_device(&tonk).await.expect("the grant mints");
+        let second = grant_device(&tonk).await.expect("the grant re-proves");
+        assert_eq!(
+            first.proof_cids(),
+            second.proof_cids(),
+            "a second grant is the first one, proven rather than re-minted"
+        );
+
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<tonk_schema::DeviceLink> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::DeviceLink> {
+                this: Term::var("this"),
+                created_at: Term::var("created_at"),
+                title: Term::var("title"),
+                reason: Term::var("reason"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("device-link query runs");
+        assert_eq!(rows.len(), 1, "one device, one row");
     }
 
     /// The whole custodian design rests on Ed25519 signatures being
