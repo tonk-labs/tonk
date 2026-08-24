@@ -19,6 +19,7 @@
 //! acquired after it. Rotating bounds the blast radius to what existed
 //! before: an attacker controls the pre-passkey spaces, not the account.
 
+use dialog_artifacts::Entity;
 use dialog_credentials::{Credential, Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
 use dialog_effects::credential::prelude::*;
@@ -264,13 +265,19 @@ pub(crate) fn device_title() -> String {
 ///
 /// Retaining the chain is what creates that entity: dialog stores each
 /// certificate under its blob hash and decomposes issuer, audience, and
-/// subject onto it, then hands the entities back. These are the fields
-/// it does not carry — a label and a creation time, so a device list
-/// renders without asking the account service.
+/// subject onto it. These are the fields it does not carry — a label and
+/// a creation time, so a device list renders without asking an account
+/// service.
 ///
-/// A chain the branch already retains describes nothing: `retain`
-/// returns only what it newly wrote, and the existing entity keeps the
-/// row it was given when it first arrived.
+/// The entity is derived the way dialog derives it — from the digest of
+/// the certificate's encoded envelope — rather than from what `retain`
+/// returns, which is only the entities it NEWLY wrote. A link chain is
+/// often retained long before it is described: saving a grant into the
+/// access store retains it as a side effect.
+///
+/// An existing row wins. `created_at` is history, so re-describing an
+/// already-described link changes nothing rather than asserting a
+/// conflicting claim.
 ///
 /// The caller decides what a failure means: onboarding treats it as
 /// best-effort (the grant is already saved and usable, so a missing
@@ -281,6 +288,9 @@ pub(crate) async fn describe_device_link(
     chain: &DelegationChain,
     title: String,
 ) -> Result<(), String> {
+    use dialog_capability::access::{Certificate as _, Delegation as _};
+    use dialog_query::{Output as _, Query, Term};
+
     let branch = state
         .reactor
         .profile_repository()
@@ -288,28 +298,51 @@ pub(crate) async fn describe_device_link(
         .acquire(&state.operator)
         .await
         .map_err(|error| format!("open profile branch: {error}"))?;
-    let entities = branch
+    branch
         .handle()
         .delegations()
         .retain(UcanDelegation(chain.clone()))
         .perform(&state.operator)
         .await
         .map_err(|error| format!("retain: {error}"))?;
+    // The chain's certificates each get an entity; the link itself is
+    // the last one, the hop that names this device as the audience.
+    let certificate = UcanDelegation(chain.clone())
+        .certificates()
+        .into_iter()
+        .last()
+        .ok_or_else(|| "the chain has no certificates".to_string())?;
+    let bytes = certificate
+        .encode()
+        .map_err(|error| format!("encode the link certificate: {error:?}"))?;
+    let entity = Entity::from_blob(blake3::hash(&bytes).as_bytes())
+        .map_err(|error| format!("derive the link entity: {error}"))?;
+    let existing: Vec<tonk_schema::DeviceLink> = branch
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::DeviceLink> {
+            this: Term::from(entity.clone()),
+            created_at: Term::var("created_at"),
+            title: Term::var("title"),
+            reason: Term::var("reason"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+        .map_err(|error| format!("query the link row: {error}"))?;
+    if !existing.is_empty() {
+        return Ok(());
+    }
     let at = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // The chain's certificates each get an entity; the link itself is
-    // the last one, the hop that names this device as the audience.
-    let Some(entity) = entities.last() else {
-        return Ok(());
-    };
     let transaction = state
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
-        .assert(tonk_schema::DeviceLink::new(entity.clone(), title, at));
+        .assert(tonk_schema::DeviceLink::new(entity, title, at));
     transaction
         .commit()
         .perform(&state.operator)

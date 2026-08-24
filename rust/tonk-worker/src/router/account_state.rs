@@ -886,15 +886,17 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
 /// list reads — sign-up, passkey sign-in, and accounts that predate the
 /// facts all converge through it.
 async fn describe_own_device(tonk: &TonkState) {
+    // No root is an ordinary state for a signed-out profile, reached on
+    // every sweep; not worth a line in the log.
     let Ok(root) = super::identity::local_root(tonk).await else {
         return;
     };
-    let Ok(chain) = DelegationChain::try_from(root.bytes.as_slice()) else {
-        return;
-    };
-    if let Err(error) =
-        crate::onboarding::describe_device_link(tonk, &chain, crate::onboarding::device_title())
-            .await
+    if let Err(error) = crate::onboarding::describe_device_link(
+        tonk,
+        &root.delegation,
+        crate::onboarding::device_title(),
+    )
+    .await
     {
         log!("describe this device's link: {error}");
     }
@@ -1641,6 +1643,40 @@ mod tests {
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].seconds(), 1_754_380_800);
         assert_eq!(again[0].created_on.0, "Chrome on macOS");
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// The sweep describes this device's own link in the account space,
+    /// so its row is where every device's list reads — including a list
+    /// rendered on this device before anything else replicates.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_describes_this_device_on_the_account_sweep() {
+        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .expect("account branch opens");
+        let links = tonk_schema::device_link::device_links(branch.handle(), &state.operator)
+            .await
+            .expect("device-link query runs");
+        assert_eq!(links.len(), 1, "exactly this device's row: {links:?}");
+        assert_eq!(
+            links[0].1,
+            state.profile.did().to_string(),
+            "the row names this device"
+        );
 
         service.stop().await.unwrap();
         discard(state, &ready.key);
