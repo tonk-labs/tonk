@@ -620,6 +620,31 @@ mod tests {
         Ok(result.json().clone())
     }
 
+    /// POST a YAML document, the way `/evaluate` takes source.
+    ///
+    /// The JSON routes cannot make a replica write real content, and a
+    /// replica with nothing to write never presigns — which is what made
+    /// every status-code assertion in this file vacuous.
+    async fn post_yaml(driver: &WebDriver, path: &str, body: &str) -> Result<serde_json::Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch(arguments[0], {
+                    method: "POST",
+                    headers: { "content-type": "application/yaml" },
+                    body: arguments[1],
+                }).then(async response => done({
+                    status: response.status,
+                    body: await response.text(),
+                })).catch(error => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!(path), serde_json::json!(body)],
+            )
+            .await?;
+        Ok(result.json().clone())
+    }
+
     async fn get_json(driver: &WebDriver, path: &str) -> Result<serde_json::Value> {
         let result = driver
             .execute_async(
@@ -634,6 +659,48 @@ mod tests {
             )
             .await?;
         Ok(result.json().clone())
+    }
+
+    /// Whether `driver`'s replica of `key` can see a bookmark named
+    /// `bookmark` on the content branch.
+    ///
+    /// This is the only honest oracle for revocation. A status code from
+    /// the guest's own worker reports what the worker did locally, which
+    /// is decoupled from whether the access service served the upload —
+    /// so only the OTHER party's view distinguishes a revoked invite from
+    /// a working one.
+    async fn owner_sees(driver: &WebDriver, key: &str, bookmark: &str) -> Result<bool> {
+        // The `Name` concept's wire shape, inlined: `tonk_worker::helpers`
+        // is feature-gated off in this build. `this` is the name entity,
+        // derived by prefixing `id:` — the row carries that, never the
+        // bare name string, so the match is on `id:<bookmark>`.
+        let query = serde_json::json!({
+            "terms": {
+                "this": { "?": { "name": "this", "type": { "primitive": { "bits": 64 } } } },
+                "entity": { "?": { "name": "entity", "type": { "primitive": { "bits": 64 } } } }
+            },
+            "predicate": {
+                "with": {
+                    "entity": {
+                        "the": "db.name/referent",
+                        "cardinality": "one",
+                        "as": "Entity"
+                    }
+                }
+            }
+        });
+        let response = post_json(
+            driver,
+            &format!("/api/repository/{key}/branch/main/query"),
+            query,
+        )
+        .await?;
+        let wanted = format!("id:{bookmark}");
+        let rows = response["body"].as_array().cloned().unwrap_or_default();
+        Ok(rows.iter().any(|row| {
+            row["fields"]["this"].as_str() == Some(wanted.as_str())
+                || row["this"].as_str() == Some(wanted.as_str())
+        }))
     }
 
     fn successful_body<'a>(
@@ -1316,6 +1383,225 @@ mod tests {
             field, "deny",
             "cancelling must report a denial, not leave the CLI waiting"
         );
+        Ok(())
+    }
+
+    /// Revocation as the user experiences it: a guest who claimed an
+    /// invite loses access to the space when that invite is withdrawn.
+    ///
+    /// The property under test is the one that matters, and the one the
+    /// account-service device list cannot show: after revocation the
+    /// claimed credential no longer reaches storage. That runs the whole
+    /// path, from minting the artifact through `/ucan/revoke` recording
+    /// it to the chain walk refusing a chain that rests on it.
+    #[dialog_common::test]
+    async fn it_cuts_off_storage_access_when_an_invite_is_revoked(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        sign_up(&owner, &env, "owner@example.com").await?;
+
+        let created = post_json(
+            &owner,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Revocable Garden",
+                "remote": env.tonk_web.join("ucan/")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create space", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+        successful_body(
+            "push space",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        let invited = post_json(
+            &owner,
+            &format!("/api/repository/{key}/invite"),
+            serde_json::json!({ "baseUrl": env.tonk_web.join("join")? }),
+        )
+        .await?;
+        let invite_url = successful_body("mint invite", &invited)["url"]
+            .as_str()
+            .context("invite response omitted its URL")?
+            .to_string();
+        // The mint answers a URL; the revocation target comes from the
+        // invitation listing, which is where its CID is recorded.
+        let listed = get_json(&owner, &format!("/api/repository/{key}/invites")).await?;
+        let body = successful_body("list invites", &listed);
+        let invite_cid = body
+            .as_array()
+            .and_then(|invites| invites.first())
+            .and_then(|invite| invite["targetCid"].as_str())
+            .with_context(|| {
+                format!("invitation listing carried no target CID; listing was: {body}")
+            })?
+            .to_string();
+
+        // A guest claims it and can reach the space.
+        let guest = driver_with_prf(&env).await?;
+        sign_up(&guest, &env, "guest@example.com").await?;
+        successful_body(
+            "visit invite",
+            &post_json(
+                &guest,
+                "/api/profile/visit",
+                serde_json::json!({ "url": invite_url }),
+            )
+            .await?,
+        );
+        successful_body(
+            "guest pulls before revocation",
+            &post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        // The guest writes something the owner can look for, and syncs it
+        // up. This half proves the write path WORKS before revocation, so
+        // its absence afterwards means something.
+        //
+        // Every earlier version of this test asserted on a status code
+        // from `sync/pull` or `sync/push`. Both are vacuous: a replica
+        // with nothing to fetch never presigns, and a replica with nothing
+        // to send never uploads, so both answer 200 whether or not the
+        // invite was revoked. The guest in those versions never wrote
+        // anything at all, so the write path this test exists to check was
+        // never exercised.
+        let before_marker = "xyz.tonk.e2e/before-revocation";
+        let after_marker = "xyz.tonk.e2e/after-revocation";
+        // Distinct bookmark names, so the owner can tell the two writes
+        // apart in the Name index.
+        let declare = |bookmark: &str, attribute: &str| {
+            format!(
+                r#"attribute!: &{bookmark}
+  the:         {attribute}
+  as:          text
+  cardinality: one
+  description: revocation e2e marker
+"#
+            )
+        };
+
+        let wrote = post_yaml(
+            &guest,
+            &format!("/api/repository/{key}/branch/main/evaluate"),
+            &declare("before-revocation", before_marker),
+        )
+        .await?;
+        assert_eq!(
+            wrote["status"].as_u64(),
+            Some(200),
+            "the guest must be able to write before revocation: {wrote}"
+        );
+        successful_body(
+            "guest pushes its pre-revocation write",
+            &post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        successful_body(
+            "owner pulls the guest's pre-revocation write",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        let owner_sees_before = owner_sees(&owner, &key, "before-revocation").await?;
+        assert!(
+            owner_sees_before,
+            "the guest's pre-revocation write must reach the owner, or the \
+             post-revocation assertion below proves nothing"
+        );
+
+        // The owner withdraws the invite.
+        successful_body(
+            "revoke invite",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/invites/{invite_cid}/revoke"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        // Now the same sequence must NOT reach the owner. Asserted on
+        // CONTENT, not on a status code: the guest's worker may report a
+        // successful push for an upload the access service refused, so
+        // only the owner's view distinguishes a revoked invite from a
+        // working one.
+        let wrote_after = post_yaml(
+            &guest,
+            &format!("/api/repository/{key}/branch/main/evaluate"),
+            &declare("after-revocation", after_marker),
+        )
+        .await?;
+        assert_eq!(
+            wrote_after["status"].as_u64(),
+            Some(200),
+            "the guest still writes locally; revocation cuts off storage, \
+             not the local branch: {wrote_after}"
+        );
+
+        // Polled: the index is eventually consistent by design, so give
+        // the guest every chance to get its write through.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let _ = post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let _ = post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?;
+            assert!(
+                !owner_sees(&owner, &key, "after-revocation").await?,
+                "a revoked invite still reached storage: the owner can see \
+                 the guest's post-revocation write"
+            );
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // The owner is unaffected: revoking one invite withdraws that
+        // delegation, not the space.
+        successful_body(
+            "owner still reaches the space",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        guest.quit().await?;
+        owner.quit().await?;
         Ok(())
     }
 

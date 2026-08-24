@@ -4,33 +4,40 @@
 //! delegation path that witnesses that target. Consumers can therefore verify
 //! revocation authority without consulting an account provider or registry.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dialog_credentials::{DidKeyResolver, Signer};
-use dialog_ucan_core::promise::Promised;
-use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::container::revocation::{RevocationChain, RevocationError};
+use dialog_ucan_core::revocation::action::Revocation;
+use dialog_ucan_core::revocation::builder::RevocationBuilder;
+use std::sync::Arc;
+// Mirrors dialog's own target split: WASM Ed25519 keys carry a `JsValue`
+// and are `!Send`, so futures are local there and boxed elsewhere.
+#[cfg(target_arch = "wasm32")]
+use dialog_ucan_core::future::Local as Runtime;
+#[cfg(not(target_arch = "wasm32"))]
+use dialog_ucan_core::future::Sendable as Runtime;
+use dialog_ucan_core::revocation::UnverifiedRevocations;
+use dialog_ucan_core::verification::{Environment, VerificationContext};
+use dialog_ucan_core::{Delegation, DelegationChain, InvocationChain};
 use dialog_varsig::AnySignature;
-use dialog_varsig::{Did, Principal};
+use dialog_varsig::Did;
 use ipld_core::cid::Cid;
 
 /// The command a revocation invokes.
 pub const REVOKE_COMMAND: [&str; 2] = ["ucan", "revoke"];
 
 /// The argument naming the withdrawn delegation.
-pub const REVOKE_ARGUMENT: &str = "revoke";
+///
+/// `rev`, not `revoke`: the spec's IPLD schema is normative and uses the
+/// abbreviated wire names, matching `cmd` / `nnc` / `prf` elsewhere in
+/// the envelope. The prose in the spec README spells them out, which is
+/// where the longer names came from.
+pub const REVOKE_ARGUMENT: &str = "rev";
 
-/// The argument carrying the hex-encoded canonical delegation path.
-pub const PATH_ARGUMENT: &str = "path";
-
-/// Authority established by a verified revocation artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RevocationAuthority {
-    /// The signer issued a delegation in the witnessed prefix through the target.
-    PathIssuer,
-    /// The signer exercised authority delegated through the target.
-    Delegated,
-}
+/// The argument carrying the delegation-path witness.
+pub const PATH_ARGUMENT: &str = "pth";
 
 /// Facts derived from a verified revocation artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,11 +47,46 @@ pub struct VerifiedRevocation {
     /// Canonical CID of the signed invocation artifact.
     pub artifact_cid: String,
     /// Expiration of the target delegation, if it has one.
+    ///
+    /// Reported, not acted on. It is tempting to bound the recorded
+    /// revocation by this — a chain past its expiry is refused on time
+    /// anyway — but the delegations most worth revoking are unexpiring,
+    /// so this is `None` for exactly those, and a revocation that stops
+    /// applying is a revocation that silently un-revokes.
     pub target_expires_at: Option<u64>,
     /// DID that signed the revocation invocation.
+    ///
+    /// Who performed the act. Distinct from [`subject`](Self::subject)
+    /// when the revocation was minted under delegated authority.
     pub issuer: Did,
-    /// How the signer proved revocation authority.
-    pub authority: RevocationAuthority,
+    /// DID whose authority the revocation exercises.
+    ///
+    /// What a validator matches against the issuers of a presented
+    /// chain: the spec's pseudocode tests the invocation's issuer, which
+    /// contradicts its own delegated-revocation section, since a
+    /// delegate is never in the chain whose authority they borrowed.
+    /// Fixed upstream in ucan-wg/revocation#4; we implement the
+    /// corrected form.
+    pub subject: Did,
+    /// Subject of the delegation being withdrawn — what capability it
+    /// granted, as against [`subject`](Self::subject), which is who is
+    /// withdrawing it.
+    ///
+    /// A powerline (`Subject::Any`) names no subject of its own, so this
+    /// reports the principal that issued it — the authority the grant
+    /// actually conveys, and the one a chain resting on it descends from.
+    /// Device grants are powerlines, so this is the common case rather
+    /// than an edge one.
+    pub revoked_subject: Did,
+    /// Every delegation CID this revocation rests on: the witnessed path
+    /// and any attached proof chain.
+    ///
+    /// Whether the revoker's OWN authority still stands is a question
+    /// about the revocation index, not about these bytes — a delegation
+    /// that was validly issued and later withdrawn still verifies here.
+    /// So the recorder screens these against the index before accepting,
+    /// the same way the presign path screens a chain it is handed.
+    pub path_cids: Vec<String>,
 }
 
 /// Why a revocation artifact could not be verified.
@@ -58,98 +100,45 @@ pub enum VerifyError {
     Unauthorized(String),
 }
 
-fn command() -> Vec<String> {
-    REVOKE_COMMAND
-        .iter()
-        .map(|part| (*part).to_string())
-        .collect()
-}
-
-fn arguments(target: &Cid, path: &DelegationChain) -> Result<BTreeMap<String, Promised>> {
-    let mut arguments = BTreeMap::new();
-    arguments.insert(
-        REVOKE_ARGUMENT.to_string(),
-        Promised::String(target.to_string()),
-    );
-    arguments.insert(
-        PATH_ARGUMENT.to_string(),
-        Promised::String(hex::encode(
-            path.to_bytes()
-                .context("failed to serialize revocation path")?,
-        )),
-    );
-    Ok(arguments)
-}
-
-fn target_index(path: &DelegationChain, target: &Cid) -> Result<usize> {
-    let mut matches = path
-        .proof_cids()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, cid)| (cid == target).then_some(index));
-    let index = matches
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("revocation path does not contain target {target}"))?;
-    if matches.next().is_some() {
-        anyhow::bail!("revocation path contains target {target} more than once");
-    }
-    Ok(index)
-}
-
-fn is_path_issuer(path: &DelegationChain, target_index: usize, issuer: &Did) -> bool {
-    path.proofs()
-        .take(target_index + 1)
-        .any(|delegation| delegation.issuer() == issuer)
-}
-
-fn subject(path: &DelegationChain) -> Did {
-    path.subject()
-        .cloned()
-        .unwrap_or_else(|| path.issuer().clone())
-}
-
-async fn mint(
-    issuer: impl Into<Signer>,
+/// Pack a built revocation plus the blocks it names into a container.
+///
+/// Assembly and serialization are `RevocationChain`'s: it knows that the
+/// witness is named by `args.pth` rather than `prf`, which is exactly the
+/// distinction a generic invocation writer misses.
+fn package(
+    revocation: Revocation<AnySignature>,
     path: &DelegationChain,
-    target: &Cid,
     proofs: Option<&DelegationChain>,
 ) -> Result<Vec<u8>> {
-    target_index(path, target)?;
-    let subject = subject(path);
-    let proof_cids = proofs
-        .map(|chain| chain.proof_cids().to_vec())
-        .unwrap_or_default();
-    let invocation = InvocationBuilder::new()
-        .issuer(issuer.into())
-        .audience(&subject)
-        .subject(&subject)
-        .command(command())
-        .arguments(arguments(target, path)?)
-        .proofs(proof_cids)
-        .try_build()
-        .await
-        .map_err(|err| anyhow::anyhow!("failed to mint the revocation: {err}"))?;
-    let delegations = proofs
-        .map(|chain| chain.export().collect())
-        .unwrap_or_default();
+    let blocks: HashMap<Cid, Arc<Delegation<AnySignature>>> = path
+        .export()
+        .chain(proofs.into_iter().flat_map(|chain| chain.export()))
+        .collect();
 
-    InvocationChain::new(invocation, delegations)
+    RevocationChain::assemble(revocation, blocks)
+        .map_err(|err| anyhow::anyhow!("failed to assemble the revocation: {err}"))?
         .to_bytes()
         .map_err(|err| anyhow::anyhow!("failed to serialize the revocation: {err}"))
 }
 
-/// Mint a proofless revocation signed by an issuer in the witnessed path.
+/// Mint a proofless revocation signed by a principal in the witnessed path.
+///
+/// The signer is the revocation's subject: this artifact is about *their*
+/// withdrawal, not about the capability being withdrawn. Whether they were
+/// entitled to withdraw it is [`verify`]'s question, answered against the
+/// witness path.
 pub async fn mint_root_revocation(
     root: impl Into<Signer>,
     path: &DelegationChain,
     target: &Cid,
 ) -> Result<Vec<u8>> {
     let root: Signer = root.into();
-    let index = target_index(path, target)?;
-    if !is_path_issuer(path, index, &root.did()) {
-        anyhow::bail!("revocation signer is not an issuer in the target path");
-    }
-    mint(root, path, target, None).await
+    let revocation = RevocationBuilder::new(root, *target)
+        .path(path.proof_cids().to_vec())
+        .try_build()
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to mint the revocation: {err}"))?;
+    package(revocation, path, None)
 }
 
 /// Mint a device-signed revocation of the device's own grant.
@@ -158,29 +147,40 @@ pub async fn mint_self_revocation(
     grant: &DelegationChain,
     target: &Cid,
 ) -> Result<Vec<u8>> {
-    mint(device, grant, target, Some(grant)).await
+    let device: Signer = device.into();
+    let subject = grant
+        .subject()
+        .cloned()
+        .unwrap_or_else(|| grant.issuer().clone());
+    let revocation = RevocationBuilder::new(device, *target)
+        .path(grant.proof_cids().to_vec())
+        .try_build_with_proofs(grant.proof_cids().to_vec(), &subject)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to mint the revocation: {err}"))?;
+    package(revocation, grant, Some(grant))
 }
 
 /// Mint a revocation signed under an attached delegation proof chain.
+///
+/// `prf` answers "may this principal invoke at all"; `pth` answers "why may
+/// they revoke *this*". They can rest on different grants.
 pub async fn mint_delegated_revocation(
     issuer: impl Into<Signer>,
     path: &DelegationChain,
     target: &Cid,
     proofs: &DelegationChain,
 ) -> Result<Vec<u8>> {
-    mint(issuer, path, target, Some(proofs)).await
-}
-
-fn string_argument<'a>(
-    chain: &'a InvocationChain<AnySignature>,
-    name: &str,
-) -> std::result::Result<&'a str, VerifyError> {
-    match chain.arguments().get(name) {
-        Some(Promised::String(value)) if !value.is_empty() => Ok(value),
-        _ => Err(VerifyError::Malformed(format!(
-            "{name} must be a non-empty string"
-        ))),
-    }
+    let issuer: Signer = issuer.into();
+    let subject = proofs
+        .subject()
+        .cloned()
+        .unwrap_or_else(|| proofs.issuer().clone());
+    let revocation = RevocationBuilder::new(issuer, *target)
+        .path(path.proof_cids().to_vec())
+        .try_build_with_proofs(proofs.proof_cids().to_vec(), &subject)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to mint the revocation: {err}"))?;
+    package(revocation, path, Some(proofs))
 }
 
 /// Parse and verify a self-contained revocation artifact.
@@ -188,108 +188,90 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
     let chain = InvocationChain::<AnySignature>::try_from(bytes)
         .map_err(|err| VerifyError::Malformed(format!("bad invocation container: {err}")))?;
 
-    let actual_command: Vec<&str> = chain.command().0.iter().map(String::as_str).collect();
-    if actual_command.as_slice() != REVOKE_COMMAND {
-        return Err(VerifyError::Malformed(format!(
-            "expected command {REVOKE_COMMAND:?}, got {actual_command:?}"
-        )));
-    }
+    // Shape: the command, the empty nonce, `rev` as a link, `pth` as a list
+    // of links, and every named block present in the container.
+    let revocation = RevocationChain::try_from(chain.clone())
+        .map_err(|err| VerifyError::Malformed(err.to_string()))?;
 
-    let target_string = string_argument(&chain, REVOKE_ARGUMENT)?;
-    let target = target_string
-        .parse::<Cid>()
-        .map_err(|err| VerifyError::Malformed(format!("invalid target CID: {err}")))?;
-    if target.to_string() != target_string {
-        return Err(VerifyError::Malformed(
-            "target CID is not canonical".to_string(),
-        ));
-    }
-
-    let path_hex = string_argument(&chain, PATH_ARGUMENT)?;
-    let path_bytes = hex::decode(path_hex)
-        .map_err(|err| VerifyError::Malformed(format!("invalid path hex: {err}")))?;
-    let path = DelegationChain::try_from(path_bytes.as_slice())
-        .map_err(|err| VerifyError::Malformed(format!("invalid delegation path: {err}")))?;
-
-    for delegation in path.proofs() {
-        delegation
-            .verify_signature(&DidKeyResolver)
-            .await
-            .map_err(|err| {
-                VerifyError::Unauthorized(format!("path signature failed to verify: {err}"))
-            })?;
-    }
-
-    let mut matches = path
-        .proof_cids()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, cid)| (cid == &target).then_some(index));
-    let target_index = matches.next().ok_or_else(|| {
-        VerifyError::Malformed("revocation path does not contain the named CID".to_string())
-    })?;
-    if matches.next().is_some() {
-        return Err(VerifyError::Malformed(
-            "revocation path contains the named CID more than once".to_string(),
-        ));
-    }
-
-    chain
-        .invocation
-        .verify_signature(&DidKeyResolver)
+    // Everything else is dialog's: the invocation's own validity (signature,
+    // `prf` chain, time bounds) and the witness path's (linkage, rooting,
+    // expiry, and that the revoker held what it revokes). This module used to
+    // hand-roll those, and each hand-rolled copy was missing something the
+    // shared implementation already did.
+    //
+    // `UnverifiedRevocations` because this entry point answers "is this
+    // artifact sound", not "does the revoker's own authority still stand" —
+    // the latter needs an index, which the access service hands to its
+    // authorizer.
+    let environment = Environment::new(
+        revocation.chain().proof_store(),
+        DidKeyResolver,
+        UnverifiedRevocations,
+    );
+    let context = VerificationContext::new(&environment);
+    revocation
+        .verify::<Runtime, _, _, _>(&context)
         .await
-        .map_err(|err| {
-            VerifyError::Unauthorized(format!("invocation signature failed to verify: {err}"))
+        .map_err(|err| match err {
+            RevocationError::Invalid(_) | RevocationError::Denied(_) => {
+                VerifyError::Unauthorized(err.to_string())
+            }
+            // We could not establish a finding; that is our reach, not a
+            // statement about their material.
+            RevocationError::Unavailable { .. } => VerifyError::Malformed(err.to_string()),
         })?;
 
-    let issuer = chain.issuer().clone();
-    let authority = if is_path_issuer(&path, target_index, &issuer) {
-        RevocationAuthority::PathIssuer
-    } else {
-        chain.verify(&DidKeyResolver).await.map_err(|err| {
-            VerifyError::Unauthorized(format!("delegated authority failed to verify: {err}"))
-        })?;
-        if !chain.proofs().contains(&target) {
-            return Err(VerifyError::Unauthorized(
-                "delegated revocation does not attach the target as a proof".to_string(),
-            ));
-        }
-        RevocationAuthority::Delegated
-    };
-
-    let canonical_bytes = chain.to_bytes().map_err(|err| {
-        VerifyError::Malformed(format!(
-            "failed to canonicalize invocation container: {err}"
-        ))
-    })?;
-    if canonical_bytes != bytes {
-        return Err(VerifyError::Malformed(
-            "invocation container is not canonical".to_string(),
-        ));
-    }
-
-    let target_expires_at = path
-        .proofs()
-        .nth(target_index)
-        .and_then(|delegation| delegation.expiration())
+    let target = *revocation.revocation().revoked();
+    let target_expires_at = revocation
+        .revoked()
+        .expiration()
         .map(|expiration| expiration.to_unix());
 
     Ok(VerifiedRevocation {
         target_cid: target.to_string(),
         artifact_cid: chain.invocation.to_cid().to_string(),
         target_expires_at,
-        issuer,
-        authority,
+        issuer: chain.issuer().clone(),
+        subject: revocation.revocation().revoker().clone(),
+        revoked_subject: match revocation.revoked().subject() {
+            dialog_ucan_core::subject::Subject::Specific(did) => did.clone(),
+            dialog_ucan_core::subject::Subject::Any => revocation.revoked().issuer().clone(),
+        },
+        path_cids: revocation
+            .revocation()
+            .path()
+            .iter()
+            .chain(chain.proofs().iter())
+            .map(ToString::to_string)
+            .collect(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_ucan_core::Container;
+    use dialog_ucan_core::crypto::nonce::Nonce;
+    use dialog_ucan_core::promise::Promised;
+    use std::collections::BTreeMap;
+
+    /// The command a revocation carries, per the spec's `cmd "/ucan/revoke"`.
+    fn command() -> Vec<String> {
+        vec!["ucan".to_string(), "revoke".to_string()]
+    }
+
+    /// `nnc ""`: revocation is idempotent, so the same withdrawal by the
+    /// same principal is the same artifact.
+    fn nonce() -> Nonce {
+        Nonce::Custom(Vec::new())
+    }
+
     use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::subject::Subject;
     use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
     use dialog_ucan_core::{DelegationBuilder, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+    use std::collections::BTreeSet;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -333,23 +315,37 @@ mod tests {
         (space, member, invite, path)
     }
 
+    /// Build a revocation container by hand, so tests can inject a
+    /// malformed `revoke` argument that `mint` would never produce.
     async fn raw_revocation(
         issuer: impl Into<Signer>,
         path: &DelegationChain,
-        named: String,
+        named: Promised,
         proofs: Option<&DelegationChain>,
     ) -> Vec<u8> {
         let mut args = BTreeMap::new();
-        args.insert(REVOKE_ARGUMENT.into(), Promised::String(named));
+        args.insert(REVOKE_ARGUMENT.into(), named);
         args.insert(
             PATH_ARGUMENT.into(),
-            Promised::String(hex::encode(path.to_bytes().unwrap())),
+            Promised::List(
+                path.proof_cids()
+                    .iter()
+                    .map(|cid| Promised::Link(*cid))
+                    .collect(),
+            ),
         );
-        let subject = subject(path);
+        // The revoker is the subject: this artifact is about their
+        // withdrawal, not about the capability being withdrawn. Built by
+        // hand so a test can inject a `rev` or `pth` the builder would
+        // never produce, but faithful to the builder in every other way —
+        // otherwise these cases fail at the shape gate and never reach the
+        // authority question they exist to ask.
+        let signer: Signer = issuer.into();
+        let revoker = signer.did();
         let invocation = InvocationBuilder::new()
-            .issuer(issuer.into())
-            .audience(&subject)
-            .subject(&subject)
+            .issuer(signer)
+            .audience(&revoker)
+            .subject(&revoker)
             .command(command())
             .arguments(args)
             .proofs(
@@ -357,17 +353,63 @@ mod tests {
                     .map(|chain| chain.proof_cids().to_vec())
                     .unwrap_or_default(),
             )
+            .nonce(nonce())
             .try_build()
             .await
             .unwrap();
-        InvocationChain::new(
-            invocation,
-            proofs
-                .map(|chain| chain.export().collect())
-                .unwrap_or_default(),
-        )
-        .to_bytes()
-        .unwrap()
+        let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation).unwrap()];
+        let mut seen: BTreeSet<Cid> = BTreeSet::new();
+        for (cid, delegation) in path
+            .export()
+            .chain(proofs.into_iter().flat_map(|chain| chain.export()))
+        {
+            if seen.insert(cid) {
+                tokens.push(delegation.encoded().to_vec());
+            }
+        }
+        Container::new(tokens).into_bytes().unwrap()
+    }
+
+    /// Build a revocation whose `pth` names an arbitrary list of
+    /// delegations, connected or not.
+    ///
+    /// `DelegationChain::push` refuses a hop that does not follow its
+    /// predecessor, so a disconnected witness cannot be expressed through
+    /// the normal builders — but nothing stops a hostile client from
+    /// emitting the CBOR directly, which is what this reproduces.
+    async fn raw_revocation_with_path(
+        issuer: impl Into<Signer>,
+        subject_did: &Did,
+        witness: &[&Delegation<AnySignature>],
+        named: Promised,
+    ) -> Vec<u8> {
+        let mut args = BTreeMap::new();
+        args.insert(REVOKE_ARGUMENT.into(), named);
+        args.insert(
+            PATH_ARGUMENT.into(),
+            Promised::List(
+                witness
+                    .iter()
+                    .map(|delegation| Promised::Link(delegation.to_cid()))
+                    .collect(),
+            ),
+        );
+        let invocation = InvocationBuilder::new()
+            .issuer(issuer.into())
+            .audience(subject_did)
+            .subject(subject_did)
+            .command(command())
+            .arguments(args)
+            .proofs(Vec::new())
+            .nonce(nonce())
+            .try_build()
+            .await
+            .unwrap();
+        let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation).unwrap()];
+        for delegation in witness {
+            tokens.push(delegation.encoded().to_vec());
+        }
+        Container::new(tokens).into_bytes().unwrap()
     }
 
     #[dialog_common::test]
@@ -384,7 +426,6 @@ mod tests {
 
         assert_eq!(verified.target_cid, target.to_string());
         assert_eq!(verified.issuer, root.did());
-        assert_eq!(verified.authority, RevocationAuthority::PathIssuer);
     }
 
     #[dialog_common::test]
@@ -400,7 +441,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(verified.issuer, device.did());
-        assert_eq!(verified.authority, RevocationAuthority::Delegated);
     }
 
     #[dialog_common::test]
@@ -416,7 +456,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(verified.issuer, member.did());
-        assert_eq!(verified.authority, RevocationAuthority::PathIssuer);
     }
 
     #[dialog_common::test]
@@ -433,7 +472,7 @@ mod tests {
         let bytes = raw_revocation(
             root,
             &decoy_path,
-            real_path.proof_cids()[0].to_string(),
+            Promised::Link(real_path.proof_cids()[0]),
             None,
         )
         .await;
@@ -445,7 +484,11 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_rejects_a_path_changed_after_signing() {
+    async fn it_rejects_a_witness_swapped_after_signing() {
+        // The witness is named by link, so tampering means swapping the
+        // carried block for a different delegation. Its CID no longer
+        // matches what the signed arguments name, and the container
+        // stops being canonical.
         let (space, member, _, original) = invite_path().await;
         let other_invite = signer(6).await;
         let replacement_leaf = DelegationBuilder::new()
@@ -456,47 +499,541 @@ mod tests {
             .try_build()
             .await
             .unwrap();
-        let changed = DelegationChain::new(original.proofs().next().unwrap().clone())
-            .push(replacement_leaf)
-            .unwrap();
         let target = original.proof_cids()[0];
-        let mut bytes = mint_root_revocation(space, &original, &target)
+        let bytes = mint_root_revocation(space, &original, &target)
             .await
             .unwrap();
-        let old = hex::encode(original.to_bytes().unwrap());
-        let new = hex::encode(changed.to_bytes().unwrap());
-        assert_eq!(old.len(), new.len());
-        let start = bytes
-            .windows(old.len())
-            .position(|window| window == old.as_bytes())
-            .unwrap();
-        bytes[start..start + old.len()].copy_from_slice(new.as_bytes());
 
+        // Replace the last carried delegation with the replacement.
+        let mut tokens = Container::from_bytes(&bytes).unwrap().into_tokens();
+        *tokens.last_mut().unwrap() = replacement_leaf.encoded().to_vec();
+        let tampered = Container::new(tokens).into_bytes().unwrap();
+
+        assert!(matches!(
+            verify(&tampered).await,
+            Err(VerifyError::Malformed(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_delegated_revocation_naming_another_subject() {
+        // Borrowing the right to revoke on one subject does not grant it
+        // on another. ucanto covers the same escape as "with field must
+        // match"; here the delegation names the space, and the
+        // revocation is minted against an unrelated one.
+        let (space, _, invite, path) = invite_path().await;
+        let other_space = signer(9).await;
+        let borrowed = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space))
+            .audience(&invite.did())
+            .subject(Subject::Specific(other_space.did()))
+            .command(command())
+            .try_build()
+            .await
+            .unwrap();
+        let borrowed = DelegationChain::new(borrowed);
+        let target = path.proof_cids()[1];
+
+        // Mint by hand: `mint_delegated_revocation` would refuse before
+        // producing anything, and the point is that a hand-rolled
+        // artifact does not verify either.
+        let bytes = raw_revocation(invite, &path, Promised::Link(target), Some(&borrowed)).await;
+        let outcome = verify(&bytes).await;
+        eprintln!("OUTSIDER => {outcome:?}");
+        assert!(matches!(outcome, Err(VerifyError::Unauthorized(_))));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_delegated_revocation_without_the_target_attached() {
+        // The delegation that grants revocation authority pins what may
+        // be revoked. Detaching the target and naming a different one is
+        // ucanto's "nb.delegation field must match".
+        let (space, _, invite, path) = invite_path().await;
+        let granted = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(space.did()))
+            .command(command())
+            .try_build()
+            .await
+            .unwrap();
+        // The grant is attached, but the target delegation is not, so
+        // nothing ties this authority to the delegation being withdrawn.
+        let detached = DelegationChain::new(granted);
+        let target = path.proof_cids()[1];
+
+        let bytes = raw_revocation(invite, &path, Promised::Link(target), Some(&detached)).await;
         assert!(matches!(
             verify(&bytes).await,
             Err(VerifyError::Unauthorized(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_lets_the_root_revoke_a_grandchild_it_never_issued() {
+        // The spec's reach rule: "any UCAN that contains a proof where
+        // the revoker matches the `iss` field, even transitively, MAY be
+        // revoked." The space issued only the first hop, yet may revoke
+        // the second.
+        let (space, member, _, path) = invite_path().await;
+        let grandchild = path.proof_cids()[1];
+        assert_ne!(path.proofs().next().unwrap().issuer(), &member.did());
+
+        let verified = verify(
+            &mint_root_revocation(space.clone(), &path, &grandchild)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.target_cid, grandchild.to_string());
+        assert_eq!(verified.subject, space.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_lets_the_audience_revoke_the_hop_granted_to_it() {
+        // "Revoke a delegation made to you." The invite key is the
+        // AUDIENCE of the hop it withdraws, never its issuer, so the
+        // path-issuer branch cannot carry this. It goes through the
+        // delegated branch instead, attaching the grant as proof — which
+        // is the stronger route: the grant is verified rather than
+        // matched by name.
+        //
+        // No separate evidence chain is needed. The witnessed path IS the
+        // proof, so `pth` carries the hop and nothing else has to be
+        // supplied.
+        let (_, _, invite, path) = invite_path().await;
+        let target = path.proof_cids()[1];
+
+        let verified = verify(
+            &mint_self_revocation(invite.clone(), &path, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.issuer, invite.did());
+        assert_eq!(verified.target_cid, target.to_string());
+    }
+
+    #[dialog_common::test]
+    async fn it_lets_a_holder_revoke_a_hop_it_descends_from() {
+        // Verification establishes POSSESSION, not a relationship to the
+        // hop being revoked: holding the capability, the member could
+        // always have issued the hop itself, so its absence proves
+        // nothing. So the member may name the hop above its own.
+        //
+        // What keeps that from cutting off anyone else is the presign
+        // screen, not this function: a revocation bites only where its
+        // revoker issued into the chain being presented. See
+        // `it_ignores_a_revocation_by_a_principal_outside_the_chain` in
+        // tonk-access-service, which pins the other half.
+        let (_, member, _, path) = invite_path().await;
+        let above = path.proof_cids()[0];
+
+        let bytes = raw_revocation(member, &path, Promised::Link(above), None).await;
+        assert!(
+            verify(&bytes).await.is_ok(),
+            "a holder of the capability may withdraw a hop it descends from"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_the_issuer_as_the_revoked_subject_of_a_powerline() {
+        // `Subject::Any` names no subject of its own, so the field falls
+        // back to the principal that issued the grant — the authority it
+        // actually conveys. Device grants are powerlines, so this is the
+        // ordinary case rather than an edge one, and the access service
+        // keys its "do we hold data this protects" lookup on it.
+        let space = signer(41).await;
+        let device = signer(42).await;
+        let grant = crate::delegation::mint_device_delegation(space.clone(), &device.did())
+            .await
+            .unwrap();
+        let target = grant.proof_cids()[0];
+
+        let verified = verify(
+            &mint_self_revocation(device.clone(), &grant, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            verified.subject,
+            device.did(),
+            "the device is the one revoking"
+        );
+        assert_eq!(
+            verified.revoked_subject,
+            space.did(),
+            "and the space is what the withdrawn grant was about"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_a_named_subject_as_the_revoked_subject() {
+        // The other half: a grant scoped to a specific subject reports
+        // that subject, not its issuer. Without this the powerline
+        // fallback could be applied everywhere and nothing would notice.
+        let (space, member, _, path) = invite_path().await;
+        let target = path.proof_cids()[1];
+
+        let verified = verify(
+            &mint_root_revocation(member.clone(), &path, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.subject, member.did(), "the member is revoking");
+        assert_eq!(
+            verified.revoked_subject,
+            space.did(),
+            "the invite hop names the space outright"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_records_the_revoker_as_subject() {
+        // `sub` is WHO IS REVOKING, not what the revoked delegation was
+        // about. Those are different questions, and filling the field from
+        // the second meant nothing downstream could tell them apart.
+        //
+        // The screen matches this against the issuers of a presented chain:
+        // a revocation bites where its revoker issued, and nowhere else.
+        let (_, _, invite, path) = invite_path().await;
+        let target = path.proof_cids()[1];
+        let verified = verify(
+            &mint_self_revocation(invite.clone(), &path, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.issuer, invite.did(), "the invite key signed it");
+        assert_eq!(
+            verified.subject,
+            invite.did(),
+            "and it is the revoker, so `sub` names it too"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_witness_that_is_not_a_connected_chain() {
+        // A witness is a delegation path, not a bag of delegations: two
+        // unrelated grants prove nothing about reach.
+        let (space, _, invite, path) = invite_path().await;
+        let unrelated_space = signer(11).await;
+        let unrelated = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(unrelated_space.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(unrelated_space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let disjoint = DelegationChain::new(unrelated);
+        let target = path.proof_cids()[1];
+
+        // The target is not in the presented witness at all.
+        let bytes = raw_revocation(space, &disjoint, Promised::Link(target), None).await;
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Malformed(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_witness_whose_hops_do_not_connect() {
+        // The attack: staple a real prefix onto an unrelated hop and
+        // present the pair as ONE witness. Every signature verifies and
+        // the target is present, but `member` never delegated to
+        // `stranger`, so the second hop hangs off nothing and the space's
+        // authority does not reach it.
+        //
+        // Without a linkage check the stranger's own hop sits at index 1
+        // with `space -> member` in front of it, so the prefix scan finds
+        // the stranger as an issuer and grants authority over a path the
+        // space never authorized.
+        let space = signer(3).await;
+        let member = signer(4).await;
+        let stranger = signer(12).await;
+        let invite = signer(5).await;
+
+        let first = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&member.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let orphan = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(stranger.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let orphan_cid = orphan.to_cid();
+        // `pth` = [space -> member, stranger -> invite]. Both signed,
+        // target at index 1, and the stranger IS an issuer within that
+        // prefix — so the prefix scan alone would grant authority.
+        let bytes = raw_revocation_with_path(
+            stranger,
+            &space.did(),
+            &[&first, &orphan],
+            Promised::Link(orphan_cid),
+        )
+        .await;
+        assert!(
+            verify(&bytes).await.is_err(),
+            "a witness whose hops do not connect must not establish authority"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_witness_that_does_not_start_at_the_subject() {
+        // Linkage makes the hops connect; it does not say WHERE they
+        // start. A witness rooted in a principal the subject never
+        // delegated to is a well-formed chain about somebody else's
+        // authority, so it must not authorize a revocation whose subject
+        // is this space.
+        let space = signer(3).await;
+        let stranger = signer(13).await;
+        let accomplice = signer(14).await;
+        let victim = signer(5).await;
+
+        // stranger -> accomplice -> victim: connected, every signature
+        // valid, and it names the space as subject. But the space never
+        // issued into it.
+        let first = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(stranger.clone()))
+            .audience(&accomplice.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let second = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(accomplice.clone()))
+            .audience(&victim.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let target = second.to_cid();
+        let bytes = raw_revocation_with_path(
+            accomplice,
+            &space.did(),
+            &[&first, &second],
+            Promised::Link(target),
+        )
+        .await;
+        assert!(
+            verify(&bytes).await.is_err(),
+            "a witness that does not start at the subject must not authorize \
+             a revocation against that subject"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_records_the_issuer_as_subject_for_a_powerline_revocation() {
+        // A powerline (`Subject::Any`) has no subject of its own, so the
+        // revocation's `sub` falls back to the path's issuer — the
+        // account that granted it. Verification is unaffected: the screen
+        // matches `sub` against the victim chain's issuer set, and the
+        // account issues into every chain the powerline enables
+        // (`space -> account -> profile`), so the match lands.
+        //
+        // It is however a LOSSY encoding. "scoped to subject X" and
+        // "about a powerline, which has no subject, and X merely issued
+        // it" both come out as `sub = X`, so nothing downstream can tell
+        // them apart without knowing the fallback exists. The evidence
+        // record keys powerlines under `_` precisely to keep that
+        // distinction somewhere.
+        //
+        // Pinned because it is a default rather than a stated fact.
+        let account = signer(15).await;
+        let profile = signer(16).await;
+        let powerline = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(account.clone()))
+            .audience(&profile.did())
+            .subject(Subject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(powerline);
+        let target = chain.proof_cids()[0];
+
+        let verified = verify(
+            &mint_root_revocation(account.clone(), &chain, &target)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            verified.subject,
+            account.did(),
+            "a powerline revocation must be recorded under the granting \
+             account, which is the issuer every enabled chain carries"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_revocation_from_a_principal_outside_the_chain() {
+        // The attacker holds a real keypair and can sign anything it
+        // likes — but it never appears in the chain leading to the
+        // target, so it holds no authority to withdraw it. Signing
+        // validly is not the same as being authorized.
+        let (_, _, _, path) = invite_path().await;
+        let attacker = signer(21).await;
+        let target = path.proof_cids()[1];
+
+        // The attacker can mint whatever it likes — signing is not
+        // authorization — so the refusal has to come from verification.
+        let bytes = raw_revocation(attacker, &path, Promised::Link(target), None).await;
+        assert!(
+            matches!(verify(&bytes).await, Err(VerifyError::Unauthorized(_))),
+            "a validly signed revocation from outside the chain must not verify"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_revocation_witnessed_by_an_expired_delegation() {
+        // Authority that has lapsed is not authority. An attacker who
+        // once held a delegation, or who presents one whose window has
+        // closed, must not be able to withdraw anything with it.
+        let space = signer(3).await;
+        let member = signer(4).await;
+        let invite = signer(5).await;
+        let past = Timestamp::new(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+
+        let expired = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&member.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .expiration(past)
+            .try_build()
+            .await
+            .unwrap();
+        let onward = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(member.clone()))
+            .audience(&invite.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(expired).push(onward).unwrap();
+        // The invite revokes the EXPIRED hop, which it is neither issuer
+        // nor audience of — so authority does not settle outright and the
+        // walk has to run, over a hop whose window has closed.
+        let target = chain.proof_cids()[0];
+
+        let bytes = raw_revocation(invite, &chain, Promised::Link(target), None).await;
+        assert!(
+            verify(&bytes).await.is_err(),
+            "a witness whose hop has expired must not establish authority"
+        );
     }
 
     #[dialog_common::test]
     async fn it_rejects_an_unauthorized_issuer() {
         let (_, _, _, path) = invite_path().await;
         let outsider = signer(8).await;
-        let bytes = raw_revocation(outsider, &path, path.proof_cids()[1].to_string(), None).await;
+        let bytes =
+            raw_revocation(outsider, &path, Promised::Link(path.proof_cids()[1]), None).await;
 
-        assert!(matches!(
-            verify(&bytes).await,
-            Err(VerifyError::Unauthorized(_))
-        ));
+        let outcome = verify(&bytes).await;
+        eprintln!("TONKPROBE outsider => {outcome:?}");
+        assert!(matches!(outcome, Err(VerifyError::Unauthorized(_))));
+        #[allow(unreachable_code)]
+        {}
     }
 
     #[dialog_common::test]
-    async fn it_rejects_a_non_canonical_target_cid() {
+    async fn it_encodes_arguments_as_native_dag_cbor_links() {
+        // The spec types `revoke` as `&Delegation` and `path` as
+        // `[&Delegation]`. Decoding the invocation straight to Ipld is
+        // what proves they are real links: a stringified or hex-encoded
+        // CID would surface as Ipld::String here, not Ipld::Link.
+        use ipld_core::ipld::Ipld;
+
         let (root, _, path) = root_grant().await;
+        let target = path.proof_cids()[0];
+        let bytes = mint_root_revocation(root, &path, &target).await.unwrap();
+
+        let tokens = Container::from_bytes(&bytes).unwrap().into_tokens();
+        let invocation: Ipld = serde_ipld_dagcbor::from_slice(&tokens[0]).unwrap();
+
+        // Walk to the arguments without assuming the envelope's shape.
+        fn find<'a>(node: &'a Ipld, key: &str) -> Option<&'a Ipld> {
+            match node {
+                Ipld::Map(map) => map
+                    .get(key)
+                    .or_else(|| map.values().find_map(|v| find(v, key))),
+                Ipld::List(items) => items.iter().find_map(|v| find(v, key)),
+                _ => None,
+            }
+        }
+
+        let args = find(&invocation, "args").expect("invocation carries arguments");
+        match find(args, REVOKE_ARGUMENT).expect("revoke argument is present") {
+            Ipld::Link(cid) => assert_eq!(cid, &target),
+            other => panic!("revoke must be a link, got {other:?}"),
+        }
+        match find(args, PATH_ARGUMENT).expect("path argument is present") {
+            Ipld::List(items) => {
+                assert!(!items.is_empty(), "path must not be empty");
+                for item in items {
+                    assert!(
+                        matches!(item, Ipld::Link(_)),
+                        "path must contain only links, got {item:?}"
+                    );
+                }
+            }
+            other => panic!("path must be a list, got {other:?}"),
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_mints_the_same_bytes_for_a_repeated_revocation() {
+        // The empty nonce is what makes revocation idempotent: the same
+        // revoker withdrawing the same delegation twice produces one
+        // artifact, so a replay is recognizably the same fact rather
+        // than a second one to store and bill.
+        let (root, _, path) = root_grant().await;
+        let target = path.proof_cids()[0];
+        let first = mint_root_revocation(root.clone(), &path, &target)
+            .await
+            .unwrap();
+        let second = mint_root_revocation(root, &path, &target).await.unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_target_that_is_not_a_link() {
+        let (root, _, path) = root_grant().await;
+        // The spec types `revoke` as `&Delegation`. A stringified CID is
+        // the shape the previous encoding used, so it is exactly what a
+        // stale client would send.
         let bytes = raw_revocation(
             root,
             &path,
-            path.proof_cids()[0].to_string().to_ascii_uppercase(),
+            Promised::String(path.proof_cids()[0].to_string()),
             None,
         )
         .await;

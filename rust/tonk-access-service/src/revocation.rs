@@ -1,365 +1,352 @@
-//! Monotone revocation-set screening for presented UCAN containers.
+//! Revocation: what was withdrawn, and who withdrew it.
 //!
-//! After cryptographic authorization succeeds, the presign path extracts every
-//! delegation CID and screens it against a replicated set derived exclusively
-//! from verified immutable artifacts. A refresh is authoritative only after a
-//! complete listing, fetch, and verification pass succeeds.
+//! The index records the facts, and [`checker::IndexedRevocations`]
+//! answers dialog's question from them. Nothing here screens a chain:
+//! the authorizer carries the checker, so revocation is asked inside
+//! the chain walk, per link, against the principals entitled to revoke
+//! that link.
+//!
+//! That per-link scoping is why it belongs there rather than here. A
+//! screen outside the walk sees one flat set of issuers and must apply
+//! it to every hop, which for `a -> b -> c -> d` would let `d`'s issuer
+//! revoke `c`: a principal that merely *received* authority revoking
+//! the grant it depends on. Authority to revoke flows downward, and
+//! only the walk knows which direction is down.
 
-#[cfg(target_arch = "wasm32")]
-pub mod r2;
-
-use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
-use std::fmt;
-
-use dialog_ucan_core::container::{Container, ContainerError};
-use dialog_ucan_core::delegation::Delegation;
-use dialog_ucan_core::invocation::Invocation;
-use dialog_varsig::AnySignature;
-
-/// Credential CIDs and validity window presented to the presign endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresentedCredentials {
-    /// The invocation's subject — the space whose access the chain
-    /// exercises. Carried so a refusal can name whose authority was
-    /// withdrawn.
-    pub subject: dialog_varsig::Did,
-    /// CIDs of every referenced or carried delegation.
-    pub delegation_cids: Vec<String>,
-    /// Latest start bound in unix seconds.
-    pub not_before: Option<u64>,
-    /// Earliest expiration bound in unix seconds.
-    pub expires_at: Option<u64>,
-}
-
-/// Parse a UCAN container once for both expiry and revocation screens.
-#[cfg_attr(test, allow(dead_code))]
-pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials, ContainerError> {
-    let tokens = Container::from_bytes(container_bytes)?.into_tokens();
-    let Some(invocation_bytes) = tokens.first() else {
-        return Err(ContainerError::Invocation(
-            "container must contain at least an invocation".to_string(),
-        ));
-    };
-    let invocation: Invocation<AnySignature> = serde_ipld_dagcbor::from_slice(invocation_bytes)
-        .map_err(|error| {
-            ContainerError::Invocation(format!("failed to decode invocation: {error}"))
-        })?;
-    let mut delegation_cids = BTreeSet::new();
-    delegation_cids.extend(invocation.proofs().iter().map(ToString::to_string));
-    let mut not_before: Option<u64> = None;
-    let mut expires_at = invocation.expiration().map(|stamp| stamp.to_unix());
-    for (index, bytes) in tokens.iter().skip(1).enumerate() {
-        let delegation: Delegation<AnySignature> =
-            serde_ipld_dagcbor::from_slice(bytes).map_err(|error| {
-                ContainerError::Invocation(format!("failed to decode delegation {index}: {error}"))
-            })?;
-        delegation_cids.insert(delegation.to_cid().to_string());
-        if let Some(stamp) = delegation.not_before() {
-            not_before = Some(not_before.map_or(stamp.to_unix(), |seen| seen.max(stamp.to_unix())));
-        }
-        if let Some(stamp) = delegation.expiration() {
-            expires_at = Some(expires_at.map_or(stamp.to_unix(), |seen| seen.min(stamp.to_unix())));
-        }
-    }
-    Ok(PresentedCredentials {
-        subject: invocation.subject().clone(),
-        delegation_cids: delegation_cids.into_iter().collect(),
-        not_before,
-        expires_at,
-    })
-}
-
-/// Fresh complete snapshots are reused for one minute.
-pub const REVOCATION_TTL_MS: u64 = 60_000;
-/// A previously complete clean snapshot may cover ten additional minutes.
-pub const REVOCATION_GRACE_MS: u64 = 600_000;
-
-/// One object returned by a complete source refresh.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredArtifact {
-    /// Full immutable object key.
-    pub key: String,
-    /// Artifact bytes.
-    pub bytes: Vec<u8>,
-}
-
-/// Monotone, isolate-local view of verified revocations.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RevocationSnapshot {
-    /// Every verified revoked target CID ever observed.
-    pub revoked: HashSet<String>,
-    /// Every verified artifact CID ever observed.
-    pub seen_artifacts: HashSet<String>,
-    /// Time of the last fully successful refresh.
-    pub refreshed_at_ms: Option<u64>,
-}
-
-/// Source lookup failure.
-#[derive(Debug, Clone)]
-pub struct SourceError(pub String);
-
-impl fmt::Display for SourceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// Complete immutable artifact source.
-pub trait RevocationSource {
-    /// List every object and fetch bytes for artifacts absent from `seen`.
-    /// Success means the listing was complete through its final page.
-    async fn complete_listing(
-        &self,
-        seen: &HashSet<String>,
-    ) -> Result<Vec<StoredArtifact>, SourceError>;
-}
-
-/// Revocation-set decision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SetVerdict {
-    /// No presented CID is revoked and the snapshot is fresh.
-    Allowed,
-    /// Refresh failed, but a prior complete clean snapshot is inside grace.
-    AllowedStale(String),
-    /// A presented delegation CID is known revoked.
-    Revoked,
-    /// No complete snapshot can safely clear the request.
-    Unavailable(String),
-}
-
-fn key_parts(key: &str) -> Result<(&str, &str), SourceError> {
-    let mut parts = key.split('/');
-    match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some("revocations"), Some(target), Some(artifact), None)
-            if !target.is_empty() && !artifact.is_empty() =>
-        {
-            Ok((target, artifact))
-        }
-        _ => Err(SourceError(format!(
-            "malformed revocation object key: {key}"
-        ))),
-    }
-}
-
-fn presented_revoked(snapshot: &RevocationSnapshot, cids: &[String]) -> bool {
-    cids.iter().any(|cid| snapshot.revoked.contains(cid))
-}
-
-fn failed_verdict(
-    snapshot: &RevocationSnapshot,
-    cids: &[String],
-    now_ms: u64,
-    reason: String,
-) -> SetVerdict {
-    if presented_revoked(snapshot, cids) {
-        return SetVerdict::Revoked;
-    }
-    match snapshot.refreshed_at_ms {
-        Some(refreshed)
-            if now_ms
-                <= refreshed
-                    .saturating_add(REVOCATION_TTL_MS)
-                    .saturating_add(REVOCATION_GRACE_MS) =>
-        {
-            SetVerdict::AllowedStale(reason)
-        }
-        _ => SetVerdict::Unavailable(reason),
-    }
-}
-
-/// Screen CIDs through a caller-owned snapshot and complete source.
-pub async fn assess_with<S: RevocationSource>(
-    snapshot: &mut RevocationSnapshot,
-    source: &S,
-    cids: &[String],
-    now_ms: u64,
-) -> SetVerdict {
-    if presented_revoked(snapshot, cids) {
-        return SetVerdict::Revoked;
-    }
-    if snapshot
-        .refreshed_at_ms
-        .is_some_and(|at| now_ms < at.saturating_add(REVOCATION_TTL_MS))
-    {
-        return SetVerdict::Allowed;
-    }
-    let listed = match source.complete_listing(&snapshot.seen_artifacts).await {
-        Ok(listed) => listed,
-        Err(error) => return failed_verdict(snapshot, cids, now_ms, error.to_string()),
-    };
-    for stored in listed {
-        let (key_target, key_artifact) = match key_parts(&stored.key) {
-            Ok(parts) => parts,
-            Err(error) => return failed_verdict(snapshot, cids, now_ms, error.to_string()),
-        };
-        let verified = match tonk_identity::revocation::verify(&stored.bytes).await {
-            Ok(verified) => verified,
-            Err(error) => return failed_verdict(snapshot, cids, now_ms, error.to_string()),
-        };
-        if verified.target_cid != key_target || verified.artifact_cid != key_artifact {
-            return failed_verdict(
-                snapshot,
-                cids,
-                now_ms,
-                format!(
-                    "revocation object key does not match verified content: {}",
-                    stored.key
-                ),
-            );
-        }
-        snapshot.revoked.insert(verified.target_cid.to_string());
-        snapshot
-            .seen_artifacts
-            .insert(verified.artifact_cid.to_string());
-    }
-    snapshot.refreshed_at_ms = Some(now_ms);
-    if presented_revoked(snapshot, cids) {
-        SetVerdict::Revoked
-    } else {
-        SetVerdict::Allowed
-    }
-}
-
-thread_local! {
-    static SNAPSHOT: RefCell<RevocationSnapshot> = RefCell::new(RevocationSnapshot::default());
-}
-
-/// Screen through the isolate-local production snapshot.
-#[cfg_attr(test, allow(dead_code))]
-pub async fn assess<S: RevocationSource>(
-    source: &S,
-    presented: &PresentedCredentials,
-    now_ms: u64,
-) -> SetVerdict {
-    // Avoid holding a RefCell borrow over await.
-    let mut snapshot = SNAPSHOT.with(|cell| cell.borrow().clone());
-    let verdict = assess_with(&mut snapshot, source, &presented.delegation_cids, now_ms).await;
-    SNAPSHOT.with(|cell| {
-        let mut current = cell.borrow_mut();
-        current.revoked.extend(snapshot.revoked);
-        current.seen_artifacts.extend(snapshot.seen_artifacts);
-        current.refreshed_at_ms = match (current.refreshed_at_ms, snapshot.refreshed_at_ms) {
-            (Some(current), Some(incoming)) => Some(current.max(incoming)),
-            (current, incoming) => current.or(incoming),
-        };
-    });
-    verdict
-}
+pub mod checker;
+pub mod index;
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
-    use super::*;
-    use dialog_credentials::Ed25519Signer;
-    use dialog_varsig::Principal;
-    use std::sync::Mutex;
+    use std::collections::BTreeMap;
 
-    struct ScriptedSource(Mutex<Result<Vec<StoredArtifact>, SourceError>>);
+    use dialog_credentials::{DidKeyResolver, Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject as UcanSubject;
+    use dialog_ucan_core::{
+        Container, Delegation, DelegationBuilder, DelegationChain, Environment, InvocationBuilder,
+        InvocationChain, VerificationContext,
+    };
+    use dialog_varsig::{AnySignature, Principal as _};
 
-    impl RevocationSource for ScriptedSource {
-        async fn complete_listing(
-            &self,
-            _seen: &HashSet<String>,
-        ) -> Result<Vec<StoredArtifact>, SourceError> {
-            self.0.lock().unwrap().clone()
+    use super::checker::IndexedRevocations;
+    use super::index::{MemoryRevocationIndex, RevocationIndex as _};
+
+    async fn signer(seed: u8) -> Ed25519Signer {
+        Ed25519Signer::import(&[seed; 32]).await.expect("a signer")
+    }
+
+    /// Verify a presented chain against `revocations`, exactly as the
+    /// authorizer does: same environment, same checker, same walk.
+    ///
+    /// Answers whether the chain was accepted, so a test reads as the
+    /// verdict a presign would get.
+    async fn accepted(
+        revocations: &MemoryRevocationIndex,
+        container_bytes: &[u8],
+    ) -> Result<bool, String> {
+        let chain = InvocationChain::<AnySignature>::try_from(container_bytes)
+            .map_err(|error| error.to_string())?;
+        let checker = IndexedRevocations(revocations);
+        let environment = Environment::new(chain.proof_store(), DidKeyResolver, &checker);
+        let context = VerificationContext::new(&environment);
+        match chain.verify(&context).await {
+            Ok(_) => Ok(true),
+            Err(dialog_ucan_core::ContainerError::Revoked { .. }) => Ok(false),
+            Err(other) => Err(other.to_string()),
         }
     }
 
-    async fn artifact() -> (String, String, Vec<u8>) {
-        let root = Ed25519Signer::import(&[41u8; 32]).await.unwrap();
-        let device = Ed25519Signer::import(&[42u8; 32]).await.unwrap();
-        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+    /// The container a holder presents when it syncs.
+    async fn present(
+        chain: &DelegationChain,
+        holder: &Ed25519Signer,
+        space: &Ed25519Signer,
+    ) -> Vec<u8> {
+        let invocation = InvocationBuilder::new()
+            .issuer(Signer::from(holder.clone()))
+            .audience(&space.did())
+            .subject(&space.did())
+            .command(vec!["test".to_string()])
+            .arguments(BTreeMap::new())
+            .proofs(chain.proof_cids().to_vec())
+            .try_build()
             .await
-            .unwrap();
-        let target = grant.proof_cids()[0];
-        let bytes = tonk_identity::revocation::mint_root_revocation(root, &grant, &target)
+            .expect("an invocation");
+        let mut tokens =
+            vec![serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes")];
+        for (_, delegation) in chain.export() {
+            tokens.push(delegation.encoded().to_vec());
+        }
+        Container::new(tokens).into_bytes().expect("a container")
+    }
+
+    /// The fork, end to end: real delegations, real containers, both
+    /// chains verified.
+    ///
+    /// `space -> profile`, branching to Alice and to Bob. Alice revokes
+    /// Bob's hop, which dialog's `validate` permits: possession is the
+    /// whole question there, and Alice holds the capability.
+    ///
+    /// What must hold is that the recorded revocation reaches the chain
+    /// its revoker had authority over and no other. The two halves of
+    /// that live in different crates, so each looks correct read alone;
+    /// this asserts them together against artifacts rather than
+    /// stand-ins.
+    #[dialog_common::test]
+    async fn it_confines_a_revocation_to_chains_its_revoker_had_authority_over() {
+        let space = signer(70).await;
+        let profile = signer(71).await;
+        let alice = signer(72).await;
+        let bob = signer(73).await;
+
+        let hop = async |issuer: &Ed25519Signer, audience: &Ed25519Signer| {
+            DelegationBuilder::new()
+                .issuer(Signer::from(issuer.clone()))
+                .audience(&audience.did())
+                .subject(UcanSubject::Specific(space.did()))
+                .command(vec![])
+                .try_build()
+                .await
+                .expect("a delegation")
+        };
+
+        let root = hop(&space, &profile).await;
+        let to_alice = hop(&profile, &alice).await;
+        let to_bob = hop(&profile, &bob).await;
+
+        let chain_of = |leaf: Delegation<AnySignature>| {
+            DelegationChain::new(root.clone())
+                .push(leaf)
+                .expect("the hops connect")
+        };
+        let alices_chain = chain_of(to_alice.clone());
+        let bobs_chain = chain_of(to_bob.clone());
+
+        let bobs_container = present(&bobs_chain, &bob, &space).await;
+        let alices_container = present(&alices_chain, &alice, &space).await;
+
+        // Alice revokes BOB's hop. She is no party to it, but she holds
+        // the capability, so the artifact itself is sound.
+        let revocations = MemoryRevocationIndex::default();
+        revocations
+            .record(&to_bob.to_cid().to_string(), alice.did().as_ref())
             .await
-            .unwrap();
-        let verified = tonk_identity::revocation::verify(&bytes).await.unwrap();
-        (
-            verified.target_cid.to_string(),
-            verified.artifact_cid.to_string(),
-            bytes,
-        )
-    }
+            .expect("recorded");
 
-    #[dialog_common::test]
-    async fn it_unions_verified_target_cids_without_removing_old_entries() {
-        let (target, artifact_cid, bytes) = artifact().await;
-        let source = ScriptedSource(Mutex::new(Ok(vec![StoredArtifact {
-            key: format!("revocations/{target}/{artifact_cid}"),
-            bytes,
-        }])));
-        let mut snapshot = RevocationSnapshot::default();
-        snapshot.revoked.insert("old".into());
-        assert_eq!(
-            assess_with(&mut snapshot, &source, std::slice::from_ref(&target), 1).await,
-            SetVerdict::Revoked
+        assert!(
+            accepted(&revocations, &bobs_container).await.unwrap(),
+            "a sibling's revocation must not reach Bob"
         );
-        assert!(snapshot.revoked.contains("old"));
-        assert!(snapshot.revoked.contains(&target));
-    }
 
-    #[dialog_common::test]
-    async fn it_does_not_advance_freshness_after_an_invalid_artifact() {
-        let source = ScriptedSource(Mutex::new(Ok(vec![StoredArtifact {
-            key: "revocations/target/artifact".into(),
-            bytes: b"invalid".to_vec(),
-        }])));
-        let mut snapshot = RevocationSnapshot::default();
-        assert!(matches!(
-            assess_with(&mut snapshot, &source, &["clean".into()], 5).await,
-            SetVerdict::Unavailable(_)
-        ));
-        assert_eq!(snapshot.refreshed_at_ms, None);
-    }
+        // And the profile, which DID issue that hop, cuts Bob off, so the
+        // assertion above is about authority rather than an unmatchable CID.
+        revocations
+            .record(&to_bob.to_cid().to_string(), profile.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            !accepted(&revocations, &bobs_container).await.unwrap(),
+            "the issuer of the hop must be able to cut Bob off"
+        );
 
-    #[dialog_common::test]
-    async fn it_rejects_a_known_revoked_cid_even_during_an_outage() {
-        let source = ScriptedSource(Mutex::new(Err(SourceError("outage".into()))));
-        let mut snapshot = RevocationSnapshot::default();
-        snapshot.revoked.insert("revoked".into());
-        assert_eq!(
-            assess_with(&mut snapshot, &source, &["revoked".into()], u64::MAX).await,
-            SetVerdict::Revoked
+        // Alice's own chain never named Bob's hop, so none of this touched
+        // her access.
+        assert!(
+            accepted(&revocations, &alices_container).await.unwrap(),
+            "revoking Bob's hop must leave Alice's chain alone"
         );
     }
 
+    /// Authority to revoke flows downward, and only downward.
+    ///
+    /// The revocation spec's pseudocode computes one `delegators` set for
+    /// the whole chain, which applied uniformly lets a principal revoke
+    /// the grant it depends on: for `space -> profile -> bob`, Bob could
+    /// withdraw the hop that gave the profile anything at all. Dialog
+    /// scopes the candidates per link instead, so Bob is not a candidate
+    /// when the hop above him is checked.
+    ///
+    /// Pinned because a flat screen passes every other test here and
+    /// fails only this one.
     #[dialog_common::test]
-    async fn it_serves_a_complete_stale_set_inside_the_grace_window() {
-        let source = ScriptedSource(Mutex::new(Err(SourceError("outage".into()))));
-        let mut snapshot = RevocationSnapshot {
-            refreshed_at_ms: Some(1),
-            ..Default::default()
+    async fn it_refuses_to_let_a_recipient_revoke_the_grant_above_it() {
+        let space = signer(80).await;
+        let profile = signer(81).await;
+        let bob = signer(82).await;
+
+        let hop = async |issuer: &Ed25519Signer, audience: &Ed25519Signer| {
+            DelegationBuilder::new()
+                .issuer(Signer::from(issuer.clone()))
+                .audience(&audience.did())
+                .subject(UcanSubject::Specific(space.did()))
+                .command(vec![])
+                .try_build()
+                .await
+                .expect("a delegation")
         };
-        assert!(matches!(
-            assess_with(
-                &mut snapshot,
-                &source,
-                &["clean".into()],
-                REVOCATION_TTL_MS + 2
-            )
-            .await,
-            SetVerdict::AllowedStale(_)
-        ));
+
+        let root = hop(&space, &profile).await;
+        let to_bob = hop(&profile, &bob).await;
+        let chain = DelegationChain::new(root.clone())
+            .push(to_bob)
+            .expect("the hops connect");
+        let container = present(&chain, &bob, &space).await;
+
+        // Bob names the ROOT hop, which he received authority through but
+        // was never a party to.
+        let revocations = MemoryRevocationIndex::default();
+        revocations
+            .record(&root.to_cid().to_string(), bob.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            accepted(&revocations, &container).await.unwrap(),
+            "a recipient must not revoke the grant its own authority rests on"
+        );
+
+        // The space issued that hop, so its revocation does bite. Same
+        // target, same chain, different revoker.
+        revocations
+            .record(&root.to_cid().to_string(), space.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            !accepted(&revocations, &container).await.unwrap(),
+            "the issuer of the root hop must be able to withdraw it"
+        );
     }
 
+    /// A recipient may always disclaim what it was given.
+    ///
+    /// The mirror of the rule above: Bob cannot revoke the hop his
+    /// authority rests on, but he can revoke the hop naming him, because
+    /// its audience is entitled to hand it back.
     #[dialog_common::test]
-    async fn it_fails_closed_without_a_complete_set_past_grace() {
-        let source = ScriptedSource(Mutex::new(Err(SourceError("outage".into()))));
-        let mut snapshot = RevocationSnapshot {
-            refreshed_at_ms: Some(1),
-            ..Default::default()
-        };
-        assert!(matches!(
-            assess_with(
-                &mut snapshot,
-                &source,
-                &["clean".into()],
-                REVOCATION_TTL_MS + REVOCATION_GRACE_MS + 2
-            )
-            .await,
-            SetVerdict::Unavailable(_)
-        ));
+    async fn it_lets_an_audience_disclaim_its_own_grant() {
+        let space = signer(90).await;
+        let bob = signer(91).await;
+
+        let to_bob = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&bob.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .expect("a delegation");
+        let chain = DelegationChain::new(to_bob.clone());
+        let container = present(&chain, &bob, &space).await;
+
+        let revocations = MemoryRevocationIndex::default();
+        assert!(
+            accepted(&revocations, &container).await.unwrap(),
+            "the chain must verify before anything is revoked"
+        );
+
+        revocations
+            .record(&to_bob.to_cid().to_string(), bob.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            !accepted(&revocations, &container).await.unwrap(),
+            "the audience of a grant may withdraw it"
+        );
+    }
+
+    /// A session is revocable, on its own and through the hop above it.
+    ///
+    /// This is the shape `tonk-worker`'s `session::open` actually mints:
+    /// a `space -> profile` powerline, then a bounded `profile ->
+    /// operator` hop with `Subject::Any`, which the operator presents
+    /// for twelve hours. The session hop is registered nowhere — it is
+    /// derived offline and known only by its CID in the chain it travels
+    /// in — so it is worth pinning that revocation reaches it at all.
+    ///
+    /// Both directions hold. The profile that issued the hop can
+    /// withdraw that one session without disturbing its others, and
+    /// withdrawing the powerline severs every session descended from it.
+    #[dialog_common::test]
+    async fn it_revokes_a_session_on_its_own_or_through_the_hop_above_it() {
+        let space = signer(150).await;
+        let profile = signer(151).await;
+        let operator = signer(152).await;
+
+        let powerline = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&profile.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .expect("a powerline");
+        let session_hop = DelegationBuilder::new()
+            .issuer(Signer::from(profile.clone()))
+            .audience(&operator.did())
+            .subject(UcanSubject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .expect("a session hop");
+        let chain = DelegationChain::new(powerline.clone())
+            .push(session_hop.clone())
+            .expect("the hops connect");
+        let container = present(&chain, &operator, &space).await;
+
+        assert!(
+            accepted(&MemoryRevocationIndex::default(), &container)
+                .await
+                .unwrap(),
+            "the session must work before anything is revoked"
+        );
+
+        // The issuing profile withdraws this one session.
+        let by_profile = MemoryRevocationIndex::default();
+        by_profile
+            .record(&session_hop.to_cid().to_string(), profile.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            !accepted(&by_profile, &container).await.unwrap(),
+            "a profile must be able to withdraw a session it minted"
+        );
+
+        // And withdrawing the powerline takes every session with it.
+        let by_space = MemoryRevocationIndex::default();
+        by_space
+            .record(&powerline.to_cid().to_string(), space.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            !accepted(&by_space, &container).await.unwrap(),
+            "revoking the hop a session rests on must sever it"
+        );
+    }
+
+    /// Revoking a hop the chain never presents leaves it alone.
+    #[dialog_common::test]
+    async fn it_passes_a_chain_nothing_it_presents_was_revoked_in() {
+        let space = signer(100).await;
+        let bob = signer(101).await;
+
+        let to_bob = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&bob.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .expect("a delegation");
+        let chain = DelegationChain::new(to_bob);
+        let container = present(&chain, &bob, &space).await;
+
+        let revocations = MemoryRevocationIndex::default();
+        revocations
+            .record("bafySomethingElse", space.did().as_ref())
+            .await
+            .expect("recorded");
+        assert!(
+            accepted(&revocations, &container).await.unwrap(),
+            "a revocation naming a hop this chain never presents must not bite"
+        );
     }
 }

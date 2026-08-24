@@ -504,8 +504,6 @@ mod when_recording_roster_facts {
                 subject: Term::var("subject"),
                 inviter: Term::var("inviter"),
                 audience: Term::var("audience"),
-                target_cid: Term::var("target_cid"),
-                path_hex: Term::var("path_hex"),
             })
             .perform(&inviter.site.operator)
             .try_vec()
@@ -1333,8 +1331,6 @@ mod when_mounting_account_authority {
                 subject: Term::var("subject"),
                 inviter: Term::var("inviter"),
                 audience: Term::var("audience"),
-                target_cid: Term::var("target_cid"),
-                path_hex: Term::var("path_hex"),
             })
             .perform(&mounted.operator)
             .try_vec()

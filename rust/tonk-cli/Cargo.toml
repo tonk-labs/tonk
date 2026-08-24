@@ -31,6 +31,10 @@ name = "site"
 path = "tests/site.rs"
 
 [[test]]
+name = "invite_revocation"
+path = "tests/invite_revocation.rs"
+
+[[test]]
 name = "notation"
 path = "tests/notation.rs"
 

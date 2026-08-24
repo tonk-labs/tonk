@@ -402,7 +402,14 @@ async fn it_rejects_an_expired_invocation() {
     assert_eq!(response.status(), 401);
     let error: serde_json::Value = response.json().await.unwrap();
     assert_eq!(error["error"]["code"], "UNAUTHORIZED");
-    assert_eq!(error["error"]["message"], "invocation has expired");
+    // Expiry is dialog's finding now, judged against the verification
+    // context's clock rather than a bound compared here, so the wording is
+    // theirs. The refusal and its code are what this pins.
+    let message = error["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.to_lowercase().contains("expired"),
+        "expected an expiry refusal, got: {message}"
+    );
 
     server.stop().await;
 }
@@ -745,21 +752,6 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(revoked["targetDid"], second_did);
     assert_eq!(revoked["targetCid"], second_grant_cid);
     assert_eq!(revoked["published"], true);
-
-    // The unauthenticated global endpoint verifies the same artifact and
-    // treats an identical publication as idempotent.
-    let response = client
-        .post(format!("{base}/revocations"))
-        .header("Content-Type", "application/cbor")
-        .body(revocation.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 202);
-    let published: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(published["targetCid"], second_grant_cid);
-    assert_eq!(published["artifactCid"], revoked["artifactCid"]);
-    assert_eq!(published["stored"], false);
 
     let body = container_with_link(
         &device,

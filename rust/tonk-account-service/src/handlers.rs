@@ -12,8 +12,6 @@ pub mod codes;
 pub mod devices;
 #[cfg(target_arch = "wasm32")]
 pub mod repository;
-#[cfg(target_arch = "wasm32")]
-pub mod revocations;
 
 /// Add CORS headers permitting cross-origin requests to a response.
 #[cfg(target_arch = "wasm32")]
@@ -86,18 +84,6 @@ pub fn build_store(
         crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
     })?;
     Ok(crate::store::d1::D1Store::new(db))
-}
-
-/// Build the immutable revocation writer from the `REVOCATIONS` binding.
-#[cfg(target_arch = "wasm32")]
-pub fn build_revocations(
-    ctx: &worker::RouteContext<()>,
-) -> std::result::Result<crate::revocations::r2::R2RevocationStore, crate::error::ServiceError> {
-    let bucket = ctx.bucket("REVOCATIONS").map_err(|err| {
-        worker::console_error!("missing REVOCATIONS binding: {err}");
-        crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
-    })?;
-    Ok(crate::revocations::r2::R2RevocationStore::new(bucket))
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]

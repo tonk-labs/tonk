@@ -1,6 +1,6 @@
 #![warn(missing_docs)]
-//! Account service: verified email → root DID, device registry, and
-//! revocations for tonk accounts.
+//! Account service: verified email → root DID and device registry for
+//! tonk accounts.
 //!
 //! Authentication is UCAN invocation containers signed by a device key
 //! with the `root → device` chain attached; the invocation subject is
@@ -17,7 +17,6 @@ pub mod error;
 mod handlers;
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod helpers;
-pub mod revocations;
 pub mod store;
 
 /// Worker entrypoint: the full HTTP surface, backed by D1, R2, and
@@ -38,8 +37,6 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/account/summary", handlers::accounts::handle_options)
         .post_async("/account/delete", handlers::accounts::handle_delete)
         .options_async("/account/delete", handlers::accounts::handle_options)
-        .post_async("/revocations", handlers::revocations::handle)
-        .options_async("/revocations", handlers::revocations::handle_options)
         .post_async(
             "/account/repository/establish",
             handlers::repository::handle,

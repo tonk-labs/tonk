@@ -6,9 +6,9 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::Invitation;
-use crate::domain::invitation_execution::{Kind, RevocationUrl};
+use crate::domain::invitation_execution::Kind;
 
-/// Revocation-routing metadata stored beside an [`Invitation`].
+/// Audience metadata stored beside an [`Invitation`].
 ///
 /// `this` is exactly the invitation entity, so old invitation records remain
 /// readable and the companion can be joined without a second identifier.
@@ -18,17 +18,14 @@ pub struct InvitationExecution {
     pub this: Entity,
     /// Stable audience mode: `open` or `scoped`.
     pub kind: Kind,
-    /// Explicit immutable-artifact relay.
-    pub revocation_url: RevocationUrl,
 }
 
 impl InvitationExecution {
     /// Build execution metadata for an invitation.
-    pub fn new(invitation: &Invitation, kind: impl Into<String>, revocation_url: &str) -> Self {
+    pub fn new(invitation: &Invitation, kind: impl Into<String>) -> Self {
         Self {
             this: invitation.this.clone(),
             kind: Kind(kind.into()),
-            revocation_url: RevocationUrl(revocation_url.to_owned()),
         }
     }
 }

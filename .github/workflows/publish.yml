@@ -173,23 +173,55 @@ jobs:
             fi
             echo "$id"
           }
+          # The revocation index, resolved the same way. The presign path
+          # fails CLOSED without this binding — an index it cannot read says
+          # nothing about what was revoked — so an unsubstituted placeholder
+          # would refuse every request rather than degrade quietly.
+          resolve_kv() {
+            namespace="$1"
+            # `kv namespace list` emits JSON on stdout but takes no --json
+            # flag, unlike `d1 list`. Strip anything ahead of the array so a
+            # banner line cannot break the parse.
+            lookup() {
+              nix --accept-flake-config develop .#ci --command \
+                wrangler kv namespace list 2>/dev/null \
+                | sed -n '/^[[:space:]]*\[/,$p' \
+                | jq -r --arg title "$1" '.[] | select(.title == $title) | .id' \
+                | head -n 1
+            }
+            id="$(lookup "$namespace")"
+            if [ -z "$id" ]; then
+              nix --accept-flake-config develop .#ci --command \
+                wrangler kv namespace create "$namespace" >&2
+              id="$(lookup "$namespace")"
+            fi
+            if [ -z "$id" ]; then
+              echo "::error::Could not resolve the KV namespace id for $namespace" >&2
+              exit 1
+            fi
+            echo "$id"
+          }
           control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
+          revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control")"
           ingest_id="$(resolve "$ingest")"
+          revocations_id="$(resolve_kv "$revocations")"
           cp wrangler.toml "$config"
           sed -i \
             -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$control\"/" \
             -e "s/database_id = \"REPLACED-PER-PULL-REQUEST\"/database_id = \"$control_id\"/" \
             -e "s/database_name = \"tonk-access-ingest-preview\"/database_name = \"$ingest\"/" \
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
+            -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             "$config"
           if ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
-            || ! grep -Fq "database_id = \"$ingest_id\"" "$config"; then
-            echo "::error::Could not bind the access preview config to $control/$ingest"
+            || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
+            || ! grep -Fq "id = \"$revocations_id\"" "$config"; then
+            echo "::error::Could not bind the access preview config to $control/$ingest/$revocations"
             exit 1
           fi
           echo "database=$control" >> "$GITHUB_OUTPUT"
@@ -214,10 +246,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # The two service URLs are the only configuration that cannot be checked
-      # in, because an alias URL exists only once its upload returns. Command
-      # line vars merge over the environment's, so the rest of `[env.preview]`
-      # still applies.
+      # The account service URL is the only configuration that cannot be
+      # checked in, because an alias URL exists only once its upload returns.
+      # Command line vars merge over the environment's, so the rest of
+      # `[env.preview]` still applies.
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
@@ -230,8 +262,7 @@ jobs:
             wrangler versions upload --env preview \
               -c "${{ steps.access-database.outputs.config }}" \
               --preview-alias "$preview_alias" \
-              --var "ACCOUNT_SERVICE_URL:$account" \
-              --var "REVOCATION_RELAY_URL:$account/revocations" 2>&1 | tee "$log"
+              --var "ACCOUNT_SERVICE_URL:$account" 2>&1 | tee "$log"
           url="$(grep -Eo "https://$preview_alias-tonk-access-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
             echo "::error::wrangler printed no preview alias URL for the access worker"

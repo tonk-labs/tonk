@@ -1,4 +1,9 @@
-//! Revoke a recorded invitation through its configured global relay.
+//! Revoke a recorded invitation at the space's own access service.
+//!
+//! The artifact is an ordinary `ucan/revoke` invocation, so it goes to
+//! the same `/ucan/` endpoint every other invocation does: the access
+//! service records it in the index its presign path already screens
+//! against. There is no separate relay to configure or to miss.
 
 use axum::{
     Json,
@@ -6,21 +11,161 @@ use axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
+use dialog_repository::RepositoryExt as _;
+use dialog_ucan::{Parameters, Scope, UcanDelegation};
+use dialog_ucan_core::DelegationChain;
+use dialog_ucan_core::command::Command;
+use dialog_ucan_core::subject::Subject as UcanSubject;
+use dialog_varsig::Did;
 use ipld_core::cid::Cid;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_account::customer::RevokeReceipt;
+use tonk_common::log;
 use tonk_schema::{Invitation, InvitationExecution};
-use tonk_worker_api::{InvitationKind, InvitationSummary, RevokeInvitationAcknowledgement};
+use tonk_worker_api::{InvitationKind, InvitationSummary};
 
 use super::AppState;
-use crate::TonkWorkerError;
+use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
+use crate::{TonkState, TonkWorkerError};
+
+/// The scope a space-wide invite covers: the whole command tree on one
+/// subject. Invites are minted from an unattenuated claim, so a narrower
+/// scope here would fail to match the chain that was actually issued.
+fn space_scope(subject: &Did) -> Scope {
+    Scope {
+        subject: UcanSubject::Specific(subject.clone()),
+        command: Command::parse("/").expect("the root command always parses"),
+        parameters: Parameters::default(),
+    }
+}
+
+/// Rebuild the delegation path that reaches `audience`, from the delegation
+/// facts retained on the repository's content branch.
+///
+/// This replaces reading a hex blob off the invitation record. The facts are
+/// the authoritative copy: `prove` walks them from the claimant back toward
+/// the subject, so the chain it returns is the real path as it stands now,
+/// not a snapshot taken at mint time. Proving as the invite's AUDIENCE (not
+/// as this profile, and not as the account) is what makes the invite hop the
+/// chain's last link, and the revocation witness has to contain that hop.
+async fn prove_path(
+    branch: &dialog_repository::Branch,
+    tonk: &TonkState,
+    subject: &Did,
+    audience: &Did,
+) -> Result<DelegationChain, TonkWorkerError> {
+    let proof = branch
+        .delegations()
+        .prove(audience.clone(), space_scope(subject))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::NotFound(format!(
+                "no retained delegation path reaches {audience}: {error}"
+            ))
+        })?;
+    let mut certificates = proof.proofs.into_iter();
+    let first = certificates
+        .next()
+        .ok_or_else(|| TonkWorkerError::NotFound(format!("the proof for {audience} is empty")))?;
+    let mut chain = DelegationChain::new(first.0);
+    for certificate in certificates {
+        chain = chain.push(certificate.0).map_err(|error| {
+            TonkWorkerError::Internal(format!("proved certificates do not chain: {error}"))
+        })?;
+    }
+    Ok(chain)
+}
+
+/// The revocation target a proved path names: its leaf, the hop into the
+/// invite's audience.
+fn leaf_cid(path: &DelegationChain) -> Result<Cid, TonkWorkerError> {
+    path.proof_cids()
+        .last()
+        .copied()
+        .ok_or_else(|| TonkWorkerError::Internal("a proved path has no leaf".to_string()))
+}
+
+/// Every recorded invitation on `branch`, each paired with the delegation
+/// path that currently reaches its audience and the CID of that path's leaf.
+///
+/// An invitation whose path can no longer be proved is dropped: that is what
+/// a revoked or never-retained invite looks like from here, and neither is
+/// listable or revocable.
+async fn proved_invitations(
+    branch: &dialog_repository::Branch,
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<Vec<(Invitation, DelegationChain, Cid)>, TonkWorkerError> {
+    let invitations: Vec<Invitation> = branch
+        .query()
+        .select(Query::<Invitation> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            inviter: Term::var("inviter"),
+            audience: Term::var("audience"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("invitation query failed: {error:?}"))
+        })?;
+
+    let mut proved = Vec::new();
+    for invitation in invitations {
+        let Ok(audience) = invitation.audience.0.to_string().parse::<Did>() else {
+            log!(
+                "invitation {} has an unparseable audience; skipping",
+                invitation.this
+            );
+            continue;
+        };
+        // Two cases land here and they are not the same: an invite that was
+        // revoked (its leaf is retracted, so it should disappear) and one
+        // minted before chains were retained (nothing was ever written, so it
+        // disappears without having been revoked). Neither is actionable from
+        // here, but they are worth telling apart in a log.
+        let Ok(path) = prove_path(branch, tonk, subject, &audience).await else {
+            log!(
+                "invitation {} has no provable path to {audience}; \
+                 it was revoked, or minted before its chain was retained",
+                invitation.this
+            );
+            continue;
+        };
+        let cid = leaf_cid(&path)?;
+        proved.push((invitation, path, cid));
+    }
+    Ok(proved)
+}
+
+/// The recorded invitation and proved path whose leaf is `target`.
+async fn resolve_target(
+    branch: &dialog_repository::Branch,
+    tonk: &TonkState,
+    subject: &Did,
+    target: &Cid,
+) -> Result<(DelegationChain, Invitation), TonkWorkerError> {
+    proved_invitations(branch, tonk, subject)
+        .await?
+        .into_iter()
+        .find(|(_, _, cid)| cid == target)
+        .map(|(invitation, path, _)| (path, invitation))
+        .ok_or_else(|| {
+            TonkWorkerError::NotFound(
+                "the target CID is not a live invitation for this repository".to_string(),
+            )
+        })
+}
 
 /// Revoke only an invitation path recorded in the named repository.
 #[wasm_compat]
 pub async fn revoke(
     State(state): State<AppState>,
     Path((repo, target_cid)): Path<(String, String)>,
-) -> Result<Json<RevokeInvitationAcknowledgement>, TonkWorkerError> {
+) -> Result<Json<RevokeReceipt>, TonkWorkerError> {
     let target: Cid = target_cid
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid target CID: {error}")))?;
@@ -32,92 +177,153 @@ pub async fn revoke(
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
-    let invitations: Vec<Invitation> = session
-        .handle()
-        .query()
-        .select(Query::<Invitation> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            inviter: Term::var("inviter"),
-            audience: Term::var("audience"),
-            target_cid: Term::var("target_cid"),
-            path_hex: Term::var("path_hex"),
-        })
+    // The subject comes from the repository rather than off the stored
+    // path: an invite is scoped to the space, so the space's own DID is
+    // what a proof search has to aim at.
+    let repository = tonk
+        .profile
+        .repository(&repo)
+        .load()
         .perform(&tonk.operator)
-        .try_vec()
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("invitation query failed: {error:?}"))
+            TonkWorkerError::NotFound(format!("repository '{repo}' not found: {error}"))
         })?;
-    let invitation = invitations
-        .into_iter()
-        .find(|invitation| invitation.target_cid.0 == target_cid)
-        .ok_or_else(|| {
-            TonkWorkerError::NotFound(
-                "the target CID is not a recorded invitation for this repository".to_string(),
-            )
-        })?;
-    let executions: Vec<InvitationExecution> = session
-        .handle()
-        .query()
-        .select(Query::<InvitationExecution> {
-            this: Term::var("this"),
-            kind: Term::var("kind"),
-            revocation_url: Term::var("revocation_url"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
+    let subject = repository.did();
+
+    // The target names a hop, and the hop is reachable only by proving as
+    // the principal it lands on. So resolve the recorded invitation whose
+    // audience the target belongs to, rather than searching the facts for a
+    // CID they do not carry (the facts are keyed by the blob store's blake3
+    // of the envelope, while a UCAN CID is dag-cbor/sha2-256).
+    let (path, invitation) = resolve_target(session.handle(), &tonk, &subject, &target).await?;
+
+    // The revocation's subject is the space, but this device signs it,
+    // so the invocation has to carry the delegation that proves the
+    // device may act for that subject. The old relay verified the
+    // artifact standalone and never asked; `/ucan/` runs the full chain
+    // check on every invocation before dispatch, and refuses a subject
+    // the presented proofs do not authorize.
+    //
+    // The space-root prefix is persisted by the browser at creation, so
+    // it is only reachable there. Native builds carry this handler for
+    // the router's shape, not to run it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let artifact = {
+        // The stored prefix runs space to account root, so on its own it
+        // authorizes the root rather than this device. Extend it with
+        // the root to device grant, which is the same pair every other
+        // invocation on a space subject presents.
+        let prefix = super::repository::space_root_prefix(&tonk, &subject).await?;
+        let root = super::identity::local_root(&tonk).await?;
+        let mut authority = prefix;
+        for delegation in root.delegation.proofs() {
+            authority = authority.push(delegation.clone()).map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "space authority and device grant do not chain: {error}"
+                ))
+            })?;
+        }
+        tonk_identity::revocation::mint_delegated_revocation(
+            tonk.profile.signer().signer().clone(),
+            &path,
+            &target,
+            &authority,
+        )
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("invitation execution query failed: {error:?}"))
-        })?;
-    let execution = executions
-        .into_iter()
-        .find(|execution| execution.this == invitation.this)
-        .ok_or_else(|| {
-            TonkWorkerError::Conflict(
-                "this legacy invitation has no revocation relay; configure an explicit relay and mint a new invitation"
-                    .to_string(),
-            )
-        })?;
-    let bytes = hex::decode(&invitation.path_hex.0).map_err(|error| {
-        TonkWorkerError::Internal(format!("stored invitation path is invalid: {error}"))
-    })?;
-    let path = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
-        TonkWorkerError::Internal(format!("stored invitation path is invalid: {error}"))
-    })?;
-    let artifact = tonk_identity::revocation::mint_root_revocation(
-        tonk.profile.signer().signer().clone(),
-        &path,
-        &target,
-    )
-    .await
-    .map_err(|error| {
-        TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
-    })?;
+            TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
+        })?
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let artifact = {
+        let _ = &subject;
+        tonk_identity::revocation::mint_root_revocation(
+            tonk.profile.signer().signer().clone(),
+            &path,
+            &target,
+        )
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
+        })?
+    };
     tonk_identity::revocation::verify(&artifact)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("revocation preflight failed: {error}"))
         })?;
-    let relay = url::Url::parse(&execution.revocation_url.0)
-        .map_err(|error| TonkWorkerError::Internal(format!("invalid revocation relay: {error}")))?;
-    let response = super::http::post_cbor(&relay, &artifact).await?;
-    let acknowledgement: RevokeInvitationAcknowledgement = serde_json::from_slice(&response.body)
-        .map_err(|error| {
+    // The revocation belongs at the access service the space actually
+    // syncs through, which is the remote `main` tracks.
+    let endpoint = match resolve_configured_remote_url_with(&repository, &tonk.operator).await? {
+        ConfiguredRemoteRequirement::Ready(remote) => remote.access_url,
+        ConfiguredRemoteRequirement::Refused(reason) => {
+            return Err(TonkWorkerError::Conflict(format!(
+                "cannot revoke an invitation to '{repo}': {} ({})",
+                reason.detail(),
+                reason.code()
+            )));
+        }
+    };
+    let response = super::http::post_cbor(&endpoint, &artifact).await?;
+    let receipt: RevokeReceipt = serde_json::from_slice(&response.body).map_err(|error| {
         TonkWorkerError::Internal(format!(
-            "revocation relay returned an invalid acknowledgement: {error}"
+            "the access service returned an unreadable revoke receipt: {error}"
         ))
     })?;
-    if acknowledgement.target_cid != target_cid {
+    if receipt.revoked != target {
         return Err(TonkWorkerError::Internal(
-            "revocation relay acknowledged a different invitation".to_string(),
+            "the access service acknowledged a different invitation".to_string(),
         ));
     }
-    Ok(Json(acknowledgement))
+
+    // Only the leaf. `path` runs space -> ... -> device -> invitee, and every
+    // other invite (and this device's everyday access) proves through that
+    // same prefix. Retracting the whole path would pull the profile-to-account
+    // union and the space-to-profile hop out from under all of them, revoking
+    // far more than the one invite that was asked for.
+    let leaf = path
+        .proofs()
+        .last()
+        .cloned()
+        .ok_or_else(|| TonkWorkerError::Internal("a proved path has no leaf".to_string()))?;
+    if let Err(error) = session
+        .handle()
+        .delegations()
+        .retract(UcanDelegation(DelegationChain::new(leaf)))
+        .perform(&tonk.operator)
+        .await
+    {
+        // The revocation is already durable at the access service, which is
+        // what actually denies the invitee. Failing to drop the local facts
+        // leaves a revoked hop listed, not a live one.
+        log!("revoked invitation was not retracted locally: {error}");
+    }
+    // The record is what `list` enumerates, so it goes with the hop it
+    // described.
+    if let Err(error) = tonk
+        .reactor
+        .repository(&repo)
+        .branch("main")
+        .transaction()
+        .retract(invitation)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("revoked invitation record was not retracted: {error}");
+    }
+
+    Ok(Json(receipt))
 }
 
 /// List secret-free invitation management rows for one repository.
+///
+/// The target CID a row reports is not stored: it is the leaf of the
+/// delegation path proved from the invitation's audience, computed the same
+/// way [`revoke`] resolves the target it is handed. Deriving both from one
+/// walk is what keeps a listed CID revocable, rather than being a stale
+/// mint-time snapshot the live facts no longer agree with.
 #[wasm_compat]
 pub async fn list(
     State(state): State<AppState>,
@@ -131,30 +337,23 @@ pub async fn list(
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
-    let invitations: Vec<Invitation> = session
-        .handle()
-        .query()
-        .select(Query::<Invitation> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            inviter: Term::var("inviter"),
-            audience: Term::var("audience"),
-            target_cid: Term::var("target_cid"),
-            path_hex: Term::var("path_hex"),
-        })
+    let repository = tonk
+        .profile
+        .repository(&repo)
+        .load()
         .perform(&tonk.operator)
-        .try_vec()
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("invitation query failed: {error:?}"))
+            TonkWorkerError::NotFound(format!("repository '{repo}' not found: {error}"))
         })?;
+    let subject = repository.did();
+
     let executions: Vec<InvitationExecution> = session
         .handle()
         .query()
         .select(Query::<InvitationExecution> {
             this: Term::var("this"),
             kind: Term::var("kind"),
-            revocation_url: Term::var("revocation_url"),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -163,9 +362,10 @@ pub async fn list(
             TonkWorkerError::Internal(format!("invitation execution query failed: {error:?}"))
         })?;
 
-    let mut rows = invitations
+    let mut rows = proved_invitations(session.handle(), &tonk, &subject)
+        .await?
         .into_iter()
-        .map(|invitation| {
+        .map(|(invitation, _, target)| {
             let execution = executions
                 .iter()
                 .find(|execution| execution.this == invitation.this);
@@ -178,7 +378,7 @@ pub async fn list(
                 .then(|| invitation.audience.0.to_string().parse().ok())
                 .flatten();
             InvitationSummary {
-                target_cid: invitation.target_cid.0,
+                target_cid: target.to_string(),
                 kind,
                 recipient_root,
                 status: if execution.is_some() {

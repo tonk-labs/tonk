@@ -531,3 +531,49 @@ async fn list_hydrates_a_linked_but_unhydrated_profile(env: AccessServiceAddress
     );
     Ok(())
 }
+
+/// The endpoints a revocation must reach: one per distinct access
+/// service, not one per space.
+///
+/// A device grant is a powerline, so revoking a device has to be told to
+/// every service that could still honour it. Several spaces usually
+/// share one service, and telling it repeatedly is wasted work — while
+/// missing one leaves the revoked device serving that space.
+#[tokio::test]
+async fn access_endpoints_are_distinct_across_spaces() -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+
+    // Two spaces on one service, a third on another.
+    fixture
+        .record_directory_space(91, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
+        .await?;
+    fixture
+        .record_directory_space(92, Some("orchard"), Some("http://127.0.0.1:9/ucan/"))
+        .await?;
+    fixture
+        .record_directory_space(93, Some("meadow"), Some("http://127.0.0.1:10/ucan/"))
+        .await?;
+    // And a local-only space, which records no remote row at all.
+    fixture
+        .record_directory_space(94, Some("shed"), None)
+        .await?;
+
+    let account = fixture.account_branch().await?;
+    let operator = fixture.operator().await?;
+    let endpoints = tonk_schema::directory::access_endpoints(&account, &operator).await?;
+
+    let found: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+    assert_eq!(
+        found,
+        vec!["http://127.0.0.1:10/ucan/", "http://127.0.0.1:9/ucan/"],
+        "each service must appear once, and a space with no remote must add nothing"
+    );
+
+    // Note: this pins deduplication and the no-remote case. Whether a
+    // non-UCAN remote is skipped is not exercised here, because the
+    // fixture only records UCAN addresses; that a revocation actually
+    // reaches every service is pinned end to end by
+    // `it_denies_a_revoked_device_at_every_service_it_reaches`.
+
+    Ok(())
+}

@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use dialog_credentials::DidKeyResolver;
 use dialog_ucan_core::InvocationChain;
 use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::revocation::UnverifiedRevocations;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
+use dialog_ucan_core::verification::{Environment, VerificationContext};
 use dialog_varsig::AnySignature;
 
 use crate::core::CeremonyError;
@@ -44,9 +46,16 @@ async fn verified_chain(
     let chain = InvocationChain::try_from(body)
         .map_err(|err| CeremonyError::Invalid(format!("bad invocation container: {err}")))?;
 
-    chain.verify(&DidKeyResolver).await.map_err(|err| {
-        CeremonyError::Unauthorized(format!("invocation failed to verify: {err}"))
-    })?;
+    chain
+        .verify(&VerificationContext::new(&Environment::new(
+            chain.proof_store(),
+            DidKeyResolver,
+            UnverifiedRevocations,
+        )))
+        .await
+        .map_err(|err| {
+            CeremonyError::Unauthorized(format!("invocation failed to verify: {err}"))
+        })?;
 
     let command_segments: Vec<&str> = chain.command().0.iter().map(String::as_str).collect();
     if command_segments.as_slice() != expected_command {
@@ -627,7 +636,12 @@ mod tests {
 
         match authorize(&store, &bytes, &["account", "device", "list"]).await {
             Err(CeremonyError::Unauthorized(msg)) => {
-                assert!(msg.contains("has expired"), "unexpected message: {msg}");
+                // Expiry is dialog's finding now, judged against the
+                // context's clock rather than a bound we compared here.
+                assert!(
+                    msg.to_lowercase().contains("expired"),
+                    "unexpected message: {msg}"
+                );
             }
             Err(other) => panic!("expected Unauthorized, got a different error: {other:?}"),
             Ok(_) => panic!("expected Unauthorized, got Ok"),

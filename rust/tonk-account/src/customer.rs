@@ -144,6 +144,59 @@ impl Effect for Remove {
     type Output = Result<(), RegistrationError>;
 }
 
+/// Ability segment `/ucan`: acts defined by the UCAN specification
+/// itself rather than by this service's roles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ucan;
+
+impl Attenuation for Ucan {
+    type Of = Subject;
+}
+
+/// `/ucan/revoke` — withdraw a delegation, per the
+/// [UCAN revocation spec](https://github.com/ucan-wg/revocation).
+///
+/// The subject is the principal whose authority is being exercised, and
+/// it is what a validator matches against the issuers of a presented
+/// chain. The invocation's issuer may differ, when revocation authority
+/// was itself delegated.
+///
+/// Argument names are the spec's IPLD schema (`rev`, `pth`), not the
+/// longer forms its prose uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Attenuate)]
+pub struct Revoke {
+    /// The delegation being withdrawn, by canonical CID.
+    #[serde(rename = "rev")]
+    pub revoke: Cid,
+    /// The delegation path witnessing that the subject may revoke the
+    /// target: root through target, each named by CID and carried as a
+    /// block in the same container.
+    ///
+    /// The spec makes this optional, and names the reason to require it:
+    /// storing revocations nobody was entitled to issue is a denial of
+    /// service vector.
+    #[serde(rename = "pth")]
+    pub path: Vec<Cid>,
+}
+
+impl Effect for Revoke {
+    type Of = Ucan;
+    type Output = Result<RevokeReceipt, RegistrationError>;
+}
+
+/// The successful answer to a `/ucan/revoke` invocation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevokeReceipt {
+    /// The delegation now recorded as revoked.
+    pub revoked: Cid,
+    /// The principal whose authority withdrew it.
+    pub subject: Did,
+    /// Whether this call recorded the revocation, as against finding it
+    /// already present. Revocation is idempotent, so a replay answers
+    /// success either way.
+    pub recorded: bool,
+}
+
 /// Ability segment `/consumer`: acts a space takes on its own behalf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Consumer;
@@ -244,6 +297,12 @@ pub enum RegistrationError {
     /// The consumer already has a different provider.
     #[error("this consumer already has a provider")]
     ConsumerProvided,
+    /// The subject is not a consumer this service holds anything for, so
+    /// a revocation about it would guard nothing. Distinct from an
+    /// unactivated customer: that one has data here and may still
+    /// revoke.
+    #[error("this subject is not a registered consumer")]
+    UnknownConsumer,
     /// The customer is already active, so enrollment is refused.
     #[error("this customer is already active")]
     CustomerActive,
@@ -271,6 +330,7 @@ impl RegistrationError {
             RegistrationError::Unauthorized { .. } => 401,
             RegistrationError::Forbidden { .. } => 403,
             RegistrationError::UnknownCustomer => 404,
+            RegistrationError::UnknownConsumer => 404,
             RegistrationError::CustomerActive
             | RegistrationError::CustomerInactive
             | RegistrationError::CustomerSuspended
@@ -310,6 +370,14 @@ mod tests {
             kind: None,
         });
         assert_eq!(add.ability(), "/provider/add");
+
+        // The spec's own command, so it is `/ucan/revoke` rather than
+        // one of this service's roles.
+        let revoke: Capability<Revoke> = subject().attenuate(Ucan).invoke(Revoke {
+            revoke: Cid::default(),
+            path: vec![Cid::default()],
+        });
+        assert_eq!(revoke.ability(), "/ucan/revoke");
 
         let provision: Capability<Provision> = subject().attenuate(Consumer).invoke(Provision);
         assert_eq!(provision.ability(), "/consumer/provision");

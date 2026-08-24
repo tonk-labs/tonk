@@ -207,7 +207,6 @@
                 tail -f "$ACCOUNT_LOG" | grep --line-buffered "ACCOUNT_VERIFICATION_CODE" &
                 echo "dev:web: local account service ready at $ACCOUNT_ORIGIN"
                 export ACCOUNT_SERVICE_URL="$ACCOUNT_ORIGIN"
-                export REVOCATION_RELAY_URL="$ACCOUNT_ORIGIN/revocations"
               fi
               if [ -n "''${UCAN_ENDPOINT:-}" ]; then
                 ENDPOINT="$UCAN_ENDPOINT"

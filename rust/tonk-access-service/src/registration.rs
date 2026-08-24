@@ -40,6 +40,7 @@ use tonk_account::customer::{
 
 use crate::email::EmailSender;
 use crate::store::{SIGNUP_PLAN, Store, StoreError};
+use dialog_ucan_core::{Environment, UnverifiedRevocations, VerificationContext};
 
 /// The command path segments of [`Enroll`], as they appear in an
 /// invocation. Pinned to the capability-derived ability by a test.
@@ -465,7 +466,11 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             }
         })?;
         chain
-            .verify(&DidKeyResolver)
+            .verify(&VerificationContext::new(&Environment::new(
+                chain.proof_store(),
+                DidKeyResolver,
+                UnverifiedRevocations,
+            )))
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("invocation failed to verify: {err}"),

@@ -249,6 +249,92 @@ async fn self_revocation(
     ))
 }
 
+/// Publish the revocation everywhere it could still be honoured.
+///
+/// The account service records a device revocation onto the device list
+/// it renders, which is a projection: nothing consults it when a presign
+/// is authorized. The chain walk consults an access service's revocation
+/// index, so an artifact that never reaches one withdraws nothing — the
+/// revoked device keeps its storage access.
+///
+/// A device grant is a powerline: not scoped to one space, so not scoped
+/// to one access service either. Telling only the account's own service
+/// would leave the device serving every space synced elsewhere, so the
+/// artifact goes to each distinct endpoint the directory knows about as
+/// well.
+///
+/// Every endpoint must accept it. A partial publication is the dangerous
+/// outcome: the user is told the device is gone while one service still
+/// serves it, so a refusal anywhere is reported rather than swallowed.
+async fn publish_revocation(state: &TonkState, artifact: &[u8]) -> Result<(), TonkWorkerError> {
+    use dialog_remote_ucan_s3::UcanAddress;
+    use std::collections::BTreeSet;
+
+    let mut endpoints: BTreeSet<String> = BTreeSet::new();
+
+    // The account's own service, from its signed descriptor rather than
+    // from configuration.
+    if let Some(descriptor) = super::account::descriptor(state).await {
+        endpoints.insert(
+            UcanAddress::new(descriptor.remote().as_str())
+                .endpoint()
+                .to_string(),
+        );
+    }
+
+    // And every service a space in the directory syncs through.
+    match state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+    {
+        Ok(main) => {
+            match tonk_schema::directory::access_endpoints(main.handle(), &state.operator).await {
+                Ok(known) => endpoints.extend(known),
+                // The directory is a cache of what the account branch says.
+                // Failing to read it must not silently narrow a revocation,
+                // so it is refused rather than treated as "no other remotes".
+                Err(error) => {
+                    return Err(TonkWorkerError::Internal(format!(
+                        "cannot enumerate the services this revocation must reach: {error:?}"
+                    )));
+                }
+            }
+        }
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "cannot open the account directory to publish a revocation: {error}"
+            )));
+        }
+    }
+
+    if endpoints.is_empty() {
+        return Err(TonkWorkerError::Conflict(
+            "this profile has no access service to publish a revocation to".to_string(),
+        ));
+    }
+
+    for endpoint in &endpoints {
+        let url = url::Url::parse(endpoint).map_err(|error| {
+            TonkWorkerError::Internal(format!("unusable access endpoint '{endpoint}': {error}"))
+        })?;
+        let response = super::http::post_cbor(&url, artifact).await?;
+        let receipt: tonk_account::customer::RevokeReceipt = serde_json::from_slice(&response.body)
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "'{endpoint}' returned an unreadable revoke receipt: {error}"
+                ))
+            })?;
+        log!(
+            "device revocation recorded at {endpoint}: {}",
+            receipt.revoked
+        );
+    }
+    Ok(())
+}
+
 /// Revoke a device, using device-signed self-revocation for the caller or a
 /// passkey/root-signed artifact for another device.
 #[wasm_compat]
@@ -270,6 +356,14 @@ pub async fn revoke(
         }
         request.revocation
     };
+    // Publish first: the account service's row is a projection of this,
+    // and a row saying "revoked" over a device that still reaches storage
+    // is worse than no row at all.
+    let artifact = hex::decode(&revocation).map_err(|error| {
+        TonkWorkerError::Conflict(format!("revocation artifact is not valid hex: {error}"))
+    })?;
+    publish_revocation(&state, &artifact).await?;
+
     let device = state.profile.signer().signer().clone();
     let arguments = [
         (

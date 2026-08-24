@@ -663,7 +663,13 @@ mod tests {
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
 
         chain
-            .verify(&dialog_credentials::DidKeyResolver)
+            .verify(&dialog_ucan_core::verification::VerificationContext::new(
+                &dialog_ucan_core::verification::Environment::new(
+                    chain.proof_store(),
+                    dialog_credentials::DidKeyResolver,
+                    dialog_ucan_core::revocation::UnverifiedRevocations,
+                ),
+            ))
             .await
             .unwrap();
         assert_eq!(chain.issuer(), &expected_root);
@@ -733,7 +739,13 @@ mod tests {
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
 
         chain
-            .verify(&dialog_credentials::DidKeyResolver)
+            .verify(&dialog_ucan_core::verification::VerificationContext::new(
+                &dialog_ucan_core::verification::Environment::new(
+                    chain.proof_store(),
+                    dialog_credentials::DidKeyResolver,
+                    dialog_ucan_core::revocation::UnverifiedRevocations,
+                ),
+            ))
             .await
             .unwrap();
         assert_eq!(chain.issuer(), &expected_root);
