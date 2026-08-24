@@ -350,11 +350,12 @@ mod when_shortening_an_invite {
     }
 }
 
-/// The library's own copy of the rule the binary enforces before it calls
-/// in: an invite that embeds a remote must name the relay its revocations
-/// will be published to. Every mint above that embeds a remote now passes
-/// one, so the refusal — which those mints used to cover by failing on it —
-/// is stated here instead. Offline: the check runs before any network.
+/// The library's own copy of what the binary no longer enforces: a mint that
+/// embeds a remote used to be refused unless the remote named a relay for its
+/// revocations. A revocation is an ordinary `ucan/revoke` invocation now,
+/// addressed to the access service the invite already carries, so there is
+/// nothing left to demand. Offline: the check that is gone ran before any
+/// network, so its absence shows without one.
 mod when_minting_an_invite_that_embeds_a_relay_less_remote {
     use anyhow::Result;
     use tonk_cli::invite;
@@ -364,22 +365,14 @@ mod when_minting_an_invite_that_embeds_a_relay_less_remote {
     const ENDPOINT: &str = "https://access.example.test/ucan/";
 
     #[dialog_common::test]
-    async fn it_refuses_and_says_how_to_configure_a_relay() -> Result<()> {
+    async fn it_mints_without_demanding_a_relay() -> Result<()> {
         let inviter = common::TestSite::new().await?;
 
-        let error = invite::mint(&inviter.site, None, Some(ENDPOINT))
+        let outcome = invite::mint(&inviter.site, None, Some(ENDPOINT))
             .await
-            .expect_err("a remote with no relay must not be embedded");
+            .expect("a relay-less remote still mints");
 
-        let message = error.to_string();
-        assert!(
-            message.contains("no revocation relay"),
-            "and say why: {message}"
-        );
-        assert!(
-            message.contains("--revocation-url"),
-            "and how to fix it: {message}"
-        );
+        assert!(!outcome.url.is_empty());
         Ok(())
     }
 }

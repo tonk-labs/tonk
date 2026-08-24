@@ -11,15 +11,13 @@ pub struct DeploymentDefaults {
     /// Normalized origin that hosted the ceremony.
     pub ceremony_origin: Url,
     /// Same-origin UCAN content endpoint.
-    pub access_remote: Url,
-    /// Where this deployment accepts revocations.
     ///
-    /// The same endpoint as [`Self::access_remote`], and derived rather than
-    /// advertised: a revocation is an ordinary `ucan/revoke` invocation now,
-    /// so it goes where every other invocation goes. The deployment stopped
-    /// advertising a separate relay when the standalone revocation registry
-    /// was deleted.
-    pub revocation_relay: Url,
+    /// Revocations are addressed here too. A revocation is an ordinary
+    /// `ucan/revoke` invocation, so it goes where every other invocation
+    /// goes; the deployment stopped advertising a relay of its own when the
+    /// standalone revocation registry was deleted, and nothing here records
+    /// one.
+    pub access_remote: Url,
 }
 
 /// Discover content defaults from the exact deployment used for account
@@ -64,7 +62,6 @@ pub async fn discover(
         .context("failed to form deployment access URL")?;
     Ok(DeploymentDefaults {
         ceremony_origin,
-        revocation_relay: access_remote.clone(),
         access_remote,
     })
 }
@@ -149,12 +146,6 @@ mod tests {
         .await?;
         assert_eq!(defaults.ceremony_origin.as_str(), format!("{origin}/"));
         assert_eq!(defaults.access_remote.as_str(), format!("{origin}/ucan/"));
-        // A revocation is an ordinary invocation, so it is addressed to the
-        // same endpoint rather than to a relay of its own.
-        assert_eq!(
-            defaults.revocation_relay.as_str(),
-            defaults.access_remote.as_str()
-        );
         server.abort();
         Ok(())
     }

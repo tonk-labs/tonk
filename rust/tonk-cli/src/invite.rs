@@ -243,17 +243,15 @@ async fn mint_for(
         None => None,
     };
 
+    // A remote with no relay configured is no longer a reason to refuse: a
+    // revocation is an ordinary `ucan/revoke` invocation, so it goes to the
+    // access service like everything else, and a separate relay is something
+    // a deployment may still name but no longer has to.
     let relay = match revocation_url {
         Some(raw) => Some(
             Url::parse(raw)
                 .map_err(|error| InviteError::Io(format!("invalid revocation URL: {error}")))?,
         ),
-        None if parsed_remote.is_some() => {
-            return Err(InviteError::Io(
-                "the selected remote has no revocation relay; configure it with `tonk remote add --revocation-url <URL>`"
-                    .to_string(),
-            ));
-        }
         None => None,
     };
     let invite = Invite::new(delegation.into_chain(), invite_audience, parsed_remote)

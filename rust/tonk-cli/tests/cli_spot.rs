@@ -242,10 +242,10 @@ fn spot_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) -> String {
     spot_with_relayed_remotes(state_dir, &relayed)
 }
 
-/// The same, with a revocation relay per remote. An invite that embeds a
-/// remote must name a relay for its revocations to reach, so a mint against
-/// a relay-less remote is refused — see
-/// `when_a_remote_carries_no_revocation_relay`.
+/// The same, with an explicit revocation relay per remote. A deployment no
+/// longer advertises one and a mint no longer needs one, but a remote may
+/// still be configured with a relay by hand, and that stays carried into the
+/// link.
 fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&str>)]) -> String {
     let site = state_dir.join("site");
     let site = site.to_str().expect("utf-8 site path");
@@ -572,51 +572,33 @@ mod when_the_invite_remote_differs_from_the_upstream {
     }
 }
 
-/// An invite that embeds a remote must name the relay its revocations will
-/// be published to, or revoking it later would have nowhere to land. The
-/// refusal used to be covered only by accident — two live-remote tests
-/// failed on it — so it is stated here, offline, where it belongs.
+/// A relay-less remote is no longer a reason to refuse a mint. A revocation
+/// is an ordinary `ucan/revoke` invocation now, addressed to the access
+/// service the invite already carries, so there is nothing extra for the
+/// link to name. The refusal this replaces is the one that used to demand
+/// `tonk remote add --revocation-url`.
 mod when_a_remote_carries_no_revocation_relay {
     use super::*;
 
+    /// The command still exits non-zero: past this point it pulls and pushes,
+    /// and the upstream is a discard port — the same reason the other offline
+    /// mints assert on stderr and never on success. That the refusal is absent
+    /// is meaningful anyway, because the check ran *before* the network and
+    /// would otherwise be the first line printed.
     #[dialog_common::test]
-    fn it_refuses_to_mint_an_invite_that_embeds_it() {
+    fn it_mints_an_invite_that_embeds_it() {
         let state = tempfile::tempdir().expect("tempdir");
         spot_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
 
         let output = run(state.path(), &["invite"], &[]);
         let stderr = stderr_of(&output);
-        assert!(!output.status.success(), "the mint must refuse: {stderr}");
-        assert!(
-            stderr.contains("no revocation relay"),
-            "and say why: {stderr}"
-        );
-        assert!(
-            stderr.contains("--revocation-url"),
-            "and how to fix it: {stderr}"
-        );
-    }
-
-    /// `--no-remote` embeds no endpoint, so there is nothing for a relay to
-    /// belong to and the rule does not apply. The boundary of the test above,
-    /// and the reason the third live-remote test passed while its two siblings
-    /// failed.
-    ///
-    /// The command still exits non-zero here: past the relay check it pulls
-    /// and pushes, and this upstream is a discard port — the same reason the
-    /// other offline mints assert on stderr and never on success. That the
-    /// refusal is absent is meaningful anyway, because the check runs *before*
-    /// the network and would otherwise be the first line printed.
-    #[dialog_common::test]
-    fn it_does_not_demand_a_relay_for_a_link_that_embeds_no_remote() {
-        let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
-
-        let output = run(state.path(), &["invite", "--no-remote"], &[]);
-        let stderr = stderr_of(&output);
         assert!(
             !stderr.contains("no revocation relay"),
-            "a link with no remote needs no relay: {stderr}"
+            "a relay is not required to mint: {stderr}"
+        );
+        assert!(
+            !stderr.contains("--revocation-url"),
+            "and nothing sends the reader to configure one: {stderr}"
         );
     }
 }
@@ -778,8 +760,8 @@ mod when_minting_against_a_live_remote {
         // Create the spot first so its DID can be provisioned: minting
         // pushes, and the access service serves no unprovisioned space.
         let did = tokio::task::spawn_blocking(move || {
-            // With a relay, because these mints embed the remote: an invite
-            // that carries an endpoint has to say where its revocations go.
+            // With a relay, to keep the hand-configured path exercised
+            // end-to-end against a live service.
             spot_with_relayed_remotes(&setup_dir, &[("origin", &setup_endpoint, Some(DEAD_RELAY))])
         })
         .await

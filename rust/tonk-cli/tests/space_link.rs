@@ -9,9 +9,6 @@ use tonk_cli::inventory::SpaceRole;
 use tonk_cli::site::{SiteConfig, TonkSite};
 use tonk_cli::spot::{AccountRecord, SpotStore};
 
-/// On the discard port: parsed and stored, never called.
-const DEAD_RELAY: &str = "http://127.0.0.1:9/revocations";
-
 const OTHER_ACCOUNT: &str = "did:key:z6MkAccountBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
 fn signed_in(
@@ -20,7 +17,6 @@ fn signed_in(
 ) -> Result<AccountRecord> {
     let mut record = AccountRecord::new(fixture.link.issuer().to_string());
     record.access_remote = Some(env.access_service_url.clone());
-    record.revocation_relay = Some(DEAD_RELAY.to_owned());
     Ok(record)
 }
 

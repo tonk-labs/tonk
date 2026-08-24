@@ -121,9 +121,6 @@ pub struct AccountRecord {
     /// Provider-matched default content endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_remote: Option<String>,
-    /// Provider-matched invitation-revocation relay.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revocation_relay: Option<String>,
     /// Unknown forward-compatible fields.
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
@@ -136,7 +133,6 @@ impl AccountRecord {
             root: root.into(),
             ceremony_origin: None,
             access_remote: None,
-            revocation_relay: None,
             extra: serde_json::Map::new(),
         }
     }

@@ -103,10 +103,6 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
         .access_remote
         .as_deref()
         .context("the account has no content endpoint; sign in again")?;
-    let relay = account
-        .revocation_relay
-        .as_deref()
-        .context("the account has no revocation relay; sign in again")?;
     preflight(&site, &roster, access).await?;
 
     // Authority first: the account root can only host what it can prove it
@@ -121,14 +117,7 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
     crate::customer::provision_in(&site.profile, store, &subject, &prefix).await?;
 
     if crate::remote::upstream_remote(&site).await?.is_none() {
-        crate::remote::add_with_revocation(
-            &site,
-            DEFAULT_REMOTE,
-            access,
-            Some(subject.clone()),
-            Some(relay),
-        )
-        .await?;
+        crate::remote::add(&site, DEFAULT_REMOTE, access, Some(subject.clone())).await?;
         crate::remote::set_upstream(&site, DEFAULT_REMOTE).await?;
     }
     crate::site::record_founder_membership(&site).await?;

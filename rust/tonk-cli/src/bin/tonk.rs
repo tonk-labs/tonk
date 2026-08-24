@@ -1473,7 +1473,6 @@ async fn link_account(
             let mut record = tonk_cli::spot::AccountRecord::new(&outcome.root_did);
             record.ceremony_origin = Some(defaults.ceremony_origin.to_string());
             record.access_remote = Some(defaults.access_remote.to_string());
-            record.revocation_relay = Some(defaults.revocation_relay.to_string());
             if let Err(error) = store.set_account(Some(record)) {
                 return print_failure(error);
             }
@@ -1825,9 +1824,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     let Some(account) = account else {
                         return ExitCode::Success;
                     };
-                    let (Some(access), Some(relay)) =
-                        (&account.access_remote, &account.revocation_relay)
-                    else {
+                    let Some(access) = &account.access_remote else {
                         unreachable!("checked before the space was created");
                     };
                     match site::TonkSite::open_with(&outcome.site, create_config).await {
@@ -1835,12 +1832,11 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                             if let Err(error) = site::record_founder_membership(&site).await {
                                 return print_failure(error);
                             }
-                            if let Err(error) = remote::add_with_revocation(
+                            if let Err(error) = remote::add(
                                 &site,
                                 remote::DEFAULT_REMOTE,
                                 access,
                                 Some(site.repository.did()),
-                                Some(relay),
                             )
                             .await
                             {
@@ -1972,7 +1968,7 @@ fn account_for_new_space(
     }
     // Checked before the space exists: creating one and only then finding
     // out it cannot be hosted leaves a half-made thing to explain.
-    if account.access_remote.is_none() || account.revocation_relay.is_none() {
+    if account.access_remote.is_none() {
         return Err(print_error(
             "the account has no content endpoint; sign in again".to_owned(),
         ));
@@ -2792,16 +2788,12 @@ async fn mint_invite(
         (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
     };
 
+    // Carried when the remote names one, absent when it does not. A relay is
+    // no longer required to mint: revocations are invocations now, addressed
+    // to the access service the invite already carries.
     let revocation_url = resolved
         .as_ref()
         .and_then(|record| record.revocation_url.clone());
-    if embedded.is_some() && revocation_url.is_none() {
-        return print_error(
-            "the selected remote has no revocation relay; re-add it with \
-             `tonk remote add --revocation-url <URL>`"
-                .to_string(),
-        );
-    }
     let remote_url = embedded.map(|record| record.endpoint);
 
     let minted = match recipient_root {

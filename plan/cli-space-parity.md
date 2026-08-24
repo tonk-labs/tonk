@@ -181,7 +181,6 @@ pub struct AccountRecord {
     pub root: String,
     pub ceremony_origin: Option<String>,
     pub access_remote: Option<String>,
-    pub revocation_relay: Option<String>,
 }
 
 pub struct Registry {
