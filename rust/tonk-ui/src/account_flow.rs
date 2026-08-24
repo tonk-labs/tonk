@@ -1355,7 +1355,7 @@ mod tests {
         // registry is where they are read from, and status does not print
         // them.
         let registry: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
-            linked.profile.path().join("spots").join("spots.json"),
+            linked.profile.path().join("spaces").join("spaces.json"),
         )?)?;
         let account = registry
             .get("account")
