@@ -26,14 +26,13 @@
 //! hard error naming the file — never silently recreated.
 //!
 //! Both names were `spot` before. An installation written by that
-//! build keeps working: `spots.json`, its `spots` key, the `spots/`
-//! root, `TONK_SPOT`, and `TONK_SPOTS_STATE` are all still read, and
-//! the first command to touch the registry converts the store in
-//! place (see [`SpaceStore::load`]). Nothing writes the old spelling
-//! back, so the conversion happens once. The cost of converting is
-//! that an older `tonk` sharing the same data dir stops seeing these
-//! spaces — it does not destroy them, because its unknown-field sink
-//! round-trips what it cannot read.
+//! build keeps working: the first command to touch its `spots.json`,
+//! `spots` key, and `spots/` root converts the store in place (see
+//! [`SpaceStore::load`]). Nothing writes the old spelling back, so the
+//! conversion happens once. The cost of converting is that an older
+//! `tonk` sharing the same data dir stops seeing these spaces — it does
+//! not destroy them, because its unknown-field sink round-trips what it
+//! cannot read.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -45,20 +44,10 @@ use tonk_schema::{RepositoryName, prelude::DidExt as _};
 /// Canonical environment variable naming the space to use.
 pub const SPACE_ENV: &str = "TONK_SPACE";
 
-/// Compatibility environment variable naming the space to use.
-///
-/// Read only when [`SPACE_ENV`] is unset, so a harness that exports both
-/// gets the canonical one. Kept because scripts predating the rename
-/// export it and cannot be edited from here.
-pub const LEGACY_SPACE_ENV: &str = "TONK_SPOT";
-
 /// Environment variable overriding the directory that holds
 /// `spaces.json` and the canonical `spaces/` root, so tests can
 /// isolate state (same pattern as `TONK_TELEMETRY_STATE`).
 pub const STATE_ENV: &str = "TONK_SPACES_STATE";
-
-/// Compatibility spelling of [`STATE_ENV`], read only when it is unset.
-pub const LEGACY_STATE_ENV: &str = "TONK_SPOTS_STATE";
 
 /// File name of the registry inside the store directory.
 const REGISTRY_FILE: &str = "spaces.json";
@@ -322,12 +311,10 @@ impl SpaceStore {
     /// data dir (`dirs::data_dir()/tonk`, the same base telemetry
     /// and update state use).
     pub fn open() -> Result<Self, SpaceError> {
-        for name in [STATE_ENV, LEGACY_STATE_ENV] {
-            if let Ok(dir) = std::env::var(name)
-                && !dir.is_empty()
-            {
-                return Ok(Self { dir: dir.into() });
-            }
+        if let Ok(dir) = std::env::var(STATE_ENV)
+            && !dir.is_empty()
+        {
+            return Ok(Self { dir: dir.into() });
         }
         let base = dirs::data_dir().ok_or(SpaceError::NoDataDir)?;
         Ok(Self {

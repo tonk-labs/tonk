@@ -40,15 +40,9 @@ use tonk_cli::{ExitCode, account, account_spaces, agents, context, guide, identi
 )]
 struct Cli {
     /// Operate on this space instead of the active directory binding.
-    /// Precedence: --space > TONK_SPACE > compatibility aliases > `tonk space use`
-    /// in the nearest
+    /// Precedence: --space > TONK_SPACE > `tonk space use` in the nearest
     /// ancestor directory.
-    #[arg(
-        long = "space",
-        visible_alias = "spot",
-        global = true,
-        value_name = "NAME"
-    )]
+    #[arg(long, global = true, value_name = "NAME")]
     space: Option<String>,
 
     /// Print full error chains: every layer of context down to the
@@ -357,7 +351,7 @@ enum Command {
 
     // -- setup --------------------------------------------------------
     /// Manage spaces: named, centrally registered fact stores
-    #[command(name = "space", visible_alias = "spot")]
+    #[command(name = "space")]
     Space {
         #[command(subcommand)]
         command: SpaceCommand,
@@ -555,7 +549,7 @@ enum AccountCommand {
     },
 
     /// List or pull the spaces your account directory lists
-    #[command(name = "spaces", visible_alias = "spots")]
+    #[command(name = "spaces")]
     Spaces {
         #[command(subcommand)]
         command: Option<AccountSpacesCommand>,
@@ -1240,21 +1234,6 @@ async fn main() {
             .try_init();
     }
     let command = cli.command.unwrap_or(Command::Context { json: false });
-    if let (Ok(canonical), Ok(legacy)) = (
-        std::env::var(tonk_cli::space::SPACE_ENV),
-        std::env::var(tonk_cli::space::LEGACY_SPACE_ENV),
-    ) && !canonical.is_empty()
-        && !legacy.is_empty()
-        && canonical != legacy
-    {
-        let exit = print_error(format!(
-            "{} and {} select different spaces; unset one or make them match",
-            tonk_cli::space::SPACE_ENV,
-            tonk_cli::space::LEGACY_SPACE_ENV
-        ));
-        std::process::exit(exit.into_raw());
-    }
-
     // The telemetry subcommand itself is never tracked — toggling
     // must not race its own event, and opt-out should be silent.
     let mut recorder = match &command {
@@ -3843,11 +3822,6 @@ fn space_from_environment() -> Option<String> {
     std::env::var(tonk_cli::space::SPACE_ENV)
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var(tonk_cli::space::LEGACY_SPACE_ENV)
-                .ok()
-                .filter(|value| !value.is_empty())
-        })
 }
 
 /// Print stable local context after a space-scoped command fails. This
@@ -4177,19 +4151,21 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn canonical_and_compatibility_space_commands_parse_identically() {
-        for noun in ["space", "spot"] {
-            let cli = Cli::try_parse_from(["tonk", noun, "link", "garden"]).unwrap();
-            let command = cli.command.as_ref().expect("space command");
-            let Command::Space {
-                command: SpaceCommand::Link { name },
-            } = command
-            else {
-                panic!("expected space link");
-            };
-            assert_eq!(name, "garden");
-            assert_eq!(descriptor(command), ("space", Some("link")));
-        }
+    fn space_is_the_only_public_spelling() {
+        let cli = Cli::try_parse_from(["tonk", "space", "link", "garden"]).unwrap();
+        let command = cli.command.as_ref().expect("space command");
+        let Command::Space {
+            command: SpaceCommand::Link { name },
+        } = command
+        else {
+            panic!("expected space link");
+        };
+        assert_eq!(name, "garden");
+        assert_eq!(descriptor(command), ("space", Some("link")));
+
+        assert!(Cli::try_parse_from(["tonk", "spot", "link", "garden"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "--spot", "garden", "status"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "account", "spots"]).is_err());
 
         // Linking is about this installation's one account, so it takes no
         // target; sharing with someone else is `tonk invite`.

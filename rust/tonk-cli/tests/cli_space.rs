@@ -39,8 +39,7 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         // These fixtures exercise remote selection, not identity provisioning.
         // Production omits this explicit unsafe compatibility override.
         .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
-        .env_remove("TONK_SPACE")
-        .env_remove("TONK_SPOT");
+        .env_remove("TONK_SPACE");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -411,23 +410,25 @@ mod when_resolving_with_precedence {
     }
 
     #[dialog_common::test]
-    fn it_accepts_the_pre_rename_flag_and_environment_names() {
+    fn it_rejects_the_pre_rename_flag_and_ignores_its_environment_name() {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
         let output = run(state.path(), &["--spot", "a", "status"], &[]);
         assert!(!output.status.success());
-        assert!(stderr_of(&output).contains("active space: a (flag)"));
+        assert!(stderr_of(&output).contains("unexpected argument '--spot'"));
 
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
         assert!(!output.status.success());
-        assert!(stderr_of(&output).contains("active space: a (env)"));
+        assert!(
+            stderr_of(&output).contains("no space active for this directory"),
+            "{}",
+            stderr_of(&output)
+        );
     }
 
-    /// `TONK_SPACES_STATE` is what every other fixture sets, so the
-    /// compatibility spelling needs a case that sets only the old one.
     #[dialog_common::test]
-    fn it_accepts_the_pre_rename_state_directory_variable() {
+    fn it_ignores_the_pre_rename_state_directory_variable() {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
@@ -444,14 +445,14 @@ mod when_resolving_with_precedence {
         let output = cmd.output().expect("run tonk");
         assert!(!output.status.success());
         assert!(
-            stderr_of(&output).contains("active space: a (env)"),
+            stderr_of(&output).contains("unknown space 'a'; none registered"),
             "{}",
             stderr_of(&output)
         );
     }
 
     #[dialog_common::test]
-    fn it_rejects_conflicting_space_environment_aliases() {
+    fn tonk_space_ignores_the_pre_rename_environment_name() {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
@@ -462,7 +463,8 @@ mod when_resolving_with_precedence {
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("TONK_SPACE and TONK_SPOT"), "{stderr}");
+        assert!(stderr.contains("active space: a (env)"), "{stderr}");
+        assert!(!stderr.contains("TONK_SPACE and TONK_SPOT"), "{stderr}");
     }
 
     #[dialog_common::test]

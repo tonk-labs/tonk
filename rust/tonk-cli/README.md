@@ -102,12 +102,12 @@ nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
 
 ### Spaces and sites
 
-A **space** is a named entry in `spots.json`, a registry kept under the
+A **space** is a named entry in `spaces.json`, a registry kept under the
 platform data dir (`~/Library/Application Support/tonk/` on macOS). Each entry
 points at a **site**: the working directory holding the actual dialog
 repository (`main`, opened on the `main` branch — multi-branch and multi-repo
 workflows are intentionally not exposed). Sites live canonically under
-`spots/<name>/`, or anywhere you like via `tonk space new --site <path>`.
+`spaces/<name>/`, or anywhere you like via `tonk space new --site <path>`.
 
 A space either belongs to no account, or to exactly one. Which one is read
 from the space itself — the founder row of the roster it carries on `main` —
@@ -139,15 +139,15 @@ there, and reaches other people through `tonk invite`.
 tag and the `access` flag that went with it, and added `owner`, `ownerName`,
 and `ownerIsYou` read from the roster.
 
-Commands resolve `--space` > `TONK_SPACE` > the visible `--spot` / `TONK_SPOT`
-compatibility aliases > the nearest directory bound by `tonk space use <name>`.
+Commands resolve `--space` > `TONK_SPACE` > the nearest directory bound by
+`tonk space use <name>`.
 There is no machine-global fallback, so parallel sessions in separate
 directories hold their own space without repeating a flag. The directory is
 only a key into the registry — no site data or pointer file is stored there.
-`tonk space unbind` removes an exact binding. `spots.json` is plain JSON, so
+`tonk space unbind` removes an exact binding. `spaces.json` is plain JSON, so
 any application can read the registry without going through the CLI.
 
-To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
+To adopt an existing `.tonk/` directory (from an older checkout, or
 somewhere you keep data outside the canonical store) as a space, point
 `--site` at it: `tonk space new proj --site ~/proj/.tonk`. The local identity
 is a shared profile (`tonk identity` prints its DID; `--reset` mints a fresh
@@ -256,8 +256,8 @@ carry a separate artifact relay, supplied by hand with `tonk remote add
 --revocation-url`; it is never inferred and never required.
 `tonk invite` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
-embedded ephemeral key); `tonk join` claims one into a fresh spot
-(`tonk join <url> --name <spot>`).
+embedded ephemeral key); `tonk join` claims one into a fresh space
+(`tonk join <url> --name <space>`).
 
 A bare `tonk invite` resolves the repo's remote, builds the link on that
 remote's origin, and embeds it so the claimer auto-configures the same access
