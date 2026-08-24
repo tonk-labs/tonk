@@ -35,6 +35,11 @@ name = "invite_revocation"
 path = "tests/invite_revocation.rs"
 
 [[test]]
+name = "revoked_device"
+path = "tests/revoked_device.rs"
+required-features = ["integration-tests"]
+
+[[test]]
 name = "notation"
 path = "tests/notation.rs"
 

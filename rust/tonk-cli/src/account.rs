@@ -818,10 +818,13 @@ pub async fn attach_for_integration_test(
 /// `service_url` names one only to cross-check it against the active
 /// account.
 ///
-/// The account is synced first, best-effort: rows described on other
-/// devices arrive with the pull, and offline the list still serves what
-/// is local. One row per device — a device described more than once
-/// keeps its earliest link time.
+/// Deliberately no sync: the list is local facts, and rows described on
+/// other devices arrive with the pulls the link flow and ordinary sync
+/// already perform. Reading through the remote here made the list
+/// hostage to it — a slow or unanswering service (CI congestion, a
+/// revoked device) turned "show me what this device knows" into a hang.
+/// One row per device — a device described more than once keeps its
+/// earliest link time.
 pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
     let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
     devices_in(profile, &store, service_url).await
@@ -842,7 +845,6 @@ pub async fn devices_in(
         bail!("requested provider does not match the active account");
     }
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    freshen_account(profile, &operator, store, "listing local facts").await;
     let branch = account_branch(profile, &operator, store).await?;
     let links = tonk_schema::device_link::device_links(&branch, &operator)
         .await
