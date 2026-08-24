@@ -201,8 +201,8 @@ unicode-width = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 webbrowser = { workspace = true }
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-tracing-log = "0.2.0"
+tracing-subscriber = { workspace = true }
+tracing-log = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

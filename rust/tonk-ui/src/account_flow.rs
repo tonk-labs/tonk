@@ -647,7 +647,7 @@ mod tests {
                 .env("TONK_TRACE", "1")
                 .env(
                     "RUST_LOG",
-                    "debug,hyper=debug,reqwest=debug,rustls=info,h2=info,dialog_remote_ucan_s3=trace,dialog_remote_s3=trace,dialog_operator=debug",
+                    "debug,hyper=trace,hyper_util=trace,reqwest=debug,rustls=info,h2=info,dialog_remote_ucan_s3=trace,dialog_remote_s3=trace,dialog_operator=debug",
                 )
                 .kill_on_drop(true)
                 .output(),

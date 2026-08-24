@@ -46,6 +46,8 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tracing-log = "0.2.0"
 dialog-reactor = { path = "./rust/dialog-reactor" }
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-account = { path = "./rust/tonk-account" }
