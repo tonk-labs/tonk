@@ -19,7 +19,9 @@ use crate::prelude::*;
 /// joins) converges on the same entity. The repository's creator
 /// asserts a bare membership at create time; invite claimers assert
 /// one alongside an [`InvitedVia`] stamp. Lives on the repository's
-/// meta branch.
+/// content branch alongside [`MemberRole`], so the roster replicates
+/// to every member: only upstreamed branches sync, and the meta branch
+/// is local-only.
 ///
 /// `subject` and `member` repeat the hash inputs as queryable
 /// attributes — same redundant-by-design rationale as

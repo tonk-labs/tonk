@@ -8,11 +8,12 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use dialog_query::{Output as _, Query, Term};
 use serde::Serialize;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{MemberName, MemberRole, Membership};
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::site::SiteConfig;
 use crate::spot::SpotStore;
@@ -41,15 +42,35 @@ pub enum SpaceRole {
     Unknown,
 }
 
-impl std::fmt::Display for SpaceRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl SpaceRole {
+    /// The name of this role, matching what `--json` serializes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
             Self::Local => "local",
             Self::Owner => "owner",
             Self::Member => "member",
-            Self::Unlisted => "-",
+            Self::Unlisted => "unlisted",
             Self::Unknown => "unknown",
-        })
+        }
+    }
+
+    /// How the role reads in the `ROLE` column.
+    ///
+    /// Only [`Self::Unlisted`] differs from its name: the listing already
+    /// spells an absent `OWNER` as `-`, and "the roster has no row of ours"
+    /// is the same absence in the neighbouring column. Everywhere else — a
+    /// log line, an error, a future message — the role names itself.
+    fn column(&self) -> &'static str {
+        match self {
+            Self::Unlisted => "-",
+            other => other.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for SpaceRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -78,6 +99,11 @@ impl RosterMember {
 pub struct Roster {
     /// Every membership row scoped to this repository.
     pub members: Vec<RosterMember>,
+    /// What was wrong with the rows that were readable but not sound —
+    /// a row with contradictory role stamps, a role URI from no known
+    /// vocabulary, more than one founder. Each row still appears in
+    /// `members`; a roster is reported as far as it can be read.
+    pub notes: Vec<String>,
 }
 
 impl Roster {
@@ -87,8 +113,17 @@ impl Roster {
     }
 
     /// The founder row, which names the owning account.
+    ///
+    /// A sound roster has at most one. When it has more the lowest DID
+    /// wins — an arbitrary rule, but a fixed one, so the owner a listing
+    /// prints and the owner a refusal names cannot disagree with each
+    /// other or drift between runs on the query's ordering. The ambiguity
+    /// itself is reported through [`Roster::notes`].
     pub fn founder(&self) -> Option<&RosterMember> {
-        self.members.iter().find(|member| member.is_founder())
+        self.members
+            .iter()
+            .filter(|member| member.is_founder())
+            .min_by(|left, right| left.did.cmp(&right.did))
     }
 
     /// The row `did` holds, if any.
@@ -97,11 +132,16 @@ impl Roster {
     }
 }
 
-/// Version-one local-replica row.
+/// Version-two local-replica row.
+///
+/// Version two is where ownership stopped being a registry tag: `account`
+/// and `access` are gone, and `owner` / `ownerName` / `ownerIsYou` — read
+/// from the space's own roster — take their place. A reader written against
+/// version one cannot be fed this, so the number moves with the shape.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LocalSpaceInventoryRowV1 {
-    /// Schema version, exactly one.
+pub struct LocalSpaceInventoryRowV2 {
+    /// Schema version, exactly two.
     pub version: u8,
     /// Registered space name.
     pub name: String,
@@ -126,7 +166,7 @@ pub struct LocalSpaceInventoryRowV1 {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocalSpaceInventory {
     /// Every valid local replica.
-    pub rows: Vec<LocalSpaceInventoryRowV1>,
+    pub rows: Vec<LocalSpaceInventoryRowV2>,
     /// One space-qualified message per skipped replica.
     pub diagnostics: Vec<String>,
 }
@@ -175,17 +215,32 @@ pub fn abbreviation_length<'a>(dids: impl IntoIterator<Item = &'a str>) -> usize
 /// `Name <email>` discipline. Names orient; only the identifier decides.
 pub fn describe(did: &str, name: Option<&str>, length: usize) -> String {
     let abbreviated = abbreviate(did, length);
-    match name {
+    match name.map(sanitize).filter(|name| !name.is_empty()) {
         Some(name) => format!("{name} ({abbreviated})"),
         None => abbreviated,
     }
+}
+
+/// Make a display name safe to print on one line of a table.
+///
+/// A member's name is written by whoever holds that roster row, reaches this
+/// device over sync, and is the only field in the listing this device does
+/// not author. Control characters are dropped rather than escaped: a newline
+/// would break the row apart and an ANSI escape would repaint the terminal,
+/// and neither is anything a name needs.
+fn sanitize(name: &str) -> String {
+    name.chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 /// Render the listing exactly as `tonk space list` prints it.
 ///
 /// Lives here rather than in the binary so the text a person actually reads
 /// can be pinned by a test that builds real replicas.
-pub fn render(rows: &[LocalSpaceInventoryRowV1]) -> String {
+pub fn render(rows: &[LocalSpaceInventoryRowV2]) -> String {
     if rows.is_empty() {
         return "(no spaces registered; create one with `tonk space new <name>`)".to_owned();
     }
@@ -204,7 +259,7 @@ pub fn render(rows: &[LocalSpaceInventoryRowV1]) -> String {
                     Some(owner) if row.owner_is_you => describe(owner, Some("you"), length),
                     Some(owner) => describe(owner, row.owner_name.as_deref(), length),
                 },
-                row.role.to_string(),
+                row.role.column().to_owned(),
             ]
         })
         .collect();
@@ -213,8 +268,8 @@ pub fn render(rows: &[LocalSpaceInventoryRowV1]) -> String {
         .map(|column| {
             cells
                 .iter()
-                .map(|row| row[column].chars().count())
-                .chain(std::iter::once(headers[column].len()))
+                .map(|row| row[column].width())
+                .chain(std::iter::once(headers[column].width()))
                 .max()
                 .unwrap_or_default()
         })
@@ -233,25 +288,29 @@ pub fn render(rows: &[LocalSpaceInventoryRowV1]) -> String {
 }
 
 /// Append one cell, padded to `width` plus the gutter unless it ends the row.
+///
+/// Padding counts terminal columns, not characters: a member's display name
+/// can hold wide (CJK) or zero-width (combining) characters, and counting
+/// those as one column each would leave the columns after it ragged.
 fn push_cell(out: &mut String, cell: &str, width: usize, last: bool) {
     out.push_str(cell);
     if last {
         return;
     }
-    let pad = width - cell.chars().count() + GUTTER;
+    let pad = width.saturating_sub(cell.width()) + GUTTER;
     out.extend(std::iter::repeat_n(' ', pad));
 }
 
 /// Inspect the registry and every replica it names without remote I/O.
 pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalSpaceInventory> {
     let registry = store.load()?;
-    let active = registry
-        .account
-        .as_ref()
-        .map(|account| account.root.clone());
+    // Resolved from the first replica that opens and reused for the rest:
+    // the account and the local root belong to the installation, not to any
+    // one space, and a listing must not answer "who are we" per row.
+    let mut identity = None;
     let mut report = LocalSpaceInventory::default();
     for (name, entry) in &registry.spots {
-        match inspect_replica(config, name, entry, active.as_deref()).await {
+        match inspect_replica(config, name, entry, &mut identity).await {
             Ok((row, note)) => {
                 report.rows.push(row);
                 if let Some(note) = note {
@@ -275,16 +334,27 @@ async fn inspect_replica(
     config: &SiteConfig,
     name: &str,
     entry: &crate::spot::SpotEntry,
-    active: Option<&str>,
-) -> Result<(LocalSpaceInventoryRowV1, Option<String>)> {
+    identity: &mut Option<crate::site::Identity>,
+) -> Result<(LocalSpaceInventoryRowV2, Option<String>)> {
     let mut config = config.clone();
     config.require_account = false;
     let site = crate::site::TonkSite::open_with(&entry.site, config)
         .await
         .with_context(|| format!("could not open {}", entry.site.display()))?;
+    // Every replica opens the same profile, so the first one to get this far
+    // answers for all of them.
+    let identity = match identity {
+        Some(identity) => &*identity,
+        slot => slot.insert(crate::site::Identity::of(&site).await?),
+    };
     let subject = site.repository.did().to_string();
     let (roster, note) = match read_roster(&site).await {
-        Ok(roster) => (Some(roster), None),
+        // A roster that read but did not add up still describes the space;
+        // what was wrong with it travels as the row's diagnostic.
+        Ok(roster) => {
+            let note = (!roster.notes.is_empty()).then(|| roster.notes.join("; "));
+            (Some(roster), note)
+        }
         Err(error) => (None, Some(format!("{error:#}"))),
     };
     let founder = roster
@@ -293,15 +363,19 @@ async fn inspect_replica(
         .map(|member| (member.did.clone(), member.name.clone()));
     let role = match &roster {
         None => SpaceRole::Unknown,
-        Some(roster) => classify(roster, &site)?,
+        Some(roster) => classify(roster, identity),
     };
     Ok((
-        LocalSpaceInventoryRowV1 {
-            version: 1,
+        LocalSpaceInventoryRowV2 {
+            version: 2,
             name: name.to_owned(),
             subject,
-            owner_is_you: match (&founder, active) {
-                (Some((owner, _)), Some(active)) => owner == active,
+            // The account slot, not every identity this device holds: the
+            // column answers "is this the account I am signed in as", which
+            // is what flips when somebody switches accounts. Whether this
+            // installation can act on the space is `role`'s question.
+            owner_is_you: match (&founder, identity.account()) {
+                (Some((owner, _)), Some(account)) => owner == account,
                 _ => false,
             },
             owner: founder.as_ref().map(|(did, _)| did.clone()),
@@ -314,30 +388,30 @@ async fn inspect_replica(
     ))
 }
 
-/// Which roster row this installation can claim: the signed-in account root
-/// first, the device profile second.
-fn classify(roster: &Roster, site: &crate::site::TonkSite) -> Result<SpaceRole> {
+/// Which roster row this installation can claim, tried in
+/// [`Identity`](crate::site::Identity)'s order of specificity.
+///
+/// The identity is passed rather than resolved here, so a listing answers
+/// "who are we" once for the whole run instead of once per replica, and
+/// cannot answer it two different ways within one report.
+fn classify(roster: &Roster, identity: &crate::site::Identity) -> SpaceRole {
     if roster.is_empty() {
-        return Ok(SpaceRole::Local);
+        return SpaceRole::Local;
     }
-    let account = crate::site::member_did(site)?.to_string();
-    let profile = site.profile.did().to_string();
-    let Some(row) = roster
-        .row_for(&account)
-        .or_else(|| roster.row_for(&profile))
-    else {
-        return Ok(SpaceRole::Unlisted);
+    let Some(row) = identity.dids().find_map(|did| roster.row_for(did)) else {
+        return SpaceRole::Unlisted;
     };
-    Ok(match row.role.as_deref() {
+    match row.role.as_deref() {
         Some(MemberRole::FOUNDER) => SpaceRole::Owner,
         Some(MemberRole::MEMBER) => SpaceRole::Member,
         _ => SpaceRole::Unknown,
-    })
+    }
 }
 
 /// Classify one replica from the roster the space itself carries.
 pub async fn role_for_site(site: &crate::site::TonkSite) -> Result<SpaceRole> {
-    classify(&read_roster(site).await?, site)
+    let identity = crate::site::Identity::of(site).await?;
+    Ok(classify(&read_roster(site).await?, &identity))
 }
 
 /// Read the roster from the replica's content branch.
@@ -345,6 +419,11 @@ pub async fn role_for_site(site: &crate::site::TonkSite) -> Result<SpaceRole> {
 /// The content branch, not the meta branch: only upstreamed branches sync, so
 /// a roster on `meta` would never converge across the devices and members it
 /// exists to describe.
+///
+/// Fails only when the branch or a query does. An individual row that does
+/// not add up degrades to a row with no role and a note in
+/// [`Roster::notes`]: the roster is shared, written by every member, and one
+/// member's bad row must not cost this device the owner of its own space.
 pub async fn read_roster(site: &crate::site::TonkSite) -> Result<Roster> {
     let session = site
         .branch()
@@ -390,20 +469,41 @@ pub async fn read_roster(site: &crate::site::TonkSite) -> Result<Roster> {
         .try_vec()
         .await
         .context("could not read membership names")?;
-    let mut members = Vec::with_capacity(memberships.len());
+    let mut roster = Roster {
+        members: Vec::with_capacity(memberships.len()),
+        notes: Vec::new(),
+    };
     for membership in memberships {
-        let mut matching = roles
+        let did = membership.member.0.to_string();
+        let stamped: Vec<String> = roles
             .iter()
             .filter(|role| role.this == membership.this)
-            .map(|role| role.role.0.to_string());
-        let role = matching.next();
-        if let Some(role) = &role
-            && matching.any(|candidate| &candidate != role)
-        {
-            bail!("membership has conflicting signed roles");
-        }
-        members.push(RosterMember {
-            did: membership.member.0.to_string(),
+            .map(|role| role.role.0.to_string())
+            .collect();
+        // A role this device cannot act on is the same as none: the row
+        // still names a member, and `Unlisted` / `Unknown` is a truthful
+        // answer where a guess would not be.
+        let role = match stamped.split_first() {
+            None => None,
+            Some((role, rest)) if rest.iter().all(|other| other == role) => {
+                if matches!(role.as_str(), MemberRole::FOUNDER | MemberRole::MEMBER) {
+                    Some(role.clone())
+                } else {
+                    roster
+                        .notes
+                        .push(format!("{did} has unknown role '{role}'"));
+                    None
+                }
+            }
+            Some(_) => {
+                roster
+                    .notes
+                    .push(format!("{did} has conflicting signed roles"));
+                None
+            }
+        };
+        roster.members.push(RosterMember {
+            did,
             name: names
                 .iter()
                 .find(|name| name.this == membership.this)
@@ -411,5 +511,16 @@ pub async fn read_roster(site: &crate::site::TonkSite) -> Result<Roster> {
             role,
         });
     }
-    Ok(Roster { members })
+    let founders = roster
+        .members
+        .iter()
+        .filter(|member| member.is_founder())
+        .count();
+    if founders > 1 {
+        roster.notes.push(format!(
+            "the roster names {founders} founders; \
+             the lowest DID is reported as the owner"
+        ));
+    }
+    Ok(roster)
 }

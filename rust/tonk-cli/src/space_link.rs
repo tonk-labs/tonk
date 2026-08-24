@@ -203,14 +203,14 @@ async fn preflight(site: &crate::site::TonkSite, roster: &Roster, access: &str) 
     if has_invitations(site).await? {
         bail!("a space with recorded shares cannot be linked to an account");
     }
-    let ours = [
-        crate::site::member_did(site)?.to_string(),
-        site.profile.did().to_string(),
-    ];
+    // Every identity this installation could have written a row under — the
+    // account, the local root, the profile — counts as us; anything else is
+    // a member this link would silently carry into the account.
+    let ours = crate::site::Identity::of(site).await?;
     if roster
         .members
         .iter()
-        .any(|member| !ours.contains(&member.did))
+        .any(|member| !ours.dids().any(|did| did == member.did))
     {
         bail!("a space with another durable member cannot be linked to an account");
     }

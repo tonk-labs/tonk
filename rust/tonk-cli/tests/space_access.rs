@@ -145,14 +145,16 @@ mod when_the_service_refuses_a_sync {
         let site = founded_by(&store, &config, "roadmap", ACCOUNT_A, Some("Ada Lovelace")).await?;
         store.set_account(Some(AccountRecord::new(ACCOUNT_B)))?;
 
-        let report = tonk_cli::sync::rejection_report(&site, "roadmap").await;
+        let report =
+            tonk_cli::sync::rejection_report(&site, "roadmap", "subject is not provisioned").await;
 
         assert_eq!(
             report,
             // Both roots share the eight-character default, so the
             // abbreviation lengthens until they can be told apart.
             "could not sync 'roadmap': this device holds no authority its access \
-             service accepts\n'roadmap' is owned by Ada Lovelace (z6MkAccountA); \
+             service accepts\nthe access service said: subject is not \
+             provisioned\n'roadmap' is owned by Ada Lovelace (z6MkAccountA); \
              you are signed in as z6MkAccountB. sign into the owning account with \
              `tonk account login`, or ask a member for an invite and claim it \
              with `tonk join <URL>`"
@@ -170,15 +172,74 @@ mod when_the_service_refuses_a_sync {
         let site = founded_by(&store, &config, "garden", ACCOUNT_A, None).await?;
         store.set_account(Some(AccountRecord::new(ACCOUNT_A)))?;
 
-        let report = tonk_cli::sync::rejection_report(&site, "garden").await;
+        let report =
+            tonk_cli::sync::rejection_report(&site, "garden", "principal is revoked").await;
 
         assert_eq!(
             report,
             "could not sync 'garden': the access service rejected this device's \
-             authority\nthis device may have been revoked; check \
-             `tonk account devices`, or ask a member for a new invite and claim \
-             it with `tonk join <URL>`"
+             authority\nthe access service said: principal is revoked\nthis \
+             device may have been revoked; check `tonk account devices`, or ask \
+             a member for a new invite and claim it with `tonk join <URL>`"
         );
+        Ok(())
+    }
+
+    /// Whatever the CLI infers about the fix, the boundary's own words reach
+    /// the person: they are the only part of the message that came from the
+    /// thing that actually said no.
+    #[dialog_common::test]
+    async fn it_carries_the_services_reason_through_verbatim() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let (store, config) = fixture(tmp.path())?;
+        let owned = founded_by(&store, &config, "garden", ACCOUNT_A, None).await?;
+        let foreign = founded_by(&store, &config, "roadmap", ACCOUNT_B, None).await?;
+        store.set_account(Some(AccountRecord::new(ACCOUNT_A)))?;
+
+        for (site, name) in [(&owned, "garden"), (&foreign, "roadmap")] {
+            let report = tonk_cli::sync::rejection_report(site, name, "policy 'is member'").await;
+
+            assert!(
+                report.contains("the access service said: policy 'is member'"),
+                "{report}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A member's sync is refused the same way an owner's is, but the fix is
+    /// not: they cannot sign into the account that owns the space, and being
+    /// told to would send them somewhere they can never get to. A roster row
+    /// of their own is what tells the two apart.
+    #[dialog_common::test]
+    async fn it_points_a_member_at_revocation_not_at_the_owners_account() -> Result<()> {
+        use tonk_schema::{MemberRole, Membership};
+
+        let tmp = tempfile::tempdir()?;
+        let (store, config) = fixture(tmp.path())?;
+        let site = founded_by(&store, &config, "roadmap", ACCOUNT_A, Some("Ada")).await?;
+        store.set_account(Some(AccountRecord::new(ACCOUNT_B)))?;
+
+        // Before the membership row exists, the space has never heard of us.
+        let stranger = tonk_cli::sync::rejection_report(&site, "roadmap", "denied").await;
+        assert!(stranger.contains("is owned by Ada"), "{stranger}");
+
+        let membership = Membership::new(ACCOUNT_B.parse()?, site.repository.did());
+        let session = site.branch().await?;
+        session
+            .handle()
+            .transaction()
+            .assert(membership.clone())
+            .assert(MemberRole::member(membership.this().clone()))
+            .commit()
+            .perform(&site.operator)
+            .await?;
+        drop(session);
+
+        let member = tonk_cli::sync::rejection_report(&site, "roadmap", "denied").await;
+
+        assert!(member.contains("may have been revoked"), "{member}");
+        assert!(!member.contains("sign into the owning account"), "{member}");
         Ok(())
     }
 
@@ -190,7 +251,7 @@ mod when_the_service_refuses_a_sync {
         let outcome = tonk_cli::spot::create(&store, "scratch", None, None, config.clone()).await?;
         let site = TonkSite::open_with(&outcome.site, config).await?;
 
-        let report = tonk_cli::sync::rejection_report(&site, "scratch").await;
+        let report = tonk_cli::sync::rejection_report(&site, "scratch", "no such subject").await;
 
         assert!(report.contains("may have been revoked"), "{report}");
         assert!(!report.contains("is owned by"), "{report}");

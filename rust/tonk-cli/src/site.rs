@@ -352,20 +352,90 @@ impl TonkSite {
     }
 }
 
-/// The DID a roster row for this installation is keyed on: the signed-in
-/// account root when there is one, else this device's profile.
+/// Every DID a roster row for this installation could be keyed on, most
+/// specific first.
+///
+/// Three identities can name one installation and they are not
+/// interchangeable:
+///
+/// - the **account** signed in here, which a linked device writes rows under;
+/// - the durable **local root** this device delegates from — the same DID as
+///   the account root once linked, a device-generated root before that. It is
+///   what `tonk join` stamps its membership with, and, living in the profile
+///   rather than the registry, it survives sign-out;
+/// - the **profile**, this device's own key, as the last resort.
+///
+/// Reading and writing resolve through this same order, so a row this
+/// installation writes is a row it later recognizes as its own.
 ///
 /// Matches the worker's `member_did`, so a founder row written here and one
 /// written by the browser converge to the same content-derived entity across
 /// every device on the same account.
-pub fn member_did(site: &TonkSite) -> Result<Did> {
-    let Some(account) = site.account_store.account()? else {
-        return Ok(site.profile.did());
-    };
-    account
-        .root
-        .parse()
-        .context("the signed-in account root is invalid")
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Identity {
+    account: Option<String>,
+    local_root: Option<String>,
+    profile: String,
+}
+
+impl Identity {
+    /// Resolve this installation's identities from one open replica.
+    ///
+    /// The account comes from the registry and the local root from the
+    /// profile's credential store; both are properties of the installation,
+    /// not of the space, so any replica answers for all of them.
+    pub async fn of(site: &TonkSite) -> Result<Self> {
+        Ok(Self {
+            account: site.account_store.account()?.map(|account| account.root),
+            // Best effort: a device that has never been provisioned has no
+            // local root, and that is not an error — it just means the row
+            // to look for is the profile's.
+            local_root: crate::identity::local_root_with_operator(
+                &site.profile,
+                site.operator.local(),
+            )
+            .await
+            .ok()
+            .flatten()
+            .map(|root| root.root_did),
+            profile: site.profile.did().to_string(),
+        })
+    }
+
+    /// The root of the account signed in here, if any.
+    ///
+    /// Narrower than [`Self::dids`] on purpose. "Which account am I signed
+    /// in as" is a question about the registry slot, and it is the one that
+    /// changes when somebody switches accounts; "can this installation act
+    /// on this space" is the broader question the other identities answer.
+    pub fn account(&self) -> Option<&str> {
+        self.account.as_deref()
+    }
+
+    /// The identities in the order a roster row is looked for.
+    pub fn dids(&self) -> impl Iterator<Item = &str> {
+        self.account
+            .as_deref()
+            .into_iter()
+            .chain(self.local_root.as_deref())
+            .chain(std::iter::once(self.profile.as_str()))
+    }
+
+    /// The DID this installation writes a roster row under: the most
+    /// specific identity it has.
+    pub fn member_did(&self) -> Result<Did> {
+        let did = self.dids().next().expect("the profile is always present");
+        did.parse()
+            .with_context(|| format!("'{did}' is not a valid DID"))
+    }
+}
+
+/// The DID a roster row for this installation is keyed on.
+///
+/// See [`Identity`] for why there are three candidates and why this is the
+/// order they are tried in.
+pub async fn member_did(site: &TonkSite) -> Result<Did> {
+    Identity::of(site).await?.member_did()
 }
 
 /// Stamp this installation as the space's founder.
@@ -373,7 +443,8 @@ pub fn member_did(site: &TonkSite) -> Result<Did> {
 /// Account-owned creation and `tonk space link` each call this once. The
 /// content-derived membership entity makes retries idempotent.
 pub async fn record_founder_membership(site: &TonkSite) -> Result<()> {
-    record_founder_membership_for(site, member_did(site)?).await
+    let member = member_did(site).await?;
+    record_founder_membership_for(site, member).await
 }
 
 /// Stamp an explicit member DID as founder.

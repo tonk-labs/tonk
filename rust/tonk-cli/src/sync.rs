@@ -277,31 +277,40 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
 ///
 /// The CLI never pre-judges a sync — it relays the boundary's answer — but
 /// the likeliest fix differs by state, so the copy is composed from the
-/// roster the replica already holds. When the space belongs to an account
-/// other than the one signed in, signing in is the fix and the message leads
-/// with it. When it belongs to the signed-in account (or names nobody else),
-/// the honest explanation is that this device's authority was revoked, and
-/// the message points at the device list instead.
-pub async fn rejection_report(site: &TonkSite, name: &str) -> String {
-    let owner = crate::inventory::read_roster(site)
-        .await
-        .ok()
-        .and_then(|roster| roster.founder().cloned());
-    let signed_in = site
-        .account_store
-        .account()
-        .ok()
-        .flatten()
-        .map(|account| account.root);
-    let foreign = match (&owner, &signed_in) {
-        (Some(owner), Some(signed_in)) => &owner.did != signed_in,
-        (Some(_), None) => true,
-        (None, _) => false,
+/// roster the replica already holds. A device the roster already names, as
+/// owner or as member, has had its authority refused rather than its identity
+/// mistaken, so the message points at the device list. A device the roster
+/// does not name, in a space that names some other founder, is most likely
+/// signed into the wrong account, and the message leads with signing in.
+///
+/// `reason` is the service's own words, carried through verbatim on its own
+/// line. The guidance either side of it is this CLI's inference from local
+/// state and can be wrong; the reason is the only part of the message that
+/// came from the boundary that actually said no, and it is what a bug report
+/// needs.
+pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> String {
+    let said = format!("the access service said: {reason}");
+    let roster = crate::inventory::read_roster(site).await.ok();
+    let identity = crate::site::Identity::of(site).await.ok();
+    let signed_in = identity
+        .as_ref()
+        .and_then(|identity| identity.account())
+        .map(str::to_owned);
+    // Signing in is only the fix for a device the space has never heard of.
+    // A device that holds a roster row of its own — under any identity it
+    // has, so a signed-out member still counts — is somebody this space
+    // already knows, and what changed is its authority, not who is signed
+    // in. Telling a member to go sign into the owner's account would send
+    // them somewhere they cannot go.
+    let listed = match (&roster, &identity) {
+        (Some(roster), Some(identity)) => identity.dids().any(|did| roster.row_for(did).is_some()),
+        _ => false,
     };
-    let Some(owner) = owner.filter(|_| foreign) else {
+    let owner = roster.and_then(|roster| roster.founder().cloned());
+    let Some(owner) = owner.filter(|_| !listed) else {
         return format!(
             "could not sync '{name}': the access service rejected this device's \
-             authority\nthis device may have been revoked; check \
+             authority\n{said}\nthis device may have been revoked; check \
              `tonk account devices`, or ask a member for a new invite and claim \
              it with `tonk join <URL>`"
         );
@@ -321,9 +330,9 @@ pub async fn rejection_report(site: &TonkSite, name: &str) -> String {
     };
     format!(
         "could not sync '{name}': this device holds no authority its access \
-         service accepts\n'{name}' is owned by {owner}; {you}. sign into the \
-         owning account with `tonk account login`, or ask a member for an \
-         invite and claim it with `tonk join <URL>`",
+         service accepts\n{said}\n'{name}' is owned by {owner}; {you}. sign \
+         into the owning account with `tonk account login`, or ask a member \
+         for an invite and claim it with `tonk join <URL>`",
         owner = crate::inventory::describe(&owner.did, owner.name.as_deref(), length),
     )
 }

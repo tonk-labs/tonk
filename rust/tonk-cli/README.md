@@ -128,10 +128,16 @@ carries the founder's account root. Like git's short hashes the abbreviation
 lengthens when a listing holds an ambiguous prefix; `--json` prints the full
 DIDs. `ROLE` is the roster row this installation can claim — `local` when the
 space carries no roster at all, `owner` for a founder row, `member` for a
-member row, `-` when the roster names somebody else, `unknown` when it cannot
-be read. The two ownership rules are: a local space can move into your
-account; once a space belongs to an account it stays there, and reaches other
-people through `tonk invite`.
+member row, `-` (`unlisted` in `--json`) when the roster names nobody you
+are, `unknown` when it cannot be read. A roster that is readable but does not
+add up — a row stamped with two roles, or a second founder — still lists, with
+what was wrong reported alongside. The two ownership rules are: a local space
+can move into your account; once a space belongs to an account it stays
+there, and reaches other people through `tonk invite`.
+
+`--json` emits version-two rows. Version two dropped the per-space `account`
+tag and the `access` flag that went with it, and added `owner`, `ownerName`,
+and `ownerIsYou` read from the roster.
 
 Commands resolve `--space` > `TONK_SPACE` > the visible `--spot` / `TONK_SPOT`
 compatibility aliases > the nearest directory bound by `tonk use <name>`.
@@ -187,9 +193,12 @@ column, not a refusal, is what says whose they are.
 Enforcement happens where it is real: at the service boundary. Push and pull
 present the space's own delegation chain and the access service accepts or
 rejects it, so a sync you cannot do fails there rather than being pre-judged
-here. The CLI relays that refusal with the fix — signing into the owning
-account when the space is somebody else's, `tonk account devices` when it is
-yours and this device may have been revoked.
+here. The CLI relays that refusal verbatim — the service's own reason on its
+own line — wrapped in the likeliest fix: signing into the owning account when
+the space is somebody else's, `tonk account devices` when it is yours and this
+device may have been revoked. The reason is the part that came from the
+boundary that actually said no; the fix is this CLI's inference from local
+state, and it can be wrong.
 
 `tonk account spaces list` reads the signed remote directory of the account you
 are signed in to, and `tonk account spaces pull <subject>` mounts one of those

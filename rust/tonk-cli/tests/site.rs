@@ -519,15 +519,13 @@ mod when_recording_roster_facts {
         invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
         let joined = TonkSite::open_with(&claimer_root, claimer_config).await?;
 
-        // Claimer side: membership + stamp referencing the same
-        // invitation entity.
-        let claimer_meta = joined
-            .repository
-            .branch(tonk_cli::remote::META_BRANCH)
-            .open()
-            .perform(&joined.operator)
-            .await?;
-        let memberships: Vec<Membership> = claimer_meta
+        // Claimer side: membership + stamp referencing the same invitation
+        // entity, on the *content* branch. Only upstreamed branches sync, so
+        // a roster row on `meta` would never reach the space's owner — and
+        // the content branch is where every reader of the roster looks.
+        let claimer_session = joined.branch().await?;
+        let claimer_content = claimer_session.handle();
+        let memberships: Vec<Membership> = claimer_content
             .query()
             .select(Query::<Membership> {
                 this: Term::var("this"),
@@ -538,7 +536,7 @@ mod when_recording_roster_facts {
             .try_vec()
             .await?;
         assert_eq!(memberships.len(), 1);
-        let roles: Vec<MemberRole> = claimer_meta
+        let roles: Vec<MemberRole> = claimer_content
             .query()
             .select(Query::<MemberRole> {
                 this: Term::var("this"),
@@ -561,7 +559,7 @@ mod when_recording_roster_facts {
         let root_did: dialog_varsig::Did = root.root_did.parse()?;
         assert_eq!(memberships[0].member.0, root_did.this());
 
-        let stamps: Vec<InvitedVia> = claimer_meta
+        let stamps: Vec<InvitedVia> = claimer_content
             .query()
             .select(Query::<InvitedVia> {
                 this: Term::var("this"),

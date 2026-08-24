@@ -2249,12 +2249,16 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
             ExitCode::Success
         }
         // The service boundary is where access is decided, so its refusal is
-        // relayed here rather than pre-empted at resolution, with the fix
-        // read from the roster the replica already holds.
+        // relayed here rather than pre-empted at resolution: the reason it
+        // gave, verbatim, wrapped in a fix read from the roster the replica
+        // already holds.
         Err(err @ sync::SyncError::Rejected { .. }) => {
+            let sync::SyncError::Rejected { reason } = &err else {
+                unreachable!("matched one line above")
+            };
             eprintln!(
                 "error: {}",
-                sync::rejection_report(&site, &resolved.name).await
+                sync::rejection_report(&site, &resolved.name, reason).await
             );
             err.exit_code()
         }
