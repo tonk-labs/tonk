@@ -894,14 +894,24 @@ async fn freshen_account(
 }
 
 /// The mounted account branch, or what to run when there is none.
+///
+/// Bounded: mounting resolves the remote head, and dialog's remote
+/// transport has no client deadline of its own, so a socket that
+/// accepts and never answers would park the command forever — sampled
+/// exactly there when `tonk account devices` hung the e2e suite. A
+/// deadline turns that into an error naming the remote.
 async fn account_branch(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
     store: &crate::spot::SpotStore,
 ) -> Result<dialog_repository::Branch> {
-    crate::account_state::open_account_branch_in(profile, operator, store)
-        .await?
-        .context("the account repository is not mounted; run `tonk account link`")
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        crate::account_state::open_account_branch_in(profile, operator, store),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the account remote did not answer while mounting"))??
+    .context("the account repository is not mounted; run `tonk account link`")
 }
 
 /// Publish a revocation everywhere it could still be honoured — the
