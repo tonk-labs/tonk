@@ -165,6 +165,41 @@ impl SpaceName {
     }
 }
 
+/// Who founded a space and when, on the directory entity.
+///
+/// Founding is distinct from mounting: [`record_space_mount`] runs for
+/// both created and joined spaces, so this is asserted only on the
+/// creation path. A directory row without it is a space this account
+/// joined rather than made, which is what lets the Hub tell "spaces I
+/// created" from "spaces shared with me" without consulting delegations.
+///
+/// Deliberately NOT on the ownership delegation's entity. The delegation
+/// is authoritative for *authority*; this is description, and it belongs
+/// on the entity the Hub already renders — otherwise every row query
+/// would join through `dialog.ucan/subject` to show a creation date.
+///
+/// [`record_space_mount`]: https://docs.rs/tonk-worker
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceFounded {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// When the space was created, unix seconds.
+    pub founded_at: crate::domain::space::FoundedAt,
+    /// The profile that created it.
+    pub founded_by: crate::domain::space::FoundedBy,
+}
+
+impl SpaceFounded {
+    /// A founding stamp for `subject`, created by `profile` at `at`.
+    pub fn new(subject: &Did, profile: &Did, at: u64) -> Self {
+        Self {
+            this: subject.this(),
+            founded_at: crate::domain::space::FoundedAt(at),
+            founded_by: crate::domain::space::FoundedBy(profile.this()),
+        }
+    }
+}
+
 /// A [`Replica`] as it was written before the [`Kind`] field
 /// existed: `name` + `subject` + `profile`, no `kind`.
 ///

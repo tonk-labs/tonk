@@ -10,6 +10,10 @@
 #![cfg(feature = "integration-tests")]
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
+use tonk_access_service::revocation::checker::IndexedRevocations;
+use tonk_access_service::revocation::index::MemoryRevocationIndex;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -47,6 +51,9 @@ fn at(seconds: u64) -> Timestamp {
 /// production.
 struct Fixture {
     store: SqliteStore,
+    /// Revocations this fixture enforces. Registration consults it per
+    /// link, so a revoked delegation cannot enroll or activate.
+    revocations: IndexedRevocations<Arc<MemoryRevocationIndex>>,
     emails: CapturedEmail,
     service: Ed25519Signer,
     origin: String,
@@ -59,13 +66,15 @@ impl Fixture {
             emails: CapturedEmail::default(),
             service: Ed25519Signer::generate().await.expect("service signer"),
             origin: "https://hub.test".to_string(),
+            revocations: IndexedRevocations(Default::default()),
         }
     }
 
     fn registration<'a>(
         &'a self,
         container: &'a [u8],
-    ) -> Registration<'a, SqliteStore, CapturedEmail> {
+    ) -> Registration<'a, SqliteStore, CapturedEmail, IndexedRevocations<Arc<MemoryRevocationIndex>>>
+    {
         Registration {
             store: &self.store,
             email: &self.emails,
@@ -74,6 +83,7 @@ impl Fixture {
             activation_ttl: 60 * 60,
             now: unix_now(),
             container,
+            revocations: &self.revocations,
         }
     }
 

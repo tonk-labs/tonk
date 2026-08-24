@@ -763,21 +763,15 @@ pub async fn register_account_device(
 }
 
 /// Revoke one of the account's devices and return the canonical publication
-/// acknowledgement. Refreshing the mutable device list is a separate,
-/// best-effort operation.
+/// acknowledgement. Refreshing the device list is a separate, best-effort
+/// operation.
 pub async fn revoke_account_device(
-    attachment_id: String,
     did: String,
-    revocation: String,
 ) -> Result<RevokeDeviceAcknowledgement, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))
-        .json(&RevokeDeviceRequest {
-            attachment_id,
-            did,
-            revocation,
-        })
+        .json(&RevokeDeviceRequest { did })
         .send()
         .await
         .map_err(into_api_error)?;

@@ -40,7 +40,8 @@ use tonk_account::customer::{
 
 use crate::email::EmailSender;
 use crate::store::{SIGNUP_PLAN, Store, StoreError};
-use dialog_ucan_core::{Environment, UnverifiedRevocations, VerificationContext};
+use dialog_ucan_core::revocation::RevocationChecker;
+use dialog_ucan_core::{Environment, VerificationContext};
 
 /// The command path segments of [`Enroll`], as they appear in an
 /// invocation. Pinned to the capability-derived ability by a test.
@@ -107,7 +108,7 @@ pub enum Answer {
 /// The environment a registration invocation executes against: storage,
 /// email delivery, the service's signing identity, and the request's
 /// origin, clock, and container.
-pub struct Registration<'a, S, E> {
+pub struct Registration<'a, S, E, R> {
     /// Control-state storage.
     pub store: &'a S,
     /// Activation email delivery.
@@ -122,9 +123,18 @@ pub struct Registration<'a, S, E> {
     pub now: u64,
     /// The exact container bytes of the invocation being handled.
     pub container: &'a [u8],
+    /// Revocation lookup, consulted per link by the chain walk.
+    ///
+    /// Registration and activation are as revocable as any other
+    /// invocation: a device whose delegation was revoked must not be
+    /// able to enroll or activate a customer. Dialog asks this per
+    /// proof, so passing a no-op checker here would silently accept a
+    /// revoked chain — see [`UnverifiedRevocations`], whose `query`
+    /// answers "not revoked" to everything.
+    pub revocations: &'a R,
 }
 
-impl<S: Store, E: EmailSender> Registration<'_, S, E> {
+impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registration<'_, S, E, R> {
     /// Verify the container, decode its capability, and perform it
     /// against this environment.
     pub async fn handle(&self) -> Result<Answer, RegistrationError>
@@ -469,7 +479,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             .verify(&VerificationContext::new(&Environment::new(
                 chain.proof_store(),
                 DidKeyResolver,
-                UnverifiedRevocations,
+                self.revocations,
             )))
             .await
             .map_err(|err| RegistrationError::Unauthorized {
@@ -688,10 +698,11 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E> Provider<Enroll> for Registration<'_, S, E>
+impl<S, E, R> Provider<Enroll> for Registration<'_, S, E, R>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
+    R: RevocationChecker + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Enroll>) -> Result<Receipt, RegistrationError> {
         self.enroll(input).await
@@ -700,10 +711,11 @@ where
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E> Provider<Activate> for Registration<'_, S, E>
+impl<S, E, R> Provider<Activate> for Registration<'_, S, E, R>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
+    R: RevocationChecker + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
         self.activate(input).await
@@ -712,10 +724,11 @@ where
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E> Provider<Add> for Registration<'_, S, E>
+impl<S, E, R> Provider<Add> for Registration<'_, S, E, R>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
+    R: RevocationChecker + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Add>) -> Result<ConsumerReceipt, RegistrationError> {
         self.add(input).await

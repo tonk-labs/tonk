@@ -35,6 +35,31 @@ pub struct BranchReference<'a> {
     pub name: &'a str,
 }
 
+/// Move every subscription waiting on this branch out of the reactor's
+/// waiting room and onto the live [`BranchState`].
+///
+/// This is the whole hand-off. A page that subscribed before the repo
+/// (or the branch) existed was answered with the empty set and kept its
+/// stream open; adopting its sender here means the very next poll
+/// delivers real rows into that same stream. Nothing polls and nothing
+/// retries — the branch coming into existence IS the event, so a space
+/// joined in another tab and a branch created later behave identically.
+///
+/// A no-op, and just one map lookup, when nothing was waiting.
+fn adopt_waiting(reference: &BranchReference<'_>, state: &Arc<BranchState>, name: &str) {
+    let reactor = reference.reactor();
+    let repo = reference.repository.name();
+    if !reactor.has_pending(repo, name) {
+        return;
+    }
+    for pending in reactor.take_pending(repo, name) {
+        state.adopt_subscriber(pending.query, pending.client, pending.sender);
+    }
+    // Evaluate once so the adopted subscribers get a real frame now,
+    // rather than waiting for somebody else's commit to schedule a poll.
+    reactor.schedule_poll(Arc::clone(state));
+}
+
 impl<'a> BranchReference<'a> {
     /// Resolve and cache the underlying branch. Returns a
     /// [`BranchSession`] carrying the dialog handle and the
@@ -49,11 +74,15 @@ impl<'a> BranchReference<'a> {
         // Resolve the repo entry (may open the repository).
         let repository = self.repository.acquire(env).await?;
 
-        // Fast path: branch already cached.
+        // Fast path: branch already cached. Still drains the waiting
+        // room — a subscriber can register while the branch is absent
+        // and the branch appear via a DIFFERENT path (another request
+        // acquiring it first), so the cached case is a real arrival too.
         if let Some(state) = repository.branches().read().get(name) {
-            return Ok(BranchSession {
-                state: Arc::clone(state),
-            });
+            let state = Arc::clone(state);
+            drop(repository.branches().read());
+            adopt_waiting(self, &state, name);
+            return Ok(BranchSession { state });
         }
 
         // Open the branch outside the lock — `branch().open()` is
@@ -70,14 +99,16 @@ impl<'a> BranchReference<'a> {
                 reason: e.to_string(),
             })?;
 
-        let mut branches = repository.branches().write();
-        let entry = branches
-            .entry(name.to_owned())
-            .or_insert_with(|| Arc::new(BranchState::new(branch)));
+        let state = {
+            let mut branches = repository.branches().write();
+            let entry = branches
+                .entry(name.to_owned())
+                .or_insert_with(|| Arc::new(BranchState::new(branch)));
+            Arc::clone(entry)
+        };
 
-        Ok(BranchSession {
-            state: Arc::clone(entry),
-        })
+        adopt_waiting(self, &state, name);
+        Ok(BranchSession { state })
     }
 
     /// The reactor that owns this branch's cache — so leaf effects can

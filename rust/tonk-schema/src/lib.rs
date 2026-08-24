@@ -66,7 +66,9 @@ pub use sync::*;
 pub mod account;
 pub use account::{AccountDisplayName, AccountPasskeyCreated};
 
+pub mod device_link;
 pub mod replica;
+pub use device_link::*;
 pub use replica::*;
 
 pub mod repository;

@@ -35,6 +35,11 @@ name = "invite_revocation"
 path = "tests/invite_revocation.rs"
 
 [[test]]
+name = "revoked_device"
+path = "tests/revoked_device.rs"
+required-features = ["integration-tests"]
+
+[[test]]
 name = "notation"
 path = "tests/notation.rs"
 
@@ -196,6 +201,8 @@ unicode-width = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 webbrowser = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-log = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

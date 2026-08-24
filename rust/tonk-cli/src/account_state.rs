@@ -234,12 +234,14 @@ pub async fn open_account_branch_in(
     operator: &Operator<NativeSpace>,
     store: &crate::spot::SpotStore,
 ) -> Result<Option<dialog_repository::Branch>> {
+    trace("open: start");
     let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
         return Ok(None);
     };
     if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
         return Ok(None);
     }
+    trace("open: marker matches, mounting");
     let repository = mount(profile, operator, &descriptor).await?;
     let branch = repository
         .branch(tonk_account::MAIN_BRANCH)
@@ -247,6 +249,7 @@ pub async fn open_account_branch_in(
         .perform(operator)
         .await
         .context("failed to open account main branch")?;
+    trace("open: done");
     Ok(Some(branch))
 }
 
@@ -572,6 +575,7 @@ async fn mount(
     let subject = descriptor.account_subject().clone();
     let repository = Repository::from(profile);
 
+    trace("mount: loading remote record");
     let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
     let remote = match repository
         .remote(tonk_account::ORIGIN_REMOTE)
@@ -604,18 +608,14 @@ async fn mount(
             .context("failed to configure account remote")?,
     };
 
+    trace("mount: remote record loaded, opening profile main");
     let branch = repository
         .branch(tonk_account::MAIN_BRANCH)
         .open()
         .perform(operator)
         .await
         .context("failed to open profile main branch")?;
-    let remote_branch = remote
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(operator)
-        .await
-        .context("failed to open account remote main")?;
+    trace("mount: profile main open");
     match branch.upstream() {
         Some(Upstream::Remote { remote, branch, .. })
             if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
@@ -624,13 +624,27 @@ async fn mount(
         // account, the account IS profile main's upstream by
         // definition, and set_upstream promotes over an existing
         // tracking target.
-        _ => branch
-            .set_upstream(&remote_branch)
-            .perform(operator)
-            .await
-            .context("failed to set account upstream")?,
+        //
+        // The remote branch is opened only on this arm: opening it
+        // resolves the remote head, and a mount on the steady path —
+        // every local read runs one — must not wait on the network for
+        // a value only repointing consumes.
+        _ => {
+            let remote_branch = remote
+                .branch(tonk_account::MAIN_BRANCH)
+                .open()
+                .perform(operator)
+                .await
+                .context("failed to open account remote main")?;
+            branch
+                .set_upstream(&remote_branch)
+                .perform(operator)
+                .await
+                .context("failed to set account upstream")?
+        }
     }
 
+    trace("mount: upstream settled, stamping replica");
     let replica = Replica::account(profile.did(), subject);
     branch
         .transaction()
@@ -640,6 +654,7 @@ async fn mount(
         .perform(operator)
         .await
         .context("failed to stamp account replica kind")?;
+    trace("mount: done");
 
     Ok(repository)
 }
@@ -705,6 +720,22 @@ pub async fn ensure_with_operator(
     ensure_with_operator_and_store(profile, operator, store).await
 }
 
+/// Breadcrumb for `TONK_TRACE=1`: one stderr line per step of the sync
+/// and mount paths, so a command that stalls names the await it stalled
+/// in rather than the timeout that eventually gave up on it.
+pub(crate) fn trace(step: &str) {
+    if std::env::var_os("TONK_TRACE").is_some_and(|value| !value.is_empty() && value != "0") {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        eprintln!(
+            "[tonk-trace {}.{:03}] {step}",
+            now.as_secs() % 1000,
+            now.subsec_millis()
+        );
+    }
+}
+
 /// [`ensure_with_operator`] against a caller-supplied spot store.
 ///
 /// The store locates account state on disk. A caller running outside an
@@ -715,20 +746,25 @@ pub async fn ensure_with_operator_and_store(
     operator: Operator<NativeSpace>,
     store: crate::spot::SpotStore,
 ) -> Result<EnsureOutcome> {
+    trace("ensure: start");
     let Some(descriptor) = descriptor_in(profile, &operator, &store).await? else {
         return Ok(EnsureOutcome {
             status: AccountStateStatus::Unconfigured,
             warning: None,
         });
     };
+    trace("ensure: descriptor read");
     let repository = mount(profile, &operator, &descriptor).await?;
+    trace("ensure: mounted");
     let operator =
         crate::account_authority::wrap(operator, profile.clone(), store.clone(), true).await?;
+    trace("ensure: operator wrapped");
 
     if marker_matches(
         marker(profile, operator.local()).await?.as_deref(),
         &descriptor,
     ) {
+        trace("ensure: marker matches, syncing");
         // Ready remains ready offline. A best-effort normal sync catches up
         // without clearing the durable trust marker on failure.
         let branch = repository
@@ -736,15 +772,20 @@ pub async fn ensure_with_operator_and_store(
             .open()
             .perform(&operator)
             .await?;
+        trace("ensure: branch open, pulling");
         let warning = match branch.pull().perform(&operator).await {
-            Ok(_) => branch
-                .push()
-                .perform(&operator)
-                .await
-                .err()
-                .map(|error| error.to_string()),
+            Ok(_) => {
+                trace("ensure: pulled, pushing");
+                branch
+                    .push()
+                    .perform(&operator)
+                    .await
+                    .err()
+                    .map(|error| error.to_string())
+            }
             Err(error) => Some(error.to_string()),
         };
+        trace(&format!("ensure: sync done ({warning:?}), adopting"));
         // Adopting the account as the access branch's upstream is what makes
         // recovered authority usable: the operator proves from the access
         // branch, not the account's. Best-effort, like the sync above — a
@@ -754,6 +795,7 @@ pub async fn ensure_with_operator_and_store(
             Ok(_) => warning,
             Err(error) => warning.or_else(|| Some(error.to_string())),
         };
+        trace("ensure: adopted");
         return Ok(EnsureOutcome {
             status: AccountStateStatus::Ready,
             warning,

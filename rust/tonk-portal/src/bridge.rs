@@ -1810,7 +1810,7 @@ fn real_href(state: &Rc<RefCell<PortalState>>, href: &str) -> String {
     // A leading-slash in-space path; anything else (already absolute host
     // path, or a fragment/query) is passed through untouched.
     if let Some(rest) = href.strip_prefix('/') {
-        if rest.starts_with("space/") {
+        if rest.starts_with("space/") || is_top_level_route(rest) {
             href.to_owned()
         } else {
             format!("/space/{space}/{rest}")
@@ -1818,6 +1818,21 @@ fn real_href(state: &Rc<RefCell<PortalState>>, href: &str) -> String {
     } else {
         href.to_owned()
     }
+}
+
+/// Routes that belong to the PROFILE, not to any space.
+///
+/// The guest resolves every link against its synthetic per-space origin, so a
+/// link to one of these arrives looking exactly like an in-space path and would
+/// be rewritten to `/space/{did}/join` — a route no space defines. The page then
+/// tries to boot the whole app inside the sealed frame, where the origin is
+/// opaque: no service worker, every asset CORS-blocked, and the renderer dies.
+///
+/// These names are the profile's own route table (`profile.yaml`), which no
+/// space route shadows, so passing them through is unambiguous.
+fn is_top_level_route(rest: &str) -> bool {
+    let head = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    matches!(head, "join" | "account" | "inspector" | "diagnose")
 }
 
 /// Set the host page's tab title on the guest's behalf. The guest's
@@ -2619,6 +2634,36 @@ mod tests {
     const DESCRIPTOR: &str = r#"{"with":{
         "count": { "the": "counter/count", "as": "UnsignedInteger", "cardinality": "one" }
     }}"#;
+
+    /// The guest resolves every link against its synthetic per-space
+    /// origin, so a link to a PROFILE route (`/join`) arrives looking
+    /// exactly like an in-space path. Rewriting it to `/space/{did}/join`
+    /// names a route no space defines, and the app then tries to boot
+    /// inside the sealed frame — opaque origin, no service worker, every
+    /// asset CORS-blocked, renderer crash. These must pass through.
+    #[dialog_common::test]
+    fn it_treats_profile_routes_as_top_level() {
+        assert!(is_top_level_route("join"));
+        assert!(is_top_level_route("account"));
+        assert!(is_top_level_route("inspector"));
+        assert!(is_top_level_route("diagnose"));
+        // A query or sub-path does not disguise the route.
+        assert!(is_top_level_route("join?x=1"));
+        assert!(is_top_level_route("account/devices"));
+        assert!(is_top_level_route("diagnose/abc123"));
+    }
+
+    /// Everything else is genuinely in-space and still gets the space
+    /// prefix — the behaviour the pass-through must not swallow.
+    #[dialog_common::test]
+    fn it_leaves_in_space_paths_to_the_space_prefix() {
+        assert!(!is_top_level_route("activity"));
+        assert!(!is_top_level_route("board"));
+        assert!(!is_top_level_route(""));
+        // A path that merely STARTS with a top-level name is not one.
+        assert!(!is_top_level_route("joinery"));
+        assert!(!is_top_level_route("accounts-payable"));
+    }
 
     // --- find_font_paths: url() argument extraction --------------------
 

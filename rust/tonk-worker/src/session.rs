@@ -12,15 +12,11 @@
 //! stolen device at most one session lifetime even if the registry is
 //! unreachable.
 //!
-//! Renewal rotates the operator key rather than re-minting under the
-//! same audience. Certificates are content-addressed, the store has no
-//! delete, and its chain walk never consults the clock — it filters
-//! candidates against the *requested* time range, which the presign path
-//! leaves unbounded, and an unbounded requirement is satisfied by every
-//! range including a lapsed one. So a stale certificate left beside its
-//! replacement under one audience would be chosen about half the time.
-//! A rotated key gets its own audience, and the retired one is simply
-//! never proved to again.
+//! Renewal re-mints the delegation under a STABLE audience: the
+//! operator key is derived from a constant context, so it does not move.
+//! Revocation withholds authority by refusing to renew the delegation,
+//! and a chain is revoked by CID, so nothing needs the audience to
+//! change. See [`rotate`] for what moving it used to cost.
 //!
 //! Renewal rides the sync drain — the regular beat this worker has —
 //! rather than chasing every presign path. The gap that leaves: a
@@ -64,6 +60,15 @@ struct PersistedSession {
 /// and a closed laptop, or renewal failure becomes the common path
 /// instead of the exceptional one.
 pub use tonk_identity::session::SESSION_TTL_SECONDS;
+
+/// Derivation context for the device's operator key.
+///
+/// Constant, so the operator DID is stable for the life of the profile:
+/// `derive` is a KDF over (profile seed, context), and renewal re-mints
+/// the delegation rather than the key. Anything addressed to the
+/// operator — notably a guest's invite chain — therefore stays valid
+/// across a renewal.
+const OPERATOR_CONTEXT: &[u8] = b"worker";
 
 /// How long before expiry a session is rotated.
 ///
@@ -129,15 +134,22 @@ where
     rotate(profile, storage).await
 }
 
-/// Mint a FRESH session unconditionally: a new random derivation
-/// context, so the operator gets its own audience and the delegation
-/// it retires stays behind rather than beside it.
+/// Mint a fresh `profile → operator` delegation for the device's
+/// operator key.
 ///
-/// [`open`] reuses the persisted session while it is fresh — right for
-/// boot, wrong for renewal: guest rotation replays leases onto a NEW
-/// operator, and reusing the current one would hand back the same
-/// audience with the lapsed chain still provable next to the
-/// replacement.
+/// The KEY is stable — [`OPERATOR_CONTEXT`] is constant, and derivation
+/// is deterministic over (seed, context) — so renewal replaces the
+/// delegation, not the audience.
+///
+/// It used to derive a new key from a random context every time. That
+/// bought nothing the expiry did not already buy: revocation withholds
+/// authority by refusing to renew the DELEGATION, and a chain is revoked
+/// by CID, so nothing needs the audience to move. What it cost was
+/// substantial — a guest's chain is addressed to the operator, so every
+/// rotation invalidated it, and the only way to re-mint one was to
+/// replay the invite. That is the sole reason a guest's invite URL, a
+/// bearer secret, had to be kept on disk at all, and why a guest nearing
+/// expiry could force a rotation that was not otherwise due.
 pub async fn rotate<S>(
     profile: &Profile,
     storage: &Storage<S>,
@@ -149,18 +161,11 @@ where
         + Provider<dialog_effects::blob::Import>,
     S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
 {
-    // A random derivation context is what makes the operator key
-    // session-scoped: `derive` is a KDF over the profile seed and this
-    // context, so a fixed context would hand every session the same
-    // audience and file a rotated delegation in the same bucket as the
-    // one it replaces.
-    let context: [u8; 16] = rand::random();
-
     // No `.allow(...)`: that mints an *unexpiring* profile → operator
     // delegation, which is the thing this module exists to replace. The
     // bounded equivalent is minted below.
     let operator = profile
-        .derive(context.to_vec())
+        .derive(OPERATOR_CONTEXT.to_vec())
         .build(storage.clone())
         .await
         .map_err(|error| {
@@ -200,7 +205,7 @@ where
         storage,
         &PersistedSession {
             version: 1,
-            context: context.to_vec(),
+            context: OPERATOR_CONTEXT.to_vec(),
             expires_at: expiration.to_unix(),
         },
     )
@@ -334,34 +339,6 @@ mod tests {
              boot read-only on the access branch"
         );
         assert_eq!(first.expires_at, second.expires_at);
-    }
-
-    #[dialog_common::test]
-    async fn it_keys_an_expiring_session_separately() {
-        let (storage, profile) = scratch().await;
-
-        let first = open(&profile, &storage).await.unwrap();
-        // Force the persisted session into the renewal window: an
-        // expiring session must rotate to a NEW audience, or its
-        // delegation lands in the same bucket as the lapsed one.
-        persist_session(
-            &profile,
-            &storage,
-            &PersistedSession {
-                version: 1,
-                context: vec![1; 16],
-                expires_at: now(), // inside the renewal margin
-            },
-        )
-        .await;
-        let second = open(&profile, &storage).await.unwrap();
-
-        assert_ne!(
-            first.operator.did(),
-            second.operator.did(),
-            "a rotated session needs its own audience, or its delegation \
-             lands in the same bucket as the lapsed one it replaces"
-        );
     }
 
     /// The one that matters: swapping `.allow(Subject::any())` for a

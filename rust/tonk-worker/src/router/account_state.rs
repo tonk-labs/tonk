@@ -491,7 +491,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 /// hydration just established. Only these two paths push profile main —
 /// the generic per-branch sync returns before it reaches the account
 /// key — so a sweep that skips this leaves local facts unpublished.
-async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
+pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
     let session = tonk
         .reactor
         .profile_repository()
@@ -538,6 +538,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     if seed_passkey_facts(tonk).await {
         log!("recorded this device's passkey creation facts in the account space");
     }
+    describe_own_device(tonk).await;
     if let Err(error) = converge_account_state(tonk).await {
         log!("account-state convergence after sync failed: {error}");
     }
@@ -626,6 +627,7 @@ pub(crate) async fn ensure_account_state_swept(
                     if seed_passkey_facts(tonk).await {
                         log!("recorded this device's passkey creation facts in the account space");
                     }
+                    describe_own_device(tonk).await;
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
@@ -873,6 +875,30 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
             log!("retain space delegation into account space: {error}");
             false
         }
+    }
+}
+
+/// Describe this device's own link in the account space, best-effort.
+///
+/// Runs on every sweep like the passkey-fact seed: retaining is
+/// content-addressed, so an already-described device commits nothing.
+/// This is what puts the signing browser's own row where every device's
+/// list reads — sign-up, passkey sign-in, and accounts that predate the
+/// facts all converge through it.
+pub(crate) async fn describe_own_device(tonk: &TonkState) {
+    // No root is an ordinary state for a signed-out profile, reached on
+    // every sweep; not worth a line in the log.
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        return;
+    };
+    if let Err(error) = crate::onboarding::describe_device_link(
+        tonk,
+        &root.delegation,
+        crate::onboarding::device_title(),
+    )
+    .await
+    {
+        log!("describe this device's link: {error}");
     }
 }
 
@@ -1617,6 +1643,40 @@ mod tests {
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].seconds(), 1_754_380_800);
         assert_eq!(again[0].created_on.0, "Chrome on macOS");
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// The sweep describes this device's own link in the account space,
+    /// so its row is where every device's list reads — including a list
+    /// rendered on this device before anything else replicates.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_describes_this_device_on_the_account_sweep() {
+        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .expect("account branch opens");
+        let links = tonk_schema::device_link::device_links(branch.handle(), &state.operator)
+            .await
+            .expect("device-link query runs");
+        assert_eq!(links.len(), 1, "exactly this device's row: {links:?}");
+        assert_eq!(
+            links[0].1,
+            state.profile.did().to_string(),
+            "the row names this device"
+        );
 
         service.stop().await.unwrap();
         discard(state, &ready.key);

@@ -831,100 +831,6 @@ pub(crate) async fn guest_lease(
     }))
 }
 
-/// Every guest this profile currently holds, in subject order.
-///
-/// The operator is shared by all mounted repositories, so rotating it
-/// invalidates every guest delegation at once — which makes the whole
-/// set, not the one guest that triggered a rotation, the unit renewal
-/// works on. Sorted so that batch behaves the same on every pass.
-pub(crate) async fn guest_leases(tonk: &TonkState) -> Result<Vec<GuestLease>, TonkWorkerError> {
-    let profile_meta = tonk
-        .reactor
-        .profile_repository()
-        .branch(PROFILE_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to open profile meta branch: {error}"))
-        })?;
-
-    let rows: Vec<Replica> = profile_meta
-        .handle()
-        .query()
-        .select(Query::<Replica> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            profile: Term::from(tonk_schema::domain::replica::Profile(
-                tonk.profile.did().this(),
-            )),
-            kind: Term::from(Replica::repository_kind()),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("replica query on profile meta failed: {error:?}"))
-        })?;
-
-    let mut subjects: Vec<Did> = Vec::with_capacity(rows.len());
-    for row in rows {
-        match row.subject.0.to_string().parse::<Did>() {
-            Ok(subject) => subjects.push(subject),
-            // A single unreadable index row is not a reason to refuse to
-            // renew every other guest; the profile route skips it the
-            // same way.
-            Err(error) => log!(
-                "replica subject {:?} is unparseable: {error:?}",
-                row.subject.0
-            ),
-        }
-    }
-    subjects.sort_by_key(|subject| subject.to_string());
-    subjects.dedup();
-
-    let mut leases = Vec::new();
-    for subject in subjects {
-        if let Some(lease) = guest_lease(tonk, &subject).await? {
-            leases.push(lease);
-        }
-    }
-    Ok(leases)
-}
-
-/// Parse a lease's retained invite, unless replaying it could not
-/// produce usable authority.
-///
-/// `Ok(None)` means the invite itself has lapsed. A guest hop is bounded
-/// by the chain it extends, so replaying an expired invite would mint a
-/// chain that is already dead — and, because the record would then name
-/// an audience whose delegation is inside the renewal margin forever, it
-/// would ask for a rotation on every single sync boundary. Declining
-/// here is what keeps a dead invite from becoming a rotation loop; the
-/// guest simply stays as it is until someone hands it a live link.
-///
-/// A URL that does not parse is a different thing: local corruption. It
-/// comes back as an error so the caller can refuse to rotate and leave
-/// the record in place for diagnosis.
-pub(crate) async fn renewable_invite(
-    lease: &GuestLease,
-    now: u64,
-) -> Result<Option<Invite>, JoinFailure> {
-    let invite = Invite::parse_url(&lease.url).await.map_err(|error| {
-        JoinFailure::malformed(format!(
-            "retained guest invite for {} did not parse: {error}",
-            lease.subject
-        ))
-    })?;
-    if invite
-        .chain
-        .expiration()
-        .is_some_and(|expiration| expiration.to_unix() <= now)
-    {
-        return Ok(None);
-    }
-    Ok(Some(invite))
-}
-
 /// Mint one bounded guest delegation from `invite` to `audience`.
 ///
 /// The single place a guest hop is created: staging, the initial visit,
@@ -953,27 +859,6 @@ pub(crate) async fn mint_guest_grant(
         audience: audience.clone(),
         expires_at,
     })
-}
-
-/// Install a minted guest chain in the durable certificate store.
-///
-/// Split from [`save_guest`] so a batch renewal can retain every
-/// replacement chain before it writes any metadata: the operator swap
-/// then happens with no guest left holding a record that names an
-/// audience it has no chain for.
-pub(crate) async fn retain_guest_grant(
-    tonk: &TonkState,
-    operator: &DefaultOperator,
-    grant: &GuestGrant,
-) -> Result<(), JoinFailure> {
-    tonk.profile
-        .access()
-        .save(UcanDelegation(grant.chain.clone()))
-        .perform(operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to save the guest authority: {error}"))
-        })
 }
 
 /// Retain the invite a guest visit was opened with, together with the
@@ -2822,7 +2707,7 @@ mod tests {
     use crate::router::repository::build_repository_info;
     use crate::router::tests::{
         attach_remote, content_invitations, content_invited_via, content_member_roles,
-        content_memberships, put_repo, test_state,
+        content_memberships, put_repo, test_state, test_state_without_root,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
@@ -3795,58 +3680,6 @@ mod tests {
         );
     }
 
-    /// The operator is shared by every mounted repository, so renewal
-    /// works on the whole guest set. Which means enumerating it has to
-    /// find exactly the guests: not the durable spaces beside them, and
-    /// not a replica whose guest site was cleared by promotion.
-    #[dialog_common::test]
-    async fn it_enumerates_only_repository_replicas_with_guest_records() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (first_url, first_key) = handcrafted_invite_url(76, 77).await;
-        let (second_url, second_key) = handcrafted_invite_url(78, 79).await;
-        let (durable_url, durable_key) = handcrafted_invite_url(80, 81).await;
-        assert_eq!(post_visit(&app, &first_url).await, StatusCode::CREATED);
-        assert_eq!(post_visit(&app, &second_url).await, StatusCode::CREATED);
-        assert_eq!(post_join(&app, &durable_url).await, StatusCode::CREATED);
-
-        let mut expected = vec![first_key.clone(), second_key.clone()];
-        expected.sort();
-
-        let leases = {
-            let tonk = state.read().await;
-            super::guest_leases(&tonk).await.expect("leases enumerate")
-        };
-        assert_eq!(
-            leases
-                .iter()
-                .map(|lease| lease.subject.to_string())
-                .collect::<Vec<_>>(),
-            expected,
-            "only the two guests, in subject order, and never the durable \
-             space or the profile and account replicas beside them",
-        );
-        assert!(
-            !expected.contains(&durable_key),
-            "the durable join is not a guest",
-        );
-
-        // Promotion clears the site by writing empty bytes, which has to
-        // read the same as never having visited.
-        assert_eq!(promote(&app, &first_key).await.0, StatusCode::OK);
-        let leases = {
-            let tonk = state.read().await;
-            super::guest_leases(&tonk).await.expect("leases enumerate")
-        };
-        assert_eq!(
-            leases
-                .iter()
-                .map(|lease| lease.subject.to_string())
-                .collect::<Vec<_>>(),
-            vec![second_key],
-            "a promoted replica must not be replayed as a guest",
-        );
-    }
-
     /// A targeted invite issued to this device's root joins durably.
     #[dialog_common::test]
     async fn it_joins_a_targeted_invite_issued_to_this_root() {
@@ -3973,6 +3806,24 @@ mod tests {
             1,
             "exactly one replica in the profile index",
         );
+    }
+
+    /// Durable membership requires a REGISTERED account. A device
+    /// holding only its onboarding account can create local spaces, not
+    /// join shared ones: the onboarding account has no provider
+    /// attachment, so the claim refuses before any authority is minted.
+    /// The guest visit stays open to it — guests are not members.
+    #[dialog_common::test]
+    async fn it_refuses_a_durable_join_for_an_onboarding_only_device() {
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        // Holding an onboarding account is not enough to count.
+        crate::onboarding::account(&*state.read().await)
+            .await
+            .expect("the onboarding account mints");
+        let (url, _key) = handcrafted_invite_url(84, 85).await;
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CONFLICT);
+        assert_eq!(post_visit(&app, &url).await, StatusCode::CREATED);
     }
 
     /// A local-only invite has no remote to prove, so it commits on

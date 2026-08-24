@@ -107,6 +107,26 @@ mod tests {
         }
     }
 
+    /// Wait until `selector`'s text no longer contains `gone` — the shape
+    /// a retraction takes in the DOM.
+    async fn wait_for_text_without(driver: &WebDriver, selector: &str, gone: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
+                && let Ok(text) = found.text().await
+                && !text.contains(gone)
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for `{selector}` to stop containing {gone:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// The latest activation link the access service captured for `email`.
     async fn activation_link(env: &TestEnvironment, email: &str) -> Result<String> {
         let endpoint = env.access_service.join("_test/emails")?;
@@ -401,7 +421,20 @@ mod tests {
         profile: &TempDir,
         args: &[String],
     ) -> Result<CliOutput> {
-        let output = tonk_command_in(env, profile).args(args).output().await?;
+        // Bounded like `finish_link`: a CLI that hangs must fail the
+        // test that ran it, not hold the suite until the job timeout.
+        // `kill_on_drop` is what actually reaps the child when the
+        // timeout drops the future — `output()` alone would leave it
+        // running.
+        let output = tokio::time::timeout(
+            Duration::from_secs(120),
+            tonk_command_in(env, profile)
+                .args(args)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow!("timed out waiting for `tonk {}`", args.join(" ")))??;
         Ok(CliOutput {
             status: output.status,
             stdout: String::from_utf8(output.stdout)?,
@@ -603,18 +636,29 @@ mod tests {
         Ok(LinkedCli { profile, link })
     }
 
+    /// The one CLI call the suite has seen stall in CI: it runs traced,
+    /// so a failure's stderr carries every connection, request, and
+    /// response with timestamps instead of a bounded "did not answer".
     async fn devices(profile: &TempDir, env: &TestEnvironment) -> Result<CliOutput> {
-        run_cli(
-            env,
-            profile,
-            &[
-                "account".to_string(),
-                "devices".to_string(),
-                "--service-url".to_string(),
-                env.account_service.to_string(),
-            ],
+        let output = tokio::time::timeout(
+            Duration::from_secs(120),
+            tonk_command_in(env, profile)
+                .args(["account", "devices", "--service-url", env.account_service.as_str()])
+                .env("TONK_TRACE", "1")
+                .env(
+                    "RUST_LOG",
+                    "debug,hyper=trace,hyper_util=trace,reqwest=debug,rustls=info,h2=info,dialog_remote_ucan_s3=trace,dialog_remote_s3=trace,dialog_operator=debug",
+                )
+                .kill_on_drop(true)
+                .output(),
         )
         .await
+        .map_err(|_| anyhow!("timed out waiting for `tonk account devices`"))??;
+        Ok(CliOutput {
+            status: output.status,
+            stdout: String::from_utf8(output.stdout)?,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 
     async fn post_json(
@@ -1696,19 +1740,18 @@ mod tests {
         driver.accept_alert().await?;
         wait_for_text_containing(&driver, "#account-working", "Access removed").await?;
 
-        let rejected = devices(&linked.profile, &env).await?;
-        assert_eq!(rejected.status.code(), Some(4), "{}", rejected.stderr);
-        assert!(
-            rejected.stderr.contains("403 Forbidden"),
-            "{}",
-            rejected.stderr
-        );
-        assert!(rejected.stderr.contains("\"code\":\"FORBIDDEN\""));
-        assert!(
-            rejected
-                .stderr
-                .contains("device is not an active member of this account")
-        );
+        // The row leaves with the authority: revoking retracted the
+        // link's facts from the account space, and the refreshed list no
+        // longer shows the device. Storage enforcement of the published
+        // revocation is pinned by the native access-service tests.
+        wait_for_text_without(&driver, "#account-device-list", "e2e terminal").await?;
+
+        // The revoked CLI still answers locally — the list is facts, not
+        // a service round trip — but it can no longer pull the account,
+        // so its own stale row is all it has left of the retraction.
+        let listed = devices(&linked.profile, &env).await?;
+        assert!(listed.status.success(), "devices failed: {}", listed.stderr);
+        assert!(listed.stdout.contains("Chrome on "), "{}", listed.stdout);
 
         driver.quit().await?;
         Ok(())

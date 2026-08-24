@@ -2624,15 +2624,41 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository<SignerCredential>, RepositoryError> {
-    // A space can be created before any account exists: it delegates to
-    // the most durable key the client holds — the passkey-derived root
-    // when one is persisted, else the profile's own device key
-    // (plan/Account model.md §2). Such a space is local-only and
-    // un-backed-up until linking redelegates it to the account and
-    // provisions it; see [`adopt_profile_spaces`].
+    // A space always delegates to an ACCOUNT: the passkey-derived root
+    // once one is persisted, else this device's onboarding account,
+    // which is a real account custodied locally rather than by WebAuthn
+    // (`plan/onboarding-accreditation.md`).
+    //
+    // It used to fall back to the profile's own device key, which made a
+    // pre-account space differ in shape from every other one and left
+    // `adopt_profile_spaces` to reconcile the difference at sign-in.
+    // Delegating to an account from the start means enrolling a passkey
+    // is an account key ROTATION, the same operation a compromised
+    // passkey needs, rather than a bespoke migration.
     let owner = match super::identity::local_root(tonk).await {
         Ok(root) => root.root_did,
-        Err(TonkWorkerError::RootRequired) => tonk.profile.did(),
+        Err(TonkWorkerError::RootRequired) => {
+            // Minting the grant here as well as the account: the device
+            // signs on the account's behalf, so a space delegated to an
+            // account this device cannot prove for would be unusable.
+            crate::onboarding::grant_device(tonk)
+                .await
+                .map_err(|error| {
+                    RepositoryError::Internal(format!("failed to grant the device: {error}"))
+                })?;
+            crate::onboarding::did(tonk)
+                .await
+                .map_err(|error| {
+                    RepositoryError::Internal(format!(
+                        "failed to open the onboarding account: {error}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    RepositoryError::Internal(
+                        "the onboarding account did not materialise".to_string(),
+                    )
+                })?
+        }
         Err(error) => {
             return Err(RepositoryError::Internal(format!(
                 "failed to load local root: {error}"
@@ -2779,7 +2805,16 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
     let Ok(root) = super::identity::local_root(tonk).await else {
         return;
     };
+    // Spaces created before accreditation are rooted at this device's
+    // ONBOARDING account, not at the profile. Older spaces predating that
+    // change are still profile-rooted, so both count as "mine to
+    // re-issue"; anything else reaches this device through someone
+    // else's chain and is left alone.
     let profile_did = tonk.profile.did();
+    let onboarding_did = crate::onboarding::did(tonk).await.unwrap_or(None);
+    let reissuable = |audience: &Did| {
+        audience == &profile_did || onboarding_did.as_ref().is_some_and(|did| audience == did)
+    };
     for key in super::profile_name::real_space_keys(tonk).await {
         let Ok(repository) = tonk
             .profile
@@ -2794,7 +2829,7 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
         let Ok(prefix) = space_root_prefix(tonk, &subject).await else {
             continue;
         };
-        let chain = if prefix.audience() == &profile_did {
+        let chain = if reissuable(prefix.audience()) {
             // Joined replicas carry a verifier-only credential: nothing
             // to redelegate from, their authority is the inviter's.
             let Some(access) = repository.try_access() else {
@@ -3107,8 +3142,37 @@ where
     )
     .await?;
     record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
+    // Only on the creation path: `record_space_mount` also runs for
+    // joined spaces, and a founding stamp there would claim this
+    // account made a space it was merely invited to.
+    record_space_founded(tonk, &repository.did()).await;
     super::adopt::stamp_space_locality(tonk, &repository.did()).await;
     Ok(())
+}
+
+/// Stamp who founded a space and when, onto its directory entity.
+///
+/// Best effort, like the mount record beside it: a space is usable the
+/// moment its delegations exist, and a missing founding stamp costs a
+/// Hub label rather than access.
+async fn record_space_founded(tonk: &TonkState, subject: &Did) {
+    let at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .assert(tonk_schema::SpaceFounded::new(
+            subject,
+            &tonk.profile.did(),
+            at,
+        ));
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("stamp space founding for '{subject}': {error}");
+    }
 }
 
 /// Anchor wrapper so branch/remote concepts can hang off the space's
@@ -5824,6 +5888,48 @@ mod tests {
             .find(|r| r.this == *memberships[0].this())
             .expect("founder role stamped on create");
         assert_eq!(role.role.0.to_string(), tonk_schema::MemberRole::FOUNDER);
+    }
+
+    /// Creating a space stamps who founded it and when, onto the
+    /// account-directory entity the Hub renders.
+    #[dialog_common::test]
+    async fn it_stamps_space_founding_on_create() {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Did;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, key) = fresh_repo("test-space-founding").await;
+
+        let guard = state.read().await;
+        let subject: Did = key.parse().expect("the repository is named by its DID");
+        let profile_entity = guard.profile.did().this();
+
+        let branch = guard
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&guard.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<tonk_schema::SpaceFounded> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceFounded> {
+                this: Term::from(subject.this()),
+                founded_at: Term::var("founded_at"),
+                founded_by: Term::var("founded_by"),
+            })
+            .perform(&guard.operator)
+            .try_vec()
+            .await
+            .expect("founding query runs");
+
+        assert_eq!(rows.len(), 1, "exactly one founding stamp");
+        assert_eq!(
+            rows[0].founded_by.0, profile_entity,
+            "the founding device is recorded, not just the account",
+        );
+        assert!(rows[0].founded_at.0 > 0, "a real timestamp");
     }
 
     /// Creating a repository names the creator on the content branch.

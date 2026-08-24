@@ -64,6 +64,16 @@ async fn handle_inner(
         .and_then(|value| value.to_string().parse().ok())
         .unwrap_or(DEFAULT_EMAIL_TOKEN_TTL);
 
+    // Bound per request, like the presign path's: the index wraps a KV
+    // handle taken from this request's `Env`, which is not ours to keep.
+    let revocations = {
+        use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+        let kv = env
+            .kv("REVOCATIONS_KV")
+            .map_err(|err| internal(format!("REVOCATIONS_KV: {err}")))?;
+        IndexedRevocations(KvRevocationIndex::new(kv))
+    };
+
     let registration = Registration {
         store: &store,
         email: &email,
@@ -72,6 +82,7 @@ async fn handle_inner(
         activation_ttl,
         now: Date::now().as_millis() / 1_000,
         container: body,
+        revocations: &revocations,
     };
     registration.handle().await
 }

@@ -1,5 +1,6 @@
 //! Best-effort browser device labels for account registration.
 
+use tonk_common::device_label::from_navigator;
 use web_sys::window;
 
 /// Derive the current browser's descriptive account device label.
@@ -15,56 +16,9 @@ pub(crate) fn current() -> String {
     )
 }
 
-fn from_navigator(user_agent: &str, platform: &str, max_touch_points: i32) -> String {
-    let browser = if ["Edg/", "EdgA/", "EdgiOS/"]
-        .iter()
-        .any(|token| user_agent.contains(token))
-    {
-        "Edge"
-    } else if user_agent.contains("OPR/") {
-        "Opera"
-    } else if user_agent.contains("SamsungBrowser/") {
-        "Samsung Internet"
-    } else if user_agent.contains("Chrome/") || user_agent.contains("CriOS/") {
-        "Chrome"
-    } else if user_agent.contains("Firefox/") || user_agent.contains("FxiOS/") {
-        "Firefox"
-    } else if user_agent.contains("Safari/") {
-        "Safari"
-    } else {
-        "Browser"
-    };
-
-    let is_ipad_desktop = platform.contains("MacIntel") && max_touch_points > 1;
-    let os = if is_ipad_desktop
-        || ["iPhone", "iPad", "iPod"]
-            .iter()
-            .any(|token| user_agent.contains(token) || platform.contains(token))
-    {
-        "iOS"
-    } else if user_agent.contains("Android") || platform.contains("Android") {
-        "Android"
-    } else if user_agent.contains("Windows") || platform.contains("Win") {
-        "Windows"
-    } else if user_agent.contains("CrOS") || platform.contains("CrOS") {
-        "Chrome OS"
-    } else if ["Macintosh", "Mac OS", "MacIntel"]
-        .iter()
-        .any(|token| user_agent.contains(token) || platform.contains(token))
-    {
-        "macOS"
-    } else if user_agent.contains("Linux") || platform.contains("Linux") {
-        "Linux"
-    } else {
-        "Unknown OS"
-    };
-
-    format!("{browser} on {os}")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::from_navigator;
+    use tonk_common::device_label::from_navigator;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);

@@ -211,6 +211,20 @@ impl CustomElement for TonkFab {
             return;
         }
         restamp_space(this, new.as_deref().unwrap_or(""));
+        // Ask again now that we know WHICH space this is. `connected_callback`
+        // runs while `space` is still an unresolved `{id}` binding, so its
+        // membership probe had no endpoint to call and silently did nothing —
+        // the bar kept its default shape (share, roster) for the rest of the
+        // session, whatever the answer would have been. Healing the children
+        // without re-asking left the bar describing a space it had never
+        // actually looked up.
+        //
+        // Probes THIS host, not `refresh_membership`'s document lookup: that
+        // one takes the first `<tonk-fab>` in the document, which need not be
+        // the element whose attribute just changed.
+        if let Some(endpoint) = host_membership_endpoint(this) {
+            spawn_local(check_membership(this.clone(), endpoint));
+        }
     }
 }
 
@@ -246,6 +260,16 @@ fn restamp_space(host: &HtmlElement, space: &str) {
 /// The membership status the worker reports for a guest visit.
 const MEMBERSHIP_GUEST: &str = "guest";
 
+/// Host attribute marking a space this device does not hold. The worker
+/// answers its membership probe with a 404, not a membership answer.
+/// There is nothing to share and no roster to read, because the replica
+/// is absent.
+///
+/// The bar stays — dropping it entirely would leave the page with no way
+/// out — but the controls that address the missing space are hidden. The
+/// space switcher stays, so the switcher is the way out.
+const UNKNOWN_SPACE_ATTR: &str = "data-unknown-space";
+
 /// Host attribute marking share as unavailable, styled to dim the control.
 /// Advisory: the control stays clickable, because the worker's refusal is what
 /// carries the reason and the offer to join.
@@ -259,6 +283,12 @@ const SHARE_UNAVAILABLE_ATTR: &str = "data-share-unavailable";
 /// neither. Idempotent, and separate from the fetch in [`attach_membership`] so
 /// the shape is testable without a service worker to answer.
 fn apply_membership(host: &HtmlElement, status: &str) {
+    // A real membership answer means the replica IS here, so clear any
+    // earlier absence stamp. The revisit check re-runs on tab focus, which
+    // is exactly when a space joined in another tab becomes available;
+    // leaving the stamp latched would hide share for the rest of the
+    // session even though the answer had changed.
+    let _ = host.remove_attribute(UNKNOWN_SPACE_ATTR);
     let guest = status == MEMBERSHIP_GUEST;
     if let Ok(Some(join)) = host.query_selector(".fab__join") {
         if guest {
@@ -271,6 +301,23 @@ fn apply_membership(host: &HtmlElement, status: &str) {
         let _ = host.set_attribute(SHARE_UNAVAILABLE_ATTR, "");
     } else {
         let _ = host.remove_attribute(SHARE_UNAVAILABLE_ATTR);
+    }
+}
+
+/// Mark the bar as addressing a space this device does not hold: hide the
+/// controls that act on it (share, roster) and the join action, and leave
+/// the space switcher, which is how the reader gets somewhere real.
+///
+/// Separate from [`apply_membership`] because this is not a membership
+/// answer — the replica is absent, so both `guest` and `durable` are
+/// wrong rather than one being right.
+fn apply_unknown_space(host: &HtmlElement) {
+    let _ = host.set_attribute(UNKNOWN_SPACE_ATTR, "");
+    // Share is unavailable for the same reason, so reuse the existing
+    // stamp rather than teaching the stylesheet a second way to say it.
+    let _ = host.set_attribute(SHARE_UNAVAILABLE_ATTR, "");
+    if let Ok(Some(join)) = host.query_selector(".fab__join") {
+        let _ = join.set_attribute("hidden", "");
     }
 }
 
@@ -292,6 +339,14 @@ async fn check_membership(host: HtmlElement, endpoint: String) {
     let Ok(response) = value.dyn_into::<Response>() else {
         return;
     };
+    // A 404 means the worker holds no such repository, so there is no
+    // membership to report. Falling through to the JSON parse just
+    // returned, leaving the bar in its default shape — offering share and
+    // a roster for a space that is not here.
+    if response.status() == 404 {
+        apply_unknown_space(&host);
+        return;
+    }
     let Ok(json) = response.json() else { return };
     let Ok(value) = JsFuture::from(json).await else {
         return;
@@ -2006,6 +2061,62 @@ mod tests {
         assert!(join_shown, "and reveals the join action");
         assert!(!member_marked, "a durable member's share is available");
         assert!(join_hidden, "and carries no join action");
+    }
+
+    /// A space this device does not hold is not a membership answer: the
+    /// worker's probe 404s because there is no such repository. The bar
+    /// must stay (it is the only way off the page) but must not offer
+    /// share, the roster, or a join for a spot that is not here.
+    ///
+    /// The space switcher is what makes keeping the bar worthwhile, so it
+    /// is pinned here too — hiding it would leave the bar present but
+    /// useless.
+    #[dialog_common::test]
+    fn it_keeps_the_switcher_but_drops_share_for_a_space_we_do_not_have() {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-fab")
+            .expect("create host")
+            .unchecked_into();
+        host.set_inner_html(&crate::markup::fab_html("did:key:zAbsent"));
+
+        apply_unknown_space(&host);
+
+        assert!(
+            host.has_attribute(UNKNOWN_SPACE_ATTR),
+            "the bar is marked as addressing a space we do not hold",
+        );
+        assert!(
+            host.has_attribute(SHARE_UNAVAILABLE_ATTR),
+            "share is unavailable — there is nothing to share",
+        );
+        assert!(
+            host.query_selector(".fab__join")
+                .expect("query")
+                .map(|join| join.has_attribute("hidden"))
+                .unwrap_or(false),
+            "no join action: there is no spot here to join",
+        );
+        // The switcher is the way out, so it must survive untouched.
+        assert!(
+            host.query_selector("ui-space-switcher")
+                .expect("query")
+                .is_some(),
+            "the space switcher stays — it is the way off this page",
+        );
+
+        // The absence is not permanent: joining in another tab and coming
+        // back re-checks membership, and a real answer must clear the
+        // stamp. Latched, it would hide share for the rest of the session.
+        apply_membership(&host, "durable");
+        assert!(
+            !host.has_attribute(UNKNOWN_SPACE_ATTR),
+            "a real membership answer clears the absence stamp",
+        );
+        assert!(
+            !host.has_attribute(SHARE_UNAVAILABLE_ATTR),
+            "and share comes back for a durable member",
+        );
     }
 
     /// The account page runs on the top-level origin, so opening it leaves

@@ -512,6 +512,12 @@ enum AccountCommand {
     /// Show whether this device is signed in, and to which account
     Status,
 
+    /// Pull the account so devices, spots, and names read current facts
+    ///
+    /// Read commands answer instantly from what this device already
+    /// knows; this is the one that fetches what other devices changed.
+    Sync,
+
     /// Sign in to your account with a synced passkey in the browser
     ///
     /// Tonk holds one account at a time. Sign out before signing in as
@@ -594,8 +600,9 @@ enum AccountCommand {
 
     /// Revoke one of the account's devices by DID
     ///
-    /// Opens a browser to approve with your passkey: cutting off another
-    /// device takes the account root, which only the passkey can derive.
+    /// This device's own account grant is enough: the revocation is
+    /// minted here, published to every access service, and the device's
+    /// rows leave the account space.
     #[command(after_help = "Examples:\n  tonk account revoke did:key:z6Mk...")]
     Revoke {
         /// DID of the device to revoke (see `tonk account devices`).
@@ -609,17 +616,6 @@ enum AccountCommand {
             hide = true
         )]
         service_url: String,
-        /// Browser page that runs the approval ceremony.
-        #[arg(
-            long,
-            value_name = "URL",
-            default_value = account::DEFAULT_ACCOUNT_PAGE,
-            hide = true
-        )]
-        account_url: String,
-        /// Print the approval URL without asking the OS to open it.
-        #[arg(long)]
-        no_open: bool,
     },
 }
 
@@ -1008,6 +1004,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                     Some(AccountSpotsCommand::Delete { .. }) => "spots-delete",
                 },
                 AccountCommand::Migrate => "migrate",
+                AccountCommand::Sync => "sync",
                 AccountCommand::Devices { .. } => "devices",
                 AccountCommand::Revoke { .. } => "revoke",
             }),
@@ -1094,6 +1091,19 @@ fn uses_active_spot(command: &Command) -> bool {
 async fn main() {
     let cli = Cli::parse();
     VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
+    // `TONK_TRACE=1` turns on the tracing subscriber, filtered by
+    // `RUST_LOG`, on stderr. This is the diagnostic for "the remote did
+    // not answer": hyper, reqwest, and dialog's remote layer all emit
+    // at debug, so a stalled command explains itself in a log rather
+    // than in a bounded timeout.
+    if std::env::var_os("TONK_TRACE").is_some_and(|value| !value.is_empty() && value != "0") {
+        let _ = tracing_log::LogTracer::init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .with_target(true)
+            .try_init();
+    }
     let command = cli.command.unwrap_or(Command::Context { json: false });
     if let (Ok(space), Ok(spot)) = (
         std::env::var(tonk_cli::spot::SPACE_ENV),
@@ -1709,24 +1719,28 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     let own = profile.did().to_string();
                     for row in rows {
                         let marker = if row.did == own { " (this device)" } else { "" };
-                        println!("{}\t{}\t{}{}", row.status, row.name, row.did, marker);
+                        // Every listed row is a live grant; the fixed
+                        // "active" column keeps the output shape scripts
+                        // and tests already parse.
+                        println!("active\t{}\t{}{}", row.name, row.did, marker);
                     }
                     ExitCode::Success
                 }
                 Err(error) => print_failure(error),
             }
         }
-        AccountCommand::Revoke {
-            did,
-            service_url,
-            account_url,
-            no_open,
-        } => {
-            let options = account::RevokeOptions {
-                service_url,
-                account_url,
-                open_browser: !no_open,
-            };
+        AccountCommand::Sync => match account::sync(&profile).await {
+            Ok(outcome) => {
+                if let Some(warning) = outcome.warning {
+                    eprintln!("warning: {warning}");
+                }
+                println!("account: {:?}", outcome.status);
+                ExitCode::Success
+            }
+            Err(error) => print_failure(error),
+        },
+        AccountCommand::Revoke { did, service_url } => {
+            let options = account::RevokeOptions { service_url };
             match account::revoke_in(&profile, &store, &options, &did).await {
                 Ok(account::RevokeOutcome::Revoked) => {
                     println!("revoked\ndevice: {did}");

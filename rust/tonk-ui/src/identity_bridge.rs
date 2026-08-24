@@ -89,17 +89,6 @@ pub(crate) struct UnlockWithPasskeyInput {
     pub service_did: Option<String>,
 }
 
-/// Input for signing a device-grant revocation.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SignRevocationInput {
-    pub delegation_cid: String,
-    pub path_hex: String,
-    /// The access service's `/ucan/` endpoint the custody cell
-    /// resolves through.
-    pub endpoint: String,
-}
-
 /// Account ceremony output sent to the account service.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,13 +101,6 @@ pub(crate) struct CeremonyOutput {
     /// input named the service.
     #[serde(default)]
     pub deposits_hex: Vec<String>,
-}
-
-/// Root-signed revocation returned by the ceremony API.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RevocationOutput {
-    pub revocation_hex: String,
 }
 
 /// Verification-only assertion input: the account passkey to assert
@@ -276,12 +258,6 @@ pub(crate) async fn authorize_device(
     input: AuthorizeDeviceInput,
 ) -> Result<AuthorizedDevice, IdentityBridgeError> {
     call("authorizeDevice", input).await
-}
-
-pub(crate) async fn sign_revocation(
-    input: SignRevocationInput,
-) -> Result<RevocationOutput, IdentityBridgeError> {
-    call("signRevocation", input).await
 }
 
 /// Ask the human to verify with the account's own passkey. Nothing is

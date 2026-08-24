@@ -10,13 +10,13 @@ use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 use tonk_account::AccountStateStatus;
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountSpaceDeletionRequest, AccountStatus,
-    RevocationProjection, RevokeDeviceAcknowledgement,
+    RevokeDeviceAcknowledgement,
 };
 
 use crate::identity_bridge::{
-    CeremonyOutput, CreateAccountInput, EnrollCustodyInput, RevocationOutput, SignRevocationInput,
-    UnlockWithPasskeyInput, VerifyPasskeyInput, create_account, enroll_custody_passkey,
-    sign_revocation, unlock_with_passkey, verify_passkey,
+    CeremonyOutput, CreateAccountInput, EnrollCustodyInput, UnlockWithPasskeyInput,
+    VerifyPasskeyInput, create_account, enroll_custody_passkey, unlock_with_passkey,
+    verify_passkey,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -573,7 +573,10 @@ fn settle_with(
     });
 }
 
-fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]) {
+/// Render the device rows, marking the row whose DID is `own` — the
+/// list itself is the same on every device, so "this device" is a
+/// presentation attribute, the way an active tab is marked.
+fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice], own: &str) {
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
     };
@@ -599,7 +602,9 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         name.set_text_content(Some(&device.name));
         let _ = identity.append_child(&name);
 
-        if device.this_device {
+        let this_device = device.did == own;
+        if this_device {
+            let _ = item.set_attribute("data-this-device", "true");
             let Ok(marker) = document.create_element("span") else {
                 continue;
             };
@@ -614,39 +619,26 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         let _ = meta.set_attribute("class", "account__device-meta");
         let date = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
             .to_locale_date_string("default", &JsValue::UNDEFINED);
-        let mut details = if device.status == "revoked" {
-            format!("Access removed · Added {}", String::from(date))
-        } else {
-            format!("Added {}", String::from(date))
-        };
-        if !device.this_device && device.status == "active" && device.delegation_hex.is_none() {
-            details.push_str(" · Sign in again on this device to enable removal");
-        }
-        meta.set_text_content(Some(&details));
+        meta.set_text_content(Some(&format!("Added {}", String::from(date))));
 
         let _ = item.append_child(&identity);
         let _ = item.append_child(&meta);
 
-        if device.status == "active" && (device.this_device || device.delegation_hex.is_some()) {
-            let Ok(button) = document.create_element("button") else {
-                continue;
-            };
-            let _ = button.set_attribute("type", "button");
-            let _ = button.set_attribute("class", "account__button account__button--remove");
-            let _ = button.set_attribute("data-revoke", &device.did);
-            let _ = button.set_attribute("data-attachment-id", &device.attachment_id);
-            let _ = button.set_attribute("data-delegation-cid", &device.delegation_cid);
-            let _ =
-                button.set_attribute("aria-label", &format!("Remove access for {}", device.name));
-            if let Some(delegation_hex) = &device.delegation_hex {
-                let _ = button.set_attribute("data-delegation-hex", delegation_hex);
-            }
-            if device.this_device {
-                let _ = button.set_attribute("data-self-revoke", "true");
-            }
-            button.set_text_content(Some("Remove access"));
-            let _ = item.append_child(&button);
+        // Every listed device is removable: a row IS an active grant,
+        // and this device's own account grant is enough to mint the
+        // revocation — no passkey and no stored evidence involved.
+        let Ok(button) = document.create_element("button") else {
+            continue;
+        };
+        let _ = button.set_attribute("type", "button");
+        let _ = button.set_attribute("class", "account__button account__button--remove");
+        let _ = button.set_attribute("data-revoke", &device.did);
+        let _ = button.set_attribute("aria-label", &format!("Remove access for {}", device.name));
+        if this_device {
+            let _ = button.set_attribute("data-self-revoke", "true");
         }
+        button.set_text_content(Some("Remove access"));
+        let _ = item.append_child(&button);
         let _ = list.append_child(&item);
     }
 }
@@ -806,13 +798,11 @@ fn reload_into_switched_profile(host: &HtmlElement) {
 }
 
 fn revocation_status(
-    acknowledgement: &RevokeDeviceAcknowledgement,
+    _acknowledgement: &RevokeDeviceAcknowledgement,
     self_revoke: bool,
 ) -> &'static str {
     if self_revoke {
         "Access removed from this device."
-    } else if acknowledgement.projection == RevocationProjection::Stale {
-        "Access removed. The device list may take a moment to update."
     } else {
         "Access removed."
     }
@@ -860,10 +850,6 @@ fn revoke_target_from_url() -> Option<String> {
     query_value("revoke")
 }
 
-fn revoke_attachment_from_url() -> Option<String> {
-    query_value("attachment")
-}
-
 /// Strip the query once the deep link has been acted on. Without this a
 /// cancelled confirm re-fires on every later dashboard visit in this tab.
 fn consume_revoke_target() {
@@ -879,35 +865,27 @@ fn load_devices(host: HtmlElement) {
     set_mode(&host, "success");
     set_busy(&host, true, "Loading devices…");
     spawn_local(async move {
+        // Which row is this device is answered separately from the list:
+        // the rows are shared facts, identical everywhere, and identity
+        // is the one thing only this device can answer for itself.
+        let own = match crate::api::identify().await {
+            Ok(identity) => identity.did,
+            Err(error) => {
+                set_busy(&host, false, "");
+                show_error(&host, error.to_string());
+                return;
+            }
+        };
         match crate::api::account_devices().await {
             Ok(devices) => {
                 set_busy(&host, false, "");
-                render_devices(&host, &devices);
+                render_devices(&host, &devices, &own);
                 if let Some(did) = revoke_target_from_url() {
-                    let attachment_id = revoke_attachment_from_url();
                     consume_revoke_target();
-                    match devices.iter().find(|device| {
-                        device.did == did
-                            && device.status == "active"
-                            && attachment_id
-                                .as_deref()
-                                .is_none_or(|expected| device.attachment_id == expected)
-                    }) {
-                        Some(device) if device.this_device || device.delegation_hex.is_some() => {
-                            begin_revoke(
-                                host.clone(),
-                                device.attachment_id.clone(),
-                                device.did.clone(),
-                                device.delegation_cid.clone(),
-                                device.delegation_hex.clone().unwrap_or_default(),
-                                device.this_device,
-                            )
+                    match devices.iter().find(|device| device.did == did) {
+                        Some(device) => {
+                            begin_revoke(host.clone(), device.did.clone(), device.did == own)
                         }
-                        Some(_) => show_error(
-                            &host,
-                            "This device was added before remote removal was supported. \
-                             Sign in again on that device, then try removing it here.",
-                        ),
                         None => show_error(
                             &host,
                             "The device in this link is no longer connected to this account.",
@@ -2046,48 +2024,26 @@ fn bind(host: &HtmlElement) {
             let Some(did) = target.get_attribute("data-revoke") else {
                 return;
             };
-            let attachment_id = target
-                .get_attribute("data-attachment-id")
-                .unwrap_or_default();
-            let delegation_cid = target
-                .get_attribute("data-delegation-cid")
-                .unwrap_or_default();
-            let delegation_hex = target
-                .get_attribute("data-delegation-hex")
-                .unwrap_or_default();
             let self_revoke = target.get_attribute("data-self-revoke").is_some();
-            begin_revoke(
-                host_for_revoke.clone(),
-                attachment_id,
-                did,
-                delegation_cid,
-                delegation_hex,
-                self_revoke,
-            );
+            begin_revoke(host_for_revoke.clone(), did, self_revoke);
         });
         let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
         closure.forget();
     }
 }
 
-/// Confirm, run the passkey ceremony, and revoke.
+/// Confirm and revoke.
 ///
-/// Only the account root can revoke another device, and the root lives
-/// behind the passkey — so the ceremony runs here, in the page, and the
-/// signed revocation travels with the request. Shared by the device
-/// list's button and the CLI's `?revoke=` handoff.
-fn begin_revoke(
-    host: HtmlElement,
-    attachment_id: String,
-    did: String,
-    delegation_cid: String,
-    delegation_hex: String,
-    self_revoke: bool,
-) {
+/// No passkey ceremony: the worker's own account grant is a powerline,
+/// so it mints the revocation itself — for this device from its own
+/// link, for another from the target's grant retained in the account
+/// space. Shared by the device list's button and the CLI's `?revoke=`
+/// handoff.
+fn begin_revoke(host: HtmlElement, did: String, self_revoke: bool) {
     let message = if self_revoke {
         "Remove access for this device? This permanently disconnects it from your Tonk account. To use it again, sign in to add it as a new device."
     } else {
-        "Remove access for this device? This permanently disconnects it from your Tonk account. To use it again, sign in to add a new device.\n\nYou will be asked to confirm with your passkey."
+        "Remove access for this device? This permanently disconnects it from your Tonk account. To use it again, sign in to add a new device."
     };
     let confirmed = window()
         .map(|window| window.confirm_with_message(message).unwrap_or(false))
@@ -2102,42 +2058,11 @@ fn begin_revoke(
         if self_revoke {
             "Revoking this device…"
         } else {
-            "Waiting for your passkey…"
+            "Revoking device…"
         },
     );
     spawn_local(async move {
-        let revocation_hex = if self_revoke {
-            String::new()
-        } else {
-            let endpoint = match proposed_remote() {
-                Ok(endpoint) => endpoint,
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error);
-                    return;
-                }
-            };
-            // Signing a revocation unlocks the root, which reads the
-            // custody cell.
-            publish_queued_custody().await;
-            let signed: Result<RevocationOutput, String> = sign_revocation(SignRevocationInput {
-                delegation_cid,
-                path_hex: delegation_hex,
-                endpoint,
-            })
-            .await
-            .map_err(|error| error.to_string());
-            match signed {
-                Ok(output) => output.revocation_hex,
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error);
-                    return;
-                }
-            }
-        };
-        set_busy(&host, true, "Revoking device…");
-        match crate::api::revoke_account_device(attachment_id, did, revocation_hex).await {
+        match crate::api::revoke_account_device(did).await {
             Ok(acknowledgement) => {
                 clear_error(&host);
                 set_busy(
@@ -2151,10 +2076,16 @@ fn begin_revoke(
                 }
 
                 // Canonical publication is already complete. Refreshing the
-                // mutable registry is deliberately best-effort and cannot
-                // turn that success into a failure.
-                match crate::api::account_devices().await {
-                    Ok(devices) => render_devices(&host, &devices),
+                // list is deliberately best-effort and cannot turn that
+                // success into a failure — or overwrite its status line.
+                let refreshed = async {
+                    let own = crate::api::identify().await?.did;
+                    let devices = crate::api::account_devices().await?;
+                    Ok::<_, crate::error::TonkUiError>((devices, own))
+                }
+                .await;
+                match refreshed {
+                    Ok((devices, own)) => render_devices(&host, &devices, &own),
                     Err(error) => web_sys::console::warn_1(
                         &format!(
                             "device revocation published; device-list refresh failed: {error}"
@@ -2701,19 +2632,18 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_distinguishes_publication_from_projection_and_self_revocation() {
-        let stale = RevokeDeviceAcknowledgement {
+    fn it_distinguishes_self_revocation_in_the_status_line() {
+        let acknowledgement = RevokeDeviceAcknowledgement {
             target_did: "did:key:device".into(),
             target_cid: "bafycid".into(),
             published: true,
-            projection: RevocationProjection::Stale,
         };
         assert_eq!(
-            revocation_status(&stale, false),
-            "Access removed. The device list may take a moment to update."
+            revocation_status(&acknowledgement, false),
+            "Access removed."
         );
         assert_eq!(
-            revocation_status(&stale, true),
+            revocation_status(&acknowledgement, true),
             "Access removed from this device."
         );
     }
@@ -2803,67 +2733,32 @@ mod tests {
     #[dialog_common::test]
     async fn it_renders_the_device_list_with_a_this_device_marker() {
         let host = mounted_account_host().await;
-        // A legacy persisted label must still render verbatim; this change only
-        // affects names generated for new registrations.
         let devices = vec![
             tonk_worker_api::AccountDevice {
-                attachment_id: "attachment-this".into(),
                 did: "did:key:zThis".into(),
-                delegation_cid: "bafythis".into(),
-                delegation_hex: Some("beef".into()),
                 name: "This browser".into(),
-                status: "active".into(),
                 created_at: 1_753_300_000,
-                this_device: true,
             },
             tonk_worker_api::AccountDevice {
-                attachment_id: "attachment-other".into(),
-                did: "did:key:zOther".into(),
-                delegation_cid: "bafyother".into(),
-                delegation_hex: Some("beef".into()),
-                name: "Old laptop".into(),
-                status: "revoked".into(),
-                created_at: 1_753_200_000,
-                this_device: false,
-            },
-            tonk_worker_api::AccountDevice {
-                attachment_id: "attachment-phone".into(),
                 did: "did:key:zPhone".into(),
-                delegation_cid: "bafyphone".into(),
-                delegation_hex: Some("beef".into()),
                 name: "Phone".into(),
-                status: "active".into(),
                 created_at: 1_753_100_000,
-                this_device: false,
-            },
-            tonk_worker_api::AccountDevice {
-                attachment_id: "attachment-legacy".into(),
-                did: "did:key:zLegacy".into(),
-                delegation_cid: "bafylegacy".into(),
-                delegation_hex: None,
-                name: "Legacy tablet".into(),
-                status: "active".into(),
-                created_at: 1_753_000_000,
-                this_device: false,
             },
         ];
-        render_devices(&host, &devices);
+        render_devices(&host, &devices, "did:key:zThis");
 
         let list = host
             .query_selector("#account-device-list")
             .unwrap()
             .unwrap();
         let items = list.query_selector_all("li").unwrap();
-        assert_eq!(items.length(), 4);
+        assert_eq!(items.length(), 2);
         let text = list.text_content().unwrap();
         assert!(text.contains("This browser"));
         assert!(text.contains("This device"));
-        assert!(text.contains("Access removed"));
         assert!(text.contains("Added"));
-        assert!(text.contains("Sign in again on this device to enable removal"));
-        // Self-revocation is device-signed and the current row does not need
-        // provider path bytes. Another device needs retained path evidence;
-        // the legacy row remains visible but has no unsafe revoke action.
+        // Every row is an active grant, so every row is removable — no
+        // stored path evidence or passkey involved.
         assert_eq!(
             list.query_selector_all("button[data-revoke]")
                 .unwrap()
@@ -2875,18 +2770,11 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-
-        // Another-device ceremony signs a revocation of a named delegation,
-        // so its button carries the CID as well as the DID.
         let button = list
             .query_selector("button[data-revoke=\"did:key:zPhone\"]")
             .unwrap()
-            .expect("the active, non-self row has a revoke button");
+            .expect("another device's row has a revoke button");
         assert_eq!(button.text_content().as_deref(), Some("Remove access"));
-        assert_eq!(
-            button.get_attribute("data-delegation-cid").as_deref(),
-            Some("bafyphone")
-        );
     }
 
     /// A `?revoke=` deep link must land on the device list, where the

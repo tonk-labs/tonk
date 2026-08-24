@@ -59,6 +59,8 @@ tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-identity = { workspace = true }
+getrandom = { workspace = true }
+zeroize = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-language-server = { workspace = true }
 tonk-notation = { workspace = true }

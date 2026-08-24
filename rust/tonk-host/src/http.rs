@@ -77,8 +77,8 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
         .as_string()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
     if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
+        return Err(ErrorDetail::http(
+            resp.status(),
             format!("HTTP {}: {body_text}", resp.status()),
         ));
     }
@@ -152,8 +152,8 @@ pub(crate) async fn post_site_to(url: &str, path: &str) -> Result<String, ErrorD
         .as_string()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
     if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
+        return Err(ErrorDetail::http(
+            resp.status(),
             format!("HTTP {}: {body_text}", resp.status()),
         ));
     }
@@ -225,8 +225,8 @@ pub(crate) async fn frame_stream(
         .dyn_into()
         .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return a Response"))?;
     if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
+        return Err(ErrorDetail::http(
+            resp.status(),
             format!("HTTP {}", resp.status()),
         ));
     }
@@ -378,8 +378,8 @@ pub(crate) async fn post_text(
         .as_string()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
     if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
+        return Err(ErrorDetail::http(
+            resp.status(),
             format!("HTTP {}: {body_text}", resp.status()),
         ));
     }
