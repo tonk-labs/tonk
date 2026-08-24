@@ -27,7 +27,8 @@ use dialog_repository::{
     Branch, CommitError, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
     UpstreamBranch,
 };
-use dialog_ucan::UcanDelegation;
+use dialog_ucan::{Parameters, Scope, UcanDelegation};
+use dialog_ucan_core::command::Command;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
@@ -231,4 +232,20 @@ pub enum UnionError {
     /// The delegation could not be built or signed.
     #[error("failed to mint the profile to account delegation: {0}")]
     Mint(String),
+}
+
+/// The scope a device grant proves: the account subject, root command.
+///
+/// A device link is a powerline, so its subject is the account rather
+/// than any one space, and `/` is the command it carries.
+pub fn account_scope(link: &DelegationChain) -> Scope {
+    let account = link
+        .subject()
+        .cloned()
+        .unwrap_or_else(|| link.issuer().clone());
+    Scope {
+        subject: UcanSubject::Specific(account),
+        command: Command::parse("/").expect("the root command always parses"),
+        parameters: Parameters::default(),
+    }
 }

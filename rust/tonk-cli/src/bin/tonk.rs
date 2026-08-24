@@ -579,8 +579,9 @@ enum AccountCommand {
 
     /// Revoke one of the account's devices by DID
     ///
-    /// Opens a browser to approve with your passkey: cutting off another
-    /// device takes the account root, which only the passkey can derive.
+    /// This device's own account grant is enough: the revocation is
+    /// minted here, published to every access service, and the device's
+    /// rows leave the account space.
     #[command(after_help = "Examples:\n  tonk account revoke did:key:z6Mk...")]
     Revoke {
         /// DID of the device to revoke (see `tonk account devices`).
@@ -594,17 +595,6 @@ enum AccountCommand {
             hide = true
         )]
         service_url: String,
-        /// Browser page that runs the approval ceremony.
-        #[arg(
-            long,
-            value_name = "URL",
-            default_value = account::DEFAULT_ACCOUNT_PAGE,
-            hide = true
-        )]
-        account_url: String,
-        /// Print the approval URL without asking the OS to open it.
-        #[arg(long)]
-        no_open: bool,
     },
 }
 
@@ -1557,24 +1547,18 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     let own = profile.did().to_string();
                     for row in rows {
                         let marker = if row.did == own { " (this device)" } else { "" };
-                        println!("{}\t{}\t{}{}", row.status, row.name, row.did, marker);
+                        // Every listed row is a live grant; the fixed
+                        // "active" column keeps the output shape scripts
+                        // and tests already parse.
+                        println!("active\t{}\t{}{}", row.name, row.did, marker);
                     }
                     ExitCode::Success
                 }
                 Err(error) => print_failure(error),
             }
         }
-        AccountCommand::Revoke {
-            did,
-            service_url,
-            account_url,
-            no_open,
-        } => {
-            let options = account::RevokeOptions {
-                service_url,
-                account_url,
-                open_browser: !no_open,
-            };
+        AccountCommand::Revoke { did, service_url } => {
+            let options = account::RevokeOptions { service_url };
             match account::revoke(&profile, &options, &did).await {
                 Ok(account::RevokeOutcome::Revoked) => {
                     println!("revoked\ndevice: {did}");

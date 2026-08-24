@@ -10,14 +10,12 @@ use std::collections::BTreeMap;
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_ucan::{Parameters, Scope};
 use dialog_ucan_core::DelegationChain;
-use dialog_ucan_core::command::Command;
-use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_varsig::Did;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_account::delegations::account_scope;
 use tonk_common::log;
 use tonk_worker_api::{
     AccountDevice, AccountSummary, PasskeyMetadata, RevokeDeviceAcknowledgement,
@@ -46,57 +44,18 @@ pub(super) async fn linked_service(
     Ok((link, service))
 }
 
-/// The audience DID dialog recorded for a retained delegation.
-///
-/// `dialog.ucan/audience` is written onto the delegation's own entity
-/// when the chain is retained, so this reads the device's identity from
-/// the same record that carries its label — no second source to drift.
-async fn delegation_audience(
-    branch: &dialog_repository::Branch,
-    state: &TonkState,
-    entity: &dialog_artifacts::Entity,
-) -> Option<String> {
-    use dialog_artifacts::{ArtifactSelector, Value};
-    use futures_util::StreamExt as _;
-
-    let selector = ArtifactSelector::new()
-        .the(dialog_repository::DELEGATION_AUDIENCE.parse().ok()?)
-        .of(entity.clone());
-    let facts = branch
-        .claims()
-        .select(selector)
-        .perform(&state.operator)
-        .await
-        .ok()?
-        .collect::<Vec<_>>()
-        .await;
-    for fact in facts.into_iter().flatten() {
-        if let Ok(Value::String(did)) = fact.value() {
-            return Some(did.to_string());
-        }
-    }
-    None
-}
-
 /// This account's device links and their audiences, from local facts.
 ///
-/// Every row the account service used to serve is derivable here: dialog
-/// decomposes issuer/audience onto each retained delegation's entity,
-/// and [`DeviceLink`] adds the label and creation time. Rows land in the
-/// account space at the moment a grant is minted — this device's own at
-/// onboarding, another device's at approval — so the branch every device
-/// syncs is also the registry, and the list renders offline.
+/// The query itself is [`tonk_schema::device_link::device_links`],
+/// shared with the CLI so both adapters list the same thing; what is
+/// local here is how the branch is reached.
 ///
 /// Revoked devices are absent rather than listed as revoked: revoking
 /// retracts the link's facts, so the row goes with the authority it
 /// described.
-///
-/// [`DeviceLink`]: tonk_schema::DeviceLink
 async fn local_devices(
     state: &TonkState,
 ) -> Result<Vec<(tonk_schema::DeviceLink, String)>, TonkWorkerError> {
-    use dialog_query::{Output as _, Query, Term};
-
     let branch = state
         .reactor
         .profile_repository()
@@ -106,30 +65,9 @@ async fn local_devices(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("open account branch to list devices: {error}"))
         })?;
-    let links: Vec<tonk_schema::DeviceLink> = branch
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::DeviceLink> {
-            this: Term::var("this"),
-            created_at: Term::var("created_at"),
-            title: Term::var("title"),
-            reason: Term::var("reason"),
-        })
-        .perform(&state.operator)
-        .try_vec()
+    tonk_schema::device_link::device_links(branch.handle(), &state.operator)
         .await
-        .map_err(|error| TonkWorkerError::Internal(format!("query device links: {error}")))?;
-
-    let mut devices = Vec::with_capacity(links.len());
-    for link in links {
-        // The audience is the device; dialog wrote it onto the same
-        // entity when the chain was retained.
-        let Some(did) = delegation_audience(branch.handle(), state, &link.this).await else {
-            continue;
-        };
-        devices.push((link, did));
-    }
-    Ok(devices)
+        .map_err(|error| TonkWorkerError::Internal(format!("query device links: {error}")))
 }
 
 /// List the devices authorized under this profile's account.
@@ -333,22 +271,6 @@ pub async fn summary(
 /// reconstructed from retained `dialog.ucan/*` facts rather than a
 /// stored copy, so it cannot drift from what the proof search reads.
 /// `proofs` answers "may this principal invoke at all" — our own link.
-/// The scope a device grant proves: the account subject, root command.
-///
-/// A device link is a powerline, so its subject is the account rather
-/// than any one space, and `/` is the command it carries.
-fn account_scope(link: &DelegationChain) -> Scope {
-    let account = link
-        .subject()
-        .cloned()
-        .unwrap_or_else(|| link.issuer().clone());
-    Scope {
-        subject: UcanSubject::Specific(account),
-        command: Command::parse("/").expect("the root command always parses"),
-        parameters: Parameters::default(),
-    }
-}
-
 /// Mint a revocation for another device, returning the artifact and the
 /// CID of the grant it withdraws.
 async fn delegated_revocation(

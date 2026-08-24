@@ -5,8 +5,15 @@
 // comments; suppress `missing_docs` like the sibling concept modules.
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
-use dialog_query::Concept;
+use dialog_artifacts::{ArtifactSelector, Entity, Value};
+use dialog_capability::{Fork, Provider};
+use dialog_common::ConditionalSync;
+use dialog_effects::archive::{Get, Put};
+use dialog_effects::authority::Identify;
+use dialog_effects::memory::Resolve;
+use dialog_query::{Concept, EvaluationError, Output as _, Query, Term};
+use dialog_repository::{Branch, DELEGATION_AUDIENCE, RemoteSite};
+use futures_util::StreamExt as _;
 
 use crate::domain::device::{CreatedAt, Reason, Title};
 
@@ -56,4 +63,84 @@ impl DeviceLink {
             reason: Reason(DEVICE_LINK.to_string()),
         }
     }
+}
+
+/// This account's device links and their audiences, from the account
+/// branch's own facts — the one query the worker's device list and the
+/// CLI's `account devices` both run.
+///
+/// Dialog decomposes issuer/audience onto each retained delegation's
+/// entity, and [`DeviceLink`] adds the label and creation time, so every
+/// row is derivable locally. A link whose audience fact is missing is
+/// skipped: without an audience there is no device to attribute the row
+/// to.
+pub async fn device_links<Env>(
+    account: &Branch,
+    env: &Env,
+) -> Result<Vec<(DeviceLink, String)>, EvaluationError>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<Identify>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static,
+{
+    let links: Vec<DeviceLink> = account
+        .query()
+        .select(Query::<DeviceLink> {
+            this: Term::var("this"),
+            created_at: Term::var("created_at"),
+            title: Term::var("title"),
+            reason: Term::var("reason"),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+
+    let mut devices = Vec::with_capacity(links.len());
+    for link in links {
+        let Some(did) = delegation_audience(account, &link.this, env).await else {
+            continue;
+        };
+        devices.push((link, did));
+    }
+    Ok(devices)
+}
+
+/// The audience DID dialog recorded for a retained delegation.
+///
+/// `dialog.ucan/audience` is written onto the delegation's own entity
+/// when the chain is retained, so this reads the device's identity from
+/// the same record that carries its label — no second source to drift.
+async fn delegation_audience<Env>(account: &Branch, entity: &Entity, env: &Env) -> Option<String>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<Identify>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static,
+{
+    let selector = ArtifactSelector::new()
+        .the(DELEGATION_AUDIENCE.parse().ok()?)
+        .of(entity.clone());
+    let facts = account
+        .claims()
+        .select(selector)
+        .perform(env)
+        .await
+        .ok()?
+        .collect::<Vec<_>>()
+        .await;
+    for fact in facts.into_iter().flatten() {
+        if let Ok(Value::String(did)) = fact.value() {
+            return Some(did.to_string());
+        }
+    }
+    None
 }

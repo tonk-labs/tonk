@@ -7,9 +7,7 @@ use dialog_operator::Profile;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
-use dialog_ucan_core::promise::Promised;
 use dialog_varsig::Did;
-use serde::Deserialize;
 use tonk_account::{AccountProviderRecord, AccountStateStatus};
 use url::Url;
 
@@ -586,22 +584,15 @@ pub async fn link_with_operator(
     link_via_callback(profile, operator, options, page).await
 }
 
-/// One registry row from `POST /devices/list`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// One device row, from the account space's own facts.
+#[derive(Debug, Clone)]
 pub struct DeviceRow {
-    /// Exact attachment generation.
-    pub attachment_id: String,
     /// The device's DID.
     pub did: String,
-    /// Display name registered at link time.
+    /// Display name described at link time.
     pub name: String,
-    /// Registry status: `active` or `revoked`.
-    pub status: String,
-    /// Registration time, seconds since the epoch.
+    /// Link time, seconds since the epoch.
     pub created_at: u64,
-    /// CID of the `root → device` delegation a revocation must name.
-    pub delegation_cid: String,
 }
 
 /// Authenticated provider attachment used by account-scoped CLI modules.
@@ -609,7 +600,6 @@ pub(crate) struct AccountConnection {
     pub(crate) service_url: String,
     pub(crate) root_did: Did,
     pub(crate) link: DelegationChain,
-    store: crate::spot::SpotStore,
 }
 
 async fn connection_from_provider(
@@ -628,7 +618,6 @@ async fn connection_from_provider(
         service_url,
         root_did,
         link,
-        store: crate::spot::SpotStore::open().context("failed to locate account state")?,
     })
 }
 
@@ -645,7 +634,6 @@ pub(crate) async fn optional_connection(profile: &Profile) -> Result<Option<Acco
             service_url,
             root_did: link.issuer().clone(),
             link,
-            store: crate::spot::SpotStore::open().context("failed to locate account state")?,
         }));
     }
     let Some(provider) = stored_provider(profile).await? else {
@@ -751,93 +739,15 @@ pub async fn attach_for_integration_test(
     Ok(())
 }
 
-impl AccountConnection {
-    /// Sign and POST one account invocation, preserving the raw HTTP status
-    /// so callers can implement rolling-deployment fallbacks.
-    pub(crate) async fn signed_post(
-        &self,
-        profile: &Profile,
-        path: &str,
-        command: Vec<String>,
-        arguments: std::collections::BTreeMap<String, Promised>,
-    ) -> Result<reqwest::Response> {
-        #[cfg(feature = "integration-tests")]
-        if integration_connections()
-            .lock()
-            .expect("integration connection registry")
-            .contains_key(profile.did().as_ref())
-        {
-            let body = tonk_identity::request::build_device_invocation(
-                profile.signer().signer().clone(),
-                &self.link,
-                command,
-                arguments,
-            )
-            .await
-            .context("failed to sign the account-service request")?;
-            return post_invocation_raw(&self.service_url, path, body).await;
-        }
-
-        let operator =
-            crate::account_state::credential_operator_for_store(profile, &self.store).await?;
-        let store = self.store.clone();
-        {
-            let guard = crate::account_session::exclusive_transition_guard(&store)?;
-            crate::account_session::ensure_initialized(profile, &operator, &guard).await?;
-        }
-        let guard = crate::account_session::shared_remote_guard(&store)?;
-        let active = crate::account_session::active_guarded(profile, &operator, &guard)
-            .await?
-            .context("no active account; run `tonk account link`")?;
-        if active.provider.trim_end_matches('/') != self.service_url.trim_end_matches('/')
-            || active.root_did != self.root_did.to_string()
-        {
-            bail!("account connection does not match the active attachment");
-        }
-        let bytes =
-            hex::decode(&active.delegation_hex).context("active account grant hex is invalid")?;
-        let link = DelegationChain::try_from(bytes.as_slice())
-            .context("active account grant is invalid")?;
-        if link.proof_cids().len() != 1 || link.proof_cids()[0].to_string() != active.delegation_cid
-        {
-            bail!("active account grant does not match canonical session state");
-        }
-        let body = tonk_identity::request::build_device_invocation(
-            profile.signer().signer().clone(),
-            &link,
-            command,
-            arguments,
-        )
-        .await
-        .context("failed to sign the account-service request")?;
-        let response = post_invocation_raw(&self.service_url, path, body).await;
-        drop(guard);
-        response
-    }
-}
-
-async fn post_invocation_raw(
-    service_url: &str,
-    path: &str,
-    body: Vec<u8>,
-) -> Result<reqwest::Response> {
-    reqwest::Client::new()
-        .post(format!(
-            "{}/{}",
-            service_url.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        ))
-        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
-        .body(body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .with_context(|| format!("failed to reach the account service at {path}"))
-}
-
-/// List the devices registered under this profile's account. The
-/// recorded provider is authoritative; a `service_url` names one only
-/// to cross-check it against the active account.
+/// List the devices authorized under this profile's account, from the
+/// account branch's own facts. The recorded provider is authoritative; a
+/// `service_url` names one only to cross-check it against the active
+/// account.
+///
+/// The account is synced first, best-effort: rows described on other
+/// devices arrive with the pull, and offline the list still serves what
+/// is local. One row per device — a device described more than once
+/// keeps its earliest link time.
 pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
     let connection = optional_connection(profile)
         .await?
@@ -847,31 +757,133 @@ pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec
     {
         bail!("requested provider does not match the active account");
     }
-    let response = connection
-        .signed_post(
-            profile,
-            "devices/list",
-            vec!["account".into(), "device".into(), "list".into()],
-            std::collections::BTreeMap::new(),
-        )
-        .await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        bail!("account service rejected devices/list ({status}): {text}");
+    let operator = crate::account_state::credential_operator(profile).await?;
+    if let Err(error) = crate::account_state::ensure_with_operator(profile, operator.clone()).await
+    {
+        eprintln!("warning: account sync failed; listing local facts: {error:#}");
     }
-    response
-        .json()
+    let branch = account_branch(profile, &operator).await?;
+    let links = tonk_schema::device_link::device_links(&branch, &operator)
         .await
-        .context("account service returned an invalid device list")
+        .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?;
+    let mut rows: std::collections::BTreeMap<String, DeviceRow> = Default::default();
+    for (link, did) in links {
+        let row = DeviceRow {
+            did,
+            name: link.title.0,
+            created_at: link.created_at.0,
+        };
+        match rows.get_mut(&row.did) {
+            Some(existing) if existing.created_at <= row.created_at => {}
+            Some(existing) => *existing = row,
+            None => {
+                rows.insert(row.did.clone(), row);
+            }
+        }
+    }
+    let mut devices: Vec<DeviceRow> = rows.into_values().collect();
+    devices.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    Ok(devices)
 }
 
-/// The browser URL that runs the revoke ceremony for `did`.
-///
-/// A query parameter, not a fragment: the fragment carries bearer
-/// secrets in the link handoff, and a device DID is neither secret nor
-/// sensitive to leak into a browser history. The DID needs no escaping —
-/// `:` is a legal query character and the rest is base58.
+/// The mounted account branch, or what to run when there is none.
+async fn account_branch(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+) -> Result<dialog_repository::Branch> {
+    crate::account_state::open_account_branch(profile, operator)
+        .await?
+        .context("the account repository is not mounted; run `tonk account link`")
+}
+
+/// Publish a revocation everywhere it could still be honoured — the
+/// account's own access service plus every service a directory space
+/// syncs through. Every endpoint must accept it: a partial publication
+/// is the dangerous outcome, so a refusal anywhere is reported rather
+/// than swallowed.
+async fn publish_revocation(
+    profile: &Profile,
+    branch: &dialog_repository::Branch,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    artifact: &[u8],
+) -> Result<()> {
+    use dialog_remote_ucan_s3::UcanAddress;
+
+    let mut endpoints = std::collections::BTreeSet::new();
+    if let Some(provider) = stored_provider(profile).await?
+        && let Some(descriptor) = provider.descriptor()
+    {
+        endpoints.insert(
+            UcanAddress::new(descriptor.remote().as_str())
+                .endpoint()
+                .to_string(),
+        );
+    }
+    endpoints.extend(
+        tonk_schema::directory::access_endpoints(branch, operator)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot enumerate the services this revocation must reach: {error:?}"
+                )
+            })?,
+    );
+    if endpoints.is_empty() {
+        bail!("this profile has no access service to publish a revocation to");
+    }
+    let client = reqwest::Client::new();
+    for endpoint in &endpoints {
+        let response = client
+            .post(endpoint)
+            .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+            .body(artifact.to_vec())
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .with_context(|| format!("failed to reach the access service at {endpoint}"))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            bail!("access service {endpoint} rejected the revocation ({status}): {text}");
+        }
+        let receipt: tonk_account::customer::RevokeReceipt = response
+            .json()
+            .await
+            .with_context(|| format!("{endpoint} returned an unreadable revoke receipt"))?;
+        let _ = receipt.revoked;
+    }
+    Ok(())
+}
+
+/// Retract a revoked device's link rows from the account space, so the
+/// row leaves every device's list the way the authority left the chain.
+/// Returns whether anything was retracted.
+async fn retract_device_rows(
+    branch: &dialog_repository::Branch,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    target: &str,
+) -> Result<bool> {
+    let links = tonk_schema::device_link::device_links(branch, operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?;
+    let mut transaction = branch.transaction();
+    let mut retracting = false;
+    for (link, did) in links {
+        if did == target {
+            transaction = transaction.retract(link);
+            retracting = true;
+        }
+    }
+    if retracting {
+        transaction
+            .commit()
+            .perform(operator)
+            .await
+            .context("failed to retract the revoked device's rows")?;
+    }
+    Ok(retracting)
+}
+
 /// The browser URL that asks the account to delegate to this CLI profile.
 ///
 /// The same page `account link` opens, with two query parameters instead of a
@@ -894,44 +906,54 @@ fn login_url(base: &str, audience: &str, callback: &str, name: &str) -> String {
     )
 }
 
-fn revoke_url(base: &str, did: &str) -> String {
-    format!(
-        "{}?revoke={did}",
-        base.trim_end_matches('#').trim_end_matches('/')
-    )
-}
-
-/// Inputs for a browser-assisted revocation.
+/// Inputs for revoking a device.
 pub struct RevokeOptions {
-    /// Account service base URL.
+    /// Account service base URL, cross-checked against the active account.
     pub service_url: String,
-    /// Browser page that runs the ceremony.
-    pub account_url: String,
-    /// Whether to ask the OS to open the ceremony URL.
-    pub open_browser: bool,
 }
 
 /// How a revocation request resolved. The caller owns the messaging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevokeOutcome {
-    /// The registry now shows the device revoked.
+    /// The revocation was published and the device's rows retracted.
     Revoked,
-    /// The registry already showed the device revoked; nothing to do.
+    /// The device has no rows left to retract; its grant was already
+    /// withdrawn.
     AlreadyRevoked,
 }
 
-/// Revoke a device. The current device self-signs immediately; another device
-/// requires the browser/passkey ceremony, then the CLI watches projection.
+/// Revoke a device under this profile's own account grant.
+///
+/// No browser and no passkey: a device link is a powerline, so this
+/// device can prove for the account subject — which is exactly the
+/// authority revoking an account-issued grant requires. The artifact is
+/// published to every access service that honours it, then the device's
+/// rows are retracted from the account space so the list converges on
+/// every device.
+///
+/// The order encodes what each failure costs. For another device the
+/// publication comes first, because enforcement lives in the revocation
+/// index and a row that disappears over a device still reaching storage
+/// would be a lie. For this device itself the retraction and its push
+/// come first, because a device that has just revoked itself can no
+/// longer push anything.
 pub async fn revoke(
     profile: &Profile,
     options: &RevokeOptions,
     did: &str,
 ) -> Result<RevokeOutcome> {
-    if profile.did().as_ref() == did {
-        let connection = optional_connection(profile)
-            .await?
-            .context("no active account; run `tonk account link`")?;
-        let link = connection.link.clone();
+    let connection = optional_connection(profile)
+        .await?
+        .context("no active account; run `tonk account link`")?;
+    if connection.service_url.trim_end_matches('/') != options.service_url.trim_end_matches('/') {
+        bail!("requested provider does not match the active account");
+    }
+    let operator = crate::account_state::credential_operator(profile).await?;
+    let link = connection.link.clone();
+    let own = profile.did().as_ref() == did;
+
+    if own {
+        let branch = account_branch(profile, &operator).await?;
         let target = link.proof_cids()[0];
         let artifact = tonk_identity::revocation::mint_self_revocation(
             profile.signer().signer().clone(),
@@ -940,116 +962,79 @@ pub async fn revoke(
         )
         .await
         .context("failed to sign self-revocation")?;
-        let rows = devices(profile, Some(&options.service_url)).await?;
-        let row = rows
-            .iter()
-            .find(|row| row.did == did && row.delegation_cid == target.to_string())
-            .context("the active self attachment is missing from the device list")?;
-        let arguments = [
-            (
-                "attachmentId".to_owned(),
-                dialog_ucan_core::promise::Promised::String(row.attachment_id.clone()),
-            ),
-            (
-                "did".to_owned(),
-                dialog_ucan_core::promise::Promised::String(did.to_string()),
-            ),
-            (
-                "revocation".to_owned(),
-                dialog_ucan_core::promise::Promised::String(hex::encode(artifact)),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let response = connection
-            .signed_post(
-                profile,
-                "devices/revoke",
-                vec!["account".into(), "device".into(), "revoke".into()],
-                arguments,
-            )
-            .await?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            bail!("account service rejected devices/revoke ({status}): {text}");
+        match retract_device_rows(&branch, &operator, did).await {
+            Ok(true) => {
+                if let Err(error) = branch.push().perform(&operator).await {
+                    eprintln!("warning: this device's rows were retracted but not pushed: {error}");
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("warning: this device's rows were not retracted: {error:#}"),
         }
+        publish_revocation(profile, &branch, &operator, &artifact).await?;
         return Ok(RevokeOutcome::Revoked);
     }
 
-    let rows = devices(profile, Some(&options.service_url)).await?;
-    let target = rows
-        .iter()
-        .find(|row| row.did == did)
-        .with_context(|| format!("no device {did} under this account"))?;
-    if target.status == "revoked" {
+    // Sync first: revoking another device needs its grant retained here,
+    // to rebuild the path that says why it may be revoked.
+    if let Err(error) = crate::account_state::ensure_with_operator(profile, operator.clone()).await
+    {
+        eprintln!("warning: account sync failed; revoking from local facts: {error:#}");
+    }
+    let branch = account_branch(profile, &operator).await?;
+    let target: Did = did.parse().context("device DID is invalid")?;
+    let listed = tonk_schema::device_link::device_links(&branch, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?
+        .into_iter()
+        .any(|(_, audience)| audience == did);
+    let proof = branch
+        .delegations()
+        .prove(target, tonk_account::delegations::account_scope(&link))
+        .perform(&operator)
+        .await;
+    let proof = match proof {
+        Ok(proof) => proof,
+        Err(error) if listed => {
+            bail!("no retained grant reaches {did}: {error}");
+        }
+        Err(_) => bail!("no device {did} under this account"),
+    };
+    if !listed {
+        // The grant is retained but its rows are gone — a prior
+        // revocation already took them.
         return Ok(RevokeOutcome::AlreadyRevoked);
     }
-
-    let target_attachment = target.attachment_id.clone();
-    let url = format!(
-        "{}&attachment={}",
-        revoke_url(&options.account_url, did),
-        target_attachment
-    );
-    println!("Approve this revocation with your passkey:\n{url}");
-    if options.open_browser && webbrowser::open(&url).is_err() {
-        eprintln!("Could not open a browser; use the URL above.");
+    let mut certificates = proof.proofs.into_iter();
+    let first = certificates
+        .next()
+        .with_context(|| format!("the grant for {did} is empty"))?;
+    let mut path = DelegationChain::new(first.0);
+    for certificate in certificates {
+        path = path
+            .push(certificate.0)
+            .context("proved certificates do not chain")?;
     }
-
-    // One pinned listener for the whole wait. Tokio replaces the
-    // process's default SIGINT handling the first time this is polled
-    // and never restores it, so a fresh `ctrl_c()` per iteration would
-    // swallow any Ctrl-C that lands between polls.
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-
-    // A failed poll is not a failed revocation — the user may be
-    // mid-passkey while the service hiccups — so polling tolerates
-    // errors until the deadline and reports the last one then.
-    let mut last_error: Option<anyhow::Error> = None;
-    let mut delay = Duration::from_millis(500);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5 * 60);
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            match last_error {
-                Some(error) => bail!(
-                    "revocation was not approved in time (last poll failed: {error:#}); \
-                     run `tonk account revoke` again"
-                ),
-                None => {
-                    bail!("revocation was not approved in time; run `tonk account revoke` again")
-                }
+    let target_cid = path.proof_cids()[0];
+    let artifact = tonk_identity::revocation::mint_delegated_revocation(
+        profile.signer().signer().clone(),
+        &path,
+        &target_cid,
+        &link,
+    )
+    .await
+    .with_context(|| format!("cannot revoke {did}"))?;
+    publish_revocation(profile, &branch, &operator, &artifact).await?;
+    match retract_device_rows(&branch, &operator, did).await {
+        Ok(true) => {
+            if let Err(error) = branch.push().perform(&operator).await {
+                eprintln!("warning: the revoked device's retraction was not pushed: {error}");
             }
         }
-        tokio::select! {
-            rows = devices(profile, Some(&options.service_url)) => match rows {
-                Ok(rows) => {
-                    last_error = None;
-                    if rows.iter().any(|row| {
-                        row.did == did
-                            && row.attachment_id == target_attachment
-                            && row.status == "revoked"
-                    }) {
-                        return Ok(RevokeOutcome::Revoked);
-                    }
-                }
-                Err(error) => last_error = Some(error),
-            },
-            signal = &mut ctrl_c => {
-                signal.context("failed to listen for Ctrl-C")?;
-                bail!("revocation cancelled");
-            }
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => {}
-            signal = &mut ctrl_c => {
-                signal.context("failed to listen for Ctrl-C")?;
-                bail!("revocation cancelled");
-            }
-        }
-        delay = (delay * 2).min(Duration::from_secs(5));
+        Ok(false) => {}
+        Err(error) => eprintln!("warning: the revoked device's rows were not retracted: {error:#}"),
     }
+    Ok(RevokeOutcome::Revoked)
 }
 
 #[cfg(test)]
@@ -1299,24 +1284,5 @@ mod tests {
             error.to_string().contains("subject-open"),
             "the error must say what shape was required, got {error}"
         );
-    }
-
-    #[test]
-    fn it_points_the_revoke_ceremony_at_the_named_device() {
-        assert_eq!(
-            revoke_url(DEFAULT_ACCOUNT_PAGE, "did:key:zDevice"),
-            "https://tonk.network/account?revoke=did:key:zDevice"
-        );
-    }
-
-    #[test]
-    fn it_parses_a_service_device_row() {
-        let rows: Vec<DeviceRow> = serde_json::from_str(
-            r#"[{"attachmentId":"generation","did":"did:key:z1","name":"laptop","status":"active",
-                 "delegationCid":"bafy","createdAt":1753300000}]"#,
-        )
-        .unwrap();
-        assert_eq!(rows[0].did, "did:key:z1");
-        assert_eq!(rows[0].created_at, 1_753_300_000);
     }
 }
