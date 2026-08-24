@@ -176,6 +176,13 @@ pub(crate) async fn grant_device(state: &TonkState) -> Result<DelegationChain, T
     .map_err(|error| {
         TonkWorkerError::Internal(format!("failed to mint the onboarding grant: {error}"))
     })?;
+    // Describe BEFORE saving. `retain` returns only the entities it
+    // newly wrote, skipping any certificate the tree already holds, and
+    // the entity is derived from the digest the blob store reports
+    // rather than computed on the side. Saving first would retain the
+    // chain, leaving nothing for `retain` to return and no entity to
+    // hang the description on.
+    describe_device_link(state, &chain).await;
     state
         .profile
         .access()
@@ -185,7 +192,6 @@ pub(crate) async fn grant_device(state: &TonkState) -> Result<DelegationChain, T
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save the onboarding grant: {error}"))
         })?;
-    describe_device_link(state, &chain).await;
     Ok(chain)
 }
 
