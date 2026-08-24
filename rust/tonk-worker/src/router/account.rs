@@ -3,7 +3,6 @@
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_ucan_core::DelegationChain;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::{AccountProviderRecord, AccountRepositoryDescriptorV1, AccountStateStatus};
@@ -354,25 +353,6 @@ pub(crate) async fn persist_link(
         }
     }
     save_provider(state, &record).await?;
-    // Describe this device in the account space itself, so every
-    // device's list includes this one without a registry to ask. This is
-    // the moment a profile gains an account, covering sign-up and
-    // passkey sign-in alike; best-effort, because the link is complete
-    // and a missing description costs a row's label, not access.
-    match DelegationChain::try_from(root.bytes.as_slice()) {
-        Ok(chain) => {
-            if let Err(error) = crate::onboarding::describe_device_link(
-                state,
-                &chain,
-                crate::onboarding::device_title(),
-            )
-            .await
-            {
-                log!("describe this device's link: {error}");
-            }
-        }
-        Err(error) => log!("this device's grant is not a delegation container: {error:?}"),
-    }
     // This profile now has an account repository to keep hidden.
     state.account_keys.invalidate();
     Ok(())

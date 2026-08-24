@@ -538,6 +538,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     if seed_passkey_facts(tonk).await {
         log!("recorded this device's passkey creation facts in the account space");
     }
+    describe_own_device(tonk).await;
     if let Err(error) = converge_account_state(tonk).await {
         log!("account-state convergence after sync failed: {error}");
     }
@@ -626,6 +627,7 @@ pub(crate) async fn ensure_account_state_swept(
                     if seed_passkey_facts(tonk).await {
                         log!("recorded this device's passkey creation facts in the account space");
                     }
+                    describe_own_device(tonk).await;
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
@@ -873,6 +875,28 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
             log!("retain space delegation into account space: {error}");
             false
         }
+    }
+}
+
+/// Describe this device's own link in the account space, best-effort.
+///
+/// Runs on every sweep like the passkey-fact seed: retaining is
+/// content-addressed, so an already-described device commits nothing.
+/// This is what puts the signing browser's own row where every device's
+/// list reads — sign-up, passkey sign-in, and accounts that predate the
+/// facts all converge through it.
+async fn describe_own_device(tonk: &TonkState) {
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        return;
+    };
+    let Ok(chain) = DelegationChain::try_from(root.bytes.as_slice()) else {
+        return;
+    };
+    if let Err(error) =
+        crate::onboarding::describe_device_link(tonk, &chain, crate::onboarding::device_title())
+            .await
+    {
+        log!("describe this device's link: {error}");
     }
 }
 
