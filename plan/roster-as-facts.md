@@ -66,6 +66,12 @@ the device list answers. A verifiable join (an invocation citing the
 invite) or a verifiable name assertion can layer on later without
 changing the storage shape.
 
+Joining requires a **registered** account. The onboarding account a
+device mints at first boot exists so the device can create local spaces
+before sign-up, not so it can enter shared ones: a membership held by an
+account whose custody dies with one device is a roster entry nothing can
+recover or hold to account. The invite claim is the enforcement point.
+
 One idea deliberately parked: membership as a delegation to read the
 member's profile/account DB (a personal card). The account DB holds
 sealed secrets, and branches of one repository share blocks, so sharing
