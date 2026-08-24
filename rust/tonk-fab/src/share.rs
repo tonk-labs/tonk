@@ -1166,6 +1166,7 @@ mod tests {
     /// The action line is not returned: only the tests about per-refusal
     /// wording read it, and they do so through [`action_text`].
     fn dialog_stub() -> (Element, Element, Element) {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let dialog = document.create_element("div").expect("create dialog");
         dialog.set_id(DIALOG_ID);
@@ -1190,6 +1191,15 @@ mod tests {
             .append_child(&dialog)
             .expect("attach dialog");
         (dialog, detail, confirm)
+    }
+
+    /// Refusal dialogs use a fixed document id in production. Keep test
+    /// fixtures unique too so one test cannot update a stale duplicate.
+    fn remove_refusal_dialog() {
+        let document = window().expect("window").document().expect("document");
+        if let Some(dialog) = document.get_element_by_id(DIALOG_ID) {
+            dialog.remove();
+        }
     }
 
     /// The prompt's action line — what confirming is being offered as.
@@ -1398,6 +1408,7 @@ mod tests {
     /// the authored ones, not a fixture's idea of them. Returns the mounted
     /// host, which the caller removes.
     fn mounted_bar() -> HtmlElement {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let host: HtmlElement = document
             .create_element("tonk-fab")
@@ -1438,6 +1449,7 @@ mod tests {
         let hidden = confirm.has_attribute("hidden");
         let disabled = confirm.has_attribute("disabled");
         bar.remove();
+        remove_refusal_dialog();
 
         assert!(!hidden, "the confirm stays on screen");
         assert!(disabled, "and inert");
