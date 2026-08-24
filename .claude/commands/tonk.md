@@ -18,8 +18,8 @@ attach it once instead.
 tonk guide            # one-screen index of the agent reference
 tonk schema           # every concept + attribute on the branch, as notation
 tonk schema <concept> # one concept's subset, same format
-tonk concept ls       # name<TAB>description, one row per user concept
-tonk view ls          # renderable entities (text/html claim carriers)
+tonk concept ls       # name<TAB>description, one row per concept this space defines
+tonk view ls          # name<TAB>entity<TAB>model<TAB>bytes, one row per renderable claim carrier
 tonk status           # synced | ahead | behind | diverged | no-upstream
 ```
 

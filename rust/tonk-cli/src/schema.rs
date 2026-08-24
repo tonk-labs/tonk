@@ -98,7 +98,10 @@ pub async fn list_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
     Ok(concepts)
 }
 
-/// Every concept on the branch, runtime vocabulary included.
+/// Every concept on the branch bar the analyzer's built-ins: the
+/// author's own, plus the runtime vocabulary the standard library
+/// seeds. `command` is the one built-in kept — see
+/// [`is_builtin_concept`] for why the rest are dropped here.
 ///
 /// For callers that need to answer a question about a system concept
 /// and list the author's in the same pass — `tonk context` reads the

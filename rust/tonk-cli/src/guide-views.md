@@ -234,12 +234,12 @@ page!: &about
 `tonk view ls` lists every entity carrying a renderable claim: the
 four view-template attributes the display stack resolves, plus
 `text/html`. It is claim-driven, so a plain concept like this `page`
-shows up next to real views — but no route serves a bare claim. The page reaches a
-browser through `<tonk-portal>`, the sandboxed iframe the display
-stack mounts for a view whose projected `type` is `text/html`; the
-worker serves the body behind it. So you reach it the way you reach
-any view: `/space/<space>/<entity>@<model>!<view>`, or
-`tonk render <entity>@<model>!<view>` headlessly.
+shows up next to real views — but no route serves a bare claim. The
+page reaches a browser through `<tonk-portal>`, the sandboxed iframe
+the display stack mounts for a view whose projected `type` is
+`text/html`; the worker serves the body behind it. So you reach it
+the way you reach any view: `/space/<space>/<entity>@<model>!<view>`
+in a browser, or `tonk render <entity>@<model>!<view>` headlessly.
 
 ---
 
