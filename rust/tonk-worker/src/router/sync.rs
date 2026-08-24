@@ -1644,8 +1644,8 @@ mod renewal_tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use super::ensure_session_authority;
-    use crate::router::tests::{api_router_with_state, test_state};
-    use crate::worker::AppState;
+    use crate::router::tests::test_state;
+    use crate::router::{AppState, api_router_with_state};
 
     async fn operator_did(state: &AppState) -> String {
         use dialog_varsig::Principal as _;
