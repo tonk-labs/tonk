@@ -15,7 +15,7 @@ pub mod skin;
 #[cfg(target_arch = "wasm32")]
 mod button;
 
-/// The bar — cells, stacks, fold and the mode pill.
+/// The bar — responsive cells, overflow stacks and the mode action.
 #[cfg(target_arch = "wasm32")]
 mod bar;
 

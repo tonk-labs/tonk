@@ -10,6 +10,35 @@ the Hub's own flows route through it (create → enter → rename in place; the
 space stack's `open ▸ … more ↖`), and `hub.html` restates the bar's tokens
 verbatim — "the hub is chrome, it runs on the same file as the bar".
 
+## Revised mobile product decision (2026-08-24)
+
+The product no longer treats the reference telescope, fold control, or strip
+panning as current laws. Those behaviors remain mentioned below only as the
+historical baseline from which the component was ported.
+
+The current bar uses one fit-driven partition after safe-area-aware left and
+right float insets are removed from the available width:
+
+- At 414px or more it renders the complete 36px-high run:
+  `sync · space · share · appearance`. There is no fold, overflow, or collapse
+  affordance in this layout.
+- Below 414px it renders a 44px-high compact run. Sync, the ellipsizing space
+  name, and overflow remain visible. Share stays in the run when at least
+  352px is usable; appearance is always in the vertical overflow menu.
+- Compact overflow is `share ▸ · appearance` when share does not fit, and
+  `appearance` when it does. The one canonical share menu is re-anchored
+  rather than cloned; `back ◂` returns to overflow.
+- The 44px sync disc toggles the compact run directly. It closes any expanded
+  dropdown before collapsing, and expands the run when it is already
+  collapsed. The state is local to the mounted element and a full-width resize
+  clears it; there is no duplicate collapse row in overflow.
+- Dropdown blocks and their bar use one fixed 7px visible gap. Opening fades
+  the dropdown without translating it through that gap.
+
+This revision preserves real-DOM mirroring and focus order, edge docking,
+`max(16px, safe-area + 8px)` on every side, the visual-viewport keyboard lift,
+the `new · open ▸ · rename` space stack, and the canonical share roster.
+
 ## Where things live today
 
 | piece | today | notes |
@@ -19,9 +48,9 @@ verbatim — "the hub is chrome, it runs on the same file as the bar".
 | shell | `rust/tonk-ui` — `index.html`, `styles.css`, `/account` page | |
 | bar's data children | `rust/tonk-workspace` — `<ui-sync-status>`, `<ui-dropdown>`, `<tonk-default-remote>`; `tonk-fab` — `<ui-space-name>`, `<ui-space-switcher>`, `<ui-member-roster>`, `<tonk-share>`, `<ui-profile-name>` | separate custom elements that own their subscriptions |
 
-## Cell map — today vs the spec
+## Historical cell map — original port vs the reference
 
-FABB: `[circle 36][space 216][changes 432][share 144][fold 24][mode 18]`,
+Historical reference: `[circle 36][space 216][changes 432][share 144][fold 24][mode 18]`,
 flush cells on one surface, 1px weighted separators, bookends swapping on
 right-snap.
 
@@ -35,7 +64,7 @@ right-snap.
 | mode 18 | — | **does not exist** — the app follows OS only (`index.html`) |
 | account | `.fab__account` — `<ui-profile-name>` + `/account` link | **not in the spec's bar** — account is Hub chrome |
 
-## What is already in place
+## Historical baseline before the mobile revision
 
 - **Edge docking**: release now glides to the nearest edge while keeping its
   free coordinate along that edge, matching `fabb.js::_snap`. `logic.rs::Dock`
@@ -44,7 +73,8 @@ right-snap.
   page is no longer pinned to those four corners.
 - **Drag + threshold**: `DRAG_THRESHOLD_PX` / `TOUCH_DRAG_THRESHOLD_PX`,
   pointer capture, click-vs-drag suppression.
-- **Telescope collapse**: `.fab__tele` wrappers, `max-width` animation.
+- **Historical telescope collapse**: `.fab__tele` wrappers and their
+  `max-width` animation existed before the revised mobile product decision.
 - Rename dispatch (`ui-space-name::dispatch_rename`), pause-sync dispatch,
   share mint with its two repair prompts.
 
@@ -76,9 +106,8 @@ light-DOM and are slotted, exactly as `fabb.js` slots `<tonk-menu>`.
    alert law is built around, but nothing in the repo implements proposals or
    history points (`grep -rn proposal rust/` returns nothing). Building it
    would be dead chrome. The bar is therefore
-   `[circle 36][space 216][share 144][fold 24][mode 18]`; cell widths and the
-   flush-run geometry stay spec-correct, the bar is just shorter. Add the rung
-   with the feature it serves.
+   `[circle 36][space 216][share 144][mode 18]`; the revised compact product
+   route is recorded above. Add the changes rung with the feature it serves.
 2. **Templates — dropped entirely.** The wireframe's `new` creates
    `untitled`, enters the space, and arms rename in place
    (`bar.editSpace()`); there is no wizard. Templates are not retained
@@ -108,11 +137,13 @@ light-DOM and are slotted, exactly as `fabb.js` slots `<tonk-menu>`.
    `prefers-color-scheme`, the composed event emitter, `mount_edit`.
 3. **Done** — `menu.rs` / `mi.rs`: the stack grammar, including the single
    masked underlay ("one filter per stack") and the clip-aware flyout.
-4. **Done** — `bar.rs` + `markup.rs`: cells, separators, fold glyph, mode
-   pill, flip, stacks, in-place disclosure, rename in place.
+4. **Done, revised** — `bar.rs` + `markup.rs`: cells, separators, mode pill,
+   real-DOM flip, stacks, in-place disclosure, rename in place, fit-driven
+   full/compact action layouts, vertical overflow, and sync-disc collapse.
 5. **Done** — `element.rs`: the float. Drag/snap/dock kept and adapted to
    read the handle through the composed path (shadow retargets `target` to
-   the host). `fab.css` and `tests/fab_stylesheet.rs` deleted with the global
+   the host). Run-width changes remain anchored to the sync disc. `fab.css`
+   and `tests/fab_stylesheet.rs` deleted with the global
    stylesheet they tested.
 6. **Done** — `dialog.rs` / `button.rs`, and the two share refusal prompts
    re-authored in FABB grammar, mounted on `<body>`.

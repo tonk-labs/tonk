@@ -35,7 +35,8 @@ const DEFAULT_MENU_WIDTH_PX: f64 = 216.0;
 
 const CSS: &str = r#"
 :host{ display:block; position:relative; }
-.row{ width:100%; min-height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
+:host([hidden]){ display:none !important; }
+.row{ width:100%; min-height:var(--_mi-min-height, 36px); display:flex; align-items:flex-end; justify-content:flex-end;
   gap:8px; padding:0 10px 9px 22px;
   font-size:13px; line-height:1; font-weight:500; color:var(--_ink);
   background:transparent; /* the stack's underlay wears the glass */

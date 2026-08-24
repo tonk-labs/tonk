@@ -27,9 +27,11 @@ use web_sys::{Element, HtmlElement, ResizeObserver, window};
 use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
-:host{ display:block; }
+:host{ display:block; max-width:100%; }
+:host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
-.w{ position:relative; display:flex; flex-direction:column; gap:7px; width:var(--fabb-menu-w, 216px); }
+.w{ position:relative; display:flex; flex-direction:column; gap:7px;
+  width:min(var(--fabb-menu-w, 216px), 100%); max-width:100%; }
 .w::before{ content:""; position:absolute; inset:0; z-index:-1;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
@@ -53,7 +55,7 @@ impl CustomElement for TonkMenu {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["mode"]
+        &["mode", "compact"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -94,6 +96,7 @@ impl CustomElement for TonkMenu {
         if let Some(listener) = shadow::install_system_mode(this) {
             self.listeners.push(listener);
         }
+        propagate(this);
         recut_mask(this);
     }
 
@@ -119,6 +122,8 @@ impl CustomElement for TonkMenu {
         if name == "mode" {
             shadow::apply_mode(this);
             propagate(this);
+        } else if name == "compact" {
+            recut_mask(this);
         }
     }
 }

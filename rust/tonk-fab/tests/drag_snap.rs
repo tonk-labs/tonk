@@ -17,6 +17,10 @@ use web_sys::{CustomEvent, Event, HtmlElement, window};
 wasm_bindgen_test_configure!(run_in_browser);
 
 fn pointer_event(kind: &str, x: f64, y: f64, buttons: i32) -> Event {
+    pointer_event_with_type(kind, x, y, buttons, "mouse")
+}
+
+fn pointer_event_with_type(kind: &str, x: f64, y: f64, buttons: i32, pointer_type: &str) -> Event {
     let init = js_sys::Object::new();
     for (name, value) in [
         ("bubbles", JsValue::TRUE),
@@ -24,7 +28,7 @@ fn pointer_event(kind: &str, x: f64, y: f64, buttons: i32) -> Event {
         ("button", 0.into()),
         ("buttons", buttons.into()),
         ("pointerId", 7.into()),
-        ("pointerType", "mouse".into()),
+        ("pointerType", pointer_type.into()),
         ("clientX", x.into()),
         ("clientY", y.into()),
     ] {
@@ -41,6 +45,18 @@ fn pointer_event(kind: &str, x: f64, y: f64, buttons: i32) -> Event {
         .expect("construct pointer event")
         .dyn_into::<Event>()
         .expect("pointer event")
+}
+
+async fn yield_for(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        window()
+            .expect("window")
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .expect("set timeout");
+    });
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .expect("timeout resolves");
 }
 
 fn px(style: &web_sys::CssStyleDeclaration, property: &str) -> f64 {
@@ -120,5 +136,100 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
     );
 
     fab.remove();
+    drop(on_snap);
+}
+
+#[dialog_common::test]
+async fn a_touch_tap_expands_but_a_nine_pixel_drag_preserves_the_collapsed_atom() {
+    tonk_fab::register();
+    let win = window().expect("window");
+    let document = win.document().expect("document");
+    let parent = document
+        .create_element("div")
+        .expect("create parent")
+        .dyn_into::<HtmlElement>()
+        .expect("html parent");
+    parent
+        .style()
+        .set_property("width", "375px")
+        .expect("parent width");
+    let fab = document
+        .create_element("tonk-fab")
+        .expect("create fab")
+        .dyn_into::<HtmlElement>()
+        .expect("html fab");
+    parent.append_child(&fab).expect("mount fab");
+    document
+        .body()
+        .expect("body")
+        .append_child(&parent)
+        .expect("mount parent");
+    yield_for(50).await;
+
+    let shadow = fab.shadow_root().expect("shadow root");
+    let circle = shadow
+        .query_selector(".fab")
+        .expect("circle selector")
+        .expect("circle")
+        .unchecked_into::<HtmlElement>();
+    let collapse = || circle.click();
+    collapse();
+    yield_for(220).await;
+    let wrapper = shadow
+        .query_selector(".w")
+        .expect("wrapper selector")
+        .expect("wrapper");
+    assert!(wrapper.class_list().contains("compact-collapsed"));
+
+    let rect = circle.get_bounding_client_rect();
+    let x = rect.left() + rect.width() / 2.0;
+    let y = rect.top() + rect.height() / 2.0;
+    circle
+        .dispatch_event(&pointer_event_with_type("pointerdown", x, y, 1, "touch"))
+        .expect("tap down");
+    win.dispatch_event(&pointer_event_with_type("pointerup", x, y, 0, "touch"))
+        .expect("tap up");
+    circle.click();
+    assert!(!wrapper.class_list().contains("compact-collapsed"));
+
+    collapse();
+    yield_for(220).await;
+    let snaps = Rc::new(RefCell::new(0_u32));
+    let sink = snaps.clone();
+    let on_snap = Closure::<dyn FnMut(CustomEvent)>::new(move |_| {
+        *sink.borrow_mut() += 1;
+    });
+    fab.add_event_listener_with_callback("fabb-snap", on_snap.as_ref().unchecked_ref())
+        .expect("listen for snap");
+
+    let rect = circle.get_bounding_client_rect();
+    let x = rect.left() + rect.width() / 2.0;
+    let y = rect.top() + rect.height() / 2.0;
+    circle
+        .dispatch_event(&pointer_event_with_type("pointerdown", x, y, 1, "touch"))
+        .expect("drag down");
+    win.dispatch_event(&pointer_event_with_type(
+        "pointermove",
+        x + 9.0,
+        y,
+        1,
+        "touch",
+    ))
+    .expect("drag move");
+    win.dispatch_event(&pointer_event_with_type(
+        "pointerup",
+        x + 9.0,
+        y,
+        0,
+        "touch",
+    ))
+    .expect("drag up");
+    circle.click();
+
+    assert!(wrapper.class_list().contains("compact-collapsed"));
+    assert_eq!(*snaps.borrow(), 1);
+    assert!(!fab.has_attribute("collapsed"));
+
+    parent.remove();
     drop(on_snap);
 }

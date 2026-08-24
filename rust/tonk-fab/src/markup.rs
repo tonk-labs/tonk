@@ -10,8 +10,8 @@
 //!
 //! ## The absent rung
 //!
-//! The spec's bar is `[circle 36][space 216][changes 432][share 144][fold
-//! 24][mode 18]`. The `changes` rung is omitted here — it drives preview /
+//! The full product bar is `[circle 36][space 216][share 144][mode 18]`.
+//! The reference's `changes` rung is omitted here — it drives preview /
 //! accept / discard / restore over proposals and history points, and this
 //! repo implements neither. See `plan/fabb-conformance.md`.
 
@@ -28,6 +28,10 @@ pub const BAR_CSS: &str = r#"
   border-radius:100px; overflow:hidden; user-select:none;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   box-shadow:var(--_ring); }
+.run{ display:flex; align-items:stretch; max-width:378px; opacity:1; visibility:visible;
+  overflow:hidden; transition-property:max-width,opacity,visibility;
+  transition-duration:200ms,160ms,0s; transition-delay:0s,0s,0s;
+  transition-timing-function:var(--_ease); }
 .cell{ display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
   padding:0 10px 9px 0; font-size:13px; line-height:1; color:var(--_ink);
   white-space:nowrap; overflow:hidden; cursor:pointer; flex:none; }
@@ -36,68 +40,65 @@ pub const BAR_CSS: &str = r#"
 .chrome{ text-transform:lowercase; }
 .fab{ width:36px; align-items:center; justify-content:center; padding:0; cursor:grab; touch-action:none; }
 :host([dragging]) .fab{ cursor:grabbing; }
-/* fixed cells — widths never follow content (law 7) */
-.space{ width:216px; padding-left:12px; text-transform:none; }
+/* full cells — compact changes only the two bookends and the space remainder */
+.space{ width:var(--_space-w,216px); padding-left:12px; text-transform:none; }
 .share{ width:144px; }
-/* the frost/sachlich triangle: label-size 14px at 500 — smaller or heavier
-   and it goes stubby */
-.fold{ width:24px; align-items:flex-end; justify-content:center; padding:0 0 9px;
+.more{ display:none; width:44px; align-items:center; justify-content:center; padding:0;
   font-size:14px; font-weight:500; line-height:1; color:var(--_ink); }
 .toggle{ width:18px; background:var(--_ink); padding:0; }
 .toggle:hover{ background:linear-gradient(var(--_hover),var(--_hover)), var(--_ink); }
 .toggle:active{ background:linear-gradient(var(--_press),var(--_press)), var(--_ink); }
-.cell + .cell{ border-left:1px solid var(--_sep); }
-/* the strip is a sibling of the circle, not a cell, so `.cell + .cell` cannot
-   reach across the boundary where they meet — the one seam in the run it
-   misses. Unflipped that seam is the strip's leading edge; flipped the strip
-   leads the bar (nothing to its left) and the seam moves to the circle. */
-.tele > .cell:first-child{ border-left:1px solid var(--_sep); }
-.w.flip .tele > .cell:first-child{ border-left:0; }
+.w:not(.flip) .run > .cell:not([hidden]){ border-left:1px solid var(--_sep); }
+.w.flip .run > .cell:not([hidden]) ~ .cell:not([hidden]){ border-left:1px solid var(--_sep); }
 .w.flip .fab{ border-left:1px solid var(--_sep); }
 /* the space cell carries a user word — it passes through untouched (law 4) */
 .space .n{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   /* descender room inside the clip; the negative margin holds the seat */
   padding-bottom:4px; margin-bottom:-4px; }
-/* the alert law: blinking, never a colour. collapsed → the disc blinks;
+/* the alert law: blinking, never a colour. compact-collapsed → the disc blinks;
    expanded → the alerted rung washes. pointing at it calms it. */
 :host([alert]) .disc.st{ animation:fabb-blink var(--_blink) var(--_ease) infinite; }
 :host([alert]) .share{ animation:fabb-wash var(--_blink) var(--_ease) infinite; }
 :host([alert]) .share:hover{ animation:none; }
 @media (prefers-reduced-motion: reduce){
   :host([alert]) .disc.st, :host([alert]) .share{ animation:none !important; } }
-/* telescope collapse · the cell strip pans when it outgrows its room */
-.tele{ display:flex; align-items:stretch; max-width:var(--_telemax, 1100px);
-  overflow-x:auto; overflow-y:hidden; transition:max-width .4s var(--_ease);
-  scrollbar-width:none; touch-action:pan-x; overscroll-behavior-x:contain; }
-.tele::-webkit-scrollbar{ display:none; }
-:host([collapsed]) .tele{ max-width:0; }
-/* fold: one triangle reduces the bar to circle · space · fold · mode.
-   .folded = the hand; .rfold = the ResizeObserver; .xopen = unfolded over it */
-.w.folded .share, .w.rfold:not(.xopen) .share{ display:none; }
+.w.compact .bar{ height:44px; }
+.w.compact .fab{ width:44px; }
+.w.compact .more{ display:flex; }
+.w.compact .toggle{ display:none; }
+.w.compact.hide-share .share{ display:none; }
 /* A missing replica leaves the space cell available as the way out, but
    removes the share control because there is nothing local to share. */
 :host([data-unknown-space]) .share{ display:none; }
-.w.rd .tele{ max-width:0; }
+.w.compact-collapsed .run{ max-width:0; opacity:0; visibility:hidden;
+  pointer-events:none; transition-delay:0s,0s,200ms; }
 /* stacks */
-.mw{ position:absolute; top:calc(100% + 7px); display:none; z-index:5; }
+.mw{ position:absolute; top:calc(100% + 7px); display:block; z-index:5;
+  opacity:0; visibility:hidden; pointer-events:none;
+  transition-property:opacity;
+  transition-duration:160ms; transition-delay:0s;
+  transition-timing-function:var(--_ease); }
 :host([up]) .mw{ top:auto; bottom:calc(100% + 7px); }
-.mw.on{ display:block; }
+.mw.on{ opacity:1; visibility:visible; pointer-events:auto;
+  transition-delay:0s; }
 /* editable space — the terminal block cursor over the last character */
 .cell.editing{ gap:0; }
-@media (prefers-reduced-motion: reduce){ .tele{ transition:none; } }
+@media (prefers-reduced-motion: reduce){
+  .run, .mw{ transition-duration:0s; transition-delay:0s; }
+}
 "#;
 
 /// The bar's shadow tree.
 ///
-/// `.tele` holds everything that telescopes; the circle and the trailing caps
-/// are bookends [`crate::bar::apply_flip`] moves between the ends.
+/// `.run` holds the canonical actions; [`crate::bar::apply_flip`] reorders its
+/// real nodes so visual and focus order mirror together.
 pub const BAR_HTML: &str = r#"<div class="w">
   <div class="bar" part="bar">
-    <button class="cell fab" part="fab" title="collapse / expand · drag to move"><span class="disc st"></span></button>
-    <div class="tele">
-      <button class="cell space" data-cell="space" title="space name" aria-haspopup="true" aria-expanded="false"><span class="n"></span></button>
-      <button class="cell share chrome" data-cell="share" title="share with others" aria-haspopup="true" aria-expanded="false">share</button>
-      <button class="cell fold" data-cell="fold" title="fold / expand">&#9666;</button>
+    <button class="cell fab" data-cell="sync" part="fab" title="sync status · drag to move"><span class="disc st"></span></button>
+    <div class="run">
+      <button class="cell space" data-cell="space" title="space name" aria-haspopup="true" aria-expanded="false" aria-controls="fabb-space-menu"><span class="n"></span></button>
+      <button class="cell share chrome" data-cell="share" title="share with others" aria-haspopup="true" aria-expanded="false" aria-controls="fabb-share-menu">share</button>
+      <button class="cell more chrome" data-cell="more" title="more actions" aria-label="more actions" aria-haspopup="true" aria-expanded="false" aria-controls="fabb-overflow-menu"><span class="more-glyph" aria-hidden="true">&#9652;</span></button>
       <button class="cell toggle" data-cell="toggle" role="switch" title="dark / light" aria-label="dark mode"></button>
     </div>
   </div>
@@ -135,7 +136,7 @@ pub const STACK_GAP_PX: i32 = 7;
 /// library.
 pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></ui-sync-status>
 <ui-space-name headless space="{space}"></ui-space-name>
-<tonk-menu slot="menu" data-for="space">
+<tonk-menu id="fabb-space-menu" slot="menu" data-for="space" hidden>
   <tonk-mi chrome data-mi-new>new<span class="g">+</span></tonk-mi>
   <tonk-mi chrome data-mi-open>open<span class="g">&#9656;</span>
     <tonk-menu slot="sub">
@@ -146,7 +147,8 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
   <tonk-mi chrome data-mi-rename>rename<span class="g rename-mark" aria-hidden="true"></span></tonk-mi>
 </tonk-menu>
 <tonk-share headless space="{space}"></tonk-share>
-<tonk-menu slot="menu" data-for="share">
+<tonk-menu id="fabb-share-menu" slot="menu" data-for="share" hidden>
+  <tonk-mi chrome data-mi-back hidden>back<span class="g">&#9666;</span></tonk-mi>
   <tonk-mi chrome data-share-link>
     <span class="say say--idle">copy link</span>
     <span class="say say--copying">copying&hellip;</span>
@@ -154,6 +156,10 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
     <span class="say say--failed">couldn&rsquo;t copy</span>
   </tonk-mi>
   <ui-member-roster space="{space}"></ui-member-roster>
+</tonk-menu>
+<tonk-menu id="fabb-overflow-menu" slot="menu" data-for="overflow" hidden>
+  <tonk-mi chrome data-overflow-share>share<span class="g">&#9656;</span></tonk-mi>
+  <tonk-mi chrome data-overflow-mode role="menuitemcheckbox" aria-checked="false"><span data-mode-label>dark mode</span></tonk-mi>
 </tonk-menu>"#;
 
 /// Styles for the slotted stack content.
@@ -235,20 +241,17 @@ mod tests {
     }
 
     #[test]
-    fn it_fixes_every_cell_width() {
-        // Law 7: widths never follow content; breakpoints swap whole rungs.
-        for (cell, width) in [
-            (".fab", "36px"),
-            (".space", "216px"),
-            (".share", "144px"),
-            (".fold", "24px"),
-            (".toggle", "18px"),
-        ] {
+    fn it_keeps_full_geometry_and_names_compact_targets() {
+        for (cell, width) in [(".fab", "36px"), (".share", "144px"), (".toggle", "18px")] {
             assert!(
                 BAR_CSS.contains(&format!("{cell}{{ width:{width}")),
                 "{cell} must be fixed at {width}",
             );
         }
+        assert!(BAR_CSS.contains(".more{ display:none; width:44px"));
+        assert!(BAR_CSS.contains(".space{ width:var(--_space-w,216px)"));
+        assert!(BAR_CSS.contains(".w.compact .bar{ height:44px"));
+        assert!(BAR_CSS.contains(".w.compact .fab{ width:44px"));
     }
 
     #[test]
@@ -290,23 +293,27 @@ mod tests {
         // swaps ends with the flip. Both sides need saying, or the bar shows
         // one missing separator in one orientation and a doubled one in the
         // other.
-        assert!(
-            BAR_CSS.contains(".tele > .cell:first-child{ border-left:1px solid var(--_sep); }")
-        );
-        assert!(BAR_CSS.contains(".w.flip .tele > .cell:first-child{ border-left:0; }"));
+        assert!(BAR_CSS.contains(
+            ".w:not(.flip) .run > .cell:not([hidden]){ border-left:1px solid var(--_sep); }"
+        ));
+        assert!(BAR_CSS.contains(
+            ".w.flip .run > .cell:not([hidden]) ~ .cell:not([hidden]){ border-left:1px solid var(--_sep); }"
+        ));
         assert!(BAR_CSS.contains(".w.flip .fab{ border-left:1px solid var(--_sep); }"));
     }
 
     #[test]
-    fn it_holds_the_bookends_outside_the_telescope() {
-        // The circle and the trailing caps must not scroll away with the
-        // cells: collapse has to stay reachable at every width.
-        let tele = BAR_HTML.find(r#"<div class="tele">"#).expect("a telescope");
+    fn it_holds_the_sync_disc_outside_the_action_run() {
+        let run = BAR_HTML
+            .find(r#"<div class="run">"#)
+            .expect("an action run");
         let circle = BAR_HTML.find("cell fab").expect("the circle");
         assert!(
-            circle < tele,
-            "the circle is a bookend, not a telescoped cell"
+            circle < run,
+            "the circle is the persistent bookend, not a retracting action"
         );
+        assert!(!BAR_HTML.contains("data-cell=\"fold\""));
+        assert!(!BAR_HTML.contains("tele"));
     }
 
     #[test]
@@ -339,6 +346,16 @@ mod tests {
             !html.contains("data-mi-settings"),
             "no settings row until there are settings to open",
         );
+    }
+
+    #[test]
+    fn it_orders_the_compact_overflow_actions() {
+        let html = stacks_html("did:key:z6Mk");
+        let share = html.find("data-overflow-share").expect("share route");
+        let mode = html.find("data-overflow-mode").expect("appearance action");
+        assert!(share < mode);
+        assert!(!html.contains("data-overflow-collapse"));
+        assert_eq!(html.matches(r#"data-for="share""#).count(), 1);
     }
 
     #[test]
@@ -454,8 +471,8 @@ mod tests {
 
     #[test]
     fn it_respects_reduced_motion_on_every_transition() {
-        // Each animated property needs its own opt-out; the telescope's
-        // max-width transition is the one that reads as motion.
+        // Each interactive transition settles immediately when motion is
+        // reduced.
         let blocks: Vec<&str> = BAR_CSS
             .match_indices("@media (prefers-reduced-motion: reduce)")
             .map(|(index, _)| &BAR_CSS[index..])
@@ -465,8 +482,12 @@ mod tests {
             "the host's own glide must stop",
         );
         assert!(
-            blocks.iter().any(|b| b.contains(".tele{ transition:none;")),
-            "the telescope must stop",
+            blocks
+                .iter()
+                .any(|b| b.contains(".run, .mw{ transition-duration:0s")),
+            "the compact run and disclosure must settle immediately",
         );
+        assert!(!BAR_CSS.contains("transition:all"));
+        assert!(!BAR_CSS.contains("transition: all"));
     }
 }

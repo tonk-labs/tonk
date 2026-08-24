@@ -319,16 +319,65 @@ pub fn mirrored(center_x: f64, vw: f64) -> bool {
     center_x >= vw / 2.0
 }
 
-/// The stylesheet's dock inset — `tonk-fab.fab-dock-* { …: 16px }` in
-/// `fab.css`. The compact-mode fit test must account for it on both sides.
-pub const DOCK_INSET_PX: f64 = 16.0;
+pub const FULL_BAR_WIDTH_PX: f64 = 414.0;
+pub const COMPACT_CELL_PX: f64 = 44.0;
+pub const COMPACT_SPACE_MIN_PX: f64 = 120.0;
+pub const SPACE_CELL_PX: f64 = 216.0;
+pub const SHARE_CELL_PX: f64 = 144.0;
 
-/// Whether the bar must render compact: the fully EXPANDED bar plus both
-/// dock insets no longer fits the viewport width. Keyed on the would-be
-/// expanded width (not the current rendered width), so the threshold is the
-/// same entering and leaving compact and cannot oscillate.
-pub fn is_compact(expanded_width: f64, viewport_width: f64) -> bool {
-    expanded_width + 2.0 * DOCK_INSET_PX > viewport_width
+/// The action partition for one resolved usable width. The caller subtracts
+/// its safe-area-aware left and right float insets before asking for a layout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarLayout {
+    pub compact: bool,
+    pub space_width_px: f64,
+    pub show_share: bool,
+    pub show_mode: bool,
+    pub show_overflow: bool,
+}
+
+/// Partition the canonical action run according to what fully fits.
+///
+/// Exact fits stay in the wider layout. In compact mode the sync and overflow
+/// bookends never disappear; the space cell consumes the remaining room and
+/// may shrink to zero when even those bookends do not fit.
+pub fn bar_layout(usable_width_px: f64) -> BarLayout {
+    let usable = usable_width_px.max(0.0);
+    if usable >= FULL_BAR_WIDTH_PX {
+        return BarLayout {
+            compact: false,
+            space_width_px: SPACE_CELL_PX,
+            show_share: true,
+            show_mode: true,
+            show_overflow: false,
+        };
+    }
+
+    let show_share = usable >= COMPACT_CELL_PX * 2.0 + COMPACT_SPACE_MIN_PX + SHARE_CELL_PX;
+    let reserved = COMPACT_CELL_PX * 2.0 + if show_share { SHARE_CELL_PX } else { 0.0 };
+    BarLayout {
+        compact: true,
+        space_width_px: (usable - reserved).clamp(0.0, SPACE_CELL_PX),
+        show_share,
+        show_mode: false,
+        show_overflow: true,
+    }
+}
+
+/// Lift a resting bottom edge above the visual viewport, leaving `gap_px`
+/// between the bar and any software keyboard occluding the layout viewport.
+pub fn keyboard_lift_px(
+    resting_bottom: f64,
+    visual_offset_top: f64,
+    visual_height: f64,
+    gap_px: f64,
+) -> f64 {
+    let occlusion = resting_bottom - (visual_offset_top + visual_height);
+    if occlusion > 0.0 {
+        occlusion + gap_px.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Clamp a dragged bar's top-left corner so the bar stays fully inside the
@@ -343,63 +392,6 @@ pub fn clamp_position(
     vh: f64,
 ) -> (f64, f64) {
     (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
-}
-
-/// Whether the compact pager's strip rests at its scroll end — the state in
-/// which the arrow's next tap wraps to the start, and the glyph flips to
-/// point back so the wrap is announced rather than silent. Tolerates a small
-/// epsilon (browsers report fractional scroll positions), and a strip with
-/// nothing to scroll is NOT "at the end": its arrow keeps pointing forward
-/// and its tap is a harmless no-op.
-pub fn strip_at_end(scroll_left: f64, client_width: f64, scroll_width: f64) -> bool {
-    let max = scroll_width - client_width;
-    max > 0.0 && scroll_left >= max - 2.0
-}
-
-/// The scroll offset the compact pager's arrow advances the strip to: one
-/// page-width forward per tap, wrapping back to the start from the end
-/// ([`strip_at_end`]).
-pub fn strip_page_target(scroll_left: f64, client_width: f64, scroll_width: f64) -> f64 {
-    let max = (scroll_width - client_width).max(0.0);
-    if strip_at_end(scroll_left, client_width, scroll_width) {
-        0.0
-    } else {
-        (scroll_left + client_width).min(max)
-    }
-}
-
-/// The telescope animation duration, in milliseconds — each tile's
-/// `max-width` transition (wireframe `--dur: .4s`).
-pub const TELESCOPE_MS: u64 = 400;
-
-/// Milliseconds of stagger between consecutive tiles as the bar telescopes
-/// open/closed (wireframe `CP_STAG`). The tiles animate in sequence rather
-/// than together, so the bar reads as unfolding rather than snapping.
-pub const TELESCOPE_STAGGER_MS: u64 = 70;
-
-/// The `transition-delay` (ms) for tile `i` of `n` in the telescope.
-///
-/// Expanding runs inner-to-outer (`i * stagger`), collapsing runs
-/// outer-to-inner (`(n - 1 - i) * stagger`), so in both directions the tile
-/// nearest the anchoring circle leads and the far edge trails — the bar looks
-/// like it grows from / retracts into the circle. Mirrors the wireframe's
-/// `(collapsed ? nTiles - 1 - i : i) * CP_STAG`.
-pub fn telescope_delay_ms(index: usize, count: usize, collapsing: bool) -> u64 {
-    let step = if collapsing {
-        count.saturating_sub(1).saturating_sub(index)
-    } else {
-        index
-    };
-    step as u64 * TELESCOPE_STAGGER_MS
-}
-
-/// How long the whole telescope takes to settle: the last tile's start delay
-/// plus one transition duration, with a small cushion. Used to schedule the
-/// post-animation `settled` state that unclamps `max-width` so content can
-/// reflow freely.
-pub fn telescope_settle_ms(count: usize) -> u64 {
-    let last = count.saturating_sub(1) as u64 * TELESCOPE_STAGGER_MS;
-    last + TELESCOPE_MS + 160
 }
 
 /// Build a `TransactRequest` JSON body for `window.tonk.transact(...)`.
@@ -562,20 +554,110 @@ mod compact {
     use super::*;
 
     #[test]
-    fn a_bar_that_fits_with_both_insets_is_not_compact() {
-        assert!(!is_compact(300.0, 400.0));
+    fn the_fit_policy_partitions_every_boundary_width() {
+        for (width, expected) in [
+            (
+                414.0,
+                BarLayout {
+                    compact: false,
+                    space_width_px: 216.0,
+                    show_share: true,
+                    show_mode: true,
+                    show_overflow: false,
+                },
+            ),
+            (
+                413.9,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 181.9,
+                    show_share: true,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                352.0,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 120.0,
+                    show_share: true,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                351.9,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 216.0,
+                    show_share: false,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                216.0,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 128.0,
+                    show_share: false,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                80.0,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 0.0,
+                    show_share: false,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+        ] {
+            let actual = bar_layout(width);
+            assert_eq!(actual.compact, expected.compact, "usable width {width}");
+            assert_eq!(
+                actual.show_share, expected.show_share,
+                "usable width {width}"
+            );
+            assert_eq!(actual.show_mode, expected.show_mode, "usable width {width}");
+            assert_eq!(
+                actual.show_overflow, expected.show_overflow,
+                "usable width {width}"
+            );
+            assert!(
+                (actual.space_width_px - expected.space_width_px).abs() < 0.001,
+                "usable width {width}: expected space {}, got {}",
+                expected.space_width_px,
+                actual.space_width_px,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod keyboard_lift {
+    use super::*;
+
+    #[test]
+    fn a_resting_bar_inside_the_visual_viewport_is_not_lifted() {
+        assert_eq!(keyboard_lift_px(700.0, 0.0, 720.0, 8.0), 0.0);
     }
 
     #[test]
-    fn a_bar_wider_than_the_viewport_minus_insets_is_compact() {
-        assert!(is_compact(380.0, 400.0));
+    fn an_occluded_resting_bar_clears_the_keyboard_by_the_gap() {
+        assert_eq!(keyboard_lift_px(760.0, 0.0, 600.0, 8.0), 168.0);
     }
 
     #[test]
-    fn the_exact_fit_is_not_compact() {
-        // 368 + 2*16 == 400: still fits; only strictly-greater flips it, so
-        // the threshold is identical in both directions and cannot flap.
-        assert!(!is_compact(368.0, 400.0));
+    fn repeated_measurements_use_the_same_resting_bottom() {
+        let first = keyboard_lift_px(760.0, 20.0, 600.0, 8.0);
+        let second = keyboard_lift_px(760.0, 20.0, 600.0, 8.0);
+        assert_eq!(first, 148.0);
+        assert_eq!(second, first);
     }
 }
 
@@ -747,85 +829,6 @@ mod edge_snap {
                 top: 16.0,
             }
         );
-    }
-}
-
-#[cfg(test)]
-mod pager {
-    use super::*;
-
-    #[test]
-    fn a_mid_strip_tap_advances_one_page_width() {
-        assert_eq!(strip_page_target(0.0, 300.0, 800.0), 300.0);
-    }
-
-    #[test]
-    fn the_last_advance_clamps_to_the_end() {
-        // 800 - 300 = 500 is the max offset; 300 + 300 = 600 overshoots it.
-        assert_eq!(strip_page_target(300.0, 300.0, 800.0), 500.0);
-    }
-
-    #[test]
-    fn a_tap_at_the_end_wraps_to_the_start() {
-        assert_eq!(strip_page_target(500.0, 300.0, 800.0), 0.0);
-        // Fractional resting positions a couple px shy of the end wrap too.
-        assert_eq!(strip_page_target(498.5, 300.0, 800.0), 0.0);
-    }
-
-    #[test]
-    fn a_strip_with_nothing_to_scroll_stays_at_the_start() {
-        assert_eq!(strip_page_target(0.0, 300.0, 300.0), 0.0);
-        assert_eq!(strip_page_target(0.0, 300.0, 250.0), 0.0);
-    }
-
-    #[test]
-    fn the_end_state_drives_the_arrow_flip() {
-        assert!(!strip_at_end(0.0, 300.0, 800.0));
-        assert!(!strip_at_end(300.0, 300.0, 800.0));
-        assert!(strip_at_end(500.0, 300.0, 800.0));
-        // Fractionally shy of the end still counts as the end.
-        assert!(strip_at_end(498.5, 300.0, 800.0));
-    }
-
-    #[test]
-    fn a_strip_with_nothing_to_scroll_is_not_at_the_end() {
-        // The arrow must keep pointing forward when there is nothing to
-        // page — a back-arrow on a strip that never moved reads as broken.
-        assert!(!strip_at_end(0.0, 300.0, 300.0));
-        assert!(!strip_at_end(0.0, 300.0, 250.0));
-    }
-}
-
-#[cfg(test)]
-mod telescope {
-    use super::*;
-
-    #[test]
-    fn expanding_leads_from_the_inner_tile() {
-        // Inner-to-outer: tile 0 starts first, later tiles trail.
-        assert_eq!(telescope_delay_ms(0, 3, false), 0);
-        assert_eq!(telescope_delay_ms(1, 3, false), TELESCOPE_STAGGER_MS);
-        assert_eq!(telescope_delay_ms(2, 3, false), 2 * TELESCOPE_STAGGER_MS);
-    }
-
-    #[test]
-    fn collapsing_leads_from_the_outer_tile() {
-        // Outer-to-inner: the far tile (index 2) starts first, tile 0 trails —
-        // so it still reads as retracting toward the circle.
-        assert_eq!(telescope_delay_ms(2, 3, true), 0);
-        assert_eq!(telescope_delay_ms(1, 3, true), TELESCOPE_STAGGER_MS);
-        assert_eq!(telescope_delay_ms(0, 3, true), 2 * TELESCOPE_STAGGER_MS);
-    }
-
-    #[test]
-    fn settle_covers_the_last_tile_plus_a_duration() {
-        // 3 tiles: last starts at 2*stagger, runs one duration, + cushion.
-        assert_eq!(
-            telescope_settle_ms(3),
-            2 * TELESCOPE_STAGGER_MS + TELESCOPE_MS + 160
-        );
-        // Degenerate: a single tile has no stagger.
-        assert_eq!(telescope_settle_ms(1), TELESCOPE_MS + 160);
     }
 }
 

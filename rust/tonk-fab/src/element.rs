@@ -26,11 +26,12 @@
 //! bar tracks the pointer 1:1 on inline `left`/`top`, and on release eases to
 //! the nearest edge while preserving its position along that edge. A
 //! right-edge landing becomes right-anchored after the glide, so later
-//! telescope changes still grow leftward. The nearest corner remains the
+//! responsive run-width changes still grow leftward. The nearest corner remains the
 //! persisted fallback seat used on a subsequent page load.
 //!
-//! A press that never travels is a click: plain toggles the telescope,
-//! alt/option toggles sync pause.
+//! A press that never travels is a click: in compact layout it toggles the
+//! action run, closing any open stack before collapse; alt/option keeps the
+//! existing sync-pause shortcut.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -41,7 +42,9 @@ use tonk_common::log;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{Element, HtmlElement, PointerEvent, Response, VisibilityState, window};
+use web_sys::{
+    Element, HtmlElement, PointerEvent, ResizeObserver, Response, VisibilityState, window,
+};
 
 use crate::bar;
 use crate::logic::{
@@ -57,7 +60,7 @@ use crate::shadow::Bound;
 const FAB_Z_INDEX: &str = "2147483646";
 
 /// How far (CSS px) the pointer must travel before a press counts as a drag.
-/// Below this the press toggles the telescope.
+/// Below this the press remains a tap.
 const DRAG_THRESHOLD_PX: f64 = 4.0;
 
 /// The drag threshold for TOUCH pointers. Wider than the mouse threshold: a
@@ -92,6 +95,8 @@ const MIRROR_CLASS: &str = "fab-mirror";
 pub(crate) struct TonkFab {
     state: bar::Shared,
     listeners: Rc<RefCell<Vec<Bound>>>,
+    responsive_observer: Option<ResizeObserver>,
+    responsive_callback: Option<Closure<dyn FnMut(JsValue, JsValue)>>,
 }
 
 impl CustomElement for TonkFab {
@@ -107,7 +112,6 @@ impl CustomElement for TonkFab {
             "label",
             "state",
             "alert",
-            "collapsed",
             "up",
             "flip",
             "data-sync-status",
@@ -132,7 +136,9 @@ impl CustomElement for TonkFab {
         self.listeners
             .borrow_mut()
             .extend(attach_stack_verbs(this, &self.state));
-        attach_responsive(this);
+        let (observer, callback) = attach_responsive(this, &self.state);
+        self.responsive_observer = observer;
+        self.responsive_callback = callback;
         self.listeners
             .borrow_mut()
             .extend(attach_keyboard_lift(this));
@@ -142,6 +148,10 @@ impl CustomElement for TonkFab {
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
+        if let Some(observer) = self.responsive_observer.take() {
+            observer.disconnect();
+        }
+        self.responsive_callback = None;
         self.listeners.borrow_mut().clear();
     }
 
@@ -507,16 +517,20 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             if mouse.alt_key() {
                 dispatch_pause(&host);
             } else {
-                let collapsed = host.has_attribute("collapsed");
-                if collapsed {
-                    let _ = host.remove_attribute("collapsed");
-                } else {
-                    let _ = host.set_attribute("collapsed", "");
+                let (compact, collapsed) = {
+                    let current = shared.borrow();
+                    (
+                        current.layout.is_some_and(|layout| layout.compact),
+                        current.compact_collapsed,
+                    )
+                };
+                if compact {
+                    if collapsed {
+                        bar::expand_compact(&host, &shared);
+                    } else {
+                        bar::collapse_compact(&host, &shared);
+                    }
                 }
-                bar::close(&host, &shared);
-                let detail = Object::new();
-                let _ = Reflect::set(&detail, &"collapsed".into(), &(!collapsed).into());
-                crate::shadow::emit(&host, "fabb-collapse", &detail);
             }
         }));
     }
@@ -780,8 +794,8 @@ fn attach_keyboard_lift(this: &HtmlElement) -> Vec<Bound> {
             }
             let current = *lift.borrow();
             let base = host.get_bounding_client_rect().bottom() + current;
-            let occluded = base - (measured.offset_top() + measured.height());
-            let next = if occluded > 0.0 { occluded + 8.0 } else { 0.0 };
+            let next =
+                crate::logic::keyboard_lift_px(base, measured.offset_top(), measured.height(), 8.0);
             if next == current {
                 return;
             }
@@ -797,25 +811,45 @@ fn attach_keyboard_lift(this: &HtmlElement) -> Vec<Bound> {
     bindings
 }
 
-/// Apply the responsive breakpoints against the bar's own parent.
-fn attach_responsive(this: &HtmlElement) {
+/// Apply the fit policy against the bar's parent after resolving both float
+/// insets. The returned observer and callback are owned by `TonkFab`.
+fn attach_responsive(
+    this: &HtmlElement,
+    state: &bar::Shared,
+) -> (
+    Option<ResizeObserver>,
+    Option<Closure<dyn FnMut(JsValue, JsValue)>>,
+) {
     let Some(parent) = this.parent_element() else {
-        return;
+        return (None, None);
     };
     let host = this.clone();
+    let shared = state.clone();
     let callback = Closure::<dyn FnMut(JsValue, JsValue)>::new(move |_: JsValue, _: JsValue| {
-        let width = host
+        let parent_width = host
             .parent_element()
             .map(|p| p.client_width() as f64)
             .unwrap_or_default();
-        bar::apply_responsive(&host, width);
+        let insets = float_insets(&host);
+        bar::apply_responsive(
+            &host,
+            (parent_width - insets.left - insets.right).max(0.0),
+            &shared,
+        );
     });
-    if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+    let observer = if let Ok(observer) = ResizeObserver::new(callback.as_ref().unchecked_ref()) {
         observer.observe(&parent);
-    }
-    // The observer must outlive this call; the bar lives as long as the page.
-    callback.forget();
-    bar::apply_responsive(this, parent.client_width() as f64);
+        Some(observer)
+    } else {
+        None
+    };
+    let insets = float_insets(this);
+    bar::apply_responsive(
+        this,
+        (parent.client_width() as f64 - insets.left - insets.right).max(0.0),
+        state,
+    );
+    (observer, Some(callback))
 }
 
 /// The viewport height in CSS px, defaulting if unavailable.
@@ -955,7 +989,7 @@ fn invalidate_edge_anchor(this: &HtmlElement) -> u32 {
 }
 
 /// Convert a settled right-edge point from `left` positioning to a stable
-/// right anchor so telescope changes continue to grow away from the handle.
+/// right anchor so responsive run-width changes grow away from the handle.
 fn schedule_right_anchor(this: &HtmlElement, right: f64) {
     let Some(win) = window() else { return };
     let version = invalidate_edge_anchor(this);
@@ -1043,10 +1077,20 @@ fn persist_dock(dock: Dock) {
 
 /// Restore the persisted dock, defaulting to bottom-right.
 ///
-/// The default is applied immediately so the bar is seated on first paint;
-/// the async query swaps in the stored corner if there is one.
+/// The default is queued for the first microtask so the bar is seated before
+/// first paint without recursively entering its connection callback; the
+/// async query swaps in the stored corner if there is one.
 fn restore_position(this: &HtmlElement) {
-    apply_dock(this, DEFAULT_DOCK);
+    // `flip` and `up` are observed attributes. Writing either while the
+    // custom element's connected callback still owns its component mutex
+    // recursively enters that same callback lock in wasm. A resolved promise
+    // resumes in the next microtask: after connection, but still before the
+    // browser paints the initial dock.
+    let host = this.clone();
+    spawn_local(async move {
+        let _ = JsFuture::from(Promise::resolve(&JsValue::UNDEFINED)).await;
+        apply_dock(&host, DEFAULT_DOCK);
+    });
 
     let query_body = serde_json::json!({
         "terms": {
