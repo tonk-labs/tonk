@@ -69,6 +69,14 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .await
             .map(with_cors_headers);
     }
+    // Revocation writes to the index rather than reading it, so it is
+    // answered here rather than on the presign path that consults it.
+    #[cfg(target_arch = "wasm32")]
+    if crate::revoke::is_revocation(&body_bytes) {
+        return crate::handlers::revoke::handle(&body_bytes, &env)
+            .await
+            .map(with_cors_headers);
+    }
     #[cfg(target_arch = "wasm32")]
     if registration_command(&body_bytes).is_some() {
         return handle_registration(&body_bytes, &req, &env)
@@ -131,17 +139,28 @@ fn record_invocation(
 /// with the declared write bytes when the permit carries them.
 async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response, u64), Refusal> {
     let authorizer = create_authorizer(env)?;
+
+    // Revocation is checked inside the chain walk rather than after it,
+    // so every proof is measured against the principals entitled to
+    // revoke that particular link. The index is bound per request: it
+    // wraps a KV handle taken from this request's `Env`, which is not
+    // ours to keep, unlike the deployment config the authorizer caches.
+    #[cfg(target_arch = "wasm32")]
+    let authorizer = {
+        use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+
+        let store = env.kv("REVOCATIONS_KV").map_err(|err| {
+            console_error!("revocation check unavailable, no REVOCATIONS_KV binding: {err}");
+            unavailable()
+        })?;
+        authorizer.with_revocations(IndexedRevocations(KvRevocationIndex::new(store)))
+    };
+
     let authorized_request = authorizer
         .authorize(body_bytes)
         .await
         .map_err(map_access_error)?;
 
-    // Screen the presented credentials: the window they claim, and
-    // whether any of them belongs to a revoked device. Runs only after
-    // cryptographic authorization succeeded, and fails closed: a
-    // presign the screen cannot clear is refused.
-    #[cfg(target_arch = "wasm32")]
-    screen_credentials(body_bytes, env).await?;
     #[cfg(target_arch = "wasm32")]
     screen_consumer_state(body_bytes, env).await?;
     #[cfg(target_arch = "wasm32")]
@@ -232,80 +251,13 @@ fn provisioning_unavailable() -> Refusal {
     .into()
 }
 
-#[cfg(target_arch = "wasm32")]
-async fn screen_credentials(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
-    use crate::expiry::{WindowVerdict, check_window};
-    use crate::revocation::{self, SetVerdict, r2::R2RevocationSource};
-
-    let presented = match revocation::collect_presented(body_bytes) {
-        Ok(presented) => presented,
-        Err(err) => {
-            // The authorizer already accepted this container, so a parse
-            // failure here is shape drift between two parsers of the same
-            // bytes. There is no key set to screen and no cached verdict
-            // to fall back on, so the request cannot be cleared.
-            console_error!("revocation screen unavailable, container unparseable: {err}");
-            return Err(unavailable());
-        }
-    };
-
-    // The window screen needs no registry, so it runs first: an expired
-    // chain is refused without spending an R2 listing on it.
-    let now_ms = Date::now().as_millis();
-    match check_window(&presented, now_ms / 1_000) {
-        WindowVerdict::Valid => {}
-        WindowVerdict::Expired => {
-            worker::console_log!("presign rejected: presented chain has expired");
-            return Err(AuthorizeError::Expired {
-                expiration: presented.expires_at.unwrap_or_default(),
-                at: now_ms / 1_000,
-            }
-            .into());
-        }
-        WindowVerdict::NotYetValid => {
-            worker::console_log!("presign rejected: presented chain is not yet valid");
-            return Err(AuthorizeError::NotValidBefore {
-                not_before: presented.not_before.unwrap_or_default(),
-                at: now_ms / 1_000,
-            }
-            .into());
-        }
-    }
-
-    let registry = match env.bucket("REVOCATIONS") {
-        Ok(bucket) => R2RevocationSource::new(bucket),
-        Err(err) => {
-            console_error!("revocation screen unavailable, no REVOCATIONS binding: {err}");
-            return Err(unavailable());
-        }
-    };
-    match revocation::assess(&registry, &presented, now_ms).await {
-        SetVerdict::Allowed => Ok(()),
-        SetVerdict::AllowedStale(reason) => {
-            console_error!("revocation registry unreachable, serving cached verdicts: {reason}");
-            Ok(())
-        }
-        SetVerdict::Revoked => {
-            worker::console_log!("presign rejected: revoked credential present");
-            Err(AuthorizeError::Revoked {
-                subject: presented.subject.clone(),
-            }
-            .into())
-        }
-        SetVerdict::Unavailable(reason) => {
-            console_error!("presign refused, revocation registry unreachable: {reason}");
-            Err(unavailable())
-        }
-    }
-}
-
 /// The client-facing 503. The reason stays in the logs: it names
 /// internal infrastructure and the caller can do nothing with it but
 /// retry.
 #[cfg(target_arch = "wasm32")]
 fn unavailable() -> Refusal {
     AuthorizeError::Unavailable {
-        detail: "revocation registry unavailable, retry shortly".to_string(),
+        detail: "access service unavailable, retry shortly".to_string(),
     }
     .into()
 }

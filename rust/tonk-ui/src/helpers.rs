@@ -180,10 +180,6 @@ mod native {
             let settings = AccessServiceSettings {
                 deployment: Some(DeploymentConfig {
                     account_service_url: account_service_url.clone(),
-                    revocation_relay_url: Url::parse(&format!(
-                        "{}/revocations",
-                        account_service.endpoint
-                    ))?,
                     // Filled in by the server with its own generated identity.
                     service_did: None,
                 }),

@@ -10,7 +10,9 @@
 
 use async_trait::async_trait;
 use dialog_credentials::DidKeyResolver;
+use dialog_ucan_core::revocation::UnverifiedRevocations;
 use dialog_ucan_core::subject::Subject;
+use dialog_ucan_core::verification::{Environment, VerificationContext};
 use dialog_ucan_core::{Container, Delegation, Invocation, InvocationChain};
 use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
@@ -390,7 +392,11 @@ async fn verify_customer_command<S: Store, const N: usize>(
     let chain = InvocationChain::try_from(container)
         .map_err(|error| Error::Malformed(error.to_string()))?;
     chain
-        .verify(&DidKeyResolver)
+        .verify(&VerificationContext::new(&Environment::new(
+            chain.proof_store(),
+            DidKeyResolver,
+            UnverifiedRevocations,
+        )))
         .await
         .map_err(|error| Error::Unauthorized(error.to_string()))?;
     if chain.command().0 != expected.map(str::to_string) {

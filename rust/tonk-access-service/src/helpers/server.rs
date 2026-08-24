@@ -17,6 +17,14 @@ use dialog_credentials::Ed25519Signer;
 use dialog_remote_s3::helpers::LocalS3;
 use dialog_remote_s3::{Address, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
+
+/// The authorizer this server runs, revocation checking included.
+type ServerAuthorizer = UcanAuthorizer<
+    dialog_remote_ucan_s3::DefaultResolver,
+    crate::revocation::checker::IndexedRevocations<
+        Arc<crate::revocation::index::MemoryRevocationIndex>,
+    >,
+>;
 use dialog_varsig::Principal;
 use hyper::body::Incoming;
 use hyper::header::{
@@ -60,6 +68,10 @@ struct RegistrationState {
     service: Ed25519Signer,
     origin: String,
     purger: crate::deletion::NativeSpacePurger,
+    /// Revocations recorded by `/ucan/revoke`. In memory, as the
+    /// worker's KV namespace is. Shared with the authorizer, which
+    /// reads it back while verifying every presented chain.
+    revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
 }
 
 /// Captures activation emails and announces them on stdout, so a human
@@ -104,7 +116,15 @@ impl AccessServer {
 
         // Create UcanAuthorizer - the core of our service
         let purger = crate::deletion::NativeSpacePurger::new(address.clone(), credential.clone());
-        let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(address, Some(credential))));
+        // The authorizer checks revocation itself, per link, during the
+        // chain walk. It reads the same index `/ucan/revoke` writes, so
+        // a revocation recorded by one request governs the next.
+        let revocations: Arc<crate::revocation::index::MemoryRevocationIndex> = Default::default();
+        let authorizer = Arc::new(RwLock::new(
+            UcanAuthorizer::new(address, Some(credential)).with_revocations(
+                crate::revocation::checker::IndexedRevocations(revocations.clone()),
+            ),
+        ));
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -145,6 +165,7 @@ impl AccessServer {
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
             purger,
+            revocations,
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -202,7 +223,7 @@ impl AccessServer {
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
-    authorizer: Arc<RwLock<UcanAuthorizer>>,
+    authorizer: Arc<RwLock<ServerAuthorizer>>,
     shortcuts: Shortcuts,
     deployment: Arc<Option<tonk_worker_api::DeploymentConfig>>,
     registration: Arc<RegistrationState>,
@@ -493,6 +514,34 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
+    // Revocation writes to the index rather than reading it, so it is
+    // answered before the presign path, mirroring the worker.
+    if crate::revoke::is_revocation(&body_bytes) {
+        let response = match crate::revoke::revoke(
+            &registration.store,
+            &registration.revocations,
+            &body_bytes,
+        )
+        .await
+        {
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("revoke receipt serializes"),
+                )))
+                .unwrap(),
+            Err(error) => Response::builder()
+                .status(error.status())
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({ "error": error }))
+                        .expect("revoke refusal serializes"),
+                )))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     if registration_command(&body_bytes).is_some() {
         let env = Registration {
             store: &registration.store,
@@ -633,16 +682,32 @@ async fn handle_request(
                 )),
             }
         }
-        Err(e) => Ok(cors_response(
+        // The refusal travels as itself. Rendering it into prose here
+        // would undo the point of the authorizer naming what failed: a
+        // client parsing the body could no longer tell an expired proof
+        // from a revoked one, and every denial through this server
+        // would arrive unclassified.
+        Err(dialog_remote_s3::S3Error::Authorization(reason)) => Ok(cors_response(
+            authorize_error_response(authorize_status(&reason), &reason),
+        )),
+        Err(other) => Ok(cors_response(
             Response::builder()
                 .status(StatusCode::FORBIDDEN)
                 .body(Full::new(Bytes::from(format!(
-                    "Authorization failed: {}",
-                    e
+                    "Authorization failed: {other}"
                 ))))
                 .unwrap(),
         )),
     }
+}
+
+/// The status an authorization refusal answers with.
+///
+/// Shares the worker's mapping rather than restating it, so the two
+/// deployments cannot answer the same refusal differently.
+fn authorize_status(reason: &dialog_capability::access::AuthorizeError) -> StatusCode {
+    StatusCode::from_u16(crate::error::Refusal::Authorization(reason.clone()).status())
+        .unwrap_or(StatusCode::FORBIDDEN)
 }
 
 /// Current time as unix seconds.

@@ -30,7 +30,7 @@ use dialog_varsig::{Did, Principal};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience, shortcut::ShortcutRequest};
-use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept, RemoteExecution};
+use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept};
 use url::Url;
 
 pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
@@ -156,10 +156,13 @@ pub async fn create_invite(
         }
     };
 
-    let invite = Invite::new(delegation.into_chain(), audience, Some(remote.access_url))
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?
-        .with_revocation_url(Some(remote.revocation_url));
+    let invite = Invite::new(
+        delegation.into_chain(),
+        audience,
+        Some(remote.access_url.clone()),
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
     // Record the invitation on the repo's content branch: the durable
     // half of the invite. The content branch syncs across replicas, so
@@ -180,15 +183,7 @@ pub async fn create_invite(
         InviteAudience::Open { .. } => "open",
         InviteAudience::Scoped => "scoped",
     };
-    let execution = InvitationExecution::new(
-        &invitation,
-        kind,
-        invite
-            .revocation_url
-            .as_ref()
-            .expect("shareable invites always carry an explicit relay")
-            .as_str(),
-    );
+    let execution = InvitationExecution::new(&invitation, kind);
     tonk.reactor
         .repository(&repo_name)
         .branch(CONTENT_BRANCH)
@@ -199,6 +194,8 @@ pub async fn create_invite(
         .perform(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+
+    retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
 
     let url_str = invite
         .to_url(base_url.as_str())
@@ -241,6 +238,67 @@ pub async fn create_invite(
         },
     };
     Ok(Json(response))
+}
+
+/// Retain an invite's delegation chain, plus the profile-to-account union,
+/// into the repository's content branch.
+///
+/// Retaining is what makes the invite revocable: it decomposes every
+/// certificate on the chain into `dialog.ucan/*` facts and an envelope blob,
+/// which is what a later [`prove`] search walks to rebuild the exact path
+/// through the invite hop. A chain that is only serialized into a URL leaves
+/// nothing on the branch, so revocation has nothing to find.
+///
+/// The union edge (`profile -> account`) rides along because the branch is a
+/// shared, synced surface: without it a second device of the same account can
+/// walk only as far as this device's profile key and stops, so the minting
+/// device would be the only one that could ever revoke. It is subject-open,
+/// so retaining it once per mint is content-addressed and free after the
+/// first.
+///
+/// Best effort on the union half only: a profile with no account root has no
+/// union to mint, and that must not fail a mint that is otherwise complete.
+///
+/// [`prove`]: dialog_repository::Delegations::prove
+pub(super) async fn retain_invite_authority(
+    tonk: &crate::TonkState,
+    repo_name: &str,
+    chain: &dialog_ucan_core::DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    // The reactor's cached handle, for the same stale-head reason the
+    // invitation transaction above routes through it.
+    let session = tonk
+        .reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to open '{repo_name}' content branch: {e}"))
+        })?;
+
+    let mut chains = vec![UcanDelegation(chain.clone())];
+    match super::identity::local_root(tonk).await {
+        Ok(root) => {
+            let signer = tonk.profile.signer().signer().clone();
+            match tonk_account::delegations::mint_account_union(&signer, &root.root_did).await {
+                Ok(union) => chains.push(UcanDelegation(union)),
+                Err(e) => log!("invite union edge was not minted: {e}"),
+            }
+        }
+        Err(e) => log!("no account root on this profile, minting invite without a union: {e}"),
+    }
+
+    session
+        .handle()
+        .delegations()
+        .retain_all(chains)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to retain the invite delegation: {e}"))
+        })?;
+    Ok(())
 }
 
 /// Shorten a minted invite URL via the shortcut service on its own
@@ -319,10 +377,10 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
 
 /// Why a spot cannot produce a shareable invite.
 ///
-/// Every variant means an invite that would fail its recipient — one that
-/// can never sync, or one that could never be withdrawn. Only
-/// [`Self::UnshareableRemote`] is terminal; the other two name something the
-/// share prompt can attach, so they offer it.
+/// Both variants mean an invite that would fail its recipient: one that
+/// can never sync. [`Self::UnshareableRemote`] is terminal;
+/// [`Self::NotSynced`] names something the share prompt can attach, so it
+/// offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteRefusal {
     /// `main` has no upstream at all. Repairable by attaching a remote.
@@ -331,15 +389,6 @@ pub(crate) enum RemoteRefusal {
     /// address is not a UCAN endpoint. An invite URL has no way to express
     /// either, so there is nothing to offer.
     UnshareableRemote,
-    /// A UCAN remote exists, but no explicit revocation relay was stored —
-    /// so an invite could be minted and never revoked.
-    ///
-    /// Repairable, and separately from [`Self::NotSynced`]: the spot is
-    /// already synced, so the repair is an upsert of the relay onto the
-    /// remote that is there, not an attach. Reached by every spot whose
-    /// remote predates in-band revocation, and by any caller that attached
-    /// a remote without naming a relay.
-    MissingRevocationRelay,
 }
 
 impl RemoteRefusal {
@@ -351,7 +400,6 @@ impl RemoteRefusal {
         match self {
             Self::NotSynced => share::BLOCKED_NOT_SYNCED,
             Self::UnshareableRemote => share::BLOCKED_UNSHAREABLE_REMOTE,
-            Self::MissingRevocationRelay => share::BLOCKED_MISSING_REVOCATION_RELAY,
         }
     }
 
@@ -360,7 +408,6 @@ impl RemoteRefusal {
         match self {
             Self::NotSynced => "This spot only exists on this device.",
             Self::UnshareableRemote => "This spot's sync server can't be shared.",
-            Self::MissingRevocationRelay => "Invites to this spot can't be withdrawn yet.",
         }
     }
 }
@@ -370,8 +417,6 @@ impl RemoteRefusal {
 pub(crate) struct RemoteExecutionUrls {
     /// UCAN access-service endpoint advertised in the invite.
     pub(crate) access_url: Url,
-    /// Immutable-artifact relay advertised in the invite.
-    pub(crate) revocation_url: Url,
 }
 
 /// Operational endpoints attached to the actual configured sync upstream.
@@ -379,8 +424,6 @@ pub(crate) struct RemoteExecutionUrls {
 pub(crate) struct ConfiguredRemoteExecutionUrls {
     /// UCAN access-service endpoint used by synchronization.
     pub(crate) access_url: Url,
-    /// Optional immutable-artifact relay metadata.
-    pub(crate) revocation_url: Option<Url>,
 }
 
 /// The outcome of probing a repository for a configured UCAN sync endpoint.
@@ -395,13 +438,13 @@ pub(crate) enum ConfiguredRemoteRequirement {
 /// The outcome of probing a repository for an invite-ready sync endpoint.
 #[derive(Debug, Clone)]
 pub(crate) enum RemoteRequirement {
-    /// A UCAN endpoint and revocation relay an invite can advertise.
+    /// A UCAN endpoint an invite can advertise.
     Ready(RemoteExecutionUrls),
     /// No such endpoint. See [`RemoteRefusal`].
     Refused(RemoteRefusal),
 }
 
-async fn resolve_configured_remote_url_with<R>(
+pub(crate) async fn resolve_configured_remote_url_with<R>(
     repository: &dialog_repository::Repository<R>,
     operator: &crate::worker::DefaultOperator,
 ) -> Result<ConfiguredRemoteRequirement, TonkWorkerError>
@@ -483,39 +526,8 @@ where
         }
     };
 
-    let remote_entity = remote_concept.map(|concept| concept.this);
-    let executions: Vec<RemoteExecution> = meta
-        .query()
-        .select(Query::<RemoteExecution> {
-            this: Term::var("this"),
-            revocation_url: Term::var("revocation_url"),
-        })
-        .perform(operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!(
-                "failed to query remote execution metadata: {error:?}"
-            ))
-        })?;
-    let revocation_url = match remote_entity.and_then(|remote_entity| {
-        executions
-            .into_iter()
-            .find(|execution| execution.this == remote_entity)
-            .map(|execution| execution.revocation_url.0)
-    }) {
-        Some(raw_relay) => Some(Url::parse(&raw_relay).map_err(|error| {
-            TonkWorkerError::Internal(format!(
-                "remote '{remote_name}' has an invalid revocation relay: {error}"
-            ))
-        })?),
-        None => None,
-    };
     Ok(ConfiguredRemoteRequirement::Ready(
-        ConfiguredRemoteExecutionUrls {
-            access_url,
-            revocation_url,
-        },
+        ConfiguredRemoteExecutionUrls { access_url },
     ))
 }
 
@@ -573,8 +585,7 @@ where
     }
 }
 
-/// Probe `main` for an invite-ready endpoint. Unlike generic sync and account
-/// backup, invites require an explicit revocation relay.
+/// Probe `main` for an invite-ready endpoint.
 pub(crate) async fn resolve_remote_url<R>(
     tonk: &crate::worker::TonkState,
     repository: &dialog_repository::Repository<R>,
@@ -597,14 +608,8 @@ where
     match resolve_configured_remote_url_with(repository, operator).await? {
         ConfiguredRemoteRequirement::Refused(reason) => Ok(RemoteRequirement::Refused(reason)),
         ConfiguredRemoteRequirement::Ready(remote) => {
-            let Some(revocation_url) = remote.revocation_url else {
-                return Ok(RemoteRequirement::Refused(
-                    RemoteRefusal::MissingRevocationRelay,
-                ));
-            };
             Ok(RemoteRequirement::Ready(RemoteExecutionUrls {
                 access_url: remote.access_url,
-                revocation_url,
             }))
         }
     }
@@ -757,10 +762,6 @@ mod tests {
         assert_eq!(
             RemoteRefusal::UnshareableRemote.detail(),
             "This spot's sync server can't be shared."
-        );
-        assert_eq!(
-            RemoteRefusal::MissingRevocationRelay.code(),
-            "missing-revocation-relay"
         );
     }
 

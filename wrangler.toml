@@ -26,12 +26,6 @@ run_worker_first = [
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
 
-# Read-only view of the provider-independent immutable revocation registry.
-# The account service owns publication; the presign path only lists prefixes.
-[[r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations"
-
 # Control state for customer registration: customers, consumers, and
 # plans. Registration commands answer 500 while this binding is absent or
 # empty; the presign path never touches it.
@@ -58,11 +52,21 @@ database_name = "tonk-access-ingest"
 database_id = "1cf85093-7a8c-4737-9d8e-607b55bf719a"
 migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
+# Revocation index: one key per (revoked delegation, revoking subject),
+# value empty, because the key is the fact. KV has no compare-and-swap,
+# so a set under one key would let two principals revoking the same
+# delegation clobber each other; distinct keys cannot collide.
+#
+# Ships empty: the id is minted once via `wrangler kv namespace create
+# REVOCATIONS_KV` and filled in here.
+[[kv_namespaces]]
+binding = "REVOCATIONS_KV"
+id = "04f72780ec4541318e768ec26d9cc5e4"
+
 [vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces"
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
-REVOCATION_RELAY_URL = "https://accounts.tonk.xyz/revocations"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 [env.staging]
@@ -71,10 +75,6 @@ routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-staging"
-
-[[env.staging.r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations-staging"
 
 # Ships empty, as production's did; filled at bootstrap so there is no way
 # to silently deploy staging against the production database.
@@ -90,11 +90,14 @@ database_name = "tonk-access-ingest-staging"
 database_id = "ebcef6f8-0910-45e4-a7d7-48976068b0ba"
 migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
+[[env.staging.kv_namespaces]]
+binding = "REVOCATIONS_KV"
+id = "02b830113c7f47879b3a839a52f643df"
+
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-staging"
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
-REVOCATION_RELAY_URL = "https://accounts-staging.tonk.xyz/revocations"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Preview. Every pull request uploads a version of this environment under a
@@ -116,10 +119,6 @@ routes = []
 binding = "BUCKET"
 bucket_name = "tonk-spaces-preview"
 
-[[env.preview.r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations-preview"
-
 # Replaced per pull request, like the account service's preview database:
 # continuous integration creates `tonk-access-control-pr-<N>` and rewrites
 # both fields in a copy of this file. The checked-in id is a deliberate
@@ -137,6 +136,11 @@ database_name = "tonk-access-ingest-preview"
 database_id = "INGEST-REPLACED-PER-PULL-REQUEST"
 migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
+# Replaced per pull request, like the control database.
+[[env.preview.kv_namespaces]]
+binding = "REVOCATIONS_KV"
+id = "REPLACED-PER-PULL-REQUEST"
+
 [env.preview.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-preview"
@@ -146,4 +150,3 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # unresolvable: a preview that failed to wire itself has to break visibly rather
 # than quietly serve a real registry to browsers that trust `/.well-known/tonk`.
 ACCOUNT_SERVICE_URL = "https://accounts-preview.invalid"
-REVOCATION_RELAY_URL = "https://accounts-preview.invalid/revocations"

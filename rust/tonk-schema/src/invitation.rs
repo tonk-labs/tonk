@@ -9,7 +9,7 @@ use dialog_query::Concept;
 use dialog_ucan_core::DelegationChain;
 use serde::Serialize;
 
-use crate::domain::invitation::{Audience, Inviter, PathHex, Subject, TargetCid};
+use crate::domain::invitation::{Audience, Inviter, Subject};
 use crate::prelude::*;
 
 /// An invitation — the durable record of a minted invite to a
@@ -24,9 +24,22 @@ use crate::prelude::*;
 /// the chain, so claim paths must derive the invitation from the
 /// chain *as parsed*, before claiming.
 ///
+/// It is deliberately NOT the certificate entity the retained
+/// delegation facts hang off. That one is `blob:<blake3>` of the
+/// envelope, and blake3 is the branch blob store's hash, not
+/// something a claimer can derive from a URL it has only parsed.
+/// Keying on it would make the record unwritable until the chain had
+/// been retained into a branch, which the claim path has not done and
+/// must not have to do.
+///
 /// `subject`, `inviter`, and `audience` repeat chain-derivable data
 /// as queryable attributes — same redundant-by-design rationale as
-/// [`Replica`](crate::Replica).
+/// [`Replica`](crate::Replica). The delegation itself is NOT repeated
+/// here: retaining the chain decomposes every certificate into
+/// `dialog.ucan/*` facts and an envelope blob on the branch, which is
+/// the authoritative copy a proof search reads. A second hand-rolled
+/// copy here could only drift from it, and did: it recorded the leaf
+/// hop, which a re-delegating claimer never presents.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Invitation {
     /// The invitation's entity. Derived from the leaf delegation CID.
@@ -37,12 +50,10 @@ pub struct Invitation {
     /// minted, before any claim redelegation extends it.
     pub inviter: Inviter,
     /// The chain's tail audience: the ephemeral key DID for open
-    /// invites, the recipient DID for scoped ones.
+    /// invites, the recipient DID for scoped ones. Revocation proves
+    /// from this principal back toward the subject, so it is the handle
+    /// onto the retained delegation facts.
     pub audience: Audience,
-    /// Canonical CID of the invitation delegation that closes this route.
-    pub target_cid: TargetCid,
-    /// Exact public delegation path through the target, hex encoded.
-    pub path_hex: PathHex,
 }
 
 /// Hash input for [`Invitation::this`]. Single-variant enum tags the
@@ -82,7 +93,6 @@ impl Invitation {
         // hash input human-inspectable and independent of `Cid`'s
         // serde representation.
         let delegation = leaf_cid.to_string();
-        let path_hex = hex::encode(chain.to_bytes().ok()?);
         Some(Self {
             this: Entity::of(&This::Invitation {
                 delegation: &delegation,
@@ -90,8 +100,6 @@ impl Invitation {
             subject: Subject(subject.this()),
             inviter: Inviter(inviter.this()),
             audience: Audience(audience.this()),
-            target_cid: TargetCid(delegation),
-            path_hex: PathHex(path_hex),
         })
     }
 
@@ -160,18 +168,10 @@ mod tests {
     async fn it_keys_execution_metadata_to_the_invitation_entity() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let invitation = Invitation::from_chain(&minted_chain(&subject).await).unwrap();
-        let execution = crate::InvitationExecution::new(
-            &invitation,
-            "open",
-            "https://artifacts.example.test/revocations/",
-        );
+        let execution = crate::InvitationExecution::new(&invitation, "open");
 
         assert_eq!(execution.this, invitation.this);
         assert_eq!(execution.kind.0, "open");
-        assert_eq!(
-            execution.revocation_url.0,
-            "https://artifacts.example.test/revocations/"
-        );
     }
 
     #[dialog_common::test]

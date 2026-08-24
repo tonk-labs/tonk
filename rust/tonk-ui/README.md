@@ -36,7 +36,7 @@ configured account service, then attaches provider metadata through
 `/api/account/attach`; it does not replace or own the local root.
 
 The page fetches `GET /.well-known/tonk` once and uses its typed
-`accountServiceUrl` and `revocationRelayUrl`. It never infers services from a
+`accountServiceUrl`. It never infers services from a
 hostname or falls back to production for an unknown origin. A `service`
 attribute remains an explicit local-test/operator override. Once attached,
 background account operations use the persisted provider URL.

@@ -675,16 +675,8 @@ fn attach_create_space_form(element: &HtmlElement) {
         };
         let name = form_field(&target, "name");
         let remote = form_field(&target, "remote");
-        // Filled by `<tonk-default-remote relay-field="revocation">` from
-        // this deployment's config; blank when it declares no relay.
-        let revocation = form_field(&target, "revocation");
         let template = form_field(&target, "template");
-        transact(&create_space_claim_json(
-            &name,
-            &remote,
-            &revocation,
-            &template,
-        ));
+        transact(&create_space_claim_json(&name, &remote, &template));
         dismiss_overlay(&target);
     });
     let target: &web_sys::EventTarget = form.unchecked_ref();

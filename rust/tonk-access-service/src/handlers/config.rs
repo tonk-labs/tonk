@@ -38,7 +38,6 @@ pub async fn handle(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let config = (|| {
         Ok::<_, Error>(DeploymentConfig {
             account_service_url: configured_url(&ctx, "ACCOUNT_SERVICE_URL")?,
-            revocation_relay_url: configured_url(&ctx, "REVOCATION_RELAY_URL")?,
             service_did,
         })
     })();

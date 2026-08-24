@@ -894,14 +894,6 @@ pub mod invitation {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation")]
     pub struct Audience(pub Entity);
-
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.invitation")]
-    pub struct TargetCid(pub String);
-
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.invitation")]
-    pub struct PathHex(pub String);
 }
 
 /// Operational metadata attached to an [`Invitation`](crate::Invitation)
@@ -913,11 +905,6 @@ pub mod invitation_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation-execution")]
     pub struct Kind(pub String);
-
-    /// Explicit endpoint that accepts immutable revocation artifacts.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.invitation-execution")]
-    pub struct RevocationUrl(pub String);
 }
 
 /// Attributes that live on [`Remote`] entities only.
