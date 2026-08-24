@@ -44,8 +44,9 @@ tonk eval -c 'person:' --format json --quiet
 
 # Inspect the branch.
 tonk schema       # every named attribute + concept as re-submittable notation
-tonk concept ls   # user-defined concepts: name<TAB>description
-tonk view ls      # entities with a text/html claim: name<TAB>entity<TAB>bytes
+tonk concept ls   # concepts this space defines: name<TAB>description
+tonk view ls      # entities with a template claim: name<TAB>entity<TAB>model<TAB>bytes
+tonk blob ls      # ingested blobs: entity<TAB>content-type<TAB>name
 tonk guide        # baked-in asserted-notation reference (also: guide notation|views|all)
 
 # Argument-based data verbs — a constrained front-end over `eval`.

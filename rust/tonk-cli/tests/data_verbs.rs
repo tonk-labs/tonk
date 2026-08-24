@@ -217,6 +217,50 @@ mod when_asserting_a_new_instance {
         );
         Ok(())
     }
+
+    /// The usage line is what an agent reads on every mis-shaped
+    /// write, so it has to be a command that runs, not a sketch of
+    /// one. It used to render `tonk … task`, with a literal ellipsis
+    /// where the verb belongs.
+    #[dialog_common::test]
+    async fn it_renders_a_runnable_usage_line() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let argv = vec!["--nope".to_string(), "x".to_string()];
+
+        let mint = tonk_cli::data_ops::assert_op(&test.site, "task", None, &argv)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            mint.contains("Usage: tonk assert task --"),
+            "mint form should name the verb and the concept:\n{mint}"
+        );
+        assert!(
+            mint.contains("--title <TEXT>"),
+            "mint form should name the required flags:\n{mint}"
+        );
+        assert!(!mint.contains('…'), "no placeholder ellipsis:\n{mint}");
+
+        // The supersede form takes the entity between the concept and
+        // the flags, so its usage line has to show that too.
+        test.eval_inline("task!: &chore\n  title: \"Chore\"\n  done: false\n")
+            .await?;
+        let supersede = tonk_cli::data_ops::assert_op(&test.site, "task", Some("chore"), &argv)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            supersede.contains("Usage: tonk assert task <ENTITY>"),
+            "supersede form should show where the entity goes:\n{supersede}"
+        );
+        assert!(
+            !supersede.contains('…'),
+            "no placeholder ellipsis:\n{supersede}"
+        );
+        Ok(())
+    }
 }
 
 // `task` has two required fields (`title`, `done`; see the note

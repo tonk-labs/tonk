@@ -25,7 +25,18 @@ pub fn parse_field_flags(
     argv: &[String],
     all_required: bool,
 ) -> Result<Vec<(String, String)>, clap::Error> {
-    let mut cmd = clap::Command::new(format!("tonk … {concept}")).no_binary_name(true);
+    // The usage line clap renders is the one an agent reads on every
+    // mis-shaped write, so it has to be a command that can be copied.
+    // `all_required` is the mint form (no entity); the supersede form
+    // takes the entity between the concept and the flags.
+    let invocation = if all_required {
+        format!("tonk assert {concept}")
+    } else {
+        format!("tonk assert {concept} <ENTITY>")
+    };
+    let mut cmd = clap::Command::new(invocation.clone())
+        .bin_name(invocation)
+        .no_binary_name(true);
     if let Some(about) = descriptor.description() {
         cmd = cmd.about(about.to_string());
     }

@@ -620,48 +620,95 @@ mod when_the_invite_remote_is_the_upstream {
     }
 }
 
-/// The base-selection arm nothing could reach before: no remotes at
-/// all, so no origin resolves and the canonical base is the answer.
+/// A space with no remote is served by no deployment, so an invite to
+/// it has no origin. The canonical base is not a fallback here — it is
+/// production, which holds none of this space's data — so the mint is
+/// refused rather than handed over as a link that reads fine and works
+/// for nobody.
 ///
-/// `--no-shorten` is what makes this testable. Shortening PUTs to the
-/// link's own origin, which here is production — so without it this
-/// test would write to the real shortcut store on every run.
+/// `--base-url` is the way through for a deployment tonk doesn't know
+/// about. `--no-shorten` is what makes *that* testable: shortening
+/// PUTs to the link's own origin, so without it these would reach the
+/// wire on every run.
 mod when_no_remote_is_registered_at_all {
     use super::*;
 
+    const UNREGISTERED_BASE: &str = "http://127.0.0.1:9/join";
+
     #[dialog_common::test]
-    fn it_mints_on_the_canonical_base() {
+    fn it_refuses_rather_than_minting_a_link_to_production() {
         let state = tempfile::tempdir().expect("tempdir");
         spot_with_remotes(state.path(), &[]);
 
         let output = run(state.path(), &["invite", "--no-shorten"], &[]);
+
+        assert!(!output.status.success(), "{}", stdout_of(&output));
+        assert!(
+            stdout_of(&output).trim().is_empty(),
+            "no link should reach stdout: {}",
+            stdout_of(&output)
+        );
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("'demo' has no remote"), "{stderr}");
+        assert!(
+            stderr.contains(tonk_cli::invite::DEFAULT_BASE_URL),
+            "the refusal names the origin it would otherwise have used: {stderr}"
+        );
+    }
+
+    /// The refusal is only useful if it names every way out: hand the
+    /// space to an account, register a remote, or override the origin.
+    #[dialog_common::test]
+    fn it_names_each_way_to_give_the_space_an_origin() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(state.path(), &["invite", "--no-shorten"], &[]);
+        let stderr = stderr_of(&output);
+
+        assert!(stderr.contains("tonk account link"), "{stderr}");
+        assert!(stderr.contains("tonk space link demo"), "{stderr}");
+        assert!(stderr.contains("tonk remote add"), "{stderr}");
+        assert!(stderr.contains("--base-url"), "{stderr}");
+    }
+
+    /// An explicit `--base-url` is the caller saying which deployment
+    /// serves this space, so the mint proceeds on that origin.
+    #[dialog_common::test]
+    fn it_mints_on_an_explicitly_named_base() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(
+            state.path(),
+            &["invite", "--no-shorten", "--base-url", UNREGISTERED_BASE],
+            &[],
+        );
         assert!(output.status.success(), "{}", stderr_of(&output));
 
         let url = stdout_of(&output);
         let url = url.trim();
-        assert!(
-            url.starts_with(tonk_cli::invite::DEFAULT_BASE_URL),
-            "canonical base: {url}"
-        );
+        assert!(url.starts_with(UNREGISTERED_BASE), "named base: {url}");
         assert!(url.contains("access="), "a real invite: {url}");
     }
 
-    /// The environment form of the same switch, so automation can opt
+    /// The environment form of `--no-shorten`, so automation can opt
     /// out without threading a flag through every call site.
     #[dialog_common::test]
     fn it_honours_the_environment_switch() {
         let state = tempfile::tempdir().expect("tempdir");
         spot_with_remotes(state.path(), &[]);
 
-        let output = run(state.path(), &["invite"], &[("TONK_NO_SHORTEN", "1")]);
+        let output = run(
+            state.path(),
+            &["invite", "--base-url", UNREGISTERED_BASE],
+            &[("TONK_NO_SHORTEN", "1")],
+        );
         assert!(output.status.success(), "{}", stderr_of(&output));
 
         let url = stdout_of(&output);
         let url = url.trim();
-        assert!(
-            url.starts_with(tonk_cli::invite::DEFAULT_BASE_URL),
-            "canonical base: {url}"
-        );
+        assert!(url.starts_with(UNREGISTERED_BASE), "named base: {url}");
         assert!(!url.contains("/@/"), "not shortened: {url}");
     }
 }

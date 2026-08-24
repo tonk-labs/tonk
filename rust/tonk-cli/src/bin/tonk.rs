@@ -824,7 +824,13 @@ enum BlobCommand {
         #[arg(value_name = "BLOB_URI")]
         reference: String,
     },
-    /// List blobs in the index with size and content type
+    /// List ingested blobs with their content type and file name
+    ///
+    /// One row per blob, tab-separated
+    /// `entity<TAB>content-type<TAB>name`. Read from the metadata
+    /// facts `tonk blob add` asserts, so bytes attached without
+    /// metadata don't appear, and a row means the facts are here, not
+    /// necessarily the bytes.
     #[command(after_help = "Examples:\n  tonk blob ls")]
     Ls,
 }
@@ -852,11 +858,13 @@ enum ConceptCommand {
         description: Option<String>,
     },
 
-    /// List user-defined concepts on the branch
+    /// List the concepts this space defines
     ///
     /// One row per concept, tab-separated `name<TAB>description`.
-    /// Built-in concepts (`attribute`, `concept`, …) are omitted —
-    /// they're resolvable everywhere and would just be noise.
+    /// The runtime vocabulary — analyzer built-ins, the standard
+    /// library, the space-home recipe — is omitted; it resolves
+    /// everywhere and would bury what you defined. `tonk schema`
+    /// still shows the whole branch.
     #[command(after_help = "Examples:\n  tonk concept ls")]
     Ls,
 }
@@ -890,11 +898,13 @@ enum ViewCommand {
         name: Option<String>,
     },
 
-    /// List renderable entities (those carrying a text/html claim)
+    /// List renderable entities (those carrying a template claim)
     ///
-    /// One row per entity, tab-separated `name<TAB>entity<TAB>bytes`.
-    /// Claim-driven: surfaces anything the host route would serve,
-    /// regardless of how the claim was asserted.
+    /// One row per entity, tab-separated
+    /// `name<TAB>entity<TAB>model<TAB>bytes`. Claim-driven: surfaces
+    /// anything the display stack or the host route would render,
+    /// regardless of how the claim was asserted. Standard-library
+    /// views are omitted.
     #[command(after_help = "Examples:\n  tonk view ls")]
     Ls,
 }
@@ -2684,10 +2694,10 @@ async fn blob_op(command: BlobCommand, spot: Option<&str>) -> ExitCode {
 fn print_blob_ls(rows: &[blob::LsRow]) {
     for row in rows {
         println!(
-            "{uri}  {size}  {content_type}",
+            "{uri}\t{content_type}\t{name}",
             uri = row.entity.as_str(),
-            size = row.size,
             content_type = row.content_type.as_deref().unwrap_or("-"),
+            name = row.name.as_deref().unwrap_or("-"),
         );
     }
 }
@@ -2717,7 +2727,7 @@ async fn mint_invite(
     no_shorten: bool,
     spot: Option<&str>,
 ) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+    let (selected, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -2732,6 +2742,11 @@ async fn mint_invite(
     // `--no-remote` suppresses only the embedded endpoint. The link
     // still belongs on the remote's origin: moving it to the canonical
     // base is the same split this resolution exists to prevent.
+    // Whether `None` below means "the user waved off a choice between
+    // several remotes" rather than "this space has none". The first
+    // still wants the canonical base; the second has no honest origin
+    // to offer.
+    let mut declined_an_origin = false;
     let resolved = match remote::resolve(&site, remote_name.as_deref()).await {
         Ok(record) => record,
         // `--no-remote` is the documented way out of the ambiguity
@@ -2744,6 +2759,7 @@ async fn mint_invite(
                  {base}\n         name an origin with `--base-url <URL>` if that is wrong",
                 base = invite::DEFAULT_BASE_URL,
             );
+            declined_an_origin = true;
             None
         }
         Err(err) => {
@@ -2785,7 +2801,27 @@ async fn mint_invite(
             Ok(derived) => derived,
             Err(err) => return print_failure(err),
         },
-        (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
+        (None, None) if declined_an_origin => invite::DEFAULT_BASE_URL.to_owned(),
+        // A space with no remote has no deployment serving it, so
+        // there is no origin a recipient could join it from. Minting
+        // against the canonical base would hand them a link to
+        // production, which holds none of this data — a share that
+        // reads as successful and works for nobody. Refuse instead,
+        // and name each way to give the space an origin.
+        (None, None) => {
+            let name = &selected.name;
+            let base = invite::DEFAULT_BASE_URL;
+            return print_error(format!(
+                "'{name}' has no remote, so there is nowhere to invite anyone to\n\
+                 \x20      its data lives only on this device, and a link would point at \
+                 {base}, which serves none of it\n\
+                 \x20      give it a home first: `tonk account link` then \
+                 `tonk space link {name}`, or `tonk remote add <name> <URL> \
+                 --revocation-url <URL>`\n\
+                 \x20      to mint against a deployment tonk doesn't know about, pass \
+                 `--base-url <URL>`"
+            ));
+        }
     };
 
     // Carried when the remote names one, absent when it does not. A relay is
@@ -3260,7 +3296,8 @@ async fn home_op(models: Vec<String>, spot: Option<&str>) -> ExitCode {
 }
 
 /// List renderable entities (`tonk view ls`), one tab-separated
-/// `name<TAB>entity<TAB>bytes` row per `text/html` claim carrier.
+/// `name<TAB>entity<TAB>model<TAB>bytes` row per template-claim
+/// carrier.
 async fn list_views_op(site: &site::TonkSite) -> ExitCode {
     let listed = match views::list(site).await {
         Ok(v) => v,
@@ -3278,7 +3315,12 @@ async fn list_views_op(site: &site::TonkSite) -> ExitCode {
 
 fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::Result<()> {
     let name = row.name.as_deref().unwrap_or("-");
-    writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
+    let model = row.model.as_deref().unwrap_or("-");
+    writeln!(
+        out,
+        "{}\t{}\t{}\t{}",
+        name, row.entity, model, row.body_bytes
+    )
 }
 
 async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {

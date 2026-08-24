@@ -17,6 +17,8 @@
 
 use std::fmt::Write as _;
 
+use crate::schema::SPACE_HOME_CONCEPT;
+
 /// One parsed `--attr field:type:cardinality` flag, ready to render
 /// into an `attribute!:` block and a `with:` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,7 +297,11 @@ pub fn build_view_decl(anchor: &str, model: &str, template: &str) -> String {
 pub fn build_home_recipe(models: &[String]) -> String {
     let mut out = String::new();
 
-    out.push_str("concept!: &space-home\n");
+    // The anchor doubles as the concept's published name, and
+    // agent-facing listings filter on that name — so it comes from
+    // the same const the filter reads, not a second copy of the
+    // literal.
+    let _ = writeln!(out, "concept!: &{SPACE_HOME_CONCEPT}");
     out.push_str("  this: space:home\n");
     let _ = writeln!(
         out,
@@ -313,7 +319,7 @@ pub fn build_home_recipe(models: &[String]) -> String {
     out.push_str("      as: entity\n");
     out.push('\n');
 
-    out.push_str("view!: &space-home-view\n");
+    let _ = writeln!(out, "view!: &{SPACE_HOME_CONCEPT}-view");
     out.push_str("  this: id:space:home/view\n");
     out.push_str("  model: space:home\n");
     out.push_str("  display: |\n");

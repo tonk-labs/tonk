@@ -21,12 +21,16 @@ pub mod flags;
 /// [`crate::invite::InviteError`].
 #[derive(Debug, thiserror::Error)]
 pub enum DataOpError {
-    /// No user concept with this name; lists the known concept names.
-    #[error("no concept named '{name}'; known concepts: {}", known.join(", "))]
+    /// No concept with this name; lists the ones this space defines.
+    ///
+    /// The list is the author's vocabulary, not the branch's — the
+    /// runtime's forty-odd concepts are still addressable, but naming
+    /// them here would bury the handful an agent might have meant.
+    #[error("no concept named '{name}'; {}", describe_known(known))]
     NoConcept {
         /// The concept name that was looked up.
         name: String,
-        /// Names of every concept actually defined on the branch.
+        /// Names of the concepts this space's author defined.
         known: Vec<String>,
     },
     /// The supersede form of `assert` named an entity that doesn't
@@ -83,6 +87,20 @@ pub enum DataOpError {
     /// I/O, schema read, or repo-not-found failure.
     #[error("{0}")]
     Io(String),
+}
+
+/// Render the tail of [`DataOpError::NoConcept`]: the concepts this
+/// space defines, or — on a space that defines none yet — the command
+/// that defines the first one. "known concepts: " followed by nothing
+/// reads as a listing failure rather than as an empty space.
+fn describe_known(known: &[String]) -> String {
+    if known.is_empty() {
+        "this space defines no concepts yet; add one with \
+         `tonk concept add <name> --attr <field>:<type>:<cardinality>`"
+            .to_string()
+    } else {
+        format!("concepts in this space: {}", known.join(", "))
+    }
 }
 
 /// Strip clap's own `"error: "` header off a rendered
@@ -560,4 +578,27 @@ pub async fn view_add(
         out.push_str("home already set; re-point it explicitly with `tonk home <concept>`\n");
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_names_the_concepts_a_space_defines() {
+        assert_eq!(
+            describe_known(&["page".to_string(), "note".to_string()]),
+            "concepts in this space: page, note"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_points_at_concept_add_when_a_space_defines_none() {
+        let described = describe_known(&[]);
+        assert!(
+            described.starts_with("this space defines no concepts yet"),
+            "{described}"
+        );
+        assert!(described.contains("tonk concept add"), "{described}");
+    }
 }

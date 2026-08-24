@@ -12,7 +12,9 @@
 //! against: profile, operator (rooted at the site directory), the
 //! repository, and the opened `main` branch.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
@@ -40,21 +42,73 @@ use tonk_account::prefix::{
 /// repository creation.
 const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 
-/// Whether the seeded standard library publishes `name`.
+/// Whether the seeded standard library declares a concept (or a
+/// command, its transient sibling) called `name`.
 ///
-/// Live schema enumeration also sees runtime/system concepts. Agent-facing
-/// workflow surfaces use this to keep the application vocabulary short.
-pub(crate) fn standard_library_has_name(name: &str) -> bool {
-    STANDARD_LIBRARY.lines().any(|line| {
-        let Some((_, anchor)) = line.split_once("!: &") else {
-            return false;
-        };
-        anchor
-            .split_ascii_whitespace()
-            .next()
-            .map(|anchor| anchor.trim_end_matches(':'))
-            == Some(name)
-    })
+/// Live schema enumeration also sees these runtime concepts, and on a
+/// fresh space they outnumber the author's own by forty to one.
+/// Agent-facing listings use this to keep the application vocabulary
+/// short — see [`crate::schema::is_system_concept`].
+///
+/// Only `concept!:` and `command!:` anchors count. The library also
+/// anchors attributes, views, and routes, but those live in a
+/// different namespace: a concept named after one of them is the
+/// author's, not the library's.
+pub(crate) fn standard_library_declares_concept(name: &str) -> bool {
+    STANDARD_LIBRARY_CONCEPTS.contains(name)
+}
+
+/// Every concept and command anchor the library declares, scanned
+/// once. See [`STANDARD_LIBRARY_PINS`] for why these are sets and not
+/// a scan per lookup.
+static STANDARD_LIBRARY_CONCEPTS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    STANDARD_LIBRARY
+        .lines()
+        .filter_map(declared_concept)
+        .collect()
+});
+
+/// The concept (or command) anchor declared on one standard-library
+/// line. `None` for every other line.
+fn declared_concept(line: &str) -> Option<&str> {
+    let anchor = line
+        .strip_prefix("concept!: &")
+        .or_else(|| line.strip_prefix("command!: &"))?;
+    anchor
+        .split_ascii_whitespace()
+        .next()
+        .map(|anchor| anchor.trim_end_matches(':'))
+}
+
+/// Whether the seeded standard library pins `uri` as the `this:` of
+/// one of its own declarations.
+///
+/// Every library declaration that matters here — its views above all —
+/// carries an explicit `this:`, so the set of pinned URIs is exactly
+/// the set of entities the library seeded. Listings of branch data
+/// (`tonk view ls`) use it to tell the library's twenty-five views
+/// from the author's own.
+///
+/// Query variables (`this: ?this`, inside the library's rules) are not
+/// entities and never match a claim's subject, so they are skipped.
+pub(crate) fn standard_library_pins_entity(uri: &str) -> bool {
+    STANDARD_LIBRARY_PINS.contains(uri)
+}
+
+/// Every entity the library pins, scanned once.
+///
+/// The listing that calls this asks per claim row and per renderable
+/// attribute, so a scan per lookup would walk the whole embedded
+/// document a few thousand times to list a handful of views.
+static STANDARD_LIBRARY_PINS: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| STANDARD_LIBRARY.lines().filter_map(pinned_entity).collect());
+
+/// The `this:` value declared on one standard-library line, at any
+/// indentation. `None` for every other line, and for the query
+/// variables the library's rule bodies bind.
+fn pinned_entity(line: &str) -> Option<&str> {
+    let value = line.trim_start().strip_prefix("this:")?.trim();
+    (!value.is_empty() && !value.starts_with('?')).then_some(value)
 }
 
 /// Name of the dialog repository tonk uses inside `.tonk/`.
