@@ -885,7 +885,7 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
 /// This is what puts the signing browser's own row where every device's
 /// list reads — sign-up, passkey sign-in, and accounts that predate the
 /// facts all converge through it.
-async fn describe_own_device(tonk: &TonkState) {
+pub(crate) async fn describe_own_device(tonk: &TonkState) {
     // No root is an ordinary state for a signed-out profile, reached on
     // every sweep; not worth a line in the log.
     let Ok(root) = super::identity::local_root(tonk).await else {

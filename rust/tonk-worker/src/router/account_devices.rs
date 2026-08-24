@@ -88,6 +88,11 @@ pub async fn list(
     use std::collections::BTreeMap as DeviceIndex;
 
     let state = state.read().await;
+    // Self-describing keeps the list honest about this device even when
+    // no sweep has run yet — a fresh sign-up renders its dashboard
+    // before the account has ever hydrated. Local-only and idempotent:
+    // an already-described link is one query and no commit.
+    super::account_state::describe_own_device(&state).await;
     let this_device = state.profile.did().to_string();
     let mut rows: DeviceIndex<String, AccountDevice> = DeviceIndex::new();
     for (link, did) in local_devices(&state).await? {
@@ -550,14 +555,18 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    /// An unlinked profile has no grants retained, so its list is empty
-    /// rather than an error — the list is local facts, not a service
-    /// call that needs an account to address.
+    /// A profile that holds a root grant lists itself even before any
+    /// account service knows it: the list is local facts and it
+    /// describes this device's own link on the way through, so it never
+    /// depends on a sweep having run.
     #[dialog_common::test]
-    async fn it_lists_no_devices_for_an_unlinked_profile() {
+    async fn it_lists_this_device_for_a_profile_with_a_root() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let own = { state.read().await.profile.did().to_string() };
         let devices = list(State(state)).await.unwrap();
-        assert!(devices.0.is_empty());
+        assert_eq!(devices.0.len(), 1);
+        assert_eq!(devices.0[0].did, own);
+        assert!(devices.0[0].this_device);
     }
 
     #[dialog_common::test]
@@ -664,10 +673,13 @@ mod tests {
         );
 
         let devices = list(State(state)).await.unwrap();
-        assert_eq!(devices.0.len(), 1);
-        assert_eq!(devices.0[0].name, "e2e terminal");
-        assert_eq!(devices.0[0].did, device.did().to_string());
-        assert!(!devices.0[0].this_device);
+        let registered = devices
+            .0
+            .iter()
+            .find(|row| row.did == device.did().to_string())
+            .expect("the registered device is listed");
+        assert_eq!(registered.name, "e2e terminal");
+        assert!(!registered.this_device);
     }
 
     /// Revoking another device mints from the target's grant retained in
