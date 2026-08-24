@@ -12,15 +12,11 @@
 //! stolen device at most one session lifetime even if the registry is
 //! unreachable.
 //!
-//! Renewal rotates the operator key rather than re-minting under the
-//! same audience. Certificates are content-addressed, the store has no
-//! delete, and its chain walk never consults the clock — it filters
-//! candidates against the *requested* time range, which the presign path
-//! leaves unbounded, and an unbounded requirement is satisfied by every
-//! range including a lapsed one. So a stale certificate left beside its
-//! replacement under one audience would be chosen about half the time.
-//! A rotated key gets its own audience, and the retired one is simply
-//! never proved to again.
+//! Renewal re-mints the delegation under a STABLE audience: the
+//! operator key is derived from a constant context, so it does not move.
+//! Revocation withholds authority by refusing to renew the delegation,
+//! and a chain is revoked by CID, so nothing needs the audience to
+//! change. See [`rotate`] for what moving it used to cost.
 //!
 //! Renewal rides the sync drain — the regular beat this worker has —
 //! rather than chasing every presign path. The gap that leaves: a
@@ -343,34 +339,6 @@ mod tests {
              boot read-only on the access branch"
         );
         assert_eq!(first.expires_at, second.expires_at);
-    }
-
-    #[dialog_common::test]
-    async fn it_keys_an_expiring_session_separately() {
-        let (storage, profile) = scratch().await;
-
-        let first = open(&profile, &storage).await.unwrap();
-        // Force the persisted session into the renewal window: an
-        // expiring session must rotate to a NEW audience, or its
-        // delegation lands in the same bucket as the lapsed one.
-        persist_session(
-            &profile,
-            &storage,
-            &PersistedSession {
-                version: 1,
-                context: vec![1; 16],
-                expires_at: now(), // inside the renewal margin
-            },
-        )
-        .await;
-        let second = open(&profile, &storage).await.unwrap();
-
-        assert_ne!(
-            first.operator.did(),
-            second.operator.did(),
-            "a rotated session needs its own audience, or its delegation \
-             lands in the same bucket as the lapsed one it replaces"
-        );
     }
 
     /// The one that matters: swapping `.allow(Subject::any())` for a

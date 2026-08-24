@@ -39,6 +39,51 @@ flowchart TB
   onboarding -->|"accreditation"| accredited
 ```
 
+## Clearance
+
+Every stored secret sits at one of two levels, and a key at one level wraps only
+secrets at that level. The levels are ordered by blast radius, so what a
+compromise costs is exactly the subtree beneath the key that leaked.
+
+| Level | Key comes from | Wraps | Compromise costs |
+|---|---|---|---|
+| **Recovery** | passkey PRF, recovery phrase, or the pre-passkey custodian | the account secret | everything |
+| **Account** | `HKDF(account secret)` | space seeds, invite seeds | spaces and invites, not the account |
+
+```mermaid
+flowchart TB
+  subgraph recovery["Recovery clearance"]
+    PK["passkey / pre-passkey custodian"]
+  end
+  subgraph account["Account clearance"]
+    AS["account secret"]
+    AK["account KEK"]
+    SEEDS["space + invite seeds"]
+  end
+  PK -->|"opens"| AS
+  AS -->|"HKDF"| AK
+  AK -->|"wraps"| SEEDS
+```
+
+> [!note]
+> There is no device-scoped third level. Session state and the local root grant
+> look like candidates, but a session record holds a KDF *context* whose other
+> half is the profile seed, and a local root is a delegation, which is a proof
+> rather than a key. Nothing is recoverable-by-this-profile-alone today.
+
+The levels are types (`Kek<Recovery>`, `Kek<Account>`), so wrapping the account
+secret with an account-level key is a compile error. The level is also
+a byte in the envelope header, bound in as AEAD associated data, which catches
+a mis-tiered blob arriving over the wire where no type travelled with it, and
+makes re-tagging one fail as tampering.
+
+> [!caution]
+> The account KEK derives from the account secret, so rotating that secret
+> rotates the KEK. Every seed wrapped under it must be re-wrapped during
+> accreditation. That re-wrap is not overhead, it is step 5: it is what lets a
+> space be re-issued under the new account instead of leaving the old one in the
+> chain forever.
+
 ## Onboarding
 
 1. Generate an **interim account secret**, same shape as an account secret but
@@ -84,11 +129,22 @@ enable account key rotation — or to drop them and let chains grow a hop when a
 re-root is needed. Dropping that ability is a one-way door; retaining it is not.
 
 > [!note]
-> Space secrets are held as non-extractable WebCrypto keys, which IndexedDB
-> stores as live `CryptoKey` handles (`KeyExport::NonExtractable`). No key bytes
-> exist on disk, so compromising the interim account secret does not yield space
-> authority — an attacker needs code execution on the device, and still cannot
-> exfiltrate anything reusable elsewhere.
+> Space seeds are wrapped bytes under the account KEK, not non-extractable
+> handles. Non-extractable would be stronger against on-device code execution,
+> but it is also non-replicable: only the device that generated a space could
+> ever re-issue it, and a second device could never hold the origin authority.
+> Wrapping keeps the seeds replicable and re-issuable, which is what account
+> rotation needs. The one non-extractable key we keep is the pre-passkey
+> custodian, because it stands in for a passkey and must be as uncopyable as
+> one.
+
+## Not yet built
+
+- **Destroying the onboarding custodian.** Demotion (overwriting the key record
+  with its own public half) is the mechanism, since the credential API has no
+  retract for keys. It belongs with step 8 and lands when accreditation does.
+- **Account-clearance wrapping.** `AccountSecret::account_kek` exists; nothing
+  wraps a space or invite seed with it yet.
 
 ## Ordering
 
@@ -103,9 +159,10 @@ the account's own is created, so there is no window where both are live.
 
 ## Open
 
-- **Non-extractable means non-replicable.** Only the device that created a space
-  can re-issue it. A second device is delegated to by the account rather than
-  re-issuing, so account rotation has a per-device step.
+- **Re-wrapping every seed is the cost of rotation.** The account KEK derives
+  from the account secret, so accreditation must unwrap and re-wrap every space
+  and invite seed. Each is independent, so this is resumable, but it is
+  proportional to how much a device accumulated before accreditation.
 - **The onboarding window is unbounded.** A space created and left un-accredited
   keeps a live signing key on that device. Shorter than "forever", longer than
   the ephemeral keys it replaces.

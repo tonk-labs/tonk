@@ -89,6 +89,76 @@ pub mod space {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
     pub struct Name(pub String);
+
+    /// When this space was founded, unix seconds.
+    ///
+    /// Written once at creation and never updated, so it records the
+    /// founding rather than the most recent mount. A space that arrived
+    /// by invite has none: joining is not founding, and the absence is
+    /// what distinguishes the two.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct FoundedAt(pub u64);
+
+    /// The profile that founded the space.
+    ///
+    /// The account is already implied — the directory belongs to it —
+    /// so this records WHICH DEVICE created the space, which is
+    /// otherwise lost: the ownership delegation's audience is the
+    /// account, and the founding device leaves no other trace.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct FoundedBy(pub Entity);
+}
+
+/// Attributes describing a device authorization — an
+/// `account -> profile` powerline as a device list presents it.
+///
+/// These hang off the DELEGATION's own entity (its blob hash), not a
+/// separate record: the delegation IS the authorization, so a parallel
+/// row could disagree with the proof it describes. Dialog already
+/// decomposes issuer/audience/subject/expiration onto that entity;
+/// these are the fields it does not carry.
+///
+/// Namespaced `xyz.tonk.device` rather than `xyz.tonk.authorization`,
+/// which already means an invite's access proof. One namespace holding
+/// both would make "authorization" ambiguous between a device link and
+/// a share link.
+pub mod device {
+    use super::Attribute;
+
+    /// When the device was linked, unix seconds.
+    ///
+    /// Distinct from the delegation's `notBefore`: that bounds validity,
+    /// this records the act. A re-issued link with the same validity
+    /// window still gets a new creation time.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.device")]
+    #[cardinality(one)]
+    pub struct CreatedAt(pub u64);
+
+    /// Human label for the device, e.g. "Chrome on macOS".
+    ///
+    /// The same string the account ceremony sends onward as
+    /// `deviceName`, kept here so a device list renders offline instead
+    /// of requiring a round trip to the account service.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.device")]
+    #[cardinality(one)]
+    pub struct Title(pub String);
+
+    /// Why the delegation exists, e.g. `device-link`.
+    ///
+    /// Duplicated from the delegation's signed `meta` because `meta` is
+    /// NOT decomposed into facts — it rides inside the envelope and
+    /// cannot be queried. The signed copy stays authoritative; this one
+    /// exists so a device list can filter without opening envelopes.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.device")]
+    #[cardinality(one)]
+    pub struct Reason(pub String);
 }
 
 /// Attributes for the `tonk/sync` concept — a replica's sync state.

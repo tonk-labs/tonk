@@ -3240,8 +3240,37 @@ where
     )
     .await?;
     record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
+    // Only on the creation path: `record_space_mount` also runs for
+    // joined spaces, and a founding stamp there would claim this
+    // account made a space it was merely invited to.
+    record_space_founded(tonk, &repository.did()).await;
     super::adopt::stamp_space_locality(tonk, &repository.did()).await;
     Ok(())
+}
+
+/// Stamp who founded a space and when, onto its directory entity.
+///
+/// Best effort, like the mount record beside it: a space is usable the
+/// moment its delegations exist, and a missing founding stamp costs a
+/// Hub label rather than access.
+async fn record_space_founded(tonk: &TonkState, subject: &Did) {
+    let at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .assert(tonk_schema::SpaceFounded::new(
+            subject,
+            &tonk.profile.did(),
+            at,
+        ));
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("stamp space founding for '{subject}': {error}");
+    }
 }
 
 /// Anchor wrapper so branch/remote concepts can hang off the space's
@@ -5975,6 +6004,50 @@ mod tests {
             .find(|r| r.this == *memberships[0].this())
             .expect("founder role stamped on create");
         assert_eq!(role.role.0.to_string(), tonk_schema::MemberRole::FOUNDER);
+    }
+
+    /// Creating a space stamps who founded it and when, onto the
+    /// account-directory entity the Hub renders.
+    #[dialog_common::test]
+    async fn it_stamps_space_founding_on_create() {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Did;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, key) = fresh_repo("test-space-founding").await;
+
+        let guard = state.read().await;
+        let subject: Did = format!("did:key:{key}")
+            .parse()
+            .expect("routing key is a did");
+        let profile_entity = guard.profile.did().this();
+
+        let branch = guard
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&guard.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<tonk_schema::SpaceFounded> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceFounded> {
+                this: Term::from(subject.this()),
+                founded_at: Term::var("founded_at"),
+                founded_by: Term::var("founded_by"),
+            })
+            .perform(&guard.operator)
+            .try_vec()
+            .await
+            .expect("founding query runs");
+
+        assert_eq!(rows.len(), 1, "exactly one founding stamp");
+        assert_eq!(
+            rows[0].founded_by.0, profile_entity,
+            "the founding device is recorded, not just the account",
+        );
+        assert!(rows[0].founded_at.0 > 0, "a real timestamp");
     }
 
     /// Creating a repository names the creator on the content branch.

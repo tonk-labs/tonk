@@ -19,13 +19,16 @@
 //! acquired after it. Rotating bounds the blast radius to what existed
 //! before: an attacker controls the pre-passkey spaces, not the account.
 
-use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_credentials::{Credential, Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
+use dialog_effects::credential::prelude::*;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
-use dialog_varsig::Did;
-use tonk_identity::envelope::{AccountSecret, Envelope, Kek, KekMethod};
-use zeroize::Zeroizing;
+use dialog_varsig::{Did, Signer as VarsigSigner};
+use tonk_identity::clearance::Recovery;
+use tonk_identity::envelope::{AccountSecret, CUSTODIAN_KEK_CONTEXT, Envelope, Kek, KekMethod};
+
+use tonk_common::log;
 
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
@@ -36,13 +39,21 @@ use crate::worker::TonkState;
 /// re-read of bytes in the old shape.
 const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
 
-/// Credential site holding the KEK that opens [`ONBOARDING_ENVELOPE_SITE`].
+/// Credential key holding the onboarding custodian: the keypair whose
+/// signature derives the KEK that opens [`ONBOARDING_ENVELOPE_SITE`].
 ///
-/// Separate from the envelope on purpose: accreditation destroys the KEK
-/// and leaves the envelope unopenable, which is what makes "the
+/// A key, not a site, because `.key()` stores a `CryptoKeyPair` handle
+/// that WebCrypto generates **non-extractable** by default. The KEK
+/// itself is never written anywhere: it is recomputed from a fresh
+/// signature on every boot, so no bytes on disk can open the envelope.
+/// That is what makes this a stand-in for a passkey rather than a
+/// password sitting next to the thing it locks.
+///
+/// Separate from the envelope on purpose: accreditation destroys the
+/// custodian and leaves the envelope unopenable, which makes "the
 /// onboarding custodian can no longer reach the account" a fact about
 /// storage rather than a promise about code paths.
-const ONBOARDING_KEK_SITE: &str = "tonk-onboarding-kek-v1";
+const ONBOARDING_CUSTODIAN_KEY: &str = "tonk-onboarding-custodian-v1";
 
 /// This device's onboarding account, minting one on first call.
 ///
@@ -87,18 +98,21 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
     let Some(envelope) = load(state, ONBOARDING_ENVELOPE_SITE).await? else {
         return Ok(None);
     };
-    let Some(kek) = load(state, ONBOARDING_KEK_SITE).await? else {
-        // The envelope outliving its KEK is the shape accreditation
-        // leaves behind, and it is deliberately unopenable.
-        return Ok(None);
+    let Some(custodian) = load_custodian(state).await? else {
+        // An envelope outliving its custodian is the shape
+        // accreditation leaves behind. Reporting it as absent would
+        // send `account()` off to mint a second onboarding account on
+        // top of an accredited device, so it is an error: the envelope
+        // is deliberately unopenable, not missing.
+        return Err(TonkWorkerError::Internal(
+            "the onboarding envelope has no custodian; this device is already accredited".into(),
+        ));
     };
     let envelope = Envelope::decode(&envelope).map_err(|error| {
         TonkWorkerError::Internal(format!("the onboarding envelope is malformed: {error}"))
     })?;
-    let kek: [u8; 32] = kek.as_slice().try_into().map_err(|_| {
-        TonkWorkerError::Internal(format!("the onboarding KEK is {} bytes, not 32", kek.len()))
-    })?;
-    Kek::from_bytes(Zeroizing::new(kek))
+    derive_kek(&custodian)
+        .await?
         .open(&envelope)
         .map(Some)
         .map_err(|error| {
@@ -110,20 +124,26 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
 async fn create(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
     let secret =
         AccountSecret::generate().map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
-    let mut kek_bytes = Zeroizing::new([0u8; 32]);
-    getrandom::fill(kek_bytes.as_mut())
-        .map_err(|error| TonkWorkerError::Internal(format!("no entropy for a KEK: {error}")))?;
-    let kek = Kek::from_bytes(Zeroizing::new(*kek_bytes));
-    let envelope = kek
+
+    // The default `generate` is what we want: on wasm it produces a
+    // non-extractable WebCrypto keypair, and the extractable variant is
+    // an explicit opt-in we deliberately do not take.
+    let custodian = Ed25519Signer::generate().await.map_err(|error| {
+        TonkWorkerError::Internal(format!(
+            "failed to generate the onboarding custodian: {error}"
+        ))
+    })?;
+    let envelope = derive_kek(&custodian)
+        .await?
         .seal(&secret, KekMethod::Local)
         .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
 
-    // Envelope first, KEK second: a KEK with no envelope reads as
-    // absent, while an envelope with no KEK is the unopenable shape
-    // accreditation leaves. Neither half alone can be mistaken for a
-    // usable account.
+    // Custodian first, envelope second: a custodian with no envelope
+    // reads as absent, while an envelope with no custodian is the
+    // unopenable shape accreditation leaves. Neither half alone can be
+    // mistaken for a usable account.
+    save_custodian(state, custodian).await?;
     save(state, ONBOARDING_ENVELOPE_SITE, envelope.encode()).await?;
-    save(state, ONBOARDING_KEK_SITE, kek_bytes.to_vec()).await?;
     Ok(secret)
 }
 
@@ -165,19 +185,157 @@ pub(crate) async fn grant_device(state: &TonkState) -> Result<DelegationChain, T
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save the onboarding grant: {error}"))
         })?;
+    describe_device_link(state, &chain).await;
     Ok(chain)
 }
 
-/// Destroy the onboarding custody.
+/// This device's label, from the worker's own navigator.
 ///
-/// Called at the END of accreditation, once every space and invite has
-/// been re-issued under the new account. The KEK goes first: with it
-/// gone the envelope cannot be opened, so a failure between the two
-/// leaves an account nobody can reach rather than one an interrupted
-/// rotation could still act as.
-pub(crate) async fn destroy(state: &TonkState) -> Result<(), TonkWorkerError> {
-    save(state, ONBOARDING_KEK_SITE, Vec::new()).await?;
-    save(state, ONBOARDING_ENVELOPE_SITE, Vec::new()).await
+/// The service worker has `WorkerNavigator` rather than `window`, and no
+/// `platform` or touch-point count, so the label is coarser than the
+/// page's — browser and OS families still come out of the user agent.
+fn device_title() -> String {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast as _;
+        let agent = js_sys::global()
+            .dyn_into::<web_sys::WorkerGlobalScope>()
+            .ok()
+            .and_then(|scope| scope.navigator().user_agent().ok())
+            .unwrap_or_default();
+        tonk_common::device_label::from_navigator(&agent, "", 0)
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        tonk_common::device_label::from_navigator("", "", 0)
+    }
+}
+
+/// Describe a device link as facts on the delegation's own entity.
+///
+/// Retaining the chain is what creates that entity: dialog stores each
+/// certificate under its blob hash and decomposes issuer, audience, and
+/// subject onto it, then hands the entities back. These are the fields
+/// it does not carry — a label and a creation time, so a device list
+/// renders without asking the account service.
+///
+/// Best effort: the grant is already saved and usable by this point, so
+/// a missing description costs a row's label, not access.
+async fn describe_device_link(state: &TonkState, chain: &DelegationChain) {
+    let branch = match state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("describe device link: open profile branch: {error}");
+            return;
+        }
+    };
+    let entities = match branch
+        .handle()
+        .delegations()
+        .retain(UcanDelegation(chain.clone()))
+        .perform(&state.operator)
+        .await
+    {
+        Ok(entities) => entities,
+        Err(error) => {
+            log!("describe device link: retain: {error}");
+            return;
+        }
+    };
+    let at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let title = device_title();
+    // The chain's certificates each get an entity; the link itself is
+    // the last one, the hop that names this device as the audience.
+    let Some(entity) = entities.last() else {
+        return;
+    };
+    let transaction = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(tonk_schema::DeviceLink::new(entity.clone(), title, at));
+    if let Err(error) = transaction.commit().perform(&state.operator).await {
+        log!("describe device link: commit: {error}");
+    }
+}
+
+/// The recovery-clearance KEK this custodian derives, via a signature
+/// over [`CUSTODIAN_KEK_CONTEXT`].
+///
+/// Recovery clearance because this key wraps the account secret itself:
+/// the onboarding custodian is the pre-passkey stand-in at the top of
+/// the hierarchy, not something derived from what it protects.
+///
+/// Ed25519 signatures are deterministic, so the same custodian yields
+/// the same KEK on every call without it ever being written down.
+async fn derive_kek(custodian: &Ed25519Signer) -> Result<Kek<Recovery>, TonkWorkerError> {
+    let signature = VarsigSigner::sign(custodian, CUSTODIAN_KEK_CONTEXT)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("the onboarding custodian did not sign: {error}"))
+        })?;
+    Ok(Kek::from_custodian(signature.to_bytes().as_ref()))
+}
+
+/// The stored custodian, or `None` when this device has none.
+async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, TonkWorkerError> {
+    let credential = match state
+        .profile
+        .did()
+        .credential()
+        .key(ONBOARDING_CUSTODIAN_KEY)
+        .load()
+        .perform(&state.operator)
+        .await
+    {
+        Ok(credential) => credential,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load the onboarding custodian: {error}"
+            )));
+        }
+    };
+    // A demoted record holds no signer: `destroy` overwrites the
+    // custodian with its own public half, so the private key is gone
+    // and this device is accredited. `None` reads as "no custodian",
+    // which is exactly right; the public half is kept only so the state
+    // stays distinguishable from a device that never onboarded.
+    let Some(signer) = credential.signer() else {
+        return Ok(None);
+    };
+    // `Signer` gains arms only when `dialog-credentials` is built with
+    // another algorithm, which this crate never enables, so ed25519 is
+    // exhaustive here and a wrong-algorithm arm would be dead code.
+    let Signer::Ed25519(signer) = signer;
+    Ok(Some(signer.clone()))
+}
+
+async fn save_custodian(
+    state: &TonkState,
+    custodian: Ed25519Signer,
+) -> Result<(), TonkWorkerError> {
+    state
+        .profile
+        .did()
+        .credential()
+        .key(ONBOARDING_CUSTODIAN_KEY)
+        .save(Credential::from(custodian))
+        .perform(&state.operator)
+        .await
+        .map_err(|error: CredentialError| {
+            TonkWorkerError::Internal(format!("failed to save the onboarding custodian: {error}"))
+        })
 }
 
 async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWorkerError> {
@@ -209,4 +367,96 @@ async fn save(state: &TonkState, site: &str, bytes: Vec<u8>) -> Result<(), TonkW
         .map_err(|error: CredentialError| {
             TonkWorkerError::Internal(format!("failed to save {site}: {error}"))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Granting a device describes the link as facts, so a device list
+    /// renders without asking the account service.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_describes_the_device_link() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let tonk = crate::router::tests::test_state_without_account().await;
+
+        grant_device(&tonk).await.expect("the grant mints");
+
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<tonk_schema::DeviceLink> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::DeviceLink> {
+                this: Term::var("this"),
+                created_at: Term::var("created_at"),
+                title: Term::var("title"),
+                reason: Term::var("reason"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("device-link query runs");
+
+        assert_eq!(rows.len(), 1, "exactly one device link described");
+        assert_eq!(rows[0].reason.0, tonk_schema::DEVICE_LINK);
+        assert!(!rows[0].title.0.is_empty(), "a device carries a label");
+        assert!(rows[0].created_at.0 > 0, "a real timestamp");
+    }
+
+    /// The whole custodian design rests on Ed25519 signatures being
+    /// deterministic (RFC 8032): the KEK is never stored, so a second
+    /// signature over the same context has to reproduce it exactly or
+    /// the account becomes unopenable on the next boot.
+    #[dialog_common::test]
+    async fn it_derives_the_same_kek_from_one_custodian() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let secret = AccountSecret::generate().unwrap();
+
+        let envelope = derive_kek(&custodian)
+            .await
+            .unwrap()
+            .seal(&secret, KekMethod::Local)
+            .unwrap();
+
+        // A separate signing call, as a later boot would make.
+        assert!(
+            derive_kek(&custodian)
+                .await
+                .unwrap()
+                .open(&envelope)
+                .is_ok(),
+            "a custodian must reopen its own envelope across calls"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_cannot_open_another_custodians_envelope() {
+        let envelope = derive_kek(&Ed25519Signer::generate().await.unwrap())
+            .await
+            .unwrap()
+            .seal(&AccountSecret::generate().unwrap(), KekMethod::Local)
+            .unwrap();
+
+        let stranger = Ed25519Signer::generate().await.unwrap();
+        assert!(
+            derive_kek(&stranger)
+                .await
+                .unwrap()
+                .open(&envelope)
+                .is_err()
+        );
+    }
 }

@@ -10,6 +10,7 @@
 //! day-to-day operation never touches the root key.
 
 pub mod ceremony;
+pub mod clearance;
 pub mod custody;
 pub mod delegation;
 pub mod envelope;
