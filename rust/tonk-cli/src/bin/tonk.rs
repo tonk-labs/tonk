@@ -2817,7 +2817,7 @@ async fn mint_invite(
                  {base}, which serves none of it\n\
                  \x20      give it a home first: `tonk account link` then \
                  `tonk space link {name}`, or `tonk remote add <name> <URL> \
-                 --revocation-url <URL>` then `tonk remote set-upstream <name>`\n\
+                 --revocation-url <URL>`\n\
                  \x20      to mint against a deployment tonk doesn't know about, pass \
                  `--base-url <URL>`"
             ));
