@@ -579,3 +579,26 @@ pub async fn view_add(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_names_the_concepts_a_space_defines() {
+        assert_eq!(
+            describe_known(&["page".to_string(), "note".to_string()]),
+            "concepts in this space: page, note"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_points_at_concept_add_when_a_space_defines_none() {
+        let described = describe_known(&[]);
+        assert!(
+            described.starts_with("this space defines no concepts yet"),
+            "{described}"
+        );
+        assert!(described.contains("tonk concept add"), "{described}");
+    }
+}
