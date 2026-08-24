@@ -5901,9 +5901,7 @@ mod tests {
         let (_app, state, key) = fresh_repo("test-space-founding").await;
 
         let guard = state.read().await;
-        let subject: Did = format!("did:key:{key}")
-            .parse()
-            .expect("routing key is a did");
+        let subject: Did = key.parse().expect("the repository is named by its DID");
         let profile_entity = guard.profile.did().this();
 
         let branch = guard

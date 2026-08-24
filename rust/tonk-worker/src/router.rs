@@ -845,10 +845,14 @@ pub mod tests {
             let prefix = super::repository::space_root_prefix(&tonk, &repository.did())
                 .await
                 .unwrap();
+            let onboarding = crate::onboarding::did(&tonk)
+                .await
+                .expect("the onboarding account reads")
+                .expect("creating a space minted an onboarding account");
             assert_eq!(
                 prefix.audience(),
-                &tonk.profile.did(),
-                "with no root, the space delegates to the profile's device key"
+                &onboarding,
+                "with no root, the space delegates to the device's onboarding account"
             );
         }
 
@@ -4385,10 +4389,12 @@ employee:
         );
     }
 
-    /// `/query` against a missing repository returns 404, not
-    /// 500.
+    /// `/query` against a missing repository answers the empty set, the
+    /// same answer a branch that exists and matches nothing gives.
+    /// Absence is not a transport failure: a 404 became `offline` on the
+    /// page and retried forever.
     #[dialog_common::test]
-    async fn it_returns_404_for_query_against_unknown_repo() {
+    async fn it_answers_a_query_against_an_unknown_repo_with_the_empty_set() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
 
@@ -4404,7 +4410,16 @@ employee:
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!([]),
+            "a repo that is not here holds nothing"
+        );
     }
 
     /// `Reactor::shutdown` must drop every active subscriber's
