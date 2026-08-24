@@ -869,6 +869,32 @@ pub async fn devices_in(
     Ok(devices)
 }
 
+/// Explicitly pull the account so every local view reads current facts.
+///
+/// The read verbs (`devices`, `status`, `spots`) deliberately never
+/// touch the remote — local answers stay instant and a sick remote
+/// cannot hang them. This is the verb that freshens what they read,
+/// bounded and honest: a remote that does not answer is an error naming
+/// it, not a wait.
+pub async fn sync(profile: &Profile) -> Result<crate::account_state::EnsureOutcome> {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    sync_in(profile, &store).await
+}
+
+/// [`sync`] through one explicit account profile store.
+pub async fn sync_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<crate::account_state::EnsureOutcome> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        crate::account_state::ensure_with_operator_and_store(profile, operator, store.clone()),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the account remote did not answer in time"))?
+}
+
 /// Sync the account best-effort, under the same hard deadline the link
 /// flow uses: reads that follow serve local facts either way, so a slow
 /// or unreachable remote must degrade to slightly stale rather than
