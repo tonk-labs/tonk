@@ -168,6 +168,10 @@ tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 tower-service = "0.3"
 ulid = "1"
+# Column widths for the CLI's aligned listings. Member display names come
+# off the roster and can hold wide or zero-width characters, which a
+# character count would misalign.
+unicode-width = "0.2"
 url = "2"
 urlencoding = "2"
 wasm-streams = "0.6"

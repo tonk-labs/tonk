@@ -350,11 +350,12 @@ mod when_shortening_an_invite {
     }
 }
 
-/// The library's own copy of the rule the binary enforces before it calls
-/// in: an invite that embeds a remote must name the relay its revocations
-/// will be published to. Every mint above that embeds a remote now passes
-/// one, so the refusal — which those mints used to cover by failing on it —
-/// is stated here instead. Offline: the check runs before any network.
+/// The library's own copy of what the binary no longer enforces: a mint that
+/// embeds a remote used to be refused unless the remote named a relay for its
+/// revocations. A revocation is an ordinary `ucan/revoke` invocation now,
+/// addressed to the access service the invite already carries, so there is
+/// nothing left to demand. Offline: the check that is gone ran before any
+/// network, so its absence shows without one.
 mod when_minting_an_invite_that_embeds_a_relay_less_remote {
     use anyhow::Result;
     use tonk_cli::invite;
@@ -364,22 +365,14 @@ mod when_minting_an_invite_that_embeds_a_relay_less_remote {
     const ENDPOINT: &str = "https://access.example.test/ucan/";
 
     #[dialog_common::test]
-    async fn it_refuses_and_says_how_to_configure_a_relay() -> Result<()> {
+    async fn it_mints_without_demanding_a_relay() -> Result<()> {
         let inviter = common::TestSite::new().await?;
 
-        let error = invite::mint(&inviter.site, None, Some(ENDPOINT))
+        let outcome = invite::mint(&inviter.site, None, Some(ENDPOINT))
             .await
-            .expect_err("a remote with no relay must not be embedded");
+            .expect("a relay-less remote still mints");
 
-        let message = error.to_string();
-        assert!(
-            message.contains("no revocation relay"),
-            "and say why: {message}"
-        );
-        assert!(
-            message.contains("--revocation-url"),
-            "and how to fix it: {message}"
-        );
+        assert!(!outcome.url.is_empty());
         Ok(())
     }
 }
@@ -473,7 +466,7 @@ mod when_recording_roster_facts {
     use tonk_cli::site::TonkSite;
     use tonk_invite::Invite;
     use tonk_schema::prelude::DidExt as _;
-    use tonk_schema::{Invitation, InvitedVia, Membership};
+    use tonk_schema::{Invitation, InvitedVia, MemberRole, Membership};
 
     use crate::common;
 
@@ -519,15 +512,13 @@ mod when_recording_roster_facts {
         invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
         let joined = TonkSite::open_with(&claimer_root, claimer_config).await?;
 
-        // Claimer side: membership + stamp referencing the same
-        // invitation entity.
-        let claimer_meta = joined
-            .repository
-            .branch(tonk_cli::remote::META_BRANCH)
-            .open()
-            .perform(&joined.operator)
-            .await?;
-        let memberships: Vec<Membership> = claimer_meta
+        // Claimer side: membership + stamp referencing the same invitation
+        // entity, on the *content* branch. Only upstreamed branches sync, so
+        // a roster row on `meta` would never reach the space's owner — and
+        // the content branch is where every reader of the roster looks.
+        let claimer_session = joined.branch().await?;
+        let claimer_content = claimer_session.handle();
+        let memberships: Vec<Membership> = claimer_content
             .query()
             .select(Query::<Membership> {
                 this: Term::var("this"),
@@ -538,6 +529,18 @@ mod when_recording_roster_facts {
             .try_vec()
             .await?;
         assert_eq!(memberships.len(), 1);
+        let roles: Vec<MemberRole> = claimer_content
+            .query()
+            .select(Query::<MemberRole> {
+                this: Term::var("this"),
+                role: Term::var("role"),
+            })
+            .perform(&joined.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].this, memberships[0].this);
+        assert_eq!(roles[0].role.0.to_string(), MemberRole::MEMBER);
         let root_bytes = joined
             .profile
             .credential()
@@ -549,7 +552,7 @@ mod when_recording_roster_facts {
         let root_did: dialog_varsig::Did = root.root_did.parse()?;
         assert_eq!(memberships[0].member.0, root_did.this());
 
-        let stamps: Vec<InvitedVia> = claimer_meta
+        let stamps: Vec<InvitedVia> = claimer_content
             .query()
             .select(Query::<InvitedVia> {
                 this: Term::var("this"),
@@ -678,7 +681,7 @@ mod when_minting_and_claiming_an_invite {
     /// here.
     #[dialog_common::test]
     fn default_config_uses_the_canonical_profile_name() {
-        let config = site::default_config();
+        let config = site::default_config().expect("default config");
         assert_eq!(config.profile_name, site::PROFILE_NAME);
     }
 }
@@ -984,6 +987,45 @@ mod when_listing_concepts {
     }
 
     #[dialog_common::test]
+    async fn it_omits_the_runtime_vocabulary_a_fresh_site_seeds() -> Result<()> {
+        // Site init lowers core.yaml and the analyzer registers its
+        // built-ins, so a fresh branch carries forty-odd concepts the
+        // author never wrote. None of them belongs in the listing.
+        let test = common::TestSite::new().await?;
+        let concepts = schema::list_concepts(&test.site).await?;
+        assert!(
+            concepts.is_empty(),
+            "a fresh site defines no concepts of its own; saw {:?}",
+            concepts.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        // Each of these is a different source of noise: an analyzer
+        // built-in, a standard-library concept, and a standard-library
+        // command. Naming them pins the filter to all three.
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let listed: Vec<_> = schema::list_concepts(&test.site)
+            .await?
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(listed, vec!["task".to_string()]);
+        for omitted in ["command", "view", "tonk/agents", "tonk/invite"] {
+            assert!(
+                !listed.contains(&omitted.to_string()),
+                "{omitted} is runtime vocabulary and should not be listed"
+            );
+            // Omitted from the listing, but still addressable by name:
+            // the filter is presentational, not a scoping rule.
+            assert!(
+                schema::find_concept(&test.site, omitted).await?.is_some(),
+                "{omitted} should still resolve by name"
+            );
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_excludes_user_defined_concepts_absent_on_a_fresh_site() -> Result<()> {
         // A fresh site has no user-defined `task` concept — only
         // built-ins are seeded. This pins that the user-defined
@@ -1011,6 +1053,52 @@ mod when_listing_views {
         let test = common::TestSite::new().await?;
         let listed = views::list(&test.site).await?;
         assert!(listed.is_empty());
+        Ok(())
+    }
+
+    /// `view add` writes `xyz.tonk.view/display`; the listing used to
+    /// select on `text/html` alone and so came back empty right after
+    /// a successful add.
+    #[dialog_common::test]
+    async fn it_lists_a_view_authored_through_view_add() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(common::ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::CONCEPT_DECL).await?;
+        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+
+        let listed = views::list(&test.site).await?;
+        let row = listed
+            .iter()
+            .find(|row| row.name.as_deref() == Some("task-view"))
+            .expect("the authored view should be listed");
+        assert_eq!(row.model.as_deref(), Some("task"));
+        // The `display: |` block scalar keeps its trailing newline.
+        assert_eq!(row.body_bytes, "<b>{title}</b>\n".len());
+        Ok(())
+    }
+
+    /// The standard library seeds twenty-five views. They are branch
+    /// data like any other, so only the pin filter keeps them out.
+    #[dialog_common::test]
+    async fn it_omits_the_views_the_standard_library_seeds() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        assert!(views::list(&test.site).await?.is_empty());
+
+        test.eval_inline(common::ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::CONCEPT_DECL).await?;
+        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+
+        let listed = views::list(&test.site).await?;
+        assert!(
+            listed
+                .iter()
+                .all(|row| row.entity.to_string() != "tonk:blob/media-view"),
+            "seeded views should stay out of the listing: {:?}",
+            listed
+                .iter()
+                .map(|row| row.entity.to_string())
+                .collect::<Vec<_>>()
+        );
         Ok(())
     }
 

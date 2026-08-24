@@ -56,14 +56,19 @@ pub struct SpotAgents {
     pub markdown: String,
 }
 
+/// Whether the `tonk/agents` concept is declared on this branch.
+///
+/// Asked by name rather than by scanning `list_concepts`: the claim
+/// rides a standard-library concept, which that listing deliberately
+/// omits.
+pub async fn is_declared(site: &TonkSite) -> Result<bool> {
+    Ok(schema::find_concept(site, CONCEPT_NAME).await?.is_some())
+}
+
 /// Read the current claim, returning `None` for spots that have never defined
 /// or asserted it.
 pub async fn get(site: &TonkSite) -> Result<Option<SpotAgents>> {
-    let declared = schema::list_concepts(site)
-        .await?
-        .iter()
-        .any(|concept| concept.name == CONCEPT_NAME);
-    if !declared {
+    if !is_declared(site).await? {
         return Ok(None);
     }
     get_declared(site).await
@@ -126,11 +131,11 @@ pub async fn set(site: &TonkSite, markdown: &str, sync: bool) -> Result<SpotAgen
         );
     }
 
-    let declared = schema::list_concepts(site)
-        .await?
-        .iter()
-        .any(|concept| concept.name == CONCEPT_NAME);
-    let schema_document = if declared { "" } else { SCHEMA_DOCUMENT };
+    let schema_document = if is_declared(site).await? {
+        ""
+    } else {
+        SCHEMA_DOCUMENT
+    };
     let entity = site.repository.did();
     let encoded = serde_json::to_string(markdown).context("encode AGENTS.md Markdown")?;
     let doc = format!(

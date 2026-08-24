@@ -54,9 +54,19 @@ fn approval_url(child: &mut Child) -> String {
             }
         }
     });
-    url_rx
-        .recv_timeout(Duration::from_secs(30))
-        .expect("account link prints an approval URL")
+    match url_rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(url) => url,
+        Err(error) => {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .take()
+                .expect("piped stderr")
+                .read_to_string(&mut stderr)
+                .expect("read stderr");
+            panic!("account link prints an approval URL: {error}; stderr: {stderr}")
+        }
+    }
 }
 
 /// SIGINT a command already inside its callback wait and return its stderr.

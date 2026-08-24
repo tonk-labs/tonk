@@ -32,9 +32,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_schema::{RepositoryName, prelude::DidExt as _};
 
-/// Environment variable naming the spot to use, beaten only by the
-/// `--spot` flag. Automation (agents, bench, CI) should always set
-/// this (or pass `--spot`) to override a directory binding.
+/// Canonical environment variable naming the space to use.
+pub const SPACE_ENV: &str = "TONK_SPACE";
+
+/// Compatibility environment variable naming the space to use.
 pub const SPOT_ENV: &str = "TONK_SPOT";
 
 /// Environment variable overriding the directory that holds
@@ -70,6 +71,9 @@ pub struct Registry {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub bindings: BTreeMap<PathBuf, String>,
+    /// The account this installation is currently signed into, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountRecord>,
     /// Fields this binary does not recognise. `spots.json` is a public
     /// format other applications read and rewrite directly, and this
     /// binary is not necessarily the newest one touching it — an
@@ -81,10 +85,57 @@ pub struct Registry {
 }
 
 /// One registered spot.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// A binding and nothing else. Which account owns a space is read from the
+/// space's own roster, not recorded beside it: a tag here could drift from
+/// the delegation chains the access service actually validates, with nothing
+/// checking it, and a member device could never learn the owner of a space it
+/// merely joined.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SpotEntry {
     /// Absolute path to the site directory backing this spot.
     pub site: PathBuf,
+}
+
+impl SpotEntry {
+    /// An entry for `site`.
+    pub fn at(site: impl Into<PathBuf>) -> Self {
+        Self { site: site.into() }
+    }
+}
+
+/// The one account this installation is signed into.
+///
+/// Tonk is signed into at most one account at a time: linking replaces this
+/// record, logout clears it. Signing out touches nothing else — not replicas,
+/// not the profile, not retained delegations — so every registered space
+/// stays open, and the account only parameterizes account-service operations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRecord {
+    /// Immutable account-root DID.
+    pub root: String,
+    /// Origin that hosted the most recent successful ceremony.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceremony_origin: Option<String>,
+    /// Provider-matched default content endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_remote: Option<String>,
+    /// Unknown forward-compatible fields.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl AccountRecord {
+    /// A record for a freshly linked account root.
+    pub fn new(root: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            ceremony_origin: None,
+            access_remote: None,
+            extra: serde_json::Map::new(),
+        }
+    }
 }
 
 /// Where a resolution's spot name came from. Surfaced in status
@@ -258,6 +309,11 @@ impl SpotStore {
         Self { dir: dir.into() }
     }
 
+    /// Root directory containing this profile's space and account state.
+    pub fn root(&self) -> &Path {
+        &self.dir
+    }
+
     /// Path to `spots.json` inside this store.
     pub fn registry_path(&self) -> PathBuf {
         self.dir.join(REGISTRY_FILE)
@@ -356,6 +412,18 @@ impl SpotStore {
             .map_err(|e| SpotError::Io(format!("could not move {} into place: {e}", tmp.display())))
     }
 
+    /// The account this installation is signed into, if any.
+    pub fn account(&self) -> Result<Option<AccountRecord>, SpotError> {
+        Ok(self.load()?.account)
+    }
+
+    /// Record (or clear) the signed-in account.
+    pub fn set_account(&self, account: Option<AccountRecord>) -> Result<(), SpotError> {
+        let mut registry = self.load()?;
+        registry.account = account;
+        self.save(&registry)
+    }
+
     /// Resolve the spot a command should operate on.
     ///
     /// Strict precedence: `flag` (`--spot`) > `env` ([`SPOT_ENV`],
@@ -390,6 +458,10 @@ impl SpotStore {
             return Err(SpotError::NoSelection);
         };
         match registry.spots.get(&name) {
+            // Resolution never consults the signed-in account. Editing a
+            // replica this device holds is unrestricted; the only enforcement
+            // that is real happens at the service boundary, against the
+            // space's own delegation chain.
             Some(entry) => Ok(Resolved {
                 name,
                 site: entry.site.clone(),
@@ -571,7 +643,7 @@ pub fn register_existing_unbound(
     if registry.spots.contains_key(name) {
         return Err(SpotError::Exists(name.to_owned()));
     }
-    registry.spots.insert(name.to_owned(), SpotEntry { site });
+    registry.spots.insert(name.to_owned(), SpotEntry::at(site));
     store.save(&registry)
 }
 
@@ -630,12 +702,9 @@ pub async fn create(
         did: site.repository.did().to_string(),
         adopted,
     };
-    registry.spots.insert(
-        name.to_owned(),
-        SpotEntry {
-            site: outcome.site.clone(),
-        },
-    );
+    registry
+        .spots
+        .insert(name.to_owned(), SpotEntry::at(outcome.site.clone()));
     if let Some(directory) = binding_directory {
         registry
             .bindings
@@ -814,16 +883,10 @@ mod tests {
             legacy_current: current.map(str::to_owned),
             spots: names
                 .iter()
-                .map(|(name, site)| {
-                    (
-                        (*name).to_owned(),
-                        SpotEntry {
-                            site: PathBuf::from(site),
-                        },
-                    )
-                })
+                .map(|(name, site)| ((*name).to_owned(), SpotEntry::at(PathBuf::from(site))))
                 .collect(),
             bindings: BTreeMap::new(),
+            account: None,
             extra: serde_json::Map::new(),
         }
     }

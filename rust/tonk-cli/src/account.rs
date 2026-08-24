@@ -126,6 +126,18 @@ pub enum AccountStatus {
     },
 }
 
+/// Local sign-in phase, readable without opening a Dialog profile.
+pub use crate::account_session::LocalPhase as SignInPhase;
+
+/// Inspect one store's sign-in phase without creating profile state.
+///
+/// Cheap enough for read-only commands: it reads the session sidecar and
+/// nothing else, so `tonk space list` can say whether an account is signed in
+/// without provisioning an identity for an installation that has none.
+pub fn sign_in_phase(store: &crate::spot::SpotStore) -> Result<SignInPhase> {
+    crate::account_session::inspect_local(store)
+}
+
 /// Inputs controlling a browser handoff.
 #[derive(Debug, Clone)]
 pub struct LinkOptions {
@@ -167,6 +179,13 @@ pub struct LinkOutcome {
     pub account_state: AccountStateStatus,
     /// Diagnostic when the persisted link remains unhydrated.
     pub warning: Option<String>,
+    /// Account service this device attached to.
+    ///
+    /// The page's own deployment when it named one, and only otherwise the
+    /// flag — the same precedence the attachment itself was recorded under,
+    /// so a caller matching endpoints against a provider matches the one
+    /// this device actually uses.
+    pub service_url: String,
 }
 
 async fn decode_provider(
@@ -252,9 +271,16 @@ pub(crate) async fn require_account_with_operator(
     }
 }
 
-pub(crate) async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderRecord>> {
-    let operator = crate::account_state::credential_operator(profile).await?;
-    stored_provider_with_operator(profile, &operator).await
+/// Refuse unless one explicit profile store holds an account attachment.
+pub(crate) async fn require_account_with_operator_in(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+) -> Result<()> {
+    match stored_provider_in(profile, operator, store).await? {
+        Some(_) => Ok(()),
+        None => bail!(ACCOUNT_REQUIRED),
+    }
 }
 
 /// Disconnect provider services while preserving this profile's root,
@@ -264,15 +290,32 @@ pub async fn logout(profile: &Profile) -> Result<()> {
     logout_with_operator(profile, &operator).await
 }
 
+/// Disconnect only the account session owned by `store`.
+pub async fn logout_in(profile: &Profile, store: &crate::spot::SpotStore) -> Result<()> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    logout_with_operator_in(profile, &operator, store).await
+}
+
 async fn logout_with_operator(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
+) -> Result<()> {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    logout_with_operator_in(profile, operator, &store).await
+}
+
+async fn logout_with_operator_in(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
 ) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    for account in crate::account_session::logout_transition(profile, operator).await? {
+    for account in
+        crate::account_session::logout_transition_for_store(profile, operator, store).await?
+    {
         if let Err(error) = crate::account_session::deliver_detach(profile, &account, now).await {
             eprintln!(
                 "warning: logged out locally; the provider was not notified                  and may list this device until it is revoked: {error:#}"
@@ -294,18 +337,25 @@ fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
 /// command. Hydration is [`crate::account_state::ensure`]'s job, and the
 /// paths that need it call it directly.
 pub async fn status(profile: &Profile) -> Result<AccountStatus> {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    status_in(profile, &store).await
+}
+
+/// Read account status from one explicit native profile store.
+pub async fn status_in(profile: &Profile, store: &crate::spot::SpotStore) -> Result<AccountStatus> {
     let device_did = profile.did().to_string();
-    let Some(root) = crate::identity::local_root(profile).await? else {
+    let Some(root) = crate::identity::local_root_in(profile, store).await? else {
         return Ok(AccountStatus::MissingRoot { device_did });
     };
-    match stored_provider(profile).await? {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    match stored_provider_in(profile, &operator, store).await? {
         None => Ok(AccountStatus::Unregistered {
             root_did: root.root_did,
             device_did,
         }),
         Some(provider) => {
             let account_state = if provider.descriptor().is_some() {
-                crate::account_state::status(profile).await?
+                crate::account_state::status_in(profile, store).await?
             } else {
                 AccountStateStatus::Unconfigured
             };
@@ -480,7 +530,7 @@ async fn link_via_callback(
         let account_state = match crate::account_state::ensure_with_operator_and_store(
             profile,
             operator.clone(),
-            store,
+            store.clone(),
         )
         .await
         {
@@ -488,7 +538,9 @@ async fn link_via_callback(
             Err(_) => AccountStateStatus::Unhydrated,
         };
         let mut warning = None;
-        if let Some(branch) = crate::account_state::open_account_branch(profile, operator).await? {
+        if let Some(branch) =
+            crate::account_state::open_account_branch_in(profile, operator, &store).await?
+        {
             let signer = profile.signer().signer().clone();
             let union =
                 tonk_account::delegations::mint_account_union(&signer, &account_did).await?;
@@ -527,6 +579,7 @@ async fn link_via_callback(
         device_did: profile.did().to_string(),
         account_state,
         warning,
+        service_url: provider_url,
     })
 }
 
@@ -560,6 +613,18 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
     link_with_operator(profile, &operator, options).await
 }
 
+/// Start or resume linking against one explicit native profile store.
+pub async fn link_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+    options: &LinkOptions,
+) -> Result<LinkOutcome> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let mut options = options.clone();
+    options.store = Some(store.clone());
+    link_with_operator(profile, &operator, &options).await
+}
+
 /// [`link`] against a caller-supplied operator.
 ///
 /// [`link`] resolves one from the global install, mounting the profile by
@@ -570,7 +635,10 @@ pub async fn link_with_operator(
     operator: &dialog_operator::Operator<NativeSpace>,
     options: &LinkOptions,
 ) -> Result<LinkOutcome> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = match options.store.clone() {
+        Some(store) => store,
+        None => crate::spot::SpotStore::open().context("failed to locate account state")?,
+    };
     {
         let guard = crate::account_session::exclusive_transition_guard(&store)?;
         crate::account_session::ensure_initialized(profile, operator, &guard).await?;
@@ -615,9 +683,10 @@ pub(crate) struct AccountConnection {
 async fn connection_from_provider(
     profile: &Profile,
     provider: AccountProviderRecord,
+    store: &crate::spot::SpotStore,
 ) -> Result<AccountConnection> {
     let service_url = provider.provider().to_string();
-    let root = crate::identity::local_root(profile)
+    let root = crate::identity::local_root_in(profile, store)
         .await?
         .context("the provider attachment has no local root")?;
     let bytes = hex::decode(root.delegation_hex).context("stored local-root hex is invalid")?;
@@ -628,12 +697,14 @@ async fn connection_from_provider(
         service_url,
         root_did,
         link,
-        store: crate::spot::SpotStore::open().context("failed to locate account state")?,
+        store: store.clone(),
     })
 }
 
-/// Load the attached provider and exact `root → device` link when present.
-pub(crate) async fn optional_connection(profile: &Profile) -> Result<Option<AccountConnection>> {
+pub(crate) async fn optional_connection_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<Option<AccountConnection>> {
     #[cfg(feature = "integration-tests")]
     if let Some((service_url, link, _)) = integration_connections()
         .lock()
@@ -645,13 +716,16 @@ pub(crate) async fn optional_connection(profile: &Profile) -> Result<Option<Acco
             service_url,
             root_did: link.issuer().clone(),
             link,
-            store: crate::spot::SpotStore::open().context("failed to locate account state")?,
+            store: store.clone(),
         }));
     }
-    let Some(provider) = stored_provider(profile).await? else {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let Some(provider) = stored_provider_in(profile, &operator, store).await? else {
         return Ok(None);
     };
-    Ok(Some(connection_from_provider(profile, provider).await?))
+    Ok(Some(
+        connection_from_provider(profile, provider, store).await?,
+    ))
 }
 
 #[cfg(feature = "integration-tests")]
@@ -839,7 +913,17 @@ async fn post_invocation_raw(
 /// recorded provider is authoritative; a `service_url` names one only
 /// to cross-check it against the active account.
 pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
-    let connection = optional_connection(profile)
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    devices_in(profile, &store, service_url).await
+}
+
+/// List devices through one explicit account profile store.
+pub async fn devices_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+    service_url: Option<&str>,
+) -> Result<Vec<DeviceRow>> {
+    let connection = optional_connection_in(profile, store)
         .await?
         .context("no active account; run `tonk account link`")?;
     if let Some(service_url) = service_url
@@ -927,8 +1011,19 @@ pub async fn revoke(
     options: &RevokeOptions,
     did: &str,
 ) -> Result<RevokeOutcome> {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    revoke_in(profile, &store, options, did).await
+}
+
+/// Revoke a device through one explicit account profile store.
+pub async fn revoke_in(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+    options: &RevokeOptions,
+    did: &str,
+) -> Result<RevokeOutcome> {
     if profile.did().as_ref() == did {
-        let connection = optional_connection(profile)
+        let connection = optional_connection_in(profile, store)
             .await?
             .context("no active account; run `tonk account link`")?;
         let link = connection.link.clone();
@@ -940,7 +1035,7 @@ pub async fn revoke(
         )
         .await
         .context("failed to sign self-revocation")?;
-        let rows = devices(profile, Some(&options.service_url)).await?;
+        let rows = devices_in(profile, store, Some(&options.service_url)).await?;
         let row = rows
             .iter()
             .find(|row| row.did == did && row.delegation_cid == target.to_string())
@@ -977,7 +1072,7 @@ pub async fn revoke(
         return Ok(RevokeOutcome::Revoked);
     }
 
-    let rows = devices(profile, Some(&options.service_url)).await?;
+    let rows = devices_in(profile, store, Some(&options.service_url)).await?;
     let target = rows
         .iter()
         .find(|row| row.did == did)
@@ -1023,7 +1118,7 @@ pub async fn revoke(
             }
         }
         tokio::select! {
-            rows = devices(profile, Some(&options.service_url)) => match rows {
+            rows = devices_in(profile, store, Some(&options.service_url)) => match rows {
                 Ok(rows) => {
                     last_error = None;
                     if rows.iter().any(|row| {

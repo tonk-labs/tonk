@@ -81,7 +81,7 @@ the associative memory, referenced from it by a content-addressed
 |--------------------------|---------------------------------------------------------|
 | `tonk blob add <file>`   | Ingest a file, print its `blob:<hash>` reference.        |
 | `tonk blob cat <blob:hash>` | Write a blob's bytes to stdout.                       |
-| `tonk blob ls`           | List blobs in the branch's index with size and content type. |
+| `tonk blob ls`           | List the branch's blobs from their metadata facts: reference, content type, name. |
 
 The reference is just another URI value, so assert it onto any
 concept like `id:` or `did:key:…`:
