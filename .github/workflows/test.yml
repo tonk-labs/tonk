@@ -16,6 +16,7 @@ jobs:
   lints:
     name: 'Lints'
     runs-on: 'ubuntu-latest'
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: wimpysworld/nothing-but-nix@main
@@ -40,6 +41,10 @@ jobs:
     name: 'End-to-end account tests'
     needs: ['lints']
     runs-on: 'ubuntu-latest'
+    # The suite finishes in ~25 minutes; a run past this is a hung wait
+    # (a wedged webdriver call or a spawned CLI blocked on the network),
+    # and without a bound it burns the runner for GitHub's 6-hour cap.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space
@@ -73,6 +78,7 @@ jobs:
     name: 'Tests'
     needs: ['lints']
     runs-on: 'ubuntu-latest'
+    timeout-minutes: 75
     strategy:
       matrix:
         platform: ["native", "web"]
