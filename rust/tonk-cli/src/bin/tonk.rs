@@ -1431,6 +1431,12 @@ async fn print_customer_line(
 /// Refuses while another account is still signed in: one account at a time is
 /// the whole model, and silently swapping would leave the spaces of the
 /// account being replaced looking broken rather than simply not-yours.
+///
+/// The registry row is written whether or not the deployment answers with
+/// its content endpoints. By the time they are asked for, the grant is
+/// installed and the session active, so refusing to record the account
+/// would leave `status` and the registry disagreeing about whether this
+/// device is signed in.
 async fn link_account(
     store: &tonk_cli::spot::SpotStore,
     name: Option<String>,
@@ -1475,14 +1481,17 @@ async fn link_account(
     .await
     {
         Ok(outcome) => {
-            let defaults = match tonk_cli::deployment::discover(&ceremony_page, &service_url).await
-            {
-                Ok(defaults) => defaults,
-                Err(error) => return print_failure(error),
-            };
-            let mut record = tonk_cli::spot::AccountRecord::new(&outcome.root_did);
-            record.ceremony_origin = Some(defaults.ceremony_origin.to_string());
-            record.access_remote = Some(defaults.access_remote.to_string());
+            // Matched against the provider the page delivered rather than
+            // the flag: the ceremony records whichever service its own
+            // deployment named, while the flag's default says production
+            // wherever it ran.
+            let discovery =
+                tonk_cli::deployment::discover(&ceremony_page, &outcome.service_url).await;
+            let record = tonk_cli::deployment::account_record(
+                &outcome.root_did,
+                &ceremony_page,
+                discovery.as_ref().ok(),
+            );
             if let Err(error) = store.set_account(Some(record)) {
                 return print_failure(error);
             }
@@ -1494,6 +1503,17 @@ async fn link_account(
             );
             if let Some(warning) = outcome.warning {
                 eprintln!("warning: account repository is not synchronized: {warning}");
+            }
+            // The device is signed in either way. Say what is missing and
+            // what restores it, rather than reporting a failure for a link
+            // the account service has already granted.
+            if let Err(error) = discovery {
+                eprintln!(
+                    "warning: {ceremony_page} did not answer with its content endpoints: {error:#}"
+                );
+                eprintln!(
+                    "spaces stay local-only until `tonk account logout` and `tonk account link` reach it"
+                );
             }
             print_customer_line(&profile, store).await;
             ExitCode::Success

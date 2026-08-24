@@ -179,6 +179,13 @@ pub struct LinkOutcome {
     pub account_state: AccountStateStatus,
     /// Diagnostic when the persisted link remains unhydrated.
     pub warning: Option<String>,
+    /// Account service this device attached to.
+    ///
+    /// The page's own deployment when it named one, and only otherwise the
+    /// flag — the same precedence the attachment itself was recorded under,
+    /// so a caller matching endpoints against a provider matches the one
+    /// this device actually uses.
+    pub service_url: String,
 }
 
 async fn decode_provider(
@@ -572,6 +579,7 @@ async fn link_via_callback(
         device_did: profile.did().to_string(),
         account_state,
         warning,
+        service_url: provider_url,
     })
 }
 
