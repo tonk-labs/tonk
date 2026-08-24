@@ -257,6 +257,22 @@ pub async fn set_upstream(
         .await
         .map_err(|e| RemoteError::Io(format!("failed to set upstream: {e}")))?;
 
+    // Membership, roles, invitations, and replica metadata live on `meta`.
+    // Track that branch beside `main` so a verified pull cannot observe
+    // content without the signed relationship that authorizes this profile.
+    let remote_meta = remote_handle
+        .branch(META_BRANCH)
+        .open()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to open remote meta branch: {e}")))?;
+    let local_meta = open_meta(site).await?;
+    local_meta
+        .set_upstream(&remote_meta)
+        .perform(&site.operator)
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to set meta upstream: {e}")))?;
+
     // Meta side: rebuild the Remote concept (deterministic from
     // replica + name + subject + address) so we can hang a
     // remote-side Branch concept off it for the TrackingBranch

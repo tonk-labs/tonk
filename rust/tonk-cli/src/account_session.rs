@@ -40,6 +40,58 @@ impl Default for AccountSessionState {
     }
 }
 
+/// Provider sign-in phase visible without opening a Dialog profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalPhase {
+    /// No canonical session state exists or it is inactive.
+    SignedOut,
+    /// A browser handoff is durable but not active yet.
+    Pending,
+    /// One provider attachment is active.
+    Active,
+}
+
+/// Inspect a profile store without creating locks, directories, or profiles.
+pub fn inspect_local(store: &SpotStore) -> Result<LocalPhase> {
+    let account = store.account_dir();
+    let entries = match std::fs::read_dir(&account) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LocalPhase::SignedOut);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect account state at {}", account.display())
+            });
+        }
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(STATE_FILE_PREFIX) || !name.ends_with(".json") {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path())?;
+        let state: AccountSessionState =
+            serde_json::from_slice(&bytes).context("stored account-session state is malformed")?;
+        if state.version != VERSION {
+            anyhow::bail!(
+                "unsupported account-session state version {}",
+                state.version
+            );
+        }
+        return Ok(if state.active.is_some() {
+            LocalPhase::Active
+        } else if state.pending_login.is_some() {
+            LocalPhase::Pending
+        } else {
+            LocalPhase::SignedOut
+        });
+    }
+    Ok(LocalPhase::SignedOut)
+}
+
 /// Durable browser handoff phase.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -316,25 +368,18 @@ pub async fn active_guarded(
     Ok(load_guarded(profile, operator, guard).await?.active)
 }
 
-/// Commit local logout in one canonical state write, returning the
-/// attachments that were active so the caller can notify their
-/// providers. An empty result means no active or pending handoff
-/// existed.
+/// Commit local logout in one explicit profile store.
 ///
-/// Logout is local-first: the durable transition never depends on any
-/// provider being reachable. Notification is a single best-effort
-/// [`deliver_detach`] per returned attachment — no outbox, no retries.
-/// A provider that misses it lists the device until the account page
-/// revokes it or the device links again (activation supersedes the
-/// stale attachment server-side).
-pub async fn logout_transition(
+/// Logout is local-first: the durable transition never depends on a provider
+/// being reachable. The returned attachments are notified best-effort.
+pub async fn logout_transition_for_store(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
+    store: &SpotStore,
 ) -> Result<Vec<ActiveAccount>> {
-    let store = SpotStore::open().context("failed to locate account state")?;
-    let guard = exclusive_transition_guard(&store)?;
+    let guard = exclusive_transition_guard(store)?;
     ensure_initialized(profile, operator, &guard).await?;
-    let mut state = load_raw(profile, operator, &store)
+    let mut state = load_raw(profile, operator, store)
         .await?
         .unwrap_or_default();
     let mut detached = Vec::new();
@@ -347,7 +392,7 @@ pub async fn logout_transition(
     let existed = !detached.is_empty() || state.pending_login.is_some();
     state.pending_login = None;
     if existed {
-        save_raw(profile, operator, &store, &state).await?;
+        save_raw(profile, operator, store, &state).await?;
         // Compatibility only: canonical state is already authoritative.
         let _ = profile
             .credential()
@@ -360,7 +405,7 @@ pub async fn logout_transition(
 }
 
 /// Tell `account`'s provider this attachment ended: one signed POST,
-/// no retry. See [`logout_transition`] for why failure is tolerable.
+/// no retry. See [`logout_transition_for_store`] for why failure is tolerable.
 pub async fn deliver_detach(profile: &Profile, account: &ActiveAccount, now: u64) -> Result<()> {
     let root: Did = account
         .root_did

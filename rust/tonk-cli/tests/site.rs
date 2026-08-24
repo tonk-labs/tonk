@@ -350,11 +350,12 @@ mod when_shortening_an_invite {
     }
 }
 
-/// The library's own copy of the rule the binary enforces before it calls
-/// in: an invite that embeds a remote must name the relay its revocations
-/// will be published to. Every mint above that embeds a remote now passes
-/// one, so the refusal — which those mints used to cover by failing on it —
-/// is stated here instead. Offline: the check runs before any network.
+/// The library's own copy of what the binary no longer enforces: a mint that
+/// embeds a remote used to be refused unless the remote named a relay for its
+/// revocations. A revocation is an ordinary `ucan/revoke` invocation now,
+/// addressed to the access service the invite already carries, so there is
+/// nothing left to demand. Offline: the check that is gone ran before any
+/// network, so its absence shows without one.
 mod when_minting_an_invite_that_embeds_a_relay_less_remote {
     use anyhow::Result;
     use tonk_cli::invite;
@@ -364,22 +365,14 @@ mod when_minting_an_invite_that_embeds_a_relay_less_remote {
     const ENDPOINT: &str = "https://access.example.test/ucan/";
 
     #[dialog_common::test]
-    async fn it_refuses_and_says_how_to_configure_a_relay() -> Result<()> {
+    async fn it_mints_without_demanding_a_relay() -> Result<()> {
         let inviter = common::TestSite::new().await?;
 
-        let error = invite::mint(&inviter.site, None, Some(ENDPOINT))
+        let outcome = invite::mint(&inviter.site, None, Some(ENDPOINT))
             .await
-            .expect_err("a remote with no relay must not be embedded");
+            .expect("a relay-less remote still mints");
 
-        let message = error.to_string();
-        assert!(
-            message.contains("no revocation relay"),
-            "and say why: {message}"
-        );
-        assert!(
-            message.contains("--revocation-url"),
-            "and how to fix it: {message}"
-        );
+        assert!(!outcome.url.is_empty());
         Ok(())
     }
 }
@@ -473,7 +466,7 @@ mod when_recording_roster_facts {
     use tonk_cli::site::TonkSite;
     use tonk_invite::Invite;
     use tonk_schema::prelude::DidExt as _;
-    use tonk_schema::{Invitation, InvitedVia, Membership};
+    use tonk_schema::{Invitation, InvitedVia, MemberRole, Membership};
 
     use crate::common;
 
@@ -519,15 +512,13 @@ mod when_recording_roster_facts {
         invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
         let joined = TonkSite::open_with(&claimer_root, claimer_config).await?;
 
-        // Claimer side: membership + stamp referencing the same
-        // invitation entity.
-        let claimer_meta = joined
-            .repository
-            .branch(tonk_cli::remote::META_BRANCH)
-            .open()
-            .perform(&joined.operator)
-            .await?;
-        let memberships: Vec<Membership> = claimer_meta
+        // Claimer side: membership + stamp referencing the same invitation
+        // entity, on the *content* branch. Only upstreamed branches sync, so
+        // a roster row on `meta` would never reach the space's owner — and
+        // the content branch is where every reader of the roster looks.
+        let claimer_session = joined.branch().await?;
+        let claimer_content = claimer_session.handle();
+        let memberships: Vec<Membership> = claimer_content
             .query()
             .select(Query::<Membership> {
                 this: Term::var("this"),
@@ -538,6 +529,18 @@ mod when_recording_roster_facts {
             .try_vec()
             .await?;
         assert_eq!(memberships.len(), 1);
+        let roles: Vec<MemberRole> = claimer_content
+            .query()
+            .select(Query::<MemberRole> {
+                this: Term::var("this"),
+                role: Term::var("role"),
+            })
+            .perform(&joined.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].this, memberships[0].this);
+        assert_eq!(roles[0].role.0.to_string(), MemberRole::MEMBER);
         let root_bytes = joined
             .profile
             .credential()
@@ -549,7 +552,7 @@ mod when_recording_roster_facts {
         let root_did: dialog_varsig::Did = root.root_did.parse()?;
         assert_eq!(memberships[0].member.0, root_did.this());
 
-        let stamps: Vec<InvitedVia> = claimer_meta
+        let stamps: Vec<InvitedVia> = claimer_content
             .query()
             .select(Query::<InvitedVia> {
                 this: Term::var("this"),
@@ -678,7 +681,7 @@ mod when_minting_and_claiming_an_invite {
     /// here.
     #[dialog_common::test]
     fn default_config_uses_the_canonical_profile_name() {
-        let config = site::default_config();
+        let config = site::default_config().expect("default config");
         assert_eq!(config.profile_name, site::PROFILE_NAME);
     }
 }

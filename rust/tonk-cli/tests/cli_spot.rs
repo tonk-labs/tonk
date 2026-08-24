@@ -40,6 +40,7 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         // Production omits this explicit unsafe compatibility override.
         .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
         .env_remove("TONK_SPOT");
+    cmd.env_remove("TONK_SPACE");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -76,6 +77,153 @@ fn stdout_of(output: &Output) -> String {
 const DEAD_REMOTE: &str = "http://127.0.0.1:9/ucan/";
 const OTHER_DEAD_REMOTE: &str = "http://127.0.0.1:9/other/";
 
+mod when_one_account_is_signed_in {
+    use super::*;
+
+    const ACCOUNT_A: &str = "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    /// Create a space through the CLI, then record `signed_in` as the
+    /// account this installation is signed into.
+    fn space_and_account(state: &Path, name: &str, signed_in: Option<&str>) {
+        let site = state.join(format!("{name}-site"));
+        let created = run(
+            state,
+            &[
+                "space",
+                "new",
+                name,
+                "--site",
+                site.to_str().expect("utf-8 site"),
+            ],
+            &[],
+        );
+        assert!(created.status.success(), "{}", stderr_of(&created));
+        let Some(signed_in) = signed_in else {
+            return;
+        };
+        let path = state.join("spots.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("registry"))
+                .expect("registry JSON");
+        registry["account"] = serde_json::json!({ "root": signed_in });
+        std::fs::write(&path, serde_json::to_vec_pretty(&registry).expect("encode"))
+            .expect("write registry");
+    }
+
+    /// The account slot parameterizes account-service operations and nothing
+    /// else. A replica this device holds opens under any account, because the
+    /// only enforcement that is real happens at the service boundary.
+    #[dialog_common::test]
+    fn a_space_this_account_did_not_create_still_opens() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
+
+        let output = run(state.path(), &["--space", "garden", "status"], &[]);
+
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stderr = stderr_of(&output);
+        assert!(!stderr.contains("doesn't have access"), "{stderr}");
+    }
+
+    /// …and it can still be written to. Editing is unrestricted.
+    #[dialog_common::test]
+    fn a_mutating_command_reaches_the_space_whatever_the_account() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
+
+        let output = run(
+            state.path(),
+            &["--space", "garden", "eval", "-c", "blank:"],
+            &[],
+        );
+
+        assert!(output.status.success(), "{}", stderr_of(&output));
+    }
+
+    #[dialog_common::test]
+    fn linking_without_an_account_says_to_sign_in_first() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_and_account(state.path(), "garden", None);
+
+        let output = run(state.path(), &["space", "link", "garden"], &[]);
+
+        assert!(!output.status.success());
+        assert!(
+            stderr_of(&output).contains("no account is signed in"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+
+    /// The listing names the space and its owner, and has no access column:
+    /// there is nothing for it to report, because nothing is refused.
+    #[dialog_common::test]
+    fn the_space_listing_carries_an_owner_and_no_access_column() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
+
+        let output = run(state.path(), &["space", "list"], &[]);
+
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("NAME"), "{stdout}");
+        assert!(stdout.contains("OWNER"), "{stdout}");
+        assert!(stdout.contains("ROLE"), "{stdout}");
+        assert!(!stdout.contains("ACCESS"), "{stdout}");
+        assert!(!stdout.contains("another account"), "{stdout}");
+        // Local-only until it is linked: no roster, so no owner.
+        assert!(stdout.contains("local"), "{stdout}");
+    }
+}
+
+mod when_no_account_is_signed_in {
+    use super::*;
+
+    #[dialog_common::test]
+    fn read_only_listing_writes_no_state() {
+        let state = tempfile::tempdir().expect("tempdir");
+
+        let spaces = run(state.path(), &["space", "list"], &[]);
+        assert!(spaces.status.success(), "{}", stderr_of(&spaces));
+        assert!(stdout_of(&spaces).contains("no spaces registered"));
+
+        assert!(!state.path().join("spots.json").exists());
+    }
+
+    #[dialog_common::test]
+    fn a_new_space_is_local_only_until_it_is_linked() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let site = state.path().join("scratch-site");
+        let output = run(
+            state.path(),
+            &[
+                "space",
+                "new",
+                "scratch",
+                "--site",
+                site.to_str().expect("utf-8 site"),
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+
+        let spots: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(state.path().join("spots.json")).expect("space registry"),
+        )
+        .expect("spots JSON");
+        let entry = spots["spots"]["scratch"].as_object().expect("space entry");
+        assert_eq!(
+            entry.keys().collect::<Vec<_>>(),
+            vec!["site"],
+            "the registry records a binding and nothing more: {spots}"
+        );
+        assert!(
+            spots["account"].is_null(),
+            "no account is signed in: {spots}"
+        );
+    }
+}
+
 /// A revocation relay for remotes that need one. Also on the discard port:
 /// a mint parses this URL and embeds it in the link, and never calls it.
 #[cfg(feature = "integration-tests")]
@@ -94,10 +242,10 @@ fn spot_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) -> String {
     spot_with_relayed_remotes(state_dir, &relayed)
 }
 
-/// The same, with a revocation relay per remote. An invite that embeds a
-/// remote must name a relay for its revocations to reach, so a mint against
-/// a relay-less remote is refused — see
-/// `when_a_remote_carries_no_revocation_relay`.
+/// The same, with an explicit revocation relay per remote. A deployment no
+/// longer advertises one and a mint no longer needs one, but a remote may
+/// still be configured with a relay by hand, and that stays carried into the
+/// link.
 fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&str>)]) -> String {
     let site = state_dir.join("site");
     let site = site.to_str().expect("utf-8 site path");
@@ -247,6 +395,35 @@ mod when_resolving_with_precedence {
     }
 
     #[dialog_common::test]
+    fn it_accepts_canonical_space_flag_and_environment_names() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_spot_registry(state.path());
+
+        let output = run(state.path(), &["--space", "a", "status"], &[]);
+        assert!(!output.status.success());
+        assert!(stderr_of(&output).contains("active spot: a (flag)"));
+
+        let output = run(state.path(), &["status"], &[("TONK_SPACE", "a")]);
+        assert!(!output.status.success());
+        assert!(stderr_of(&output).contains("active spot: a (env)"));
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_conflicting_space_environment_aliases() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_spot_registry(state.path());
+
+        let output = run(
+            state.path(),
+            &["status"],
+            &[("TONK_SPACE", "a"), ("TONK_SPOT", "b")],
+        );
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("TONK_SPACE and TONK_SPOT"), "{stderr}");
+    }
+
+    #[dialog_common::test]
     fn it_does_not_fall_back_to_the_legacy_global_selection() {
         let state = tempfile::tempdir().expect("tempdir");
         two_spot_registry(state.path());
@@ -268,7 +445,7 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["use"], &[("TONK_SPOT", "a")]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("current spot: a"), "{stdout}");
+        assert!(stdout.contains("current space: a"), "{stdout}");
         assert!(stdout.contains("selected via: env"), "{stdout}");
         assert!(stdout.contains("next: tonk context"), "{stdout}");
     }
@@ -395,51 +572,33 @@ mod when_the_invite_remote_differs_from_the_upstream {
     }
 }
 
-/// An invite that embeds a remote must name the relay its revocations will
-/// be published to, or revoking it later would have nowhere to land. The
-/// refusal used to be covered only by accident — two live-remote tests
-/// failed on it — so it is stated here, offline, where it belongs.
+/// A relay-less remote is no longer a reason to refuse a mint. A revocation
+/// is an ordinary `ucan/revoke` invocation now, addressed to the access
+/// service the invite already carries, so there is nothing extra for the
+/// link to name. The refusal this replaces is the one that used to demand
+/// `tonk remote add --revocation-url`.
 mod when_a_remote_carries_no_revocation_relay {
     use super::*;
 
+    /// The command still exits non-zero: past this point it pulls and pushes,
+    /// and the upstream is a discard port — the same reason the other offline
+    /// mints assert on stderr and never on success. That the refusal is absent
+    /// is meaningful anyway, because the check ran *before* the network and
+    /// would otherwise be the first line printed.
     #[dialog_common::test]
-    fn it_refuses_to_mint_an_invite_that_embeds_it() {
+    fn it_mints_an_invite_that_embeds_it() {
         let state = tempfile::tempdir().expect("tempdir");
         spot_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
 
         let output = run(state.path(), &["invite"], &[]);
         let stderr = stderr_of(&output);
-        assert!(!output.status.success(), "the mint must refuse: {stderr}");
-        assert!(
-            stderr.contains("no revocation relay"),
-            "and say why: {stderr}"
-        );
-        assert!(
-            stderr.contains("--revocation-url"),
-            "and how to fix it: {stderr}"
-        );
-    }
-
-    /// `--no-remote` embeds no endpoint, so there is nothing for a relay to
-    /// belong to and the rule does not apply. The boundary of the test above,
-    /// and the reason the third live-remote test passed while its two siblings
-    /// failed.
-    ///
-    /// The command still exits non-zero here: past the relay check it pulls
-    /// and pushes, and this upstream is a discard port — the same reason the
-    /// other offline mints assert on stderr and never on success. That the
-    /// refusal is absent is meaningful anyway, because the check runs *before*
-    /// the network and would otherwise be the first line printed.
-    #[dialog_common::test]
-    fn it_does_not_demand_a_relay_for_a_link_that_embeds_no_remote() {
-        let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
-
-        let output = run(state.path(), &["invite", "--no-remote"], &[]);
-        let stderr = stderr_of(&output);
         assert!(
             !stderr.contains("no revocation relay"),
-            "a link with no remote needs no relay: {stderr}"
+            "a relay is not required to mint: {stderr}"
+        );
+        assert!(
+            !stderr.contains("--revocation-url"),
+            "and nothing sends the reader to configure one: {stderr}"
         );
     }
 }
@@ -601,8 +760,8 @@ mod when_minting_against_a_live_remote {
         // Create the spot first so its DID can be provisioned: minting
         // pushes, and the access service serves no unprovisioned space.
         let did = tokio::task::spawn_blocking(move || {
-            // With a relay, because these mints embed the remote: an invite
-            // that carries an endpoint has to say where its revocations go.
+            // With a relay, to keep the hand-configured path exercised
+            // end-to-end against a live service.
             spot_with_relayed_remotes(&setup_dir, &[("origin", &setup_endpoint, Some(DEAD_RELAY))])
         })
         .await
@@ -868,7 +1027,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: a"), "{stdout}");
-        assert!(stdout.contains("active spot: b (env)"), "{stdout}");
+        assert!(stdout.contains("active space: b (env)"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -928,7 +1087,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
-        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
+        assert!(stdout.contains("active space: b (directory"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -942,7 +1101,7 @@ mod when_a_directory_is_bound {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
-        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
+        assert!(stdout.contains("active space: b (directory"), "{stdout}");
 
         let status = run_in(state.path(), &work, &["status"], &[]);
         let stderr = stderr_of(&status);
@@ -976,7 +1135,7 @@ mod when_a_directory_is_bound {
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("active spot: c (directory"), "{stdout}");
+        assert!(stdout.contains("active space: c (directory"), "{stdout}");
 
         let status = run_in(state.path(), &work, &["status"], &[]);
         assert!(status.status.success(), "{}", stderr_of(&status));
@@ -1082,7 +1241,7 @@ mod when_deleting_a_spot {
         assert!(!site.exists(), "data deleted");
 
         let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
-        assert!(listed.contains("no spots registered"), "{listed}");
+        assert!(listed.contains("no spaces registered"), "{listed}");
         assert!(!listed.contains("unregistered site data"), "{listed}");
     }
 

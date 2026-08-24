@@ -76,16 +76,16 @@ pub struct RecordWarning {
     pub message: String,
 }
 
-fn site_config(_profile: &Profile) -> crate::site::SiteConfig {
+fn site_config(_profile: &Profile) -> Result<crate::site::SiteConfig> {
     #[cfg(feature = "integration-tests")]
     if let Some(config) = account::integration_site_config(_profile) {
-        return config;
+        return Ok(config);
     }
     crate::site::default_config()
 }
 
 async fn open_site(path: &std::path::Path, profile: &Profile) -> Result<TonkSite> {
-    let site = TonkSite::open_with(path, site_config(profile)).await?;
+    let site = TonkSite::open_with(path, site_config(profile)?).await?;
     if site.profile.did() != profile.did() {
         bail!("registered site profile does not match the active account profile");
     }
@@ -349,7 +349,7 @@ pub async fn pull(
     };
 
     let mut fresh_target = FreshPullTarget::new(target.clone());
-    let site = crate::site::mount_delegated_at(&target, chain, site_config(profile))
+    let site = crate::site::mount_delegated_at(&target, chain, site_config(profile)?)
         .await
         .context("failed to mount account spot")?;
     remote::add_with_revocation(
@@ -364,24 +364,33 @@ pub async fn pull(
     remote::set_upstream(&site, DEFAULT_REMOTE)
         .await
         .context("failed to set the account spot upstream")?;
+    crate::sync::pull(&site)
+        .await
+        .with_context(|| format!("initial pull from '{DEFAULT_REMOTE}' failed"))?;
+    // The pulled replica must carry a roster row this account can claim —
+    // that row, on the space's own content branch, is the only record of who
+    // owns it, and nothing beside the space is written to stand in for it.
+    let role = crate::inventory::role_for_site(&site)
+        .await
+        .context("could not read the pulled space's roster")?;
+    if !matches!(
+        role,
+        crate::inventory::SpaceRole::Owner | crate::inventory::SpaceRole::Member
+    ) {
+        bail!("pulled space has no signed membership for this account profile");
+    }
     let canonical_target = target
         .canonicalize()
-        .context("failed to canonicalize the mounted account spot")?;
+        .context("failed to canonicalize the mounted account space")?;
     spot::register_existing_unbound(store, &name, &canonical_target)?;
     fresh_target.commit();
 
-    let warning = match crate::sync::pull(&site).await {
-        Ok(_) => None,
-        Err(error) => Some(format!(
-            "initial pull from '{DEFAULT_REMOTE}' failed: {error}; run `tonk pull` before making changes so you don't diverge from upstream"
-        )),
-    };
     Ok(PullOutcome {
         subject: requested.to_string(),
         name,
         site: canonical_target,
         already_local: false,
-        warning,
+        warning: None,
     })
 }
 
@@ -411,11 +420,11 @@ async fn repository_name(site: &TonkSite) -> Option<String> {
 /// absent or unhydrated account answers `false` rather than failing
 /// the command this probe is trying to make safe.
 pub async fn directory_lists(site: &TonkSite) -> Result<bool> {
-    let store = SpotStore::open()?;
+    let store = &site.account_store;
     let operator =
-        crate::account_state::credential_operator_for_store(&site.profile, &store).await?;
+        crate::account_state::credential_operator_for_store(&site.profile, store).await?;
     let Some(account) =
-        crate::account_state::open_account_branch_in(&site.profile, &operator, &store).await?
+        crate::account_state::open_account_branch_in(&site.profile, &operator, store).await?
     else {
         return Ok(false);
     };
@@ -446,6 +455,30 @@ pub async fn record_site_in(
     site: &TonkSite,
     store: &SpotStore,
 ) -> Result<RecordOutcome> {
+    record_site_for_profile(registry_name, site, &site.profile, store, false).await
+}
+
+/// [`record_site_in`] where a failed account push is an error.
+///
+/// `tonk space link` uses this boundary: the space is tagged as the account's
+/// only once the account directory that other devices read has actually
+/// accepted the record, so a silent push failure cannot leave a space marked
+/// account-owned that no other device can find.
+pub async fn record_site_pushed(
+    registry_name: &str,
+    site: &TonkSite,
+    store: &SpotStore,
+) -> Result<RecordOutcome> {
+    record_site_for_profile(registry_name, site, &site.profile, store, true).await
+}
+
+async fn record_site_for_profile(
+    registry_name: &str,
+    site: &TonkSite,
+    account_profile: &Profile,
+    store: &SpotStore,
+    require_push: bool,
+) -> Result<RecordOutcome> {
     let Some(upstream) = remote::upstream_remote(site).await? else {
         return Ok(RecordOutcome::NoUpstream);
     };
@@ -458,9 +491,9 @@ pub async fn record_site_in(
         .unwrap_or_else(|| registry_name.to_string());
 
     let operator =
-        crate::account_state::credential_operator_for_store(&site.profile, store).await?;
+        crate::account_state::credential_operator_for_store(account_profile, store).await?;
     let Some(account) =
-        crate::account_state::open_account_branch_in(&site.profile, &operator, store).await?
+        crate::account_state::open_account_branch_in(account_profile, &operator, store).await?
     else {
         return Ok(RecordOutcome::NoAccount);
     };
@@ -488,6 +521,13 @@ pub async fn record_site_in(
         .find(|space| space.subject == subject)
         .and_then(|space| space.name);
     if current.as_ref() == Some(&desired) && current_name.as_deref() == Some(name.as_str()) {
+        if require_push {
+            account
+                .push()
+                .perform(&operator)
+                .await
+                .context("failed to push the account directory")?;
+        }
         return Ok(RecordOutcome::Unchanged);
     }
 
@@ -495,6 +535,9 @@ pub async fn record_site_in(
         .await
         .context("failed to record the spot in the account directory")?;
     if let Err(error) = account.push().perform(&operator).await {
+        if require_push {
+            return Err(error).context("failed to push the account directory");
+        }
         eprintln!("warning: account directory updated locally; push failed: {error:#}");
     }
     Ok(RecordOutcome::Recorded)
@@ -511,7 +554,7 @@ fn first_registry_name_for_site<'a>(
 
 /// Record the registry entry matching an already-open site.
 pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
-    let store = SpotStore::open()?;
+    let store = &site.account_store;
     let registry = store.load()?;
     let candidates: Vec<_> = registry
         .spots
@@ -531,7 +574,7 @@ pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
         &site.root,
     )
     .context("the evaluated site is not registered as a spot")?;
-    record_site(name, site).await
+    record_site_in(name, site, store).await
 }
 
 /// Best-effort directory sweep of every registered spot.

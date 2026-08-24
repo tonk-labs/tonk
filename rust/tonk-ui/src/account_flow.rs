@@ -560,7 +560,7 @@ mod tests {
         {
             Ok(result) => {
                 result?;
-                assert_eq!(outcome_line.trim_end(), "linked");
+                assert_eq!(outcome_line.trim_end(), "signed in");
             }
             Err(_) => {
                 child.kill().await?;
@@ -572,7 +572,7 @@ mod tests {
         let prefix = format!("{heading}{url_line}{outcome_line}");
         let link = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
         assert!(link.status.success(), "link failed: {}", link.stderr);
-        assert!(link.stdout.contains("linked\naccount: did:key:"));
+        assert!(link.stdout.contains("signed in\naccount: did:key:"));
         assert!(link.stdout.contains("device: did:key:"));
         assert!(
             link.stdout.contains("status: synced")
@@ -1201,7 +1201,7 @@ mod tests {
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
         assert_eq!(url::Url::parse(provider)?, env.account_service);
-        assert!(linked.link.stdout.contains("linked"));
+        assert!(linked.link.stdout.contains("signed in"));
 
         let devices = devices(&linked.profile, &env).await?;
         assert!(
