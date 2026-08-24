@@ -4172,18 +4172,28 @@ name!:
     /// regression loses, and prices the same install as a full copy of the
     /// space.
     async fn claim_install_cost(filler: usize) -> ClaimInstallCost {
-        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        use dialog_repository::{Branch, RepositoryExt as _};
 
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let repo = put_repo(&app, &format!("cost-{filler}")).await;
-        let tonk = state.read().await;
-        let repository: Repository = tonk
+        let tonk = test_state().await;
+
+        // Tree shape is a pure function of its keys, and history keys carry
+        // the repository issuer. `put_repo` deliberately generates a fresh
+        // signer, which made this cost fixture sample a different tree on
+        // every run and occasionally turn one insert into a near-total
+        // rechunk. Pin the issuer so this test measures the install
+        // algorithm rather than key-distribution luck.
+        let signer = Ed25519Signer::import(&[65u8; 32])
+            .await
+            .expect("the fixture signer imports");
+        let repo = signer.did().repo_key().to_owned();
+        let repository = tonk
             .profile
-            .repository(&repo)
-            .load()
+            .repository(repo)
+            .create()
+            .with_credential(signer)
             .perform(&tonk.operator)
             .await
-            .expect("repo loads");
+            .expect("the fixture repository creates");
         let content: Branch = repository
             .branch(DEFAULT_BRANCH)
             .open()
