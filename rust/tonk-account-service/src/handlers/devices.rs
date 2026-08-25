@@ -7,7 +7,7 @@ use crate::auth::{
     authorize, authorize_root, optional_revocation, required_string, string_argument,
 };
 use crate::core::devices::{
-    DeviceView, detach_device, list_devices, register_device, revoke_device,
+    DeviceView, detach_device, link_device, list_devices, register_device, revoke_device,
 };
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
@@ -122,7 +122,7 @@ async fn handle_link_inner(
     let descriptor_hex = hex::encode(descriptor);
     let now = Date::now().as_millis() / 1000;
 
-    let attachment_id = register_device(
+    let attachment_id = link_device(
         &store,
         &account,
         &device_did,

@@ -289,6 +289,45 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_signs_back_into_the_same_account_after_signing_out(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+
+        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        click(&driver, "#account-unlink").await?;
+        driver.accept_alert().await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+
+        click(&driver, "#account-choose-link").await?;
+        click(&driver, "#account-link-submit").await?;
+        if let Err(wait_error) = element(&driver, "tonk-account[data-mode=\"success\"]").await {
+            let host = element(&driver, "tonk-account").await?;
+            let mode = host.attr("data-mode").await?.unwrap_or_default();
+            let error = element(&driver, "#account-error").await?.text().await?;
+            return Err(wait_error).context(format!(
+                "same-account re-login stopped in mode {mode:?}: {error:?}"
+            ));
+        }
+
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("account summary after re-login", &summary)["email"],
+            EMAIL
+        );
+        let devices = get_json(&driver, "/api/account/devices").await?;
+        let devices = successful_body("device list after re-login", &devices)
+            .as_array()
+            .context("device list was not an array")?;
+        assert_eq!(devices.len(), 1, "re-login must not duplicate the device");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_reports_an_existing_email_and_recovers_with_another_address(
         env: TestEnvironment,
     ) -> Result<()> {

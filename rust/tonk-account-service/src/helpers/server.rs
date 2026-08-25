@@ -31,7 +31,7 @@ use crate::core::codes::{generate_code, request_code};
 use crate::core::deletion::delete_account;
 use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
-    DeviceView, detach_device, list_devices, register_device, revoke_device,
+    DeviceView, detach_device, link_device, list_devices, register_device, revoke_device,
 };
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
@@ -411,7 +411,7 @@ async fn devices_link_route(
     })?;
     let descriptor_hex = hex::encode(descriptor);
 
-    let attachment_id = register_device(
+    let attachment_id = link_device(
         &backends.store,
         &account,
         &device_did,
