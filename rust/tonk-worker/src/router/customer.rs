@@ -227,22 +227,26 @@ pub async fn get_state(
                     ..record.clone()
                 };
                 save_customer(&state, &refreshed).await?;
-                // Activation observed here is what promotes the fact on
-                // profile main, so the other devices on this account see
-                // it without each probing the service. The probe answers
-                // the sync endpoint alongside the status, so activation
-                // records the service's own address rather than deriving
-                // one from whichever origin this request reached.
-                if let Err(error) = record_customer_status(
-                    &state,
-                    receipt.status,
-                    &record.email,
-                    receipt.provider.as_deref(),
-                )
-                .await
-                {
-                    log!("account customer status not recorded: {error}");
-                }
+            }
+            // Reconcile the FACT on every probe, not only when the
+            // status changed. Two guards used to stand in the way: a
+            // missing local record (this device may never have enrolled)
+            // and an unchanged status. The second is the one that bit —
+            // by the time anything reads the provider, some earlier
+            // probe has already flipped the stored record to `Active`,
+            // so the statuses match forever after and the address is
+            // never written. The probe is the only place a device
+            // learns the provider without enrolling, so it has to write
+            // what it learned every time.
+            let email = record
+                .as_ref()
+                .map(|record| record.email.clone())
+                .unwrap_or_default();
+            if let Err(error) =
+                record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref())
+                    .await
+            {
+                log!("account customer status not recorded: {error}");
             }
             // This probe is what notices activation, so it is where
             // work deferred during the wait gets replayed.
@@ -569,6 +573,15 @@ pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registrati
     match customer.provider() {
         Some(provider) => Registration::Served {
             provider: provider.to_owned(),
+        },
+        // Active with no recorded address: the status write landed
+        // before the one carrying the provider, which happens when a
+        // space is created in the moment right after activation. The
+        // account is served — the status says so — and the caller
+        // resolves the address elsewhere, so this must not read as
+        // "awaiting activation" and leave the space local-only.
+        None if customer.status.0 == "Active" => Registration::Served {
+            provider: String::new(),
         },
         // Enrolled far enough to record an address, but not far enough
         // to be served: the activation link is still unclicked.

@@ -978,9 +978,13 @@ mod tests {
 
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
         let info = successful_body("read the space configuration", &info);
+        // Report what the worker actually knows, so a failure here says
+        // whether the provider fact was recorded or merely unread.
+        let customer = get_json(&driver, "/api/customer").await?;
         assert!(
             info["remote"]["origin"].is_object(),
-            "an activated account's space must wire the origin remote, got {}",
+            "an activated account's space must wire the origin remote, got {}; \
+             customer state was {customer}",
             info["remote"],
         );
         let upstream = &info["branch"]["main"]["upstream"];
@@ -1043,7 +1047,7 @@ mod tests {
             &driver,
             &format!("/api/repository/{key}/remote"),
             serde_json::json!({
-                "remote": { "origin": { "address": { "Ucan": env.tonk_web.join("ucan/")? } } },
+                "remote": { "origin": { "address": { "Ucan": { "endpoint": env.tonk_web.join("ucan/")? } } } },
                 "branch": { "main": { "upstream": { "remote": "origin", "branch": "main" } } },
             }),
         )
