@@ -107,5 +107,8 @@ pub use site::{Route, Site};
 mod identity;
 pub use identity::{ProfileIdentity, ProfileName};
 
+mod roster;
+pub use roster::{RosterAccount, RosterEmail, RosterProfile};
+
 mod petname;
 pub use petname::petname;

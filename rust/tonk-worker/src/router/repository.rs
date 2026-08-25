@@ -1827,7 +1827,11 @@ pub(crate) async fn remove_space_inner(
     // too, since sharing can't be ruled out.
     let other_profiles = {
         let tonk = state.read().await;
-        match tonk.registry.read_roster(&tonk.storage).await {
+        match tonk
+            .registry
+            .read_roster(&tonk.storage, &tonk.operator)
+            .await
+        {
             Ok(roster) => roster.len() > 1,
             Err(error) => {
                 log!("profile roster unreadable before storage delete: {error}");

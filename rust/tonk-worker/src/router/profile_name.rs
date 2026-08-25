@@ -178,13 +178,23 @@ pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
     keys
 }
 
-/// Re-stamp the self member's `MemberName` on a space's content branch.
+/// Project `name` onto `member`'s `MemberName` in one space's roster.
+///
+/// Idempotent: reads the roster first and commits only when the row is
+/// missing or stale, so the sweep can run it on every pass without
+/// touching the branch. A linked profile's rename also clears the
+/// device-keyed row a pre-link join left behind (cardinality-one on a
+/// different entity, so the assert alone would not overwrite it).
+///
+/// Returns whether anything was written, so the caller knows to queue
+/// the space for sync.
 #[cfg(target_arch = "wasm32")]
-pub(crate) async fn restamp_member_name(
+pub(crate) async fn project_member_name(
     tonk: &TonkState,
     key: &str,
+    member: &dialog_varsig::Did,
     name: &str,
-) -> Result<(), RepositoryError> {
+) -> Result<bool, RepositoryError> {
     // The repo (subject) DID identifies the membership entity. Read it
     // from the acquired content-branch handle (`of()` is the subject),
     // matching how sync.rs derives the replica subject.
@@ -196,50 +206,52 @@ pub(crate) async fn restamp_member_name(
         .await
         .map_err(|e| RepositoryError::Internal(format!("acquire content branch '{key}': {e}")))?;
     let repo_did = session.handle().of().clone();
-
-    let member = crate::router::account::member_did(tonk)
-        .await
-        .map_err(|error| match error {
-            crate::TonkWorkerError::RootRequired => RepositoryError::RootRequired,
-            error => RepositoryError::Internal(error.to_string()),
-        })?;
     let membership = Membership::new(member.clone(), repo_did.clone());
+    let names: Vec<MemberName> = session
+        .handle()
+        .query()
+        .select(Query::<MemberName> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("name query '{key}': {e:?}")))?;
+
+    let stale = !names
+        .iter()
+        .any(|row| row.this == *membership.this() && row.name.0 == name);
+    let device = tonk.profile.did();
+    let obsolete: Vec<MemberName> = if *member == device {
+        Vec::new()
+    } else {
+        let device_entity = Membership::new(device, repo_did).this().clone();
+        names
+            .into_iter()
+            .filter(|row| row.this == device_entity)
+            .collect()
+    };
+    if !stale && obsolete.is_empty() {
+        return Ok(false);
+    }
 
     let mut txn = tonk
         .reactor
         .repository(key)
         .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(MemberName::new(membership.this().clone(), name.to_string()));
-
-    // Linked profiles: a rename must also clear the orphaned device-keyed
-    // name row (cardinality-one on a different entity, so the assert above
-    // won't overwrite it).
-    let device = tonk.profile.did();
-    if member != device {
-        let device_membership = Membership::new(device, repo_did);
-        let device_entity = device_membership.this().clone();
-        let names: Vec<MemberName> = session
-            .handle()
-            .query()
-            .select(Query::<MemberName> {
-                this: Term::var("this"),
-                name: Term::var("name"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .map_err(|e| RepositoryError::Internal(format!("name query '{key}': {e:?}")))?;
-        for stale in names.into_iter().filter(|n| n.this == device_entity) {
-            txn = txn.retract(stale);
-        }
+        .transaction();
+    if stale {
+        txn = txn.assert(MemberName::new(membership.this().clone(), name.to_string()));
     }
-
+    for row in obsolete {
+        txn = txn.retract(row);
+    }
     txn.commit()
         .perform(&tonk.operator)
         .await
-        .map_err(|e| RepositoryError::Internal(format!("restamp member name for '{key}': {e}")))?;
-    Ok(())
+        .map_err(|e| RepositoryError::Internal(format!("project member name to '{key}': {e}")))?;
+    Ok(true)
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -342,7 +354,7 @@ mod tests {
     /// A rename after linking a device to an account root must move the
     /// space's roster row rather than duplicate it: the founder membership
     /// was stamped on the device DID (the account was unlinked when the
-    /// space was created), so [`restamp_member_name`] has to key the new
+    /// space was created), so [`project_member_name`] has to key the new
     /// `MemberName` on the root and retract the now-orphaned device-keyed
     /// row.
     #[dialog_common::test]
@@ -386,9 +398,13 @@ mod tests {
         };
 
         let tonk = state.read().await;
-        restamp_member_name(&tonk, &key, "brave-lynx")
-            .await
-            .expect("restamp succeeds");
+        let root_did: Did = root_did_str.parse().unwrap();
+        assert!(
+            project_member_name(&tonk, &key, &root_did, "brave-lynx")
+                .await
+                .expect("projection succeeds"),
+            "a rekey is a write"
+        );
 
         let session = tonk
             .reactor
@@ -398,7 +414,6 @@ mod tests {
             .await
             .unwrap();
         let repo_did = session.handle().of().clone();
-        let root_did: Did = root_did_str.parse().unwrap();
         let root_entity = Membership::new(root_did, repo_did.clone()).this().clone();
         let device_entity = Membership::new(device_did, repo_did).this().clone();
 

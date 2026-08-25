@@ -2408,7 +2408,6 @@ mod tests {
                     provider: Some("https://accounts.example".into()),
                     email: Some("person@example.com".into()),
                     display_name: Some("Alice".into()),
-                    last_active_at: 1_754_380_800,
                     active: true,
                 },
                 tonk_worker_api::ProfileRosterEntry {
@@ -2417,7 +2416,6 @@ mod tests {
                     provider: None,
                     email: None,
                     display_name: Some("brave-otter".into()),
-                    last_active_at: 1_754_000_000,
                     active: false,
                 },
             ],
