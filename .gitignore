@@ -6,6 +6,7 @@ automerge-repo-data
 result
 .carry
 .tonk
+.wt
 
 # Node dependencies
 node_modules

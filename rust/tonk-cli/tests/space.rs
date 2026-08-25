@@ -152,7 +152,7 @@ mod when_removing_a_space {
         Ok(())
     }
 
-    /// Data kept behind is data no entry names. `space list` has to
+    /// Data kept behind is data no entry names. Bare `space` has to
     /// report it, because nothing else will and it still holds the
     /// canonical name against a later join or account pull.
     #[dialog_common::test]

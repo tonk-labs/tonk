@@ -76,7 +76,7 @@ this plan exists to avoid.
   nothing per-space. A registry written by another tool round-trips
   byte-for-byte.
 - Canonical vocabulary only: `space`, `--space`, `TONK_SPACE`, and
-  `account spaces`.
+  `account space`.
 - Out of scope: browser profile UX, account-to-account ownership transfer,
   delegation-chain rebasing, rotating existing bearer links, provider billing
   transfer, multiple simultaneous accounts, and warnings on writes to a

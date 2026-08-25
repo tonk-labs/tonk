@@ -64,16 +64,31 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].local_name.as_deref(), Some("alpha"));
 
-    let outcome = account_spaces::pull(
-        &fixture.profile,
-        &fixture.store,
-        site.repository.did().as_ref(),
-        None,
-    )
-    .await?;
+    let outcome = account_spaces::pull(&fixture.profile, &fixture.store, "alpha", None).await?;
     assert!(outcome.already_local);
+    assert_eq!(outcome.subject, site.repository.did().to_string());
     assert_eq!(outcome.name, "alpha");
     assert_eq!(outcome.site, canonical);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pull_rejects_an_ambiguous_directory_name_with_exact_subjects() -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    let first = fixture
+        .record_directory_space(83, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
+        .await?;
+    let second = fixture
+        .record_directory_space(84, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
+        .await?;
+
+    let error = account_spaces::pull(&fixture.profile, &fixture.store, "garden", None)
+        .await
+        .expect_err("a duplicate account-directory name must be disambiguated by subject");
+    let message = error.to_string();
+    assert!(message.contains("ambiguous"), "{error:#}");
+    assert!(message.contains(first.as_ref()), "{error:#}");
+    assert!(message.contains(second.as_ref()), "{error:#}");
     Ok(())
 }
 
@@ -460,10 +475,10 @@ async fn record_sweep_uses_the_first_alias_once() -> Result<()> {
     Ok(())
 }
 
-/// The regression `tonk account spaces` shipped with: `account status`
-/// reported "signed in: yes" while `spaces` claimed no account was
-/// configured, because the spaces commands required a prior command to
-/// have hydrated the link. They hydrate on demand now.
+/// The regression `tonk account space` shipped with: `account status`
+/// reported "signed in: yes" while the account-space listing claimed no
+/// account was configured, because the command required a prior command to
+/// have hydrated the link. It hydrates on demand now.
 #[dialog_common::test]
 async fn list_hydrates_a_linked_but_unhydrated_profile(env: AccessServiceAddress) -> Result<()> {
     // Descriptor remotes are canonical with a trailing slash.

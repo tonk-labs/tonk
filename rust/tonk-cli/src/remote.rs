@@ -1,4 +1,4 @@
-//! `tonk remote add` / `tonk remote list` / `tonk remote
+//! `tonk remote add` / bare `tonk remote` / `tonk remote
 //! set-upstream` — register and link UCAN-S3 access-service
 //! remotes against the local site.
 //!
@@ -33,7 +33,7 @@ pub const META_BRANCH: &str = "meta";
 /// ("origin") flows across both surfaces.
 pub const DEFAULT_REMOTE: &str = "origin";
 
-/// One row of `tonk remote list` — also the shape `find`
+/// One row of `tonk remote` — also the shape `find`
 /// returns and `tonk invite --remote` consumes when embedding
 /// a remote URL in a freshly-minted invite.
 #[derive(Debug, Clone, Serialize, Deserialize)]

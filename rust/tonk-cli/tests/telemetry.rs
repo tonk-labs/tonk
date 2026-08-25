@@ -56,15 +56,15 @@ fn tonk_bin() -> std::path::PathBuf {
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into())
 }
 
-/// Run `tonk guide` with telemetry pointed at `endpoint` and state
+/// Run `tonk help glossary` with telemetry pointed at `endpoint` and state
 /// isolated in `state_dir`. `extra_env` overrides for opt-out cases.
-fn run_tonk_guide(
+fn run_tonk_help(
     state_dir: &std::path::Path,
     endpoint: &str,
     extra_env: &[(&str, &str)],
 ) -> Output {
     let mut cmd = Command::new(tonk_bin());
-    cmd.arg("guide")
+    cmd.args(["help", "glossary"])
         .env("TONK_TELEMETRY_STATE", state_dir)
         .env("TONK_POSTHOG_KEY", "test-key")
         .env("TONK_POSTHOG_ENDPOINT", endpoint)
@@ -84,14 +84,14 @@ fn run_tonk_guide(
 }
 
 #[dialog_common::test]
-fn guide_posts_one_command_run_event() {
+fn help_posts_one_command_run_event() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let endpoint = format!("http://{}", listener.local_addr().expect("addr"));
     let (tx, rx) = mpsc::channel();
     serve_once(listener, tx);
 
     let state = tempfile::tempdir().expect("tempdir");
-    let output = run_tonk_guide(state.path(), &endpoint, &[]);
+    let output = run_tonk_help(state.path(), &endpoint, &[]);
     assert!(output.status.success());
 
     let request = rx
@@ -99,7 +99,7 @@ fn guide_posts_one_command_run_event() {
         .expect("request arrives");
     assert!(request.starts_with("POST /batch/"));
     assert!(request.contains("\"cli_command_run\""));
-    assert!(request.contains("\"command\":\"guide\""));
+    assert!(request.contains("\"command\":\"help\""));
     assert!(request.contains("\"success\":true"));
     assert!(request.contains("\"duration_ms\""));
     assert!(request.contains("\"environment\":\"cli\""));
@@ -120,7 +120,7 @@ fn do_not_track_sends_nothing() {
     serve_once(listener, tx);
 
     let state = tempfile::tempdir().expect("tempdir");
-    let output = run_tonk_guide(state.path(), &endpoint, &[("DO_NOT_TRACK", "1")]);
+    let output = run_tonk_help(state.path(), &endpoint, &[("DO_NOT_TRACK", "1")]);
     assert!(output.status.success());
     assert!(
         rx.recv_timeout(Duration::from_secs(1)).is_err(),
@@ -141,12 +141,12 @@ fn notice_prints_only_once() {
     serve_once(listener, tx);
 
     let state = tempfile::tempdir().expect("tempdir");
-    let first = run_tonk_guide(state.path(), &endpoint, &[]);
+    let first = run_tonk_help(state.path(), &endpoint, &[]);
     assert!(String::from_utf8_lossy(&first.stderr).contains("tonk telemetry off"));
 
     // Second run: endpoint may be gone (serve_once handled one
     // request); flush is best-effort so the command still succeeds.
-    let second = run_tonk_guide(state.path(), &endpoint, &[]);
+    let second = run_tonk_help(state.path(), &endpoint, &[]);
     assert!(second.status.success());
     assert!(!String::from_utf8_lossy(&second.stderr).contains("tonk telemetry off"));
 }

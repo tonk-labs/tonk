@@ -69,6 +69,7 @@ async fn it_writes_nothing_on_a_dry_run() -> Result<()> {
         &test.site,
         "# Not committed\n",
         tonk_cli::data_ops::WriteOptions {
+            notation: false,
             dry_run: true,
             ..Default::default()
         },

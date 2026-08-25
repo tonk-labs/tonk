@@ -98,7 +98,7 @@ impl ExitCode {
 
 /// The envelope every `--json` listing carries.
 ///
-/// There used to be two conventions. `tonk context --json` carried a
+/// There used to be two conventions. `tonk status --json` carries a
 /// top-level string `schemaVersion`; every listing emitted a bare array
 /// whose rows each repeated a numeric `version: 1`. Both were versioned
 /// and neither could be recognised from the other, and the per-row form

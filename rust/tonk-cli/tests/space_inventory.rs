@@ -331,6 +331,7 @@ async fn it_retains_other_rows_when_one_site_is_unreadable() -> Result<()> {
 mod rendering {
     use super::*;
     use tonk_cli::inventory::LocalSpaceInventoryRow;
+    use unicode_width::UnicodeWidthStr;
 
     fn row(
         name: &str,
@@ -385,10 +386,10 @@ mod rendering {
 
         assert_eq!(
             rendered,
-            "NAME\tOWNER\tROLE\n\
-             scratch (z6Mkq7vp)\t-\tlocal\n\
-             garden (z6Mk4e2b)\tyou (z6Mkccc1)\towner\n\
-             roadmap (z6Mkf0aa)\tAda Lovelace (z6Mkbbb9)\tmember"
+            "NAME                OWNER                    ROLE\n\
+             scratch (z6Mkq7vp)  -                        local\n\
+             garden (z6Mk4e2b)   you (z6Mkccc1)           owner\n\
+             roadmap (z6Mkf0aa)  Ada Lovelace (z6Mkbbb9)  member"
         );
     }
 
@@ -442,20 +443,18 @@ mod rendering {
             ),
         ]);
 
-        assert!(
-            rendered.contains("outside (z6Mkaaa1)\tz6Mkbbb2\t-"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("broken (z6Mkccc3)\t-\tunknown"),
-            "{rendered}"
+        assert_eq!(
+            rendered,
+            "NAME                OWNER     ROLE\n\
+             outside (z6Mkaaa1)  z6Mkbbb2  -\n\
+             broken (z6Mkccc3)   -         unknown"
         );
     }
 
     /// A display name is the one cell this device does not author: it is
-    /// written by another member and arrives over sync. Tabs keep it inside
-    /// one machine-splittable cell, and control characters must not reach the
-    /// terminal at all.
+    /// written by another member and arrives over sync. Width-aware padding
+    /// keeps it inside one visible column, and control characters must not
+    /// reach the terminal at all.
     #[test]
     fn it_keeps_a_hostile_display_name_inside_its_own_cell() {
         let rendered = render(&[
@@ -486,10 +485,20 @@ mod rendering {
             ),
         ]);
 
+        let role_column = rendered
+            .lines()
+            .next()
+            .and_then(|header| header.find("ROLE"))
+            .expect("header carries the role column");
         for line in rendered.lines().skip(1) {
-            let cells: Vec<_> = line.split('\t').collect();
-            assert_eq!(cells.len(), 3, "each row has three cells: {line:?}");
-            assert_eq!(cells[2], "member", "the role stays in its own cell");
+            let prefix = line
+                .strip_suffix("member")
+                .expect("the role stays at the end of its row");
+            assert_eq!(
+                UnicodeWidthStr::width(prefix),
+                role_column,
+                "the role starts in the same visible column: {line:?}"
+            );
         }
         // One line per row plus the header — a newline in a name would add
         // another, and the escape would repaint the terminal.

@@ -22,7 +22,7 @@ use crate::remote::{self, DEFAULT_REMOTE};
 use crate::site::TonkSite;
 use crate::space::{self, SpaceStore};
 
-/// One row rendered by `tonk account spaces`.
+/// One row rendered by `tonk account space`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSpaceRow {
@@ -135,7 +135,7 @@ async fn local_subjects(
 /// Open the account branch, hydrating the link first when this device
 /// has not reached Ready yet.
 ///
-/// `tonk account spaces` must not depend on a prior `tonk account
+/// `tonk account space` must not depend on a prior `tonk account
 /// status` run having done the hydration: a linked-but-unhydrated
 /// profile is an ordinary state right after `tonk account login` on a
 /// fresh device, and reporting it as "no account" reads as data loss.
@@ -242,12 +242,9 @@ impl Drop for FreshPullTarget {
 pub async fn pull(
     profile: &Profile,
     store: &SpaceStore,
-    subject: &str,
+    name_or_subject: &str,
     requested_name: Option<&str>,
 ) -> Result<PullOutcome> {
-    let requested: Did = subject
-        .parse()
-        .map_err(|error| anyhow::anyhow!("invalid account space subject '{subject}': {error:?}"))?;
     let (operator, account) = ready_account_branch(profile, store).await?;
     if let Err(error) = account.pull().download().perform(&operator).await {
         eprintln!("warning: account sync failed; pulling from the local copy: {error:#}");
@@ -264,6 +261,34 @@ pub async fn pull(
         );
     }
 
+    let directory = tonk_schema::directory::spaces(&account, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?;
+    let requested: Did = match name_or_subject.parse() {
+        Ok(subject) => subject,
+        Err(_) => {
+            let matches: Vec<Did> = directory
+                .iter()
+                .filter(|space| space.name.as_deref() == Some(name_or_subject))
+                .map(|space| space.subject.clone())
+                .collect();
+            match matches.as_slice() {
+                [] => bail!("the account directory has no space named '{name_or_subject}'"),
+                [subject] => subject.clone(),
+                subjects => {
+                    let subjects = subjects
+                        .iter()
+                        .map(AsRef::<str>::as_ref)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    bail!(
+                        "account space name '{name_or_subject}' is ambiguous; matches {subjects}; pull by subject DID"
+                    )
+                }
+            }
+        }
+    };
+
     let record = tonk_schema::directory::mount_record(&account, &requested, &operator)
         .await
         .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
@@ -272,9 +297,7 @@ pub async fn pull(
                 "the account directory has no mount record for {requested} — the space                  is local-only on its home device or predates directory records"
             )
         })?;
-    let directory_name = tonk_schema::directory::spaces(&account, &operator)
-        .await
-        .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
+    let directory_name = directory
         .into_iter()
         .find(|space| space.subject == requested)
         .and_then(|space| space.name);
@@ -415,7 +438,7 @@ async fn repository_name(site: &TonkSite) -> Option<String> {
 
 /// Whether the account directory lists `site`'s repository with a
 /// mount record — the claim `tonk space rm` leans on when it tells
-/// someone their data is recoverable with `tonk account spaces pull`.
+/// someone their data is recoverable with `tonk account space pull`.
 ///
 /// Answered from the account branch's local copy of the directory; an
 /// absent or unhydrated account answers `false` rather than failing

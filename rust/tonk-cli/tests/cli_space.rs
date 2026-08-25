@@ -161,7 +161,7 @@ mod when_one_account_is_signed_in {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
-        let output = run(state.path(), &["space", "list"], &[]);
+        let output = run(state.path(), &["space"], &[]);
 
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
@@ -182,7 +182,7 @@ mod when_no_account_is_signed_in {
     fn read_only_listing_writes_no_state() {
         let state = tempfile::tempdir().expect("tempdir");
 
-        let spaces = run(state.path(), &["space", "list"], &[]);
+        let spaces = run(state.path(), &["space"], &[]);
         assert!(spaces.status.success(), "{}", stderr_of(&spaces));
         assert!(stdout_of(&spaces).contains("no spaces registered"));
 
@@ -298,13 +298,14 @@ mod when_nothing_is_registered {
     use super::*;
 
     #[dialog_common::test]
-    fn bare_tonk_attempts_live_context_instead_of_static_help() {
+    fn bare_tonk_prints_the_same_index_as_help() {
         let state = tempfile::tempdir().expect("tempdir");
-        let output = run(state.path(), &[], &[]);
-        assert!(!output.status.success());
-        let stderr = stderr_of(&output);
-        assert!(stderr.contains("no spaces registered"), "{stderr}");
-        assert!(!stderr.contains("Usage: tonk"), "{stderr}");
+        let bare = run(state.path(), &[], &[]);
+        let help = run(state.path(), &["-h"], &[]);
+        assert!(bare.status.success(), "{}", stderr_of(&bare));
+        assert!(help.status.success(), "{}", stderr_of(&help));
+        assert_eq!(stdout_of(&bare), stdout_of(&help));
+        assert!(stdout_of(&bare).contains("start a space"));
     }
 
     #[dialog_common::test]
@@ -321,13 +322,14 @@ mod when_nothing_is_registered {
     }
 
     #[dialog_common::test]
-    fn root_help_leads_with_a_direct_workflow() {
+    fn root_help_is_the_grouped_command_index() {
         let state = tempfile::tempdir().expect("tempdir");
         let output = run(state.path(), &["--help"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("tonk context"), "{stdout}");
-        assert!(stdout.contains("tonk query <CONCEPT> --json"), "{stdout}");
+        assert!(stdout.contains("examine state"), "{stdout}");
+        assert!(stdout.contains("write facts"), "{stdout}");
+        assert!(stdout.contains("collaborate"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -484,16 +486,13 @@ mod when_resolving_with_precedence {
     }
 
     #[dialog_common::test]
-    fn bare_use_reports_the_effective_selection() {
+    fn bare_use_is_retired_in_favour_of_the_space_listing() {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
         let output = run(state.path(), &["space", "use"], &[("TONK_SPACE", "a")]);
-        assert!(output.status.success(), "{}", stderr_of(&output));
-        let stdout = stdout_of(&output);
-        assert!(stdout.contains("space: a\n"), "{stdout}");
-        assert!(stdout.contains("selected via: env"), "{stdout}");
-        assert!(stdout.contains("next: tonk context"), "{stdout}");
+        assert!(!output.status.success());
+        assert!(stderr_of(&output).contains("<NAME>"));
     }
 
     #[dialog_common::test]
@@ -519,11 +518,14 @@ mod when_using_space_agent_context {
         let state = tempfile::tempdir().expect("tempdir");
         space_with_remotes(state.path(), &[]);
 
-        let output = run(state.path(), &["agents"], &[]);
+        let output = run(state.path(), &["space", "agents"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
         assert!(stderr.contains("no AGENTS.md claim"), "{stderr}");
-        assert!(stderr.contains("tonk agents set AGENTS.md"), "{stderr}");
+        assert!(
+            stderr.contains("tonk space agents set AGENTS.md"),
+            "{stderr}"
+        );
     }
 
     #[dialog_common::test]
@@ -536,7 +538,12 @@ mod when_using_space_agent_context {
 
         let output = run(
             state.path(),
-            &["agents", "set", source.to_str().expect("utf-8 path")],
+            &[
+                "space",
+                "agents",
+                "set",
+                source.to_str().expect("utf-8 path"),
+            ],
             &[],
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
@@ -545,11 +552,11 @@ mod when_using_space_agent_context {
         assert!(receipt.contains("entity: did:key:"), "{receipt}");
         assert!(receipt.contains("revision:"), "{receipt}");
 
-        let output = run(state.path(), &["agents"], &[]);
+        let output = run(state.path(), &["space", "agents"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         assert_eq!(stdout_of(&output), expected);
 
-        let output = run(state.path(), &["agents", "get", "--json"], &[]);
+        let output = run(state.path(), &["space", "agents", "get", "--json"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let value: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("valid claim JSON");
@@ -579,6 +586,7 @@ mod when_using_space_agent_context {
         let output = run(
             state.path(),
             &[
+                "space",
                 "agents",
                 "set",
                 source.to_str().expect("utf-8 path"),
@@ -600,6 +608,7 @@ mod when_using_space_agent_context {
         let output = run(
             state.path(),
             &[
+                "space",
                 "agents",
                 "set",
                 source.to_str().expect("utf-8 path"),
@@ -695,23 +704,24 @@ mod when_importing {
 }
 
 #[dialog_common::test]
-fn context_reports_a_configured_dead_remote_without_fetching_it() {
+fn status_reports_when_a_configured_remote_cannot_be_fetched() {
     let state = tempfile::tempdir().expect("tempdir");
     space_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
 
     let started = std::time::Instant::now();
     let output = run(
         state.path(),
-        &["context", "--json"],
+        &["status", "--json"],
         &[("TONK_SPACE", "demo")],
     );
     assert!(output.status.success(), "{}", stderr_of(&output));
     assert!(
         started.elapsed() < std::time::Duration::from_secs(2),
-        "offline context took {:?}",
+        "failed status fetch took {:?}",
         started.elapsed()
     );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("context JSON");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("status JSON");
+    assert_eq!(value["schemaVersion"], "tonk.status.v2");
     assert_eq!(value["sync"]["state"], "not-fetched");
     assert_eq!(value["sync"]["fetched"], false);
 }
@@ -1241,7 +1251,7 @@ mod when_a_directory_is_bound {
 
         let elsewhere = state.path().join("elsewhere");
         std::fs::create_dir_all(&elsewhere).expect("mkdir elsewhere");
-        let output = run_in(state.path(), &elsewhere, &["space", "list"], &[]);
+        let output = run_in(state.path(), &elsewhere, &["space"], &[]);
         let stdout = stdout_of(&output);
         assert!(!stdout.contains("active here:"), "{stdout}");
     }
@@ -1294,7 +1304,7 @@ mod when_a_directory_is_bound {
         let (work, _nested) = fixture(state.path());
         bind(state.path(), &work, "a");
 
-        let output = run_in(state.path(), state.path(), &["space", "list"], &[]);
+        let output = run_in(state.path(), state.path(), &["space"], &[]);
         let stdout = stdout_of(&output);
         assert!(stdout.contains("directories:"), "{stdout}");
         assert!(stdout.contains(&shown(&work)), "{stdout}");
@@ -1467,7 +1477,7 @@ mod when_deleting_a_space {
         // Nothing moved: the space is still registered and its data
         // is untouched.
         assert!(site.is_dir(), "data survives the refusal");
-        let listed = stdout_of(&run(state.path(), &["space", "list"], &[]));
+        let listed = stdout_of(&run(state.path(), &["space"], &[]));
         assert!(listed.contains("garden"), "{listed}");
     }
 
@@ -1491,7 +1501,7 @@ mod when_deleting_a_space {
         );
         assert!(!site.exists(), "data deleted");
 
-        let listed = stdout_of(&run(state.path(), &["space", "list"], &[]));
+        let listed = stdout_of(&run(state.path(), &["space"], &[]));
         assert!(listed.contains("no spaces registered"), "{listed}");
         assert!(!listed.contains("unregistered site data"), "{listed}");
     }
@@ -1516,7 +1526,7 @@ mod when_deleting_a_space {
         assert!(stdout.contains("data kept at"), "{stdout}");
         assert!(site.is_dir(), "data kept");
 
-        let listed = stdout_of(&run(state.path(), &["space", "list"], &[]));
+        let listed = stdout_of(&run(state.path(), &["space"], &[]));
         assert!(listed.contains("unregistered site data"), "{listed}");
         let canonical = site.canonicalize().expect("canonicalize site");
         assert!(
@@ -1572,23 +1582,22 @@ mod when_reading {
             assert!(out.status.success(), "{args:?} failed: {}", stderr_of(&out));
         };
         run(&["space", "new", "demo"]);
-        run(&["concept", "add", "task", "--attr", "title:text:one"]);
+        run(&["concept", "add", "task", "--field", "title:text:one"]);
         run(&["view", "add", "task", "--template", "<b>{title}</b>"]);
         let agents = state.join("AGENTS.md");
         std::fs::write(&agents, "# Demo space\n").expect("write AGENTS.md");
-        run(&["agents", "set", agents.to_str().expect("utf-8 path")]);
+        run(&[
+            "space",
+            "agents",
+            "set",
+            agents.to_str().expect("utf-8 path"),
+        ]);
         if remote {
             run(&["remote", "add", "origin", DEAD_REMOTE]);
         }
     }
 
-    const LISTINGS: [&[&str]; 5] = [
-        &["concept", "ls"],
-        &["view", "ls"],
-        &["blob", "ls"],
-        &["remote", "list"],
-        &["space", "list"],
-    ];
+    const LISTINGS: [&[&str]; 5] = [&["concept"], &["view"], &["blob"], &["remote"], &["space"]];
 
     /// An empty listing is one parenthesised sentence, not silence. The
     /// silent ones read as a broken command to anyone who ran them before
@@ -1602,7 +1611,7 @@ mod when_reading {
         for args in LISTINGS {
             let out = run(state.path(), args, &[("TONK_SPACE", "demo")]);
             let stdout = stdout_of(&out);
-            if args == ["space", "list"] {
+            if args == ["space"] {
                 // The one listing that is never empty: the space just
                 // created is in it.
                 continue;
@@ -1622,7 +1631,7 @@ mod when_reading {
         populated(state.path(), true);
 
         for args in LISTINGS {
-            if args == ["blob", "ls"] {
+            if args == ["blob"] {
                 continue; // nothing ingests a blob without a file to read
             }
             let out = run(state.path(), args, &[("TONK_SPACE", "demo")]);
@@ -1652,16 +1661,14 @@ mod when_reading {
         populated(state.path(), false);
 
         for args in [
-            vec!["context", "--json"],
             vec!["status", "--json"],
             vec!["account", "status", "--json"],
-            vec!["space", "use", "--json"],
-            vec!["agents", "get", "--json"],
+            vec!["space", "agents", "get", "--json"],
             vec!["query", "task", "--json"],
-            vec!["concept", "ls", "--json"],
-            vec!["view", "ls", "--json"],
-            vec!["blob", "ls", "--json"],
-            vec!["space", "list", "--json"],
+            vec!["concept", "--json"],
+            vec!["view", "--json"],
+            vec!["blob", "--json"],
+            vec!["space", "--json"],
         ] {
             let out = run(state.path(), &args, &[("TONK_SPACE", "demo")]);
             assert!(out.status.success(), "{args:?} failed: {}", stderr_of(&out));
@@ -1671,7 +1678,7 @@ mod when_reading {
 
             // One envelope for every read. `tonk query` is the exception
             // and says so: it emits an EvaluateResponse, the same shape
-            // `tonk eval --format json` emits, which is a transaction
+            // `tonk eval --json` emits, which is a transaction
             // envelope rather than a listing.
             if args[0] != "query" {
                 let version = document["schemaVersion"]
@@ -1684,11 +1691,11 @@ mod when_reading {
             }
             if matches!(
                 args.as_slice(),
-                ["agents", "get", "--json"]
-                    | ["concept", "ls", "--json"]
-                    | ["view", "ls", "--json"]
-                    | ["blob", "ls", "--json"]
-                    | ["space", "list", "--json"]
+                ["space", "agents", "get", "--json"]
+                    | ["concept", "--json"]
+                    | ["view", "--json"]
+                    | ["blob", "--json"]
+                    | ["space", "--json"]
             ) {
                 assert!(
                     document["rows"].is_array(),
@@ -1703,17 +1710,71 @@ mod when_reading {
         populated(with_remote.path(), true);
         let out = run(
             with_remote.path(),
-            &["remote", "list", "--json"],
+            &["remote", "--json"],
             &[("TONK_SPACE", "demo")],
         );
         assert!(out.status.success(), "{}", stderr_of(&out));
         let stdout = stdout_of(&out);
         let document: serde_json::Value = serde_json::from_str(&stdout)
-            .unwrap_or_else(|e| panic!("remote list --json ({e}):\n{stdout}"));
+            .unwrap_or_else(|e| panic!("remote --json ({e}):\n{stdout}"));
         assert_eq!(document["schemaVersion"], "tonk.remote-list.v1", "{stdout}");
         assert_eq!(document["rows"][0]["name"], "origin", "{stdout}");
         // The version used to be repeated on every row, saying something
         // true of the whole response once per element.
         assert!(document["rows"][0]["version"].is_null(), "{stdout}");
+    }
+
+    #[dialog_common::test]
+    fn show_dispatches_schema_concept_view_and_entity_names() {
+        let state = tempfile::tempdir().expect("tempdir");
+        populated(state.path(), false);
+        let env = &[("TONK_SPACE", "demo")];
+
+        let schema = run(state.path(), &["show"], env);
+        assert!(schema.status.success(), "{}", stderr_of(&schema));
+        assert!(stdout_of(&schema).contains("concept!: &task"));
+
+        let concept = run(state.path(), &["show", "task", "--json"], env);
+        assert!(concept.status.success(), "{}", stderr_of(&concept));
+        let concept: serde_json::Value =
+            serde_json::from_str(&stdout_of(&concept)).expect("concept JSON");
+        assert_eq!(concept["schemaVersion"], "tonk.show-concept.v1");
+        assert_eq!(concept["fields"][0]["name"], "title");
+        assert!(concept["recipes"].as_array().is_some_and(|recipes| {
+            recipes
+                .iter()
+                .any(|recipe| recipe == "tonk assert task --<field> <value>")
+        }));
+
+        let view = run(state.path(), &["show", "task-view", "--json"], env);
+        assert!(view.status.success(), "{}", stderr_of(&view));
+        let view: serde_json::Value = serde_json::from_str(&stdout_of(&view)).expect("view JSON");
+        assert_eq!(view["schemaVersion"], "tonk.show-view.v1");
+        assert_eq!(view["anchor"], "task-view");
+        assert_eq!(view["model"], "task");
+        assert_eq!(
+            view["template"].as_str().map(str::trim_end),
+            Some("<b>{title}</b>")
+        );
+
+        let seeded = run(
+            state.path(),
+            &["eval", "-c", "task!: &first\n  title: \"First\""],
+            env,
+        );
+        assert!(seeded.status.success(), "{}", stderr_of(&seeded));
+        let entity = run(state.path(), &["show", "first", "--json"], env);
+        assert!(entity.status.success(), "{}", stderr_of(&entity));
+        let entity: serde_json::Value =
+            serde_json::from_str(&stdout_of(&entity)).expect("entity JSON");
+        assert_eq!(entity["schemaVersion"], "tonk.show-entity.v1");
+        assert!(entity["facts"].as_array().is_some_and(|facts| {
+            facts.iter().any(|fact| {
+                fact["attribute"] == "xyz.tonk.task/title"
+                    && fact["value"]
+                        .as_str()
+                        .is_some_and(|value| value.contains("First"))
+            })
+        }));
     }
 }

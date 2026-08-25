@@ -371,7 +371,7 @@ impl SpaceStore {
     /// These are left by `tonk space rm --keep-data` (and by a
     /// hand-edited `spaces.json`). They are invisible to every other
     /// command yet still occupy their names: `tonk join --name x` and
-    /// `tonk account spaces pull --name x` both refuse to write over
+    /// `tonk account space pull --name x` both refuse to write over
     /// one. Listing them is what makes that state recoverable instead
     /// of merely confusing.
     ///
@@ -726,7 +726,7 @@ pub struct RemoveOutcome {
     pub unbound: Vec<PathBuf>,
 }
 
-/// Rows for `tonk space list` plus the resolved active selection
+/// Rows for `tonk space` plus the resolved active selection
 /// (None when nothing resolves — empty registry or dangling name).
 #[derive(Debug, Clone)]
 pub struct Listing {
@@ -910,9 +910,9 @@ pub fn unbind(store: &SpaceStore, directory: &Path) -> Result<UnbindOutcome, Spa
     })
 }
 
-/// Everything `tonk space list` needs in one read: the rows plus
+/// Everything `tonk space` needs in one read: the rows plus
 /// what a bare command would currently resolve to (honouring the
-/// same `flag`/`env` precedence, so `tonk --space x space list`
+/// same `flag`/`env` precedence, so `tonk --space x space`
 /// marks `x`).
 pub fn listing(
     store: &SpaceStore,
@@ -946,13 +946,13 @@ pub fn listing(
 /// order looks more cautious and is worse: a delete that fails after
 /// the entry is already gone leaves data on disk that nothing names,
 /// which is precisely the state that later blocks `tonk join` and
-/// `tonk account spaces pull` on the same name. Deleting first means a
+/// `tonk account space pull` on the same name. Deleting first means a
 /// failure leaves the space fully registered and the command safe to
 /// retry.
 ///
 /// The residual risk runs the other way — data deleted, registry save
 /// fails — and is benign: the entry points at an empty path, `tonk
-/// space list` shows it, and re-running `rm` clears it.
+/// space` shows it, and re-running `rm` clears it.
 pub fn remove(store: &SpaceStore, name: &str, data: Data) -> Result<RemoveOutcome, SpaceError> {
     let mut registry = store.load()?;
     let Some(entry) = registry.spaces.remove(name) else {

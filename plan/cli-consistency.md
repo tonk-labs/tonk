@@ -41,10 +41,11 @@ the concept's own dynamic command, so they appear in
 `tonk assert <concept> --help` beside the fields.
 
 **0.4 One listing format.** `concept ls`, `view ls`, `blob ls`,
-`remote list`, `space list`, `account spaces` and `account devices` share one
-renderer: header row, tab-separated cells, `-` for an absent value, and a
-parenthesised sentence naming what is missing when there is nothing to show.
-Five of them used to print nothing at all when empty.
+`remote list`, `space list`, `account space` and `account devices` share one
+renderer: header row, columns padded to the widest visible cell, `-` for an
+absent value, and a parenthesised sentence naming what is missing when there
+is nothing to show. Use `--json` for stable machine-readable output. Five of
+them used to print nothing at all when empty.
 
 **0.5 `--json` on every read** except `tonk schema` and `tonk guide`.
 

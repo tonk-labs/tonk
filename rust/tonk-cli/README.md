@@ -20,7 +20,7 @@ tonk space new garden
 tonk space use garden
 
 # Every local replica, with the owner each space names.
-tonk space list
+tonk space
 
 # Sign in. Tonk holds one account at a time.
 tonk account login
@@ -30,8 +30,9 @@ tonk account logout
 tonk space link garden
 
 # What your account's directory lists, and pulling one of those spaces here.
-tonk account spaces list
-tonk account spaces pull did:key:...
+tonk account space
+tonk account space pull garden      # a unique directory name
+tonk account space pull did:key:... # exact when names collide
 
 # Sharing never changes ownership: the invitee joins as a member.
 tonk invite
@@ -40,31 +41,31 @@ tonk invite
 tonk eval -c 'person:'
 tonk eval ./doc.notation
 cat doc.notation | tonk eval -
-tonk eval -c 'person:' --format json --quiet
+tonk eval -c 'person:' --json --quiet
 
 # Inspect the branch.
-tonk schema       # every named attribute + concept as re-submittable notation
-tonk concept ls   # concepts this space defines: name<TAB>description
-tonk view ls      # entities with a template claim: name<TAB>entity<TAB>model<TAB>bytes
-tonk blob ls      # ingested blobs: entity<TAB>content-type<TAB>name
-tonk guide        # baked-in asserted-notation reference (also: guide notation|views|all)
+tonk show         # every named field + concept as re-submittable notation
+tonk concept      # concepts this space defines
+tonk view         # entities with a template claim
+tonk blob         # ingested blobs
+tonk help         # baked-in asserted-notation reference (also: help notation|views|all)
 
 # Argument-based data verbs — a constrained front-end over `eval`.
 # Dialog vocabulary: you assert claims and retract them. A retraction
 # is itself an assertion invalidating an old claim, not a delete.
-tonk schema habit                             # one concept's schema, as re-submittable notation
+tonk show habit                               # one concept's schema and usage
 tonk assert habit --help                      # the concept's real flags (fields, types, required)
 tonk assert habit --name "Run" --target "5k"  # mint a new instance (typed flags from the branch schema)
 tonk assert habit <entity> --target "10k"     # assert superseding claims on an existing instance
 tonk query habit                              # every instance (add --json for machine output)
-tonk get habit <entity>                       # one instance
+tonk show habit <entity>                      # one instance
 tonk retract habit <entity> --field target    # retract one field (a many field loses every value)
 tonk retract habit <entity>                   # retract the whole instance
 
 # Authoring — schema, views, and the space home.
-tonk concept add habit --attr name:text:one   # anchored concept + typed attributes
+tonk concept add habit --field name:text:one  # anchored concept + typed fields
 tonk view add habit --template '<b>{name}</b>'  # declarative view (auto-surfaces an unset home)
-tonk home habit                               # put habit's directory on the space home
+tonk space home habit                         # put habit's directory on the space home
 
 # CSV transfer over the main branch.
 tonk export --out data.csv
@@ -111,7 +112,7 @@ workflows are intentionally not exposed). Sites live canonically under
 
 A space either belongs to no account, or to exactly one. Which one is read
 from the space itself — the founder row of the roster it carries on `main` —
-so `tonk space list` can name the owner of a space you merely joined, and no
+so `tonk space` can name the owner of a space you merely joined, and no
 record beside the space can drift out of step with it:
 
 ```text
@@ -200,9 +201,10 @@ device may have been revoked. The reason is the part that came from the
 boundary that actually said no; the fix is this CLI's inference from local
 state, and it can be wrong.
 
-`tonk account spaces list` reads the signed remote directory of the account you
-are signed in to, and `tonk account spaces pull <subject>` mounts one of those
-spaces here as an owner or member replica.
+`tonk account space` reads the signed remote directory of the account you are
+signed in to. `tonk account space pull <name-or-subject>` mounts one of those
+spaces here as an owner or member replica; a name works when it identifies one
+directory row, while the subject DID disambiguates duplicate names.
 
 `tonk space rm` removes only the local replica (and, unless `--keep-data` is
 used, its local bytes). It does not remove signed account directory facts,

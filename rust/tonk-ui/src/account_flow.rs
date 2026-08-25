@@ -455,6 +455,27 @@ mod tests {
         stderr: String,
     }
 
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct JsonRows<T> {
+        schema_version: String,
+        rows: Vec<T>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CliDeviceRow {
+        status: String,
+        name: String,
+        did: String,
+        this_device: bool,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct CliAccountSpaceRow {
+        subject: String,
+    }
+
     async fn run_cli(
         env: &TestEnvironment,
         profile: &TempDir,
@@ -682,7 +703,13 @@ mod tests {
         let output = tokio::time::timeout(
             Duration::from_secs(120),
             tonk_command_in(env, profile)
-                .args(["account", "devices", "--service-url", env.account_service.as_str()])
+                .args([
+                    "account",
+                    "devices",
+                    "--service-url",
+                    env.account_service.as_str(),
+                    "--json",
+                ])
                 .env("TONK_TRACE", "1")
                 .env(
                     "RUST_LOG",
@@ -824,11 +851,34 @@ mod tests {
         &result["body"]
     }
 
-    fn did_for_device<'a>(output: &'a str, name: &str) -> Option<&'a str> {
-        output.lines().find_map(|line| {
-            let fields: Vec<_> = line.split('\t').collect();
-            (fields.len() == 4 && fields[1] == name).then_some(fields[2])
-        })
+    fn device_rows(output: &str) -> Result<Vec<CliDeviceRow>> {
+        let report: JsonRows<CliDeviceRow> =
+            serde_json::from_str(output).context("account devices output was not valid JSON")?;
+        if report.schema_version != "tonk.account-devices.v1" {
+            return Err(anyhow!(
+                "account devices returned unsupported schema {}",
+                report.schema_version
+            ));
+        }
+        Ok(report.rows)
+    }
+
+    fn account_space_subjects(output: &str) -> Result<Vec<String>> {
+        let report: JsonRows<CliAccountSpaceRow> =
+            serde_json::from_str(output).context("account space output was not valid JSON")?;
+        if report.schema_version != "tonk.account-spaces.v1" {
+            return Err(anyhow!(
+                "account space returned unsupported schema {}",
+                report.schema_version
+            ));
+        }
+        Ok(report.rows.into_iter().map(|row| row.subject).collect())
+    }
+
+    fn did_for_device<'a>(rows: &'a [CliDeviceRow], name: &str) -> Option<&'a str> {
+        rows.iter()
+            .find(|row| row.name == name)
+            .map(|row| row.did.as_str())
     }
 
     /// The pending-work queue, end to end: a space created before the
@@ -990,7 +1040,7 @@ mod tests {
         // that promotion recorded the space — rather than asserting on
         // whichever intermediate state the first run happened to catch.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut last_seen = String::from("<spaces never completed a run>");
+        let mut last_seen = String::from("<account space never completed a run>");
         let recorded = loop {
             // Drive the browser's sync drain rather than waiting for
             // incidental traffic to trigger one. Promotion writes the
@@ -1001,11 +1051,18 @@ mod tests {
             let run = run_cli(
                 &env,
                 &second_device.profile,
-                &["account".to_string(), "spaces".to_string()],
+                &[
+                    "account".to_string(),
+                    "space".to_string(),
+                    "--json".to_string(),
+                ],
             )
             .await?;
             if run.status.success() {
-                if run.stdout.contains(&key) {
+                if account_space_subjects(&run.stdout)?
+                    .iter()
+                    .any(|subject| subject == &key)
+                {
                     break true;
                 }
                 last_seen = run.stdout;
@@ -1027,7 +1084,7 @@ mod tests {
             } else {
                 // Any other non-zero exit is a real error; failing here
                 // beats burning the deadline on it.
-                return Err(anyhow!("spaces failed: {}", run.stderr));
+                return Err(anyhow!("account space failed: {}", run.stderr));
             }
             if tokio::time::Instant::now() >= deadline {
                 break false;
@@ -1037,7 +1094,7 @@ mod tests {
         assert!(
             recorded,
             "promotion completed without recording the claimed space in the account \
-             directory; last `spaces` output was: {last_seen}"
+             directory; last `account space` output was: {last_seen}"
         );
 
         let devtools = ChromeDevTools::new(claimer.handle.clone());
@@ -1312,16 +1369,17 @@ mod tests {
             "devices failed: {}",
             devices.stderr
         );
+        let device_rows = device_rows(&devices.stdout)?;
         assert!(
-            devices.stdout.contains("active\tChrome on "),
+            device_rows
+                .iter()
+                .any(|row| row.status == "active" && row.name.starts_with("Chrome on ")),
             "{}",
             devices.stdout
         );
-        assert!(devices.stdout.contains("active\te2e terminal\t"));
         assert!(
-            devices.stdout.lines().any(|line| {
-                let fields: Vec<_> = line.split('\t').collect();
-                fields.len() == 4 && fields[1] == "e2e terminal" && fields[3] == "yes"
+            device_rows.iter().any(|row| {
+                row.status == "active" && row.name == "e2e terminal" && row.this_device
             }),
             "the linked terminal must be the row marked as this device: {}",
             devices.stdout
@@ -1776,7 +1834,8 @@ mod tests {
         let linked = link_cli(&driver, &env).await?;
         let listed = devices(&linked.profile, &env).await?;
         assert!(listed.status.success(), "devices failed: {}", listed.stderr);
-        let cli_did = did_for_device(&listed.stdout, "e2e terminal")
+        let listed_rows = device_rows(&listed.stdout)?;
+        let cli_did = did_for_device(&listed_rows, "e2e terminal")
             .context("CLI device was absent from the account device list")?
             .to_string();
 
@@ -1799,7 +1858,14 @@ mod tests {
         // so its own stale row is all it has left of the retraction.
         let listed = devices(&linked.profile, &env).await?;
         assert!(listed.status.success(), "devices failed: {}", listed.stderr);
-        assert!(listed.stdout.contains("Chrome on "), "{}", listed.stdout);
+        let listed_rows = device_rows(&listed.stdout)?;
+        assert!(
+            listed_rows
+                .iter()
+                .any(|row| row.name.starts_with("Chrome on ")),
+            "{}",
+            listed.stdout
+        );
 
         driver.quit().await?;
         Ok(())

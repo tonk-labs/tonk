@@ -231,7 +231,7 @@ fn sanitize(name: &str) -> String {
         .to_owned()
 }
 
-/// Render the listing exactly as `tonk space list` prints it.
+/// Render the listing exactly as `tonk space` prints it.
 ///
 /// Lives here rather than in the binary so the text a person actually reads
 /// can be pinned by a test that builds real replicas.

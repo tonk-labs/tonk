@@ -1,5 +1,5 @@
 //! Reading the account directory — the one query the worker's adoption
-//! and the CLI's `account spaces` both run; each renders it its own way.
+//! and the CLI's `account space` both run; each renders it its own way.
 //!
 //! The directory lives on the account branch as plain facts anchored on
 //! each space's own entity: the `tonk:space` row ([`Space`]), the

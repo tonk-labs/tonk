@@ -1,4 +1,4 @@
-//! `tonk schema` — read every attribute and concept asserted on
+//! `tonk show --notation` — read every attribute and concept asserted on
 //! the branch, emit a notation document that re-submits cleanly.
 //!
 //! Two query passes:
@@ -47,7 +47,7 @@ use crate::output::EvaluateResponse;
 use crate::site::TonkSite;
 
 /// Slim summary of one named concept on the branch — just enough
-/// for `tonk concept ls` to print. The full descriptor stays internal
+/// for `tonk concept` to print. The full descriptor stays internal
 /// to [`render`] (which needs it to re-emit the `with:` map as
 /// notation).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -92,7 +92,7 @@ pub struct FieldSummary {
 ///
 /// The filter is presentational, not a scoping rule: a system concept
 /// is still addressable by name through [`find_concept`], so
-/// `tonk query member` keeps working while `tonk concept ls` stays
+/// `tonk query member` keeps working while `tonk concept` stays
 /// about the space's own vocabulary.
 pub async fn list_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
     let mut concepts = list_all_concepts(site).await?;
@@ -106,7 +106,7 @@ pub async fn list_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
 /// [`is_builtin_concept`] for why the rest are dropped here.
 ///
 /// For callers that need to answer a question about a system concept
-/// and list the author's in the same pass — `tonk context` reads the
+/// and list the author's in the same pass — `tonk status` reads the
 /// `tonk/agents` claim and prints the author's concepts, and would
 /// otherwise enumerate the branch twice.
 pub async fn list_all_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
@@ -391,7 +391,7 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
 /// Built-in concept names hard-coded in
 /// `tonk_schema::builtin::concept_registry`. Documents can't
 /// shadow a built-in (the registry wins on lookup), so re-emitting
-/// them in `tonk schema` output would be both wasteful and
+/// them in `tonk show --notation` output would be both wasteful and
 /// rejected — built-ins carry attributes without descriptions, and
 /// the analyzer's `attribute!` validator requires non-empty
 /// descriptions.
@@ -415,7 +415,7 @@ fn is_builtin_concept(name: &str) -> bool {
     )
 }
 
-/// Name of the concept `tonk home` authors to key the space home.
+/// Name of the concept `tonk space home` authors to key the space home.
 /// Machinery for the home recipe, not vocabulary the author asserts
 /// against, so it is filtered out of agent-facing listings alongside
 /// the standard library.

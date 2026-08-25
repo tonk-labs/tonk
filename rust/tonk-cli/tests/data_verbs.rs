@@ -76,7 +76,7 @@ mod when_rendering_a_concept_schema_subset {
         test.eval_inline(ATTRIBUTE_DECL).await?;
         test.eval_inline(CONCEPT_DECL).await?;
         let out = tonk_cli::data_ops::schema_subset(&test.site, "task").await?;
-        // Same format as bare `tonk schema`: the subset is a valid
+        // Same format as `tonk show --notation`: the subset is a valid
         // notation document a fresh branch accepts wholesale.
         let fresh = TestSite::new().await?;
         fresh.eval_inline(&out).await?;
@@ -561,6 +561,7 @@ mod when_previewing_a_write {
 
     fn preview() -> WriteOptions {
         WriteOptions {
+            notation: false,
             dry_run: true,
             ..Default::default()
         }
@@ -743,6 +744,81 @@ mod when_previewing_a_write {
             ],
         )
         .await?;
+        Ok(())
+    }
+}
+
+mod when_printing_notation_for_a_write {
+    use super::*;
+    use tonk_cli::data_ops::WriteOptions;
+
+    fn notation() -> WriteOptions {
+        WriteOptions {
+            notation: true,
+            ..Default::default()
+        }
+    }
+
+    async fn revision(test: &TestSite) -> Result<String> {
+        let session = test.site.branch().await?;
+        Ok(format!("{:?}", session.handle().revision()))
+    }
+
+    #[dialog_common::test]
+    async fn every_macro_returns_its_document_without_changing_the_branch() -> Result<()> {
+        let test = TestSite::new().await?;
+
+        let before = revision(&test).await?;
+        let concept = tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            notation(),
+        )
+        .await?;
+        assert!(concept.contains("concept!: &habit"), "{concept}");
+        assert_eq!(revision(&test).await?, before);
+
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+
+        let before = revision(&test).await?;
+        let asserted = tonk_cli::data_ops::assert_op(
+            &test.site,
+            "habit",
+            None,
+            &["--name".into(), "Read".into(), "--notation".into()],
+        )
+        .await?;
+        assert!(asserted.contains("habit!:"), "{asserted}");
+        assert!(asserted.contains("name: \"Read\""), "{asserted}");
+        assert_eq!(revision(&test).await?, before);
+
+        let view =
+            tonk_cli::data_ops::view_add(&test.site, "habit", None, "<b>{name}</b>", notation())
+                .await?;
+        assert!(view.contains("view!: &habit-view"), "{view}");
+        assert_eq!(revision(&test).await?, before);
+
+        let home = tonk_cli::data_ops::home(&test.site, &["habit".into()], notation()).await?;
+        assert!(home.contains("tonk/space"), "{home}");
+        assert_eq!(revision(&test).await?, before);
+
+        test.eval_inline("habit!: &reading\n  name: \"Read\"\n")
+            .await?;
+        let before = revision(&test).await?;
+        let retracted =
+            tonk_cli::data_ops::retract(&test.site, "habit", "reading", None, notation()).await?;
+        assert!(retracted.contains("habit!:"), "{retracted}");
+        assert!(retracted.contains("..: _"), "{retracted}");
+        assert_eq!(revision(&test).await?, before);
         Ok(())
     }
 }

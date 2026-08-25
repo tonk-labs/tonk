@@ -12,9 +12,10 @@ The model has three pieces:
    concept a DOM event produces.
 2. A **command** (`command!:`) describes the shape of that event-
    derived fact and where each field reads from. A command is a
-   transient concept — `command!:` is the keyword `tonk schema`
-   shows and is equivalent to `concept!:` with `transient: true`;
-   both write a fact that lives one cycle and is never persisted.
+   transient concept — `command!:` is equivalent to `concept!:` with
+   `transient: true`. The command descriptor is durable schema; each
+   event-derived instance of it lives one reactor cycle and is never
+   persisted.
 3. A **rule** (`rule!:`) watches for the transient and asserts
    downstream state. The transient is the trigger; its one-cycle
    lifetime makes the rule fire exactly once per event.
@@ -54,6 +55,7 @@ rule!:
       where: { of: ?old, with: 1, is: ?count }
 
 view!: &counter-basic
+  this: id:counter-basic
   model: counter
   display: !text/html |
     <p>{count}
@@ -61,13 +63,13 @@ view!: &counter-basic
     </p>
 ```
 
-A view is identified by its **anchor name** (`&counter-basic`
-publishes it under `id:counter-basic`). It declares the `model`
-it renders and the `display` template; `<tonk-display>` resolves
-the view by that name. Re-asserting the same anchor with a
-different `display` re-points the name to the new entity — edits
-replace in place, so there are never stale duplicates to pick
-between.
+The anchor publishes the view name; `this: id:counter-basic` pins its
+entity so re-asserting a different `display` updates the same view.
+`<tonk-display>` does not select this anchor directly: it resolves a
+view concept (normally `tonk:view`) and queries that concept for the
+view whose `model` is `counter`. Keep one view per model in each view
+concept. `tonk view add --name counter-basic` authors this stable shape
+for you.
 
 A click on the button asserts an `increment` whose `subject`
 reads from the bound button's `data-subject` (which the template
@@ -194,6 +196,7 @@ read it back through `dom.event.current-target.dataset/<name>`:
 
 ```yaml
 view!: &todo-row
+  this: id:todo-row
   model: todo
   display: !text/html |
     <li>
@@ -247,6 +250,7 @@ command!: &save
 
 ```yaml
 view!: &save-form
+  this: id:save-form
   model: note
   display: !text/html |
     <form onsubmit=save>
@@ -360,6 +364,7 @@ rule!:
 
 ```yaml
 view!: &composer
+  this: id:composer
   model: board
   display: !text/html |
     <form>
@@ -421,9 +426,9 @@ cases 2 and 3 are exactly that false positive.
 Events fire in the live shell, not in a standalone page, so open the
 view in the space: `/space/<space>/<model>` for the model's directory,
 `/space/<space>/<entity>@<model>!<view>` for one entity through a
-named view. `tonk render` is no substitute here — it prints the HTML
-with nothing behind it, so a click reaches no command. Use it to check
-the markup, the shell to check the wiring.
+named view concept. `tonk render` is no substitute here — it prints the
+HTML with nothing behind it, so a click reaches no command. Use it to
+check the markup, the shell to check the wiring.
 
 To put a collaborator in front of the same view, hand them the repo
 with `tonk invite`.
@@ -436,7 +441,7 @@ dispatches `CustomEvent`s consumed by commands via
 `dom.event.detail/*`, exactly like the built-in
 `<tonk-sheet-binder>`. Components are authored as branch data
 (the `component` concept) and stay inside the concept-and-rule
-pipeline; see `tonk guide views`.
+pipeline; see `tonk help views`.
 
 Anything that instead needs a whole isolated page — third-party
 embeds, self-contained canvas apps — belongs in a sandboxed
@@ -444,5 +449,6 @@ iframe view (`<tonk-portal>`), outside the scope of this guide.
 
 ---
 
-Don't memorize built-ins — run `tonk schema` to see the concepts,
-rules, and transient commands already on the branch.
+Don't memorize concept fields — use `tonk concept` and
+`tonk show <concept>`. Rules themselves remain notation documents;
+keep the source that installed them under version control.

@@ -130,7 +130,7 @@ pub use crate::account_session::LocalPhase as SignInPhase;
 /// Inspect one store's sign-in phase without creating profile state.
 ///
 /// Cheap enough for read-only commands: it reads the session sidecar and
-/// nothing else, so `tonk space list` can say whether an account is signed in
+/// nothing else, so bare `tonk space` can say whether an account is signed in
 /// without provisioning an identity for an installation that has none.
 pub fn sign_in_phase(store: &crate::space::SpaceStore) -> Result<SignInPhase> {
     crate::account_session::inspect_local(store)

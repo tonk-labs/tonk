@@ -1,5 +1,5 @@
 //! Pure notation builders for the noun-first authoring verbs
-//! (`tonk concept add`, `tonk view add`, `tonk home`). No I/O — every
+//! (`tonk concept add`, `tonk view add`, `tonk space home`). No I/O — every
 //! function here takes already-parsed arguments and returns (or
 //! errors on) a `String` of asserted notation; callers (later tasks)
 //! own reading CLI flags and handing the result to
@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 
 use crate::schema::SPACE_HOME_CONCEPT;
 
-/// One parsed `--attr field:type:cardinality` flag, ready to render
+/// One parsed `--field field:type:cardinality` flag, ready to render
 /// into an `attribute!:` block and a `with:` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttrSpec {
@@ -32,16 +32,16 @@ pub struct AttrSpec {
     pub cardinality: String,
 }
 
-/// Error parsing a raw `--attr` flag or building notation from it.
+/// Error parsing a raw `--field` flag or building notation from it.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthoringError {
     /// The raw value didn't split into exactly three `:`-separated
     /// parts (`<field>:<type>:<cardinality>`).
     #[error(
-        "--attr '{raw}' is malformed; expected <field>:<type>:<cardinality>, e.g. title:text:one"
+        "--field '{raw}' is malformed; expected <field>:<type>:<cardinality>, e.g. title:text:one"
     )]
     BadAttrSpec {
-        /// The raw, unparsed `--attr` value.
+        /// The raw, unparsed `--field` value.
         raw: String,
     },
     /// The type segment isn't one of the canonical spellings the
@@ -69,7 +69,7 @@ pub enum AuthoringError {
 }
 
 /// Canonical `as:` type spellings the analyzer accepts, matching
-/// `schema::type_to_notation`'s output (which `tonk schema` proves
+/// `schema::type_to_notation`'s output (which `tonk show --notation` proves
 /// re-submittable). Input is matched case-insensitively.
 const VALID_TYPES: &[&str] = &[
     "Text",
@@ -81,7 +81,7 @@ const VALID_TYPES: &[&str] = &[
     "Symbol",
 ];
 
-/// Parse a raw `--attr field:type:cardinality` flag value into an
+/// Parse a raw `--field field:type:cardinality` flag value into an
 /// [`AttrSpec`]. The type segment is matched case-insensitively
 /// against [`VALID_TYPES`] and normalized to its canonical spelling;
 /// the cardinality segment must be exactly `one` or `many`.

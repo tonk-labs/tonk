@@ -14,10 +14,10 @@ use crate::schema::{self, FieldSummary};
 use crate::site::TonkSite;
 use crate::space::Resolved;
 
-/// Version of the structured `tonk context --json` contract.
+/// Legacy version retained only for the in-process context renderer.
 ///
 /// v2 renamed every `spot` key to `space` and moved the whole document to
-/// camelCase, which is what `tonk space list --json` and the registry's own
+/// camelCase, which is what `tonk space --json` and the registry's own
 /// account record already emit.
 ///
 /// v3 absorbed the sync and account sections. Four commands used to answer
@@ -75,7 +75,7 @@ pub struct SyncContext {
     pub hash: Option<String>,
     /// Whether the upstream head was fetched to reach this verdict.
     ///
-    /// `tonk status` fetches; `tonk context` does not, so bare `tonk`
+    /// Whether the upstream comparison performed a fetch.
     /// stays offline. A reader that acts on `state` needs to know which
     /// it got, because an unfetched `synced` only means "nothing local
     /// has happened since the last fetch".
@@ -192,7 +192,7 @@ impl From<FieldSummary> for FieldContext {
 ///
 /// `sync` and `account` are passed in rather than gathered here: the caller
 /// already holds the profile and store they need, and how the sync state was
-/// reached is the caller's decision — `tonk status` fetches, `tonk context`
+/// reached is the caller's decision — `tonk status` fetches, while other callers
 /// does not.
 pub async fn inspect(
     resolved: &Resolved,
@@ -203,7 +203,7 @@ pub async fn inspect(
     // One enumeration answers both questions: whether the branch
     // declares the standard library's `tonk/agents` concept, and which
     // concepts this space's author defined. `is_system_concept` is the
-    // same filter `tonk concept ls` applies.
+    // same filter bare `tonk concept` applies.
     let live_concepts = schema::list_all_concepts(site).await?;
     let agents_declared = live_concepts
         .iter()
@@ -266,7 +266,7 @@ pub async fn inspect(
                 },
                 verify: WorkflowStep {
                     purpose: "verify that exact instance after the write",
-                    command: format!("tonk query {name} <ENTITY> --json"),
+                    command: format!("tonk show {name} <ENTITY> --json"),
                     mutates: false,
                 },
                 create: WorkflowStep {
@@ -292,7 +292,7 @@ pub async fn inspect(
             WorkflowStep {
                 purpose: "define a model",
                 command:
-                    "tonk concept add note --attr title:text:one --attr body:text:one".to_string(),
+                    "tonk concept add note --field title:text:one --field body:text:one".to_string(),
                 mutates: true,
             },
             WorkflowStep {
@@ -309,7 +309,7 @@ pub async fn inspect(
             },
             WorkflowStep {
                 purpose: "surface it on the space home",
-                command: "tonk home note".to_string(),
+                command: "tonk space home note".to_string(),
                 mutates: true,
             },
         ],
@@ -340,7 +340,7 @@ pub fn sync_state_gloss(state: ContextSyncState) -> &'static str {
         ContextSyncState::Ahead => "ahead (local has unpushed commits; run `tonk push`)",
         ContextSyncState::Behind => "behind (upstream has new commits; run `tonk pull`)",
         ContextSyncState::Diverged => "diverged (run `tonk pull` to merge, then `tonk push`)",
-        // `tonk context` does not fetch, so bare `tonk` stays offline. It
+        // An offline caller does not fetch. It
         // can see that an upstream is configured but not where the branch
         // stands against it, and says which.
         ContextSyncState::NotFetched => "upstream configured, not checked (run `tonk status`)",
@@ -363,7 +363,7 @@ impl SpaceContext {
     ///
     /// One vocabulary for all four "where am I" commands. This field was
     /// `current space:` in `tonk space use`, `space:` in `tonk status`,
-    /// and ``space: `demo` `` in `tonk context`, with `selected via:`
+    /// and ``space: `demo` `` in status output, with `selected via:`
     /// spelled three ways to match.
     pub fn render(&self) -> String {
         let mut out = String::new();
@@ -385,7 +385,7 @@ impl SyncContext {
         }
     }
 
-    /// The bounded local-only classification used by `tonk context`.
+    /// A bounded local-only classification for callers that avoid fetching.
     pub fn offline(upstream_configured: bool, hash: Option<String>) -> Self {
         Self {
             state: if upstream_configured {
@@ -509,7 +509,7 @@ impl ContextReport {
         if self.concepts.len() > DEFAULT_CONCEPT_LIMIT {
             let _ = writeln!(
                 out,
-                "\n{} more concepts; run `tonk context --json` for the complete contract.",
+                "\n{} more concepts; run `tonk concept --json` for the complete list.",
                 self.concepts.len() - DEFAULT_CONCEPT_LIMIT
             );
         }

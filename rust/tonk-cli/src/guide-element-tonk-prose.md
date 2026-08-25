@@ -30,7 +30,8 @@ always adopted). This is the `prose` library module
 
 | Name | Meaning |
 |------|---------|
-| `value` / text | Markdown source (the text child is the primary channel). |
+| text / `content` | Bare markdown or the versioned envelope; text is the primary store-binding channel. |
+| `value` | Bare markdown convenience channel; reactive after mount. |
 | `readonly` | Presence locks the editor. |
 | `placeholder` | Ghost text shown while empty. |
 | `auto-focus` | Focus the editor on mount. |
@@ -42,13 +43,16 @@ always adopted). This is the `prose` library module
 | `change` | `{ value, content }` — `value` is the markdown, `content` the versioned envelope. Fires after edits go idle (debounced); programmatic writes don't refire. |
 | `ready` | `{ editor }` — once, after the editor mounts. |
 
+The `value` property returns current markdown. The `content` property returns
+the versioned envelope suitable for lossless store round-trips.
+
 ## Notes
 
 - Inline syntax (`**bold**`, `*em*`, `` `code` ``, `[text](url)`), block
   syntax (`> `, `- `, `1. `, `## `, `---`), task lists, and images all
   convert as you type.
 - Code blocks upgrade to embedded `<tonk-code>` editors when that element
-  is defined on the page (see `tonk guide views tonk-code`); otherwise
+  is defined on the page (see `tonk help tonk-code`); otherwise
   they stay editable plain text.
 - Theming runs through `--tonk-prose-*` custom properties. Full API:
   `rust/tonk-prose/README.md`.

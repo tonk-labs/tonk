@@ -87,7 +87,7 @@ fn declared_concept(line: &str) -> Option<&str> {
 /// Every library declaration that matters here — its views above all —
 /// carries an explicit `this:`, so the set of pinned URIs is exactly
 /// the set of entities the library seeded. Listings of branch data
-/// (`tonk view ls`) use it to tell the library's twenty-five views
+/// (`tonk view`) use it to tell the library's twenty-five views
 /// from the author's own.
 ///
 /// Query variables (`this: ?this`, inside the library's rules) are not
