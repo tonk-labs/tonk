@@ -200,7 +200,11 @@ sealed, subject)` needs the ceremony.
 - Space create (worker and CLI): after `retain_space_delegation`, read
   `AccountEncryptionKey`, seal, assert `CustodiedSeed`. Best-effort like
   retain; an account with no key yet logs and skips.
-- Invite mint: the same, `kind = tonk:invite`.
+- Join through an open invite: the joiner seals the invite principal's
+  seed, `kind = tonk:invite`. The membership hangs off that principal,
+  so it is the joiner's account that must re-issue `principal → new
+  root` at rotation; the inviter holds `/` on the space and can always
+  mint another invite, so nothing is sealed at mint.
 - A sweep on the account-ready path: every locally held signer with no
   `CustodiedSeed` for the current recipient gets sealed. This repairs
   accounts that predate the key and re-seals after rotation on devices
