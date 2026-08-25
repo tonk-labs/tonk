@@ -450,6 +450,43 @@ async fn derive_kek(custodian: &Ed25519Signer) -> Result<Kek<Recovery>, TonkWork
 }
 
 /// The stored custodian, or `None` when this device has none.
+/// Retire the onboarding account: demote its custodian to the public
+/// half, so the envelope can never be opened again on this device.
+///
+/// The envelope stays. An envelope with no custodian is what `read`
+/// reports as "already accredited", which is exactly the state that must
+/// never be mistaken for "no onboarding account yet" — that would mint a
+/// second onboarding account on top of an accredited device. There is no
+/// retract for keys in the credential API, so demotion overwrites the
+/// record with a verifier.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
+    use dialog_credentials::Ed25519Verifier;
+    use dialog_varsig::Principal as _;
+
+    let Some(custodian) = load_custodian(state).await? else {
+        return Ok(());
+    };
+    let verifier: Ed25519Verifier = custodian.did().to_string().parse().map_err(|error| {
+        TonkWorkerError::Internal(format!(
+            "the custodian DID is not an Ed25519 key: {error:?}"
+        ))
+    })?;
+    state
+        .profile
+        .did()
+        .credential()
+        .key(ONBOARDING_CUSTODIAN_KEY)
+        .save(Credential::from(verifier))
+        .perform(&state.operator)
+        .await
+        .map_err(|error: CredentialError| {
+            TonkWorkerError::Internal(format!(
+                "failed to demote the onboarding custodian: {error}"
+            ))
+        })
+}
+
 async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, TonkWorkerError> {
     let credential = match state
         .profile

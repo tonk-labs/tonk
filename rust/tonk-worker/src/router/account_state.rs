@@ -976,7 +976,7 @@ pub(crate) async fn read_encryption_key(
 /// Reads the branch as it is, ready or not: the fact arrives with the
 /// account pull or is written locally, and neither needs the descriptor
 /// gate to be read back.
-async fn published_encryption_key(
+pub(crate) async fn published_encryption_key(
     tonk: &TonkState,
     account: &dialog_varsig::Did,
 ) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
@@ -1186,54 +1186,6 @@ async fn custody_recipient(
         }
         Err(error) => Err(error),
     }
-}
-
-/// Open the seed custodied for `subject` under this device's onboarding
-/// account, when there is one. `None` when no row is sealed to the
-/// onboarding recipient: the subject predates seed custody, or was joined
-/// rather than created here.
-///
-/// Only the onboarding account's rows are openable without a ceremony,
-/// because only its secret is local; a passkey account's rows are opened
-/// by rotation, inside one.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn open_onboarding_seed(
-    tonk: &TonkState,
-    subject: &dialog_varsig::Did,
-) -> Result<Option<Zeroizing<[u8; 32]>>, TonkWorkerError> {
-    let secret = crate::onboarding::account(tonk).await?;
-    let key = secret.encryption_key();
-    let recipient = key.recipient().did();
-    let branch = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
-    let rows: Vec<CustodiedSeed> = branch
-        .handle()
-        .query()
-        .select(Query::<CustodiedSeed> {
-            this: Term::var("this"),
-            subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
-            kind: Term::var("kind"),
-            recipient: Term::from(tonk_schema::domain::custody::Recipient(recipient.this())),
-            sealed: Term::var("sealed"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("read custodied seed: {error:?}")))?;
-    let Some(row) = rows.into_iter().next() else {
-        return Ok(None);
-    };
-    let sealed = tonk_identity::sealed::Sealed::decode(&row.sealed.0).map_err(|error| {
-        TonkWorkerError::Internal(format!("custodied seed unreadable: {error}"))
-    })?;
-    key.open(&sealed, subject)
-        .map(Some)
-        .map_err(|error| TonkWorkerError::Internal(format!("custodied seed did not open: {error}")))
 }
 
 /// Project the authoritative account display name into the local profile
