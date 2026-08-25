@@ -19,6 +19,46 @@ use std::fmt::Write as _;
 
 use crate::schema::SPACE_HOME_CONCEPT;
 
+/// One of the four view concepts the standard library resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewKind {
+    /// A single entity's full presentation (`tonk:view`).
+    Detail,
+    /// Every entity of a model (`tonk:view/directory`).
+    Directory,
+    /// A compact reference label (`tonk:view/label`).
+    Label,
+    /// A title presentation (`tonk:view/title`).
+    Title,
+}
+
+impl ViewKind {
+    fn notation_head(self) -> &'static str {
+        match self {
+            Self::Detail => "view!",
+            Self::Directory => "view/directory!",
+            Self::Label => "view/label!",
+            Self::Title => "view/title!",
+        }
+    }
+
+    /// Stable default anchor for this kind and model.
+    pub fn default_anchor(self, model: &str) -> String {
+        match self {
+            Self::Detail => format!("{model}-view"),
+            Self::Directory => format!("{model}-directory"),
+            Self::Label => format!("{model}-label"),
+            Self::Title => format!("{model}-title"),
+        }
+    }
+
+    /// Whether a first view of this kind can sensibly surface a model's
+    /// directory on an otherwise blank home.
+    pub fn can_auto_surface(self) -> bool {
+        matches!(self, Self::Detail | Self::Directory)
+    }
+}
+
 /// One parsed `--field field:type:cardinality` flag, ready to render
 /// into an `attribute!:` block and a `with:` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,9 +315,9 @@ fn entity_attr_values(template: &str) -> Vec<String> {
 /// anchor) supersedes rather than duplicates it. `template` is
 /// emitted verbatim, line by line, under a `display: |` block
 /// indented four spaces.
-pub fn build_view_decl(anchor: &str, model: &str, template: &str) -> String {
+pub fn build_view_decl(kind: ViewKind, anchor: &str, model: &str, template: &str) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "view!: &{anchor}");
+    let _ = writeln!(out, "{}: &{anchor}", kind.notation_head());
     let _ = writeln!(out, "  this: id:{anchor}");
     let _ = writeln!(out, "  model: {model}");
     out.push_str("  display: |\n");
@@ -402,11 +442,39 @@ mod tests {
     }
     #[test]
     fn it_builds_a_view_decl_with_a_stable_this() {
-        let doc = build_view_decl("note-view", "note", "<b>{title}</b>");
+        let doc = build_view_decl(ViewKind::Detail, "note-view", "note", "<b>{title}</b>");
         assert!(doc.contains("view!: &note-view"));
         assert!(doc.contains("this: id:note-view"));
         assert!(doc.contains("model: note"));
         assert!(doc.contains("<b>{title}</b>"));
+    }
+    #[test]
+    fn it_builds_each_view_kind_with_its_stable_default_anchor() {
+        for (kind, head, anchor) in [
+            (ViewKind::Detail, "view!", "note-view"),
+            (ViewKind::Directory, "view/directory!", "note-directory"),
+            (ViewKind::Label, "view/label!", "note-label"),
+            (ViewKind::Title, "view/title!", "note-title"),
+        ] {
+            assert_eq!(kind.default_anchor("note"), anchor);
+            let doc = build_view_decl(kind, anchor, "note", "<b>{title}</b>");
+            assert!(doc.starts_with(&format!("{head}: &{anchor}")), "{doc}");
+            assert!(doc.contains(&format!("this: id:{anchor}")), "{doc}");
+        }
+    }
+
+    #[test]
+    fn it_preserves_a_caller_supplied_view_anchor_for_every_kind() {
+        for kind in [
+            ViewKind::Detail,
+            ViewKind::Directory,
+            ViewKind::Label,
+            ViewKind::Title,
+        ] {
+            let doc = build_view_decl(kind, "custom-card", "note", "<b>{title}</b>");
+            assert!(doc.contains("&custom-card"), "{doc}");
+            assert!(doc.contains("this: id:custom-card"), "{doc}");
+        }
     }
     fn fields(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()

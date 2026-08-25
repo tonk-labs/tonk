@@ -1094,8 +1094,10 @@ mod when_listing_views {
         tonk_cli::data_ops::view_add(
             &test.site,
             "task",
+            tonk_cli::authoring::ViewKind::Detail,
             None,
             "<b>{title}</b>",
+            false,
             Default::default(),
         )
         .await?;
@@ -1123,8 +1125,10 @@ mod when_listing_views {
         tonk_cli::data_ops::view_add(
             &test.site,
             "task",
+            tonk_cli::authoring::ViewKind::Detail,
             None,
             "<b>{title}</b>",
+            false,
             Default::default(),
         )
         .await?;

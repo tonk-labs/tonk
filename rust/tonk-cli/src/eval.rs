@@ -9,6 +9,7 @@ use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
 use tonk_notation::{Parsed, Syntax, parse};
 
 use crate::ExitCode;
+use crate::authoring::build_home_recipe;
 use crate::output::{self, EvaluateResponse, Format};
 use crate::site::TonkSite;
 
@@ -70,6 +71,8 @@ pub struct Options {
     /// preview: `commits.claims` is zeroed and `revision_after ==
     /// revision_before`, so the branch is left untouched.
     pub dry_run: bool,
+    /// Atomically replace the home with this concept's directory.
+    pub home: Option<String>,
 }
 
 impl Default for Options {
@@ -78,6 +81,7 @@ impl Default for Options {
             format: Format::Notation,
             quiet: false,
             dry_run: false,
+            home: None,
         }
     }
 }
@@ -138,7 +142,17 @@ pub async fn run_against_site(
     options: Options,
 ) -> Result<Outcome, EvalError> {
     let label = source.label();
-    let text = source.read().await?;
+    let mut text = source.read().await?;
+    if let Some(model) = &options.home {
+        text.push('\n');
+        // Keep validation inside this same analyzed document: an empty query
+        // binds no variables and writes nothing, but forces ordinary concept
+        // resolution to accept an in-document declaration or reject an
+        // unknown name before the transaction can commit the home recipe.
+        text.push_str(model);
+        text.push_str(":\n\n");
+        text.push_str(&build_home_recipe(std::slice::from_ref(model)));
+    }
     let syntax = parse_or_diagnose(&label, &text)?;
 
     let session = site

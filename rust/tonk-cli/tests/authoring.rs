@@ -109,8 +109,10 @@ mod when_setting_the_home {
         tonk_cli::data_ops::view_add(
             &test.site,
             "habit",
+            tonk_cli::authoring::ViewKind::Detail,
             None,
             "<b>{name}</b>",
+            false,
             Default::default(),
         )
         .await?;
@@ -153,6 +155,17 @@ mod when_setting_the_home {
 
 mod when_adding_a_view {
     use super::*;
+    use tonk_cli::authoring::ViewKind;
+
+    async fn render_home(test: &TestSite) -> Result<String> {
+        let replica = tonk_cli::data_ops::query(&test.site, "tonk/replica", false).await?;
+        let entity = replica
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("this: ").map(str::to_owned))
+            .expect("a fresh site has a replica entity");
+        let route = tonk_cli::render::RenderRoute::parse(&format!("{entity}@tonk/space"))?;
+        Ok(tonk_cli::render::render(&test.site, &route).await?)
+    }
 
     #[dialog_common::test]
     async fn it_asserts_the_view_and_auto_surfaces_an_unset_home() -> Result<()> {
@@ -170,8 +183,10 @@ mod when_adding_a_view {
         let out = tonk_cli::data_ops::view_add(
             &test.site,
             "habit",
+            tonk_cli::authoring::ViewKind::Detail,
             None,
             "<b>{name}</b>",
+            false,
             Default::default(),
         )
         .await?;
@@ -204,8 +219,10 @@ mod when_adding_a_view {
         let out = tonk_cli::data_ops::view_add(
             &test.site,
             "habit",
+            tonk_cli::authoring::ViewKind::Detail,
             Some("habit-alt"),
             "<i>{name}</i>",
+            false,
             Default::default(),
         )
         .await?;
@@ -213,6 +230,125 @@ mod when_adding_a_view {
             !out.contains("home set:"),
             "an explicitly set home must not be re-pointed by view add:\n{out}"
         );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_authors_and_renders_a_directory_view_for_every_row() -> Result<()> {
+        let test = TestSite::new().await?;
+        super::seed_habit(&test).await?;
+        tonk_cli::data_ops::assert_op(&test.site, "habit", None, &["--name".into(), "Walk".into()])
+            .await?;
+
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            ViewKind::Directory,
+            None,
+            "<li>{name}</li>",
+            false,
+            Default::default(),
+        )
+        .await?;
+        assert!(out.contains("set the home to habit"), "{out}");
+
+        let route = tonk_cli::render::RenderRoute::parse("habit")?;
+        let html = tonk_cli::render::render(&test.site, &route).await?;
+        assert!(html.contains("Run"), "{html}");
+        assert!(html.contains("Walk"), "{html}");
+        assert!(!html.contains("<wa-carousel"), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn label_and_title_views_do_not_auto_surface_a_blank_home() -> Result<()> {
+        let test = TestSite::new().await?;
+        super::seed_habit(&test).await?;
+
+        for kind in [ViewKind::Label, ViewKind::Title] {
+            let out = tonk_cli::data_ops::view_add(
+                &test.site,
+                "habit",
+                kind,
+                None,
+                "<b>{name}</b>",
+                false,
+                Default::default(),
+            )
+            .await?;
+            assert!(out.contains("home unchanged"), "{out}");
+            assert!(!out.contains("live at /space/"), "{out}");
+        }
+
+        let html = render_home(&test).await?;
+        assert!(!html.contains("Run"), "blank home was replaced:\n{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn explicit_home_replaces_the_existing_home_in_one_revision() -> Result<()> {
+        let test = TestSite::new().await?;
+        super::seed_habit(&test).await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            ViewKind::Detail,
+            None,
+            "<b>{name}</b>",
+            false,
+            Default::default(),
+        )
+        .await?;
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "note",
+            &["title:text:one".into()],
+            Some("a note"),
+            Default::default(),
+        )
+        .await?;
+        tonk_cli::data_ops::assert_op(
+            &test.site,
+            "note",
+            None,
+            &["--title".into(), "Write".into()],
+        )
+        .await?;
+        let before = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("revision before explicit home")
+            .edition
+            .value();
+
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "note",
+            ViewKind::Directory,
+            None,
+            "<li>{title}</li>",
+            true,
+            Default::default(),
+        )
+        .await?;
+        assert!(out.contains("set the home to note"), "{out}");
+        let after = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("revision after explicit home")
+            .edition
+            .value();
+        assert_eq!(after, before + 1);
+
+        let html = render_home(&test).await?;
+        assert!(html.contains("Write"), "{html}");
+        assert!(!html.contains("Run"), "old home remained active:\n{html}");
         Ok(())
     }
 }

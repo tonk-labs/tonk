@@ -3,8 +3,8 @@
 //! binary maps errors to exit codes.
 
 use crate::authoring::{
-    AuthoringError, build_concept_decl, build_home_recipe, build_view_decl, lint_view_template,
-    parse_attr_spec,
+    AuthoringError, ViewKind, build_concept_decl, build_home_recipe, build_view_decl,
+    lint_view_template, parse_attr_spec,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -40,6 +40,7 @@ impl WriteOptions {
             format: Format::Notation,
             quiet: self.quiet,
             dry_run: self.dry_run,
+            home: None,
         }
     }
 
@@ -606,8 +607,10 @@ pub async fn home(
 pub async fn view_add(
     site: &TonkSite,
     model: &str,
+    kind: ViewKind,
     name: Option<&str>,
     template: &str,
+    set_home: bool,
     write: WriteOptions,
 ) -> Result<String, DataOpError> {
     let info = require_concept(site, model).await?;
@@ -623,10 +626,11 @@ pub async fn view_add(
     let lint = lint_view_template(template, &fields);
     let anchor = name
         .map(str::to_string)
-        .unwrap_or_else(|| format!("{model}-view"));
-    let auto_surface = home_is_unset(site).await?;
-    let mut doc = build_view_decl(&anchor, model, template);
-    if auto_surface {
+        .unwrap_or_else(|| kind.default_anchor(model));
+    let auto_surface = !set_home && kind.can_auto_surface() && home_is_unset(site).await?;
+    let surface_home = set_home || auto_surface;
+    let mut doc = build_view_decl(kind, &anchor, model, template);
+    if surface_home {
         doc.push('\n');
         doc.push_str(&build_home_recipe(&[model.to_string()]));
     }
@@ -643,14 +647,14 @@ pub async fn view_add(
         out.push_str(&format!("warning: {warning}\n"));
     }
     out.push_str(&outcome.stdout);
-    if auto_surface {
+    if surface_home {
         let did = site.repository.did();
         out.push_str(&format!(
             "\n{}\nlive at /space/{did}/\n",
             write.summarize(format_args!("set the home to {model}"))
         ));
     } else {
-        out.push_str("home already set; re-point it explicitly with `tonk space home <concept>`\n");
+        out.push_str("home unchanged; use --home or `tonk space home <concept>`\n");
     }
     Ok(out)
 }
