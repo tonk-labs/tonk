@@ -652,13 +652,34 @@ async fn it_drives_the_full_ceremony_over_http() {
         dialog_ucan_core::DelegationChain::try_from(second_grant_bytes.as_slice()).unwrap();
     let response = client
         .post(format!("{base}/devices/link"))
-        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .body(hex::decode(&ceremony.invocation_hex).unwrap())
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
     let linked: serde_json::Value = response.json().await.unwrap();
     assert_eq!(linked["descriptorHex"], expected_descriptor);
+    let second_attachment = linked["attachmentId"].as_str().unwrap();
+
+    // Browser sign-out leaves the account-service attachment active. A later
+    // login with the same passkey mints a new invocation and nonce-bearing
+    // root-to-device grant, but must recover the active generation.
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
+        .await
+        .unwrap();
+    let relink = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
+        .await
+        .unwrap();
+    assert_ne!(relink.delegation_hex, ceremony.delegation_hex);
+    let response = client
+        .post(format!("{base}/devices/link"))
+        .body(hex::decode(relink.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let relinked: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(relinked["attachmentId"], second_attachment);
 
     // POST /devices/list -> the newly registered device shows up.
     let body = container_with_link(

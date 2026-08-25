@@ -1162,10 +1162,11 @@ async fn persist(
     let root_status = crate::api::root_status()
         .await
         .map_err(|error| error.to_string())?;
-    if root_needs_persist(&root_status, &ceremony.root_did) {
+    let root = root_for_link(&root_status, ceremony);
+    if root.needs_persist {
         crate::api::save_root(
-            ceremony.credential_id.clone(),
-            ceremony.delegation_hex.clone(),
+            root.credential_id.to_string(),
+            root.delegation_hex.to_string(),
             None,
         )
         .await
@@ -1173,9 +1174,9 @@ async fn persist(
     }
     crate::api::save_account_link(
         provider.to_string(),
-        ceremony.root_did.clone(),
-        ceremony.credential_id.clone(),
-        ceremony.delegation_hex.clone(),
+        root.root_did.to_string(),
+        root.credential_id.to_string(),
+        root.delegation_hex.to_string(),
         descriptor_hex,
         initialize_name,
     )
@@ -1183,12 +1184,41 @@ async fn persist(
     .map_err(|error| error.to_string())
 }
 
-fn root_needs_persist(status: &tonk_worker_api::RootStatus, root_did: &str) -> bool {
+#[derive(Debug, PartialEq, Eq)]
+struct LinkRoot<'a> {
+    root_did: &'a str,
+    credential_id: &'a str,
+    delegation_hex: &'a str,
+    needs_persist: bool,
+}
+
+/// Select the grant the worker should attach after a remote link succeeds.
+///
+/// A same-root browser re-login reuses the still-active server generation, so
+/// it must also reuse the local grant that generation records. A missing or
+/// different root continues through the normal root-persistence boundary.
+fn root_for_link<'a>(
+    status: &'a tonk_worker_api::RootStatus,
+    ceremony: &'a CeremonyOutput,
+) -> LinkRoot<'a> {
     match status {
-        tonk_worker_api::RootStatus::Missing { .. } => true,
         tonk_worker_api::RootStatus::Ready {
-            root_did: current, ..
-        } => current != root_did,
+            root_did,
+            credential_id,
+            delegation_hex,
+            ..
+        } if root_did == &ceremony.root_did => LinkRoot {
+            root_did,
+            credential_id,
+            delegation_hex,
+            needs_persist: false,
+        },
+        _ => LinkRoot {
+            root_did: &ceremony.root_did,
+            credential_id: &ceremony.credential_id,
+            delegation_hex: &ceremony.delegation_hex,
+            needs_persist: true,
+        },
     }
 }
 
@@ -2296,7 +2326,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_persists_a_different_passkey_root_after_signing_out() {
+    fn it_selects_the_new_ceremony_when_the_root_differs() {
         let status = tonk_worker_api::RootStatus::Ready {
             root_did: "did:key:zOldRoot".into(),
             device_did: "did:key:zDevice".into(),
@@ -2305,9 +2335,52 @@ mod tests {
             delegation_hex: "00".into(),
             passkey: None,
         };
+        let ceremony = CeremonyOutput {
+            root_did: "did:key:zNewRoot".into(),
+            credential_id: "new-credential".into(),
+            delegation_hex: "11".into(),
+            invocation_hex: "22".into(),
+            deposits_hex: Vec::new(),
+        };
 
-        assert!(root_needs_persist(&status, "did:key:zNewRoot"));
-        assert!(!root_needs_persist(&status, "did:key:zOldRoot"));
+        assert_eq!(
+            root_for_link(&status, &ceremony),
+            LinkRoot {
+                root_did: "did:key:zNewRoot",
+                credential_id: "new-credential",
+                delegation_hex: "11",
+                needs_persist: true,
+            }
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_reuses_the_stored_grant_when_the_same_root_links_again() {
+        let status = tonk_worker_api::RootStatus::Ready {
+            root_did: "did:key:zRoot".into(),
+            device_did: "did:key:zDevice".into(),
+            credential_id: "stored-credential".into(),
+            delegation_cid: "bafystored".into(),
+            delegation_hex: "00".into(),
+            passkey: None,
+        };
+        let ceremony = CeremonyOutput {
+            root_did: "did:key:zRoot".into(),
+            credential_id: "ceremony-credential".into(),
+            delegation_hex: "11".into(),
+            invocation_hex: "22".into(),
+            deposits_hex: Vec::new(),
+        };
+
+        assert_eq!(
+            root_for_link(&status, &ceremony),
+            LinkRoot {
+                root_did: "did:key:zRoot",
+                credential_id: "stored-credential",
+                delegation_hex: "00",
+                needs_persist: false,
+            }
+        );
     }
 
     #[dialog_common::test]
