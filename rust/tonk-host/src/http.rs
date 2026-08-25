@@ -31,10 +31,37 @@ fn append_context_headers(headers: &Headers) {
     }
 }
 
-/// POST JSON `body` to `url` with `accept: application/json`,
-/// return the response body text. Errors out on non-2xx with a
-/// `Network` kind error carrying the status code.
-pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
+/// GET JSON from a bare host-relative `url` and return the response body text.
+///
+/// A sealed guest's `window.fetch` override relays the unexpanded `/api/...`
+/// string to the top document. Non-2xx responses retain their status and body
+/// in the returned network error.
+pub async fn get_json(url: &str) -> Result<String, ErrorDetail> {
+    ready::wait().await;
+    let init = RequestInit::new();
+    init.set_method("GET");
+    let headers = Headers::new()
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    headers
+        .append("accept", "application/json")
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    append_context_headers(&headers);
+    init.set_headers(&headers);
+
+    let win = window_handle()?;
+    let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
+        .await
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
+    response_text(resp_value).await
+}
+
+/// POST JSON `body` to a bare host-relative `url` and return the response body
+/// text.
+///
+/// A sealed guest's `window.fetch` override relays the unexpanded `/api/...`
+/// string to the top document. Non-2xx responses retain their status and body
+/// in the returned network error.
+pub async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
     // Gate every `/api/*` request on service-worker activation.
     // Without this, an early call lands on the static-asset
     // server and comes back as 405. Idempotent — after the first
@@ -64,6 +91,10 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
+    response_text(resp_value).await
+}
+
+async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
     let resp: Response = resp_value
         .dyn_into()
         .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;

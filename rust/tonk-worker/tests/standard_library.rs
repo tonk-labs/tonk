@@ -148,3 +148,32 @@ fn it_defaults_the_space_alias_to_blank_in_core() {
         "core.yaml must seed the default tonk/space -> tonk:blank alias",
     );
 }
+
+#[test]
+fn it_describes_space_removal_as_device_local() {
+    let rendered_words = PROFILE_LIBRARY
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        rendered_words.contains("Remove {name} from this device?"),
+        "the Hub confirmation must name the device-local removal boundary",
+    );
+    assert!(
+        rendered_words.contains("Removing it does not delete other members' copies."),
+        "the Hub confirmation must preserve independent replicas",
+    );
+    assert!(
+        !rendered_words.contains("from this account, on every"),
+        "the Hub must not imply that local removal erases account or peer copies",
+    );
+}
+
+#[test]
+fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
+    assert!(
+        PROFILE_LIBRARY
+            .contains("box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);"),
+        "Hub focus rings need both palette poles so selected and ordinary controls stay visible",
+    );
+}

@@ -127,6 +127,34 @@ mod tests {
         }
     }
 
+    /// Enter the opaque Hub frame after first restoring the top browsing
+    /// context. Callers that navigate or inspect top-document account UI must
+    /// call `enter_default_frame` again first.
+    async fn enter_hub(driver: &WebDriver) -> Result<()> {
+        driver.enter_default_frame().await?;
+        let frame = element(driver, "tonk-site > iframe").await?;
+        frame.enter_frame().await?;
+        element(driver, ".hub-page").await?;
+        Ok(())
+    }
+
+    async fn wait_for_displayed(driver: &WebDriver, selector: &str) -> Result<WebElement> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
+                && found.is_displayed().await.unwrap_or(false)
+            {
+                return Ok(found);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for `{selector}` to be displayed"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// The latest activation link the access service captured for `email`.
     async fn activation_link(env: &TestEnvironment, email: &str) -> Result<String> {
         let endpoint = env.access_service.join("_test/emails")?;
@@ -910,6 +938,29 @@ mod tests {
             .map(|row| row.did.as_str())
     }
 
+    fn active_profile_and_label(body: &serde_json::Value) -> Result<(String, String)> {
+        let active = body["active"]
+            .as_str()
+            .context("profiles response omitted the active name")?;
+        let entry = body["profiles"]
+            .as_array()
+            .and_then(|profiles| {
+                profiles
+                    .iter()
+                    .find(|profile| profile["profileName"].as_str() == Some(active))
+            })
+            .context("profiles response omitted its active entry")?;
+        let label = ["displayName", "email", "profileName"]
+            .into_iter()
+            .find_map(|field| {
+                entry[field]
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .context("active profile has no display label")?;
+        Ok((active.to_string(), label.to_string()))
+    }
+
     /// A space created before activation stays LOCAL: no remote, no
     /// provisioning, and therefore no refused presign.
     ///
@@ -1443,10 +1494,14 @@ mod tests {
         };
         assert!(space_keys(successful_body("list first account's spaces", &listed)).contains(&key));
         let profiles = get_json(&driver, "/api/profiles").await?;
-        let first_profile = successful_body("list profiles", &profiles)["active"]
-            .as_str()
-            .context("profiles response omitted the active name")?
-            .to_string();
+        let (first_profile, first_label) =
+            active_profile_and_label(successful_body("list profiles", &profiles))?;
+
+        // The real Hub frame renders the first account's space.
+        driver.goto(env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text_containing(&driver, ".stack", "First Garden").await?;
+        driver.enter_default_frame().await?;
 
         // Add account: a fresh profile lands on the normal Choice flow,
         // where the second sign-up runs unchanged.
@@ -1465,13 +1520,144 @@ mod tests {
             space_keys(successful_body("list second account's spaces", &listed)).is_empty(),
             "a fresh account must not see the other account's spaces"
         );
-        wait_for_text_containing(&driver, "#account-profile-list", "first@example.com").await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let (_, second_label) =
+            active_profile_and_label(successful_body("list second profile", &profiles))?;
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        let passkey_created_on =
+            successful_body("read second account summary", &summary)["passkey"]["createdOn"]
+                .as_str()
+                .context("second account summary omitted passkey creation device")?
+                .to_string();
 
-        // Switch back through the switcher; the first Hub returns.
-        let selector = format!("#account-profile-list button[data-activate=\"{first_profile}\"]");
+        // The second account's sealed Hub has its own empty roster.
+        driver.goto(env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        if let Err(error) =
+            wait_for_text_containing(&driver, "[data-account-trigger]", &second_label).await
+        {
+            let diagnostic = driver
+                .execute(
+                    r#"return {
+                        trigger: document.querySelector('[data-account-trigger]')?.textContent,
+                        error: document.querySelector('[data-account-error]')?.textContent,
+                        errorHidden: document.querySelector('[data-account-error]')?.hidden,
+                        activeProfile: document.querySelector('ui-hub-account')?.dataset.activeProfile,
+                        activeProvider: document.querySelector('ui-hub-account')?.dataset.activeProvider,
+                        hasTonkFetch: typeof window.tonk?.fetch === 'function'
+                    }"#,
+                    Vec::new(),
+                )
+                .await
+                .map(|value| value.json().to_string())
+                .unwrap_or_else(|diagnostic_error| {
+                    format!("unable to inspect Hub state: {diagnostic_error}")
+                });
+            return Err(error).context(format!("Hub account diagnostic: {diagnostic}"));
+        }
+        wait_for_displayed(&driver, ".sempty").await?;
+        let second_stack = element(&driver, ".stack").await?.text().await?;
+        assert!(
+            !second_stack.contains("First Garden"),
+            "the second account's Hub must omit the first account's space"
+        );
+
+        // Settings reads real account and device facts through the sealed
+        // guest, and keeps unsupported Usage/Syncing surfaces absent.
+        click(&driver, "[data-account-trigger]").await?;
+        click(&driver, "[data-open-settings]").await?;
+        wait_for_text(&driver, "[data-account-email]", "second@example.com").await?;
+        assert_eq!(
+            element(&driver, "[data-passkey-created-on]")
+                .await?
+                .prop("textContent")
+                .await?
+                .as_deref(),
+            Some(passkey_created_on.as_str()),
+            "Hub settings must render the account summary's passkey creation device"
+        );
+        click(&driver, "[data-settings-tab=\"devices\"]").await?;
+        wait_for_text_containing(&driver, "[data-device-list]", "current device").await?;
+        let settings_text = element(&driver, "[data-settings-dialog]")
+            .await?
+            .text()
+            .await?
+            .to_ascii_lowercase();
+        for forbidden in ["usage", "upgrade", "metering", "syncing"] {
+            assert!(
+                !settings_text.contains(forbidden),
+                "Hub settings must not contain {forbidden}"
+            );
+        }
+
+        // The authoritative display-name write repaints the Hub trigger and
+        // remains in the field after the dialog is reopened.
+        click(&driver, "[data-settings-tab=\"account\"]").await?;
+        let display_name = element(&driver, "[data-display-name]").await?;
+        let select_all = if cfg!(target_os = "macos") {
+            Key::Command + "a"
+        } else {
+            Key::Control + "a"
+        };
+        display_name.send_keys(select_all).await?;
+        display_name.send_keys("Second Hub").await?;
+        display_name.send_keys(Key::Enter).await?;
+        if let Err(error) = wait_for_text(&driver, "[data-account-label]", "Second Hub").await {
+            let diagnostic = driver
+                .execute(
+                    r#"const input = document.querySelector('[data-display-name]');
+                    const error = document.querySelector('[data-display-name-error]');
+                    const account = document.querySelector('ui-hub-account');
+                    return {
+                        trigger: document.querySelector('[data-account-trigger]')?.textContent,
+                        inputValue: input?.value,
+                        confirmedName: input?.dataset.confirmedName,
+                        inputDisabled: input?.disabled,
+                        inputBusy: input?.getAttribute('aria-busy'),
+                        error: error?.textContent,
+                        errorHidden: error?.hidden,
+                        activeName: account?.dataset.activeName
+                    }"#,
+                    Vec::new(),
+                )
+                .await
+                .map(|value| value.json().to_string())
+                .unwrap_or_else(|diagnostic_error| {
+                    format!("unable to inspect display-name state: {diagnostic_error}")
+                });
+            return Err(error).context(format!("Hub display-name diagnostic: {diagnostic}"));
+        }
+        click(&driver, "[data-settings-close]").await?;
+        let focus_restored = driver
+            .execute(
+                "return document.activeElement?.hasAttribute('data-account-trigger') === true",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(focus_restored.json(), &serde_json::json!(true));
+        click(&driver, "[data-account-trigger]").await?;
+        click(&driver, "[data-open-settings]").await?;
+        assert_eq!(
+            element(&driver, "[data-display-name]")
+                .await?
+                .prop("value")
+                .await?
+                .as_deref(),
+            Some("Second Hub")
+        );
+        click(&driver, "[data-settings-close]").await?;
+
+        // Switch back from the Hub's account roster. The component navigates
+        // the whole top page, so restore the top context before waiting for
+        // the newly mounted Hub frame.
+        click(&driver, "[data-account-trigger]").await?;
+        wait_for_text_containing(&driver, "[data-account-menu]", &first_label).await?;
+        let selector = format!("button[data-profile=\"{first_profile}\"]");
         click(&driver, &selector).await?;
-        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        wait_for_text_containing(&driver, "#account-email-value", "first@example.com").await?;
+        driver.enter_default_frame().await?;
+        enter_hub(&driver).await?;
+        wait_for_text_containing(&driver, ".stack", "First Garden").await?;
+        driver.enter_default_frame().await?;
         let listed = get_json(&driver, "/api/profile").await?;
         assert!(
             space_keys(successful_body("relist first account's spaces", &listed)).contains(&key),

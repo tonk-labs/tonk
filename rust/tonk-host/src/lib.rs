@@ -74,6 +74,8 @@ mod host;
 #[cfg(target_arch = "wasm32")]
 mod http;
 #[cfg(target_arch = "wasm32")]
+pub use http::{get_json, post_json};
+#[cfg(target_arch = "wasm32")]
 mod navigate;
 #[cfg(target_arch = "wasm32")]
 mod page_effect;
