@@ -93,8 +93,9 @@ makes re-tagging one fail as tampering.
    the interim account's encryption key and store it as a `CustodiedSeed` fact
    in the account DB, keyed by the derived `did:key`.
 4. Delegate full authority from every space to the interim account.
-5. For every invite, seal the invitation secret the same way, as a
-   `CustodiedSeed` with `kind = tonk:invite`.
+5. For every open invite joined, seal the invitation secret the same way, as
+   a `CustodiedSeed` with `kind = tonk:invite`: the membership hangs off
+   that principal, so re-issuing it at rotation is the joiner's job.
 6. Delegate full authority from the invite key to the interim account key.
 
 ## Accreditation (= account rotation)

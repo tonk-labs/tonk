@@ -20,7 +20,7 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_credentials::SignerCredential;
+use dialog_credentials::{Ed25519Signer, SignerCredential};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -2682,12 +2682,16 @@ pub async fn create_repository(
     // repository's own `tonk/repository` concept. Generating the signer
     // first (rather than letting `.create()` mint one) is what lets the
     // name derive from the DID instead of the other way around.
-    // Extractable, so the seed can be sealed to the account below; the
-    // signer itself is stored as the repository's credential as before.
-    let (signer, seed) = super::create_invite::generate_ephemeral()
+    // The seed is drawn here rather than inside `generate`, so it can be
+    // sealed to the account below; the signer imports from it the same
+    // way an account root does (non-extractable on the web target), so
+    // the credential the repository stores is the shape it always was.
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut())
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    let signer = Ed25519Signer::import(&*seed)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
-    let seed = Zeroizing::new(seed);
     let did = signer.did();
     let key = did.repo_key();
 

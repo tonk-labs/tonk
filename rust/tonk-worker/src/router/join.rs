@@ -87,9 +87,10 @@ use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience};
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
-    RepositoryName, prelude::DidExt as _,
+    RepositoryName, SeedKind, prelude::DidExt as _,
 };
 use tonk_worker_api::JoinFailureKind;
+use zeroize::Zeroizing;
 
 use self::staging::Staging;
 use super::AppState;
@@ -1550,6 +1551,21 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
                 Err(error) => {
                     log!("claimed space directory record skipped: {error}");
                 }
+            }
+            // The membership hangs off the invite principal, so the
+            // account keeps that principal's seed: at rotation it mints
+            // `principal -> new root` itself instead of needing a fresh
+            // invite. A targeted invite carries no seed and its chain is
+            // rooted at the account already. Best-effort, like the
+            // directory record above.
+            if let InviteAudience::Open { seed } = &prepared.invite.audience {
+                super::account_state::custody_seed(
+                    tonk,
+                    prepared.invite.chain.audience(),
+                    SeedKind::Invite,
+                    Zeroizing::new(*seed),
+                )
+                .await;
             }
         }
     }
