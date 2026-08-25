@@ -7,7 +7,6 @@
 //! share a label. The response carries the new repository's routing key
 //! (the DID suffix), which the UI routes by.
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_capability::Subject;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_effects::Use;
@@ -20,7 +19,8 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_credentials::{Ed25519Signer, SignerCredential};
+use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
+use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -2595,7 +2595,7 @@ pub async fn create_repository(
     tonk: &TonkState,
     display_name: &str,
     configuration: &RepositoryConfiguration,
-) -> Result<Repository<SignerCredential>, RepositoryError> {
+) -> Result<Repository, RepositoryError> {
     // A space always delegates to an ACCOUNT: the passkey-derived root
     // once one is persisted, else this device's onboarding account,
     // which is a real account custodied locally rather than by WebAuthn
@@ -2658,22 +2658,38 @@ pub async fn create_repository(
     let did = signer.did();
     let key = did.repo_key();
 
-    let repository = tonk
-        .profile
-        .repository(key)
-        .create()
-        .with_credential(signer)
+    // The seed sealed to the account is the ONLY copy of the space secret
+    // that outlives this function: the repository stores the verifier, and
+    // every later act on the space proves through `space -> account ->
+    // device`, the way a joined replica does. So the custody row lands
+    // before anything else does, and a seed that cannot be custodied is a
+    // space that is not created.
+    if !super::account_state::custody_seed(tonk, &did, SeedKind::Space, seed).await {
+        return Err(RepositoryError::Internal(
+            "the space seed could not be custodied under the account".to_string(),
+        ));
+    }
+
+    let verifier: Ed25519Verifier = did.to_string().parse().map_err(|e| {
+        RepositoryError::Internal(format!("space DID is not a valid Ed25519 did:key: {e:?}"))
+    })?;
+    let space_credential = Subject::from(tonk.profile.did())
+        .attenuate(Space::new(key))
+        .create(Credential::from(verifier))
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             RepositoryError::Internal(format!("Failed to create repository '{}': {}", key, e))
         })?;
+    let repository = Repository::from(space_credential);
     log!("Repository created. DID: {}", repository.did());
 
-    // 2. Delegate subject-specific authority to the owner key.
-    let delegation = repository
+    // 2. Delegate subject-specific authority to the owner key, from the
+    //    signer this function still holds.
+    let minter = Repository::from(signer);
+    let delegation = minter
         .access()
-        .claim(&repository)
+        .claim(&minter)
         .delegate(owner.clone())
         .perform(&tonk.operator)
         .await
@@ -2719,10 +2735,6 @@ pub async fn create_repository(
         .map_err(|error| {
             RepositoryError::Internal(format!("Failed to persist space root delegation: {error}"))
         })?;
-    // The recovery copy: the seed sealed to the account, so any device
-    // on the account can re-issue this space after a ceremony. Best
-    // effort like the retain above; the space is usable without it.
-    super::account_state::custody_seed(tonk, &repository.did(), SeedKind::Space, seed).await;
 
     // 3-7. Wire up the meta branch and register the replica. The
     // replica is a name-less membership index; its identity (`subject`)
@@ -2771,18 +2783,22 @@ pub(crate) async fn space_root_prefix(
 
 /// Bring pre-account spaces under the account after linking.
 ///
-/// A space created before any account existed delegates to the profile's
-/// device key, the only durable key the client had. Once a root is
-/// persisted, each such space re-delegates from its own signer to the
-/// account root: the stored prefix is replaced, the new authority lands
-/// in the profile's access branch, is retained into the account space,
-/// and the space is provisioned as a consumer under the account's
-/// customer. Spaces already rooted at the account — created while signed
-/// out, or adopted by an earlier pass — skip the redelegation but still
-/// get the retain and the provisioning, both idempotent. Joined replicas
-/// (whose prefix reaches this profile through someone else's chain) are
-/// left alone. Best effort per space: adoption failing must never fail
-/// the link that triggered it.
+/// A space created before accreditation delegates to the onboarding
+/// account. Once a root is persisted, each such space is re-issued to the
+/// account root from its custodied seed (the repository holds only the
+/// verifier): the stored prefix is replaced, the new authority lands in
+/// the profile's access branch, is retained into the account space, and
+/// the space is provisioned as a consumer under the account's customer.
+/// Spaces already rooted at the account — created while signed out, or
+/// adopted by an earlier pass — skip the re-issue but still get the
+/// retain and the provisioning, both idempotent. Joined replicas (whose
+/// prefix reaches this profile through someone else's chain) and spaces
+/// with no custodied seed are left alone. Best effort per space: adoption
+/// failing must never fail the link that triggered it.
+///
+/// Re-sealing the seed to the new account, retracting the old row, and
+/// retiring the onboarding account are the rest of accreditation
+/// (`plan/join-under-custody.md`, Stage 3).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
     let Ok(root) = super::identity::local_root(tonk).await else {
@@ -2813,13 +2829,29 @@ pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
             continue;
         };
         let chain = if reissuable(prefix.audience()) {
-            // Joined replicas carry a verifier-only credential: nothing
-            // to redelegate from, their authority is the inviter's.
-            let Some(access) = repository.try_access() else {
-                continue;
+            // The space's own signer is re-issued from its custodied seed:
+            // the repository stores only the verifier, and the seed sealed
+            // to the onboarding account is the copy that survives. A space
+            // with no custodied seed (created before seeds were custodied,
+            // or joined rather than created) is left alone.
+            let seed = match super::account_state::open_onboarding_seed(tonk, &subject).await {
+                Ok(Some(seed)) => seed,
+                Ok(None) => continue,
+                Err(error) => {
+                    log!("space '{subject}' was not adopted by the account: {error}");
+                    continue;
+                }
             };
-            let delegation = match access
-                .claim(&repository)
+            let minter = match Ed25519Signer::import(&*seed).await {
+                Ok(signer) => Repository::from(signer),
+                Err(error) => {
+                    log!("space '{subject}' was not adopted by the account: {error}");
+                    continue;
+                }
+            };
+            let delegation = match minter
+                .access()
+                .claim(&minter)
                 .delegate(root.root_did.clone())
                 .perform(&tonk.operator)
                 .await
@@ -4862,6 +4894,115 @@ mod tests {
     use crate::router::evaluate::evaluate_body;
     use crate::router::tests::{content_invitations, put_repo, put_repo_info};
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
+
+    /// The seed sealed to the account is the only copy of a created
+    /// space's secret: the repository stores the verifier, the space still
+    /// proves for the operator through `space -> account -> device`, and
+    /// opening the custodied seed with the account key re-derives exactly
+    /// the space's signer.
+    #[dialog_common::test]
+    async fn it_creates_a_space_with_a_public_key_and_custodies_its_seed() {
+        use dialog_capability::Subject;
+        use dialog_effects::Use;
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::RepositoryExt as _;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "public-key-space").await;
+        let tonk = state.read().await;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(
+            repository.try_access().is_none(),
+            "the repository stores only the verifier",
+        );
+        let subject = repository.did();
+
+        tonk.profile
+            .access()
+            .prove(Subject::from(subject.clone()).attenuate(Use))
+            .audience(&tonk.operator)
+            .perform(&tonk.operator)
+            .await
+            .expect("the space proves through the account without its own key");
+
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::CustodiedSeed> {
+                this: Term::var("this"),
+                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+                kind: Term::var("kind"),
+                recipient: Term::var("recipient"),
+                sealed: Term::var("sealed"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one custodied space seed");
+        assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+            crate::router::tests::test_root_seed(&tonk.profile_name),
+        ));
+        let opened = account
+            .encryption_key()
+            .open(&sealed, &subject)
+            .expect("the account key opens the custodied seed");
+        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
+            .await
+            .unwrap();
+        assert_eq!(reissued.did(), subject, "the seed derives the space's key");
+    }
+
+    /// A space created under the onboarding account is re-rooted at the
+    /// passkey root by opening its custodied seed, not by reaching for a
+    /// local signer the repository no longer holds.
+    #[dialog_common::test]
+    async fn it_adopts_an_onboarding_space_from_its_custodied_seed() {
+        use crate::router::tests::{persist_test_root, test_state_without_root};
+        use dialog_varsig::Principal as _;
+
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let key = put_repo(&app, "onboarding-space").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let tonk = state.read().await;
+        let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
+        assert_eq!(
+            super::space_root_prefix(&tonk, &subject)
+                .await
+                .unwrap()
+                .audience(),
+            &onboarding,
+            "created under the onboarding account",
+        );
+
+        let root_did = persist_test_root(&tonk).await;
+        super::adopt_profile_spaces(&tonk).await;
+
+        let prefix = super::space_root_prefix(&tonk, &subject).await.unwrap();
+        assert_eq!(
+            prefix.audience(),
+            &root_did,
+            "re-issued to the passkey root"
+        );
+        assert_eq!(prefix.issuer(), &subject, "minted by the space itself");
+    }
 
     /// The scaffold notation, embedded at compile time.
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
