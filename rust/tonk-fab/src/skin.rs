@@ -28,17 +28,17 @@
 pub const SKIN: &str = r#"
 *, *::before, *::after{ box-sizing:border-box; }
 .w{
-  --_ink:   var(--fabb-ink, #34332b);
-  --_soft:  var(--fabb-ink-soft, #55544a);
+  --_ink:   var(--fabb-ink, #131313);
+  --_soft:  var(--fabb-ink-soft, #55544f);
   --_on:    var(--fabb-on-ink, #fbfaef);
-  --_sep:   var(--fabb-sep, rgba(43,44,20,.34));
-  --_hover: var(--fabb-hover, rgba(43,44,20,.06));
-  --_press: var(--fabb-press, rgba(43,44,20,.12));
+  --_sep:   var(--fabb-sep, rgba(19,19,19,.28));
+  --_hover: var(--fabb-hover, rgba(19,19,19,.06));
+  --_press: var(--fabb-press, rgba(19,19,19,.12));
   --_bg:    var(--fabb-bg, rgba(255,255,255,.72));
   --_panel: var(--fabb-panel, rgba(255,255,255,.92));
   --_filter:blur(12px) saturate(1.5);
-  --_ring:  0 0 0 1px rgba(43,44,20,.85);
-  --_ringc: rgba(43,44,20,.85);
+  --_ring:  0 0 0 1px var(--fabb-ring, rgba(19,19,19,.85));
+  --_ringc: var(--fabb-ring, rgba(19,19,19,.85));
   --_ease:  cubic-bezier(0.25,0.46,0.45,0.94);
   --_blink: 2.4s;
   font-family:'IBM Plex Sans Condensed','Bahnschrift','Arial Narrow',system-ui,sans-serif;
@@ -51,13 +51,17 @@ pub const SKIN: &str = r#"
 /* selection is chrome too — ink only, never the browser's blue */
 .w ::selection{ background:var(--_ink); color:var(--_on); }
 .w.dark{
-  --_ink:#e9e6d6; --_soft:#cdcaba; --_on:#22221c;
-  --_sep:rgba(233,230,214,.28); --_hover:rgba(255,255,255,.09); --_press:rgba(255,255,255,.15);
+  --_ink:var(--fabb-ink-dark, #e9e6d6);
+  --_soft:var(--fabb-ink-soft-dark, #cdcaba);
+  --_on:var(--fabb-on-ink-dark, #22221c);
+  --_sep:var(--fabb-sep-dark, rgba(233,230,214,.28));
+  --_hover:var(--fabb-hover-dark, rgba(251,250,239,.09));
+  --_press:var(--fabb-press-dark, rgba(251,250,239,.15));
   --_bg:var(--fabb-bg-dark, rgba(32,32,26,.78));
   --_panel:var(--fabb-panel-dark, rgba(32,32,26,.88));
   --_filter:blur(16px) saturate(1.5);
-  --_ring:0 0 0 1px rgba(233,230,214,.55);
-  --_ringc:rgba(233,230,214,.55);
+  --_ring:0 0 0 1px var(--fabb-ring-dark, rgba(233,230,214,.55));
+  --_ringc:var(--fabb-ring-dark, rgba(233,230,214,.55));
 }
 /* the calm blink — alerts pulse, they never take a color */
 @keyframes fabb-blink{ 0%,100%{opacity:1} 50%{opacity:.55} }

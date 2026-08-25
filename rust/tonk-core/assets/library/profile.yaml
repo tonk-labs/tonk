@@ -217,11 +217,14 @@ view/directory!:
           --ring:rgba(19,19,19,.85); --sep:rgba(19,19,19,.28);
           /* frost pre-composited over the flat page — a flat page blurs to
              itself, so the rows get the same look with no filter. Only the
-             genuinely overlaying surfaces (the bar, the modal) wear real
-             glass. */
+             genuinely overlaying surfaces (the bar and account roster) wear
+             real glass. */
           --frost:rgba(255,255,255,.72); --frost-solid:#fafafa;
-          --card:#fff; --wash:rgba(19,19,19,.06); --wash-2:rgba(19,19,19,.12);
-          --wash-p:rgba(251,250,239,.16); --dim:rgba(16,16,12,.32);
+          --panel:#d2d2d2; --cur:var(--panel); --card:#fff; --card-hover:#f1f1f1;
+          --wash:rgba(19,19,19,.06); --wash-2:rgba(19,19,19,.12);
+          --wash-p:rgba(251,250,239,.16); --canvas:#e9e9e7; --stub-ink:#9a9993;
+          --veil:rgba(236,236,236,.9); --dim:rgba(16,16,12,.32);
+          --track:rgba(19,19,19,.22);
           --cond:"IBM Plex Sans Condensed","Bahnschrift","Arial Narrow",sans-serif;
           --sans:"IBM Plex Sans",Helvetica,Arial,sans-serif;
           --ease:cubic-bezier(.25,.46,.45,.94);
@@ -232,8 +235,10 @@ view/directory!:
           --page:#161613; --ink:#e9e6d6; --on-ink:#22221c; --soft:#cdcaba;
           --ring:rgba(233,230,214,.55); --sep:rgba(233,230,214,.28);
           --frost:rgba(32,32,26,.78); --frost-solid:#1e1e19;
-          --card:#26251f; --wash:rgba(251,250,239,.09); --wash-2:rgba(251,250,239,.15);
-          --wash-p:rgba(19,19,19,.14); --dim:rgba(0,0,0,.45);
+          --panel:#3b3a34; --card:#26251f; --card-hover:#32312a;
+          --wash:rgba(251,250,239,.09); --wash-2:rgba(251,250,239,.15);
+          --wash-p:rgba(19,19,19,.14); --canvas:#1b1b18; --stub-ink:#6f6e66;
+          --veil:#161613; --dim:rgba(0,0,0,.45); --track:rgba(233,230,214,.25);
         }
         .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
         /* selection is chrome too — ink, never the browser's blue */
@@ -267,15 +272,14 @@ view/directory!:
         .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
           line-height:1; letter-spacing:.02em; text-transform:lowercase; }
 
-        /* ── masthead — the mark on the bar's own row, block-height ── */
-        .hub-logo { position:fixed; top:48px; left:48px; z-index:10;
-          color:var(--ink); user-select:none; }
-        .hub-logo svg { display:block; height:36px; width:auto; }
-
-        /* ── the hub bar — cells and the ink cap ── */
-        .hubbar { position:fixed; top:48px; right:24px; z-index:10;
-          display:flex; align-items:stretch; height:36px; background:var(--frost);
-          border-radius:0 18px 18px 0; /* the bar ends in the cap — no box behind it */
+        /* ── centered launcher — one proportional grid, logo above it ── */
+        .hub-logo { position:absolute; top:clamp(62px,11vh,106px); left:50%; z-index:10;
+          transform:translateX(-50%); color:var(--ink); user-select:none; }
+        .hub-logo svg { display:block; width:132px; height:auto; }
+        .hubcol { position:relative; width:min(576px, calc(100vw - 32px));
+          margin-inline:auto; padding-top:clamp(148px,23vh,220px); }
+        .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
+          width:100%; height:36px; overflow:hidden; background:var(--frost);
           -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
           box-shadow:0 0 0 1px var(--ring); }
         /* every word sits bottom-right on the 9px seat */
@@ -284,110 +288,114 @@ view/directory!:
           text-decoration:none; color:inherit; flex:none; }
         .hcell:hover { background:var(--wash); }
         .hcell:active { background:var(--wash-2); }
-        .hc-new { width:144px; }
-        .hc-acct { width:216px; border-left:1px solid var(--sep); }
+        .hc-acct { width:224px; min-width:0; }
+        .hc-view { width:192px; border-left:1px solid var(--sep); }
+        .hc-cfg { width:112px; border-left:1px solid var(--sep);
+          padding-right:8px; padding-left:10px; }
+        .hc-acct[aria-current="page"], .hc-view[aria-current="page"],
+        .hc-cfg[aria-current="page"] {
+          background:var(--cur); }
         .hcell .g { font-size:14px; font-weight:500; }
-        /* the create form is the cell — a hidden form would need the cell to
-           reach into it, and a button inside its own form needs nothing */
-        .hub-new-form { display:contents; }
-        /* the cap is the mode switch — its ink fill inverts with the tokens,
-           so it is lit when dark and dark when light, for free */
+        .settings-icon { width:9px; height:9px; flex:none; }
+        /* the mode remains an ordinary square cell in the same grid */
         .hub-page ui-mode-switch { display:flex; flex:none; }
-        .hub-page .mode-cap { width:18px; height:36px; flex:none; background:var(--ink);
-          border-radius:0 18px 18px 0; }
-        .hub-page .mode-cap:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+        .hub-page .mode-cap { display:grid; place-items:center; width:48px; height:36px;
+          flex:none; border-left:1px solid var(--sep); background:var(--frost); }
+        .hub-page .mode-cap:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost); }
+        .hub-page .mode-cap:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost); }
+        .hub-page .mode-mark { display:block; width:10px; height:10px;
+          background:linear-gradient(90deg,var(--ink) 50%,transparent 50%);
+          box-shadow:0 0 0 1px var(--ink); }
 
-        /* ── account roster — the 216px wireframe rung opens in place ── */
-        .hub-page ui-hub-account { position:relative; display:flex; flex:none; }
+        /* ── account roster — a third attached view below the header ── */
+        .hub-page ui-hub-account { position:relative; display:block; width:100%; }
         .account-trigger { overflow:hidden; }
         .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
           white-space:nowrap; text-transform:none; }
-        .account-menu { position:absolute; top:43px; right:0; z-index:32; width:216px;
-          background:var(--frost-solid); color:var(--ink); text-transform:none;
-          box-shadow:0 0 0 1px var(--ring), 0 8px 24px rgba(0,0,0,.16); }
+        .account-menu { display:flex; flex-direction:column; gap:7px; width:100%; margin-top:7px;
+          color:var(--ink); text-transform:none; }
         .account-menu[hidden] { display:none; }
-        .account-menu__profiles { display:flex; flex-direction:column; }
+        .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
         .account-menu__row { display:flex; align-items:center; justify-content:space-between;
           gap:12px; width:100%; min-height:44px; padding:8px 12px; text-align:left;
-          border-bottom:1px solid var(--sep); font:inherit; color:inherit;
+          background:var(--frost-solid); font:inherit; color:inherit;
+          box-shadow:0 0 0 1px var(--ring);
           overflow-wrap:anywhere; transition-property:scale; transition-duration:150ms;
           transition-timing-function:ease-out; }
         button.account-menu__row:hover { background:var(--wash); }
         button.account-menu__row:active { background:var(--wash-2); scale:.96; }
         .account-menu__profile[aria-current="true"] { color:var(--soft); }
         .account-menu__current { flex:none; font-size:11px; text-transform:lowercase; }
-        .account-menu__error { padding:10px 12px; color:var(--ink); font-family:var(--sans);
-          font-size:12px; line-height:1.45; text-wrap:pretty; overflow-wrap:anywhere; }
+        .account-menu__error { padding:10px 12px; background:var(--frost-solid);
+          color:var(--ink); font-family:var(--sans); font-size:12px; line-height:1.45;
+          text-wrap:pretty; overflow-wrap:anywhere; box-shadow:0 0 0 1px var(--ring); }
         .account-menu__error[hidden] { display:none; }
 
-        /* ── settings — fixed, truthful Account / Devices surface ── */
-        .hub-settings { position:fixed; inset:0; z-index:40; font-family:var(--sans);
-          text-transform:none; letter-spacing:normal; }
+        /* ── settings — mutually exclusive with spaces, attached in flow ── */
+        .hub-settings { display:grid; grid-template-columns:144px 432px; align-items:start;
+          width:576px; margin-top:7px; font-family:var(--sans); text-transform:none;
+          letter-spacing:normal; }
         .hub-settings[hidden] { display:none; }
-        .hub-settings__scrim { position:absolute; inset:0; width:100%; height:100%;
-          background:var(--dim); cursor:default; }
-        .hub-settings__dialog { position:absolute; top:96px; right:24px;
-          width:min(760px, calc(100vw - 48px)); max-height:calc(100dvh - 120px);
-          overflow:auto; background:var(--frost-solid); color:var(--ink);
-          box-shadow:0 0 0 1px var(--ring), 0 24px 64px rgba(0,0,0,.24); }
-        .hub-settings__header { position:sticky; top:0; z-index:2; display:flex;
-          align-items:center; justify-content:space-between; min-height:44px;
-          padding-left:16px; background:var(--ink); color:var(--on-ink); }
-        .hub-settings__header h2, .hub-settings__pane h3 { margin:0; font-family:var(--cond);
-          font-size:14px; line-height:1; font-weight:600; text-transform:lowercase;
-          text-wrap:balance; }
-        .hub-settings__close { align-self:stretch; min-width:44px; color:inherit;
-          font-size:22px; line-height:1; }
-        .hub-settings__close:hover { background:var(--wash-p); }
-        .hub-settings__layout { display:grid; grid-template-columns:180px minmax(0,1fr);
-          min-height:420px; }
-        .hub-settings__rail { display:flex; flex-direction:column; border-right:1px solid var(--sep); }
-        .hub-settings__rail button { min-height:44px; padding:0 14px; text-align:left;
-          border-bottom:1px solid var(--sep); color:var(--soft); }
-        .hub-settings__rail button[aria-selected="true"] { background:var(--ink);
-          color:var(--on-ink); }
-        .hub-settings__body { min-width:0; }
-        .hub-settings__pane { padding:24px; }
+        .hub-settings__rail { position:relative; z-index:2; display:flex;
+          flex-direction:column; gap:7px; }
+        .hub-settings__rail button { position:relative; display:flex; align-items:flex-end;
+          justify-content:flex-end; height:36px; padding:0 10px 9px;
+          background:var(--frost-solid); color:var(--soft); font-family:var(--cond);
+          font-weight:600; letter-spacing:.02em; text-transform:lowercase;
+          border:1px solid var(--ring); box-shadow:none; }
+        .hub-settings__rail button[aria-selected="true"] { background:var(--panel);
+          color:var(--ink); border-right:0; }
+        .hub-settings__rail button[aria-selected="true"]::after { content:"";
+          position:absolute; top:0; right:-1px; width:1px; height:100%;
+          background:var(--panel); }
+        .hub-settings__body { position:relative; z-index:1; width:100%; min-height:408px;
+          max-height:60vh; padding:8px 18px 18px; overflow:auto; background:var(--panel);
+          color:var(--ink); border:1px solid var(--ring); }
+        .hub-settings__pane { min-width:0; }
         .hub-settings__pane[hidden] { display:none; }
-        .hub-settings__pane h3 { margin-bottom:24px; font-size:18px; }
-        .hub-settings__pane p { margin:0 0 16px; line-height:1.5; text-wrap:pretty; }
-        .account-field { display:grid; gap:7px; margin-bottom:18px; font-size:12px;
-          color:var(--soft); }
-        .account-field input { width:100%; min-height:44px; padding:8px 10px;
-          border:1px solid var(--sep); border-radius:0; background:var(--card); color:var(--ink);
-          font:600 15px/1.4 var(--sans); }
-        .account-facts { display:grid; gap:0; margin:0 0 24px; }
-        .account-facts > div { display:grid; grid-template-columns:minmax(120px,1fr) minmax(0,2fr);
-          gap:16px; padding:12px 0; border-bottom:1px solid var(--sep); }
-        .account-facts dt { color:var(--soft); font-size:12px; }
-        .account-facts dd { margin:0; overflow-wrap:anywhere; }
-        .hub-settings__action, .hub-settings__pane [data-account-handoff] {
-          min-height:44px; padding:0 14px; background:var(--ink); color:var(--on-ink); }
-        .hub-settings__action:hover, .hub-settings__pane [data-account-handoff]:hover {
-          background:linear-gradient(var(--wash-p),var(--wash-p)),var(--ink); }
-        .hub-settings__error { margin:0 0 16px; color:var(--ink); font-size:12px;
+        .settings-row { display:flex; align-items:baseline; justify-content:space-between;
+          flex-wrap:wrap; gap:7px 16px; min-height:44px; padding:9px 0; }
+        .settings-row > span { color:var(--soft); }
+        .settings-row > strong { min-width:0; max-width:100%; font-family:var(--cond);
+          font-size:13.5px; font-weight:600; text-align:right; overflow-wrap:anywhere; }
+        .settings-row--field { cursor:text; }
+        .settings-row--field input { width:min(100%, 17ch); min-height:36px; padding:5px 0;
+          border:0; border-bottom:1px solid var(--sep); border-radius:0;
+          background:transparent; color:var(--ink); font:600 13.5px/1.4 var(--cond);
+          text-align:right; }
+        .settings-section { display:block; margin-top:18px; padding:0 0 7px;
+          border-bottom:1px solid var(--sep); background:transparent; color:var(--soft);
+          font-size:13px; line-height:1.4; text-transform:lowercase; }
+        .settings-explanation { margin:6px 0 0; color:var(--soft); font-size:13px;
+          line-height:1.55; text-wrap:pretty; }
+        .settings-row--action { align-items:center; }
+        .settings-row--action > span { max-width:17ch; line-height:1.45; }
+        .settings-link, .hub-settings__pane [data-account-handoff] { min-height:44px;
+          padding:0; background:transparent; color:var(--ink); font-family:var(--cond);
+          font-weight:600; text-align:right; text-decoration:underline;
+          text-underline-offset:3px; }
+        .settings-link:hover, .hub-settings__pane [data-account-handoff]:hover {
+          background:transparent; text-decoration-thickness:2px; }
+        .hub-settings__error { margin:0; color:var(--ink); font-size:12px;
           line-height:1.45; text-wrap:pretty; overflow-wrap:anywhere; }
         .hub-settings__error[hidden] { display:none; }
-        [data-device-list] { display:grid; gap:12px; }
-        .device-row { padding:14px; background:var(--card);
-          box-shadow:0 0 0 1px var(--sep); }
+        [data-device-list] { display:block; }
+        .device-row { display:grid; grid-template-columns:minmax(0,1fr) auto;
+          align-items:baseline; gap:4px 16px; min-height:44px; padding:9px 0;
+          border-bottom:1px solid var(--sep); }
         .device-row[data-status="revoked"] { color:var(--soft); }
-        .device-row__heading { display:flex; align-items:flex-start; justify-content:space-between;
-          gap:16px; }
+        .device-row__heading { min-width:0; }
         .device-row__heading strong { min-width:0; overflow-wrap:anywhere; }
-        .device-row__state { flex:none; color:var(--soft); font-size:11px; text-transform:lowercase; }
-        .device-row__added { margin-top:7px; color:var(--soft); font-size:12px; }
-        .device-row__remove { min-height:44px; margin-top:6px; color:var(--ink);
+        .device-row__state { margin-left:7px; color:var(--soft); font-size:11px;
+          text-transform:lowercase; }
+        .device-row__added { color:var(--soft); font-size:12px; text-align:right; }
+        .device-row__remove { grid-column:2; min-height:36px; color:var(--ink);
           text-decoration:underline; text-underline-offset:3px; }
 
         /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
-        .stack { width:432px; margin:20vh auto 120px; display:flex;
+        .stack { width:100%; margin-top:7px; padding-bottom:120px; display:flex;
           flex-direction:column; gap:7px; }
-        .shead { display:flex; align-items:flex-end; justify-content:center;
-          padding-bottom:9px; background:var(--ink); color:var(--on-ink);
-          box-shadow:0 0 0 1px var(--ink);
-          /* opaque — a filter behind solid ink is pure spend */
-          -webkit-backdrop-filter:none; backdrop-filter:none; }
+        .stack[hidden] { display:none; }
         /* the wrapper, not the link, is the positioning context: the verbs
            and the confirm cluster sit OUTSIDE the anchor (a control inside
            one is invalid markup, and a label inside one navigates instead of
@@ -421,18 +429,12 @@ view/directory!:
           text-transform:lowercase; cursor:pointer; }
         .verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
           text-decoration:underline; text-underline-offset:3px; }
-        /* the quiet ghost — no box, just the words */
-        .snew { align-self:flex-end; margin-top:2px; padding:7px 2px;
-          color:var(--soft); cursor:pointer; }
-        .snew:hover { color:var(--ink); text-decoration:underline; text-underline-offset:3px; }
-        .snew-form { display:contents; }
-        /* empty state: visible until a real row exists */
-        .sempty { display:flex; align-items:flex-end; justify-content:flex-end;
-          padding:0 10px 9px 16px; color:var(--soft);
-          background:var(--frost-solid); text-transform:none;
-          font-family:var(--sans); font-weight:400; font-size:13.5px; }
-        .stack:has(.srow-wrap) .sempty { display:none; }
-
+        /* creation is the stack's final, and only, solid ink row */
+        .snew-form { display:block; }
+        .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+          width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
+          color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
+        .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
         /* ── the remove cluster — the page dims, the surface never ──
            Driven by the same native radios the rest of the view uses: no
            script runs in a seeded view, so the open state has to be
@@ -482,50 +484,47 @@ view/directory!:
           .srow .n { max-width:calc(100% - 150px); }
         }
         @media (max-width:640px) {
-          .hub-logo { top:20px; left:16px; }
-          .hub-logo svg { height:28px; }
-          .hubbar { top:max(16px, calc(env(safe-area-inset-top) + 8px)); right:16px; }
-          /* rung swap: the new-space rung leaves the bar — the stack's ghost
-             creates — rather than squeezing every cell */
-          .hc-new { display:none; }
-          .hc-acct, .account-menu { width:144px; }
-          .stack { width:min(432px, calc(100vw - 32px)); margin-top:14vh; }
           .modal { width:min(432px, calc(100vw - 84px));
             top:max(20vh, calc(env(safe-area-inset-top) + 90px)); }
-          .hub-settings__dialog { top:max(72px, calc(env(safe-area-inset-top) + 64px));
-            right:16px; width:calc(100vw - 32px); max-height:calc(100dvh - 88px); }
-          .hub-settings__layout { grid-template-columns:1fr; min-height:0; }
-          .hub-settings__rail { position:sticky; top:44px; z-index:1; display:grid;
-            grid-template-columns:1fr 1fr; border-right:0; background:var(--frost-solid); }
-          .hub-settings__rail button { text-align:center; }
-          .hub-settings__pane { padding:20px 16px 28px; }
-          .account-facts > div { grid-template-columns:1fr; gap:5px; }
+        }
+        @media (max-width:607px) {
+          .hubcol { width:min(432px, calc(100vw - 32px)); }
+          .hc-acct { width:168px; }
+          .hc-view { width:144px; }
+          .hc-cfg { width:84px; }
+          .hub-page .mode-cap { width:36px; }
+          .hub-settings { grid-template-columns:108px 324px; width:100%; margin-left:0; }
+        }
+        @media (max-width:519px) {
+          .hub-logo { top:62px; }
+          .hub-logo svg { width:98px; }
+          .hubcol { padding-top:132px; }
+        }
+        @media (max-width:463px) {
+          .hc-acct { width:50%; }
+          .hc-view { width:auto; flex:1; }
+          .hc-cfg, .hub-page .mode-cap { width:44px; flex:0 0 44px; }
+          .hc-cfg { justify-content:center; padding-inline:0; }
+          .settings-word { position:absolute; width:1px; height:1px; padding:0;
+            margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;
+            border:0; }
+          .hub-settings { display:flex; flex-direction:column; }
+          .hub-settings__rail { flex-direction:row; gap:0; width:100%; }
+          .hub-settings__rail button { flex:1; }
+          .hub-settings__rail button[aria-selected="true"] { border-right:1px solid var(--ring);
+            border-bottom:0; }
+          .hub-settings__rail button[aria-selected="true"]::after { top:auto; right:auto;
+            bottom:-1px; left:0; width:100%; height:1px; }
+          .hub-settings__body { min-height:min(408px, 55vh); }
         }
       </style>
 
       <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
 
-      <nav class="hubbar chrome" aria-label="hub">
-        <!-- Creating asks nothing up front: the space starts "Untitled" (the
-             worker uniquifies the sentinel) and is renamed in place with the
-             bar's block cursor the moment you land in it. The hidden inputs
-             carry the sync remote and its revocation relay, filled on connect
-             by <tonk-default-remote auto> — without them the worker still
-             creates the space, silently local-only. -->
-        <form class="hub-new-form" onsubmit=space/create>
-          <input type="hidden" name="name" value="Untitled">
-          <input type="hidden" name="remote" value="">
-          <input type="hidden" name="revocation" value="">
-          <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
-          <button class="hcell hc-new" type="submit">new space<span class="g">+</span></button>
-        </form>
+      <main class="hubcol">
         <ui-hub-account></ui-hub-account>
-        <ui-mode-switch></ui-mode-switch>
-      </nav>
 
-      <div class="stack chrome">
-        <div class="shead blk">spaces</div>
-        <div class="sempty blk">no spaces yet</div>
+      <div class="stack chrome" data-spaces-view aria-label="spaces">
         <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
              link, so the verbs and the confirm cluster travel with the row
              while staying outside it: reaching for remove never navigates.
@@ -567,21 +566,25 @@ view/directory!:
             </form>
           </div>
         </div>
-        <!-- The stack's own ghost create, which is also the only one on a
-             phone: the bar drops its new-space rung at 640 rather than
-             squeezing every cell. -->
+        <!-- Creating asks nothing up front: the space starts "Untitled" (the
+             worker uniquifies the sentinel) and is renamed in place with the
+             bar's block cursor the moment you land in it. The hidden inputs
+             carry the sync remote and its revocation relay, filled on connect
+             by <tonk-default-remote auto> — without them the worker still
+             creates the space, silently local-only. -->
         <form class="snew-form" onsubmit=space/create>
           <input type="hidden" name="name" value="Untitled">
           <input type="hidden" name="remote" value="">
           <input type="hidden" name="revocation" value="">
           <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
-          <button class="snew" type="submit">new space</button>
+          <button class="snew chrome" type="submit">create a new space<span class="g" aria-hidden="true">&#9656;</span></button>
         </form>
       </div>
 
       <!-- The shared "everything closed" state for the confirm radios. Last,
            so a row's own radio can never be un-checked by it accidentally. -->
       <input class="rm-radio" type="radio" name="__rm" id="rm-closed" checked tabindex="-1">
+      </main>
     </div>
 
 # ============================================================

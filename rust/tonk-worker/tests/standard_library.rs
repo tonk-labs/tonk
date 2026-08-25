@@ -30,6 +30,11 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
+/// Light-DOM markup mounted by the Hub account custom element. The profile
+/// library supplies its geometry, so their visual contract is checked here
+/// together.
+const HUB_ACCOUNT_MARKUP: &str = include_str!("../../tonk-workspace/src/ui_hub_account.html");
+
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
 fn assert_library_lowers(label: &str, document: &str) {
@@ -53,6 +58,14 @@ fn assert_library_lowers(label: &str, document: &str) {
         !request.claims.is_empty(),
         "{label} should lower to at least one claim",
     );
+}
+
+fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
+    document
+        .split(selector)
+        .nth(1)
+        .and_then(|css| css.split('}').next())
+        .unwrap_or_else(|| panic!("profile library must contain the `{selector}` rule"))
 }
 
 #[test]
@@ -176,4 +189,180 @@ fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
             .contains("box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);"),
         "Hub focus rings need both palette poles so selected and ordinary controls stay visible",
     );
+}
+
+#[test]
+fn it_keeps_the_hub_on_the_complete_stone_token_contract() {
+    for token in [
+        "--panel:",
+        "--cur:var(--panel)",
+        "--card-hover:",
+        "--canvas:",
+        "--stub-ink:",
+        "--veil:",
+        "--track:",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(token),
+            "the Hub palette must define `{token}` in its shared contract",
+        );
+    }
+}
+
+#[test]
+fn it_builds_one_centered_hub_launcher_with_an_attached_settings_view() {
+    for contract in [
+        ".hubcol",
+        "width:min(576px, calc(100vw - 32px))",
+        ".hc-view",
+        ".hc-cfg",
+        "create a new space",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the centered Hub launcher must contain `{contract}`",
+        );
+    }
+    let hubbar = PROFILE_LIBRARY
+        .split(".hubbar {")
+        .nth(1)
+        .and_then(|css| css.split('}').next())
+        .expect("the Hub bar rule");
+    for rejected in ["position:fixed", "right:", "border-radius"] {
+        assert!(
+            !hubbar.contains(rejected),
+            "the centered Hub bar must reject `{rejected}`",
+        );
+    }
+    for (selector, width) in [
+        (".hc-acct {", "width:224px"),
+        (".hc-view {", "width:192px"),
+        (".hc-cfg {", "width:112px"),
+        (".hub-page .mode-cap {", "width:48px"),
+    ] {
+        assert!(
+            css_rule(PROFILE_LIBRARY, selector).contains(width),
+            "the proportional desktop Hub cell `{selector}` must contain `{width}`",
+        );
+    }
+    for rejected in ["class=\"shead"] {
+        assert!(
+            !PROFILE_LIBRARY.contains(rejected),
+            "the centered Hub launcher must reject `{rejected}`",
+        );
+    }
+    for rejected in ["class=\"sempty", "no spaces yet"] {
+        assert!(
+            !PROFILE_LIBRARY.contains(rejected),
+            "an empty Hub roster must show only the creation action, not `{rejected}`",
+        );
+    }
+}
+
+#[test]
+fn it_separates_the_account_roster_into_independent_blocks() {
+    let menu = css_rule(PROFILE_LIBRARY, ".account-menu {");
+    for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
+        assert!(
+            menu.contains(contract),
+            "the account roster must contain `{contract}`",
+        );
+    }
+    let profiles = css_rule(PROFILE_LIBRARY, ".account-menu__profiles {");
+    assert!(
+        profiles.contains("gap:7px"),
+        "profiles must keep the same 7px rhythm as Hub space rows",
+    );
+    let row = css_rule(PROFILE_LIBRARY, ".account-menu__row {");
+    assert!(
+        row.contains("box-shadow:0 0 0 1px var(--ring)"),
+        "each account row must carry its own ring",
+    );
+    assert!(
+        !row.contains("border-bottom"),
+        "separated account blocks must not retain fused row dividers",
+    );
+}
+
+#[test]
+fn it_adapts_the_gooey_settings_hierarchy_to_the_wider_launcher() {
+    let settings = css_rule(PROFILE_LIBRARY, ".hub-settings {");
+    for contract in [
+        "display:grid",
+        "grid-template-columns:144px 432px",
+        "width:576px",
+    ] {
+        assert!(
+            settings.contains(contract),
+            "the desktop settings view must contain `{contract}`",
+        );
+    }
+    let rail = css_rule(PROFILE_LIBRARY, ".hub-settings__rail {");
+    for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
+        assert!(
+            rail.contains(contract),
+            "the desktop settings rail must contain `{contract}`",
+        );
+    }
+    let tab = css_rule(PROFILE_LIBRARY, ".hub-settings__rail button {");
+    for contract in ["border:1px solid var(--ring)", "box-shadow:none"] {
+        assert!(
+            tab.contains(contract),
+            "every settings tab must share the panel's inset edge geometry with `{contract}`",
+        );
+    }
+    let selected_tab = css_rule(
+        PROFILE_LIBRARY,
+        ".hub-settings__rail button[aria-selected=\"true\"] {",
+    );
+    assert!(
+        selected_tab.contains("border-right:0"),
+        "the selected desktop tab must erase only its docking edge",
+    );
+    let body = css_rule(PROFILE_LIBRARY, ".hub-settings__body {");
+    assert!(
+        body.contains("min-height:408px"),
+        "the settings body must preserve the reference panel's information capacity",
+    );
+    let medium = PROFILE_LIBRARY
+        .split("@media (max-width:607px)")
+        .nth(1)
+        .expect("the medium Hub breakpoint");
+    let medium_settings = css_rule(medium, ".hub-settings {");
+    for contract in [
+        "grid-template-columns:108px 324px",
+        "width:100%",
+        "margin-left:0",
+    ] {
+        assert!(
+            medium_settings.contains(contract),
+            "the medium settings view must contain `{contract}`",
+        );
+    }
+    let compact = PROFILE_LIBRARY
+        .split("@media (max-width:463px)")
+        .nth(1)
+        .expect("the compact Hub breakpoint");
+    let compact_rail = css_rule(compact, ".hub-settings__rail {");
+    assert!(
+        compact_rail.contains("width:100%"),
+        "the compact settings tabs must span the full attached panel",
+    );
+    for contract in ["border-right:1px solid var(--ring)", "border-bottom:0"] {
+        assert!(
+            compact.contains(contract),
+            "the compact selected tab must move its erased docking edge with `{contract}`",
+        );
+    }
+    for contract in [
+        "class=\"settings-section\">passkeys",
+        "class=\"settings-section\">account management",
+        "Your passkey replaces a password",
+        "manage passkeys and account",
+    ] {
+        assert!(
+            HUB_ACCOUNT_MARKUP.contains(contract),
+            "the adapted settings hierarchy must contain `{contract}`",
+        );
+    }
 }

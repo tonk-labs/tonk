@@ -231,6 +231,41 @@ pub fn stacks_html(space_did: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skin::SKIN;
+
+    #[test]
+    fn it_exposes_the_stone_ink_palette_in_both_modes() {
+        for declaration in [
+            "--fabb-ink, #131313",
+            "--fabb-ink-soft, #55544f",
+            "--fabb-on-ink, #fbfaef",
+            "--fabb-sep, rgba(19,19,19,.28)",
+            "--fabb-hover, rgba(19,19,19,.06)",
+            "--fabb-press, rgba(19,19,19,.12)",
+            "--fabb-ring, rgba(19,19,19,.85)",
+            "--fabb-ink-dark, #e9e6d6",
+            "--fabb-ink-soft-dark, #cdcaba",
+            "--fabb-on-ink-dark, #22221c",
+            "--fabb-sep-dark, rgba(233,230,214,.28)",
+            "--fabb-hover-dark, rgba(251,250,239,.09)",
+            "--fabb-press-dark, rgba(251,250,239,.15)",
+            "--fabb-ring-dark, rgba(233,230,214,.55)",
+        ] {
+            assert!(
+                SKIN.contains(declaration),
+                "the shared FABB skin must expose `{declaration}`",
+            );
+        }
+        assert!(!SKIN.contains("#34332b"), "the old olive ink must be gone");
+        assert!(
+            !SKIN.contains("rgba(43,44,20"),
+            "the old olive alpha colors must be gone",
+        );
+        assert!(
+            SKIN.contains("var(--fabb-ring"),
+            "the internal ring must read the public ring token",
+        );
+    }
 
     #[test]
     fn it_omits_the_changes_rung() {

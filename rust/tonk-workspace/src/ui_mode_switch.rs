@@ -78,6 +78,11 @@ impl CustomElement for UiModeSwitch {
         let _ = button.set_attribute("role", "switch");
         let _ = button.set_attribute("title", "dark / light");
         let _ = button.set_attribute("aria-label", "dark mode");
+        if let Ok(mark) = document.create_element("span") {
+            mark.set_class_name("mode-mark");
+            let _ = mark.set_attribute("aria-hidden", "true");
+            let _ = button.append_child(&mark);
+        }
         let _ = this.append_child(&button);
     }
 
@@ -134,5 +139,48 @@ pub(crate) fn register() {
     };
     if win.custom_elements().get("ui-mode-switch").is_undefined() {
         UiModeSwitch::define("ui-mode-switch");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use web_sys::{HtmlElement, window};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    fn it_mounts_one_labelled_switch_with_one_split_tone_mark() {
+        super::register();
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("ui-mode-switch")
+            .expect("create mode switch")
+            .dyn_into()
+            .expect("HtmlElement");
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("append mode switch");
+
+        let switches = host.query_selector_all("[role=\"switch\"]").unwrap();
+        assert_eq!(switches.length(), 1, "the component owns one switch");
+        let switch: web_sys::Element = switches
+            .item(0)
+            .unwrap()
+            .dyn_into()
+            .expect("switch element");
+        assert_eq!(
+            switch.get_attribute("aria-label").as_deref(),
+            Some("dark mode"),
+        );
+        assert_eq!(
+            host.query_selector_all(".mode-mark").unwrap().length(),
+            1,
+            "the square cell contains one split-tone mode mark",
+        );
+        host.remove();
     }
 }

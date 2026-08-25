@@ -1555,8 +1555,12 @@ mod tests {
                 });
             return Err(error).context(format!("Hub account diagnostic: {diagnostic}"));
         }
-        wait_for_displayed(&driver, ".sempty").await?;
+        wait_for_displayed(&driver, ".snew").await?;
         let second_stack = element(&driver, ".stack").await?.text().await?;
+        assert_eq!(
+            second_stack, "create a new space",
+            "an empty Hub roster must collapse directly to the creation action"
+        );
         assert!(
             !second_stack.contains("First Garden"),
             "the second account's Hub must omit the first account's space"
@@ -1578,7 +1582,7 @@ mod tests {
         );
         click(&driver, "[data-settings-tab=\"devices\"]").await?;
         wait_for_text_containing(&driver, "[data-device-list]", "current device").await?;
-        let settings_text = element(&driver, "[data-settings-dialog]")
+        let settings_text = element(&driver, "[data-settings-view]")
             .await?
             .text()
             .await?
@@ -1589,6 +1593,22 @@ mod tests {
                 "Hub settings must not contain {forbidden}"
             );
         }
+        let section_style = driver
+            .execute(
+                r#"const section = document.querySelector('.settings-section');
+                const style = getComputedStyle(section);
+                return { backgroundColor: style.backgroundColor, display: style.display };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            section_style.json(),
+            &serde_json::json!({
+                "backgroundColor": "rgba(0, 0, 0, 0)",
+                "display": "block"
+            }),
+            "the attached settings section must not inherit the global badge treatment"
+        );
 
         // The authoritative display-name write repaints the Hub trigger and
         // remains in the field after the dialog is reopened.
@@ -1627,15 +1647,14 @@ mod tests {
                 });
             return Err(error).context(format!("Hub display-name diagnostic: {diagnostic}"));
         }
-        click(&driver, "[data-settings-close]").await?;
+        click(&driver, "[data-return-spaces]").await?;
         let focus_restored = driver
             .execute(
-                "return document.activeElement?.hasAttribute('data-account-trigger') === true",
+                "return document.activeElement?.hasAttribute('data-return-spaces') === true",
                 Vec::new(),
             )
             .await?;
         assert_eq!(focus_restored.json(), &serde_json::json!(true));
-        click(&driver, "[data-account-trigger]").await?;
         click(&driver, "[data-open-settings]").await?;
         assert_eq!(
             element(&driver, "[data-display-name]")
@@ -1645,7 +1664,7 @@ mod tests {
                 .as_deref(),
             Some("Second Hub")
         );
-        click(&driver, "[data-settings-close]").await?;
+        click(&driver, "[data-return-spaces]").await?;
 
         // Switch back from the Hub's account roster. The component navigates
         // the whole top page, so restore the top context before waiting for

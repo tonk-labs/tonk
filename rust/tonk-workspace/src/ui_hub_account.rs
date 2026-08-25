@@ -294,9 +294,7 @@ impl CustomElement for UiHubAccount {
                     .and_then(|trigger| trigger.get_attribute("aria-expanded"))
                     .as_deref()
                     == Some("true");
-                if expanded {
-                    close_menu(&host, false);
-                } else {
+                if !expanded {
                     open_menu(&host);
                 }
                 return;
@@ -312,12 +310,13 @@ impl CustomElement for UiHubAccount {
                 return;
             }
             if target
-                .closest("[data-settings-close], [data-settings-scrim]")
+                .closest("[data-return-spaces]")
                 .ok()
                 .flatten()
                 .is_some()
             {
-                close_settings(&host, &settings_opener, true);
+                close_menu(&host, false);
+                close_settings(&host, &settings_opener, false);
                 return;
             }
             if let Some(tab) = target.closest("[data-settings-tab]").ok().flatten()
@@ -395,8 +394,6 @@ impl CustomElement for UiHubAccount {
                 } else {
                     close_menu(&host, true);
                 }
-            } else if event.key() == "Tab" && settings_open(&host) {
-                trap_settings_focus(&host, &event);
             }
         }));
         let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
@@ -727,8 +724,30 @@ fn account_trigger(this: &HtmlElement) -> Option<HtmlElement> {
 }
 
 fn open_menu(this: &HtmlElement) {
+    let return_view = if settings_open(this) {
+        "settings"
+    } else {
+        "spaces"
+    };
+    let _ = this.set_attribute("data-account-return-view", return_view);
+    set_hidden(this, "[data-settings-view]", true);
+    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
+        let _ = spaces.remove_attribute("aria-current");
+    }
+    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
+        let _ = settings.remove_attribute("aria-current");
+    }
+    if let Some(root) = this.closest(".hubcol").ok().flatten() {
+        let _ = root.set_attribute("data-hub-view", "accounts");
+        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
+            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
+        {
+            stack.set_hidden(true);
+        }
+    }
     if let Some(trigger) = account_trigger(this) {
         let _ = trigger.set_attribute("aria-expanded", "true");
+        let _ = trigger.set_attribute("aria-current", "page");
     }
     if let Ok(Some(menu)) = this.query_selector("[data-account-menu]")
         && let Ok(menu) = menu.dyn_into::<HtmlElement>()
@@ -738,8 +757,13 @@ fn open_menu(this: &HtmlElement) {
 }
 
 fn close_menu(this: &HtmlElement, restore_focus: bool) {
+    let was_open = account_trigger(this)
+        .and_then(|trigger| trigger.get_attribute("aria-expanded"))
+        .as_deref()
+        == Some("true");
     if let Some(trigger) = account_trigger(this) {
         let _ = trigger.set_attribute("aria-expanded", "false");
+        let _ = trigger.remove_attribute("aria-current");
         if restore_focus {
             let _ = trigger.focus();
         }
@@ -749,21 +773,72 @@ fn close_menu(this: &HtmlElement, restore_focus: bool) {
     {
         menu.set_hidden(true);
     }
+    if !was_open {
+        return;
+    }
+
+    let return_to_settings =
+        this.get_attribute("data-account-return-view").as_deref() == Some("settings");
+    let _ = this.remove_attribute("data-account-return-view");
+    set_hidden(this, "[data-settings-view]", !return_to_settings);
+    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
+        if return_to_settings {
+            let _ = spaces.remove_attribute("aria-current");
+        } else {
+            let _ = spaces.set_attribute("aria-current", "page");
+        }
+    }
+    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
+        if return_to_settings {
+            let _ = settings.set_attribute("aria-current", "page");
+        } else {
+            let _ = settings.remove_attribute("aria-current");
+        }
+    }
+    if let Some(root) = this.closest(".hubcol").ok().flatten() {
+        if return_to_settings {
+            let _ = root.set_attribute("data-hub-view", "settings");
+        } else {
+            let _ = root.remove_attribute("data-hub-view");
+        }
+        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
+            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
+        {
+            stack.set_hidden(return_to_settings);
+        }
+    }
 }
 
 fn settings_open(this: &HtmlElement) -> bool {
-    this.query_selector("[data-settings-overlay]")
+    this.query_selector("[data-settings-view]")
         .ok()
         .flatten()
         .and_then(|element| element.dyn_into::<HtmlElement>().ok())
-        .is_some_and(|overlay| !overlay.hidden())
+        .is_some_and(|view| !view.hidden())
 }
 
 fn open_settings(this: &HtmlElement, opener: &Rc<RefCell<Option<HtmlElement>>>) {
     close_menu(this, false);
-    *opener.borrow_mut() = account_trigger(this);
-    set_hidden(this, "[data-settings-overlay]", false);
-    set_hub_inert(this, true);
+    *opener.borrow_mut() = this
+        .query_selector("[data-open-settings]")
+        .ok()
+        .flatten()
+        .and_then(|element| element.dyn_into().ok());
+    set_hidden(this, "[data-settings-view]", false);
+    if let Some(root) = this.closest(".hubcol").ok().flatten() {
+        let _ = root.set_attribute("data-hub-view", "settings");
+        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
+            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
+        {
+            stack.set_hidden(true);
+        }
+    }
+    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
+        let _ = spaces.remove_attribute("aria-current");
+    }
+    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
+        let _ = settings.set_attribute("aria-current", "page");
+    }
     select_settings_tab(this, "account");
 
     if this.get_attribute("data-active-provider").as_deref() == Some("false") {
@@ -781,11 +856,6 @@ fn open_settings(this: &HtmlElement, opener: &Rc<RefCell<Option<HtmlElement>>>) 
         input.set_value(&name);
         let _ = input.set_attribute("data-confirmed-name", &name);
     }
-    if let Ok(Some(close)) = this.query_selector("[data-settings-close]")
-        && let Ok(close) = close.dyn_into::<HtmlElement>()
-    {
-        let _ = close.focus();
-    }
 }
 
 fn close_settings(
@@ -793,42 +863,25 @@ fn close_settings(
     opener: &Rc<RefCell<Option<HtmlElement>>>,
     restore_focus: bool,
 ) {
-    set_hidden(this, "[data-settings-overlay]", true);
-    set_hub_inert(this, false);
+    set_hidden(this, "[data-settings-view]", true);
+    if let Some(root) = this.closest(".hubcol").ok().flatten() {
+        let _ = root.remove_attribute("data-hub-view");
+        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
+            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
+        {
+            stack.set_hidden(false);
+        }
+    }
+    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
+        let _ = settings.remove_attribute("aria-current");
+    }
+    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
+        let _ = spaces.set_attribute("aria-current", "page");
+    }
     if let Some(opener) = opener.borrow_mut().take()
         && restore_focus
     {
         let _ = opener.focus();
-    }
-}
-
-fn set_hub_inert(this: &HtmlElement, inert: bool) {
-    let page = this.closest(".hub-page").ok().flatten().or_else(|| {
-        window()
-            .and_then(|window| window.document())
-            .and_then(|document| document.query_selector(".hub-page").ok().flatten())
-    });
-    let Some(page) = page else {
-        return;
-    };
-    let Ok(chrome) = page.query_selector_all(".hub-logo, .stack, .hubbar > :not(ui-hub-account)")
-    else {
-        return;
-    };
-    for index in 0..chrome.length() {
-        let Some(element) = chrome
-            .item(index)
-            .and_then(|node| node.dyn_into::<Element>().ok())
-        else {
-            continue;
-        };
-        if inert {
-            let _ = element.set_attribute("inert", "");
-            let _ = element.set_attribute("aria-hidden", "true");
-        } else {
-            let _ = element.remove_attribute("inert");
-            let _ = element.remove_attribute("aria-hidden");
-        }
     }
 }
 
@@ -859,55 +912,6 @@ fn select_settings_tab(this: &HtmlElement, selected: &str) {
                 pane.set_hidden(hidden);
             }
         }
-    }
-}
-
-fn trap_settings_focus(this: &HtmlElement, event: &KeyboardEvent) {
-    let Some(dialog) = this.query_selector("[data-settings-dialog]").ok().flatten() else {
-        return;
-    };
-    let Ok(nodes) = dialog.query_selector_all(
-        "button:not([disabled]), input:not([disabled]), a[href], [tabindex]:not([tabindex=\"-1\"])",
-    ) else {
-        return;
-    };
-    let mut focusable = Vec::new();
-    for index in 0..nodes.length() {
-        let Some(element) = nodes
-            .item(index)
-            .and_then(|node| node.dyn_into::<Element>().ok())
-        else {
-            continue;
-        };
-        if element.closest("[hidden]").ok().flatten().is_none()
-            && let Ok(element) = element.dyn_into::<HtmlElement>()
-        {
-            focusable.push(element);
-        }
-    }
-    let Some(first) = focusable.first() else {
-        return;
-    };
-    let Some(last) = focusable.last() else {
-        return;
-    };
-    let active = window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.active_element());
-    let wrap = if event.shift_key() {
-        active
-            .as_ref()
-            .is_none_or(|active| active.is_same_node(Some(first)))
-            .then_some(last)
-    } else {
-        active
-            .as_ref()
-            .is_none_or(|active| active.is_same_node(Some(last)))
-            .then_some(first)
-    };
-    if let Some(target) = wrap {
-        event.prevent_default();
-        let _ = target.focus();
     }
 }
 
@@ -977,7 +981,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_mounts_the_account_menu_and_settings_shell() {
+    fn it_mounts_the_complete_header_and_attached_settings_view() {
         let host = account_element();
 
         assert!(
@@ -987,11 +991,20 @@ mod tests {
             "the registered element must mount its account menu"
         );
         assert!(
-            host.query_selector("[data-settings-dialog]")
+            host.query_selector("[data-settings-view]")
                 .expect("valid selector")
                 .is_some(),
-            "the registered element must mount its settings dialog"
+            "the registered element must mount its attached settings view"
         );
+        assert_eq!(host.query_selector_all(".hubbar > *").unwrap().length(), 4);
+        for rejected in [
+            "[data-settings-dialog]",
+            "[data-settings-overlay]",
+            "[data-settings-scrim]",
+            "[data-settings-close]",
+        ] {
+            assert!(host.query_selector(rejected).unwrap().is_none());
+        }
         let display_name = host
             .query_selector("[data-display-name]")
             .expect("valid selector")
@@ -1137,6 +1150,146 @@ mod tests {
                 .is_some_and(|active| active.is_same_node(Some(&trigger)))
         );
         host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_treats_the_account_roster_as_a_tab_and_restores_the_previous_view_on_dismiss() {
+        let document = window().unwrap().document().unwrap();
+        let hubcol: HtmlElement = document.create_element("main").unwrap().dyn_into().unwrap();
+        hubcol.set_class_name("hubcol");
+        let host = account_element();
+        let stack: HtmlElement = document
+            .create_element("section")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        stack.set_class_name("stack");
+        let _ = stack.set_attribute("data-spaces-view", "");
+        hubcol.append_child(&host).unwrap();
+        hubcol.append_child(&stack).unwrap();
+        document.body().unwrap().append_child(&hubcol).unwrap();
+
+        let trigger: HtmlElement = host
+            .query_selector("[data-account-trigger]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let menu: HtmlElement = host
+            .query_selector("[data-account-menu]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let settings_button: HtmlElement = host
+            .query_selector("[data-open-settings]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let settings: HtmlElement = host
+            .query_selector("[data-settings-view]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+
+        settings_button.click();
+        trigger.click();
+        assert!(!menu.hidden());
+        assert!(settings.hidden(), "the roster replaces the settings view");
+        assert!(stack.hidden());
+        assert_eq!(
+            hubcol.get_attribute("data-hub-view").as_deref(),
+            Some("accounts")
+        );
+        assert_eq!(
+            trigger.get_attribute("aria-current").as_deref(),
+            Some("page")
+        );
+        assert!(settings_button.get_attribute("aria-current").is_none());
+        assert!(
+            host.query_selector("[data-return-spaces]")
+                .unwrap()
+                .unwrap()
+                .get_attribute("aria-current")
+                .is_none()
+        );
+
+        let escape = KeyboardEventInit::new();
+        escape.set_key("Escape");
+        escape.set_bubbles(true);
+        trigger
+            .dispatch_event(
+                &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &escape).unwrap(),
+            )
+            .unwrap();
+        assert!(menu.hidden());
+        assert!(!settings.hidden(), "closing the roster restores settings");
+        assert!(stack.hidden());
+        assert_eq!(
+            hubcol.get_attribute("data-hub-view").as_deref(),
+            Some("settings")
+        );
+        assert!(trigger.get_attribute("aria-current").is_none());
+        assert_eq!(
+            settings_button.get_attribute("aria-current").as_deref(),
+            Some("page")
+        );
+
+        host.query_selector("[data-return-spaces]")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        trigger.click();
+        assert!(!menu.hidden());
+        assert!(settings.hidden());
+        assert!(stack.hidden(), "the roster replaces the spaces view");
+        assert_eq!(
+            trigger.get_attribute("aria-current").as_deref(),
+            Some("page")
+        );
+        assert!(
+            host.query_selector("[data-return-spaces]")
+                .unwrap()
+                .unwrap()
+                .get_attribute("aria-current")
+                .is_none()
+        );
+        trigger.click();
+        assert!(!menu.hidden(), "the active account tab is not a toggle");
+        assert!(settings.hidden());
+        assert!(stack.hidden());
+        assert_eq!(
+            trigger.get_attribute("aria-current").as_deref(),
+            Some("page")
+        );
+        assert_eq!(
+            hubcol.get_attribute("data-hub-view").as_deref(),
+            Some("accounts")
+        );
+
+        trigger
+            .dispatch_event(
+                &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &escape).unwrap(),
+            )
+            .unwrap();
+        assert!(menu.hidden());
+        assert!(settings.hidden());
+        assert!(!stack.hidden(), "dismissing the roster restores spaces");
+        assert!(trigger.get_attribute("aria-current").is_none());
+        assert_eq!(
+            host.query_selector("[data-return-spaces]")
+                .unwrap()
+                .unwrap()
+                .get_attribute("aria-current")
+                .as_deref(),
+            Some("page")
+        );
+
+        hubcol.remove();
     }
 
     #[wasm_bindgen_test]
@@ -1287,32 +1440,164 @@ mod tests {
             local
                 .text_content()
                 .unwrap()
-                .contains("Not signed in on this profile")
+                .contains("This profile is not connected to an account")
         );
         host.remove();
     }
 
     #[wasm_bindgen_test]
-    fn it_owns_the_settings_dialog_keyboard_and_close_lifecycle() {
-        let host = account_element();
+    fn it_keeps_provider_free_profiles_local_spaces_and_creation_available() {
         let document = window().unwrap().document().unwrap();
-        let account_trigger: HtmlElement = host
+        let hubcol: HtmlElement = document.create_element("main").unwrap().dyn_into().unwrap();
+        hubcol.set_class_name("hubcol");
+        let host = account_element();
+        let stack: HtmlElement = document
+            .create_element("section")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        stack.set_class_name("stack");
+        let _ = stack.set_attribute("data-spaces-view", "");
+        stack.set_inner_html(
+            r#"<a class="srow" href="/space/did:key:local">Local notes</a>
+               <button class="snew" type="submit">create a new space</button>"#,
+        );
+        hubcol.append_child(&host).unwrap();
+        hubcol.append_child(&stack).unwrap();
+        document.body().unwrap().append_child(&hubcol).unwrap();
+
+        super::render_profiles(
+            &host,
+            &ProfilesResponse {
+                active: "Local workspace".into(),
+                profiles: vec![profile("Local workspace", None, None, None, true)],
+            },
+        );
+        let account: HtmlElement = host
             .query_selector("[data-account-trigger]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
-        account_trigger.click();
+        assert!(account.text_content().unwrap().contains("Local workspace"));
+        account.click();
+        let menu: HtmlElement = host
+            .query_selector("[data-account-menu]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(!menu.hidden(), "the local profile still opens its roster");
+
+        let settings: HtmlElement = host
+            .query_selector("[data-open-settings]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        settings.click();
+        let settings_view: HtmlElement = host
+            .query_selector("[data-settings-view]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(!settings_view.hidden());
+        assert!(stack.hidden());
+        let local_account: HtmlElement = host
+            .query_selector("[data-local-profile]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(!local_account.hidden());
+        assert!(
+            local_account
+                .text_content()
+                .unwrap()
+                .contains("not connected to an account")
+        );
+        assert!(
+            local_account
+                .query_selector("[data-account-handoff]")
+                .unwrap()
+                .is_some()
+        );
+
+        let devices: HtmlElement = host
+            .query_selector("[data-settings-tab=\"devices\"]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        devices.click();
+        let local_devices: HtmlElement = host
+            .query_selector("[data-local-devices]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(!local_devices.hidden());
+        assert!(
+            local_devices
+                .text_content()
+                .unwrap()
+                .contains("require an account")
+        );
+
+        let spaces: HtmlElement = host
+            .query_selector("[data-return-spaces]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        spaces.click();
+        assert!(!stack.hidden());
+        assert!(stack.query_selector(".srow[href]").unwrap().is_some());
+        assert!(
+            stack
+                .query_selector(".snew")
+                .unwrap()
+                .unwrap()
+                .get_attribute("disabled")
+                .is_none()
+        );
+        hubcol.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_owns_the_attached_settings_view_and_header_lifecycle() {
+        let document = window().unwrap().document().unwrap();
+        let hubcol: HtmlElement = document.create_element("main").unwrap().dyn_into().unwrap();
+        hubcol.set_class_name("hubcol");
+        let host = account_element();
+        let stack: HtmlElement = document
+            .create_element("section")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        stack.set_class_name("stack");
+        let _ = stack.set_attribute("data-spaces-view", "");
+        hubcol.append_child(&host).unwrap();
+        hubcol.append_child(&stack).unwrap();
+        document.body().unwrap().append_child(&hubcol).unwrap();
+
         let settings_button: HtmlElement = host
             .query_selector("[data-open-settings]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
+        let spaces_button: HtmlElement = host
+            .query_selector("[data-return-spaces]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
         settings_button.click();
 
-        let overlay: HtmlElement = host
-            .query_selector("[data-settings-overlay]")
+        let settings: HtmlElement = host
+            .query_selector("[data-settings-view]")
             .unwrap()
             .unwrap()
             .dyn_into()
@@ -1323,7 +1608,17 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        assert!(!overlay.hidden());
+        assert!(!settings.hidden());
+        assert!(stack.hidden());
+        assert_eq!(
+            hubcol.get_attribute("data-hub-view").as_deref(),
+            Some("settings")
+        );
+        assert_eq!(
+            settings_button.get_attribute("aria-current").as_deref(),
+            Some("page")
+        );
+        assert!(spaces_button.get_attribute("aria-current").is_none());
         assert!(menu.hidden(), "opening settings closes the account menu");
 
         let devices_tab: HtmlElement = host
@@ -1352,62 +1647,31 @@ mod tests {
         assert!(account_pane.hidden());
         assert!(!devices_pane.hidden());
 
-        let close: HtmlElement = host
-            .query_selector("[data-settings-close]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        close.click();
-        assert!(overlay.hidden());
-        assert!(
-            document
-                .active_element()
-                .is_some_and(|active| active.is_same_node(Some(&account_trigger)))
+        spaces_button.click();
+        assert!(settings.hidden());
+        assert!(!stack.hidden());
+        assert!(hubcol.get_attribute("data-hub-view").is_none());
+        assert_eq!(
+            spaces_button.get_attribute("aria-current").as_deref(),
+            Some("page")
         );
+        assert!(settings_button.get_attribute("aria-current").is_none());
 
-        account_trigger.click();
-        settings_button.click();
-        let scrim: HtmlElement = host
-            .query_selector("[data-settings-scrim]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        scrim.click();
-        assert!(overlay.hidden());
-
-        account_trigger.click();
         settings_button.click();
         let escape_init = KeyboardEventInit::new();
         escape_init.set_key("Escape");
         escape_init.set_bubbles(true);
-        close
+        settings
             .dispatch_event(
                 &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &escape_init).unwrap(),
             )
             .unwrap();
-        assert!(overlay.hidden());
-
-        account_trigger.click();
-        settings_button.click();
-        close.focus().unwrap();
-        let backwards = KeyboardEventInit::new();
-        backwards.set_key("Tab");
-        backwards.set_shift_key(true);
-        backwards.set_bubbles(true);
-        close
-            .dispatch_event(
-                &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &backwards).unwrap(),
-            )
-            .unwrap();
-        let active = document.active_element().expect("focus remains in dialog");
+        assert!(settings.hidden());
         assert!(
-            host.query_selector("[data-settings-dialog]")
-                .unwrap()
-                .unwrap()
-                .contains(Some(&active))
+            document
+                .active_element()
+                .is_some_and(|active| active.is_same_node(Some(&settings_button)))
         );
-        host.remove();
+        hubcol.remove();
     }
 }
