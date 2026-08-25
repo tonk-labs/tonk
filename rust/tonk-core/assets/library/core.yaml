@@ -715,6 +715,9 @@ view/directory!:
           background: var(--wa-color-text-normal);
           color: var(--wa-color-surface-default);
         }
+        .roster__role[data-role="tonk:admin"]::after {
+          content: "admin";
+        }
         .roster__role[data-role="tonk:member"]::after {
           content: "member";
           color: var(--wa-color-text-quiet);

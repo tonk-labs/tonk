@@ -34,6 +34,8 @@ pub enum SpaceRole {
     Local,
     /// The roster names this installation as the space's founder.
     Owner,
+    /// The roster names this installation as an admin.
+    Admin,
     /// The roster names this installation as a member.
     Member,
     /// The space carries a roster, and no row in it is ours.
@@ -48,6 +50,7 @@ impl SpaceRole {
         match self {
             Self::Local => "local",
             Self::Owner => "owner",
+            Self::Admin => "admin",
             Self::Member => "member",
             Self::Unlisted => "unlisted",
             Self::Unknown => "unknown",
@@ -403,6 +406,7 @@ fn classify(roster: &Roster, identity: &crate::site::Identity) -> SpaceRole {
     };
     match row.role.as_deref() {
         Some(MemberRole::FOUNDER) => SpaceRole::Owner,
+        Some(MemberRole::ADMIN) => SpaceRole::Admin,
         Some(MemberRole::MEMBER) => SpaceRole::Member,
         _ => SpaceRole::Unknown,
     }
@@ -486,7 +490,10 @@ pub async fn read_roster(site: &crate::site::TonkSite) -> Result<Roster> {
         let role = match stamped.split_first() {
             None => None,
             Some((role, rest)) if rest.iter().all(|other| other == role) => {
-                if matches!(role.as_str(), MemberRole::FOUNDER | MemberRole::MEMBER) {
+                if matches!(
+                    role.as_str(),
+                    MemberRole::FOUNDER | MemberRole::ADMIN | MemberRole::MEMBER
+                ) {
                     Some(role.clone())
                 } else {
                     roster
