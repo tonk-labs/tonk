@@ -134,6 +134,9 @@ pub async fn enroll(
             Receipt {
                 customer: root_did.clone(),
                 status: CustomerStatus::Active,
+                // Synthesized locally, so it names no service-provided
+                // provider; whatever was recorded before stands.
+                provider: None,
             }
         }
         Err(error) => return Err(error.into()),
@@ -143,12 +146,26 @@ pub async fn enroll(
         &state,
         &CustomerRecord {
             customer: receipt.customer.to_string(),
-            email,
+            email: email.clone(),
             status: receipt.status,
             enrolled_at: Timestamp::now().to_unix(),
         },
     )
     .await?;
+    // The same answer as a fact on profile main, so every device on this
+    // account reads the registration state by query rather than by
+    // probing the service itself.
+    //
+    // The sync endpoint comes from the receipt: the SERVICE decides
+    // where its customers sync and says so, rather than each client
+    // deriving an address from whichever origin it happened to reach.
+    // An older service that answers no remote leaves whatever was
+    // recorded before in place.
+    if let Err(error) =
+        record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref()).await
+    {
+        log!("account customer status not recorded: {error}");
+    }
     Ok(Json(receipt))
 }
 
@@ -181,6 +198,22 @@ pub async fn get_state(
                     ..record.clone()
                 };
                 save_customer(&state, &refreshed).await?;
+                // Activation observed here is what promotes the fact on
+                // profile main, so the other devices on this account see
+                // it without each probing the service. The probe answers
+                // the sync endpoint alongside the status, so activation
+                // records the service's own address rather than deriving
+                // one from whichever origin this request reached.
+                if let Err(error) = record_customer_status(
+                    &state,
+                    receipt.status,
+                    &record.email,
+                    receipt.provider.as_deref(),
+                )
+                .await
+                {
+                    log!("account customer status not recorded: {error}");
+                }
             }
             // This probe is what notices activation, so it is where
             // work deferred during the wait gets replayed.
@@ -435,6 +468,161 @@ async fn load_customer(
     }
 }
 
+/// Whether a provider actually serves this account — the precondition
+/// for wiring a space to a remote.
+///
+/// Every other [`Registration`] answers `false`: awaiting activation,
+/// suspended, and never registered are all states in which the access
+/// service's provisioning gate refuses the subject, so attaching an
+/// upstream would produce a space that syncs to a 403. Failing closed
+/// costs a local-only space the share button can still sync; failing
+/// open costs a space wired to a remote that refuses it.
+///
+/// Callers that need to explain WHY should read [`registration`]
+/// directly — this collapses four states into a yes/no.
+pub(crate) async fn is_active(state: &crate::worker::TonkState) -> bool {
+    matches!(registration(state).await, Registration::Served { .. })
+}
+
+/// The provider serving this account, from the fact on profile main.
+///
+/// The one answer every attach path should use: the service names it in
+/// the registration receipt, so it does not depend on which origin a
+/// later request arrives on, and it reaches other devices through sync
+/// rather than being re-derived from each page's own location.
+pub(crate) async fn provider_address(state: &crate::worker::TonkState) -> Option<String> {
+    account_customer(state).await?.provider().map(str::to_owned)
+}
+
+/// How far this account got through registering with a provider.
+///
+/// The share flow's whole decision, in one read. A space with no remote
+/// cannot be shared, and what to do about it depends entirely on this:
+/// attach and go, finish confirming an email, or register from scratch.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Registration {
+    /// No provider and no enrollment: nothing has been registered.
+    Unregistered,
+    /// Enrolled, but the activation email has not been confirmed, so no
+    /// provider serves this account yet. `email` is where the link went.
+    AwaitingActivation {
+        /// The address the activation link was sent to.
+        email: String,
+    },
+    /// Registered and served. `provider` is where spaces attach.
+    Served {
+        /// The provider serving this account.
+        provider: String,
+    },
+    /// Registered, but service was withdrawn. No email confirms this
+    /// away; it is terminal until an operator says otherwise.
+    Suspended,
+}
+
+/// Read how far this account got through registering.
+///
+/// The provider address is the primary signal, because the service names
+/// it only once it actually serves the customer (see the access
+/// service's `enroll`, which deliberately answers none). So "has a
+/// provider" is "completed registration", and status only refines what
+/// an absent one means.
+pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registration {
+    let Some(customer) = account_customer(state).await else {
+        return Registration::Unregistered;
+    };
+    if customer.status.0 == "Suspended" {
+        return Registration::Suspended;
+    }
+    match customer.provider() {
+        Some(provider) => Registration::Served {
+            provider: provider.to_owned(),
+        },
+        // Enrolled far enough to record an address, but not far enough
+        // to be served: the activation link is still unclicked.
+        None if !customer.email.0.is_empty() => Registration::AwaitingActivation {
+            email: customer.email.0.clone(),
+        },
+        None => Registration::Unregistered,
+    }
+}
+
+/// This account's registration fact, absent when nothing recorded one.
+async fn account_customer(
+    state: &crate::worker::TonkState,
+) -> Option<tonk_schema::AccountCustomer> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{AccountCustomer, prelude::DidExt as _};
+
+    let account = super::identity::root_did(state).await.ok()?;
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+        .ok()?;
+    let rows: Vec<AccountCustomer> = branch
+        .handle()
+        .query()
+        .select(Query::<AccountCustomer> {
+            this: Term::from(account.this()),
+            status: Term::var("status"),
+            email: Term::var("email"),
+            provider: Term::var("provider"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    rows.into_iter().next()
+}
+
+/// Record the account's registration state as a fact on profile main,
+/// so it reaches every device on the account.
+///
+/// Called wherever the service's answer is learned — enrollment, and the
+/// status probe that notices activation — so the fact tracks the
+/// service rather than drifting from it.
+pub(crate) async fn record_customer_status(
+    state: &crate::worker::TonkState,
+    status: CustomerStatus,
+    email: &str,
+    provider: Option<&str>,
+) -> Result<(), TonkWorkerError> {
+    use tonk_schema::{AccountCustomer, prelude::DidExt as _};
+
+    let account = super::identity::root_did(state).await?;
+    // An absent address means "unchanged", not "no provider": a service
+    // that predates the field must not blank one a previous receipt
+    // already recorded.
+    let provider = match provider {
+        Some(provider) => provider.to_owned(),
+        None => provider_address(state).await.unwrap_or_default(),
+    };
+    state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(AccountCustomer::new(
+            account.this(),
+            status.as_str(),
+            email.to_owned(),
+            provider,
+        ))
+        .commit()
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("commit account customer status: {error}"))
+        })?;
+    Ok(())
+}
+
 async fn save_customer(
     state: &crate::worker::TonkState,
     record: &CustomerRecord,
@@ -629,6 +817,40 @@ pub async fn complete_pending_custody(
     }
     drain_pending(&state).await;
     Ok(Json(()))
+}
+
+/// Record a customer at `status`, so a test can put the profile in the
+/// state the gate reads without standing up an access service.
+///
+/// Writes the fact on profile main — what [`is_active`] actually reads —
+/// alongside the device-local record the account panel renders, so a
+/// test sets up the same pair the enrollment path does.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn record_test_customer(
+    state: &crate::worker::TonkState,
+    status: CustomerStatus,
+) -> Result<(), TonkWorkerError> {
+    const EMAIL: &str = "customer@example.test";
+    const PROVIDER: &str = "https://example.test/ucan/";
+    let customer = super::identity::root_did(state).await?.to_string();
+    save_customer(
+        state,
+        &CustomerRecord {
+            customer,
+            email: EMAIL.to_owned(),
+            status,
+            enrolled_at: 0,
+        },
+    )
+    .await?;
+    // A provider only for a served customer, mirroring what the access
+    // service actually answers: enrollment names none, because an
+    // unactivated customer gets neither service nor provisioning. A
+    // fixture that recorded one anyway would make `Registered`
+    // indistinguishable from `Active` and quietly defeat the gate the
+    // tests exist to check.
+    let provider = matches!(status, CustomerStatus::Active).then_some(PROVIDER);
+    record_customer_status(state, status, EMAIL, provider).await
 }
 
 pub(crate) async fn clear_customer(
