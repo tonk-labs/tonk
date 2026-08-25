@@ -78,3 +78,27 @@ sealed secrets, and branches of one repository share blocks, so sharing
 any branch of it with a space is sharing block reachability with that
 space. If a readable card is wanted, it should be its own small
 repository, not a branch of the account's.
+
+## Status (2026-08-24)
+
+Shipped on `feat/roster-as-facts`:
+
+- The profile roster is facts: `RosterProfile` (storage name, label) with
+  `RosterAccount` and `RosterEmail` stamps, on a `roster` branch of the
+  registry profile's repository that has no upstream. Signing out retracts
+  the stamps and keeps the entry. `last_active_at` is gone.
+- The active-profile pointer stays a credential, deliberately. Boot reads
+  it before any operator exists, and a fact needs an operator to read; a
+  pointer in a DB you need an operator to open is the same problem the
+  pointer already solved one level down. It is single-writer per device,
+  so the merge argument does not apply to it.
+- The rename projects `MemberName` to every reachable space at the moment
+  it happens and queues each for sync; the sweep runs the same idempotent
+  projection as catch-up. The convergence report and its retry
+  bookkeeping are gone; a space the projection cannot reach is logged and
+  left for the next sweep.
+
+Not yet: the switcher as a subscription (the sealed UI has no path to
+the registry db; it still fetches `/api/profiles`), the per-space name
+override policy (representable, no UI asks for it), and email as an
+account-space fact (waits on the summary proxy retiring).

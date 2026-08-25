@@ -952,14 +952,17 @@ pub(crate) async fn seed_passkey_facts(tonk: &TonkState) -> bool {
     true
 }
 
-/// Project the authoritative account display name into local caches and every
-/// known real-space roster.
+/// Project the authoritative account display name into the local profile
+/// name cache and every known real-space roster.
+///
+/// The idempotent catch-up: a rename projects at the moment it happens,
+/// and this runs on every sweep for whatever that moment could not reach
+/// (a space that was unmounted, a name another device chose). Every
+/// space is checked and written independently; a failure is logged and
+/// left for the next sweep rather than failing the others.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn converge_account_state(
-    tonk: &TonkState,
-) -> Result<tonk_worker_api::AccountConvergenceReport, TonkWorkerError> {
-    use tonk_schema::{AccountDisplayName, MemberName, Membership, ProfileName};
-    use tonk_worker_api::AccountConvergenceReport;
+pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkWorkerError> {
+    use tonk_schema::{AccountDisplayName, ProfileName};
 
     let ready = require_ready_account_state(tonk).await?;
     let account = tonk
@@ -983,7 +986,7 @@ pub(crate) async fn converge_account_state(
             TonkWorkerError::Internal(format!("read account display name: {error:?}"))
         })?;
     let Some(name) = names.into_iter().next().map(|name| name.name.0) else {
-        return Ok(AccountConvergenceReport::default());
+        return Ok(());
     };
 
     let profile_entity = tonk.profile.did().this();
@@ -1020,117 +1023,47 @@ pub(crate) async fn converge_account_state(
             })?;
     }
 
-    let member = ready.subject;
-    let device = tonk.profile.did();
-    let mut report = AccountConvergenceReport {
-        profile_changed,
-        ..AccountConvergenceReport::default()
-    };
+    project_member_names(tonk, &ready.subject, &name, profile_changed).await;
+    Ok(())
+}
+
+/// Project `name` onto `member`'s row in every known real space's roster,
+/// queueing each space that changed for sync. `republish` also refreshes
+/// the self-identity overlay of the spaces that did not change, for a
+/// profile-name cache that did.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn project_member_names(
+    tonk: &TonkState,
+    member: &dialog_varsig::Did,
+    name: &str,
+    republish: bool,
+) {
     for key in crate::router::profile_name::real_space_keys(tonk).await {
-        let result = async {
-            let session = tonk
-                .reactor
-                .repository(&key)
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!("open projection target '{key}': {error}"))
-                })?;
-            let subject = session.handle().of().clone();
-            let membership = Membership::new(member.clone(), subject.clone());
-            let current: Vec<MemberName> = session
-                .handle()
-                .query()
-                .select(Query::<MemberName> {
-                    this: Term::from(membership.this().clone()),
-                    name: Term::var("name"),
-                })
-                .perform(&tonk.operator)
-                .try_vec()
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!(
-                        "read account member name in '{key}': {error:?}"
-                    ))
-                })?;
-            let root_stale = current.first().is_none_or(|row| row.name.0 != name);
-
-            let mut obsolete = Vec::new();
-            if device != member {
-                let device_membership = Membership::new(device.clone(), subject);
-                obsolete = session
-                    .handle()
-                    .query()
-                    .select(Query::<MemberName> {
-                        this: Term::from(device_membership.this().clone()),
-                        name: Term::var("name"),
-                    })
-                    .perform(&tonk.operator)
-                    .try_vec()
-                    .await
-                    .map_err(|error| {
-                        TonkWorkerError::Internal(format!(
-                            "read obsolete member name in '{key}': {error:?}"
-                        ))
-                    })?;
-            }
-
-            if !root_stale && obsolete.is_empty() {
-                return Ok(false);
-            }
-            let mut transaction = tonk
-                .reactor
-                .repository(&key)
-                .branch(tonk_account::MAIN_BRANCH)
-                .transaction();
-            if root_stale {
-                transaction =
-                    transaction.assert(MemberName::new(membership.this().clone(), name.clone()));
-            }
-            for stale in obsolete {
-                transaction = transaction.retract(stale);
-            }
-            transaction
-                .commit()
-                .perform(&tonk.operator)
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!(
-                        "project account member name to '{key}': {error}"
-                    ))
-                })?;
-            Ok::<bool, TonkWorkerError>(true)
-        }
-        .await;
-
-        let changed = match result {
+        let changed = match crate::router::profile_name::project_member_name(
+            tonk, &key, member, name,
+        )
+        .await
+        {
             Ok(changed) => {
                 if changed {
                     tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
-                    report.changed_keys.push(key.clone());
                 }
                 changed
             }
             Err(error) => {
-                log!("account-name projection for '{key}' failed: {error}");
-                report.failed_keys.push(key.clone());
+                log!("member name projection for '{key}' failed: {error}");
                 false
             }
         };
-        if changed || profile_changed {
+        if changed || republish {
             crate::router::sync::publish_self_identity(tonk, &key, tonk_account::MAIN_BRANCH).await;
         }
     }
-
-    Ok(report)
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub(crate) async fn converge_account_state(
-    _tonk: &TonkState,
-) -> Result<tonk_worker_api::AccountConvergenceReport, TonkWorkerError> {
-    Ok(Default::default())
+pub(crate) async fn converge_account_state(_tonk: &TonkState) -> Result<(), TonkWorkerError> {
+    Ok(())
 }
 
 fn account_state_unavailable() -> TonkWorkerError {
@@ -1165,10 +1098,11 @@ async fn adopt_account_display_name(
         })?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
-    let convergence = converge_account_state(tonk).await?;
+    // The rename's own fan-out: every space this device can reach gets
+    // the name now and is queued for sync; the sweep catches up the rest.
+    converge_account_state(tonk).await?;
     Ok(tonk_worker_api::AccountDisplayNameResponse {
         name: name.to_string(),
-        convergence,
     })
 }
 
@@ -1206,10 +1140,9 @@ pub(crate) async fn initialize_display_name(
             TonkWorkerError::Internal(format!("read initial account display name: {error:?}"))
         })?;
     if let Some(existing) = existing.into_iter().next() {
-        let convergence = converge_account_state(tonk).await?;
+        converge_account_state(tonk).await?;
         return Ok(tonk_worker_api::AccountDisplayNameResponse {
             name: existing.name.0,
-            convergence,
         });
     }
 
@@ -1224,7 +1157,7 @@ pub(crate) async fn rename_display_name(
     name: &str,
 ) -> Result<Option<tonk_worker_api::AccountDisplayNameResponse>, TonkWorkerError> {
     use tonk_schema::{ProfileName, prelude::DidExt as _};
-    use tonk_worker_api::{AccountConvergenceReport, AccountDisplayNameResponse};
+    use tonk_worker_api::AccountDisplayNameResponse;
 
     let name = name.trim();
     if name.is_empty() {
@@ -1254,25 +1187,12 @@ pub(crate) async fn rename_display_name(
             TonkWorkerError::Internal(format!("failed to persist profile name override: {error}"))
         })?;
 
-    let convergence = AccountConvergenceReport {
-        profile_changed: true,
-        ..AccountConvergenceReport::default()
-    };
+    // Keyed the way the membership rows were written: on the persisted
+    // root when there is one, else on the device.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let mut convergence = convergence;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    for key in crate::router::profile_name::real_space_keys(tonk).await {
-        match crate::router::profile_name::restamp_member_name(tonk, &key, name).await {
-            Ok(()) => {
-                tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
-                convergence.changed_keys.push(key.clone());
-            }
-            Err(error) => {
-                log!("restamp MemberName for space '{key}' failed: {error}");
-                convergence.failed_keys.push(key.clone());
-            }
-        }
-        crate::router::sync::publish_self_identity(tonk, &key, tonk_account::MAIN_BRANCH).await;
+    {
+        let member = super::account::member_did(tonk).await?;
+        project_member_names(tonk, &member, name, true).await;
     }
 
     // Roster upkeep: the switcher row shows the new name.
@@ -1280,7 +1200,6 @@ pub(crate) async fn rename_display_name(
 
     Ok(Some(AccountDisplayNameResponse {
         name: name.to_string(),
-        convergence,
     }))
 }
 
@@ -1314,7 +1233,7 @@ mod tests {
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
-    async fn it_projects_each_space_independently_and_retries_only_failures() {
+    async fn it_projects_the_name_to_each_space_and_catches_up_the_ones_it_could_not_reach() {
         use dialog_capability::Subject;
         use dialog_credentials::{Credential, Ed25519Verifier};
         use dialog_effects::space::{Space, SpaceExt as _};
@@ -1376,10 +1295,23 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            assert!(response.convergence.profile_changed);
-            assert!(response.convergence.changed_keys.contains(&key_a));
-            assert!(response.convergence.changed_keys.contains(&key_c));
-            assert_eq!(response.convergence.failed_keys, vec![missing_key.clone()]);
+            assert_eq!(response.name, "shared-name");
+        }
+        // The rename projected to the spaces it could reach, and the one
+        // it could not is left for the sweep rather than failing the rest.
+        let member_name = |names: Vec<tonk_schema::MemberName>| {
+            names
+                .into_iter()
+                .map(|row| row.name.0)
+                .find(|name| name == "shared-name")
+        };
+        for key in [&key_a, &key_c] {
+            assert_eq!(
+                member_name(crate::router::tests::content_member_names(&state, key).await)
+                    .as_deref(),
+                Some("shared-name"),
+                "the rename projects to a mounted space"
+            );
         }
 
         let (before_a, before_c) = {
@@ -1422,15 +1354,34 @@ mod tests {
                 .await
                 .unwrap();
 
-            let retry = converge_account_state(&tonk).await.unwrap();
-            assert!(!retry.profile_changed);
-            assert_eq!(retry.changed_keys, vec![missing_key.clone()]);
-            assert!(retry.failed_keys.is_empty());
+            // The sweep's catch-up reaches the space the rename could not.
+            converge_account_state(&tonk).await.unwrap();
+            let caught_up = tonk
+                .reactor
+                .repository(&missing_key)
+                .branch(tonk_account::MAIN_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .handle()
+                .revision();
+            assert!(
+                caught_up.is_some(),
+                "the catch-up writes the name into the space it reached"
+            );
 
-            let no_op = converge_account_state(&tonk).await.unwrap();
-            assert!(!no_op.profile_changed);
-            assert!(no_op.changed_keys.is_empty());
-            assert!(no_op.failed_keys.is_empty());
+            // Idempotent: a second pass finds nothing stale and writes nothing.
+            converge_account_state(&tonk).await.unwrap();
+            let settled = tonk
+                .reactor
+                .repository(&missing_key)
+                .branch(tonk_account::MAIN_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .handle()
+                .revision();
+            assert_eq!(caught_up, settled, "a converged space receives no write");
 
             let after_a = tonk
                 .reactor
