@@ -39,6 +39,9 @@ pub(crate) struct CreateAccountOutput {
     pub invocation_hex: String,
     #[serde(default)]
     pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    /// The account's X25519 recipient, published as `AccountEncryptionKey`.
+    #[serde(default)]
+    pub encryption_key: Option<String>,
     #[serde(default)]
     pub deposits_hex: Vec<String>,
     pub custody_did: String,
@@ -101,6 +104,9 @@ pub(crate) struct CeremonyOutput {
     /// input named the service.
     #[serde(default)]
     pub deposits_hex: Vec<String>,
+    /// The account's X25519 recipient, when the ceremony held the secret.
+    #[serde(default)]
+    pub encryption_key: Option<String>,
 }
 
 /// Verification-only assertion input: the account passkey to assert

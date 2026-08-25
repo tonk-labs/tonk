@@ -20,7 +20,7 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_credentials::{Ed25519Signer, SignerCredential};
+use dialog_credentials::SignerCredential;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -37,9 +37,10 @@ use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceStatus, TrackingBranch,
 };
 use url::Url;
+use zeroize::Zeroizing;
 
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
@@ -2771,9 +2772,12 @@ pub async fn create_repository(
     // repository's own `tonk/repository` concept. Generating the signer
     // first (rather than letting `.create()` mint one) is what lets the
     // name derive from the DID instead of the other way around.
-    let signer = Ed25519Signer::generate()
+    // Extractable, so the seed can be sealed to the account below; the
+    // signer itself is stored as the repository's credential as before.
+    let (signer, seed) = super::create_invite::generate_ephemeral()
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    let seed = Zeroizing::new(seed);
     let did = signer.did();
     let key = did.repo_key();
 
@@ -2853,6 +2857,10 @@ pub async fn create_repository(
         .map_err(|error| {
             RepositoryError::Internal(format!("Failed to persist space root delegation: {error}"))
         })?;
+    // The recovery copy: the seed sealed to the account, so any device
+    // on the account can re-issue this space after a ceremony. Best
+    // effort like the retain above; the space is usable without it.
+    super::account_state::custody_seed(tonk, &repository.did(), SeedKind::Space, seed).await;
 
     // 3-7. Wire up the meta branch and register the replica. The
     // replica is a name-less membership index; its identity (`subject`)

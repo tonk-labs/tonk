@@ -1168,6 +1168,7 @@ async fn persist(
             root.credential_id.to_string(),
             root.delegation_hex.to_string(),
             None,
+            ceremony.encryption_key.clone(),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -1469,6 +1470,7 @@ fn bind(host: &HtmlElement) {
                     created.credential_id.clone(),
                     created.delegation_hex.clone(),
                     created.passkey.clone(),
+                    created.encryption_key.clone(),
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -1478,6 +1480,7 @@ fn bind(host: &HtmlElement) {
                     delegation_hex: created.delegation_hex,
                     invocation_hex: created.invocation_hex,
                     deposits_hex: created.deposits_hex,
+                    encryption_key: created.encryption_key,
                 };
                 set_busy(&host, true, "Creating your account…");
                 complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await?;
@@ -1589,6 +1592,7 @@ fn bind(host: &HtmlElement) {
                         created_at: (js_sys::Date::now() / 1000.0) as u64,
                         created_on: crate::device_name::current(),
                     }),
+                    None,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
