@@ -126,7 +126,10 @@ Admin therefore has to be decided by what a chain covers:
   CLI classification exist. The join retains the claimed chain into the
   space's content branch so a member's own hop is individually
   revocable.
-- Pending on this branch: the promote route (a `/` chain to the admin's
-  account, retained in the space db, role stamped) and the kick route
-  (delegated revocation of the member's own hop under the kicker's `/`
-  chain, roster rows retracted).
+- `member/promote` and `member/expel` are commands (transients on the
+  space branch, run by worker handlers after the commit, like
+  `tonk:invite`): promote mints a `/` chain to the member's account,
+  retains it in the space db and stamps the role; expel proves the
+  member's own hop, revokes it under the remover's `/` chain, records it
+  at the access service and retracts the roster rows. No HTTP endpoints.
+  The roster row does not offer the forms yet.

@@ -37,7 +37,8 @@ pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 mod revoke_invite;
 
-/// Space membership management: admins and removals.
+/// Space membership management: admins and removals, as commands.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod members;
 
 pub mod inspect;
@@ -262,14 +263,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
-        // Membership management: promoting a member to admin, and removing
-        // a member by revoking the hop that admits them. See
-        // `router/members.rs`.
-        .route("/api/repository/{repo}/admins", post(members::promote))
-        .route(
-            "/api/repository/{repo}/members/{member}/revoke",
-            post(members::revoke),
-        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.

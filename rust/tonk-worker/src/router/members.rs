@@ -1,5 +1,7 @@
 //! Space membership management: promoting a member to admin, and
-//! removing a member.
+//! removing a member. Both are commands (`member/promote`,
+//! `member/expel`), asserted transiently on the space's branch and run
+//! by the handlers here after the commit.
 //!
 //! Both are about chains, with the roster following. An admin is a
 //! member who holds a `/` chain for the space, minted by someone who
@@ -15,11 +17,6 @@
 //! authority question is answered by what the chain covers, not by the
 //! role fact. See `plan/space-admins.md`.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-};
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::RepositoryExt as _;
@@ -27,15 +24,10 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use ipld_core::cid::Cid;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
-use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership};
-use tonk_worker_api::{PromoteMemberAcknowledgement, PromoteMemberRequest};
 
-use super::AppState;
 use super::revoke_invite::{leaf_cid, prove_path, publish_revocation, retract_leaf};
 use crate::{TonkState, TonkWorkerError};
 
@@ -165,26 +157,24 @@ pub(super) async fn retract_member_rows(
     }
 }
 
-/// `POST /api/repository/{repo}/members/{member}/revoke`: remove a member.
-#[wasm_compat]
-pub async fn revoke(
-    State(state): State<AppState>,
-    Path((repo, member)): Path<(String, String)>,
-) -> Result<Json<RevokeReceipt>, TonkWorkerError> {
-    let member: Did = member
-        .parse()
-        .map_err(|error| TonkWorkerError::Router(format!("invalid member DID: {error:?}")))?;
-    let tonk = state.read().await;
+/// Remove `member` from the space at `repo`: revoke the hop that admits
+/// them, record it at the space's access service, and retract their
+/// roster rows.
+pub(crate) async fn expel_member(
+    tonk: &TonkState,
+    repo: &str,
+    member: &Did,
+) -> Result<RevokeReceipt, TonkWorkerError> {
     let session = tonk
         .reactor
-        .repository(&repo)
+        .repository(repo)
         .branch(CONTENT_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
     let repository = tonk
         .profile
-        .repository(&repo)
+        .repository(repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -192,47 +182,45 @@ pub async fn revoke(
             TonkWorkerError::NotFound(format!("repository '{repo}' not found: {error}"))
         })?;
     let subject = repository.did();
-    if super::account::member_did(&tonk).await? == member {
+    if super::account::member_did(tonk).await? == *member {
         return Err(TonkWorkerError::Forbidden(
             "removing yourself is leaving, not a revocation".to_string(),
         ));
     }
 
-    let (path, target) = resolve_member_target(&tonk, session.handle(), &subject, &member).await?;
+    let (path, target) = resolve_member_target(tonk, session.handle(), &subject, member).await?;
     let receipt =
-        publish_revocation(&tonk, &repo, &repository, session.handle(), &path, &target).await?;
-    retract_leaf(&tonk, session.handle(), &path).await;
-    retract_member_rows(&tonk, &repo, session.handle(), &subject, &member).await;
+        publish_revocation(tonk, repo, &repository, session.handle(), &path, &target).await?;
+    retract_leaf(tonk, session.handle(), &path).await;
+    retract_member_rows(tonk, repo, session.handle(), &subject, member).await;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(&repo, js_sys::Date::now());
-    Ok(Json(receipt))
+    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    Ok(receipt)
 }
 
-/// `POST /api/repository/{repo}/admins`: promote a member to admin.
+/// Promote `member` of the space at `repo` to admin.
 ///
 /// Mints a `/` chain from this profile's authority for the space down to
 /// the member's account, exactly as a scoped invite is minted but without
 /// the attenuation, retains it in the space db beside the invites, and
 /// stamps the role. The member's devices find the chain where every
-/// other member proof is found; nothing is sent to them.
-#[wasm_compat]
-pub async fn promote(
-    State(state): State<AppState>,
-    Path(repo): Path<String>,
-    Json(request): Json<PromoteMemberRequest>,
-) -> Result<Json<PromoteMemberAcknowledgement>, TonkWorkerError> {
-    let member = request.member;
-    let tonk = state.read().await;
+/// other member proof is found; nothing is sent to them. Returns the CID
+/// of the chain's leaf: the hop a demotion revokes.
+pub(crate) async fn promote_member(
+    tonk: &TonkState,
+    repo: &str,
+    member: &Did,
+) -> Result<Cid, TonkWorkerError> {
     let session = tonk
         .reactor
-        .repository(&repo)
+        .repository(repo)
         .branch(CONTENT_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
     let repository = tonk
         .profile
-        .repository(&repo)
+        .repository(repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -241,7 +229,7 @@ pub async fn promote(
         })?;
     let subject = repository.did();
     let membership = Membership::new(member.clone(), subject.clone());
-    match role_of(&tonk, session.handle(), &member, &subject).await? {
+    match role_of(tonk, session.handle(), member, &subject).await? {
         None => {
             return Err(TonkWorkerError::NotFound(format!(
                 "{member} is not a member of this space"
@@ -266,11 +254,11 @@ pub async fn promote(
             TonkWorkerError::Forbidden(format!("cannot mint an admin chain: {error}"))
         })?;
     let chain = delegation.into_chain();
-    let target_cid = leaf_cid(&chain)?.to_string();
-    super::create_invite::retain_invite_authority(&tonk, &repo, &chain).await?;
+    let target = leaf_cid(&chain)?;
+    super::create_invite::retain_invite_authority(tonk, repo, &chain).await?;
 
     tonk.reactor
-        .repository(&repo)
+        .repository(repo)
         .branch(CONTENT_BRANCH)
         .transaction()
         .assert(MemberRole::admin(membership.this().clone()))
@@ -279,9 +267,132 @@ pub async fn promote(
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("stamp admin role: {error}")))?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(&repo, js_sys::Date::now());
-    let _ = member.this();
-    Ok(Json(PromoteMemberAcknowledgement { member, target_cid }))
+    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    Ok(target)
+}
+
+/// The DID a `member/*` command names, or `None` when it does not decode.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn member_of<C>(facts: &crate::reactor::EntityFacts, member: impl Fn(&C) -> String) -> Option<Did>
+where
+    C: crate::reactor::Decode,
+{
+    facts
+        .first()
+        .map(|artifact| artifact.of.clone())
+        .and_then(|entity| C::decode(entity, facts))
+        .and_then(|command| member(&command).parse::<Did>().ok())
+}
+
+/// Runs `member/promote`: the roster row's promote form on the space the
+/// command fires in.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct PromoteMemberHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl PromoteMemberHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::PromoteMember::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PromoteMemberHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        member_of::<tonk_schema::command::PromoteMember>(facts, |command| {
+            command.member.0.to_string()
+        })
+        .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        let member = member_of::<tonk_schema::command::PromoteMember>(facts, |command| {
+            command.member.0.to_string()
+        });
+        let env = env.clone();
+        Box::pin(async move {
+            let Some(member) = member else {
+                log!("member/promote: no/unparseable member, skipping");
+                return;
+            };
+            let repo = env.origin().repo.clone();
+            let tonk = env.state().read().await;
+            match promote_member(&tonk, &repo, &member).await {
+                Ok(target) => log!("member/promote: {member} is an admin of {repo} ({target})"),
+                Err(error) => log!("member/promote for {member} on {repo} failed: {error}"),
+            }
+        })
+    }
+}
+
+/// Runs `member/expel`: the roster row's remove form on the space the
+/// command fires in.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct ExpelMemberHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl ExpelMemberHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::ExpelMember::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ExpelMemberHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        member_of::<tonk_schema::command::ExpelMember>(facts, |command| {
+            command.member.0.to_string()
+        })
+        .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        let member = member_of::<tonk_schema::command::ExpelMember>(facts, |command| {
+            command.member.0.to_string()
+        });
+        let env = env.clone();
+        Box::pin(async move {
+            let Some(member) = member else {
+                log!("member/expel: no/unparseable member, skipping");
+                return;
+            };
+            let repo = env.origin().repo.clone();
+            let tonk = env.state().read().await;
+            match expel_member(&tonk, &repo, &member).await {
+                Ok(receipt) => log!(
+                    "member/expel: {member} removed from {repo} (revoked {})",
+                    receipt.revoked
+                ),
+                Err(error) => log!("member/expel for {member} on {repo} failed: {error}"),
+            }
+        })
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -299,7 +410,10 @@ mod tests {
     use crate::router::tests::{content_member_roles, content_memberships, put_repo, test_state};
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    async fn open_content(state: &AppState, key: &str) -> (dialog_repository::Branch, Did) {
+    async fn open_content(
+        state: &crate::router::AppState,
+        key: &str,
+    ) -> (dialog_repository::Branch, Did) {
         let tonk = state.read().await;
         let session = tonk
             .reactor
@@ -436,16 +550,10 @@ mod tests {
                 .unwrap();
         }
 
-        let Json(acknowledgement) = promote(
-            State(state.clone()),
-            Path(key.clone()),
-            Json(PromoteMemberRequest {
-                member: member.clone(),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(acknowledgement.member, member);
+        let target = {
+            let tonk = state.read().await;
+            promote_member(&tonk, &key, &member).await.unwrap()
+        };
 
         let roles = content_member_roles(&state, &key).await;
         let entity = Membership::new(member.clone(), subject.clone())
@@ -471,9 +579,9 @@ mod tests {
             .await
             .expect("the admin chain is provable from the space db at /");
         assert_eq!(
-            proof.proofs.last().unwrap().0.to_cid().to_string(),
-            acknowledgement.target_cid,
-            "the acknowledged target is the chain's leaf"
+            proof.proofs.last().unwrap().0.to_cid(),
+            target,
+            "the returned target is the chain's leaf"
         );
     }
 
@@ -483,16 +591,25 @@ mod tests {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let key = put_repo(&app, "members-stranger").await;
         let stranger = Ed25519Signer::generate().await.unwrap().did();
-        let error = promote(
-            State(state),
-            Path(key),
-            Json(PromoteMemberRequest { member: stranger }),
-        )
-        .await
-        .unwrap_err();
+        let tonk = state.read().await;
+        let error = promote_member(&tonk, &key, &stranger).await.unwrap_err();
         assert!(
             matches!(error, TonkWorkerError::NotFound(_)),
             "got {error:?}"
+        );
+    }
+
+    /// The command decodes the member from its distinct attribute, so a
+    /// promote and an expel never decode as each other.
+    #[dialog_common::test]
+    async fn it_decodes_each_member_command_by_its_own_attribute() {
+        use crate::reactor::Decode as _;
+        use tonk_schema::command::{ExpelMember, PromoteMember};
+        let promote = PromoteMember::trigger_attributes();
+        let expel = ExpelMember::trigger_attributes();
+        assert!(
+            promote.iter().all(|attribute| !expel.contains(attribute)),
+            "promote {promote:?} and expel {expel:?} share no trigger attribute"
         );
     }
 }
