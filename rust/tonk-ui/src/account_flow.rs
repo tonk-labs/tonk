@@ -660,7 +660,26 @@ mod tests {
             .await?;
         // The callback answers the form POST with a redirect back to the
         // account page, which renders the outcome in its own styling.
-        element(driver, "tonk-account[data-mode=\"success\"]").await?;
+        if let Err(wait_error) = element(driver, "tonk-account[data-mode=\"success\"]").await {
+            // Say WHERE the approval stopped, not just that it did: the
+            // panel's mode, its error line, and its status line are what
+            // separate a ceremony that failed from a callback that never
+            // redirected.
+            let host = element(driver, "tonk-account").await?;
+            let mode = host.attr("data-mode").await?.unwrap_or_default();
+            let error = match driver.find(By::Css("#account-error")).await {
+                Ok(element) => element.text().await.unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+            let working = match driver.find(By::Css("#account-working")).await {
+                Ok(element) => element.text().await.unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+            let url = driver.current_url().await?;
+            return Err(wait_error).context(format!(
+                "approval stopped in mode {mode:?} at {url}; error={error:?}; status={working:?}"
+            ));
+        }
         wait_for_text(
             driver,
             "#account-success-message",
