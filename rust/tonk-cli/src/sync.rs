@@ -82,9 +82,9 @@ pub enum SyncError {
     Io(String),
 }
 
-impl SyncError {
+impl crate::Coded for SyncError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         match self {
             SyncError::UpstreamNotConfigured { .. }
             | SyncError::Io(_)
@@ -335,6 +335,26 @@ pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> Stri
          for an invite and claim it with `tonk join <URL>`",
         owner = crate::inventory::describe(&owner.did, owner.name.as_deref(), length),
     )
+}
+
+/// Read the local branch without touching the network.
+///
+/// `tonk context` is what bare `tonk` runs, and orientation should not
+/// wait on a round trip to answer. Without a fetch there is no upstream
+/// head to classify against — dialog caches none — so this reports the
+/// one thing it can know locally: whether an upstream is configured at
+/// all. The `not-fetched` state says so rather than implying `synced`.
+pub async fn status_offline(site: &TonkSite) -> Result<crate::context::SyncContext, SyncError> {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
+    let branch = session.handle();
+    let hash = branch.revision().map(|revision| revision.tree.to_string());
+    Ok(crate::context::SyncContext::offline(
+        branch.upstream().is_some(),
+        hash,
+    ))
 }
 
 fn map_fetch_error(error: FetchError) -> SyncError {

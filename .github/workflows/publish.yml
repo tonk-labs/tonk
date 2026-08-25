@@ -374,9 +374,9 @@ jobs:
             To link the CLI to it:
 
             ```
-            tonk account link \
+            tonk account login \
               --service-url ${{ steps.account-preview.outputs.url }} \
-              --account-url ${{ steps.deploy-preview.outputs.url }}/account/link
+              --via ${{ steps.deploy-preview.outputs.url }}/account/link
             ```
 
             <details><summary>Wrangler output</summary>

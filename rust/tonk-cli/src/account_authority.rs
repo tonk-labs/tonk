@@ -15,7 +15,7 @@ use dialog_ucan::{Ucan, UcanAuthorization};
 use dialog_ucan_core::DelegationChain;
 
 use crate::account_session::{AccountSessionReadGuard, ActiveAccount};
-use crate::spot::SpotStore;
+use crate::space::SpaceStore;
 
 const REMOTE_AUTHORIZATION_MARGIN_SECONDS: u64 = 60;
 
@@ -24,7 +24,7 @@ const REMOTE_AUTHORIZATION_MARGIN_SECONDS: u64 = 60;
 pub struct AccountBoundOperator {
     inner: Operator<NativeSpace>,
     profile: Profile,
-    store: SpotStore,
+    store: SpaceStore,
     require_account: bool,
 }
 
@@ -43,7 +43,7 @@ impl AccountBoundOperator {
     pub fn new(
         inner: Operator<NativeSpace>,
         profile: Profile,
-        store: SpotStore,
+        store: SpaceStore,
         require_account: bool,
     ) -> Self {
         Self {
@@ -70,7 +70,7 @@ impl AccountBoundOperator {
     }
 
     #[cfg(feature = "integration-tests")]
-    pub(crate) fn store(&self) -> &SpotStore {
+    pub(crate) fn store(&self) -> &SpaceStore {
         &self.store
     }
 
@@ -84,7 +84,7 @@ impl AccountBoundOperator {
                 detail: error.to_string(),
             })?
             .ok_or_else(|| AuthorizeError::Malformed {
-                detail: "log in with `tonk account link` before accessing a remote".to_string(),
+                detail: "log in with `tonk account login` before accessing a remote".to_string(),
             })
     }
 
@@ -164,10 +164,10 @@ impl AccountBoundOperator {
         let mut chain = if subject == root {
             grant
         } else {
-            // Resolving rather than reading: a spot predating this account,
+            // Resolving rather than reading: a space predating this account,
             // or created by a release that stored no prefix, still has to
             // reach its own remote. Recovery is the same one every other
-            // account path uses, so the authority a spot syncs with is the
+            // account path uses, so the authority a space syncs with is the
             // authority it gets backed up with.
             let prefix = crate::site::load_account_root_prefix_for(
                 &self.profile,
@@ -382,7 +382,7 @@ where
 pub async fn wrap(
     inner: Operator<NativeSpace>,
     profile: Profile,
-    store: SpotStore,
+    store: SpaceStore,
     require_account: bool,
 ) -> Result<AccountBoundOperator> {
     if require_account {

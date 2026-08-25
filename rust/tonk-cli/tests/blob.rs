@@ -27,6 +27,44 @@ async fn it_adds_a_blob_and_prints_its_reference() -> Result<()> {
 }
 
 #[dialog_common::test]
+async fn it_plans_an_add_without_writing_anything() -> Result<()> {
+    let test = TestSite::new().await?;
+    let file = test.parent.join("notes.md");
+    tokio::fs::write(&file, b"# heading").await?;
+
+    let plan = blob::plan(&file, None).await?;
+    assert_eq!(plan.content_type, "text/markdown");
+    assert_eq!(plan.size, 9);
+    assert_eq!(plan.name, "notes.md");
+
+    // Nothing reached the branch: the metadata facts a real add asserts
+    // are what `blob ls` reads, so an empty listing is the proof.
+    assert!(blob::ls(&test.site).await?.is_empty());
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_plans_with_the_content_type_override_it_would_assert() -> Result<()> {
+    let test = TestSite::new().await?;
+    let file = test.parent.join("data.bin");
+    tokio::fs::write(&file, b"arbitrary bytes").await?;
+
+    let plan = blob::plan(&file, Some("application/x-custom".to_string())).await?;
+    assert_eq!(plan.content_type, "application/x-custom");
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_to_plan_an_unreadable_file() -> Result<()> {
+    let test = TestSite::new().await?;
+    // A preview that reported success for a file it could never read
+    // would be a preview of something that cannot happen.
+    let missing = test.parent.join("absent.png");
+    assert!(blob::plan(&missing, None).await.is_err());
+    Ok(())
+}
+
+#[dialog_common::test]
 async fn it_honors_an_explicit_content_type_override() -> Result<()> {
     let test = TestSite::new().await?;
     let file = test.parent.join("data.bin");

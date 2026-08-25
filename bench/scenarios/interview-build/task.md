@@ -8,7 +8,7 @@ details. You cannot see them, but you can talk to them: run
 per call. They are not technical — ask about their club and what they
 want to keep track of, not about schemas or tools.
 
-Interview them, then build what they need in this tonk spot: concepts,
+Interview them, then build what they need in this tonk space: concepts,
 seed data from what they told you, and views so they can see it.
 Confirm the plan with them once before building. Stop when `tonk
 status` reports the branch is synced.

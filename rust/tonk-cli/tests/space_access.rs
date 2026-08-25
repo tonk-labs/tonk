@@ -6,13 +6,13 @@ mod common;
 
 use anyhow::Result;
 use tonk_cli::site::{SiteConfig, TonkSite};
-use tonk_cli::spot::{AccountRecord, SpotStore};
+use tonk_cli::space::{AccountRecord, SpaceStore};
 
 const ACCOUNT_A: &str = "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ACCOUNT_B: &str = "did:key:z6MkAccountBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
-fn fixture(tmp: &std::path::Path) -> Result<(SpotStore, SiteConfig)> {
-    let store = SpotStore::at(tmp.join("state"));
+fn fixture(tmp: &std::path::Path) -> Result<(SpaceStore, SiteConfig)> {
+    let store = SpaceStore::at(tmp.join("state"));
     let mut config = common::isolated_config(tmp)?;
     config.account_store = store.clone();
     Ok((store, config))
@@ -21,7 +21,7 @@ fn fixture(tmp: &std::path::Path) -> Result<(SpotStore, SiteConfig)> {
 /// Create a space and stamp `founder` as its founder on the content branch,
 /// the way a hosted space carries its own roster.
 async fn founded_by(
-    store: &SpotStore,
+    store: &SpaceStore,
     config: &SiteConfig,
     name: &str,
     founder: &str,
@@ -29,7 +29,7 @@ async fn founded_by(
 ) -> Result<TonkSite> {
     use tonk_schema::{MemberName, MemberRole, Membership};
 
-    let outcome = tonk_cli::spot::create(store, name, None, None, config.clone()).await?;
+    let outcome = tonk_cli::space::create(store, name, None, None, config.clone()).await?;
     let site = TonkSite::open_with(&outcome.site, config.clone()).await?;
     let membership = Membership::new(founder.parse()?, site.repository.did());
     let session = site.branch().await?;
@@ -85,8 +85,8 @@ mod when_opening_a_replica {
 
         let registry = store.load()?;
         assert!(registry.account.is_none());
-        assert!(registry.spots.contains_key("garden"));
-        let site = TonkSite::open_with(&registry.spots["garden"].site, config).await?;
+        assert!(registry.spaces.contains_key("garden"));
+        let site = TonkSite::open_with(&registry.spaces["garden"].site, config).await?;
         assert_eq!(tonk_cli::inventory::read_roster(&site).await?, before);
         Ok(())
     }
@@ -104,7 +104,7 @@ mod when_opening_a_replica {
             serde_json::from_slice(&std::fs::read(store.registry_path())?)?;
 
         assert_eq!(json["account"]["root"], ACCOUNT_A);
-        let entry = json["spots"]["garden"].as_object().expect("space entry");
+        let entry = json["spaces"]["garden"].as_object().expect("space entry");
         assert_eq!(
             entry.keys().collect::<Vec<_>>(),
             vec!["site"],
@@ -248,7 +248,8 @@ mod when_the_service_refuses_a_sync {
     async fn it_falls_back_to_revocation_when_the_space_names_nobody() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let (store, config) = fixture(tmp.path())?;
-        let outcome = tonk_cli::spot::create(&store, "scratch", None, None, config.clone()).await?;
+        let outcome =
+            tonk_cli::space::create(&store, "scratch", None, None, config.clone()).await?;
         let site = TonkSite::open_with(&outcome.site, config).await?;
 
         let report = tonk_cli::sync::rejection_report(&site, "scratch", "no such subject").await;
@@ -268,7 +269,7 @@ mod when_the_service_refuses_a_sync {
     ) -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let (store, config) = fixture(tmp.path())?;
-        let outcome = tonk_cli::spot::create(&store, "garden", None, None, config.clone()).await?;
+        let outcome = tonk_cli::space::create(&store, "garden", None, None, config.clone()).await?;
         let site = TonkSite::open_with(&outcome.site, config).await?;
         tonk_cli::remote::add(
             &site,

@@ -27,21 +27,21 @@ task!: &book-venue
 
 "$TONK" home task
 
-if [ "${BENCH_SPOT_AGENTS:-0}" = 1 ]; then
-  "$TONK" agents set "$SCENARIO/spot-AGENTS.md"
+if [ "${BENCH_SPACE_AGENTS:-0}" = 1 ]; then
+  "$TONK" agents set "$SCENARIO/space-AGENTS.md"
   "$TONK" agents --json > "$RUN_DIR/agents-claim.json"
   "$TONK" agents > "$RUN_DIR/site/AGENTS.md"
   claim_entity="$(jq -r '.entity' "$RUN_DIR/agents-claim.json")"
-  spot_entity="$(cat "$RUN_DIR/space.did")"
-  if [ "$claim_entity" != "$spot_entity" ]; then
-    echo "prepare: AGENTS.md claim maps $claim_entity, expected $spot_entity" >&2
+  space_entity="$(cat "$RUN_DIR/space.did")"
+  if [ "$claim_entity" != "$space_entity" ]; then
+    echo "prepare: AGENTS.md claim maps $claim_entity, expected $space_entity" >&2
     exit 1
   fi
-  if ! cmp -s "$SCENARIO/spot-AGENTS.md" "$RUN_DIR/site/AGENTS.md"; then
-    echo "prepare: projected AGENTS.md differs from the spot claim fixture" >&2
+  if ! cmp -s "$SCENARIO/space-AGENTS.md" "$RUN_DIR/site/AGENTS.md"; then
+    echo "prepare: projected AGENTS.md differs from the space claim fixture" >&2
     exit 1
   fi
-  echo "prepare: asserted and projected trusted spot AGENTS.md claim" >&2
+  echo "prepare: asserted and projected trusted space AGENTS.md claim" >&2
 fi
 
 echo "prepare: seeded first-use task list" >&2

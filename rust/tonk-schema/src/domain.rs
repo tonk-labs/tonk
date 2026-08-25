@@ -76,7 +76,7 @@ pub mod space {
     /// Whether this device holds a local replica of the space. Written
     /// to the profile-main OVERLAY only — device-local, never
     /// replicated — so the Hub can style a directory row it cannot
-    /// open locally (the hollow, replicate-on-first-visit spot).
+    /// open locally (the hollow, replicate-on-first-visit space).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
     #[cardinality(one)]
@@ -421,7 +421,7 @@ pub mod command {
     /// Attributes the `tonk:enable-sync` command carries.
     ///
     /// The share control dispatches this routelessly when a user accepts the
-    /// offer to turn sync on, so the target spot and the endpoint both travel
+    /// offer to turn sync on, so the target space and the endpoint both travel
     /// on the transient rather than being inferred from a dispatch origin.
     pub mod enable_sync {
         use super::super::Entity;
@@ -446,7 +446,7 @@ pub mod command {
         #[domain("dom.event.current-target.dataset")]
         pub struct EnableSync(pub Entity);
 
-        /// The spot to attach the remote to.
+        /// The space to attach the remote to.
         ///
         /// An `Entity` for the same reason as [`EnableSync`]: the value is a
         /// `did:key:…`, and the worker's untagged `Value` decode reads any
@@ -744,7 +744,7 @@ pub mod authorization {
     /// The UCAN access-service endpoint for sync — the `&remote=` parameter
     /// suffix. Never empty: `run_invite` refuses to mint an invite (and so
     /// never asserts this) for a repository with no shareable remote, since
-    /// one that carried no remote would strand its recipient in a spot that
+    /// one that carried no remote would strand its recipient in a space that
     /// can never fill.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.authorization")]
@@ -780,12 +780,12 @@ pub mod credential {
 }
 
 /// Attributes on the overlay-only `tonk:share/blocked` fact — why a share
-/// click could not mint an invite. Keyed on the spot's subject entity, the
+/// click could not mint an invite. Keyed on the space's subject entity, the
 /// same entity [`crate::command::Credential`] is keyed by, so the share
 /// control reads both off one subject.
 ///
 /// Overlay-only, so it is session-scoped and never replicated: a refusal is
-/// this device's answer to this click, not a property of the spot.
+/// this device's answer to this click, not a property of the space.
 pub mod share {
     use super::Attribute;
 

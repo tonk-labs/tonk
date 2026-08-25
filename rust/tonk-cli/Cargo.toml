@@ -80,12 +80,12 @@ name = "authoring"
 path = "tests/authoring.rs"
 
 [[test]]
-name = "spot"
-path = "tests/spot.rs"
+name = "space"
+path = "tests/space.rs"
 
 [[test]]
-name = "cli_spot"
-path = "tests/cli_spot.rs"
+name = "cli_space"
+path = "tests/cli_space.rs"
 
 [[test]]
 name = "context"
@@ -96,8 +96,8 @@ name = "agents"
 path = "tests/agents.rs"
 
 [[test]]
-name = "account_spots"
-path = "tests/account_spots.rs"
+name = "account_spaces"
+path = "tests/account_spaces.rs"
 required-features = ["integration-tests"]
 
 [[test]]

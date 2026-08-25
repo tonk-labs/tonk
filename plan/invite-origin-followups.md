@@ -44,8 +44,8 @@ a shot again.
 
 ### Verify the bench pipeline end to end
 
-The spot migration below was verified per-command against a real
-binary (spot registration, DID parse, cwd-independent `remote add` /
+The space migration below was verified per-command against a real
+binary (space registration, DID parse, cwd-independent `remote add` /
 `set-upstream` / `invite`, and the registry isolation `cold-onboard`
 depends on) but no full `bench run` has been executed since. The
 browser half — stack, bridge, shots — is unexercised.
@@ -73,15 +73,15 @@ CLI coverage in both flag and environment form. Follows the existing
 than the endpoint override first sketched here — an endpoint override
 would break the same-origin invariant the shortcut design rests on.
 
-**Bench is spot-based.** `site.sh` calls `tonk spot new <spot> --site
+**Bench is space-based.** `site.sh` calls `tonk space new <space> --site
 "$RUN_DIR/site"` (which prints `DID: …` in the same shape `tonk init`
 did, so the existing parse survives); `run.sh` exports
-`TONK_SPOTS_STATE` and `TONK_SPOT`; `shots.sh` lost its stale
+`TONK_SPACES_STATE` and `TONK_SPACE`; `shots.sh` lost its stale
 `$site/.tonk` guard and its inert `cd`s, as did
 `targeted-edit/prepare.sh`; `episode.sh` passes both variables into the
-agent's environment, overridable as `EPISODE_SPOT` /
-`EPISODE_SPOTS_STATE`. `cold-onboard` sets both — an empty spot *and* a
-separate empty registry, because an empty `TONK_SPOT` alone still falls
+agent's environment, overridable as `EPISODE_SPACE` /
+`EPISODE_SPACES_STATE`. `cold-onboard` sets both — an empty space *and* a
+separate empty registry, because an empty `TONK_SPACE` alone still falls
 through to the registry's `current`, which would have been the origin
 site the agent is supposed to be joining.
 
@@ -114,7 +114,7 @@ remotes where one fails to decode resolves the other implicitly.
 **Stale command names.** `tonk concepts` → `tonk concept ls` in
 `.claude/skills/tonk-bug/SKILL.md` (agent-facing, so a live footgun)
 and `README.md`; `tonk views` → `tonk view ls` and `tonk init` → `tonk
-spot new` in `README.md`, whose CLI blurb also still described a
+space new` in `README.md`, whose CLI blurb also still described a
 `.tonk/` site in the current directory. `bench/README.md`'s
 harness description updated. Its dated measurement sections remain because
 they record what past runs actually did.
@@ -137,7 +137,7 @@ curl -s -X PUT https://tonk.network/@ --data-binary "/join?access=probe" -w " [%
 runtime. When that runtime also hosts the in-process access service, a
 blocking `Command::output()` starves the server the subprocess is
 calling and the test hangs with no error. Route those through
-`tokio::task::spawn_blocking` — `rust/tonk-cli/tests/cli_spot.rs` does
+`tokio::task::spawn_blocking` — `rust/tonk-cli/tests/cli_space.rs` does
 this and is the working example.
 
 **A stale rlib silently runs the old test binary.** With a shared target
@@ -145,8 +145,8 @@ directory, `cargo test -p tonk-cli` can report the previous commit's
 test counts with no warning. `cargo clean -p tonk-cli` first when a
 count looks wrong.
 
-**`TONK_SPOTS_STATE` names a directory, not a file.** It holds
-`spots.json` and the `spots/` root. Passing a path ending in
-`spots.json` makes the CLI create a `spots.json/` directory with a real
-`spots.json` nested inside — isolation still works, which is why the
+**`TONK_SPACES_STATE` names a directory, not a file.** It holds
+`spaces.json` and the `spaces/` root. Passing a path ending in
+`spaces.json` makes the CLI create a `spaces.json/` directory with a real
+`spaces.json` nested inside — isolation still works, which is why the
 mistake survives.

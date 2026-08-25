@@ -289,6 +289,7 @@ mod when_reporting_errors {
     use anyhow::Result;
 
     use crate::common;
+    use tonk_cli::Coded;
 
     #[dialog_common::test]
     async fn it_exits_with_parse_error_on_malformed_yaml() -> Result<()> {

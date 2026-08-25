@@ -27,15 +27,15 @@ any field mints a NEW entity unless you bind the old one with `this:`),
 and bare lowercase tokens are symbols resolved through the name table —
 quote every string literal (`name: "alice"`, not `name: alice`).
 
-## Spots
+## Spaces
 
-Commands run against the selected *spot* (a named fact store). The
+Commands run against the selected *space* (a named fact store). The
 cwd never locates site data — it's only a possible key into the
-registry. Resolution order: `--spot <name>` > `TONK_SPOT` env > a
-binding created by `tonk use <name>`. There is no global fallback.
-In automation, pin the spot per-process (`TONK_SPOT=x tonk ...` or
-`--spot x`), or bind a dedicated working directory once with `tonk
-use <name>`. `tonk spot unbind` removes an exact binding. `tonk spot
+registry. Resolution order: `--space <name>` > `TONK_SPACE` env > a
+binding created by `tonk space use <name>`. There is no global fallback.
+In automation, pin the space per-process (`TONK_SPACE=x tonk ...` or
+`--space x`), or bind a dedicated working directory once with `tonk
+space use <name>`. `tonk space unbind` removes an exact binding. `tonk space
 list` shows what is registered, every bound directory, and what is
 active for this invocation.
 

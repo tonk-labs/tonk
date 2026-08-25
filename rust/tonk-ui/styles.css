@@ -7,7 +7,7 @@
    attribute silently stops working on a bare button wherever that sheet
    loads. A sealed `<tonk-portal>` guest concatenates it ahead of this file
    (`tonk-portal`'s `build_inject_payload`), which is where it bit: the FAB's
-   guest-only "join spot" action rendered on every spot, owners included, and
+   guest-only "join space" action rendered on every space, owners included, and
    the hide-again after a successful join was equally inert.
 
    `!important` rather than a bare `display: none`. Unlayered declarations do

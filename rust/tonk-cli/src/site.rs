@@ -5,7 +5,7 @@
 //! repository on the `main` branch — multi-branch / multi-repo
 //! UX is intentionally not exposed. A site's directory is never
 //! located by walking the current directory: the caller resolves
-//! it through the spot registry (see [`crate::spot`]) and passes
+//! it through the space registry (see [`crate::space`]) and passes
 //! the path in directly.
 //!
 //! [`TonkSite`] is the assembled context every command works
@@ -171,7 +171,7 @@ pub struct TonkSite {
     /// cached branch handles tonk reads and writes through.
     pub reactor: Reactor,
     /// Exact profile-local account and space registry used to open this site.
-    pub account_store: crate::spot::SpotStore,
+    pub account_store: crate::space::SpaceStore,
 }
 
 impl TonkSite {
@@ -264,10 +264,10 @@ impl TonkSite {
     }
 
     /// Initialize (or adopt) a site whose directory is exactly
-    /// `root` — no `.tonk/` nesting. This is what canonical spot
-    /// storage uses: the registry maps a spot name to this
+    /// `root` — no `.tonk/` nesting. This is what canonical space
+    /// storage uses: the registry maps a space name to this
     /// directory. Idempotent: an existing repository at `root` is
-    /// loaded, not clobbered, which is also how `tonk spot new
+    /// loaded, not clobbered, which is also how `tonk space new
     /// --site <path>` adopts pre-existing storage.
     pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
         std::fs::create_dir_all(root)
@@ -368,12 +368,12 @@ impl TonkSite {
     /// this build's format.
     ///
     /// Every command reaches its data through here, so this is where an
-    /// unreadable old spot becomes a sentence someone can act on rather than
+    /// unreadable old space becomes a sentence someone can act on rather than
     /// `missing field \`branch\`` from inside block decoding.
     /// Acquire a named branch on this site's repository.
     ///
     /// Branches hold separate data and are migrated separately, so anything
-    /// walking a whole spot names each in turn rather than assuming `main`.
+    /// walking a whole space names each in turn rather than assuming `main`.
     pub async fn named_branch(&self, branch: &str) -> Result<BranchSession, ReactorError> {
         self.reactor
             .repository(REPO_NAME)
@@ -543,7 +543,7 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
 async fn bootstrap_repository(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    account_store: &crate::spot::SpotStore,
+    account_store: &crate::space::SpaceStore,
     require_account: bool,
     provision_account_spaces: bool,
 ) -> Result<Repository> {
@@ -790,8 +790,8 @@ async fn optional_credential(
 /// when this profile holds the subject's authority but no chain to the
 /// account reaches it yet.
 ///
-/// Every path that authorizes a remote request for a spot needs this exact
-/// prefix, so all of them recover the same way. A spot created before the
+/// Every path that authorizes a remote request for a space needs this exact
+/// prefix, so all of them recover the same way. A space created before the
 /// account existed — or by a release that stored no prefix at all — has
 /// repository authority that stops at the profile, and refusing it would
 /// strand data the device demonstrably owns. Extending that authority to
@@ -955,7 +955,7 @@ async fn mint_prefix(
         .delegate(account_root.clone())
         .perform(operator)
         .await
-        .context("this profile cannot delegate the spot to the account root")?;
+        .context("this profile cannot delegate the space to the account root")?;
     Ok(delegation.into_chain())
 }
 
@@ -981,7 +981,7 @@ pub struct SiteConfig {
     /// disable it while still exercising account-bound authorization.
     pub provision_account_spaces: bool,
     /// Profile-scoped account repository and session state.
-    pub account_store: crate::spot::SpotStore,
+    pub account_store: crate::space::SpaceStore,
 }
 
 impl SiteConfig {
@@ -994,7 +994,7 @@ impl SiteConfig {
             profile_directory: Directory::Profile,
             require_account: false,
             provision_account_spaces: false,
-            account_store: crate::spot::SpotStore::open()
+            account_store: crate::space::SpaceStore::open()
                 .context("failed to locate account state")?,
         })
     }
@@ -1011,7 +1011,8 @@ pub fn default_config() -> Result<SiteConfig> {
         profile_directory: Directory::Profile,
         require_account: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
         provision_account_spaces: true,
-        account_store: crate::spot::SpotStore::open().context("failed to locate account state")?,
+        account_store: crate::space::SpaceStore::open()
+            .context("failed to locate account state")?,
     })
 }
 

@@ -1,7 +1,7 @@
-//! Upgrading a spot written by the pre-dialog-upgrade build, end to end.
+//! Upgrading a space written by the pre-dialog-upgrade build, end to end.
 //!
 //! Every step runs for real: the published `v0.6.7` binary is downloaded,
-//! handed a spot directory that binary itself created, and asked to export
+//! handed a space directory that binary itself created, and asked to export
 //! it — because only it can read that format. The export is remapped, the
 //! current build imports it, and the note the old build wrote is queried
 //! back.
@@ -248,7 +248,7 @@ fn legacy_binary(into: &Path) -> Result<PathBuf> {
 
 /// Run the legacy CLI against the fixture's isolated home.
 ///
-/// `HOME` is overridden because the spot registry resolves through
+/// `HOME` is overridden because the space registry resolves through
 /// `dirs::data_dir()`, which on macOS ignores any tonk-specific variable and
 /// would otherwise write into the developer's real registry.
 fn legacy_run(cli: &Path, home: &Path, work: &Path, args: &[&str]) -> Result<()> {
@@ -267,15 +267,15 @@ fn legacy_run(cli: &Path, home: &Path, work: &Path, args: &[&str]) -> Result<()>
     Ok(())
 }
 
-/// A spot written by the old build, upgraded and still answering as itself.
+/// A space written by the old build, upgraded and still answering as itself.
 ///
-/// The identity half is the point. A migrated spot that answers with the
+/// The identity half is the point. A migrated space that answers with the
 /// right values under *new* entities is a copy, not an upgrade: its peers
-/// would treat it as a different spot. So this asserts the exact DID the old
+/// would treat it as a different space. So this asserts the exact DID the old
 /// build minted, not merely that a row with the right title came back.
 #[tokio::test]
 #[cfg_attr(not(feature = "legacy-migration"), ignore)]
-async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
+async fn it_upgrades_a_legacy_space_end_to_end() -> Result<()> {
     let workspace = tempfile::tempdir()?;
     let legacy_cli = legacy_binary(workspace.path())?;
 
@@ -283,32 +283,36 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
     // read it — opening its branch fails with `missing field 'branch'` —
     // which is precisely why the export must run under the old binary.
     let home = workspace.path().join("legacy-home");
-    let spots = home.join("Library/Application Support/tonk/spots");
-    std::fs::create_dir_all(&spots)?;
+    // `spots`, not `spaces`: everything under this home is resolved by the
+    // v0.6.7 binary, which predates the rename. The current build's
+    // conversion is exercised in `space::tests`, not here — this home must
+    // stay in the layout the old binary reads.
+    let legacy_root = home.join("Library/Application Support/tonk/spots");
+    std::fs::create_dir_all(&legacy_root)?;
     let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy-spot-v0.6.7.tar.gz");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy-space-v0.6.7.tar.gz");
     let status = Command::new("tar")
         .arg("-xzf")
         .arg(&fixture)
         .arg("-C")
-        .arg(&spots)
+        .arg(&legacy_root)
         .status()?;
     if !status.success() {
-        bail!("failed to unpack the legacy spot fixture");
+        bail!("failed to unpack the legacy space fixture");
     }
 
-    // The registry that names the spot. It is written here rather than
+    // The registry that names the space. It is written here rather than
     // committed because it stores absolute paths, which would be this
     // machine's and no one else's.
-    let spot = spots.join("legacy");
+    let space = legacy_root.join("legacy");
     let registry = serde_json::json!({
-        "spots": { "legacy": { "site": spot } },
+        "spots": { "legacy": { "site": space } },
         "bindings": {},
     });
     std::fs::write(
-        spots
+        legacy_root
             .parent()
-            .context("spots directory has no parent")?
+            .context("legacy site root has no parent")?
             .join("spots.json"),
         serde_json::to_vec_pretty(&registry)?,
     )?;
@@ -317,7 +321,7 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
     let work = workspace.path().join("work");
     std::fs::create_dir_all(&work)?;
     let export = workspace.path().join("legacy.csv");
-    // `tonk use`, not `tonk spot use`: binding a directory to a spot is a
+    // `tonk use`, not `tonk space use`: binding a directory to a space is a
     // top-level verb in this release.
     legacy_run(&legacy_cli, &home, &work, &["use", "legacy"])?;
     let runtime = work.join("runtime.tonk");
@@ -391,7 +395,7 @@ rule!:
         .stdout;
     assert!(
         rows.contains("written by the old build"),
-        "the upgraded spot must still answer the legacy note query; saw:\n{rows}"
+        "the upgraded space must still answer the legacy note query; saw:\n{rows}"
     );
     assert!(
         rows.contains("did:key:z6Mk3VY17HUDh9rW6UpiDdtF9BGmdqfsYC2ZGzk4rAJadk2H"),
@@ -411,13 +415,13 @@ rule!:
     Ok(())
 }
 
-/// The whole `tonk migrate --legacy` command, credentials included.
+/// The whole `tonk migrate space` command, credentials included.
 ///
 /// The test above drives the pieces directly; this one runs the command a
 /// person would run, against a fixture that has an account attached. That
 /// ordering is the thing under test: the account carries the authority every
 /// migrated repository's chain terminates in, so a run that upgrades the data
-/// and leaves the credentials behind produces a spot that reads locally and
+/// and leaves the credentials behind produces a space that reads locally and
 /// cannot be pushed anywhere.
 // Gated by `cfg` rather than `cfg_attr(.., ignore)`: `dialog_common::test`
 // does not carry a trailing attribute through, so an `ignore` written the
@@ -441,7 +445,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     let workspace = tempfile::tempdir()?;
 
     // A fixture written by the old build *with an account linked*, which is
-    // the half `legacy-spot-v0.6.7` lacks: it carries the certificate
+    // the half `legacy-space-v0.6.7` lacks: it carries the certificate
     // directory as well as the repositories.
     let home = workspace.path().join("home");
     let state = home.join("Library/Application Support/tonk");
@@ -473,7 +477,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     }
 
     // The fixture was produced by a test harness that isolates its profile
-    // under the spot directory; the shipped CLI reads its profile from
+    // under the space directory; the shipped CLI reads its profile from
     // `dialog/<name>`. Move it there so the command sees these credentials
     // rather than quietly minting a fresh, empty profile.
     let certificates = home.join("Library/Application Support/dialog/tonk");
@@ -495,35 +499,35 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     // The registry naming the fixture's data repository, written here because
     // it stores absolute paths that belong to this run alone.
     let registry = serde_json::json!({
-        "spots": { "linked": { "site": state.join("linked") } },
+        "spaces": { "linked": { "site": state.join("linked") } },
         "bindings": {},
     });
     std::fs::write(
-        state.join("spots.json"),
+        state.join("spaces.json"),
         serde_json::to_vec_pretty(&registry)?,
     )?;
 
     // Run the command itself, as a person would.
     //
     // `--site` names the source to export from; the destination is whichever
-    // spot is active here, so the run needs one of this build's own making
+    // space is active here, so the run needs one of this build's own making
     // to import into.
     let work = workspace.path().join("work");
     std::fs::create_dir_all(&work)?;
     // Credentials first. The fixture's certificate store is in the old
     // format, so until this runs the build cannot see an account at all --
-    // `spot new` below refuses outright with "A Tonk account is required".
+    // `space new` below refuses outright with "A Tonk account is required".
     // That refusal is why the account step has to lead.
     let migrated_account = Command::new(env!("CARGO_BIN_EXE_tonk"))
-        .args(["account", "migrate"])
+        .args(["migrate", "account"])
         .current_dir(&work)
         .env("HOME", &home)
         .env("DO_NOT_TRACK", "1")
         .output()
-        .context("running tonk account migrate failed")?;
+        .context("running tonk migrate account failed")?;
     if !migrated_account.status.success() {
         bail!(
-            "tonk account migrate failed: {}",
+            "tonk migrate account failed: {}",
             String::from_utf8_lossy(&migrated_account.stderr)
         );
     }
@@ -549,22 +553,22 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
          old build minted; saw:\n{status}"
     );
 
-    // `spot new` registers and binds in one step.
+    // `space new` registers and binds in one step.
     let created = Command::new(env!("CARGO_BIN_EXE_tonk"))
-        .args(["spot", "new", "upgraded"])
+        .args(["space", "new", "upgraded"])
         .current_dir(&work)
         .env("HOME", &home)
         .env("DO_NOT_TRACK", "1")
         .output()
-        .context("running tonk spot new failed")?;
+        .context("running tonk space new failed")?;
     if !created.status.success() {
         bail!(
-            "tonk spot new failed: {}",
+            "tonk space new failed: {}",
             String::from_utf8_lossy(&created.stderr)
         );
     }
     let output = Command::new(env!("CARGO_BIN_EXE_tonk"))
-        .args(["migrate", "--legacy", "--site", "linked"])
+        .args(["migrate", "space", "linked"])
         .current_dir(&work)
         .env("HOME", &home)
         .env("DO_NOT_TRACK", "1")
@@ -574,7 +578,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),
-        "tonk migrate --legacy failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "tonk migrate space failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     // Credentials first: the run must say so, and it must say so before it
@@ -613,7 +617,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     let rows = String::from_utf8_lossy(&queried.stdout).into_owned();
     assert!(
         rows.contains("written by the old build with an account"),
-        "the migrated spot must answer the legacy note query; saw:\n{rows}"
+        "the migrated space must answer the legacy note query; saw:\n{rows}"
     );
     assert!(
         rows.contains("did:key:z6Mk68TsruaH39SRJqbBn5PJNzEuCBxAmePdWqSz9hqPxpfn"),
@@ -649,7 +653,7 @@ fn migrate_and_publish(endpoint: &str) -> Result<()> {
     let pushed = tonk(&["push"])?;
     assert!(
         pushed.status.success(),
-        "the migrated spot must publish\nstdout:\n{}\nstderr:\n{}",
+        "the migrated space must publish\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&pushed.stdout),
         String::from_utf8_lossy(&pushed.stderr)
     );

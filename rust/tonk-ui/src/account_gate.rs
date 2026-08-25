@@ -2,7 +2,7 @@
 //!
 //! Durable authority is only ever issued to an account (see
 //! `router::account::require_account`), so a signed-out user who asks to
-//! create a spot or join an invite is refused by the service worker. The
+//! create a space or join an invite is refused by the service worker. The
 //! refusal arrives here as an `account-required` message carrying the intent
 //! that was refused.
 //!
@@ -15,7 +15,7 @@
 //! There is no passkey modal here any more. The one that used to live here
 //! offered "Create a new passkey" with nothing behind it: no address, no
 //! recovery, no service. The credential it minted looked like an account to
-//! everyone except the system that issued it, and the spots created against it
+//! everyone except the system that issued it, and the spaces created against it
 //! were local-only and never backed up.
 
 use tonk_worker_api::{AccountRequired, JoinResponse, PendingIntent};
@@ -77,7 +77,7 @@ pub(crate) fn take_pending() -> Option<PendingIntent> {
 /// The account page calls this when it was opened directly rather than by the
 /// gate — no `next`, so nothing sent the user here. Without it, an intent
 /// abandoned earlier in this tab would replay on the next sign-in and create a
-/// spot nobody asked for.
+/// space nobody asked for.
 pub(crate) fn discard_pending() {
     if let Some(storage) = session_storage() {
         let _ = storage.remove_item(PENDING_KEY);
@@ -211,7 +211,7 @@ pub(crate) async fn resume_pending() -> Result<bool, String> {
 /// Only for the moment a ceremony completes. A page load that merely FINDS an
 /// account uses [`resume_pending`] instead: `next` means "here is the way
 /// back", and honouring it on load would bounce someone who opened their
-/// account settings from a spot straight out of the page they asked for.
+/// account settings from a space straight out of the page they asked for.
 pub(crate) async fn finish() -> Result<bool, String> {
     if resume_pending().await? {
         return Ok(true);

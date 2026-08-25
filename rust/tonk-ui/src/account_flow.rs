@@ -398,14 +398,14 @@ mod tests {
             .current_dir(profile.path())
             .env("HOME", profile.path())
             .env("XDG_DATA_HOME", profile.path().join("data"))
-            .env("TONK_SPOTS_STATE", profile.path().join("spots"))
+            .env("TONK_SPACES_STATE", profile.path().join("spaces"))
             .env("TONK_TELEMETRY_STATE", profile.path().join("telemetry"))
             .env("TONK_UPDATE_STATE", profile.path().join("update"))
             .env("TONK_NO_UPDATE_CHECK", "1")
             .env("DO_NOT_TRACK", "1")
             .env("NO_PROXY", "127.0.0.1,localhost,tonk.network")
             .env_remove("TONK_TELEMETRY")
-            .env_remove("TONK_SPOT")
+            .env_remove("TONK_SPACE")
             .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");
         command
     }
@@ -469,7 +469,7 @@ mod tests {
             }
             Err(_) => {
                 child.kill().await?;
-                Err(anyhow!("timed out waiting for `tonk account link`"))
+                Err(anyhow!("timed out waiting for `tonk account login`"))
             }
         }
     }
@@ -512,7 +512,7 @@ mod tests {
         let mut command = tonk_command_in(env, &profile);
         command.args([
             "account",
-            "link",
+            "login",
             "--name",
             "e2e terminal",
             "--no-open",
@@ -788,8 +788,7 @@ mod tests {
     fn did_for_device<'a>(output: &'a str, name: &str) -> Option<&'a str> {
         output.lines().find_map(|line| {
             let fields: Vec<_> = line.split('\t').collect();
-            (fields.len() == 3 && fields[1] == name)
-                .then(|| fields[2].trim_end_matches(" (this device)"))
+            (fields.len() == 4 && fields[1] == name).then_some(fields[2])
         })
     }
 
@@ -828,7 +827,7 @@ mod tests {
         .await?;
         let key = successful_body("create space before activation", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
 
         // Pushing it now must fail: nobody is paying for this subject.
@@ -899,9 +898,9 @@ mod tests {
             }),
         )
         .await?;
-        let key = successful_body("create synced spot", &created)["key"]
+        let key = successful_body("create synced space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         let pushed = post_json(
             &creator,
@@ -909,7 +908,7 @@ mod tests {
             serde_json::json!({}),
         )
         .await?;
-        successful_body("push synced spot", &pushed);
+        successful_body("push synced space", &pushed);
         let invited = post_json(
             &creator,
             &format!("/api/repository/{key}/invite"),
@@ -930,7 +929,7 @@ mod tests {
             serde_json::json!({ "url": invite_url }),
         )
         .await?;
-        successful_body("visit shared spot", &visited);
+        successful_body("visit shared space", &visited);
         let promoted = post_json(
             &claimer,
             &format!("/api/repository/{key}/membership"),
@@ -941,18 +940,18 @@ mod tests {
 
         // The account directory is the backup now: link a CLI as a
         // second device of the claimer's account and read the claimed
-        // spot back out of the synced account DB — the real
+        // space back out of the synced account DB — the real
         // cross-device path, not a service-side artifact store.
         let second_device = link_cli_with(&claimer, &env, false).await?;
         // Two things have to land before this reads: the freshly linked
-        // device's first account sync (until then `spots` exits non-zero
+        // device's first account sync (until then `spaces` exits non-zero
         // with "not yet hydrated"), and the browser's push of the
         // directory facts, which happens on its next sync drain. Both
         // are timing, not behaviour, so poll on the outcome under test —
-        // that promotion recorded the spot — rather than asserting on
+        // that promotion recorded the space — rather than asserting on
         // whichever intermediate state the first run happened to catch.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut last_seen = String::from("<spots never completed a run>");
+        let mut last_seen = String::from("<spaces never completed a run>");
         let recorded = loop {
             // Drive the browser's sync drain rather than waiting for
             // incidental traffic to trigger one. Promotion writes the
@@ -963,7 +962,7 @@ mod tests {
             let run = run_cli(
                 &env,
                 &second_device.profile,
-                &["account".to_string(), "spots".to_string()],
+                &["account".to_string(), "spaces".to_string()],
             )
             .await?;
             if run.status.success() {
@@ -989,7 +988,7 @@ mod tests {
             } else {
                 // Any other non-zero exit is a real error; failing here
                 // beats burning the deadline on it.
-                return Err(anyhow!("spots failed: {}", run.stderr));
+                return Err(anyhow!("spaces failed: {}", run.stderr));
             }
             if tokio::time::Instant::now() >= deadline {
                 break false;
@@ -998,8 +997,8 @@ mod tests {
         };
         assert!(
             recorded,
-            "promotion completed without recording the claimed spot in the account \
-             directory; last `spots` output was: {last_seen}"
+            "promotion completed without recording the claimed space in the account \
+             directory; last `spaces` output was: {last_seen}"
         );
 
         let devtools = ChromeDevTools::new(claimer.handle.clone());
@@ -1064,7 +1063,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
         }
-        let restored = successful_body("load claimed spot on second device", &restored);
+        let restored = successful_body("load claimed space on second device", &restored);
         assert_eq!(restored["subject"], key);
 
         let pulled = post_json(
@@ -1073,10 +1072,10 @@ mod tests {
             serde_json::json!({}),
         )
         .await?;
-        successful_body("pull claimed spot on second device", &pulled);
+        successful_body("pull claimed space on second device", &pulled);
         let hydrated = get_json(&claimer, &format!("/api/repository/{key}")).await?;
         assert_eq!(
-            successful_body("load pulled spot on second device", &hydrated)["label"],
+            successful_body("load pulled space on second device", &hydrated)["label"],
             "Shared Garden"
         );
 
@@ -1106,9 +1105,9 @@ mod tests {
             }),
         )
         .await?;
-        let key = successful_body("create synced spot", &created)["key"]
+        let key = successful_body("create synced space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         let pushed = post_json(
             &driver,
@@ -1116,7 +1115,7 @@ mod tests {
             serde_json::json!({}),
         )
         .await?;
-        successful_body("push synced spot", &pushed);
+        successful_body("push synced space", &pushed);
 
         let plan = get_json(&driver, "/api/account/deletion/plan").await?;
         let plan = successful_body("review the deletion plan", &plan);
@@ -1177,7 +1176,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, "first@example.com").await?;
 
-        // First account creates a spot; its Hub lists it.
+        // First account creates a space; its Hub lists it.
         let created = post_json(
             &driver,
             "/api/spaces",
@@ -1189,9 +1188,9 @@ mod tests {
             }),
         )
         .await?;
-        let key = successful_body("create first account's spot", &created)["key"]
+        let key = successful_body("create first account's space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         let listed = get_json(&driver, "/api/profile").await?;
         let space_keys = |body: &serde_json::Value| -> Vec<String> {
@@ -1223,11 +1222,11 @@ mod tests {
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         sign_up(&driver, &env, "second@example.com").await?;
 
-        // The second account sees none of the first account's spots.
+        // The second account sees none of the first account's spaces.
         let listed = get_json(&driver, "/api/profile").await?;
         assert!(
             space_keys(successful_body("list second account's spaces", &listed)).is_empty(),
-            "a fresh account must not see the other account's spots"
+            "a fresh account must not see the other account's spaces"
         );
         wait_for_text_containing(&driver, "#account-profile-list", "first@example.com").await?;
 
@@ -1239,7 +1238,7 @@ mod tests {
         let listed = get_json(&driver, "/api/profile").await?;
         assert!(
             space_keys(successful_body("relist first account's spaces", &listed)).contains(&key),
-            "switching back must restore the first account's spot list"
+            "switching back must restore the first account's space list"
         );
 
         driver.quit().await?;
@@ -1280,7 +1279,14 @@ mod tests {
             devices.stdout
         );
         assert!(devices.stdout.contains("active\te2e terminal\t"));
-        assert!(devices.stdout.contains(" (this device)"));
+        assert!(
+            devices.stdout.lines().any(|line| {
+                let fields: Vec<_> = line.split('\t').collect();
+                fields.len() == 4 && fields[1] == "e2e terminal" && fields[3] == "yes"
+            }),
+            "the linked terminal must be the row marked as this device: {}",
+            devices.stdout
+        );
 
         driver.quit().await?;
         Ok(())
@@ -1305,10 +1311,13 @@ mod tests {
         .await?;
         assert!(status.status.success(), "status failed: {}", status.stderr);
         assert!(status.stdout.contains("signed in: yes"));
+        // `login` prints the sign-in itself; the registration the signup
+        // performed is reported by `status`, which is the one command that
+        // reads the access service.
         assert!(
-            linked.link.stdout.contains("access service:"),
-            "the link reports the registration the signup performed: {}",
-            linked.link.stdout
+            status.stdout.contains("access service:"),
+            "status reports the registration the signup performed: {}",
+            status.stdout
         );
 
         driver.quit().await?;
@@ -1346,7 +1355,7 @@ mod tests {
         // registry is where they are read from, and status does not print
         // them.
         let registry: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
-            linked.profile.path().join("spots").join("spots.json"),
+            linked.profile.path().join("spaces").join("spaces.json"),
         )?)?;
         let account = registry
             .get("account")
@@ -1366,7 +1375,7 @@ mod tests {
         Ok(())
     }
 
-    /// A listener standing in for a waiting `tonk account link --via`.
+    /// A listener standing in for a waiting `tonk account login --via`.
     ///
     /// The CLI's half is a loopback server that accepts one form POST; a test
     /// needs no CLI process to play that part, only the same contract. It
@@ -1411,7 +1420,7 @@ mod tests {
         Ok((url, receiver))
     }
 
-    /// The browser half of `tonk account link --via`: the page reads the
+    /// The browser half of `tonk account login --via`: the page reads the
     /// waiting profile's DID and callback out of the URL, runs a real passkey
     /// ceremony, and posts the grant back.
     ///
@@ -1529,7 +1538,7 @@ mod tests {
         .await?;
         let key = successful_body("create space", &created)["key"]
             .as_str()
-            .context("create response omitted the spot key")?
+            .context("create response omitted the space key")?
             .to_string();
         successful_body(
             "push space",

@@ -117,9 +117,9 @@ pub enum EvalError {
     Io(String),
 }
 
-impl EvalError {
+impl crate::Coded for EvalError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         match self {
             EvalError::Parse(_) | EvalError::Empty(_) => ExitCode::ParseError,
             EvalError::Analyze(_) => ExitCode::AnalyzeError,

@@ -80,7 +80,7 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
         profile_directory: Directory::At(profile_dir.to_string_lossy().into_owned()),
         require_account: false,
         provision_account_spaces: false,
-        account_store: tonk_cli::spot::SpotStore::at(parent.join("_state")),
+        account_store: tonk_cli::space::SpaceStore::at(parent.join("_state")),
     })
 }
 
@@ -91,7 +91,7 @@ pub struct AccountFixture {
     pub pre_account_site: TonkSite,
     pub server: tonk_account_service::helpers::AccountServer,
     pub profile: dialog_operator::Profile,
-    pub store: tonk_cli::spot::SpotStore,
+    pub store: tonk_cli::space::SpaceStore,
     pub link: dialog_ucan_core::DelegationChain,
     pub config: SiteConfig,
     pub descriptor: Vec<u8>,
@@ -116,7 +116,7 @@ impl AccountFixture {
 
     /// A fixture that has linked but never hydrated: the trusted-base
     /// marker is absent, exactly like a fresh device right after
-    /// `tonk account link`.
+    /// `tonk account login`.
     pub async fn unhydrated_with_account_remote(remote: &str) -> Result<Self> {
         Self::build(remote, false).await
     }
@@ -249,7 +249,7 @@ impl AccountFixture {
         Ok((subject, DelegationChain::new(delegation)))
     }
 
-    /// The account-store operator every spots read/write in tests runs
+    /// The account-store operator every spaces read/write in tests runs
     /// under.
     pub async fn operator(
         &self,

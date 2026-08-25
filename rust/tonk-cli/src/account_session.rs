@@ -11,7 +11,7 @@ use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use tonk_account::detach::SignedDetachIntent;
 
-use crate::spot::SpotStore;
+use crate::space::SpaceStore;
 
 /// Credential site containing the sole native remote-account authority state.
 pub const ACCOUNT_SESSION_SITE: &str = "tonk-account-session-v1";
@@ -52,7 +52,7 @@ pub enum LocalPhase {
 }
 
 /// Inspect a profile store without creating locks, directories, or profiles.
-pub fn inspect_local(store: &SpotStore) -> Result<LocalPhase> {
+pub fn inspect_local(store: &SpaceStore) -> Result<LocalPhase> {
     let account = store.account_dir();
     let entries = match std::fs::read_dir(&account) {
         Ok(entries) => entries,
@@ -140,16 +140,16 @@ pub struct ActiveAccount {
 /// Held shared lock covering active-state read through remote dispatch.
 pub struct AccountSessionReadGuard {
     _file: File,
-    store: SpotStore,
+    store: SpaceStore,
 }
 
 /// Held exclusive lock covering one account lifecycle transition.
 pub struct AccountSessionWriteGuard {
     _file: File,
-    store: SpotStore,
+    store: SpaceStore,
 }
 
-fn lock_file(store: &SpotStore) -> Result<File> {
+fn lock_file(store: &SpaceStore) -> Result<File> {
     let dir = store.account_dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create account state at {}", dir.display()))?;
@@ -163,7 +163,7 @@ fn lock_file(store: &SpotStore) -> Result<File> {
 }
 
 /// Acquire the cross-process shared remote-dispatch guard.
-pub fn shared_remote_guard(store: &SpotStore) -> Result<AccountSessionReadGuard> {
+pub fn shared_remote_guard(store: &SpaceStore) -> Result<AccountSessionReadGuard> {
     let file = lock_file(store)?;
     file.lock_shared()
         .context("failed to acquire the account-session read lock")?;
@@ -174,7 +174,7 @@ pub fn shared_remote_guard(store: &SpotStore) -> Result<AccountSessionReadGuard>
 }
 
 /// Acquire the cross-process exclusive account-transition guard.
-pub fn exclusive_transition_guard(store: &SpotStore) -> Result<AccountSessionWriteGuard> {
+pub fn exclusive_transition_guard(store: &SpaceStore) -> Result<AccountSessionWriteGuard> {
     let file = lock_file(store)?;
     file.lock()
         .context("failed to acquire the account-session write lock")?;
@@ -184,7 +184,7 @@ pub fn exclusive_transition_guard(store: &SpotStore) -> Result<AccountSessionWri
     })
 }
 
-fn state_path(profile: &Profile, store: &SpotStore) -> Result<PathBuf> {
+fn state_path(profile: &Profile, store: &SpaceStore) -> Result<PathBuf> {
     let profile_key = blake3::hash(profile.did().as_ref().as_bytes()).to_hex();
     Ok(store
         .account_dir()
@@ -194,7 +194,7 @@ fn state_path(profile: &Profile, store: &SpotStore) -> Result<PathBuf> {
 async fn load_raw(
     profile: &Profile,
     _operator: &Operator<NativeSpace>,
-    store: &SpotStore,
+    store: &SpaceStore,
 ) -> Result<Option<AccountSessionState>> {
     let path = state_path(profile, store)?;
     let bytes = match std::fs::read(&path) {
@@ -219,7 +219,7 @@ async fn load_raw(
 async fn save_raw(
     profile: &Profile,
     _operator: &Operator<NativeSpace>,
-    store: &SpotStore,
+    store: &SpaceStore,
     state: &AccountSessionState,
 ) -> Result<()> {
     let path = state_path(profile, store)?;
@@ -329,7 +329,7 @@ pub async fn ensure_initialized(
 pub async fn activate_link(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    store: &SpotStore,
+    store: &SpaceStore,
     attachment_id: Option<String>,
 ) -> Result<()> {
     let guard = exclusive_transition_guard(store)?;
@@ -375,7 +375,7 @@ pub async fn active_guarded(
 pub async fn logout_transition_for_store(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    store: &SpotStore,
+    store: &SpaceStore,
 ) -> Result<Vec<ActiveAccount>> {
     let guard = exclusive_transition_guard(store)?;
     ensure_initialized(profile, operator, &guard).await?;

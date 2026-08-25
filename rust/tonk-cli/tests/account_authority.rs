@@ -1,4 +1,4 @@
-//! Live coverage for authorizing a spot's remote under an account.
+//! Live coverage for authorizing a space's remote under an account.
 
 mod common;
 
@@ -24,11 +24,11 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
 }
 
 /// Releases before the account-root prefix existed stored no such
-/// credential, so upgrading left every spot they created with nothing under
+/// credential, so upgrading left every space they created with nothing under
 /// that key. Authorization has to rebuild the prefix from the certificates
-/// the profile already holds instead of reporting the spot as undelegated.
+/// the profile already holds instead of reporting the space as undelegated.
 #[dialog_common::test]
-async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
+async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
@@ -71,14 +71,16 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
     Ok(())
 }
 
-/// Creating a spot retains its authority into the account space.
+/// Creating a space retains its authority into the account space.
 ///
 /// The retain itself is `tonk_account::delegations`, shared with the worker so
 /// the two adapters cannot drift into retaining different things. This pins
 /// the CLI's half of that wiring; `it_recovers_space_access_on_a_second_device`
 /// proves the retained facts actually travel.
 #[dialog_common::test]
-async fn it_retains_a_created_spot_into_the_account_space(env: AccessServiceAddress) -> Result<()> {
+async fn it_retains_a_created_space_into_the_account_space(
+    env: AccessServiceAddress,
+) -> Result<()> {
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let fixture = common::AccountFixture::with_account_remote(&remote).await?;
     assert_eq!(
@@ -106,7 +108,7 @@ async fn it_retains_a_created_spot_into_the_account_space(env: AccessServiceAddr
     .await?;
     assert!(
         !site.repository.did().to_string().is_empty(),
-        "spot creation must succeed"
+        "space creation must succeed"
     );
 
     let operator = fixture.pre_account_site.operator.inner();
@@ -260,7 +262,7 @@ async fn it_installs_authority_from_a_callback_authorization(
     // what the browser e2e covers — it authorizes a CLI profile that never
     // linked.
     let site = TonkSite::init_at_with(
-        &fixture.tmp.path().join("authorized-spot"),
+        &fixture.tmp.path().join("authorized-space"),
         account_config(&fixture),
     )
     .await?;
@@ -269,7 +271,7 @@ async fn it_installs_authority_from_a_callback_authorization(
         .await?;
     tonk_cli::sync::push(&site)
         .await
-        .context("a spot must push under authority that reaches the account root")?;
+        .context("a space must push under authority that reaches the account root")?;
 
     Ok(())
 }
@@ -374,7 +376,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
             open_browser: false,
             via: Some(page.url.clone()),
             announce: Some(announce),
-            store: Some(tonk_cli::spot::SpotStore::at(
+            store: Some(tonk_cli::space::SpaceStore::at(
                 joiner.parent.join("account-state"),
             )),
         },
@@ -425,7 +427,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     let joiner_account = tonk_cli::account_state::open_account_branch_in(
         &joiner_profile,
         joiner_operator,
-        &tonk_cli::spot::SpotStore::at(joiner.parent.join("account-state")),
+        &tonk_cli::space::SpaceStore::at(joiner.parent.join("account-state")),
     )
     .await?
     .expect("linking hydrates the joiner's account");
@@ -486,7 +488,7 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     use dialog_ucan_core::command::Command;
     use dialog_ucan_core::subject::Subject as UcanSubject;
 
-    // Device one: an account, and a spot whose authority it retains there.
+    // Device one: an account, and a space whose authority it retains there.
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let first = common::AccountFixture::with_account_remote(&remote).await?;
     // The access service serves nothing for an account that has not
@@ -587,7 +589,7 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
 ///
 /// The command exists for profiles that predate delegations being facts: it
 /// drains the legacy certificate store into the access branch and retains
-/// each spot into the account space. A fresh profile has neither, so the run
+/// each space into the account space. A fresh profile has neither, so the run
 /// must succeed and report zero rather than erroring — which is what makes it
 /// safe to re-run.
 #[dialog_common::test]
@@ -595,7 +597,7 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     use dialog_storage::provider::storage::{NativeSpace, Storage};
 
     let fixture = common::AccountFixture::new().await?;
-    let store = tonk_cli::spot::SpotStore::at(fixture.tmp.path().join("registry"));
+    let store = tonk_cli::space::SpaceStore::at(fixture.tmp.path().join("registry"));
     // Mount the fixture's profile so migration has a provider for its
     // subject: it commits as the profile, and an unmounted one errors.
     let storage = Storage::<NativeSpace>::default();
@@ -626,7 +628,7 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
         "a drained certificate store has nothing left to migrate; first pass moved {}",
         first.certificates
     );
-    assert_eq!(second.spots, 0, "no spot may be retained twice");
+    assert_eq!(second.spaces, 0, "no space may be retained twice");
     Ok(())
 }
 

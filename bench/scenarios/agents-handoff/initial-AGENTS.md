@@ -1,6 +1,6 @@
-# Tonk spot working context
+# Tonk space working context
 
-This file is a runtime projection of a Dialog claim on the selected spot's
+This file is a runtime projection of a Dialog claim on the selected space's
 repository subject DID. The claim is authoritative; cwd does not select Tonk
 data.
 
@@ -27,4 +27,4 @@ To persist an update, edit this projection and run:
 
 Inspect the live source, repository subject, and revision with:
 
-`tonk agents --json`
+`tonk agents get --json`

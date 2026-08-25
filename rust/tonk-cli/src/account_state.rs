@@ -1,8 +1,8 @@
 //! Native account-system repository lifecycle.
 //!
-//! Account bytes live under the spot store's dedicated `account/` directory,
-//! never in a named spot or in `spots.json`. The trusted marker remains a
-//! profile credential so account status can be read without opening any spot.
+//! Account bytes live under the space store's dedicated `account/` directory,
+//! never in a named space or in `spaces.json`. The trusted marker remains a
+//! profile credential so account status can be read without opening any space.
 
 use std::path::Path;
 
@@ -23,7 +23,7 @@ use tonk_schema::{Replica, prelude::DidExt as _};
 
 /// Stable derivation context for the account-system operator.
 ///
-/// This must never be replaced with the historical spot context (`slide`):
+/// This must never be replaced with the historical space context (`slide`):
 /// changing either context re-derives an operator DID and invalidates existing
 /// authority chains.
 const ACCOUNT_OPERATOR_CONTEXT: &[u8] = b"tonk/account-state/v1";
@@ -92,7 +92,7 @@ async fn descriptor(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<Option<AccountRepositoryDescriptorV1>> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     descriptor_in(profile, operator, &store).await
 }
 
@@ -100,7 +100,7 @@ async fn descriptor(
 async fn descriptor_in(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountRepositoryDescriptorV1>> {
     Ok(crate::account::stored_provider_in(profile, operator, store)
         .await?
@@ -109,14 +109,14 @@ async fn descriptor_in(
 
 /// Read durable native account-state status without contacting the remote.
 pub async fn status(profile: &Profile) -> Result<AccountStateStatus> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     status_in(profile, &store).await
 }
 
 /// Read account repository status from one explicit profile store.
 pub async fn status_in(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<AccountStateStatus> {
     let operator = credential_operator_for_store(profile, store).await?;
     let Some(descriptor) = descriptor_in(profile, &operator, store).await? else {
@@ -142,7 +142,7 @@ pub async fn adopt_account_access(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<bool> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     adopt_account_access_in(profile, operator, &store).await
 }
 
@@ -150,7 +150,7 @@ pub async fn adopt_account_access(
 pub async fn adopt_account_access_in(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<bool> {
     let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
         return Ok(false);
@@ -224,7 +224,7 @@ pub async fn open_account_branch(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<Option<dialog_repository::Branch>> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     open_account_branch_in(profile, operator, &store).await
 }
 
@@ -232,7 +232,7 @@ pub async fn open_account_branch(
 pub async fn open_account_branch_in(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Option<dialog_repository::Branch>> {
     trace("open: start");
     let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
@@ -275,7 +275,7 @@ pub async fn retain_space_delegation(
     operator: &Operator<NativeSpace>,
     chain: &DelegationChain,
 ) -> Result<bool> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     retain_space_delegation_in(profile, operator, &store, chain).await
 }
 
@@ -283,7 +283,7 @@ pub async fn retain_space_delegation(
 pub async fn retain_space_delegation_in(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
     chain: &DelegationChain,
 ) -> Result<bool> {
     let Some(branch) = open_account_branch_in(profile, operator, store).await? else {
@@ -299,16 +299,16 @@ pub async fn retain_space_delegation_in(
 pub struct MigrationOutcome {
     /// Legacy certificate-store entries drained into access-branch facts.
     pub certificates: usize,
-    /// Spots whose authority was retained into the account space.
-    pub spots: usize,
-    /// Spots already retained, so nothing was written for them.
+    /// Spaces whose authority was retained into the account space.
+    pub spaces: usize,
+    /// Spaces already retained, so nothing was written for them.
     pub already: usize,
-    /// The account repository was legacy and could not receive retained spots.
+    /// The account repository was legacy and could not receive retained spaces.
     pub account_legacy: bool,
 }
 
 fn account_repository_readability(
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
     subject: &dialog_varsig::Did,
 ) -> tonk_account::Readability {
     let revision = store.account_dir().join(tonk_account::revision_path(
@@ -330,15 +330,15 @@ fn account_repository_readability(
 ///    session grants are re-minted in memory on every build, so persisting
 ///    them only accumulated one per build forever.
 ///
-/// 2. **Each spot's authority into the account space.** The account
-///    repository is the durable home of delegations: retaining a spot's
+/// 2. **Each space's authority into the account space.** The account
+///    repository is the durable home of delegations: retaining a space's
 ///    `space → account-root` prefix there is what lets the next device regain
 ///    access by pulling, instead of fetching a backup artifact.
 ///
-/// Spots that fail individually are counted and skipped rather than aborting
-/// the run, so one unreadable spot cannot block migrating the rest.
+/// Spaces that fail individually are counted and skipped rather than aborting
+/// the run, so one unreadable space cannot block migrating the rest.
 ///
-/// This form resolves the operator and spot registry from the install; the
+/// This form resolves the operator and space registry from the install; the
 /// [`migrate_delegations`] form takes them, for callers that already hold one.
 pub async fn migrate_delegations_here() -> Result<MigrationOutcome> {
     let storage = Storage::<NativeSpace>::default();
@@ -348,12 +348,12 @@ pub async fn migrate_delegations_here() -> Result<MigrationOutcome> {
         .await
         .context("failed to mount the profile for delegation migration")?;
     let operator = credential_operator(&profile).await?;
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     migrate_delegations(&profile, &operator, &storage, &store).await
 }
 
 /// [`migrate_delegations_here`] against a caller-supplied profile, operator,
-/// storage, and spot store.
+/// storage, and space store.
 ///
 /// `profile` must be mounted in `storage`: the certificate migration commits
 /// as the profile, so a storage without it errors rather than silently
@@ -362,7 +362,7 @@ pub async fn migrate_delegations(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     storage: &Storage<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<MigrationOutcome> {
     use dialog_repository::MigrateAccess as _;
 
@@ -412,7 +412,7 @@ pub async fn migrate_delegations(
         .await
         .context("failed to open account main branch")?;
 
-    for entry in store.load()?.spots.values() {
+    for entry in store.load()?.spaces.values() {
         let Ok(site) = crate::site::TonkSite::open(&entry.site).await else {
             continue;
         };
@@ -423,7 +423,7 @@ pub async fn migrate_delegations(
             continue;
         };
         match tonk_account::delegations::retain_space_delegation(&branch, &chain, operator).await {
-            Ok(true) => outcome.spots += 1,
+            Ok(true) => outcome.spaces += 1,
             Ok(false) => outcome.already += 1,
             Err(_) => continue,
         }
@@ -468,10 +468,11 @@ async fn operator_with_profile(
 /// storage.
 pub async fn credential_operator_for_store(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Operator<NativeSpace>> {
     let root = store.account_dir();
-    let default_store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let default_store =
+        crate::space::SpaceStore::open().context("failed to locate account state")?;
     // Persisted profiles must be remounted before deriving another operator;
     // isolated test stores use the caller's in-memory profile directly.
     if root == default_store.account_dir() {
@@ -515,7 +516,7 @@ pub async fn credential_operator_for_store(
 }
 
 pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<NativeSpace>> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     operator_with_profile(
         profile,
         &store.account_dir(),
@@ -528,7 +529,7 @@ pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<Na
 /// Build the account operator for one explicit native profile store.
 pub async fn operator_for_store(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Operator<NativeSpace>> {
     credential_operator_for_store(profile, store).await
 }
@@ -720,7 +721,7 @@ pub async fn ensure_with_operator(
     profile: &Profile,
     operator: Operator<NativeSpace>,
 ) -> Result<EnsureOutcome> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     ensure_with_operator_and_store(profile, operator, store).await
 }
 
@@ -740,7 +741,7 @@ pub(crate) fn trace(step: &str) {
     }
 }
 
-/// [`ensure_with_operator`] against a caller-supplied spot store.
+/// [`ensure_with_operator`] against a caller-supplied space store.
 ///
 /// The store locates account state on disk. A caller running outside an
 /// install — a test, or an embedder with its own layout — supplies one rather
@@ -748,7 +749,7 @@ pub(crate) fn trace(step: &str) {
 pub async fn ensure_with_operator_and_store(
     profile: &Profile,
     operator: Operator<NativeSpace>,
-    store: crate::spot::SpotStore,
+    store: crate::space::SpaceStore,
 ) -> Result<EnsureOutcome> {
     trace("ensure: start");
     let Some(descriptor) = descriptor_in(profile, &operator, &store).await? else {
@@ -840,7 +841,7 @@ mod tests {
     #[test]
     fn it_detects_a_legacy_account_repository_before_opening_it() {
         let temp = tempfile::tempdir().unwrap();
-        let store = crate::spot::SpotStore::at(temp.path().join("state"));
+        let store = crate::space::SpaceStore::at(temp.path().join("state"));
         let subject: dialog_varsig::Did =
             "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX"
                 .parse()
@@ -881,7 +882,7 @@ mod tests {
     /// services bind a fresh port every restart): the stored `origin`
     /// remote cell is repointed to the current descriptor instead of
     /// refusing forever with "profile main already follows a different
-    /// account remote" — the failure that left `tonk account spots`
+    /// account remote" — the failure that left `tonk account spaces`
     /// reporting no account while `tonk account status` said signed in.
     #[dialog_common::test]
     async fn it_repoints_the_account_remote_when_the_link_moves() {
@@ -895,7 +896,7 @@ mod tests {
             .await
             .unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let store = crate::spot::SpotStore::at(temp.path().join("state"));
+        let store = crate::space::SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let profile_name = format!("cli-account-repoint-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
@@ -926,7 +927,7 @@ mod tests {
                 .unwrap();
         async fn account_operator(
             profile: &Profile,
-            store: &crate::spot::SpotStore,
+            store: &crate::space::SpaceStore,
             profile_name: &str,
             profile_dir: &Directory,
         ) -> Operator<NativeSpace> {
@@ -941,7 +942,7 @@ mod tests {
         }
         async fn attach(
             profile: &Profile,
-            store: &crate::spot::SpotStore,
+            store: &crate::space::SpaceStore,
             profile_name: &str,
             profile_dir: &Directory,
             root_did: &dialog_varsig::Did,
@@ -1059,7 +1060,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_ensures_account_state_outside_the_spot_registry() {
+    async fn it_ensures_account_state_outside_the_space_registry() {
         use dialog_common::helpers::Provisionable as _;
         use dialog_operator::Profile;
         use dialog_ucan::UcanDelegation;
@@ -1069,7 +1070,7 @@ mod tests {
             .await
             .unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let store = crate::spot::SpotStore::at(temp.path().join("state"));
+        let store = crate::space::SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let profile_name = format!("cli-account-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
@@ -1117,7 +1118,7 @@ mod tests {
         // the profile's own credential store, through the same encoding. The
         // descriptor is read back by a different code path than the one that
         // writes it, and an earlier revision of this merge wrote it here and
-        // read it through the spot's account operator — which found nothing
+        // read it through the space's account operator — which found nothing
         // and reported an established account as unconfigured.
         // Lay down the same two records `account::link` persists, through the
         // shared type, so the descriptor this reads back is one that was
