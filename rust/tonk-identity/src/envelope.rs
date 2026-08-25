@@ -22,9 +22,10 @@ use crate::clearance::{Account, Clearance, Recovery};
 /// version is a deliberate account rotation, never a routine change.
 pub const SIGNING_CONTEXT: &[u8] = b"tonk/sign/v1";
 
-/// HKDF info reserved for the X25519 encryption root when E2EE lands.
-/// No derivation function exists yet on purpose: reserving the domain
-/// is the reason the *secret* is wrapped rather than the signing key.
+/// HKDF info for the account's X25519 encryption key, the recipient
+/// every device seals custodied seeds to (see [`crate::sealed`]).
+/// Having a second root derive from the same secret is the reason the
+/// *secret* is wrapped rather than the signing key.
 pub const ENCRYPTION_CONTEXT: &[u8] = b"tonk/enc/v1";
 
 /// Entry-function salt that seeds the custody keypair. Evaluated as
@@ -99,6 +100,13 @@ impl AccountSecret {
     /// the new one.
     pub fn account_kek(&self) -> Kek<Account> {
         Kek(expand(&self.0, Account::CONTEXT), PhantomData)
+    }
+
+    /// The account's X25519 encryption key, via [`ENCRYPTION_CONTEXT`].
+    /// Its public half is the recipient every device seals custodied
+    /// seeds to; the private half only exists inside a ceremony.
+    pub fn encryption_key(&self) -> crate::sealed::EncryptionKey {
+        crate::sealed::EncryptionKey::from_bytes(expand(&self.0, ENCRYPTION_CONTEXT))
     }
 
     /// The account signer. On the web target the key imports into

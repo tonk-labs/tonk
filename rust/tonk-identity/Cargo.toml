@@ -10,6 +10,7 @@ description = "Root identity derived from a passkey: PRF-derived root key and th
 aes-gcm = { workspace = true }
 anyhow = { workspace = true }
 blake3 = { workspace = true }
+bs58 = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
@@ -22,6 +23,7 @@ serde_ipld_dagcbor = { workspace = true }
 sha2_0_10 = { workspace = true }
 thiserror = { workspace = true }
 tonk-account = { workspace = true }
+x25519-dalek = { workspace = true }
 zeroize = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
