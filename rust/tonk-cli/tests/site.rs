@@ -350,6 +350,49 @@ mod when_shortening_an_invite {
     }
 }
 
+mod when_claiming_before_account_linking {
+    #[cfg(feature = "integration-tests")]
+    use anyhow::Result;
+    #[cfg(feature = "integration-tests")]
+    use tonk_access_service::helpers::AccessServiceAddress;
+    #[cfg(feature = "integration-tests")]
+    use tonk_cli::{invite, remote, sync};
+
+    #[cfg(feature = "integration-tests")]
+    use crate::common;
+
+    /// The invite's profile-ending chain, not an account session, authorizes
+    /// the initial pull. Account linking later makes the profile portable; it
+    /// is not a precondition for receiving the shared space.
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_pulls_with_invite_authority(env: AccessServiceAddress) -> Result<()> {
+        let endpoint = env.access_service_url.as_str();
+        let inviter = common::TestSite::new().await?;
+        env.provision_subject(inviter.site.repository.did().as_str())
+            .await?;
+        remote::add(&inviter.site, "origin", endpoint, None).await?;
+        remote::set_upstream(&inviter.site, "origin").await?;
+        sync::push(&inviter.site).await?;
+
+        let base = format!("{endpoint}/join");
+        let invitation = invite::mint(&inviter.site, Some(&base), Some(endpoint)).await?;
+        let claimer_tmp = tempfile::tempdir()?;
+        let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
+        let mut claimer_config = common::isolated_config(&claimer_parent)?;
+        claimer_config.require_account = true;
+
+        let outcome = invite::claim(&claimer_root, &invitation.url, claimer_config).await?;
+
+        assert!(
+            outcome.synced,
+            "the invite authority should pull before any account is linked"
+        );
+        Ok(())
+    }
+}
+
 /// The library's own copy of what the binary no longer enforces: a mint that
 /// embeds a remote used to be refused unless the remote named a relay for its
 /// revocations. A revocation is an ordinary `ucan/revoke` invocation now,

@@ -26,6 +26,10 @@ name = "site"
 path = "tests/site.rs"
 
 [[test]]
+name = "join_profile"
+path = "tests/join_profile.rs"
+
+[[test]]
 name = "invite_revocation"
 path = "tests/invite_revocation.rs"
 

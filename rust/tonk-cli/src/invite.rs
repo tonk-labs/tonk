@@ -405,24 +405,20 @@ pub async fn claim(
         .await
         .map_err(|e| InviteError::Io(e.to_string()))?;
 
-    let local_root = crate::identity::local_root_with_operator(&profile, &operator)
+    // An invite already carries the authority needed to join. A linked
+    // profile claims to its durable account root; before linking, the
+    // persistent profile DID is the stable identity available on this device.
+    // The later profile↔account union carries profile-held spaces forward.
+    let member = match crate::identity::local_root_with_operator(&profile, &operator)
         .await
-        .map_err(|e| InviteError::Io(e.to_string()))?;
-    // Claiming an invite is what makes this device a member, and a member is
-    // what a later `tonk invite` delegates from. Rooting that chain in an
-    // anonymous key leaves it with no owner and nothing able to revoke it.
-    if config.require_account {
-        crate::account::require_account_with_operator(&profile, &operator)
-            .await
-            .map_err(|e| InviteError::Io(e.to_string()))?;
-    }
-    let member = local_root
-        .ok_or_else(|| {
-            InviteError::Io("local root provisioning did not produce a record".to_string())
-        })?
-        .root_did
-        .parse()
-        .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?;
+        .map_err(|e| InviteError::Io(e.to_string()))?
+    {
+        Some(root) => root
+            .root_did
+            .parse()
+            .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?,
+        None => profile.did(),
+    };
     let claimed = invite
         .claim(&member)
         .await
