@@ -40,7 +40,7 @@ for their authoritative fields.
 A sheet points at the entity to display, that entity's model concept, and the
 view concept used to resolve a model-specific template:
 
-```yaml
+```yaml tonk=parse
 workspace/sheet!: &sheet-alice
   this: id:sheet-alice
   title:    "Alice"
@@ -63,7 +63,7 @@ tonk view add person --name person-card --template '<article><h2>{name}</h2></ar
 The CLI pins the view to `id:person-card`, so re-running it updates the same
 view. In raw notation, include the equivalent stable `this:` yourself:
 
-```yaml
+```yaml tonk=parse
 view!: &person-card
   this: id:person-card
   model: person

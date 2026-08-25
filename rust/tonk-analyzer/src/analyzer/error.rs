@@ -511,6 +511,20 @@ pub enum AnalyzeErrorKind {
         /// Underlying message from dialog's compiler.
         reason: String,
     },
+    /// Two differently named transient commands used as positive rule
+    /// triggers have equal or subset required-attribute shapes, so one event
+    /// can satisfy both rules.
+    #[error(
+        "an event intended for transient command {event_command:?} also satisfies {also_matches:?} because their required attributes overlap ({shared_attributes}); give each command verb-specific `the:` paths such as `dataset/toggle` and `dataset/remove`"
+    )]
+    OverlappingTransientCommands {
+        /// The narrower command (or the later command when shapes are equal).
+        event_command: String,
+        /// The broader command the same event also satisfies.
+        also_matches: String,
+        /// Stable, sorted list of the attributes shared by both shapes.
+        shared_attributes: String,
+    },
 }
 
 impl AnalyzeErrorKind {
@@ -543,6 +557,7 @@ impl AnalyzeErrorKind {
             Self::ProtectedUri { .. } => "E_PROTECTED_URI",
             Self::IncompleteAssertion { .. } => "E_INCOMPLETE_ASSERTION",
             Self::RuleCompileFailed { .. } => "E_RULE_COMPILE_FAILED",
+            Self::OverlappingTransientCommands { .. } => "E_OVERLAPPING_TRANSIENT_COMMANDS",
         }
     }
 }

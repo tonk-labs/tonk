@@ -901,10 +901,10 @@ enum ConceptCommand {
 enum ViewCommand {
     /// Assert a declarative view for a concept
     ///
-    /// When no home is set yet, the build is auto-surfaced onto the
-    /// space home so it's immediately visible.
+    /// A first detail or directory view is auto-surfaced when the home is
+    /// blank. --home explicitly replaces an existing home.
     #[command(
-        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --name habit-card"
+        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --name habit-card\n  tonk view add habit --kind directory --template-file habit.html --home"
     )]
     Add {
         /// The concept this view renders.
@@ -921,15 +921,40 @@ enum ViewCommand {
         /// Read the template from a file instead.
         #[arg(long, value_name = "PATH")]
         template_file: Option<PathBuf>,
-        /// Anchor name for the view (default: <concept>-view).
+        /// Anchor name (default depends on --kind).
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Which standard view concept to author.
+        #[arg(long, value_enum, default_value_t = ViewKindArg::Detail)]
+        kind: ViewKindArg,
+        /// Atomically replace the current home with this concept's directory.
+        #[arg(long)]
+        home: bool,
         /// Print the notation document without evaluating it.
         #[arg(long)]
         notation: bool,
         #[command(flatten)]
         write: WriteArgs,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ViewKindArg {
+    Detail,
+    Directory,
+    Label,
+    Title,
+}
+
+impl From<ViewKindArg> for tonk_cli::authoring::ViewKind {
+    fn from(kind: ViewKindArg) -> Self {
+        match kind {
+            ViewKindArg::Detail => Self::Detail,
+            ViewKindArg::Directory => Self::Directory,
+            ViewKindArg::Label => Self::Label,
+            ViewKindArg::Title => Self::Title,
+        }
+    }
 }
 
 /// The switches every write verb takes, matching `tonk eval`'s.
@@ -980,7 +1005,7 @@ impl WriteArgs {
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --json\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
+    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --json\n  tonk eval ./doc.notation --home todo\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
 )]
 struct EvalArgs {
     /// Inline document. Mutually exclusive with the positional
@@ -1001,6 +1026,10 @@ struct EvalArgs {
     /// Omit to read from a piped stdin.
     #[arg(value_name = "PATH")]
     path: Option<String>,
+
+    /// Atomically replace the current home with this concept's directory.
+    #[arg(long, value_name = "CONCEPT")]
+    home: Option<String>,
 
     /// Skip the automatic pull-before / push-after that wraps a
     /// committing eval when an upstream is configured. The manual
@@ -2333,6 +2362,7 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
         },
         quiet: args.quiet,
         dry_run: args.dry_run,
+        home: args.home,
     };
 
     let (_, site) = match open_selected(space).await {
@@ -3655,6 +3685,8 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
             template,
             template_file,
             name,
+            kind,
+            home,
             notation,
             write,
         }) => {
@@ -3678,8 +3710,10 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
             match data_ops::view_add(
                 &site,
                 &model,
+                kind.into(),
                 name.as_deref(),
                 &template,
+                home,
                 write.options(notation),
             )
             .await
@@ -4197,6 +4231,81 @@ mod account_spaces_parser_tests {
                 "guide command no longer parses: {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn view_kind_and_home_flags_parse() {
+        for (value, expected) in [
+            ("detail", ViewKindArg::Detail),
+            ("directory", ViewKindArg::Directory),
+            ("label", ViewKindArg::Label),
+            ("title", ViewKindArg::Title),
+        ] {
+            let cli = Cli::try_parse_from([
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--kind",
+                value,
+                "--template",
+                "<p>{title}</p>",
+                "--home",
+            ])
+            .expect("view kind parses");
+            let Some(Command::View {
+                command: Some(ViewCommand::Add { kind, home, .. }),
+                ..
+            }) = cli.command
+            else {
+                panic!("expected view add command");
+            };
+            assert_eq!(kind, expected);
+            assert!(home);
+        }
+
+        let cli = Cli::try_parse_from([
+            "tonk",
+            "view",
+            "add",
+            "note",
+            "--template",
+            "<p>{title}</p>",
+        ])
+        .expect("default view kind parses");
+        assert!(matches!(
+            cli.command,
+            Some(Command::View {
+                command: Some(ViewCommand::Add {
+                    kind: ViewKindArg::Detail,
+                    home: false,
+                    ..
+                }),
+                ..
+            })
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--kind",
+                "gallery",
+                "--template",
+                "<p>{title}</p>",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn eval_home_flag_parses() {
+        let cli = Cli::try_parse_from(["tonk", "eval", "app.notation", "--home", "todo"]).unwrap();
+        let Some(Command::Eval(EvalArgs { home, .. })) = cli.command else {
+            panic!("expected eval command");
+        };
+        assert_eq!(home.as_deref(), Some("todo"));
     }
 
     #[test]

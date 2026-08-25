@@ -83,7 +83,7 @@ All of these are direct references and require no resolution.
 
 Define attributes, compose a concept, assert an entity, query it:
 
-```yaml
+```yaml tonk=eval
 attribute!: &person-name
   description: The person's name
   the:         xyz.tonk.person/name
@@ -182,7 +182,7 @@ retraction).
 A YAML anchor written between the head's colon and its body
 publishes the resulting entity under that name:
 
-```yaml
+```yaml tonk=illustrative-ellipsis
 attribute!: &person-name
   ...
 ```
@@ -234,7 +234,7 @@ value can take four forms:
 The mapping form lets you control entity derivation
 explicitly:
 
-```yaml
+```yaml tonk=parse
 person!:
   name: Alice
   age: 23
@@ -283,7 +283,7 @@ an object (rename it, query its target, etc.).
    same variable name unify — the same value must satisfy
    every position the variable appears in.
 
-```yaml
+```yaml tonk=parse
 # Find people whose name matches their xyz.tonk role.
 person:
   this: ?p
@@ -329,7 +329,7 @@ with the same name across expressions join. Results are
 filtered to bindings that satisfy every expression
 simultaneously.
 
-```yaml
+```yaml tonk=parse
 person:
   this: ?e
   name: ?name
@@ -341,7 +341,7 @@ xyz.tonk:
 
 A query+mutation document also joins via shared variables:
 
-```yaml
+```yaml tonk=parse
 person:
   this: ?alice
   name: "Alice"
@@ -361,7 +361,7 @@ Joins are limited to a single evaluation scope.
 The `&` anchor on a head's value is sugar for an explicit
 `name!` operation. The desugaring:
 
-```yaml
+```yaml tonk=eval
 attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
@@ -371,7 +371,7 @@ attribute!: &person-name
 
 is equivalent to:
 
-```yaml
+```yaml tonk=eval
 attribute!:
   this: ?person-name
   description: "The person's name"
@@ -391,7 +391,7 @@ as a name pointing to it.
 Use `name!` directly when you need to publish under multiple
 names, rename, or alias:
 
-```yaml
+```yaml tonk=eval
 attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
@@ -401,11 +401,11 @@ attribute!: &person-name
 # Additional names for the same entity:
 name!:
   this:   id:tonk-person-name
-  entity: ?person-name
+  entity: person-name
 
 name!:
   this:   id:p-name
-  entity: ?person-name
+  entity: person-name
 ```
 
 ### Cardinality and what `this:` is for
@@ -429,7 +429,7 @@ at a time. Two consequences:
 
 Renaming is `name!` plus retraction:
 
-```yaml
+```yaml tonk=eval
 # Re-point id:alice to a different entity:
 name!:
   this:   id:alice
@@ -473,7 +473,7 @@ Defines an attribute by domain/name, value type, and
 cardinality. Although `attribute` is a built-in, its is a regular concept and
 can be described in the notation:
 
-```yaml
+```yaml tonk=illustrative-built-in-schema
 # The four attributes that make up the attribute concept.
 
 attribute!:
@@ -529,12 +529,12 @@ of a new one.
 
 Because `attribute` is a regular concept, you can query it:
 
-```yaml
+```yaml tonk=eval
 # Find every attribute whose cardinality is "many".
 attribute:
   this:        ?a
-  the:         ?selector
-  cardinality: many
+  id:          ?selector
+  cardinality: "many"
 ```
 
 Note: the schema definition above is illustrative. In an
@@ -545,7 +545,7 @@ itself are built-in.
 
 Composes attributes into a shape with named fields:
 
-```yaml
+```yaml tonk=parse
 concept!: &person
   description: "A person"
   with:
@@ -571,7 +571,7 @@ express the `concept` concept's own schema.
 
 Establishes a name that can be resolved to an associated entity.
 
-```yaml
+```yaml tonk=parse
 name!:
   this:   id:alice
   entity: did:key:zAlice
@@ -585,7 +585,7 @@ Fields:
 
 The schema, illustratively:
 
-```yaml
+```yaml tonk=illustrative-built-in-schema
 attribute!:
   this: ?entity
   description: "The entity identified by the name"
@@ -604,7 +604,7 @@ queries can find every name pointing at a given entity, or
 every entity with at least one name, using the regular query
 machinery:
 
-```yaml
+```yaml tonk=illustrative-placeholders
 # Find all names for this entity.
 name:
   this:   ?n
@@ -622,7 +622,7 @@ premises under `when:` (all must match) and optionally `unless:`
 (none may match); the head under `assert:`, `assert!:`, or
 `retract!:` says what to conclude.
 
-```yaml
+```yaml tonk=parse
 rule!:
   assert!: alert
   when:
@@ -653,7 +653,7 @@ Predicates filter bindings rather than reading stored facts.
 The range predicates order every comparable type — numbers, strings,
 symbols, entities, bytes — and read `of` as the left side:
 
-```yaml
+```yaml tonk=illustrative-rule-fragment
 # ?count is in the half-open interval (1, 100].
 - assert: ">"
   where: { of: ?count, with: 1 }
@@ -691,7 +691,7 @@ run; a join is what binds it.
 Because they are ordinary premises, they compose — a span's child
 reference feeds the next node lookup:
 
-```yaml
+```yaml tonk=illustrative-rule-fragment
 - assert: tree/span
   where: { of: ?root, node: ?child }
 - assert: tree/node
@@ -703,7 +703,7 @@ formula's outputs; only the required input (`of:`) must be given.
 
 A resolver also heads a query on its own, not just a rule premise:
 
-```yaml
+```yaml tonk=parse
 tree/node:
   of: "8QsR69j39jU7acb4H9VfsSpR2SrHJ6f2PPKHoosnsAPr"
   kind: ?kind
@@ -716,7 +716,7 @@ before concepts. A concept declared under one of those names could
 never be referenced, since every mention would mean the built-in, so
 declaring one is an error rather than a silent shadowing:
 
-```yaml
+```yaml tonk=illustrative-error
 concept!: &tree/node   # error: "tree/node" is a built-in resolver
 ```
 

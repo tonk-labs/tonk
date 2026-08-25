@@ -666,9 +666,16 @@ mod when_previewing_a_write {
         .await?;
         let before = revision(&test).await?;
 
-        let out =
-            tonk_cli::data_ops::view_add(&test.site, "habit", None, "<b>{name}</b>", preview())
-                .await?;
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            tonk_cli::authoring::ViewKind::Detail,
+            None,
+            "<b>{name}</b>",
+            false,
+            preview(),
+        )
+        .await?;
 
         assert!(out.contains("dry run"), "{out}");
         // `view_add` auto-surfaces onto an unset home, so a preview that
@@ -801,9 +808,16 @@ mod when_printing_notation_for_a_write {
         assert!(asserted.contains("name: \"Read\""), "{asserted}");
         assert_eq!(revision(&test).await?, before);
 
-        let view =
-            tonk_cli::data_ops::view_add(&test.site, "habit", None, "<b>{name}</b>", notation())
-                .await?;
+        let view = tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            tonk_cli::authoring::ViewKind::Detail,
+            None,
+            "<b>{name}</b>",
+            false,
+            notation(),
+        )
+        .await?;
         assert!(view.contains("view!: &habit-view"), "{view}");
         assert_eq!(revision(&test).await?, before);
 

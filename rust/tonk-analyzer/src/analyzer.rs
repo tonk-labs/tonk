@@ -157,6 +157,7 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
     let scope = Scope::new();
     let graph = graph::push(syntax)?;
     let resolved = poll_ready(graph.resolve(syntax, &scope, &graph::LocalOnly))?;
+    rule::check_overlapping_transient_rule_triggers(syntax, &scope)?;
     expand(syntax, &scope, resolved)
 }
 
@@ -222,6 +223,7 @@ impl<'s, 'a> Analyze<'s, 'a> {
         let graph = graph::push(syntax)?;
         let resolver = graph::BranchResolver::new(source, env);
         let resolved = graph.resolve(syntax, &scope, &resolver).await?;
+        rule::check_overlapping_transient_rule_triggers(syntax, &scope)?;
         expand(syntax, &scope, resolved)
     }
 }

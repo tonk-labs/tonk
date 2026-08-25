@@ -11,7 +11,7 @@ concept; use `--notation` to inspect that document.
 `view` is `{model, display}`: the concept it renders and the HTML
 template. Assert one per presentation:
 
-```yaml
+```yaml tonk=parse
 view!: &person-card
   this: id:person-card
   model: person
@@ -28,6 +28,22 @@ name; the explicit `this: id:person-card` pins the view entity so a
 later assertion supersedes its cardinality-one `display` instead of
 leaving the old view entity queryable. `tonk view add --name person-card`
 adds this stable `this:` automatically.
+
+## Authoring detail, directory, label, and title views
+
+`tonk view add` authors a detail view by default. Select any standard view
+concept explicitly with `--kind detail|directory|label|title`; each kind gets a
+stable default anchor (`<model>-view`, `<model>-directory`, `<model>-label`, or
+`<model>-title`). A supplied `--name` is preserved unchanged.
+
+```text
+tonk view add todo --kind directory --template-file todo.html --home
+```
+
+A first detail or directory view automatically surfaces its model while the
+home is blank. Label and title views do not. `--home` explicitly replaces an
+existing home with this one concept's directory and commits the view plus home
+change atomically. Without it, an existing home is always preserved.
 
 ## `<tonk-display>` — one entity through a view
 
@@ -49,7 +65,7 @@ renders a single entity. The resolution that trips people up:
 So you author the instance with a `model` (above) and point callers at
 the concept:
 
-```yaml
+```yaml tonk=illustrative-view-config
 # Correct: the sheet/host references the view CONCEPT.
 view: tonk:view
 # Wrong: referencing a view instance (id:person-card) makes the
@@ -104,7 +120,7 @@ Render the reference through a small **label view** — a `view/label`
 instance. It lives under the built-in `tonk:view/label` concept, so it
 doesn't collide with the model's default `tonk:view`:
 
-```yaml
+```yaml tonk=parse
 # A comment points at its author (a person).
 view!: &comment-card
   this: id:comment-card
@@ -169,7 +185,7 @@ interactions) is packaged as a **web component** instead.
 A component is branch data: a `component` row whose `module` field is
 a JS module that defines your element.
 
-```yaml
+```yaml tonk=eval
 component!: &tally-widget
   module: |
     customElements.get('tally-widget') || customElements.define('tally-widget',
@@ -218,7 +234,7 @@ For an imperative HTML document, assert the always-seeded `portal` concept.
 Its `content` may contain scripts and query through `window.tonk` in the live
 browser:
 
-```yaml
+```yaml tonk=eval
 portal!: &about
   this: id:about
   content: |

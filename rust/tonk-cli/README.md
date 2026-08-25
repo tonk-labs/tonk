@@ -40,6 +40,7 @@ tonk invite
 # Evaluate a notation document: inline, from a file, or piped.
 tonk eval -c 'person:'
 tonk eval ./doc.notation
+tonk eval interactive.notation --home todo # install the document and replace the home atomically
 cat doc.notation | tonk eval -
 tonk eval -c 'person:' --json --quiet
 
@@ -65,6 +66,7 @@ tonk retract habit <entity>                   # retract the whole instance
 # Authoring — schema, views, and the space home.
 tonk concept add habit --field name:text:one  # anchored concept + typed fields
 tonk view add habit --template '<b>{name}</b>'  # declarative view (auto-surfaces an unset home)
+tonk view add habit --kind directory --template-file habit.html --home
 tonk space home habit                         # put habit's directory on the space home
 
 # CSV transfer over the main branch.
@@ -90,6 +92,11 @@ tonk invite --recipient-root did:key:z6Mk... # seed-free targeted invite
 tonk invite --no-remote        # embed none; the claimer wires an upstream by hand
 tonk join 'https://...#invite' --name garden
 ```
+
+`view add` authors `detail` by default; `--kind` also accepts `directory`,
+`label`, and `title`. A first detail or directory view auto-surfaces only while
+the home is blank. `--home` is explicit replacement authority: it installs the
+view and replaces the prior home with this one concept in the same transaction.
 
 ## Telemetry
 
