@@ -131,33 +131,109 @@ devices.
 The worker's label is coarser — no `platform`, no touch-point count — so
 browser and OS come from the user agent alone.
 
-## Wrapped keys
+## Wrapped keys (2026-08-25)
 
 Not a delegation, so not this entity. A sealed space seed is its own
-concept, keyed by the DID it derives:
+concept, and it is sealed to a **public key**, not wrapped under the
+account KEK.
+
+The KEK derives from the account secret, and the account secret only
+materialises inside a passkey ceremony. A CLI device holds a delegation
+from the root, never the secret, so a symmetric wrap at account clearance
+would make every space creation a browser-only act. Sealing to a public
+key splits the two halves: anything holding the account DB can *seal*,
+only a ceremony can *open*.
+
+### The account encryption key
+
+`AccountSecret::encryption_key()` derives an X25519 key from the account
+secret (`HKDF(secret, info = "tonk/account/encryption/v1")`), the same
+way `signer()` derives the Ed25519 one. Its public half is a `did:key`
+under the `x25519-pub` multicodec (`0xec`, `did:key:z6LS…`), so a
+recipient is an `Entity` like every other reference. Published on the
+account subject entity, next to `AccountDisplayName`:
 
 ```
-CustodiedSeed   this = hash(subject)
-                subject    → the space or invite DID
-                envelope   → sealed bytes, clearance = account
-                generation → which account secret sealed it
+{account DID}
+  xyz.tonk.account/encryption-key   did:key:z6LS…   cardinality one
 ```
 
-It sits *beside* the ownership delegation rather than on it: the
+`AccountEncryptionKey`, written by the custody ceremony at account
+creation, by onboarding-account creation (it has a secret too), and by
+rotation. Cardinality one: rotation overwrites, and sealed rows name their
+own recipient, so nothing is lost by that.
+
+### The sealed seed
+
+One row per `(subject, recipient)`, content-derived like `Membership`:
+
+```
+CustodiedSeed   this = Entity::of(CustodiedSeed { subject, recipient })
+  xyz.tonk.custody/subject     the space DID, or the invite principal DID
+  xyz.tonk.custody/kind        tonk:space | tonk:invite
+  xyz.tonk.custody/recipient   the did:key:z6LS… it is sealed to
+  xyz.tonk.custody/sealed      the envelope bytes
+```
+
+A row per pair rather than a stamp on the directory entity, because
+rotation adds a row for the new recipient and retracts the old one rather
+than overwriting in place, and sealing a space seed to an admin's account
+as a recovery custodian (see `space-admins.md`) is just another row with
+another recipient. `subject` and `kind` repeat the hash inputs as
+queryable attributes so rotation can enumerate everything sealed to the
+old key and a recovering device can find the seed for a space without
+knowing the entity.
+
+### The envelope
+
+`version (1) ‖ algorithm (1) ‖ ephemeral X25519 pub (32) ‖ nonce (12) ‖
+ciphertext`. Shared secret = ECDH(ephemeral, recipient); AEAD key =
+`HKDF(shared, salt = ephemeral_pub ‖ recipient_pub, info =
+"tonk/custody/v1")`; AES-256-GCM, as `Envelope` already uses. Associated
+data is the header plus the recipient DID plus the subject DID, so a blob
+cannot be re-pointed at another space or another recipient.
+`seal(recipient, seed, subject)` needs no secret; `open(encryption_key,
+sealed, subject)` needs the ceremony.
+
+### Writers and readers
+
+- Space create (worker and CLI): after `retain_space_delegation`, read
+  `AccountEncryptionKey`, seal, assert `CustodiedSeed`. Best-effort like
+  retain; an account with no key yet logs and skips.
+- Invite mint: the same, `kind = tonk:invite`.
+- A sweep on the account-ready path: every locally held signer with no
+  `CustodiedSeed` for the current recipient gets sealed. This repairs
+  accounts that predate the key and re-seals after rotation on devices
+  that still hold plaintext.
+- Rotation (browser): open every row sealed to the old recipient,
+  re-issue `space → new-root`, re-seal to the new recipient, retract the
+  old rows.
+- Recovery on a new device (browser): open the row for the space and
+  reconstruct the signer into the local credential store.
+- The CLI only ever seals.
+
+The seed sits *beside* the ownership delegation rather than on it: the
 delegation says who may act for the space, the seed says how to re-issue
-it. They have different lifetimes — rotation replaces the delegation and
-re-wraps the seed — so one entity carrying both would make every rotation
-a read-modify-write of the ownership record.
+it. They have different lifetimes, so one entity carrying both would make
+every rotation a read-modify-write of the ownership record. Join on the
+DID when both are needed: `CustodiedSeed.subject` equals the delegation's
+`dialog.ucan/subject`.
 
-Join on the DID when both are needed: `CustodiedSeed.subject` equals the
-delegation's `dialog.ucan/subject`.
+Clearance is unchanged: sealing is public, opening is Recovery-gated. A
+device compromise leaks nothing it did not already hold; an account
+compromise costs the seeds, which `onboarding-accreditation.md` already
+accepts. `vault-key.md` describes wrappings addressed to public keys
+enumerable from the account space; this is that primitive with the
+account as the only addressee, and the vault should share it.
 
 ## Where these live
 
-Profile main, which replicates through the account upstream. Both the
-authority and the sealed seed must reach every device on the account —
-that is what makes a space usable on a second device and re-issuable
-after a lost one.
+The account space `main`, which replicates to every linked device and is
+readable only by the account. Both the authority and the sealed seed must
+reach every device on the account — that is what makes a space usable on
+a second device and re-issuable after a lost one. The plaintext signer
+stays in the creating device's local credential store; the fact is the
+recovery copy.
 
 ## Relationship to #748 (feat/ucan-revocations)
 
@@ -184,11 +260,12 @@ service would otherwise be the only source of.
 
 1. ~~`SpaceFounded` on the directory entity~~ — DONE.
 2. ~~`DeviceLink` on the powerline~~ — DONE.
-3. **`CustodiedSeed`** — the concept and the seal-on-create path, with
-   space keys generated extractable and their seeds sealed under the
-   account KEK.
-4. **Rotation** consumes all three: re-wrap seeds, re-issue ownership
-   delegations, retract the old device link.
+3. **`AccountEncryptionKey` + `CustodiedSeed`** — the X25519 key derived
+   from the account secret and published as a fact; the `Sealed`
+   envelope in tonk-identity; the concept; seal-on-create in the worker
+   and the CLI for spaces and invites; the backfill sweep.
+4. **Rotation and recovery** consume all three: open and re-seal seeds,
+   re-issue ownership delegations, retract the old device link.
 
 ## Open
 
