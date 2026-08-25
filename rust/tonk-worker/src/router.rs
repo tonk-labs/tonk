@@ -595,24 +595,57 @@ pub mod tests {
     /// creates a root without an account around it.
     pub async fn test_state_without_account() -> TonkState {
         let state = test_state_without_root().await;
+        persist_test_root(&state).await;
+        state
+    }
+
+    /// Persist the test root on `state`, the way a creation or unlock
+    /// ceremony does: the `root -> device` grant, the recipient custodied
+    /// seeds are sealed to, and that recipient published on profile main.
+    /// Returns the root DID.
+    pub(crate) async fn persist_test_root(state: &TonkState) -> dialog_varsig::Did {
         let root = Ed25519Signer::import(&test_root_seed(&state.profile_name))
             .await
             .unwrap();
+        let root_did = root.did();
         let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
             .await
             .unwrap();
+        // What a creation or unlock ceremony hands back with the root, and
+        // what the account sweep then publishes: the recipient custodied
+        // seeds are sealed to. Published here directly, since the fixture
+        // has no account branch to sweep.
+        let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
+            zeroize::Zeroizing::new(test_root_seed(&state.profile_name)),
+        )
+        .encryption_key()
+        .recipient()
+        .did();
         super::identity::persist_root(
-            &state,
+            state,
             tonk_worker_api::SaveRootRequest {
                 credential_id: "test-credential".to_string(),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
                 passkey: None,
-                encryption_key: None,
+                encryption_key: Some(recipient.to_string()),
             },
         )
         .await
         .unwrap();
         state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .transaction()
+            .assert(tonk_schema::AccountEncryptionKey::new(
+                root_did.this(),
+                recipient.this(),
+            ))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .expect("the fixture publishes the account's encryption key");
+        root_did
     }
 
     /// Create an isolated test state with a stable local root grant and an
