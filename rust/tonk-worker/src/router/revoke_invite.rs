@@ -49,7 +49,7 @@ fn space_scope(subject: &Did) -> Scope {
 /// not a snapshot taken at mint time. Proving as the invite's AUDIENCE (not
 /// as this profile, and not as the account) is what makes the invite hop the
 /// chain's last link, and the revocation witness has to contain that hop.
-async fn prove_path(
+pub(super) async fn prove_path(
     branch: &dialog_repository::Branch,
     tonk: &TonkState,
     subject: &Did,
@@ -80,7 +80,7 @@ async fn prove_path(
 
 /// The revocation target a proved path names: its leaf, the hop into the
 /// invite's audience.
-fn leaf_cid(path: &DelegationChain) -> Result<Cid, TonkWorkerError> {
+pub(super) fn leaf_cid(path: &DelegationChain) -> Result<Cid, TonkWorkerError> {
     path.proof_cids()
         .last()
         .copied()
@@ -198,107 +198,9 @@ pub async fn revoke(
     // of the envelope, while a UCAN CID is dag-cbor/sha2-256).
     let (path, invitation) = resolve_target(session.handle(), &tonk, &subject, &target).await?;
 
-    // The revocation's subject is the space, but this device signs it,
-    // so the invocation has to carry the delegation that proves the
-    // device may act for that subject. The old relay verified the
-    // artifact standalone and never asked; `/ucan/` runs the full chain
-    // check on every invocation before dispatch, and refuses a subject
-    // the presented proofs do not authorize.
-    //
-    // The space-root prefix is persisted by the browser at creation, so
-    // it is only reachable there. Native builds carry this handler for
-    // the router's shape, not to run it.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let artifact = {
-        // The stored prefix runs space to account root, so on its own it
-        // authorizes the root rather than this device. Extend it with
-        // the root to device grant, which is the same pair every other
-        // invocation on a space subject presents.
-        let prefix = super::repository::space_root_prefix(&tonk, &subject).await?;
-        let root = super::identity::local_root(&tonk).await?;
-        let mut authority = prefix;
-        for delegation in root.delegation.proofs() {
-            authority = authority.push(delegation.clone()).map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "space authority and device grant do not chain: {error}"
-                ))
-            })?;
-        }
-        tonk_identity::revocation::mint_delegated_revocation(
-            tonk.profile.signer().signer().clone(),
-            &path,
-            &target,
-            &authority,
-        )
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
-        })?
-    };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let artifact = {
-        let _ = &subject;
-        tonk_identity::revocation::mint_root_revocation(
-            tonk.profile.signer().signer().clone(),
-            &path,
-            &target,
-        )
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Forbidden(format!("cannot revoke this invitation: {error}"))
-        })?
-    };
-    tonk_identity::revocation::verify(&artifact)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("revocation preflight failed: {error}"))
-        })?;
-    // The revocation belongs at the access service the space actually
-    // syncs through, which is the remote `main` tracks.
-    let endpoint = match resolve_configured_remote_url_with(&repository, &tonk.operator).await? {
-        ConfiguredRemoteRequirement::Ready(remote) => remote.access_url,
-        ConfiguredRemoteRequirement::Refused(reason) => {
-            return Err(TonkWorkerError::Conflict(format!(
-                "cannot revoke an invitation to '{repo}': {} ({})",
-                reason.detail(),
-                reason.code()
-            )));
-        }
-    };
-    let response = super::http::post_cbor(&endpoint, &artifact).await?;
-    let receipt: RevokeReceipt = serde_json::from_slice(&response.body).map_err(|error| {
-        TonkWorkerError::Internal(format!(
-            "the access service returned an unreadable revoke receipt: {error}"
-        ))
-    })?;
-    if receipt.revoked != target {
-        return Err(TonkWorkerError::Internal(
-            "the access service acknowledged a different invitation".to_string(),
-        ));
-    }
-
-    // Only the leaf. `path` runs space -> ... -> device -> invitee, and every
-    // other invite (and this device's everyday access) proves through that
-    // same prefix. Retracting the whole path would pull the profile-to-account
-    // union and the space-to-profile hop out from under all of them, revoking
-    // far more than the one invite that was asked for.
-    let leaf = path
-        .proofs()
-        .last()
-        .cloned()
-        .ok_or_else(|| TonkWorkerError::Internal("a proved path has no leaf".to_string()))?;
-    if let Err(error) = session
-        .handle()
-        .delegations()
-        .retract(UcanDelegation(DelegationChain::new(leaf)))
-        .perform(&tonk.operator)
-        .await
-    {
-        // The revocation is already durable at the access service, which is
-        // what actually denies the invitee. Failing to drop the local facts
-        // leaves a revoked hop listed, not a live one.
-        log!("revoked invitation was not retracted locally: {error}");
-    }
+    let receipt =
+        publish_revocation(&tonk, &repo, &repository, session.handle(), &path, &target).await?;
+    retract_leaf(&tonk, session.handle(), &path).await;
     // The record is what `list` enumerates, so it goes with the hop it
     // described.
     if let Err(error) = tonk
@@ -315,6 +217,165 @@ pub async fn revoke(
     }
 
     Ok(Json(receipt))
+}
+
+/// This device's authority to revoke under the space: a `/` chain from the
+/// space down to this device.
+///
+/// Searched on the space's own branch first, proving as this profile's
+/// account: that is where an admin's chain lives, retained by whoever
+/// promoted them. The creation prefix persisted at space creation is the
+/// fallback, for a founder whose space db holds no chains yet. Either way
+/// the chain reaches the account, so the root-to-device grant is pushed on
+/// top: that is the pair every other invocation on a space subject presents.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn revoking_authority(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    subject: &Did,
+) -> Result<DelegationChain, TonkWorkerError> {
+    let root = super::identity::local_root(tonk).await?;
+    let full = Scope {
+        subject: UcanSubject::Specific(subject.clone()),
+        command: Command::parse("/").expect("the root command always parses"),
+        parameters: Parameters::default(),
+    };
+    let mut authority = match branch
+        .delegations()
+        .prove(root.root_did.clone(), full)
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(proof) => {
+            let mut certificates = proof.proofs.into_iter();
+            match certificates.next() {
+                Some(first) => {
+                    let mut chain = DelegationChain::new(first.0);
+                    for certificate in certificates {
+                        chain = chain.push(certificate.0).map_err(|error| {
+                            TonkWorkerError::Internal(format!(
+                                "proved certificates do not chain: {error}"
+                            ))
+                        })?;
+                    }
+                    chain
+                }
+                None => super::repository::space_root_prefix(tonk, subject).await?,
+            }
+        }
+        Err(_) => super::repository::space_root_prefix(tonk, subject).await?,
+    };
+    for delegation in root.delegation.proofs() {
+        authority = authority.push(delegation.clone()).map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "space authority and device grant do not chain: {error}"
+            ))
+        })?;
+    }
+    Ok(authority)
+}
+
+/// Mint the delegated revocation of `target` under this device's authority
+/// for the space and record it at the space's access service.
+///
+/// The revocation's subject is the space, but this device signs it, so the
+/// invocation carries the chain that proves the device may act for that
+/// subject; `/ucan/` runs the full chain check before dispatch and refuses
+/// a subject the presented proofs do not authorize. Native builds carry
+/// this for the router's shape, not to run it: the authority is persisted
+/// by the browser.
+pub(super) async fn publish_revocation<R>(
+    tonk: &TonkState,
+    repo: &str,
+    repository: &dialog_repository::Repository<R>,
+    branch: &dialog_repository::Branch,
+    path: &DelegationChain,
+    target: &Cid,
+) -> Result<RevokeReceipt, TonkWorkerError>
+where
+    R: dialog_varsig::Principal + Clone,
+{
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let artifact = {
+        let subject = repository.did();
+        let authority = revoking_authority(tonk, branch, &subject).await?;
+        tonk_identity::revocation::mint_delegated_revocation(
+            tonk.profile.signer().signer().clone(),
+            path,
+            target,
+            &authority,
+        )
+        .await
+        .map_err(|error| TonkWorkerError::Forbidden(format!("cannot revoke this grant: {error}")))?
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let artifact = {
+        let _ = branch;
+        tonk_identity::revocation::mint_root_revocation(
+            tonk.profile.signer().signer().clone(),
+            path,
+            target,
+        )
+        .await
+        .map_err(|error| TonkWorkerError::Forbidden(format!("cannot revoke this grant: {error}")))?
+    };
+    tonk_identity::revocation::verify(&artifact)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("revocation preflight failed: {error}"))
+        })?;
+    // The revocation belongs at the access service the space actually
+    // syncs through, which is the remote `main` tracks.
+    let endpoint = match resolve_configured_remote_url_with(repository, &tonk.operator).await? {
+        ConfiguredRemoteRequirement::Ready(remote) => remote.access_url,
+        ConfiguredRemoteRequirement::Refused(reason) => {
+            return Err(TonkWorkerError::Conflict(format!(
+                "cannot revoke a grant on '{repo}': {} ({})",
+                reason.detail(),
+                reason.code()
+            )));
+        }
+    };
+    let response = super::http::post_cbor(&endpoint, &artifact).await?;
+    let receipt: RevokeReceipt = serde_json::from_slice(&response.body).map_err(|error| {
+        TonkWorkerError::Internal(format!(
+            "the access service returned an unreadable revoke receipt: {error}"
+        ))
+    })?;
+    if receipt.revoked != *target {
+        return Err(TonkWorkerError::Internal(
+            "the access service acknowledged a different grant".to_string(),
+        ));
+    }
+    Ok(receipt)
+}
+
+/// Retract the leaf of a revoked path from the space's retained chains.
+///
+/// Only the leaf. `path` runs space -> ... -> device -> holder, and every
+/// other grant (and this device's everyday access) proves through that same
+/// prefix. Retracting the whole path would pull the profile-to-account union
+/// and the space-to-profile hop out from under all of them, revoking far
+/// more than the one grant that was asked for. Best-effort: the revocation
+/// is already durable at the access service, which is what denies the
+/// holder; a leaf left behind is listed, not live.
+pub(super) async fn retract_leaf(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    path: &DelegationChain,
+) {
+    let Some(leaf) = path.proofs().last().cloned() else {
+        log!("a proved path has no leaf to retract");
+        return;
+    };
+    if let Err(error) = branch
+        .delegations()
+        .retract(UcanDelegation(DelegationChain::new(leaf)))
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("revoked grant was not retracted locally: {error}");
+    }
 }
 
 /// List secret-free invitation management rows for one repository.

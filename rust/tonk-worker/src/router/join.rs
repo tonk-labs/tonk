@@ -66,7 +66,6 @@ use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider, Subject};
 use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, Ed25519Verifier};
-use dialog_effects::Use;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::memory::{Publish, Resolve};
@@ -2729,7 +2728,7 @@ mod overlay_scope_tests {
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
+pub(crate) mod tests {
     use super::{DEFAULT_BRANCH, membership_has_name};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
@@ -2757,7 +2756,10 @@ mod tests {
     /// repository subject. Distinct tag bytes give distinct
     /// subjects/ephemerals. Returns the URL plus the subject's routing
     /// key (the repo the join mounts the claimer's replica under).
-    async fn handcrafted_invite_url(subject_tag: u8, ephemeral_tag: u8) -> (String, String) {
+    pub(crate) async fn handcrafted_invite_url(
+        subject_tag: u8,
+        ephemeral_tag: u8,
+    ) -> (String, String) {
         crate::router::tests::open_invite_url(subject_tag, ephemeral_tag, None).await
     }
 
@@ -2878,7 +2880,10 @@ mod tests {
             let authority = tonk
                 .profile
                 .access()
-                .prove(dialog_capability::Subject::from(subject.clone()))
+                .prove(
+                    dialog_capability::Subject::from(subject.clone())
+                        .attenuate(dialog_effects::Use),
+                )
                 .audience(&tonk.operator)
                 .perform(&tonk.operator)
                 .await
@@ -2924,7 +2929,7 @@ mod tests {
         }
     }
 
-    async fn post_join(app: &axum::Router, url: &str) -> StatusCode {
+    pub(crate) async fn post_join(app: &axum::Router, url: &str) -> StatusCode {
         post_invite(app, "/api/profile/join", url).await
     }
 
@@ -3712,7 +3717,7 @@ mod tests {
         let proof = tonk
             .profile
             .access()
-            .prove(dialog_capability::Subject::from(subject.clone()))
+            .prove(dialog_capability::Subject::from(subject.clone()).attenuate(dialog_effects::Use))
             .audience(&tonk.operator)
             .perform(&tonk.operator)
             .await
@@ -3817,7 +3822,7 @@ mod tests {
         let tonk = state.read().await;
         tonk.profile
             .access()
-            .prove(dialog_capability::Subject::from(subject.clone()))
+            .prove(dialog_capability::Subject::from(subject.clone()).attenuate(dialog_effects::Use))
             .audience(&tonk.operator)
             .perform(&tonk.operator)
             .await

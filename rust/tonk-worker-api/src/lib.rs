@@ -21,6 +21,7 @@ mod identify;
 mod identity;
 mod invite;
 mod join;
+mod members;
 mod profile;
 mod profiles;
 mod query;
@@ -50,6 +51,7 @@ pub use invite::{
 pub use join::{
     JoinFailureKind, JoinRequest, JoinResponse, MembershipResponse, VisitRequest, VisitResponse,
 };
+pub use members::{PromoteMemberAcknowledgement, PromoteMemberRequest};
 pub use profile::{ProfileInfo, SpaceEntry};
 pub use profiles::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 pub use query::Query;

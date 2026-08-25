@@ -7,7 +7,9 @@
 //! share a label. The response carries the new repository's routing key
 //! (the DID suffix), which the UI routes by.
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_capability::Subject;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_effects::Use;
 use std::collections::HashMap;
 
