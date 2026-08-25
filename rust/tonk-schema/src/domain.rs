@@ -594,19 +594,29 @@ pub mod command {
         pub struct Remove(pub Entity);
     }
 
-    /// Attributes of the `member/promote` command.
+    /// Attributes of the `member/promote` command, dispatched by the FAB's
+    /// roster once the page has minted the admin hop.
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;
 
-        /// The DID of the member to promote to admin, read from the roster
-        /// row's `data-promote`. The distinctly named attribute is both the
-        /// payload and the command's unique shape, as with
-        /// [`super::remove::Remove`]. An `Entity` because a DID carries a
-        /// `:`. Derived attribute: `dom.event.current-target.dataset/promote`.
+        /// The DID the member's membership is keyed on. Derived attribute:
+        /// `xyz.tonk.promote/member`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("dom.event.current-target.dataset")]
-        pub struct Promote(pub Entity);
+        #[domain("xyz.tonk.promote")]
+        pub struct Member(pub Entity);
+
+        /// The space the promotion is in: dispatched routeless from the FAB,
+        /// the command names its target rather than firing on it.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.promote")]
+        pub struct Space(pub Entity);
+
+        /// The hop the page minted under the passkey, `promoter-account ->
+        /// member` over the space at `/`, as base58 of the serialized chain.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.promote")]
+        pub struct Chain(pub String);
     }
 
     /// Attributes of the `member/expel` command.

@@ -312,20 +312,29 @@ impl Command for RemoveSpace {
     type Output = ();
 }
 
-/// Promote a member of the space this command fires in to admin.
+/// Promote a member of a space to admin.
 ///
-/// Asserted transiently by the roster row's promote form; the worker's
-/// handler mints a `/` chain to the member's account, retains it in the
-/// space db beside the invites, and stamps `MemberRole::admin`. The
-/// target space is the dispatch origin, as for `tonk:invite`. A single
-/// matched field, like [`RemoveSpace`]: `dataset/promote` is read by no
-/// other command, so it is the command's shape as well as its payload.
+/// Dispatched by the FAB's roster after the page minted the admin hop
+/// under the passkey: the guest asks the outer page to delegate `/` on
+/// the space to the member's account, and the page answers with the hop
+/// signed by the promoter's account root. The worker's handler proves the
+/// promoter's own `/` chain from the space db, appends the hop, checks it
+/// is the one asked for, retains the chain beside the invites, and stamps
+/// `MemberRole::admin`. No device key sits in the admin chain, so signing
+/// a device out never takes the admins it promoted with it.
+///
+/// Routeless like `tonk:pause-sync`: the command names its `space` rather
+/// than firing on it, so the FAB needs nothing seeded per space.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PromoteMember {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The DID the member's membership is keyed on, from `data-promote`.
-    pub member: crate::domain::command::promote::Promote,
+    /// The DID the member's membership is keyed on.
+    pub member: crate::domain::command::promote::Member,
+    /// The space the promotion is in.
+    pub space: crate::domain::command::promote::Space,
+    /// The page-minted `promoter-account -> member` hop, base58.
+    pub chain: crate::domain::command::promote::Chain,
 }
 
 impl Command for PromoteMember {

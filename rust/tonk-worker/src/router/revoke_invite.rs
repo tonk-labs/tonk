@@ -219,17 +219,15 @@ pub async fn revoke(
     Ok(Json(receipt))
 }
 
-/// This device's authority to revoke under the space: a `/` chain from the
-/// space down to this device.
+/// This profile's account's authority over the space: a `/` chain from the
+/// space down to the account.
 ///
-/// Searched on the space's own branch first, proving as this profile's
-/// account: that is where an admin's chain lives, retained by whoever
-/// promoted them. The creation prefix persisted at space creation is the
-/// fallback, for a founder whose space db holds no chains yet. Either way
-/// the chain reaches the account, so the root-to-device grant is pushed on
-/// top: that is the pair every other invocation on a space subject presents.
+/// Searched on the space's own branch first, proving as the account: that
+/// is where an admin's chain lives, retained by whoever promoted them. The
+/// creation prefix persisted at space creation is the fallback, for a
+/// founder whose space db holds no chains yet.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn revoking_authority(
+pub(super) async fn account_authority(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
     subject: &Did,
@@ -240,7 +238,7 @@ async fn revoking_authority(
         command: Command::parse("/").expect("the root command always parses"),
         parameters: Parameters::default(),
     };
-    let mut authority = match branch
+    match branch
         .delegations()
         .prove(root.root_did.clone(), full)
         .perform(&tonk.operator)
@@ -258,13 +256,26 @@ async fn revoking_authority(
                             ))
                         })?;
                     }
-                    chain
+                    Ok(chain)
                 }
-                None => super::repository::space_root_prefix(tonk, subject).await?,
+                None => super::repository::space_root_prefix(tonk, subject).await,
             }
         }
-        Err(_) => super::repository::space_root_prefix(tonk, subject).await?,
-    };
+        Err(_) => super::repository::space_root_prefix(tonk, subject).await,
+    }
+}
+
+/// This device's authority to revoke under the space: the account's chain
+/// with the root-to-device grant pushed on top, the pair every other
+/// invocation on a space subject presents.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn revoking_authority(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    subject: &Did,
+) -> Result<DelegationChain, TonkWorkerError> {
+    let root = super::identity::local_root(tonk).await?;
+    let mut authority = account_authority(tonk, branch, subject).await?;
     for delegation in root.delegation.proofs() {
         authority = authority.push(delegation.clone()).map_err(|error| {
             TonkWorkerError::Internal(format!(

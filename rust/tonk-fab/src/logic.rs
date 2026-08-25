@@ -357,6 +357,38 @@ pub fn dock_claim_json(dock: Dock) -> Value {
     })
 }
 
+/// Build a `TransactRequest` JSON body for the `member/promote` command.
+///
+/// Asserted once the page has minted the admin hop under the passkey:
+/// `member` is the DID the membership is keyed on, `space` the space, and
+/// `chain` the base58 hop `promoter-account -> member`. Routeless like
+/// `pause_claim_json`: the worker reads `space` off the command.
+pub fn promote_claim_json(space: &str, member: &str, chain: &str) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Promote a member of a space to admin.",
+                        "with": {
+                            "member": { "the": "xyz.tonk.promote/member", "cardinality": "one", "as": "Entity" },
+                            "space": { "the": "xyz.tonk.promote/space", "cardinality": "one", "as": "Entity" },
+                            "chain": { "the": "xyz.tonk.promote/chain", "cardinality": "one", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "member": member,
+                    "space": space,
+                    "chain": chain
+                }
+            }
+        }]
+    })
+}
+
 /// Build a `TransactRequest` JSON body for the `tonk:pause-sync` command.
 ///
 /// A transient command asserting the target `space` (the DID to pause) with a
@@ -1074,6 +1106,25 @@ pub fn member_roster_query_body() -> String {
         }
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod promote {
+    use super::*;
+
+    #[test]
+    fn it_names_the_space_member_and_chain_on_the_promote_command() {
+        let body = promote_claim_json("did:key:zSpace", "did:key:zMember", "3vQB7B6MrGQZaxCu");
+        let claim = &body["claims"][0];
+        assert_eq!(claim["op"], "assert");
+        assert_eq!(claim["application"]["predicate"]["kind"], "transient");
+        let parameters = &claim["application"]["parameters"];
+        assert_eq!(parameters["space"], "did:key:zSpace");
+        assert_eq!(parameters["member"], "did:key:zMember");
+        assert_eq!(parameters["chain"], "3vQB7B6MrGQZaxCu");
+        let with = &claim["application"]["predicate"]["concept"]["with"];
+        assert_eq!(with["chain"]["the"], "xyz.tonk.promote/chain");
+    }
 }
 
 #[cfg(test)]

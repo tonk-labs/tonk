@@ -126,10 +126,16 @@ Admin therefore has to be decided by what a chain covers:
   CLI classification exist. The join retains the claimed chain into the
   space's content branch so a member's own hop is individually
   revocable.
-- `member/promote` and `member/expel` are commands (transients on the
-  space branch, run by worker handlers after the commit, like
-  `tonk:invite`): promote mints a `/` chain to the member's account,
-  retains it in the space db and stamps the role; expel proves the
-  member's own hop, revokes it under the remover's `/` chain, records it
-  at the access service and retracts the roster rows. No HTTP endpoints.
-  The roster row does not offer the forms yet.
+- `member/promote` and `member/expel` are commands run by worker handlers
+  after the commit, like `tonk:invite`. Expel is a form on the space
+  branch: it proves the member's own hop, revokes it under the remover's
+  `/` chain, records it at the access service and retracts the roster
+  rows. Promote is dispatched by the FAB's roster: the guest asks the
+  outer page to delegate `/` on the space to the member's account
+  (`window.tonk.delegate`), the page runs the passkey ceremony inside
+  the click's activation and answers with the root-signed hop, and the
+  command carries it. The worker proves the promoter's own `/` chain,
+  appends the hop, checks issuer, audience, subject and command, retains
+  it beside the invites and stamps the role. No device key sits in an
+  admin chain, so signing a device out never takes its promotions with
+  it. No HTTP endpoints.
