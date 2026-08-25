@@ -47,6 +47,26 @@ const ACCESS_PARAM: &str = "access";
 /// can style an error state without any script of its own.
 const STATE_ATTR: &str = "data-state";
 
+/// Why pasted text could not become a local join target. Kept on the
+/// element as `data-refusal` so the light-DOM wall can explain and animate
+/// the exact refusal without parsing URLs a second way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InviteLinkRefusal {
+    Empty,
+    Malformed,
+    Unresolvable,
+}
+
+impl InviteLinkRefusal {
+    fn as_attr(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Malformed => "malformed",
+            Self::Unresolvable => "unresolvable",
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct TonkInviteLink {
     submit: SubmitClosure,
@@ -111,12 +131,14 @@ async fn submit(this: &HtmlElement) {
     let pasted = read_field(this, &field).unwrap_or_default();
     let _ = this.set_attribute(STATE_ATTR, "resolving");
     match local_join_href(pasted.trim()).await {
-        Some(href) => {
+        Ok(href) => {
             let _ = this.remove_attribute(STATE_ATTR);
+            let _ = this.remove_attribute("data-refusal");
             dispatch_mount(this, &href);
         }
-        None => {
+        Err(refusal) => {
             let _ = this.set_attribute(STATE_ATTR, "invalid");
+            let _ = this.set_attribute("data-refusal", refusal.as_attr());
         }
     }
 }
@@ -188,20 +210,22 @@ fn read_field(this: &HtmlElement, field: &str) -> Option<String> {
 /// are deliberately discarded — they only say where the link was minted —
 /// EXCEPT for the one thing only that origin can do: expand `/@/{hash}`
 /// into the query it stands for.
-async fn local_join_href(pasted: &str) -> Option<String> {
+async fn local_join_href(pasted: &str) -> Result<String, InviteLinkRefusal> {
     if pasted.is_empty() {
-        return None;
+        return Err(InviteLinkRefusal::Empty);
     }
-    let url = web_sys::Url::new(pasted).ok()?;
+    let url = web_sys::Url::new(pasted).map_err(|_| InviteLinkRefusal::Malformed)?;
     // The seed rides the fragment and is never sent to any server; carry
     // it across from the pasted link whichever form the link took.
     let fragment = url.hash();
     let query = if carries_access(&url) {
         url.search()
     } else {
-        resolve_invite(&url).await?
+        resolve_invite(&url)
+            .await
+            .ok_or(InviteLinkRefusal::Unresolvable)?
     };
-    Some(format!("/join{query}{fragment}"))
+    Ok(format!("/join{query}{fragment}"))
 }
 
 /// Whether the link already carries its delegation chain, and so needs
@@ -256,15 +280,37 @@ mod tests {
         assert_eq!(
             local_join_href("https://staging.tonk.xyz/join?access=abc&remote=https%3A%2F%2Fs#seed")
                 .await,
-            Some("/join?access=abc&remote=https%3A%2F%2Fs#seed".to_string()),
+            Ok("/join?access=abc&remote=https%3A%2F%2Fs#seed".to_string()),
         );
-        assert_eq!(local_join_href("").await, None, "empty paste is refused");
+        assert_eq!(
+            local_join_href("").await,
+            Err(InviteLinkRefusal::Empty),
+            "empty paste is refused"
+        );
         assert_eq!(
             local_join_href("https://staging.tonk.xyz/").await,
-            None,
+            Err(InviteLinkRefusal::Unresolvable),
             "a bare origin carries no invite"
         );
-        assert_eq!(local_join_href("not a url").await, None);
+        assert_eq!(
+            local_join_href("not a url").await,
+            Err(InviteLinkRefusal::Malformed)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_a_target_or_a_structured_parse_refusal() {
+        let target = format!(
+            "{:?}",
+            local_join_href("https://staging.tonk.xyz/join?access=abc#seed").await
+        );
+        assert!(target.contains("/join?access=abc#seed"));
+
+        let refusal = format!("{:?}", local_join_href("definitely not a url").await);
+        assert_eq!(
+            refusal, "Err(Malformed)",
+            "garbage must produce a named refusal instead of a bare absence or panic",
+        );
     }
 
     /// What decides whether a link needs resolving is the chain it

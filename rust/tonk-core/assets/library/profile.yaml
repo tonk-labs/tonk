@@ -396,6 +396,10 @@ view/directory!:
         .stack { width:100%; margin-top:7px; padding-bottom:120px; display:flex;
           flex-direction:column; gap:7px; }
         .stack[hidden] { display:none; }
+        .sempty { height:36px; padding:0 10px 9px 16px; display:flex;
+          align-items:flex-end; justify-content:flex-end; color:var(--soft);
+          background:var(--frost-solid); box-shadow:0 0 0 1px var(--sep); }
+        .stack:has(.srow-wrap) .sempty { display:none; }
         /* the wrapper, not the link, is the positioning context: the verbs
            and the confirm cluster sit OUTSIDE the anchor (a control inside
            one is invalid markup, and a label inside one navigates instead of
@@ -525,6 +529,7 @@ view/directory!:
         <ui-hub-account></ui-hub-account>
 
       <div class="stack chrome" data-spaces-view aria-label="spaces">
+        <div class="sempty">no spaces yet</div>
         <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
              link, so the verbs and the confirm cluster travel with the row
              while staying outside it: reaching for remove never navigates.
@@ -775,24 +780,21 @@ view/directory!:
   model: tonk:join/status
   display: |
     <div class="join-card-wrap">
-      <style>
-        .join-card { display: block; margin: 40px auto; width: min(540px, 100%); }
-      </style>
       <!-- Only the in-flight and failed states live here. The resting
            (paste) state is the ROUTE view's, because this directory is
            empty until a join starts and an empty nested directory renders
-           nothing. `data-id={this}` marks the repeat row; the card is
+           nothing. `data-id={this}` marks the repeat row; the wall is
            inside it, so the whole surface is per-status. -->
       <div class="join-status" data-id={this}>
-        <wa-card class="join-card">
-          <div slot="header"><h1>Joining…</h1></div>
+        <div class="join-opening" aria-live="polite">
+          <span>opening this space</span>
           <wa-spinner></wa-spinner>
-          <tonk-display entity={this} model=tonk:join/failure>
-            <span slot="no-entity"></span>
-            <span slot="no-model"></span>
-            <span slot="loading"></span>
-          </tonk-display>
-        </wa-card>
+        </div>
+        <tonk-display entity={this} model=tonk:join/failure>
+          <span slot="no-entity"></span>
+          <span slot="no-model"></span>
+          <span slot="loading"></span>
+        </tonk-display>
       </div>
     </div>
 
@@ -803,12 +805,21 @@ view!: &join/failure-view
   this: id:tonk:join/failure/view
   model: tonk:join/failure
   display: |
-    <wa-callout variant="danger" class="join-error">
-      <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
-      <strong>Couldn’t join</strong>
-      <p>{reason}</p>
-      <tonk-join-retry kind={kind}></tonk-join-retry>
-    </wa-callout>
+    <!-- Revoked and deleted intentionally share this one screen. The
+         diagnostic reason remains in the console/worker status; rendering it
+         here would reveal whether the space still exists. -->
+    <section class="edge-wall edge-wall--closed" aria-labelledby="edge-closed-title">
+      <div class="edge-statement" id="edge-closed-title">this invitation is closed</div>
+      <div class="edge-field edge-field--settled">
+        <span class="edge-noun">invitation link</span>
+        <span class="edge-value">closed</span>
+      </div>
+      <div class="edge-narrator">this link no longer opens a space; ask its sender for a current invitation</div>
+      <div class="edge-run">
+        <a class="ebtn quiet" href="/">start a new space</a>
+        <tonk-join-retry class="ebtn solid" kind={kind}>join this space</tonk-join-retry>
+      </div>
+    </section>
 
 # ============================================================
 # ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
@@ -949,26 +960,89 @@ view!: &join/route-view
       <tonk-title text="Tonk"></tonk-title>
       <main class="join-view">
         <style>
-          /* The paste form is this route's RESTING state and renders from
-             the route view itself — an entity view on the site, the same
-             shape the Hub uses. It deliberately does NOT live behind the
-             nested `tonk:join/status` directory: that directory is empty
-             until a join is actually in flight, and an empty nested
-             directory renders nothing at all, which left `/join` on a
-             spinner forever. The status directory below now carries ONLY
-             the in-flight and failed states, and hides the form once it
-             has a row to show. */
-          .join-paste { display: flex; flex-direction: column; gap: 14px;
-            width: min(540px, 100%); margin: 40px auto; }
-          .join-paste wa-input { width: 100%; }
-          .join-paste wa-button { align-self: center; min-width: 220px; }
-          .join-paste-error { display: none; color: var(--wa-color-danger-on-quiet); }
-          tonk-invite-link[data-state="invalid"] ~ .join-paste-error { display: block; }
+          .join-view {
+            --edge-page:#ececec; --edge-ink:#131313; --edge-on:#fbfaef;
+            --edge-soft:#55544f; --edge-card:#fafafa;
+            --edge-ring:rgba(19,19,19,.85); --edge-wash:rgba(19,19,19,.12);
+            min-height:100vh; padding:1px; color:var(--edge-ink);
+            background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
+              'Bahnschrift','Arial Narrow',system-ui,sans-serif;
+            font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
+          }
+          :root.wa-dark .join-view {
+            --edge-page:#161613; --edge-ink:#e9e6d6; --edge-on:#22221c;
+            --edge-soft:#cdcaba; --edge-card:#1e1e19;
+            --edge-ring:rgba(233,230,214,.55); --edge-wash:rgba(251,250,239,.15);
+          }
+          .edge-mast { position:fixed; left:48px; top:48px; width:132px;
+            color:var(--edge-ink); z-index:2; }
+          .edge-mast img { display:block; width:100%; height:auto; }
+          :root.wa-dark .edge-mast img { filter:invert(1); }
+          .edge-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
+            margin-top:43px; display:flex; flex-direction:column; gap:7px; }
+          .edge-statement, .edge-field, .edge-narrator { min-height:36px;
+            background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+          .edge-statement { padding:10px 14px; display:flex; align-items:flex-end;
+            font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+            line-height:1.55; text-wrap:balance; }
+          .edge-field { height:36px; min-width:0; padding:0 10px 8px 12px;
+            display:flex; align-items:flex-end; gap:12px; overflow:hidden; }
+          .edge-noun { flex:none; color:var(--edge-soft); font-size:12px;
+            line-height:1; text-transform:lowercase; }
+          .edge-value { flex:1; min-width:0; color:var(--edge-ink); font:inherit;
+            font-size:13px; line-height:1; text-align:right; }
+          .edge-input { border:0; outline:0; padding:0; background:transparent;
+            caret-color:transparent; }
+          .edge-cur { width:7px; height:13px; margin-left:-7px;
+            background:var(--edge-ink); mix-blend-mode:difference;
+            animation:edge-cursor 1.05s steps(1,end) infinite; }
+          .edge-narrator { padding:10px 14px; color:var(--edge-soft);
+            font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
+            font-weight:400; line-height:1.55; text-wrap:pretty; }
+          .edge-narrator__invalid { display:none; }
+          .edge-run { display:flex; gap:0; }
+          .ebtn { min-height:40px; flex:1 1 0; padding:8px 10px; display:flex;
+            align-items:flex-end; justify-content:flex-end; color:var(--edge-ink);
+            text-decoration:none; text-transform:lowercase; cursor:pointer; }
+          .ebtn.quiet { background:var(--edge-card);
+            box-shadow:0 0 0 1px var(--edge-ring); }
+          .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
+          .ebtn.solid button { width:100%; min-height:40px; padding:8px 10px;
+            display:flex; align-items:flex-end; justify-content:flex-end;
+            border:0; color:inherit; background:transparent; font:inherit;
+            text-transform:lowercase; cursor:pointer; }
+          .ebtn:active, .ebtn.solid button:active { scale:.96; }
+          tonk-invite-link { display:none; }
+          .edge-wall:has(tonk-invite-link[data-state="invalid"]) .edge-field {
+            animation:edge-reject .45s ease 2; }
+          .edge-wall:has(tonk-invite-link[data-state="invalid"])
+            .edge-narrator__default { display:none; }
+          .edge-wall:has(tonk-invite-link[data-state="invalid"])
+            .edge-narrator__invalid { display:inline; }
+          @keyframes edge-reject { 0%,100% { background:var(--edge-card); }
+            50% { background:var(--edge-wash); } }
+          @keyframes edge-cursor { 0%,49% { opacity:1; } 50%,100% { opacity:0; } }
           /* A join in flight or failed gives the status display a row;
              `data-state=ready` is `<tonk-display>`'s own signal for that,
              so the form steps aside without depending on the row's markup. */
           .join-view:has(.join-status-slot[data-state="ready"]) .join-paste { display: none; }
+          .join-opening { width:min(432px, calc(100vw - 32px)); min-height:36px;
+            margin-left:216px; margin-top:43px; padding:10px 14px;
+            display:flex; align-items:center; justify-content:space-between;
+            background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+          .join-status:has(tonk-display[data-state="ready"]) .join-opening { display:none; }
+          @media (max-width:680px) {
+            .edge-mast { left:16px; top:24px; width:98px; }
+            .edge-wall, .join-opening { margin-left:16px; margin-top:132px; }
+            .edge-run { flex-direction:column; }
+            .ebtn { min-height:44px; }
+          }
+          @media (prefers-reduced-motion:reduce) {
+            .edge-cur, .edge-wall:has(tonk-invite-link[data-state="invalid"])
+              .edge-field { animation:none; }
+          }
         </style>
+        <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-logo.svg" alt=""></a>
         <tonk-page onmount=tonk:join></tonk-page>
         <!-- `onmount`, not `onsubmit`: `<tonk-invite-link>` cancels the
              submit, resolves the pasted text (expanding a short link on
@@ -976,13 +1050,22 @@ view!: &join/route-view
              carrying `detail.href` — the one read path `tonk:join`
              declares. Same command, same handler, whether the invite
              arrived in the address bar or in this box. -->
-        <form class="join-paste" onmount=tonk:join>
-          <h1>Join a spot</h1>
-          <p>Paste the invite link someone shared with you.</p>
-          <wa-input name="url" placeholder="https://&hellip;" autocomplete="off" required></wa-input>
+        <form class="join-paste edge-wall edge-wall--no-access" onmount=tonk:join>
+          <div class="edge-statement">you do not have access to this space</div>
+          <label class="edge-field">
+            <span class="edge-noun">invitation link</span>
+            <input class="edge-value edge-input" name="url" type="url" autocomplete="off" required aria-label="invitation link">
+            <i class="edge-cur" aria-hidden="true"></i>
+          </label>
           <tonk-invite-link field="url"></tonk-invite-link>
-          <p class="join-paste-error">That doesn't look like an invite link.</p>
-          <wa-button type="submit" variant="brand">Join spot</wa-button>
+          <div class="edge-narrator">
+            <span class="edge-narrator__default">paste the complete invitation link you were sent</span>
+            <span class="edge-narrator__invalid">an invitation link is a complete web address carrying its access information</span>
+          </div>
+          <div class="edge-run">
+            <a class="ebtn quiet" href="/">start a new space</a>
+            <button class="ebtn solid" type="submit">join this space</button>
+          </div>
         </form>
         <!-- The `tonk:join` trigger lives INSIDE the status display, not
              beside the form. `<tonk-page>` waits for its enclosing

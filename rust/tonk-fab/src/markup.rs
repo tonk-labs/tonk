@@ -155,6 +155,7 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
     <span class="say say--copying">copying&hellip;</span>
     <span class="say say--copied">copied</span>
     <span class="say say--failed">couldn&rsquo;t copy</span>
+    <span class="say say--activation">sharing needs an activated email</span>
   </tonk-mi>
   <ui-member-roster space="{space}"></ui-member-roster>
 </tonk-menu>
@@ -193,6 +194,8 @@ tonk-fab [data-share-link][data-share-state="blocked"] .say--idle{ display:inlin
 tonk-fab [data-share-link][data-share-state="copying"] .say--copying{ display:inline; }
 tonk-fab [data-share-link][data-share-state="copied"] .say--copied{ display:inline; }
 tonk-fab [data-share-link][data-share-state="failed"] .say--failed{ display:inline; }
+tonk-fab [data-share-link][data-activation-blocked] .say{ display:none; }
+tonk-fab [data-share-link][data-activation-blocked] .say--activation{ display:inline; }
 "#;
 
 /// The share flow's repairable sync refusal.
@@ -208,13 +211,13 @@ tonk-fab [data-share-link][data-share-state="failed"] .say--failed{ display:inli
 /// The action run reads left-to-right as dismiss-then-commit, and the two
 /// fuse flush — the fill boundary between quiet and primary IS the divider
 /// (law 3), which is why there is no gap and no separator between them.
-pub const REFUSAL_DIALOGS_HTML: &str = r#"<tonk-dialog id="fab-enable-sync" heading="turn on sync?">
-  <p data-enable-sync-detail>This spot only exists on this device.</p>
-  <p data-enable-sync-action>Turn on sync so the people you share with can open it.</p>
-  <tonk-button slot="actions" variant="quiet" data-dialog="close">not now</tonk-button>
-  <tonk-button slot="actions" variant="primary" data-enable-sync-confirm>turn on sync &amp; copy link</tonk-button>
-</tonk-dialog>
-"#;
+pub const REFUSAL_DIALOGS_HTML: &str = r#"<tonk-cluster id="fabb-connect-cluster" hidden>
+  <p slot="statement" data-enable-sync-statement>connect this space</p>
+  <tonk-field noun="sync server" value="" data-enable-sync-remote></tonk-field>
+  <p slot="narrator"><span data-enable-sync-detail>This space only exists on this device.</span> <span data-enable-sync-action>Connect it so other people can open it.</span></p>
+  <tonk-button slot="run" variant="primary" solid data-enable-sync-confirm>connect</tonk-button>
+  <span slot="ghost">keep it on this device</span>
+</tonk-cluster>"#;
 
 /// Stamp the space DID into [`STACKS_HTML`].
 ///
@@ -484,8 +487,12 @@ mod tests {
     }
 
     #[test]
-    fn it_gives_the_sync_refusal_its_prompt() {
-        assert!(REFUSAL_DIALOGS_HTML.contains(r#"id="fab-enable-sync""#));
+    fn it_gives_sync_a_connect_ceremony() {
+        assert!(!REFUSAL_DIALOGS_HTML.contains(r#"id="fab-enable-sync""#));
+        assert!(REFUSAL_DIALOGS_HTML.contains(r#"id="fabb-connect-cluster""#));
+        assert!(REFUSAL_DIALOGS_HTML.contains("<tonk-cluster"));
+        assert!(REFUSAL_DIALOGS_HTML.contains(r#"noun="sync server""#));
+        assert!(REFUSAL_DIALOGS_HTML.contains("keep it on this device"));
         assert!(REFUSAL_DIALOGS_HTML.contains("data-enable-sync-confirm"));
         // The line share.rs rewrites per refusal class. Without the hook the
         // prompt is silently stuck on the `not-synced` wording.
@@ -496,22 +503,21 @@ mod tests {
 
     #[test]
     fn it_offers_a_way_out_of_every_prompt() {
-        // Each cluster needs a dismiss; `data-dialog=close` is what the
-        // dialog's own handler acts on.
+        // The ceremony bails only through the cluster's ghost or Escape.
         assert_eq!(
             REFUSAL_DIALOGS_HTML
                 .matches(r#"data-dialog="close""#)
                 .count(),
-            1
+            0
         );
+        assert!(REFUSAL_DIALOGS_HTML.contains(r#"slot="ghost""#));
     }
 
     #[test]
     fn it_keeps_prompt_chrome_lowercase() {
         // Law 4. The prompt BODIES carry sentences and stay as written; the
         // headings and the action labels are chrome.
-        assert!(REFUSAL_DIALOGS_HTML.contains(r#"heading="turn on sync?""#));
-        for label in ["not now", "turn on sync &amp; copy link"] {
+        for label in ["connect"] {
             assert!(REFUSAL_DIALOGS_HTML.contains(&format!(">{label}</tonk-button>")));
         }
     }

@@ -437,25 +437,45 @@ view!:
         .local-invite-notice {
           display: flex;
           flex-direction: column;
-          gap: var(--wa-space-2xs);
-          color: var(--wa-color-text-quiet);
+          gap: 7px;
+          width: min(432px, 100%);
+          --edge-ink: #131313;
+          --edge-soft: #55544f;
+          --edge-panel: #fafafa;
+          --edge-ring: rgba(19,19,19,.28);
+          color: var(--edge-soft);
+          font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+        }
+        :root.wa-dark .local-invite-notice {
+          --edge-ink: #e9e6d6;
+          --edge-soft: #cdcaba;
+          --edge-panel: #1e1e19;
+          --edge-ring: rgba(233,230,214,.28);
         }
         .local-invite-notice__label {
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-xs);
-          letter-spacing: 0.06em;
-          text-transform: uppercase;
+          min-height: 36px;
+          padding: 9px 12px;
+          display: flex;
+          align-items: flex-end;
+          background: var(--edge-panel);
+          box-shadow: 0 0 0 1px var(--edge-ring);
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: lowercase;
         }
         .local-invite-notice p {
           margin: 0;
-          font-family: var(--wa-font-family-body);
-          font-size: var(--wa-font-size-s);
-          line-height: var(--wa-line-height-normal);
+          min-height: 36px;
+          padding: 12px 14px;
+          background: var(--edge-panel);
+          box-shadow: 0 0 0 1px var(--edge-ring);
+          font-size: 13px;
+          line-height: 1.55;
           text-wrap: pretty;
         }
       </style>
       <span class="local-invite-notice__label">local spot &middot; no sync remote</span>
-      <p>{detail} Use Share to turn on sync and create an agent link.</p>
+      <p>{detail} Use connect in the condition banner, then create the agent link again.</p>
     </div>
 
 # Derive `tonk:agent-invite` by joining the repo's `tonk:repository` name

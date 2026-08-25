@@ -56,6 +56,8 @@ use crate::shadow::{self, Bound, Edit};
 /// out sideways: sideways flight needs the room a hover pointer implies.
 const INPLACE_MAX_WIDTH_PX: f64 = 640.0;
 
+pub(crate) const CONNECT_BANNER_ID: &str = "fabb-connect-banner";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cell {
     Sync,
@@ -774,6 +776,81 @@ pub(crate) fn update(this: &HtmlElement) {
         let _ = mode.set_attribute("aria-checked", &shadow::is_dark(this).to_string());
     }
     update_more_glyph(this);
+    update_sync_condition(this);
+}
+
+fn update_sync_condition(this: &HtmlElement) {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    let local_only = this.get_attribute("data-sync-status").as_deref() == Some("sync:local")
+        && this.get_attribute("data-customer-status").as_deref() != Some("Registered");
+    if !local_only {
+        if let Some(cluster) = document.get_element_by_id("fabb-connect-cluster") {
+            let _ = cluster.set_attribute("hidden", "");
+        }
+        if let Some(banner) = document.get_element_by_id(CONNECT_BANNER_ID) {
+            retire_banner(&banner);
+        }
+        return;
+    }
+    if document.get_element_by_id(CONNECT_BANNER_ID).is_some() {
+        sync_condition_mode(this, &document);
+        return;
+    }
+    let Ok(banner) = document.create_element("tonk-banner") else {
+        return;
+    };
+    banner.set_id(CONNECT_BANNER_ID);
+    banner.set_inner_html("connect this space<span slot=\"door\">connect</span>");
+    if let Some(mode) = this.get_attribute("mode") {
+        let _ = banner.set_attribute("mode", &mode);
+    }
+    let on_open = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        crate::share::open_enable_sync_from_banner();
+    });
+    let _ = banner.add_event_listener_with_callback("fabb-open", on_open.as_ref().unchecked_ref());
+    on_open.forget();
+    if let Some(body) = document.body() {
+        let _ = body.append_child(&banner);
+    }
+}
+
+fn sync_condition_mode(this: &HtmlElement, document: &web_sys::Document) {
+    for id in [CONNECT_BANNER_ID, "fabb-connect-cluster"] {
+        let Some(element) = document.get_element_by_id(id) else {
+            continue;
+        };
+        if let Some(mode) = this.get_attribute("mode") {
+            let _ = element.set_attribute("mode", &mode);
+        } else {
+            let _ = element.remove_attribute("mode");
+        }
+    }
+}
+
+pub(crate) fn refresh_sync_condition(this: &HtmlElement) {
+    update_sync_condition(this);
+}
+
+fn retire_banner(banner: &Element) {
+    let retire = Reflect::get(banner, &"retire".into())
+        .ok()
+        .and_then(|value| value.dyn_into::<js_sys::Function>().ok());
+    if let Some(retire) = retire {
+        let _ = retire.call0(banner);
+    } else {
+        banner.remove();
+    }
+}
+
+pub(crate) fn remove_conditions() {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    if let Some(banner) = document.get_element_by_id(CONNECT_BANNER_ID) {
+        banner.remove();
+    }
 }
 
 fn update_more_glyph(this: &HtmlElement) {

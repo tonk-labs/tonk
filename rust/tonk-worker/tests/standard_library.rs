@@ -250,10 +250,26 @@ fn it_builds_one_centered_hub_launcher_with_an_attached_settings_view() {
         !PROFILE_LIBRARY.contains(rejected),
         "the centered Hub launcher must reject `{rejected}`",
     );
-    for rejected in ["class=\"sempty", "no spaces yet"] {
+    assert_eq!(
+        PROFILE_LIBRARY.matches("no spaces yet").count(),
+        1,
+        "the empty Hub must state the neutral roster fact exactly once",
+    );
+    for rejected in ["signed out", "no spaces available"] {
         assert!(
-            !PROFILE_LIBRARY.contains(rejected),
-            "an empty Hub roster must show only the creation action, not `{rejected}`",
+            !PROFILE_LIBRARY.to_lowercase().contains(rejected),
+            "a provider-free local profile must not claim `{rejected}`",
+        );
+    }
+    for contract in [
+        "<ui-hub-account>",
+        "data-account-handoff",
+        "href=\"/space/{subject}\"",
+        "class=\"snew-form\"",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "provider-free Hub access must preserve `{contract}`",
         );
     }
 }
@@ -364,5 +380,38 @@ fn it_adapts_the_gooey_settings_hierarchy_to_the_wider_launcher() {
             HUB_ACCOUNT_MARKUP.contains(contract),
             "the adapted settings hierarchy must contain `{contract}`",
         );
+    }
+}
+
+#[test]
+fn it_renders_join_refusals_as_neutral_edge_walls() {
+    let failure = PROFILE_LIBRARY
+        .split("view!: &join/failure-view")
+        .nth(1)
+        .and_then(|tail| tail.split("# ROUTING (profile branch)").next())
+        .expect("join failure view");
+    let route = PROFILE_LIBRARY
+        .split("view!: &join/route-view")
+        .nth(1)
+        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .expect("join route view");
+
+    for rejected in ["<wa-callout", "variant=\"danger\"", "{reason}"] {
+        assert!(
+            !failure.contains(rejected),
+            "the closed-invitation wall must not expose `{rejected}`",
+        );
+    }
+    assert!(failure.contains("this invitation is closed"));
+    assert!(route.contains("you do not have access to this space"));
+    for wall in [("closed", failure), ("no-access", route)] {
+        assert_eq!(
+            wall.1.matches("class=\"ebtn solid\"").count(),
+            1,
+            "the {} wall must carry exactly one solid ink door",
+            wall.0,
+        );
+        assert!(wall.1.contains("start a new space"));
+        assert!(wall.1.contains("join this space"));
     }
 }

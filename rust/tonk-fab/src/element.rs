@@ -97,6 +97,7 @@ pub(crate) struct TonkFab {
     listeners: Rc<RefCell<Vec<Bound>>>,
     responsive_observer: Option<ResizeObserver>,
     responsive_callback: Option<Closure<dyn FnMut(JsValue, JsValue)>>,
+    activation_watch: Option<crate::activation::ActivationWatch>,
 }
 
 impl CustomElement for TonkFab {
@@ -149,6 +150,7 @@ impl CustomElement for TonkFab {
         restore_position(this);
         self.listeners.borrow_mut().extend(attach_presence(this));
         self.listeners.borrow_mut().extend(attach_account(this));
+        self.activation_watch = crate::activation::watch(this);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -156,7 +158,10 @@ impl CustomElement for TonkFab {
             observer.disconnect();
         }
         self.responsive_callback = None;
+        self.activation_watch = None;
         self.listeners.borrow_mut().clear();
+        bar::remove_conditions();
+        crate::activation::remove();
     }
 
     fn attribute_changed_callback(
@@ -253,7 +258,7 @@ pub(crate) fn mount_refusal_dialogs() {
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
-    if document.get_element_by_id("fab-enable-sync").is_some() {
+    if document.get_element_by_id("fabb-connect-cluster").is_some() {
         return;
     }
     let Some(body) = document.body() else { return };
