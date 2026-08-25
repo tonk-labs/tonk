@@ -680,7 +680,11 @@ async fn hydrate(
 
     match probe_remote_main(&remote, operator).await {
         Ok(RemotePresence::Present(_)) => {
-            branch.pull().perform(operator).await?;
+            // Download, not a bare pull: `main` is the access branch the
+            // operator proves from, and a head that runs ahead of the local
+            // archive would have its own hydration authorized by a walk
+            // over nodes that are not here yet.
+            branch.pull().download().perform(operator).await?;
         }
         Ok(RemotePresence::Absent) => {
             branch.transaction().commit().perform(operator).await?;
@@ -693,7 +697,7 @@ async fn hydrate(
                 // against an empty upstream. Reads resolve missing blocks
                 // through the configured remote. See `account_remote`'s
                 // losing-adoption test.
-                branch.pull().perform(operator).await?;
+                branch.pull().download().perform(operator).await?;
             }
         }
         Err(error) => return Err(error.into()),
@@ -773,7 +777,7 @@ pub async fn ensure_with_operator_and_store(
             .perform(&operator)
             .await?;
         trace("ensure: branch open, pulling");
-        let warning = match branch.pull().perform(&operator).await {
+        let warning = match branch.pull().download().perform(&operator).await {
             Ok(_) => {
                 trace("ensure: pulled, pushing");
                 branch
