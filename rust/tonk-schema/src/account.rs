@@ -3,7 +3,7 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::account::{DisplayName, PasskeyCreatedAt, PasskeyCreatedOn};
+use crate::domain::account::{DisplayName, EncryptionKey, PasskeyCreatedAt, PasskeyCreatedOn};
 
 /// The account-wide display name, keyed by the immutable account subject.
 ///
@@ -69,6 +69,32 @@ impl AccountPasskeyCreated {
     /// Unix seconds, back in the integer form the wire DTO carries.
     pub fn seconds(&self) -> u64 {
         self.created_at.0 as u64
+    }
+}
+
+/// The account's public encryption key, keyed by the immutable account
+/// subject: the recipient every device seals a [`CustodiedSeed`] to.
+///
+/// Written by the ceremony that creates the account secret and again at
+/// rotation. Any device holding the account space can read it and seal;
+/// only a ceremony, which derives the private half, can open.
+///
+/// [`CustodiedSeed`]: crate::CustodiedSeed
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountEncryptionKey {
+    /// The immutable account subject.
+    pub this: Entity,
+    /// The X25519 `did:key:z6LS…`.
+    pub key: EncryptionKey,
+}
+
+impl AccountEncryptionKey {
+    /// Publish `key` as the account's encryption key.
+    pub fn new(account: Entity, key: Entity) -> Self {
+        Self {
+            this: account,
+            key: EncryptionKey(key),
+        }
     }
 }
 

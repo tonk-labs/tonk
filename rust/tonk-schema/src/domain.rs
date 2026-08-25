@@ -706,7 +706,7 @@ pub mod roster {
 
 /// Root-owned account state replicated through the hidden account repository.
 pub mod account {
-    use super::Attribute;
+    use super::{Attribute, Entity};
 
     /// The account-wide display name. Cardinality-one merge semantics choose a
     /// deterministic winner when linked devices write concurrently.
@@ -733,6 +733,46 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct PasskeyCreatedOn(pub String);
+
+    /// The account's X25519 public key as a `did:key:z6LS…` entity: the
+    /// recipient every device seals custodied seeds to. Derived from the
+    /// account secret, so rotation publishes a new one; cardinality-one
+    /// because sealed rows name their own recipient and need no history
+    /// here.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct EncryptionKey(pub Entity);
+}
+
+/// Attributes of a seed sealed to an account, in the account space. One
+/// row per `(subject, recipient)`; see [`crate::CustodiedSeed`].
+pub mod custody {
+    use super::{Attribute, Entity};
+
+    /// The DID the seed derives: a space's, or an invite principal's.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Subject(pub Entity);
+
+    /// What the subject is: `tonk:space` or `tonk:invite`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Kind(pub Entity);
+
+    /// The X25519 `did:key` the seed is sealed to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Recipient(pub Entity);
+
+    /// The sealed envelope bytes (`tonk_identity::sealed::Sealed`).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Sealed(pub Vec<u8>);
 }
 
 /// Attributes that describe a repository on its content branch, keyed by the
