@@ -135,6 +135,9 @@ fn root_result(ceremony: crate::ceremony::RootCeremony) -> Result<JsValue, JsVal
         Reflect::set(&metadata, &"createdOn".into(), &passkey.created_on.into())?;
         Reflect::set(&result, &"passkey".into(), &metadata)?;
     }
+    if let Some(encryption_key) = ceremony.encryption_key {
+        Reflect::set(&result, &"encryptionKey".into(), &encryption_key.into())?;
+    }
     Ok(result.into())
 }
 
@@ -291,6 +294,11 @@ async fn unlock_with_passkey(input: JsValue) -> Result<JsValue, JsValue> {
         &result,
         &"credentialId".into(),
         &unlock.credential_id.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"encryptionKey".into(),
+        &unlock.encryption_key.into(),
     )?;
     set_deposits(&result, &unlock.deposits_hex)?;
     Ok(result)

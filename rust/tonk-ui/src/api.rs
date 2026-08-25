@@ -496,6 +496,7 @@ pub async fn save_root(
     credential_id: String,
     delegation_hex: String,
     passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    encryption_key: Option<String>,
 ) -> Result<RootStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -504,6 +505,7 @@ pub async fn save_root(
             credential_id,
             delegation_hex,
             passkey,
+            encryption_key,
         })
         .send()
         .await

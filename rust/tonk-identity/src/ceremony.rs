@@ -48,6 +48,10 @@ pub struct RootCeremony {
     pub delegation_hex: String,
     /// Creation details when this ceremony created the passkey.
     pub passkey: Option<PasskeyCreationMetadata>,
+    /// The account's X25519 recipient (`did:key:z6LS…`) when this
+    /// ceremony held the secret, for the worker to publish as
+    /// `AccountEncryptionKey`.
+    pub encryption_key: Option<String>,
 }
 
 /// A fresh account, its first custody passkey, and its creation
@@ -87,6 +91,7 @@ async fn root_ceremony(
     credential_id: String,
     device_did: dialog_varsig::Did,
     passkey: Option<PasskeyCreationMetadata>,
+    encryption_key: Option<String>,
 ) -> Result<RootCeremony> {
     let root_did = root.did().to_string();
     let delegation = mint_device_delegation(root, &device_did).await?;
@@ -103,6 +108,7 @@ async fn root_ceremony(
         delegation_cid,
         delegation_hex,
         passkey,
+        encryption_key,
     })
 }
 
@@ -277,11 +283,13 @@ pub async fn create_custody_account(
         Some(service) => mint_service_deposits(&root, service).await?,
         None => Vec::new(),
     };
+    let encryption_key = secret.encryption_key().recipient().did().to_string();
     let root_ceremony = root_ceremony(
         root.clone(),
         credential_id.clone(),
         device_did.clone(),
         passkey.clone(),
+        Some(encryption_key),
     )
     .await?;
     let account = create_account(
@@ -496,6 +504,9 @@ pub struct CustodyUnlock {
     /// Hex-encoded account-signed access-service deposits, when the
     /// caller named the service; empty otherwise.
     pub deposits_hex: Vec<String>,
+    /// The account's X25519 recipient (`did:key:z6LS…`), for the worker
+    /// to publish as `AccountEncryptionKey`.
+    pub encryption_key: String,
 }
 
 /// Unlock the account with a custody passkey on a fresh browser: one
@@ -511,6 +522,7 @@ pub async fn unlock_account(
 ) -> Result<CustodyUnlock> {
     let (secret, credential_id) = assert_unlock(endpoint).await?;
     let root = secret.signer().await?;
+    let encryption_key = secret.encryption_key().recipient().did().to_string();
     let deposits_hex = match service {
         Some(service) => mint_service_deposits(&root, service).await?,
         None => Vec::new(),
@@ -520,6 +532,7 @@ pub async fn unlock_account(
         account,
         credential_id,
         deposits_hex,
+        encryption_key,
     })
 }
 

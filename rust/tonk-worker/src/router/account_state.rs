@@ -20,7 +20,12 @@ use tonk_account::{
     probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_common::log;
-use tonk_schema::{AccountPasskeyCreated, Replica, prelude::DidExt as _};
+use tonk_identity::sealed::RecipientKey;
+use tonk_schema::{
+    AccountEncryptionKey, AccountPasskeyCreated, CustodiedSeed, Replica, SeedKind,
+    prelude::DidExt as _,
+};
+use zeroize::Zeroizing;
 
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
@@ -538,6 +543,9 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     if seed_passkey_facts(tonk).await {
         log!("recorded this device's passkey creation facts in the account space");
     }
+    if seed_encryption_key(tonk).await {
+        log!("published the account's encryption key in the account space");
+    }
     describe_own_device(tonk).await;
     if let Err(error) = converge_account_state(tonk).await {
         log!("account-state convergence after sync failed: {error}");
@@ -626,6 +634,9 @@ pub(crate) async fn ensure_account_state_swept(
                     // ready sweep above has not run yet.
                     if seed_passkey_facts(tonk).await {
                         log!("recorded this device's passkey creation facts in the account space");
+                    }
+                    if seed_encryption_key(tonk).await {
+                        log!("published the account's encryption key in the account space");
                     }
                     describe_own_device(tonk).await;
                     if let Err(error) = converge_account_state(tonk).await {
@@ -945,6 +956,151 @@ pub(crate) async fn seed_passkey_facts(tonk: &TonkState) -> bool {
         .await
     {
         log!("commit account passkey creation facts: {error}");
+        return false;
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+    true
+}
+
+/// The account's published encryption key, when the account is ready and
+/// has one.
+pub(crate) async fn read_encryption_key(
+    tonk: &TonkState,
+    ready: &ReadyAccountBranch,
+) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
+    let branch = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
+    let rows: Vec<AccountEncryptionKey> = branch
+        .handle()
+        .query()
+        .select(Query::<AccountEncryptionKey> {
+            this: Term::from(ready.subject.this()),
+            key: Term::var("key"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("read account encryption key: {error:?}"))
+        })?;
+    rows.into_iter()
+        .next()
+        .map(|row| {
+            row.key.0.to_string().parse().map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "the published account encryption key is not a DID: {error}"
+                ))
+            })
+        })
+        .transpose()
+}
+
+/// Publish the recipient the root record carries as the account's
+/// encryption key, when the account space does not already say so.
+/// Returns whether it wrote.
+///
+/// Only a ceremony that held the secret records a recipient, so a
+/// device that merely links has nothing to contribute and returns
+/// `false`. A differing published key is replaced: the record comes
+/// from the most recent ceremony, and rotation is what changes it.
+pub(crate) async fn seed_encryption_key(tonk: &TonkState) -> bool {
+    let Ok(ready) = require_ready_account_state(tonk).await else {
+        return false;
+    };
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        return false;
+    };
+    let Some(recipient) = root.encryption_key else {
+        return false;
+    };
+    match read_encryption_key(tonk, &ready).await {
+        Ok(Some(published)) if published == recipient => return false,
+        Ok(_) => {}
+        Err(error) => {
+            log!("account encryption key unreadable before seeding: {error}");
+            return false;
+        }
+    }
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(AccountEncryptionKey::new(
+            ready.subject.this(),
+            recipient.this(),
+        ))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("commit account encryption key: {error}");
+        return false;
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+    true
+}
+
+/// Seal `seed` (the signing seed `subject` derives from) to the account's
+/// published encryption key and record it as a [`CustodiedSeed`] in the
+/// account space, so any device on the account can re-issue the subject
+/// after a passkey ceremony opens it. Returns whether it wrote.
+///
+/// Best-effort, like [`retain_space_delegation`]: the subject is usable
+/// the moment its signer exists locally, and an account that has not
+/// published a key yet (one predating the key, or not ready) is logged
+/// and left for the next sweep rather than failing the caller.
+pub(crate) async fn custody_seed(
+    tonk: &TonkState,
+    subject: &dialog_varsig::Did,
+    kind: SeedKind,
+    seed: Zeroizing<[u8; 32]>,
+) -> bool {
+    let Ok(ready) = require_ready_account_state(tonk).await else {
+        return false;
+    };
+    let recipient = match read_encryption_key(tonk, &ready).await {
+        Ok(Some(recipient)) => recipient,
+        Ok(None) => {
+            log!("seed for {subject} not custodied: the account has published no encryption key");
+            return false;
+        }
+        Err(error) => {
+            log!("seed for {subject} not custodied: {error}");
+            return false;
+        }
+    };
+    let sealed = match RecipientKey::from_did(&recipient) {
+        Ok(key) => match key.seal(&seed, subject) {
+            Ok(sealed) => sealed.encode(),
+            Err(error) => {
+                log!("seed for {subject} not custodied: {error}");
+                return false;
+            }
+        },
+        Err(error) => {
+            log!("seed for {subject} not custodied: {error}");
+            return false;
+        }
+    };
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(CustodiedSeed::new(subject.clone(), kind, recipient, sealed))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("commit custodied seed for {subject}: {error}");
         return false;
     }
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1498,6 +1654,7 @@ mod tests {
                 credential_id: credential_id.clone(),
                 delegation_hex: delegation_hex.clone(),
                 passkey,
+                encryption_key: None,
             },
         )
         .await
@@ -1594,6 +1751,86 @@ mod tests {
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].seconds(), 1_754_380_800);
         assert_eq!(again[0].created_on.0, "Chrome on macOS");
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// The recipient a ceremony recorded on the local root is published
+    /// as the account's encryption key, and a seed sealed to it lands as
+    /// a `CustodiedSeed` row that the account's own key opens.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_publishes_the_encryption_key_and_custodies_a_seed() {
+        use tonk_identity::envelope::AccountSecret;
+        use tonk_identity::sealed::Sealed;
+
+        let (state, service, _descriptor, root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+
+        // A device that only linked recorded no recipient: nothing to seed.
+        assert!(!seed_encryption_key(&state).await);
+        assert_eq!(read_encryption_key(&state, &ready).await.unwrap(), None);
+        let subject: dialog_varsig::Did = "did:key:z6MkSpaceUnderTest".parse().unwrap();
+        assert!(!custody_seed(&state, &subject, SeedKind::Space, Zeroizing::new([7u8; 32])).await);
+
+        // A ceremony that held the secret re-saves the root with the recipient.
+        let account = AccountSecret::from_bytes(Zeroizing::new([5u8; 32]));
+        let recipient = account.encryption_key().recipient().did();
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &state.profile.did())
+                .await
+                .unwrap();
+        crate::router::identity::persist_root(
+            &state,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "credential".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
+                encryption_key: Some(recipient.to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(seed_encryption_key(&state).await);
+        assert!(!seed_encryption_key(&state).await, "already published");
+        assert_eq!(
+            read_encryption_key(&state, &ready).await.unwrap(),
+            Some(recipient.clone())
+        );
+
+        assert!(custody_seed(&state, &subject, SeedKind::Space, Zeroizing::new([7u8; 32])).await);
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let rows: Vec<CustodiedSeed> = branch
+            .handle()
+            .query()
+            .select(Query::<CustodiedSeed> {
+                this: Term::var("this"),
+                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+                kind: Term::var("kind"),
+                recipient: Term::var("recipient"),
+                sealed: Term::var("sealed"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind.0.to_string(), SeedKind::SPACE);
+        assert_eq!(rows[0].recipient.0, recipient.this());
+        let sealed = Sealed::decode(&rows[0].sealed.0).unwrap();
+        let opened = account.encryption_key().open(&sealed, &subject).unwrap();
+        assert_eq!(*opened, [7u8; 32]);
 
         service.stop().await.unwrap();
         discard(state, &ready.key);

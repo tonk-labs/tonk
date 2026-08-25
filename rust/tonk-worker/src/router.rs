@@ -609,6 +609,7 @@ pub mod tests {
                 credential_id: "test-credential".to_string(),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
                 passkey: None,
+                encryption_key: None,
             },
         )
         .await
@@ -906,6 +907,7 @@ pub mod tests {
                 credential_id: "test-credential".to_string(),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
                 passkey: None,
+                encryption_key: None,
             },
         )
         .await

@@ -32,8 +32,9 @@ use dialog_varsig::{Did, Principal};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience, shortcut::ShortcutRequest};
-use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept};
+use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept, SeedKind};
 use url::Url;
+use zeroize::Zeroizing;
 
 pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
 
@@ -198,6 +199,19 @@ pub async fn create_invite(
         .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
 
     retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
+
+    // The recovery copy of the invite principal: sealed to the account,
+    // so the account can re-issue from it after a ceremony. Best effort;
+    // the invite works without it.
+    if let InviteAudience::Open { seed } = &invite.audience {
+        super::account_state::custody_seed(
+            &tonk,
+            &audience_did,
+            SeedKind::Invite,
+            Zeroizing::new(*seed),
+        )
+        .await;
+    }
 
     let url_str = invite
         .to_url(base_url.as_str())
