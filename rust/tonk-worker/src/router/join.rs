@@ -66,6 +66,7 @@ use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider, Subject};
 use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, Ed25519Verifier};
+use dialog_effects::Use;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::memory::{Publish, Resolve};
@@ -1493,7 +1494,11 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
         .await?;
     }
 
+    let claimed = chain.clone();
     let grant = save_authority(tonk, &prepared, chain).await?;
+    if prepared.mode == JoinMode::Durable {
+        retain_claim_authority(tonk, &prepared.key, &claimed).await;
+    }
 
     if prepared.installs_replica() {
         record_initialized_replica_in_profile(tonk, &prepared.subject)
@@ -1562,6 +1567,44 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
         subject: prepared.subject,
         renewed: prepared.existing,
     })
+}
+
+/// Retain the claimed chain into the space's content branch, so the hop
+/// that admits this member is provable from the space itself.
+///
+/// The invite hop is already there (the inviter retained it at mint);
+/// what an open invite adds at claim time is the hop from the invite's
+/// ephemeral audience to this member, and without it the space knows
+/// this member only through the invite everyone else also came in
+/// through. An admin removing one member needs that member's own hop:
+/// revoking the shared invite hop would remove everyone who used it.
+///
+/// Best-effort: the join is complete once the authority is saved
+/// locally, and a member whose hop did not land here is still a member,
+/// just not individually removable until it does.
+async fn retain_claim_authority(tonk: &TonkState, key: &str, chain: &DelegationChain) {
+    let session = match tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            log!("claimed chain not retained on '{key}': {error}");
+            return;
+        }
+    };
+    if let Err(error) = session
+        .handle()
+        .delegations()
+        .retain(UcanDelegation(chain.clone()))
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("claimed chain not retained on '{key}': {error}");
+    }
 }
 
 /// Save the authority this join accepted into the durable certificate
