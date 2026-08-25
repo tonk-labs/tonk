@@ -2356,6 +2356,7 @@ mod tests {
             delegation_cid: "bafystored".into(),
             delegation_hex: "00".into(),
             passkey: None,
+            encryption_key: None,
         };
         let ceremony = CeremonyOutput {
             root_did: "did:key:zRoot".into(),
