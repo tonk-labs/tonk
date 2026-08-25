@@ -3007,6 +3007,50 @@ pub(crate) mod tests {
             memberships.iter().any(|row| row.member.0 == onboarding),
             "the membership is keyed on the onboarding account",
         );
+
+        // The invite principal's seed is custodied on profile main, sealed
+        // to the onboarding account, which is what accreditation opens to
+        // re-root the membership.
+        use dialog_query::{Output as _, Query, Term};
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::CustodiedSeed> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                kind: Term::from(tonk_schema::SeedKind::Invite.kind()),
+                recipient: Term::var("recipient"),
+                sealed: Term::var("sealed"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one custodied invite seed");
+        let principal: dialog_varsig::Did = rows[0].subject.0.to_string().parse().unwrap();
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        let opened = crate::onboarding::account(&tonk)
+            .await
+            .unwrap()
+            .encryption_key()
+            .open(&sealed, &principal)
+            .expect("the onboarding account opens its custodied seed");
+        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
+            .await
+            .unwrap();
+        assert_eq!(
+            reissued.did(),
+            principal,
+            "the seed derives the invite principal the membership hangs off",
+        );
     }
 
     /// A local-only invite has no remote to prove, so it commits on

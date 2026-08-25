@@ -1063,15 +1063,8 @@ pub(crate) async fn custody_seed(
     kind: SeedKind,
     seed: Zeroizing<[u8; 32]>,
 ) -> bool {
-    let Ok(ready) = require_ready_account_state(tonk).await else {
-        return false;
-    };
-    let recipient = match read_encryption_key(tonk, &ready).await {
-        Ok(Some(recipient)) => recipient,
-        Ok(None) => {
-            log!("seed for {subject} not custodied: the account has published no encryption key");
-            return false;
-        }
+    let (recipient, ready) = match custody_recipient(tonk).await {
+        Ok(found) => found,
         Err(error) => {
             log!("seed for {subject} not custodied: {error}");
             return false;
@@ -1104,8 +1097,83 @@ pub(crate) async fn custody_seed(
         return false;
     }
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+    if let Some(ready) = ready {
+        tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let _ = ready;
     true
+}
+
+/// The recipient custodied seeds are sealed to on this device, and the
+/// ready account branch when the recipient is a linked passkey account's.
+///
+/// A linked account publishes its key from the ceremony that held the
+/// secret; an onboarding account's secret is local, so its key is derived
+/// here and published on profile `main` the first time it is needed. That
+/// is the branch the account becomes the upstream of at accreditation, so
+/// rows sealed before it land where rows sealed after it do.
+async fn custody_recipient(
+    tonk: &TonkState,
+) -> Result<(dialog_varsig::Did, Option<ReadyAccountBranch>), TonkWorkerError> {
+    match super::identity::local_root(tonk).await {
+        Ok(_) => {
+            let ready = require_ready_account_state(tonk).await?;
+            let recipient = read_encryption_key(tonk, &ready).await?.ok_or_else(|| {
+                TonkWorkerError::Conflict(
+                    "the account has published no encryption key yet".to_string(),
+                )
+            })?;
+            Ok((recipient, Some(ready)))
+        }
+        Err(TonkWorkerError::RootRequired) => {
+            let secret = crate::onboarding::account(tonk).await?;
+            let recipient = secret.encryption_key().recipient().did();
+            let account = secret
+                .signer()
+                .await
+                .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?
+                .did();
+            let branch = tonk
+                .reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("open profile main: {error}"))
+                })?;
+            let published: Vec<AccountEncryptionKey> = branch
+                .handle()
+                .query()
+                .select(Query::<AccountEncryptionKey> {
+                    this: Term::from(account.this()),
+                    key: Term::var("key"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("read onboarding encryption key: {error:?}"))
+                })?;
+            if published.is_empty() {
+                branch
+                    .handle()
+                    .transaction()
+                    .assert(AccountEncryptionKey::new(account.this(), recipient.this()))
+                    .commit()
+                    .perform(&tonk.operator)
+                    .await
+                    .map_err(|error| {
+                        TonkWorkerError::Internal(format!(
+                            "publish onboarding encryption key: {error}"
+                        ))
+                    })?;
+            }
+            Ok((recipient, None))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Project the authoritative account display name into the local profile
