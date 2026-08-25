@@ -565,6 +565,33 @@ mod when_recording_roster_facts {
         assert_eq!(stamps[0].this, *memberships[0].this());
         assert_eq!(stamps[0].invitation.0, expected.this);
 
+        // The claimed chain is retained on the content branch, so the hop
+        // that admits this member is provable from the space itself: what
+        // an admin revokes to remove them alone.
+        let proof = claimer_content
+            .delegations()
+            .prove(
+                root_did.clone(),
+                dialog_ucan::Scope {
+                    subject: dialog_ucan_core::subject::Subject::Specific(
+                        joined.repository.did().clone(),
+                    ),
+                    command: dialog_ucan_core::command::Command::parse("/use")?,
+                    parameters: dialog_ucan::Parameters::default(),
+                },
+            )
+            .perform(&joined.operator)
+            .await?;
+        let leaf = proof
+            .proofs
+            .last()
+            .expect("the claimed chain reaches the member");
+        assert_eq!(leaf.0.audience(), &root_did, "the leaf admits the member");
+        assert!(
+            proof.proofs.len() > 1,
+            "the member's own hop sits below the invite hop"
+        );
+
         Ok(())
     }
 }

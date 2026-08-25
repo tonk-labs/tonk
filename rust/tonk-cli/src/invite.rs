@@ -434,9 +434,11 @@ pub async fn claim(
 
     // Install only the reusable root-ending authority and verifier-backed
     // repository. Invite-specific roster/provenance writes remain below.
+    let chain = claimed.chain.clone();
     let joined = site::mount_delegated_with(&root, profile, operator, claimed.chain, config)
         .await
         .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
+    retain_claim_authority(&joined, chain).await;
 
     // Wire the embedded remote (if any) onto the freshly
     // bootstrapped site. Match the worker's `DEFAULT_REMOTE` so
@@ -517,6 +519,29 @@ pub async fn claim(
 /// Both stamps are first-wins, mirroring the worker. The role is the one that
 /// matters: `MemberRole` is cardinality-one on the membership entity, so
 /// asserting `member` over a row the pull just brought down would demote
+/// Retain the claimed chain into the space's content branch, so the hop
+/// that admits this member is provable from the space itself and an admin
+/// can revoke it without touching the invite everyone else used. Best
+/// effort: the join is complete once the authority is saved locally.
+async fn retain_claim_authority(joined: &TonkSite, chain: dialog_ucan_core::DelegationChain) {
+    let session = match joined.branch().await {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("warning: claimed chain not retained on the space: {error}");
+            return;
+        }
+    };
+    if let Err(error) = session
+        .handle()
+        .delegations()
+        .retain(UcanDelegation(chain))
+        .perform(&joined.operator)
+        .await
+    {
+        eprintln!("warning: claimed chain not retained on the space: {error}");
+    }
+}
+
 /// whoever it names — including a founder claiming an invite to their own
 /// space, whose profile is shared with every other site on this machine.
 async fn record_claim_roster(
