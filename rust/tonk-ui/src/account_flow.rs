@@ -1992,4 +1992,224 @@ mod tests {
         driver.quit().await?;
         Ok(())
     }
+
+    /// Link a second browser to an existing account the way a page from
+    /// before the encryption key existed did: the same unlock ceremony and
+    /// the same two saves, but the root is stored WITHOUT the key. The
+    /// account's virtual authenticator must already hold the passkey.
+    async fn legacy_link(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
+        let identify = get_json(driver, "/api/identify").await?;
+        let device_did = successful_body("identify", &identify)["did"]
+            .as_str()
+            .context("identify omitted the device DID")?
+            .to_string();
+        let ceremony = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                const [deviceDid, service] = arguments;
+                window.tonkIdentity.unlockWithPasskey({
+                    deviceDid,
+                    deviceName: "Legacy Chrome",
+                    endpoint: `${window.location.origin}/ucan/`,
+                }).then(async ceremony => {
+                    const bytes = Uint8Array.from(
+                        ceremony.invocationHex.match(/../g).map(pair => parseInt(pair, 16)),
+                    );
+                    const response = await fetch(`${service}devices/link`, {
+                        method: "POST",
+                        headers: { "content-type": "application/cbor" },
+                        body: bytes,
+                    });
+                    const linked = await response.json();
+                    done({ status: response.status, ceremony, linked });
+                }).catch(error => done({ error: String(error) }));
+                "#,
+                vec![
+                    serde_json::json!(device_did),
+                    serde_json::json!(env.account_service.as_str()),
+                ],
+            )
+            .await?
+            .json()
+            .clone();
+        anyhow::ensure!(
+            ceremony.get("error").is_none() && ceremony["status"] == 200,
+            "legacy link ceremony failed: {ceremony}"
+        );
+        anyhow::ensure!(
+            ceremony["ceremony"]["encryptionKey"].is_string(),
+            "the unlock ceremony derives the key; the legacy page just never saved it: {ceremony}"
+        );
+        let saved = post_json(
+            driver,
+            "/api/identity/root",
+            serde_json::json!({
+                "credentialId": ceremony["ceremony"]["credentialId"],
+                "delegationHex": ceremony["ceremony"]["delegationHex"],
+            }),
+        )
+        .await?;
+        successful_body("legacy root save", &saved);
+        let attached = post_json(
+            driver,
+            "/api/account/attach",
+            serde_json::json!({
+                "provider": env.account_service.as_str(),
+                "rootDid": ceremony["ceremony"]["rootDid"],
+                "credentialId": ceremony["ceremony"]["credentialId"],
+                "delegationHex": ceremony["ceremony"]["delegationHex"],
+                "descriptorHex": ceremony["linked"]["descriptorHex"],
+                "initializeName": false,
+            }),
+        )
+        .await?;
+        successful_body("legacy attach", &attached);
+        Ok(())
+    }
+
+    /// Poll a JSON GET until `accept` says the body is what we wait for.
+    async fn poll_json(
+        driver: &WebDriver,
+        path: &str,
+        what: &str,
+        accept: impl Fn(&serde_json::Value) -> bool,
+    ) -> Result<serde_json::Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let response = get_json(driver, path).await?;
+            if response.get("error").is_none() && accept(&response["body"]) {
+                return Ok(response["body"].clone());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for {what}: {response}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// A device linked before the account's encryption key existed has
+    /// nothing to seal a new space's seed to. Creating one from a page makes
+    /// the worker ask that page for a passkey assertion; the page answers by
+    /// saving the key with the root, and the create resumes. The space ends
+    /// up custodied under the account, and the device now carries the key.
+    #[dialog_common::test]
+    async fn it_asks_the_page_for_a_passkey_assertion_when_custody_needs_the_key(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let creator = driver_with_prf(&env).await?;
+        sign_up(&creator, &env, EMAIL).await?;
+        // A second device on the same account, in the same session so the
+        // virtual authenticator still holds the passkey: "Add account"
+        // rotates the worker onto a fresh profile with no root of its own,
+        // which is exactly what a new browser is.
+        let added = post_json(&creator, "/api/profiles/add", serde_json::json!({})).await?;
+        successful_body("add profile", &added);
+        creator.goto(env.tonk_web.as_str()).await?;
+        legacy_link(&creator, &env).await?;
+
+        let root = get_json(&creator, "/api/identity/root").await?;
+        let root = successful_body("root status", &root);
+        assert_eq!(root["status"], "ready");
+        assert!(
+            root.get("encryptionKey").is_none(),
+            "a legacy link records no key: {root}"
+        );
+
+        // Create through the profile branch, the way the FAB does: a
+        // transient the worker runs post-commit, with this page as the
+        // originating client the worker can ask.
+        let created = post_json(
+            &creator,
+            "/api/profile/branch/main/transact",
+            serde_json::json!({
+                "claims": [{
+                    "op": "assert",
+                    "application": {
+                        "predicate": {
+                            "kind": "transient",
+                            "concept": {
+                                "description": "A request to create a new space from the wizard form.",
+                                "with": {
+                                    "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
+                                    "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
+                                    "template": { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                                }
+                            }
+                        },
+                        "parameters": {
+                            "name": "Custodied After Assertion",
+                            "remote": env.tonk_web.join("ucan/")?,
+                            "template": "blank"
+                        }
+                    }
+                }]
+            }),
+        )
+        .await?;
+        successful_body("create space command", &created);
+
+        let root = poll_json(
+            &creator,
+            "/api/identity/root",
+            "the assertion to record the key",
+            |body| body.get("encryptionKey").is_some(),
+        )
+        .await?;
+        let recipient = root["encryptionKey"]
+            .as_str()
+            .context("root status omitted the key")?
+            .to_string();
+        assert!(recipient.starts_with("did:key:z6LS"), "{recipient}");
+
+        let profile = poll_json(
+            &creator,
+            "/api/profile",
+            "the space to be created",
+            |body| {
+                body["space"]
+                    .as_array()
+                    .is_some_and(|spaces| !spaces.is_empty())
+            },
+        )
+        .await?;
+        let key = profile["space"][0]["key"]
+            .as_str()
+            .context("profile space entry omitted its key")?
+            .to_string();
+
+        let rows = post_json(
+            &creator,
+            "/api/profile/branch/main/query",
+            serde_json::json!({
+                "terms": {
+                    "this": { "?": { "name": "this" } },
+                    "subject": { "?": { "name": "subject" } },
+                    "recipient": { "?": { "name": "recipient" } }
+                },
+                "predicate": {
+                    "with": {
+                        "subject": { "the": "xyz.tonk.custody/subject", "cardinality": "one", "as": "Entity" },
+                        "recipient": { "the": "xyz.tonk.custody/recipient", "cardinality": "one", "as": "Entity" }
+                    }
+                }
+            }),
+        )
+        .await?;
+        let rows = successful_body("custodied seeds", &rows)
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            rows.iter().any(|row| {
+                let subject = row["fields"]["subject"].as_str().unwrap_or_default();
+                let sealed_to = row["fields"]["recipient"].as_str().unwrap_or_default();
+                subject.ends_with(&key) && sealed_to == recipient
+            }),
+            "the new space's seed is sealed to the key the assertion derived: {rows:?}"
+        );
+
+        creator.quit().await?;
+        Ok(())
+    }
 }
