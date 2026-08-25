@@ -37,6 +37,10 @@ pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 mod revoke_invite;
 
+/// Space membership management: admins and removals, as commands.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod members;
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 

@@ -19,7 +19,9 @@ use ::axum::{
     extract::{Path, State},
 };
 use axum_wasm_macros::wasm_compat;
+use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
+use dialog_effects::Use;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     LoadRemoteError, RemoteRepository, RepositoryExt as _, SiteAddress, Upstream,
@@ -139,7 +141,7 @@ pub async fn create_invite(
     let delegation: UcanDelegation = tonk
         .profile
         .access()
-        .claim(&repository)
+        .claim(Subject::from(repository.did()).attenuate(Use))
         .delegate(audience_did.clone())
         .perform(&tonk.operator)
         .await

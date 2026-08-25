@@ -586,6 +586,34 @@ concept!: &member
 # The role badge label comes from CSS `::after` keyed on `data-role`, so the
 # raw `tonk:founder` / `tonk:member` URI never shows; the raw {role} text is
 # kept (visually hidden) only to drive the attribute.
+# Membership management. Each is a single matched field, so the attribute
+# is the command's shape as well as its payload: `dataset/promote` and
+# `dataset/expel` are read by no other command. Both act on the space
+# they fire in. The worker's handlers do the chain work; the service
+# refuses a removal minted under a member's `/use` chain, so holding the
+# space is what makes it take effect, not the role on the roster.
+command!: &member/promote
+  description: Promote a member of this space to admin.
+  with:
+    member:
+      description: The DID of the member to promote, read from `data-promote`.
+      the: dom.event.current-target.dataset/promote
+      as: entity
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
+command!: &member/expel
+  description: Remove a member from this space.
+  with:
+    member:
+      description: The DID of the member to remove, read from `data-expel`.
+      the: dom.event.current-target.dataset/expel
+      as: entity
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
 view!: &member/row
   this: id:tonk:member/row
   model: tonk:member
@@ -714,6 +742,9 @@ view/directory!:
           content: "founder";
           background: var(--wa-color-text-normal);
           color: var(--wa-color-surface-default);
+        }
+        .roster__role[data-role="tonk:admin"]::after {
+          content: "admin";
         }
         .roster__role[data-role="tonk:member"]::after {
           content: "member";

@@ -312,6 +312,48 @@ impl Command for RemoveSpace {
     type Output = ();
 }
 
+/// Promote a member of the space this command fires in to admin.
+///
+/// Asserted transiently by the roster row's promote form; the worker's
+/// handler mints a `/` chain to the member's account, retains it in the
+/// space db beside the invites, and stamps `MemberRole::admin`. The
+/// target space is the dispatch origin, as for `tonk:invite`. A single
+/// matched field, like [`RemoveSpace`]: `dataset/promote` is read by no
+/// other command, so it is the command's shape as well as its payload.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PromoteMember {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The DID the member's membership is keyed on, from `data-promote`.
+    pub member: crate::domain::command::promote::Promote,
+}
+
+impl Command for PromoteMember {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Remove a member from the space this command fires in.
+///
+/// Asserted transiently by the roster row's expel form; the worker's
+/// handler revokes the hop that admits the member under the remover's
+/// own `/` chain, records it at the space's access service, and retracts
+/// the member's roster rows. The service refuses a revocation minted
+/// under a member's `/use` chain, so holding the space is what lets this
+/// take effect, not the role fact.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExpelMember {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The DID the member's membership is keyed on, from `data-expel`.
+    pub member: crate::domain::command::expel::Expel,
+}
+
+impl Command for ExpelMember {
+    type Input = Self;
+    type Output = ();
+}
+
 /// The durable fact a `tonk:invite` handler asserts: the public
 /// delegation chain it minted, **keyed by the membership DID** (`this`).
 ///

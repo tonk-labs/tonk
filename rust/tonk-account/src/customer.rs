@@ -9,6 +9,7 @@
 //! definition.
 
 use dialog_capability::{Attenuate, Attenuation, Effect, Subject};
+use dialog_effects::Use;
 use dialog_effects::archive::{Archive, Catalog};
 use dialog_effects::memory::{Memory, Space};
 use dialog_ucan::Scope;
@@ -65,9 +66,11 @@ pub fn service_space(service: &Did) -> String {
 /// is accepted as a deposit.
 pub fn deposit_scopes(customer: &Did, service: &Did) -> [Scope; 2] {
     let memory = Subject::from(customer.clone())
+        .attenuate(Use)
         .attenuate(Memory)
         .attenuate(Space::new(service_space(service)));
     let archive = Subject::from(customer.clone())
+        .attenuate(Use)
         .attenuate(Archive)
         .attenuate(Catalog::new(SERVICE_CATALOG));
     [Scope::from(&memory), Scope::from(&archive)]
@@ -389,12 +392,14 @@ mod tests {
         let service = did!("key:z6MkrZ1r5XBFZjBU34qyD8fueMbMRkKw17BZaq2ivKFjnz2z");
         let [memory, archive] = deposit_scopes(&customer, &service);
 
-        assert_eq!(memory.command.segments(), &["memory".to_string()]);
+        // Both deposits sit at `/use`: what tells them apart is the policy,
+        // and neither is `/`.
+        assert_eq!(memory.command.segments(), &["use".to_string()]);
         assert_eq!(
             memory.parameters.as_map().get("space"),
             Some(&ipld_core::ipld::Ipld::String(format!("branch/{service}")))
         );
-        assert_eq!(archive.command.segments(), &["archive".to_string()]);
+        assert_eq!(archive.command.segments(), &["use".to_string()]);
         assert_eq!(
             archive.parameters.as_map().get("catalog"),
             Some(&ipld_core::ipld::Ipld::String("index".to_string()))

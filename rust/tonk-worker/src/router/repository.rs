@@ -7,6 +7,10 @@
 //! share a label. The response carries the new repository's routing key
 //! (the DID suffix), which the UI routes by.
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_capability::Subject;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_effects::Use;
 use std::collections::HashMap;
 
 use ::axum::{
@@ -1048,7 +1052,7 @@ async fn run_invite(
     let delegation: dialog_ucan::UcanDelegation = tonk
         .profile
         .access()
-        .claim(&repository)
+        .claim(Subject::from(repository.did()).attenuate(Use))
         .delegate(membership_did)
         .perform(&tonk.operator)
         .await

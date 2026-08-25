@@ -594,6 +594,35 @@ pub mod command {
         pub struct Remove(pub Entity);
     }
 
+    /// Attributes of the `member/promote` command.
+    pub mod promote {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The DID of the member to promote to admin, read from the roster
+        /// row's `data-promote`. The distinctly named attribute is both the
+        /// payload and the command's unique shape, as with
+        /// [`super::remove::Remove`]. An `Entity` because a DID carries a
+        /// `:`. Derived attribute: `dom.event.current-target.dataset/promote`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Promote(pub Entity);
+    }
+
+    /// Attributes of the `member/expel` command.
+    pub mod expel {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The DID of the member to remove, read from the roster row's
+        /// `data-expel`. Distinct from `dataset/remove`, which removes a
+        /// space from this device. Derived attribute:
+        /// `dom.event.current-target.dataset/expel`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Expel(pub Entity);
+    }
+
     /// Attributes the `tonk:join` command reads from `<tonk-page>`'s
     /// `mount` event. The page delivers the complete URL because the
     /// service worker cannot observe its fragment.

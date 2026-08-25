@@ -26,7 +26,7 @@ use dialog_varsig::{Did, Principal as _};
 fn scope(subject: &Did) -> Scope {
     Scope {
         subject: UcanSubject::Specific(subject.clone()),
-        command: Command::parse("/").expect("the root command parses"),
+        command: Command::parse("/use").expect("the use command parses"),
         parameters: Parameters::default(),
     }
 }
