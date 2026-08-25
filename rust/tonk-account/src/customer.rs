@@ -9,6 +9,7 @@
 //! definition.
 
 use dialog_capability::{Attenuate, Attenuation, Effect, Subject};
+use dialog_effects::Use;
 use dialog_effects::archive::{Archive, Catalog};
 use dialog_effects::memory::{Memory, Space};
 use dialog_ucan::Scope;
@@ -65,9 +66,11 @@ pub fn service_space(service: &Did) -> String {
 /// is accepted as a deposit.
 pub fn deposit_scopes(customer: &Did, service: &Did) -> [Scope; 2] {
     let memory = Subject::from(customer.clone())
+        .attenuate(Use)
         .attenuate(Memory)
         .attenuate(Space::new(service_space(service)));
     let archive = Subject::from(customer.clone())
+        .attenuate(Use)
         .attenuate(Archive)
         .attenuate(Catalog::new(SERVICE_CATALOG));
     [Scope::from(&memory), Scope::from(&archive)]

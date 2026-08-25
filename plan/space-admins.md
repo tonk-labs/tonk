@@ -71,3 +71,62 @@ Open question: whether kicking should also rotate anything. A kicked
 member keeps bytes they already replicated; revocation cuts off
 storage, not memory. That is the same honesty note the vault plan
 carries, and it is policy, not schema.
+
+## The revocation rule, precisely (2026-08-24)
+
+Two halves, both in code:
+
+1. Dialog asks the revocation checker per link, with the candidate
+   revokers for a link being the subject and the issuers of the hops
+   above it (`IndexedRevocations::query`, tonk-access-service). A
+   revocation recorded under a sibling or a recipient never reaches
+   anyone; authority to revoke flows downward only.
+2. The service records a revocation under the invocation's `sub`
+   (`revoke.rs`). For a delegated revocation that is the subject the
+   `prf` chain proves for: the space. The space is the root issuer of
+   every chain under it, so a revocation proven for the space applies
+   to every hop in the space, whoever minted the hop and whenever.
+
+So the proposal above holds, with one correction to its premise: it is
+not "an admin can prove for the subject" that matters, it is that the
+proof carries `/ucan/revoke`. Every member currently can: invites are
+minted from an unattenuated claim, so every member's chain is `/` and
+every member can remove anyone, founder included, through the existing
+invite-revocation route.
+
+Admin therefore has to be decided by what a chain covers:
+
+- Member invites are attenuated to the storage commands the presign path
+  authorizes, `/memory` and `/archive`. They share no prefix, so a
+  member invite is two delegations (one chain per command), retained,
+  claimed, and proved side by side. A member cannot invoke
+  `/ucan/revoke` for the space at all.
+- The founder's `space -> account` prefix and an admin's
+  `space -> ... -> admin-account` chain stay `/`. Promotion mints the
+  admin chain the way a scoped invite is minted, retains it into the
+  space db, and stamps `MemberRole::admin`.
+- Removing a member is a delegated revocation of the member's own hop,
+  proven for the space under the kicker's `/` chain. For that hop to be
+  individually revocable it must be in the space db: the join retains
+  the claimed chain into the content branch (the invite hop alone is
+  shared by everyone who used an open invite).
+- Existing members hold `/` chains until re-invited; they are de facto
+  admins and should be listed as such or re-issued.
+
+## Status (2026-08-25)
+
+- dialog-db#469 moves every storage command under `/use` with HTTP
+  verbs (`/use/get/memory/cell`, `/use/put/archive/block`, ...), with
+  `Use` a level of the capability hierarchy. `/use` is read+write,
+  `/ucan/*` stays outside it, `/void` is reserved and empty.
+- On `feat/space-admins`: invites (worker route, `tonk:invite` command,
+  CLI) are minted at `/use`; invite proofs are searched at `/use`;
+  customer deposits go through `Use`; the space still delegates `/` to
+  its creator's account. `MemberRole::ADMIN`, the roster badge and the
+  CLI classification exist. The join retains the claimed chain into the
+  space's content branch so a member's own hop is individually
+  revocable.
+- Pending on this branch: the promote route (a `/` chain to the admin's
+  account, retained in the space db, role stamped) and the kick route
+  (delegated revocation of the member's own hop under the kicker's `/`
+  chain, roster rows retracted).

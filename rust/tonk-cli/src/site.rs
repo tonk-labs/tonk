@@ -19,6 +19,7 @@ use std::sync::LazyLock;
 use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
+use dialog_effects::Use;
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
 use dialog_operator::{DeriveOperator, Operator, Profile};
@@ -905,7 +906,7 @@ pub(crate) async fn recover_prefix(
 ) -> Result<Option<DelegationChain>> {
     let proof = profile
         .access()
-        .prove(Subject::from(subject.clone()))
+        .prove(Subject::from(subject.clone()).attenuate(Use))
         .perform(operator)
         .await
         .context("failed to recover repository authority")?;

@@ -29,13 +29,13 @@ use super::AppState;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use crate::{TonkState, TonkWorkerError};
 
-/// The scope a space-wide invite covers: the whole command tree on one
-/// subject. Invites are minted from an unattenuated claim, so a narrower
-/// scope here would fail to match the chain that was actually issued.
+/// The scope an invite covers: using the space. Invites are minted at
+/// `/use`, so this is the level a proof search has to aim at; a `/` chain
+/// (the founder's, an admin's) covers it too.
 fn space_scope(subject: &Did) -> Scope {
     Scope {
         subject: UcanSubject::Specific(subject.clone()),
-        command: Command::parse("/").expect("the root command always parses"),
+        command: Command::parse("/use").expect("the use command always parses"),
         parameters: Parameters::default(),
     }
 }

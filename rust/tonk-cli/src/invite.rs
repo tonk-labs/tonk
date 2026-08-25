@@ -12,6 +12,8 @@
 //! locally, ready for `tonk push` / `tonk pull` once a remote
 //! is configured.
 
+use dialog_capability::Subject;
+use dialog_effects::Use;
 use std::path::{Path, PathBuf};
 
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
@@ -229,7 +231,7 @@ async fn mint_for(
     let delegation: UcanDelegation = site
         .profile
         .access()
-        .claim(&site.repository)
+        .claim(Subject::from(site.repository.did()).attenuate(Use))
         .delegate(audience.clone())
         .perform(&site.operator)
         .await
