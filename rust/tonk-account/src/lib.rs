@@ -380,13 +380,22 @@ pub fn is_legacy_format(error: &str) -> bool {
 ///
 /// The old binary is the only thing that can read the old format, so the
 /// remedy is to install it, export, and import — not to retry.
+///
+/// `tonk` used to drive that itself, downloading `v0.6.7` and exporting
+/// through it. The command is gone; the failure it answered is not, so
+/// this spells the steps out instead of naming a command that no longer
+/// exists. Detecting the format is what keeps this a sentence rather than
+/// `missing field 'branch'`, which is why [`is_legacy_format`] stays.
 pub const LEGACY_FORMAT_REMEDY: &str = "\
 this space was written by an older tonk and cannot be opened by this one.
 
-Upgrade it with `tonk migrate space <name>`, which installs the last
-compatible build, exports the data, and imports it here. That command is
-scheduled for removal once a release has carried a working copy, so upgrade
-before then — see plan/cli-consistency.md.";
+Only tonk v0.6.7 can read that format. To recover the data:
+
+  1. install v0.6.7 (github.com/tonk-labs/tonk/releases/tag/v0.6.7)
+  2. export each branch with it: tonk export --branch <name> --out <file>
+  3. import each file here: tonk import <file> --branch <name>
+
+Branches migrate separately, so repeat steps 2 and 3 for each one.";
 
 #[cfg(test)]
 mod tests {
