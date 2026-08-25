@@ -160,10 +160,6 @@ struct Blocked {
 /// shared with the worker that publishes it.
 const BLOCKED_NOT_SYNCED: &str = tonk_worker_api::share::BLOCKED_NOT_SYNCED;
 
-/// The refusal class the join prompt can repair: this replica is a guest
-/// visit, which holds no membership to delegate an invite from.
-const BLOCKED_NEEDS_MEMBERSHIP: &str = tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP;
-
 /// Subscription tag for the refusal query, distinct from [`SUB_TAG`] so the
 /// scaffolding can tell the two subscriptions' frames apart.
 const BLOCKED_TAG: &str = "tonk-share-blocked";
@@ -222,13 +218,6 @@ impl Repair {
         }
     }
 }
-
-/// The join prompt, shown for [`BLOCKED_NEEDS_MEMBERSHIP`]. Its own dialog
-/// rather than the sync one with substituted copy: the two refusals have
-/// nothing in common but being repairable, and a guest's sync is fine.
-const JOIN_DIALOG_ID: &str = "fab-join-first";
-const JOIN_DIALOG_CONFIRM: &str = "[data-join-first-confirm]";
-const JOIN_DIALOG_DETAIL: &str = "[data-join-first-detail]";
 
 /// Per-element state. One pending copy at a time — a click while a mint is in
 /// flight is dropped (see [`ShareState::accepts_click`]).
@@ -566,21 +555,6 @@ impl TonkShare {
             let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
                 return;
             };
-            // The join prompt's confirm shares this listener because both
-            // prompts answer a refusal of the same click. It promotes and
-            // stops: minting after it would spend a delegation on a click the
-            // user made to answer a question, and the passkey prompt the
-            // promotion raises is a better place to end than a surprise copy.
-            if let Ok(Some(join)) = target.closest(JOIN_DIALOG_CONFIRM)
-                && !join.has_attribute("disabled")
-            {
-                event.prevent_default();
-                close_join_dialog();
-                if let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) {
-                    promote_to_member(&space);
-                }
-                return;
-            }
             let Some(confirm) = target.closest(DIALOG_CONFIRM).ok().flatten() else {
                 return;
             };
@@ -892,16 +866,6 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
     }
     state.borrow_mut().pending_time = None;
 
-    // A guest's refusal is repairable, but not by attaching sync: it asks for
-    // membership, which the promote request obtains (raising the passkey
-    // prompt through the identity gate when there is no local root yet).
-    if blocked.code == BLOCKED_NEEDS_MEMBERSHIP {
-        abandon(state, &blocked.detail);
-        set_state(host, ShareState::Blocked);
-        open_join_dialog(&blocked.detail);
-        return;
-    }
-
     let Some(repair) = Repair::for_code(&blocked.code) else {
         // Nothing the prompt could fix — including an attach that failed after
         // the user already accepted it. Say so rather than leaving the button
@@ -988,62 +952,6 @@ fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
         }
     }
     let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::TRUE);
-}
-
-/// Promote this guest replica to durable membership — the same request the
-/// bar's `join spot` action makes, so there is one promote path and not two.
-///
-/// The worker answers `AccountRequired` when this device has no account and
-/// posts an account-required message, which the page turns into a trip through
-/// sign-up and replays on the way back — so a refusal needs nothing from here.
-/// A success does: the bar stamped `data-share-unavailable` from its check at
-/// connect and has no other reason to look again, so this asks it to. The
-/// comment this replaces deferred to "the membership check on the next
-/// render", which nothing performs — that is why share stayed greyed until a
-/// reload.
-fn promote_to_member(space: &str) {
-    let Ok(path) = crate::logic::membership_endpoint(space) else {
-        return;
-    };
-    let Some(origin) = tonk_host::bridge::context_origin() else {
-        return;
-    };
-    wasm_bindgen_futures::spawn_local(async move {
-        let promoted = reqwest::Client::new()
-            .post(format!("{origin}{path}"))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success());
-        if promoted {
-            crate::element::refresh_membership();
-        }
-    });
-}
-
-/// Open the join prompt with the worker's sentence. Its confirm is always
-/// live: unlike the sync prompt there is no variant of this refusal the user
-/// can't act on — a guest can always join.
-fn open_join_dialog(detail: &str) {
-    let Some(dialog) = window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(JOIN_DIALOG_ID))
-    else {
-        return;
-    };
-    if let Ok(Some(slot)) = dialog.query_selector(JOIN_DIALOG_DETAIL) {
-        slot.set_text_content(Some(detail));
-    }
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::TRUE);
-}
-
-fn close_join_dialog() {
-    let Some(dialog) = window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(JOIN_DIALOG_ID))
-    else {
-        return;
-    };
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::FALSE);
 }
 
 fn close_enable_sync_dialog() {
@@ -1492,67 +1400,6 @@ mod tests {
             .append_child(&host)
             .expect("mount");
         host
-    }
-
-    fn dialog_is_open(id: &str) -> bool {
-        window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id(id))
-            .map(|dialog| {
-                Reflect::get(&dialog, &JsValue::from_str("open"))
-                    .map(|open| open.is_truthy())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-    }
-
-    /// A guest's refusal is repairable, and the repair is not the one the
-    /// enable-sync prompt offers: joining the spot, which is what raises the
-    /// passkey prompt. Two refusals, two prompts — reusing the sync dialog
-    /// would put "Turn on sync & copy link" in front of a guest whose sync is
-    /// fine.
-    #[dialog_common::test]
-    fn it_offers_the_join_repair_for_a_membership_refusal() {
-        let bar = mounted_bar();
-        let host = fresh_host();
-        let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        state.borrow_mut().pending_time = Some(7.0);
-        set_state(&host, ShareState::Copying);
-
-        handle_blocked(
-            &host,
-            &state,
-            Blocked {
-                code: tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP.to_owned(),
-                detail: "You're visiting this spot as a guest.".to_owned(),
-                time: 7.0,
-            },
-        );
-
-        let join_open = dialog_is_open(JOIN_DIALOG_ID);
-        let sync_open = dialog_is_open(DIALOG_ID);
-        let confirm_live = window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id(JOIN_DIALOG_ID))
-            .and_then(|dialog| dialog.query_selector(JOIN_DIALOG_CONFIRM).ok().flatten())
-            .map(|confirm| !confirm.has_attribute("disabled"))
-            .unwrap_or(false);
-        let detail = window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id(JOIN_DIALOG_ID))
-            .and_then(|dialog| dialog.query_selector(JOIN_DIALOG_DETAIL).ok().flatten())
-            .and_then(|slot| slot.text_content())
-            .unwrap_or_default();
-        bar.remove();
-
-        assert_eq!(read_state(&host), ShareState::Blocked);
-        assert!(join_open, "the join prompt opens");
-        assert!(!sync_open, "the sync prompt stays shut");
-        assert!(confirm_live, "its confirm is offered, not disabled");
-        assert_eq!(
-            detail, "You're visiting this spot as a guest.",
-            "the worker's sentence reaches the user",
-        );
     }
 
     /// A refusal with no repair still has to explain itself. The confirm stays

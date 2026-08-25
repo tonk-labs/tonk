@@ -238,12 +238,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
-        .route("/api/profile/visit", post(join::visit))
         .route("/api/profile/join", post(join::join))
-        .route(
-            "/api/repository/{repo}/membership",
-            get(join::membership).post(join::join_guest),
-        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
@@ -1318,35 +1313,6 @@ pub mod tests {
             remote.map(|_| "https://relay.example.test/revocations/".parse().unwrap()),
         );
         (invite.to_url("https://tonk.network/join").unwrap(), key)
-    }
-
-    /// `POST /api/profile/visit` — an accountless guest visit.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn visit_invite(app: &Router, url: &str) -> StatusCode {
-        post_invite_url(app, "/api/profile/visit", url).await
-    }
-
-    /// `POST /api/profile/join` — a durable claim to the local root.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn join_invite_url(app: &Router, url: &str) -> StatusCode {
-        post_invite_url(app, "/api/profile/join", url).await
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn post_invite_url(app: &Router, path: &str, url: &str) -> StatusCode {
-        let body = serde_json::json!({ "url": url }).to_string();
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .uri(path)
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
     }
 
     /// Drive the `tonk:invite` command end to end on a fresh, synced repo

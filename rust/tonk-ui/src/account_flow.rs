@@ -1143,18 +1143,11 @@ mod tests {
         sign_up(&claimer, &env, "claimer@example.com").await?;
         let visited = post_json(
             &claimer,
-            "/api/profile/visit",
+            "/api/profile/join",
             serde_json::json!({ "url": invite_url }),
         )
         .await?;
-        successful_body("visit shared space", &visited);
-        let promoted = post_json(
-            &claimer,
-            &format!("/api/repository/{key}/membership"),
-            serde_json::json!({}),
-        )
-        .await?;
-        successful_body("promote guest membership", &promoted);
+        successful_body("join shared space", &visited);
 
         // The account directory is the backup now: link a CLI as a
         // second device of the claimer's account and read the claimed
@@ -1806,7 +1799,7 @@ mod tests {
             "visit invite",
             &post_json(
                 &guest,
-                "/api/profile/visit",
+                "/api/profile/join",
                 serde_json::json!({ "url": invite_url }),
             )
             .await?,

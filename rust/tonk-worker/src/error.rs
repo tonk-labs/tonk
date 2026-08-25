@@ -49,16 +49,6 @@ pub enum TonkWorkerError {
     #[error("A local passkey root is required")]
     RootRequired,
 
-    /// An account must be attached before this operation.
-    ///
-    /// Distinct from [`TonkWorkerError::RootRequired`], which reports a
-    /// missing local root to the code that reads one. This reports the
-    /// user-facing precondition: durable authority is only ever issued to an
-    /// account, so creating a spot or joining an invite durably refuses here
-    /// and the page sends the user to sign up. A guest visit reaches neither.
-    #[error("A Tonk account is required")]
-    AccountRequired,
-
     /// Linked account state is not ready for authoritative writes.
     #[error("Account state unavailable: {0}")]
     AccountStateUnavailable(String),
@@ -113,10 +103,6 @@ pub enum RepositoryError {
     #[error("A local passkey root is required")]
     RootRequired,
 
-    /// Durable creation was attempted without an attached account.
-    #[error("A Tonk account is required")]
-    AccountRequired,
-
     /// Any other failure during construction: a dialog-db operation failed.
     #[error("Internal repository error: {0}")]
     Internal(String),
@@ -127,7 +113,6 @@ impl From<RepositoryError> for TonkWorkerError {
         match error {
             RepositoryError::InvalidConfiguration(m) => TonkWorkerError::Router(m),
             RepositoryError::RootRequired => TonkWorkerError::RootRequired,
-            RepositoryError::AccountRequired => TonkWorkerError::AccountRequired,
             RepositoryError::Internal(m) => TonkWorkerError::Internal(m),
         }
     }
@@ -143,7 +128,7 @@ impl TonkWorkerError {
             TonkWorkerError::PreconditionFailed(_) => "precondition_failed",
             TonkWorkerError::Forbidden(_) => "forbidden",
             TonkWorkerError::Upstream { .. } => "upstream",
-            TonkWorkerError::RootRequired | TonkWorkerError::AccountRequired => "conflict",
+            TonkWorkerError::RootRequired => "conflict",
             TonkWorkerError::AccountStateUnavailable(_) => "account_state_unavailable",
             TonkWorkerError::Analyze { .. } => "analyze",
         }
@@ -159,7 +144,6 @@ impl TonkWorkerError {
             | TonkWorkerError::Forbidden(m)
             | TonkWorkerError::AccountStateUnavailable(m) => m.clone(),
             TonkWorkerError::RootRequired => "a local passkey root is required".to_string(),
-            TonkWorkerError::AccountRequired => "a Tonk account is required".to_string(),
             TonkWorkerError::Upstream { message, .. } => message.clone(),
             TonkWorkerError::Analyze { message, .. } => message.clone(),
         }
@@ -192,9 +176,7 @@ impl IntoResponse for TonkWorkerError {
             TonkWorkerError::NotFound(_) => StatusCode::NOT_FOUND,
             TonkWorkerError::Router(_) | TonkWorkerError::Analyze { .. } => StatusCode::BAD_REQUEST,
             TonkWorkerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            TonkWorkerError::Conflict(_)
-            | TonkWorkerError::RootRequired
-            | TonkWorkerError::AccountRequired => StatusCode::CONFLICT,
+            TonkWorkerError::Conflict(_) | TonkWorkerError::RootRequired => StatusCode::CONFLICT,
             TonkWorkerError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             TonkWorkerError::Forbidden(_) => StatusCode::FORBIDDEN,
             TonkWorkerError::Upstream { status, .. } => StatusCode::from_u16(*status)
@@ -206,7 +188,6 @@ impl IntoResponse for TonkWorkerError {
         let (code, range) = match &self {
             TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),
             TonkWorkerError::RootRequired => (Some("ROOT_REQUIRED".to_string()), None),
-            TonkWorkerError::AccountRequired => (Some("ACCOUNT_REQUIRED".to_string()), None),
             TonkWorkerError::Upstream { code, .. } => (code.clone(), None),
             _ => (None, None),
         };
