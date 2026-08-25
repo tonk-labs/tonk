@@ -28,7 +28,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{Element, HtmlElement, window};
 
-use crate::logic::member_roster_query_body;
+use crate::logic::{
+    member_roster_query_body, role_manages_members, self_did_from_conclusions, self_did_query_body,
+};
 use crate::subscribing;
 
 const SUB_TAG: &str = "ui-member-roster";
@@ -40,6 +42,10 @@ pub struct UiMemberRosterElement {
     /// delta can upsert/retract individual rows rather than needing a full
     /// snapshot every time. Order is insertion order.
     members: Rc<RefCell<Vec<Member>>>,
+    /// The signed-in member's own profile DID, resolved once from the
+    /// profile branch. Which roster row is "me" decides whether the
+    /// management controls render at all.
+    viewer: Rc<RefCell<Option<String>>>,
 }
 
 impl CustomElement for UiMemberRosterElement {
@@ -56,8 +62,12 @@ impl CustomElement for UiMemberRosterElement {
     fn connected_callback(&mut self, this: &HtmlElement) {
         let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
             members: self.members.clone(),
+            viewer: self.viewer.clone(),
         });
         self.scaffold.connect(this, behaviour);
+        if self.viewer.borrow().is_none() {
+            resolve_viewer(this, self.members.clone(), self.viewer.clone());
+        }
     }
 
     fn attribute_changed_callback(
@@ -76,6 +86,7 @@ impl CustomElement for UiMemberRosterElement {
         self.scaffold.disconnect();
         let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
             members: self.members.clone(),
+            viewer: self.viewer.clone(),
         });
         self.scaffold.connect(this, behaviour);
     }
@@ -99,6 +110,7 @@ struct Member {
 /// roster query, and rendering delivered frames as member spans.
 struct MemberRosterBehaviour {
     members: Rc<RefCell<Vec<Member>>>,
+    viewer: Rc<RefCell<Option<String>>>,
 }
 
 impl subscribing::Subscribing for MemberRosterBehaviour {
@@ -118,7 +130,7 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
                 members.push(row);
             }
         }
-        render_spans(host, &members);
+        render_spans(host, &members, self.viewer.borrow().as_deref());
     }
 
     fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
@@ -146,7 +158,7 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
             }
         }
 
-        render_spans(host, &members);
+        render_spans(host, &members, self.viewer.borrow().as_deref());
     }
 
     fn tag(&self) -> &'static str {
@@ -178,11 +190,11 @@ fn read_row(row: &JsValue) -> Option<Member> {
 }
 
 /// Rebuild the host's children as one member span per row, in `members`'
-/// order — the markup the deleted `fab-roster` view used to supply. A
-/// member who is not already an admin or the founder gets a "Make admin"
-/// button; the worker refuses the rest, but there is no point offering
-/// what it will refuse.
-fn render_spans(host: &HtmlElement, members: &[Member]) {
+/// order — the markup the deleted `fab-roster` view used to supply. When
+/// the viewer's own row is the founder or an admin, every member who is
+/// not already one gets a "Make admin" button; the worker refuses the
+/// rest, but there is no point offering what it will refuse.
+fn render_spans(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
     while let Some(child) = host.first_child() {
         let _ = host.remove_child(&child);
     }
@@ -190,6 +202,9 @@ fn render_spans(host: &HtmlElement, members: &[Member]) {
         return;
     };
     let space = host.get_attribute("space").unwrap_or_default();
+    let manages = viewer
+        .and_then(|viewer| members.iter().find(|member| member.did == viewer))
+        .is_some_and(|me| role_manages_members(&me.role));
     for member in members {
         let Ok(span) = document.create_element("span") else {
             continue;
@@ -197,7 +212,7 @@ fn render_spans(host: &HtmlElement, members: &[Member]) {
         let _ = span.set_attribute("class", "fab__menu-item fab__menu-item--member");
         let _ = span.set_attribute("data-role", &member.role);
         span.set_text_content(Some(&member.name));
-        if !space.is_empty() && member.role != "tonk:founder" && member.role != "tonk:admin" {
+        if manages && !space.is_empty() && !role_manages_members(&member.role) {
             if let Ok(button) = document.create_element("button") {
                 let _ = button.set_attribute("type", "button");
                 let _ = button.set_attribute("class", "fab__member-promote");
@@ -210,6 +225,61 @@ fn render_spans(host: &HtmlElement, members: &[Member]) {
         }
         let _ = host.append_child(&span);
     }
+}
+
+/// Resolve the viewer's own profile DID with a one-shot, routeless
+/// `window.tonk.query` (the FAB mounts on the profile branch), then
+/// re-render so the management controls appear once "me" is known. A
+/// failed or empty answer leaves the roster read-only.
+fn resolve_viewer(
+    host: &HtmlElement,
+    members: Rc<RefCell<Vec<Member>>>,
+    viewer: Rc<RefCell<Option<String>>>,
+) {
+    let Some(win) = window() else { return };
+    let Some(tonk) = Reflect::get(&win, &"tonk".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Object>().ok())
+    else {
+        return;
+    };
+    let Some(query) = Reflect::get(&tonk, &"query".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Function>().ok())
+    else {
+        return;
+    };
+    let Ok(body) = js_sys::JSON::parse(&self_did_query_body()) else {
+        return;
+    };
+    let Some(promise) = query
+        .call1(&tonk, &body)
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Promise>().ok())
+    else {
+        return;
+    };
+    let host = host.clone();
+    spawn_local(async move {
+        let rows = match JsFuture::from(promise).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                log!("{SUB_TAG}: the profile query failed: {error:?}");
+                return;
+            }
+        };
+        let json = js_sys::JSON::stringify(&rows)
+            .ok()
+            .and_then(|s| s.as_string())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let Some(did) = json.as_ref().and_then(self_did_from_conclusions) else {
+            return;
+        };
+        *viewer.borrow_mut() = Some(did);
+        if host.is_connected() {
+            render_spans(&host, &members.borrow(), viewer.borrow().as_deref());
+        }
+    });
 }
 
 /// Wire a "Make admin" button: on click, ask the outer page to delegate

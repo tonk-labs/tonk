@@ -1108,6 +1108,77 @@ pub fn member_roster_query_body() -> String {
     .to_string()
 }
 
+/// The one-shot query body for the signed-in member's own profile DID.
+///
+/// Reads the PROFILE branch's replica records by raw attribute: every
+/// replica there carries `xyz.tonk.replica/profile`, the profile that owns
+/// it, so any row answers. Directory mode (`this` unbound). Routeless from
+/// the FAB, whose host mounts `with="main@profile:tonk"`.
+pub fn self_did_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "profile": { "the": "xyz.tonk.replica/profile", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this":    { "?": { "name": "this" } },
+            "profile": { "?": { "name": "profile" } }
+        }
+    })
+    .to_string()
+}
+
+/// The profile DID from a `Conclusion[]` answer to [`self_did_query_body`]:
+/// the first row's `profile` field. `None` for an empty answer.
+pub fn self_did_from_conclusions(rows: &Value) -> Option<String> {
+    rows.as_array()?.iter().find_map(|row| {
+        row.get("fields")
+            .and_then(|fields| fields.get("profile"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+}
+
+/// Whether a member holding `role` runs the space: founders and admins
+/// may promote (and expel) other members; the worker refuses everyone
+/// else, so the roster offers those controls only to them.
+pub fn role_manages_members(role: &str) -> bool {
+    role == "tonk:founder" || role == "tonk:admin"
+}
+
+#[cfg(test)]
+mod self_did {
+    use super::*;
+
+    #[test]
+    fn it_queries_the_replica_profile_by_raw_attribute() {
+        let body = self_did_query_body();
+        assert!(body.contains("xyz.tonk.replica/profile"));
+        assert!(body.contains("\"this\":{\"?\""));
+        assert!(!body.contains("tonk:profile"));
+    }
+
+    #[test]
+    fn it_reads_the_profile_off_the_first_row() {
+        let rows = json!([
+            { "this": "r1", "fields": { "profile": "did:key:zMe" } },
+            { "this": "r2", "fields": { "profile": "did:key:zMe" } }
+        ]);
+        assert_eq!(
+            self_did_from_conclusions(&rows).as_deref(),
+            Some("did:key:zMe")
+        );
+        assert_eq!(self_did_from_conclusions(&json!([])), None);
+    }
+
+    #[test]
+    fn it_lets_founders_and_admins_manage_members() {
+        assert!(role_manages_members("tonk:founder"));
+        assert!(role_manages_members("tonk:admin"));
+        assert!(!role_manages_members("tonk:member"));
+        assert!(!role_manages_members(""));
+    }
+}
+
 #[cfg(test)]
 mod promote {
     use super::*;
