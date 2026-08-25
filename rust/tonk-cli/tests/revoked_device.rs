@@ -10,6 +10,7 @@ mod common;
 
 use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
+use tonk_schema::prelude::DidExt as _;
 
 /// Record `artifact` with the service, refusing anything but success.
 async fn publish(env: &AccessServiceAddress, artifact: Vec<u8>) -> Result<()> {
@@ -182,5 +183,80 @@ async fn it_lists_devices_promptly_after_a_delegated_revocation(
         listed.is_ok(),
         "a revoked device's list parked instead of answering"
     );
+    Ok(())
+}
+
+/// The e2e shape without a browser: a second device of the same account
+/// pushes new commits to the account remote, and this device's next
+/// `tonk account devices` pulls them, adopts the access upstream, and
+/// opens the account. This is the sequence that parked with no I/O in
+/// e2e: the pull moved the access head past the local archive, and the
+/// proof for hydrating it waited on its own fetch.
+#[dialog_common::test]
+async fn it_lists_devices_promptly_after_another_device_pushed(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let this = common::AccountFixture::with_account_remote(&remote).await?;
+    this.activate_with(&env).await?;
+    let operator =
+        tonk_cli::account_state::credential_operator_for_store(&this.profile, &this.store).await?;
+    tonk_cli::account_state::ensure_with_operator_and_store(
+        &this.profile,
+        operator.clone(),
+        this.store.clone(),
+    )
+    .await?;
+
+    // A second device on the same account (fixtures share the root seed):
+    // hydrate it and push a commit the first device has not seen.
+    let other = common::AccountFixture::with_account_remote(&remote).await?;
+    let other_operator =
+        tonk_cli::account_state::credential_operator_for_store(&other.profile, &other.store)
+            .await?;
+    tonk_cli::account_state::ensure_with_operator_and_store(
+        &other.profile,
+        other_operator.clone(),
+        other.store.clone(),
+    )
+    .await?;
+    let branch = tonk_cli::account_state::open_account_branch_in(
+        &other.profile,
+        &other_operator,
+        &other.store,
+    )
+    .await?
+    .context("the second device mounts the account")?;
+    branch
+        .transaction()
+        .assert(tonk_schema::AccountDisplayName::new(
+            other.link.issuer().this(),
+            "pushed from the other device".to_string(),
+        ))
+        .commit()
+        .perform(&other_operator)
+        .await?;
+    branch.push().perform(&other_operator).await?;
+
+    for round in 0..3 {
+        let started = std::time::Instant::now();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            tonk_cli::account::devices_in(&this.profile, &this.store, None),
+        )
+        .await;
+        eprintln!("round {round}: devices took {:?}", started.elapsed());
+        anyhow::ensure!(
+            listed.is_ok(),
+            "listing after another device's push parked instead of answering"
+        );
+        // Tighter than the timeout: the read path has bounds that turn a
+        // wait into a warning, and this test is about there being no wait.
+        anyhow::ensure!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "listing after another device's push waited {:?} on the remote",
+            started.elapsed()
+        );
+    }
     Ok(())
 }
