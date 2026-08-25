@@ -641,6 +641,40 @@ pub mod profile {
     pub struct DisplayName(pub String);
 }
 
+/// Attributes on the device-local roster of profiles this browser knows,
+/// kept in the registry profile's repository on a branch that never syncs.
+/// One entity per profile storage name; the account, provider, and email
+/// stamps are absent for a local workspace.
+pub mod roster {
+    use super::{Attribute, Entity};
+
+    /// The storage name the profile opens under: the activation handle.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Name(pub String);
+
+    /// The display label as of the last refresh: the profile's display
+    /// name, cached so a closed profile can be rendered without opening it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Label(pub String);
+
+    /// The account root the profile is attached to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Account(pub Entity);
+
+    /// The attached provider base URL.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Provider(pub String);
+
+    /// The account email, captured best-effort at link time.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Email(pub String);
+}
+
 /// Root-owned account state replicated through the hidden account repository.
 pub mod account {
     use super::Attribute;

@@ -146,26 +146,12 @@ pub struct AccountDisplayNameRequest {
     pub name: String,
 }
 
-/// Durable projections changed by account-state convergence.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountConvergenceReport {
-    /// Whether the device-local profile name cache changed.
-    pub profile_changed: bool,
-    /// Real-space routing keys whose durable roster changed.
-    pub changed_keys: Vec<String>,
-    /// Real-space routing keys that could not be checked or updated.
-    pub failed_keys: Vec<String>,
-}
-
 /// Result of an authoritative account display-name write.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDisplayNameResponse {
     /// Name committed to the account repository.
     pub name: String,
-    /// Idempotent projection work completed after the account commit.
-    pub convergence: AccountConvergenceReport,
 }
 
 /// One device authorized under this profile's account, read from the
@@ -276,17 +262,10 @@ mod tests {
     fn it_serializes_display_name_results_in_camel_case() {
         let value = serde_json::to_value(AccountDisplayNameResponse {
             name: "Alice".into(),
-            convergence: AccountConvergenceReport {
-                profile_changed: true,
-                changed_keys: vec!["one".into()],
-                failed_keys: vec!["two".into()],
-            },
         })
         .unwrap();
         assert_eq!(value["name"], "Alice");
-        assert_eq!(value["convergence"]["profileChanged"], true);
-        assert_eq!(value["convergence"]["changedKeys"][0], "one");
-        assert_eq!(value["convergence"]["failedKeys"][0], "two");
+        assert!(value.get("convergence").is_none());
     }
 
     #[dialog_common::test]
