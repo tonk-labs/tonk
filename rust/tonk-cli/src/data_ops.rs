@@ -22,6 +22,8 @@ pub mod flags;
 /// write: commit, sync, and print the matched rows.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WriteOptions {
+    /// Print the notation document and stop before evaluation.
+    pub notation: bool,
     /// Build, analyze, and plan the transaction, then drop it instead of
     /// committing.
     pub dry_run: bool,
@@ -106,13 +108,13 @@ pub enum DataOpError {
     /// A field/value error from the notation builders.
     #[error(transparent)]
     Data(#[from] crate::data::DataError),
-    /// A `--attr` flag on `concept add` failed to parse (malformed
+    /// A `--field` flag on `concept add` failed to parse (malformed
     /// spec, unknown type, or bad cardinality).
     #[error(transparent)]
     Authoring(#[from] crate::authoring::AuthoringError),
     /// `concept add` named a concept that already exists on the
     /// branch.
-    #[error("concept '{name}' already exists; inspect it with `tonk schema {name}`")]
+    #[error("concept '{name}' already exists; inspect it with `tonk show {name}`")]
     ConceptExists {
         /// The concept name that was already taken.
         name: String,
@@ -148,7 +150,7 @@ pub enum DataOpError {
 fn describe_known(known: &[String]) -> String {
     if known.is_empty() {
         "this space defines no concepts yet; add one with \
-         `tonk concept add <name> --attr <field>:<type>:<cardinality>`"
+         `tonk concept add <name> --field <field>:<type>:<cardinality>`"
             .to_string()
     } else {
         format!("concepts in this space: {}", known.join(", "))
@@ -216,7 +218,7 @@ pub async fn require_concept(
 }
 
 /// Render one concept's schema subset — same notation as bare
-/// `tonk schema`, filtered — or the enumerating [`DataOpError::NoConcept`].
+/// `tonk show --notation`, filtered — or the enumerating [`DataOpError::NoConcept`].
 /// The human field/type table this replaces lives in
 /// `tonk assert <concept> --help`, where the flags are.
 pub async fn schema_subset(site: &TonkSite, concept: &str) -> Result<String, DataOpError> {
@@ -375,6 +377,9 @@ pub async fn assert_op(
     match entity {
         None => {
             let doc = build_assert(&info.descriptor, concept, &pairs)?;
+            if write.notation {
+                return Ok(doc);
+            }
             let outcome =
                 auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
             Ok(format!(
@@ -394,6 +399,9 @@ pub async fn assert_op(
                 return Err(DataOpError::NoFields);
             }
             let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
+            if write.notation {
+                return Ok(doc);
+            }
             let outcome =
                 auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
             let before = outcome
@@ -420,7 +428,7 @@ pub async fn assert_op(
                 }
                 Err(error) => {
                     rendered.push_str(&format!(
-                        "the read-back failed: {error}\nverify: tonk query {concept} {entity}\n"
+                        "the read-back failed: {error}\nverify: tonk show {concept} {entity}\n"
                     ));
                 }
             }
@@ -464,6 +472,9 @@ pub async fn retract(
         }
     }
     let doc = build_retract(concept, entity, field);
+    if write.notation {
+        return Ok(doc);
+    }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let line = match field {
@@ -473,7 +484,7 @@ pub async fn retract(
     Ok(format!("{line}\n{}", outcome.stdout))
 }
 
-/// Author a new concept: parse every raw `--attr field:type:card`
+/// Author a new concept: parse every raw `--field field:type:card`
 /// flag ([`parse_attr_spec`]), reject a name already on the branch
 /// ([`DataOpError::ConceptExists`]), then build and commit the
 /// anchored `concept!:`/`attribute!:` declaration
@@ -502,6 +513,9 @@ pub async fn concept_add(
         });
     }
     let doc = build_concept_decl(name, description, &attrs);
+    if write.notation {
+        return Ok(doc);
+    }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     Ok(format!(
@@ -569,6 +583,9 @@ pub async fn home(
         require_concept(site, model).await?;
     }
     let doc = build_home_recipe(models);
+    if write.notation {
+        return Ok(doc);
+    }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let did = site.repository.did();
@@ -613,6 +630,9 @@ pub async fn view_add(
         doc.push('\n');
         doc.push_str(&build_home_recipe(&[model.to_string()]));
     }
+    if write.notation {
+        return Ok(doc);
+    }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let mut out = format!(
@@ -630,7 +650,7 @@ pub async fn view_add(
             write.summarize(format_args!("set the home to {model}"))
         ));
     } else {
-        out.push_str("home already set; re-point it explicitly with `tonk home <concept>`\n");
+        out.push_str("home already set; re-point it explicitly with `tonk space home <concept>`\n");
     }
     Ok(out)
 }

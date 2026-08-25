@@ -14,7 +14,12 @@ use crate::schema::type_to_notation;
 /// declared on the static subcommand — they are built into the concept's own
 /// command instead, which also puts them in `tonk assert <concept> --help`
 /// beside the fields.
-const WRITE_SWITCHES: [(&str, char, &str); 3] = [
+const WRITE_SWITCHES: [(&str, char, &str); 4] = [
+    (
+        "notation",
+        '\0',
+        "Print the notation document without evaluating it",
+    ),
     (
         "dry-run",
         '\0',
@@ -124,6 +129,7 @@ pub fn parse_field_flags(
             })
             .collect(),
         write: WriteOptions {
+            notation: flag("notation"),
             dry_run: flag("dry-run"),
             no_sync: flag("no-sync"),
             quiet: flag("quiet"),

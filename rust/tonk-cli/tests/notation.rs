@@ -423,14 +423,16 @@ mod when_serving_the_guide {
     use tonk_cli::guide;
 
     #[dialog_common::test]
-    fn it_returns_the_index_for_no_topic() {
-        let text = guide::resolve(None, None).expect("index resolves");
-        assert!(text.contains("tonk guide notation"));
-    }
-
-    #[dialog_common::test]
     fn it_returns_each_topic_body() {
+        assert!(
+            guide::topic("glossary")
+                .unwrap()
+                .contains("content-addressed")
+        );
         assert!(guide::topic("notation").unwrap().contains("attribute!"));
+        assert!(guide::topic("spaces").unwrap().contains("TONK_SPACE"));
+        assert!(guide::topic("tutorial").unwrap().contains("tonk assert"));
+        assert!(guide::topic("sync").unwrap().contains("upstream"));
         assert!(guide::topic("views").unwrap().contains("tonk:view"));
         assert!(guide::topic("events").unwrap().contains("rule!"));
         assert!(
@@ -443,25 +445,15 @@ mod when_serving_the_guide {
 
     #[dialog_common::test]
     fn it_returns_the_full_guide_for_all() {
-        let all = guide::resolve(Some("all"), None).expect("all resolves");
-        assert!(all.starts_with("# Asserted-notation guide"));
-        assert_eq!(all, guide::GUIDE);
-    }
-
-    #[dialog_common::test]
-    fn it_concatenates_the_per_topic_bodies_into_the_full_guide() {
-        // `GUIDE` repeats the `include_str!` paths literally (concat!
-        // needs them), so it can silently drift from the per-topic
-        // consts. Pin it to the concatenation so a renamed/moved topic
-        // file updated in only one place fails here.
-        let expected = format!(
-            "{}\n{}\n{}\n{}",
-            guide::NOTATION,
-            guide::VIEWS,
-            guide::EVENTS,
-            guide::WORKSPACE,
-        );
-        assert_eq!(guide::GUIDE, expected);
+        assert!(guide::GUIDE.starts_with("# Glossary"));
+        for topic in guide::TOPICS {
+            let heading = guide::topic(topic)
+                .expect("topic body")
+                .lines()
+                .next()
+                .unwrap();
+            assert!(guide::GUIDE.contains(heading), "full guide omits {topic}");
+        }
     }
 
     #[dialog_common::test]
@@ -474,64 +466,68 @@ mod when_serving_the_guide {
             let body =
                 guide::topic(name).unwrap_or_else(|| panic!("advertised topic {name} has no body"));
             assert!(!body.is_empty(), "topic {name} is empty");
-            assert_eq!(
-                guide::resolve(Some(name), None).expect("topic resolves"),
-                body
-            );
-        }
-    }
-
-    #[dialog_common::test]
-    fn it_errors_on_an_unknown_topic() {
-        let err = guide::resolve(Some("nope"), None).expect_err("unknown rejects");
-        let message = err.to_string();
-        assert!(message.contains("nope"), "echoes the bad input");
-        assert!(message.contains("notation"), "lists a valid topic");
-        assert!(message.contains("all"), "advertises the `all` pseudo-topic");
-    }
-
-    #[dialog_common::test]
-    fn it_serves_every_advertised_element_under_views() {
-        // `ELEMENTS`, the `element()` match arms, the catalog table in
-        // guide-views.md, and the include_str! files are hand-synced.
-        // Drive off `ELEMENTS` so a name advertised without a body (or
-        // vice versa) is caught.
-        for name in guide::ELEMENTS {
-            let body = guide::element(name)
-                .unwrap_or_else(|| panic!("advertised element {name} has no body"));
-            assert!(!body.is_empty(), "element {name} is empty");
             assert!(
-                body.contains(name),
-                "element doc for {name} should mention the tag"
-            );
-            assert_eq!(
-                guide::resolve(Some("views"), Some(name)).expect("element resolves"),
-                body,
-                "`views {name}` should serve the element doc",
+                guide::description(name).is_some(),
+                "topic {name} lacks summary"
             );
         }
-        // tonk-table is the crate this work added; make sure it's wired.
-        assert!(guide::element("tonk-table").is_some());
+        assert!(guide::topic("bogus").is_none());
     }
 
     #[dialog_common::test]
-    fn it_errors_on_an_unknown_element() {
-        let err =
-            guide::resolve(Some("views"), Some("tonk-nope")).expect_err("unknown element rejects");
-        let message = err.to_string();
-        assert!(message.contains("tonk-nope"), "echoes the bad input");
-        assert!(message.contains("tonk-table"), "lists documented elements");
+    fn raw_view_examples_pin_the_entity_they_update() {
+        for (topic, body) in [
+            ("views", guide::VIEWS),
+            ("events", guide::EVENTS),
+            ("workspace", guide::WORKSPACE),
+        ] {
+            let lines: Vec<_> = body.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if !line.starts_with("view") || !line.contains("!: &") {
+                    continue;
+                }
+                let pins_entity = lines[index + 1..]
+                    .iter()
+                    .take_while(|line| line.is_empty() || line.starts_with("  "))
+                    .any(|line| line.trim_start().starts_with("this:"));
+                assert!(
+                    pins_entity,
+                    "{topic} guide has an unstable raw view assertion: {line}"
+                );
+            }
+        }
     }
 
     #[dialog_common::test]
-    fn it_errors_when_a_plain_topic_is_given_an_item() {
-        // Only `views` takes a second argument.
-        let err = guide::resolve(Some("notation"), Some("x")).expect_err("rejects an item");
-        assert!(
-            err.to_string().contains("views"),
-            "points at the right form"
-        );
-        // A bogus topic with an item still reads as an unknown topic.
-        assert!(guide::resolve(Some("bogus"), Some("x")).is_err());
+    fn workspace_guide_tracks_the_optional_sheets_module() {
+        let sheets = include_str!("../../tonk-core/assets/library/sheets.yaml");
+        for declaration in [
+            "concept!: &workspace/sheet",
+            "concept!: &workspace/sheet-order",
+            "concept!: &empty-artifact",
+            "concept!: &tonk/binder",
+            "command!: &workspace/create-sheet",
+            "command!: &workspace/activate-sheet",
+            "command!: &workspace/close-sheet",
+        ] {
+            assert!(
+                sheets.contains(declaration),
+                "sheets module no longer contains {declaration}"
+            );
+        }
+        for name in [
+            "workspace/sheet",
+            "workspace/sheet-order",
+            "empty-artifact",
+            "tonk/binder",
+            "workspace/create-sheet",
+            "workspace/activate-sheet",
+            "workspace/close-sheet",
+        ] {
+            assert!(
+                guide::WORKSPACE.contains(name),
+                "workspace guide omits current module surface {name}"
+            );
+        }
     }
 }

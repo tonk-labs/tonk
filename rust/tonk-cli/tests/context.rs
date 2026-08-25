@@ -53,7 +53,7 @@ async fn it_maps_live_schema_to_a_read_update_verify_workflow() -> Result<()> {
         "{markdown}"
     );
     assert!(
-        markdown.contains("`tonk query task <ENTITY> --json`"),
+        markdown.contains("`tonk show task <ENTITY> --json`"),
         "{markdown}"
     );
     assert!(markdown.contains("`title` text/one/required"), "{markdown}");
@@ -88,7 +88,7 @@ async fn it_emits_a_versioned_complete_contract() -> Result<()> {
     assert_eq!(value["concepts"].as_array().map(Vec::len), Some(0));
     assert_eq!(
         value["emptySpaceWorkflow"][0]["command"],
-        "tonk concept add note --attr title:text:one --attr body:text:one"
+        "tonk concept add note --field title:text:one --field body:text:one"
     );
 
     // v3 is camelCase throughout: a v1 reader must miss, not silently
@@ -134,10 +134,7 @@ async fn it_exposes_claim_backed_agent_context_with_source_revision() -> Result<
 mod when_reporting_where_i_am {
     use super::*;
 
-    /// Four commands answered "where am I" in four layouts, naming the
-    /// same field three ways: `space:` in `tonk status`, `current space:`
-    /// in `tonk space use`, and ``space: `demo` `` in `tonk context`.
-    /// They render the same sections now, so one vocabulary covers all.
+    /// The status report's sections use one vocabulary for the same space.
     #[dialog_common::test]
     fn it_renders_one_field_vocabulary_across_the_sections() {
         let space = context::SpaceContext {
@@ -155,10 +152,9 @@ mod when_reporting_where_i_am {
 
     #[dialog_common::test]
     fn it_says_when_the_sync_state_was_not_fetched() {
-        // `tonk context` is what bare `tonk` runs and does not touch the
-        // network, so it can see that an upstream exists but not where the
-        // branch stands against it. Reporting `synced` there would be a
-        // claim it has not checked.
+        // An offline status fallback can see that an upstream exists but
+        // not where the branch stands against it. Reporting `synced` there
+        // would be a claim it has not checked.
         let sync = context::SyncContext {
             state: context::ContextSyncState::NotFetched,
             hash: None,

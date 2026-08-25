@@ -37,7 +37,7 @@ async fn it_plans_an_add_without_writing_anything() -> Result<()> {
     assert_eq!(plan.name, "notes.md");
 
     // Nothing reached the branch: the metadata facts a real add asserts
-    // are what `blob ls` reads, so an empty listing is the proof.
+    // are what bare `blob` reads, so an empty listing is the proof.
     assert!(blob::ls(&test.site).await?.is_empty());
     Ok(())
 }

@@ -339,7 +339,7 @@ pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> Stri
 
 /// Read the local branch without touching the network.
 ///
-/// `tonk context` is what bare `tonk` runs, and orientation should not
+/// Kept for local-only callers that need orientation without a fetch.
 /// wait on a round trip to answer. Without a fetch there is no upstream
 /// head to classify against — dialog caches none — so this reports the
 /// one thing it can know locally: whether an upstream is configured at

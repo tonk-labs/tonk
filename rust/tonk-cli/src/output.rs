@@ -10,7 +10,7 @@
 //!
 //! [`EvaluateResponse`] is tonk's own copy of the JSON wire
 //! shape the worker's `/evaluate` route returns. The two are
-//! byte-compatible: tonk's `-f json` output is the same JSON a
+//! byte-compatible: tonk's `--json` output is the same JSON a
 //! browser client would see from the HTTP route. Defined here
 //! rather than imported so tonk doesn't depend on the worker
 //! crate.

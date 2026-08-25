@@ -507,7 +507,7 @@ pub async fn claim(
 /// The content branch, not `meta`. Only upstreamed branches sync, so a
 /// membership written to `meta` never reaches the space's owner or its other
 /// members — and, since the roster is now what names a space's owner and this
-/// device's role in it, would leave `tonk space list` showing a space this
+/// device's role in it, would leave `tonk space` showing a space this
 /// device legitimately joined as one whose roster holds no row of ours. The
 /// worker's claim path writes the same facts to the same branch.
 ///

@@ -1,4 +1,4 @@
-//! `tonk view ls` — enumerate every entity on the local branch that
+//! `tonk view` — enumerate every entity on the local branch that
 //! carries a renderable claim.
 //!
 //! Claim-driven, not concept-driven: we don't care whether an entity
@@ -14,15 +14,15 @@
 //!   selects on for a one-off page.
 //!
 //! Listing only `text/html` — as this module once did — meant
-//! `tonk view ls` came back empty right after `tonk view add`
+//! `tonk view` came back empty right after `tonk view add`
 //! succeeded, because the two were looking at different claims.
 //!
 //! The standard library seeds twenty-five views of its own. Those are
-//! filtered out for the same reason `tonk concept ls` drops the
+//! filtered out for the same reason `tonk concept` drops the
 //! runtime vocabulary: they resolve everywhere, and listing them
 //! buries the view the author just wrote.
 //!
-//! Used by `tonk view ls`, the only caller.
+//! Used by bare `tonk view`.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -33,7 +33,7 @@ use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 
 use crate::site::TonkSite;
 
-/// One row of `tonk view ls`.
+/// One row of `tonk view`.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewSummary {
@@ -55,6 +55,20 @@ pub struct ViewSummary {
     /// the longest one — the most likely candidate for "the current
     /// view body."
     pub body_bytes: usize,
+}
+
+/// The authored parts of one view, for `tonk show <view>`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewDescription {
+    /// Published anchor name, falling back to the entity URI.
+    pub anchor: String,
+    /// Entity carrying the view facts.
+    pub entity: Entity,
+    /// Published concept name, or its entity URI when unnamed.
+    pub model: Option<String>,
+    /// Renderable template body.
+    pub template: String,
 }
 
 /// The attributes a renderable claim can land under. The four view
@@ -283,6 +297,106 @@ pub async fn entity_for_name(site: &TonkSite, name: &str) -> Result<Option<Entit
     tonk_schema::concept::lookup_named_entity(name, session.handle(), &site.operator)
         .await
         .map_err(|e| anyhow!("name lookup failed for {name}: {e:?}"))
+}
+
+/// Resolve a view name or entity and return its model, anchor, and template.
+pub async fn describe(site: &TonkSite, reference: &str) -> Result<Option<ViewDescription>> {
+    let entity = match reference.parse::<Entity>() {
+        Ok(entity) => Some(entity),
+        Err(_) => entity_for_name(site, reference).await?,
+    };
+    let Some(entity) = entity else {
+        return Ok(None);
+    };
+
+    let mut template = None;
+    for uri in RENDERABLE_ATTRIBUTES {
+        if let Some(claim) = claims_for_attribute(site, uri)
+            .await?
+            .into_iter()
+            .find(|claim| claim.of == entity)
+        {
+            template = Some(match claim.is {
+                Value::String(value) => value.to_string(),
+                Value::Symbol(value) => value.to_string(),
+                Value::Bytes(value) => String::from_utf8_lossy(&value).into_owned(),
+                value => format!("{value:?}"),
+            });
+            break;
+        }
+    }
+    let Some(template) = template else {
+        return Ok(None);
+    };
+
+    let names = name_claims_by_entity(site).await?;
+    let model = model_claims_by_entity(site)
+        .await?
+        .get(&entity)
+        .map(|model| {
+            names
+                .get(model)
+                .cloned()
+                .unwrap_or_else(|| model.to_string())
+        });
+    let anchor = names
+        .get(&entity)
+        .cloned()
+        .unwrap_or_else(|| entity.to_string());
+    Ok(Some(ViewDescription {
+        anchor,
+        entity,
+        model,
+        template,
+    }))
+}
+
+/// One current fact carried by an entity, for `tonk show <entity>`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityFact {
+    /// Attribute URI.
+    pub attribute: String,
+    /// Debug-stable rendering of the typed value.
+    pub value: String,
+}
+
+/// Resolve an entity URI or bookmark and enumerate every current fact on it.
+pub async fn facts_for_entity(
+    site: &TonkSite,
+    reference: &str,
+) -> Result<Option<(Entity, Vec<EntityFact>)>> {
+    let entity = match reference.parse::<Entity>() {
+        Ok(entity) => Some(entity),
+        Err(_) => entity_for_name(site, reference).await?,
+    };
+    let Some(entity) = entity else {
+        return Ok(None);
+    };
+    let session = site.branch().await?;
+    let claims: Vec<dialog_query::Claim> = session
+        .handle()
+        .query()
+        .select(AttributeQuery::new(
+            Term::<attribute::The>::var("the"),
+            Term::from(entity.clone()),
+            Term::<dialog_query::Any>::var("is"),
+            Term::<attribute::Cause>::blank(),
+            None,
+        ))
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .map_err(|e| anyhow!("fact lookup for entity {entity} failed: {e:?}"))?;
+    let mut facts: Vec<_> = claims
+        .into_iter()
+        .map(|claim| EntityFact {
+            attribute: claim.the.to_string(),
+            value: format!("{:?}", claim.is),
+        })
+        .collect();
+    facts.sort_by(|a, b| a.attribute.cmp(&b.attribute).then(a.value.cmp(&b.value)));
+    Ok(Some((entity, facts)))
 }
 
 fn text_html_attribute() -> Result<Attribute> {

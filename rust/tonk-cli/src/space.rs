@@ -726,7 +726,7 @@ pub struct RemoveOutcome {
     pub unbound: Vec<PathBuf>,
 }
 
-/// Rows for `tonk space list` plus the resolved active selection
+/// Rows for `tonk space` plus the resolved active selection
 /// (None when nothing resolves — empty registry or dangling name).
 #[derive(Debug, Clone)]
 pub struct Listing {
@@ -910,9 +910,9 @@ pub fn unbind(store: &SpaceStore, directory: &Path) -> Result<UnbindOutcome, Spa
     })
 }
 
-/// Everything `tonk space list` needs in one read: the rows plus
+/// Everything `tonk space` needs in one read: the rows plus
 /// what a bare command would currently resolve to (honouring the
-/// same `flag`/`env` precedence, so `tonk --space x space list`
+/// same `flag`/`env` precedence, so `tonk --space x space`
 /// marks `x`).
 pub fn listing(
     store: &SpaceStore,
@@ -952,7 +952,7 @@ pub fn listing(
 ///
 /// The residual risk runs the other way — data deleted, registry save
 /// fails — and is benign: the entry points at an empty path, `tonk
-/// space list` shows it, and re-running `rm` clears it.
+/// space` shows it, and re-running `rm` clears it.
 pub fn remove(store: &SpaceStore, name: &str, data: Data) -> Result<RemoveOutcome, SpaceError> {
     let mut registry = store.load()?;
     let Some(entry) = registry.spaces.remove(name) else {

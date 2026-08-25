@@ -1,13 +1,13 @@
 //! One shape for every listing the CLI prints.
 //!
-//! `concept ls`, `view ls`, `blob ls`, `remote list`, `space list`,
+//! `concept`, `view`, `blob`, `remote`, `space`,
 //! `account spaces` and `account devices` each used to roll their own:
 //! some carried a header row, most did not; some printed a parenthesised
 //! line when there was nothing to show, most printed nothing at all; an
 //! absent value was `-` in three of them and an empty cell in the rest.
 //! Seven listings meant seven formats to learn.
 //!
-//! The one format here is `space list`'s, the newest of them and the only
+//! The one format here is `space`'s, the newest of them and the only
 //! one that was designed rather than accumulated: a header row, tab
 //! separated cells, [`ABSENT`] where a value is missing, and a
 //! parenthesised sentence when there are no rows at all. Tabs rather than

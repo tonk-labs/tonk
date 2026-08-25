@@ -10,7 +10,7 @@
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory as _, Parser, Subcommand};
 
 use tonk_cli::Coded;
 use tonk_cli::Rows;
@@ -30,13 +30,53 @@ use tonk_cli::transfer;
 use tonk_cli::views;
 use tonk_cli::{ExitCode, account, account_spaces, agents, context, guide, identity, schema, site};
 
+const CLI_INDEX: &str = "\
+usage: tonk [--space <name>] [-v] <command> [<args>]
+
+A space is a synced store of facts about entities. A concept is a schema:
+an entity that matches one is an instance with typed fields. Views render
+instances. Reads and writes are notation, evaluated against the space
+(see 'tonk help notation').
+
+start a space (see also: tonk help spaces)
+   space      List spaces, create one, or bind this directory to one
+   join       Join a shared space from an invite URL
+
+examine state
+   status     Where you are: space, branch, sync, account
+   show       Describe the schema, a concept, an entity, or a view
+   query      Read the instances of a concept
+   render     Render a view to HTML
+
+write facts
+   assert     Create an instance of a concept, or update fields on one
+   retract    Retract a field, or a whole instance
+   eval       Evaluate a notation document: anything the verbs can't say
+
+define
+   concept    List concepts, or define one with typed fields
+   view       List views, or author one for a concept
+
+collaborate (see also: tonk help sync)
+   invite     Create an invite URL granting access to this space
+   pull       Pull main from its upstream
+   push       Push main to its upstream
+   remote     List or manage remotes
+   account    Sign in to a Tonk account; manage devices and spaces
+
+'tonk help -a' lists every command; 'tonk help -g' lists the guides
+(glossary, notation, spaces, tutorial, sync, views, events, workspace,
+and built-in elements). See 'tonk help <command>'
+or 'tonk help <guide>' for details.
+";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "tonk",
-    about = "CLI for a synced fact store: inspect live state, run explicit workflows, verify every write",
     version,
     propagate_version = true,
-    after_help = "Start with live state, not documentation:\n  tonk context\n  tonk query <CONCEPT> --json\n  tonk assert <CONCEPT> <ENTITY> --<field> <value>\n  tonk query <CONCEPT> <ENTITY> --json\n\nBare `tonk` runs `tonk context`. Use `tonk help <COMMAND>` for more workflows."
+    disable_help_subcommand = true,
+    override_help = CLI_INDEX
 )]
 struct Cli {
     /// Operate on this space instead of the active directory binding.
@@ -61,70 +101,33 @@ static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    // -- orient -------------------------------------------------------
-    /// Print live concepts and direct read-update-verify workflows
-    ///
-    /// Read-only. This is also what bare `tonk` runs.
-    #[command(after_help = "Examples:\n  tonk\n  tonk context\n  tonk context --json")]
-    Context {
-        /// Emit the versioned tonk.context.v3 contract.
-        #[arg(long)]
+    /// Show help for a command or built-in guide
+    #[command(hide = true)]
+    Help {
+        /// List every command, including plumbing commands.
+        #[arg(short = 'a', long = "all", conflicts_with_all = ["guides", "name"])]
+        all: bool,
+        /// List the built-in guides.
+        #[arg(short = 'g', long = "guides", conflicts_with_all = ["all", "name"])]
+        guides: bool,
+        /// Command or guide name.
+        #[arg(value_name = "COMMAND|GUIDE")]
+        name: Option<String>,
+    },
+    /// Describe the schema, a concept, an entity, or a view
+    Show {
+        /// Concept, view, entity bookmark, or entity URI.
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        /// Entity bookmark or URI when NAME is a concept.
+        #[arg(value_name = "ENTITY", requires = "name")]
+        entity: Option<String>,
+        /// Emit versioned camelCase JSON.
+        #[arg(long, conflicts_with = "notation")]
         json: bool,
-    },
-
-    /// Read or update the AGENTS.md claim carried by this space
-    ///
-    /// Bare `tonk agents` means `get`, so the raw Markdown can be
-    /// projected with `tonk agents > AGENTS.md`. The claim on the
-    /// repository subject DID remains the source of truth.
-    #[command(
-        after_help = "Examples:\n  tonk agents\n  tonk agents get --json\n  tonk agents > AGENTS.md\n  tonk agents set AGENTS.md\n  tonk agents set - < AGENTS.md"
-    )]
-    Agents {
-        #[command(subcommand)]
-        command: Option<AgentsCommand>,
-    },
-
-    /// Print the built-in agent reference (the index, or one topic)
-    ///
-    /// With no topic, prints a one-screen index; `tonk guide <topic>`
-    /// prints one section; `tonk guide all` prints everything. Useful
-    /// for agent harnesses that need to learn the syntax without repo
-    /// access.
-    // Topic list here is hand-rolled for help text; keep in sync with `guide::TOPICS`.
-    #[command(
-        after_help = "Topics: notation, views, events, workspace, all\n\nBuilt-in elements (full docs): tonk guide views <element>\n  tonk-display, tonk-prose, tonk-code, tonk-table\n\nExamples:\n  tonk guide\n  tonk guide views\n  tonk guide views tonk-table\n  tonk guide all"
-    )]
-    Guide {
-        /// One of: notation, views, events, workspace, all. Omit for
-        /// the index.
-        #[arg(value_name = "TOPIC")]
-        topic: Option<String>,
-        /// Under `views`, a built-in element to show full docs for
-        /// (e.g. `tonk guide views tonk-table`).
-        #[arg(value_name = "ITEM")]
-        item: Option<String>,
-    },
-
-    /// Print the branch's schema as re-submittable notation
-    ///
-    /// Every named attribute and concept, or just one concept's
-    /// subset when `<CONCEPT>` is given. The human field/type view
-    /// lives in `tonk assert <concept> --help`.
-    ///
-    /// No `--json`, deliberately: the output is already a machine
-    /// format, and one you can feed straight back to `tonk eval`. A
-    /// JSON transcription would be a second machine format that
-    /// nothing accepts as input.
-    #[command(
-        after_help = "Examples:\n  tonk schema\n  tonk schema task\n  tonk schema > schema.notation"
-    )]
-    Schema {
-        /// Optional concept name — emit only that concept's
-        /// `concept!:` block plus the `attribute!:` declarations
-        /// it references.
-        #[arg(value_name = "CONCEPT")]
-        concept: Option<String>,
+        /// Emit re-submittable schema notation.
+        #[arg(long, conflicts_with = "json")]
+        notation: bool,
     },
 
     /// Report how local main relates to its upstream and its current hash
@@ -140,34 +143,26 @@ enum Command {
     },
 
     // -- author -------------------------------------------------------
-    /// Define a concept (schema) with typed attributes
+    /// Define a concept with typed fields
     Concept {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
-        command: ConceptCommand,
+        command: Option<ConceptCommand>,
     },
 
-    /// Author a declarative HTML view for a concept
+    /// Define a view for a concept
     View {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
-        command: ViewCommand,
-    },
-
-    /// Pin one or more concepts' directories on the space home
-    ///
-    /// Authors the origin-keyed root-concept recipe and re-points
-    /// the `tonk/space` alias (cardinality-one — safe to re-run;
-    /// each run replaces the home wholesale).
-    #[command(after_help = "Examples:\n  tonk home habit\n  tonk home habit entry")]
-    Home {
-        /// Concept name(s) to surface, in order.
-        #[arg(value_name = "CONCEPT", required = true)]
-        models: Vec<String>,
-        #[command(flatten)]
-        write: WriteArgs,
+        command: Option<ViewCommand>,
     },
 
     // -- data ---------------------------------------------------------
-    /// Write facts: mint an instance, or supersede fields on one
+    /// Create an instance of a concept, or update fields on one
     ///
     /// With no entity, mints a new instance of the concept (every
     /// non-optional field required); with an entity, asserts
@@ -203,21 +198,14 @@ enum Command {
 
     /// Read instances of a concept, every field bound
     ///
-    /// With no entity, every instance; with an entity, just that
-    /// one. Reads are queries in dialog — read-only, nothing
-    /// commits. Filter flags (e.g. `--where`) are the intended
-    /// future direction; today the whole concept is returned.
-    #[command(
-        after_help = "Examples:\n  tonk query task\n  tonk query task alice\n  tonk query task --json"
-    )]
+    /// Reads every instance through a dialog query — read-only,
+    /// nothing commits. Filter flags (e.g. `--where`) are the
+    /// intended future direction; today the whole concept is returned.
+    #[command(after_help = "Examples:\n  tonk query task\n  tonk query task --json")]
     Query {
         /// Name of the concept to query.
         #[arg(value_name = "CONCEPT")]
         concept: String,
-        /// Optional bookmark name or `did:key:…` entity URI —
-        /// fetch just this instance.
-        #[arg(value_name = "ENTITY")]
-        entity: Option<String>,
         /// Emit `EvaluateResponse` as pretty JSON instead of notation.
         #[arg(long)]
         json: bool,
@@ -242,6 +230,9 @@ enum Command {
         /// Retract just this field instead of the whole instance.
         #[arg(long)]
         field: Option<String>,
+        /// Print the notation document without evaluating it.
+        #[arg(long)]
+        notation: bool,
         #[command(flatten)]
         write: WriteArgs,
     },
@@ -251,7 +242,7 @@ enum Command {
     ///
     /// The escape hatch for anything the verbs don't cover: rules,
     /// multi-statement documents, joins, retractions inside
-    /// assertions. `tonk guide notation` documents the grammar.
+    /// assertions. `tonk help notation` documents the grammar.
     Eval(EvalArgs),
 
     /// Render a view to HTML, headlessly
@@ -272,7 +263,7 @@ enum Command {
     },
 
     // -- collab -------------------------------------------------------
-    /// Mint an invite URL granting access to this repo
+    /// Create an invite URL granting access to this space
     ///
     /// Mints a UCAN delegation chain over the local repo. The
     /// default form is audience-open: anyone holding the URL can
@@ -324,7 +315,7 @@ enum Command {
         no_shorten: bool,
     },
 
-    /// Join a shared repo from an invite URL into a new space
+    /// Join a shared space from an invite URL
     #[command(after_help = "Examples:\n  tonk join 'https://...#invite' --name garden")]
     Join {
         /// The invite URL (quote it - the #fragment matters).
@@ -343,18 +334,24 @@ enum Command {
     #[command(after_help = "Examples:\n  tonk pull")]
     Pull,
 
-    /// Manage remotes (add, list, set-upstream)
+    /// List or manage remotes
     Remote {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
-        command: RemoteCommand,
+        command: Option<RemoteCommand>,
     },
 
     // -- setup --------------------------------------------------------
-    /// Manage spaces: named, centrally registered fact stores
+    /// List or manage spaces
     #[command(name = "space")]
     Space {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
-        command: SpaceCommand,
+        command: Option<SpaceCommand>,
     },
 
     /// Show (or reset) the local profile DID
@@ -375,14 +372,21 @@ enum Command {
 
     /// Sign in to a Tonk account on this device, and manage it
     Account {
+        /// Emit versioned camelCase JSON for the bare status form.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
-        command: AccountCommand,
+        command: Option<AccountCommand>,
     },
 
     /// Store and inspect content-addressed blobs (images, files)
+    #[command(hide = true)]
     Blob {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
-        command: BlobCommand,
+        command: Option<BlobCommand>,
     },
 
     /// Export local main's artifacts as CSV
@@ -390,7 +394,10 @@ enum Command {
     /// Writes to stdout unless `--out <file>` is given. One row per
     /// artifact, which is the bulk path out of a space: `tonk query`
     /// answers a question, this copies everything.
-    #[command(after_help = "Examples:\n  tonk export\n  tonk export --out data.csv")]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tonk export\n  tonk export --out data.csv"
+    )]
     Export {
         /// Write the CSV to this file instead of stdout.
         #[arg(long, value_name = "PATH")]
@@ -405,7 +412,7 @@ enum Command {
     ///
     /// Commits each row as an assertion. The inverse of `tonk export`,
     /// and the bulk path in.
-    #[command(after_help = "Examples:\n  tonk import data.csv")]
+    #[command(hide = true, after_help = "Examples:\n  tonk import data.csv")]
     Import {
         /// The CSV file to read (`the,of,as,is,cause` columns).
         #[arg(value_name = "PATH")]
@@ -431,7 +438,10 @@ enum Command {
     ///
     /// `status` (default) prints the effective state and why;
     /// `on` / `off` persist the choice.
-    #[command(after_help = "Examples:\n  tonk telemetry\n  tonk telemetry off")]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tonk telemetry\n  tonk telemetry off"
+    )]
     Telemetry {
         /// One of: status, on, off. Omit for status.
         #[arg(value_name = "ACTION")]
@@ -442,7 +452,10 @@ enum Command {
     ///
     /// Upgrades installs made by the install script. Copies installed
     /// via npm or nix are left to those tools.
-    #[command(after_help = "Examples:\n  tonk update\n  tonk update --disable-check")]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tonk update\n  tonk update --disable-check"
+    )]
     Update {
         /// Stop checking for new releases in the background.
         #[arg(long, conflicts_with = "enable_check")]
@@ -457,10 +470,10 @@ enum Command {
 enum AgentsCommand {
     /// Write the claim's Markdown to stdout
     ///
-    /// What bare `tonk agents` runs. `--json` lives here rather than on
+    /// What bare `tonk space agents` runs. `--json` lives here rather than on
     /// the parent because on the parent it could be passed alongside
     /// `set`, where it meant nothing and had to be rejected at runtime.
-    #[command(after_help = "Examples:\n  tonk agents get\n  tonk agents get --json")]
+    #[command(after_help = "Examples:\n  tonk space agents get\n  tonk space agents get --json")]
     Get {
         /// Include the repository subject and observed revision.
         #[arg(long)]
@@ -553,6 +566,9 @@ enum AccountCommand {
     /// List or pull the spaces your account directory lists
     #[command(name = "spaces")]
     Spaces {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
         command: Option<AccountSpacesCommand>,
     },
@@ -591,13 +607,6 @@ enum AccountCommand {
 
 #[derive(Subcommand, Debug)]
 enum AccountSpacesCommand {
-    /// List remote account spaces and local registration state
-    #[command(after_help = "Examples:\n  tonk account spaces\n  tonk account spaces list --json")]
-    List {
-        /// Emit versioned camelCase JSON.
-        #[arg(long)]
-        json: bool,
-    },
     /// Pull one exact repository subject into canonical local storage
     Pull {
         /// Full repository subject DID.
@@ -658,14 +667,6 @@ enum RemoteCommand {
         subject: Option<String>,
     },
 
-    /// Print every remote registered on the meta branch
-    #[command(after_help = "Examples:\n  tonk remote list\n  tonk remote list --json")]
-    List {
-        /// Emit versioned camelCase JSON.
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Wire local main's upstream to <remote>/main
     #[command(after_help = "Examples:\n  tonk remote set-upstream prod")]
     SetUpstream {
@@ -708,23 +709,29 @@ enum SpaceCommand {
     /// in its central site directory. A nested binding overrides this
     /// one. Pin one invocation with --space or TONK_SPACE instead.
     ///
-    /// Omit NAME to report what this directory currently resolves to.
-    #[command(after_help = "Examples:\n  tonk space use\n  tonk space use garden")]
+    #[command(after_help = "Examples:\n  tonk space use garden")]
     Use {
-        /// A registered space name. Omit it to inspect the current selection.
+        /// A registered space name.
         #[arg(value_name = "NAME")]
-        name: Option<String>,
-        /// Emit versioned camelCase JSON.
-        #[arg(long)]
-        json: bool,
+        name: String,
     },
 
-    /// List every local replica with its account, role, and access
-    #[command(after_help = "Examples:\n  tonk space list\n  tonk space list --json")]
-    List {
-        /// Emit versioned camelCase JSON rows.
+    /// Pin one or more concepts' directories on the space home
+    Home {
+        /// Concept name(s) to surface, in order.
+        #[arg(value_name = "CONCEPT", required = true)]
+        models: Vec<String>,
+        /// Print the notation document without evaluating it.
         #[arg(long)]
-        json: bool,
+        notation: bool,
+        #[command(flatten)]
+        write: WriteArgs,
+    },
+
+    /// Read or update the AGENTS.md claim carried by this space
+    Agents {
+        #[command(subcommand)]
+        command: Option<AgentsCommand>,
     },
 
     /// Link a local-only space to the account you are signed in to
@@ -760,7 +767,7 @@ enum SpaceCommand {
         name: String,
         /// Unregister the space but leave its data on disk.
         ///
-        /// The data then belongs to no space: `tonk space list` reports
+        /// The data then belongs to no space: `tonk space` reports
         /// it, `tonk space new <name> --site <path>` adopts it back,
         /// and it keeps its canonical name reserved against `tonk
         /// join` and `tonk account spaces pull`.
@@ -859,19 +866,6 @@ enum BlobCommand {
         #[arg(value_name = "BLOB_URI")]
         reference: String,
     },
-    /// List ingested blobs with their content type and file name
-    ///
-    /// One row per blob, tab-separated
-    /// `entity<TAB>content-type<TAB>name`. Read from the metadata
-    /// facts `tonk blob add` asserts, so bytes attached without
-    /// metadata don't appear, and a row means the facts are here, not
-    /// necessarily the bytes.
-    #[command(after_help = "Examples:\n  tonk blob ls\n  tonk blob ls --json")]
-    Ls {
-        /// Emit versioned camelCase JSON.
-        #[arg(long)]
-        json: bool,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -883,34 +877,23 @@ enum ConceptCommand {
     /// `tonk assert <name> --help` shows the typed flags right
     /// after this succeeds.
     #[command(
-        after_help = "Types: text, entity, unsigned-integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --attr name:text:one --attr target:text:one --description \"a tracked habit\"\n  tonk concept add note --attr body:text:one --attr tag:text:many"
+        after_help = "Types: text, entity, unsigned-integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --field name:text:one --field target:text:one --description \"a tracked habit\"\n  tonk concept add note --field body:text:one --field tag:text:many"
     )]
     Add {
         /// Name for the concept (also the anchor).
         #[arg(value_name = "NAME")]
         name: String,
         /// One field as `<field>:<type>:<cardinality>`; repeatable.
-        #[arg(long = "attr", value_name = "FIELD:TYPE:CARD", required = true)]
-        attrs: Vec<String>,
+        #[arg(long = "field", value_name = "FIELD:TYPE:CARD", required = true)]
+        fields: Vec<String>,
         /// Human description for the concept.
         #[arg(long, value_name = "TEXT")]
         description: Option<String>,
+        /// Print the notation document without evaluating it.
+        #[arg(long)]
+        notation: bool,
         #[command(flatten)]
         write: WriteArgs,
-    },
-
-    /// List the concepts this space defines
-    ///
-    /// One row per concept, tab-separated `name<TAB>description`.
-    /// The runtime vocabulary — analyzer built-ins, the standard
-    /// library, the space-home recipe — is omitted; it resolves
-    /// everywhere and would bury what you defined. `tonk schema`
-    /// still shows the whole branch.
-    #[command(after_help = "Examples:\n  tonk concept ls\n  tonk concept ls --json")]
-    Ls {
-        /// Emit versioned camelCase JSON.
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -941,22 +924,11 @@ enum ViewCommand {
         /// Anchor name for the view (default: <concept>-view).
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Print the notation document without evaluating it.
+        #[arg(long)]
+        notation: bool,
         #[command(flatten)]
         write: WriteArgs,
-    },
-
-    /// List renderable entities (those carrying a template claim)
-    ///
-    /// One row per entity, tab-separated
-    /// `name<TAB>entity<TAB>model<TAB>bytes`. Claim-driven: surfaces
-    /// anything the display stack or the host route would render,
-    /// regardless of how the claim was asserted. Standard-library
-    /// views are omitted.
-    #[command(after_help = "Examples:\n  tonk view ls\n  tonk view ls --json")]
-    Ls {
-        /// Emit versioned camelCase JSON.
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -992,13 +964,23 @@ impl From<WriteArgs> for tonk_cli::data_ops::WriteOptions {
             dry_run: args.dry_run,
             no_sync: args.no_sync,
             quiet: args.quiet,
+            notation: false,
+        }
+    }
+}
+
+impl WriteArgs {
+    fn options(self, notation: bool) -> tonk_cli::data_ops::WriteOptions {
+        tonk_cli::data_ops::WriteOptions {
+            notation,
+            ..self.into()
         }
     }
 }
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --format json\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
+    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --json\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
 )]
 struct EvalArgs {
     /// Inline document. Mutually exclusive with the positional
@@ -1006,9 +988,9 @@ struct EvalArgs {
     #[arg(short = 'c', long = "command", value_name = "DOC")]
     command: Option<String>,
 
-    /// Output format. Default `notation`.
-    #[arg(long = "format", value_name = "FORMAT", default_value = "notation")]
-    format: FormatArg,
+    /// Emit `EvaluateResponse` as pretty JSON instead of notation.
+    #[arg(long)]
+    json: bool,
 
     /// Suppress the matches section; emit only the envelope
     /// (notation) or the structured commits-only response (JSON).
@@ -1037,21 +1019,6 @@ struct EvalArgs {
     dry_run: bool,
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum FormatArg {
-    Notation,
-    Json,
-}
-
-impl From<FormatArg> for Format {
-    fn from(value: FormatArg) -> Self {
-        match value {
-            FormatArg::Notation => Format::Notation,
-            FormatArg::Json => Format::Json,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum TelemetryAction {
     Status,
@@ -1063,46 +1030,43 @@ enum TelemetryAction {
 /// (never argument values) are ever reported.
 fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     match command {
-        Command::Context { .. } => ("context", None),
-        Command::Agents { command } => (
-            "agents",
-            Some(match command {
-                None | Some(AgentsCommand::Get { .. }) => "get",
-                Some(AgentsCommand::Set { .. }) => "set",
-            }),
-        ),
-        Command::Space { command } => (
+        Command::Help { .. } => ("help", None),
+        Command::Space { command, .. } => (
             "space",
             Some(match command {
-                SpaceCommand::New { .. } => "new",
-                SpaceCommand::Use { .. } => "use",
-                SpaceCommand::List { .. } => "list",
-                SpaceCommand::Link { .. } => "link",
-                SpaceCommand::Rm { .. } => "rm",
-                SpaceCommand::Unbind { .. } => "unbind",
+                None => "list",
+                Some(SpaceCommand::New { .. }) => "new",
+                Some(SpaceCommand::Use { .. }) => "use",
+                Some(SpaceCommand::Link { .. }) => "link",
+                Some(SpaceCommand::Rm { .. }) => "rm",
+                Some(SpaceCommand::Unbind { .. }) => "unbind",
+                Some(SpaceCommand::Home { .. }) => "home",
+                Some(SpaceCommand::Agents { command }) => match command {
+                    None | Some(AgentsCommand::Get { .. }) => "agents-get",
+                    Some(AgentsCommand::Set { .. }) => "agents-set",
+                },
             }),
         ),
         Command::Identity { .. } => ("identity", None),
-        Command::Account { command } => (
+        Command::Account { command, .. } => (
             "account",
             Some(match command {
-                AccountCommand::Status { .. } => "status",
-                AccountCommand::Login { .. } => "login",
-                AccountCommand::Logout => "logout",
-                AccountCommand::Delete { .. } => "delete",
-                AccountCommand::Spaces { command } => match command {
-                    None | Some(AccountSpacesCommand::List { .. }) => "spaces-list",
+                None | Some(AccountCommand::Status { .. }) => "status",
+                Some(AccountCommand::Login { .. }) => "login",
+                Some(AccountCommand::Logout) => "logout",
+                Some(AccountCommand::Delete { .. }) => "delete",
+                Some(AccountCommand::Spaces { command, .. }) => match command {
+                    None => "spaces-list",
                     Some(AccountSpacesCommand::Pull { .. }) => "spaces-pull",
                     Some(AccountSpacesCommand::Delete { .. }) => "spaces-delete",
                 },
-                AccountCommand::Sync => "sync",
-                AccountCommand::Devices { .. } => "devices",
-                AccountCommand::Revoke { .. } => "revoke",
+                Some(AccountCommand::Sync) => "sync",
+                Some(AccountCommand::Devices { .. }) => "devices",
+                Some(AccountCommand::Revoke { .. }) => "revoke",
             }),
         ),
         Command::Eval(_) => ("eval", None),
-        Command::Guide { .. } => ("guide", None),
-        Command::Schema { .. } => ("schema", None),
+        Command::Show { .. } => ("show", None),
         Command::Query { .. } => ("query", None),
         Command::Assert { .. } => ("assert", None),
         Command::Retract { .. } => ("retract", None),
@@ -1121,37 +1085,36 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Status { .. } => ("status", None),
         Command::Invite { .. } => ("invite", None),
         Command::Join { .. } => ("join", None),
-        Command::Remote { command } => (
+        Command::Remote { command, .. } => (
             "remote",
             Some(match command {
-                RemoteCommand::Add { .. } => "add",
-                RemoteCommand::List { .. } => "list",
-                RemoteCommand::SetUpstream { .. } => "set-upstream",
+                None => "list",
+                Some(RemoteCommand::Add { .. }) => "add",
+                Some(RemoteCommand::SetUpstream { .. }) => "set-upstream",
             }),
         ),
-        Command::Concept { command } => (
+        Command::Concept { command, .. } => (
             "concept",
             Some(match command {
-                ConceptCommand::Add { .. } => "add",
-                ConceptCommand::Ls { .. } => "ls",
+                None => "list",
+                Some(ConceptCommand::Add { .. }) => "add",
             }),
         ),
-        Command::View { command } => (
+        Command::View { command, .. } => (
             "view",
             Some(match command {
-                ViewCommand::Add { .. } => "add",
-                ViewCommand::Ls { .. } => "ls",
+                None => "list",
+                Some(ViewCommand::Add { .. }) => "add",
             }),
         ),
-        Command::Home { .. } => ("home", None),
         Command::Telemetry { .. } => ("telemetry", None),
         Command::Update { .. } => ("update", None),
-        Command::Blob { command } => (
+        Command::Blob { command, .. } => (
             "blob",
             Some(match command {
-                BlobCommand::Add { .. } => "add",
-                BlobCommand::Cat { .. } => "cat",
-                BlobCommand::Ls { .. } => "ls",
+                None => "list",
+                Some(BlobCommand::Add { .. }) => "add",
+                Some(BlobCommand::Cat { .. }) => "cat",
             }),
         ),
     }
@@ -1162,10 +1125,8 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
 fn uses_active_space(command: &Command) -> bool {
     matches!(
         command,
-        Command::Context { .. }
-            | Command::Agents { .. }
-            | Command::Eval(_)
-            | Command::Schema { .. }
+        Command::Eval(_)
+            | Command::Show { .. }
             | Command::Query { .. }
             | Command::Assert { .. }
             | Command::Retract { .. }
@@ -1180,13 +1141,16 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Blob { .. }
             | Command::Concept { .. }
             | Command::View { .. }
-            | Command::Home { .. }
     )
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
+    let Some(command) = cli.command else {
+        print!("{CLI_INDEX}");
+        return;
+    };
     for (retired, replacement) in [
         ("TONK_SPOT", "TONK_SPACE"),
         ("TONK_SPOTS_STATE", "TONK_SPACES_STATE"),
@@ -1210,7 +1174,6 @@ async fn main() {
             .with_target(true)
             .try_init();
     }
-    let command = cli.command.unwrap_or(Command::Context { json: false });
     // The telemetry subcommand itself is never tracked — toggling
     // must not race its own event, and opt-out should be silent.
     let mut recorder = match &command {
@@ -1230,7 +1193,7 @@ async fn main() {
                 (None, None) => "stdin",
             },
         );
-        recorder.property("format", format!("{:?}", args.format).to_lowercase());
+        recorder.property("format", if args.json { "json" } else { "notation" });
         recorder.property("dry_run", args.dry_run);
         recorder.property("quiet", args.quiet);
     }
@@ -1241,29 +1204,26 @@ async fn main() {
     let report_active_space = uses_active_space(&command);
     let space = cli.space;
     let exit = match command {
-        Command::Context { json } => context_op(json, space.as_deref()).await,
-        Command::Agents { command } => agents_op(command, space.as_deref()).await,
-        Command::Space { command } => space_op(command, space.as_deref()).await,
+        Command::Help { all, guides, name } => print_help(all, guides, name.as_deref()),
+        Command::Space { command, json } => space_op(command, json, space.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
-        Command::Account { command } => account_op(command).await,
+        Command::Account { command, json } => account_op(command, json).await,
         Command::Eval(args) => eval(args, space.as_deref()).await,
-        Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
-        Command::Schema { concept } => print_schema(concept, space.as_deref()).await,
-        Command::Query {
-            concept,
+        Command::Show {
+            name,
             entity,
             json,
-        } => match entity {
-            Some(entity) => get_op(concept, entity, json, space.as_deref()).await,
-            None => query_op(concept, json, space.as_deref()).await,
-        },
+            notation,
+        } => show_op(name, entity, json, notation, space.as_deref()).await,
+        Command::Query { concept, json } => query_op(concept, json, space.as_deref()).await,
         Command::Assert { concept, rest } => assert_cmd(concept, rest, space.as_deref()).await,
         Command::Retract {
             concept,
             entity,
             field,
+            notation,
             write,
-        } => retract_op(concept, entity, field, write, space.as_deref()).await,
+        } => retract_op(concept, entity, field, notation, write, space.as_deref()).await,
         Command::Migrate { command } => match command {
             MigrateCommand::Carry { from, do_move } => migrate(from, do_move).await,
             MigrateCommand::Account => migrate_account().await,
@@ -1296,11 +1256,10 @@ async fn main() {
             .await
         }
         Command::Join { url, name } => claim_invite(url, name, space.as_deref()).await,
-        Command::Remote { command } => remote_op(command, space.as_deref()).await,
-        Command::Blob { command } => blob_op(command, space.as_deref()).await,
-        Command::Concept { command } => concept_op(command, space.as_deref()).await,
-        Command::View { command } => view_op(command, space.as_deref()).await,
-        Command::Home { models, write } => home_op(models, write, space.as_deref()).await,
+        Command::Remote { command, json } => remote_op(command, json, space.as_deref()).await,
+        Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
+        Command::Concept { command, json } => concept_op(command, json, space.as_deref()).await,
+        Command::View { command, json } => view_op(command, json, space.as_deref()).await,
         Command::Telemetry { action } => telemetry_op(action),
         Command::Update {
             disable_check,
@@ -1368,7 +1327,7 @@ async fn identity(reset: bool) -> ExitCode {
 /// The account section of the context report, from a read the caller
 /// already performed.
 ///
-/// One function so `tonk account status` and `tonk context` cannot report
+/// One function so `tonk account status` and `tonk status` cannot report
 /// the same device differently.
 fn account_context(status: &account::AccountStatus) -> context::AccountContext {
     match status {
@@ -1406,7 +1365,7 @@ fn account_context(status: &account::AccountStatus) -> context::AccountContext {
 
 /// The account section when the profile itself cannot be read.
 ///
-/// `tonk context` reports orientation and must not fail because the
+/// `tonk status` reports orientation and must not fail because the
 /// account is unreadable; the space it is describing works signed out.
 fn account_context_unavailable() -> context::AccountContext {
     context::AccountContext {
@@ -1423,58 +1382,7 @@ fn sync_context(status: sync::SyncStatus) -> context::SyncContext {
     context::SyncContext::fetched(status.state, status.hash.map(|hash| hash.to_string()))
 }
 
-/// `tonk context` (and bare `tonk`) — one bounded, read-only workflow card.
-async fn context_op(json: bool, space: Option<&str>) -> ExitCode {
-    let (resolved, site) = match open_selected(space).await {
-        Ok(opened) => opened,
-        Err(code) => return code,
-    };
-    // Orientation stays offline: bare `tonk` is the command people run to
-    // find out where they are, and it should not wait on a network round
-    // trip to answer. `tonk status` is the one that fetches.
-    let sync = match sync::status_offline(&site).await {
-        Ok(sync) => sync,
-        Err(err) => return print_coded(err),
-    };
-    let account = match identity::open().await {
-        Ok(profile) => match tonk_cli::space::SpaceStore::open() {
-            Ok(store) => match account::status_in(&profile, &store).await {
-                Ok(status) => account_context(&status),
-                Err(err) => {
-                    eprintln!("warning: account context unavailable: {err:#}");
-                    account_context_unavailable()
-                }
-            },
-            Err(err) => {
-                eprintln!("warning: account context unavailable: {err:#}");
-                account_context_unavailable()
-            }
-        },
-        Err(err) => {
-            eprintln!("warning: account context unavailable: {err:#}");
-            account_context_unavailable()
-        }
-    };
-    let report = match context::inspect(&resolved, &site, sync, account).await {
-        Ok(report) => report,
-        Err(err) => return print_error(format!("could not build live context: {err:#}")),
-    };
-    let rendered = if json {
-        match report.render_json() {
-            Ok(rendered) => rendered,
-            Err(err) => return print_error(format!("could not encode context JSON: {err}")),
-        }
-    } else {
-        report.render_markdown()
-    };
-    let mut stdout = std::io::stdout().lock();
-    if let Err(err) = stdout.write_all(rendered.as_bytes()) {
-        return print_error(format!("failed to write stdout: {err}"));
-    }
-    ExitCode::Success
-}
-
-/// `tonk agents` — read or update claim-backed space instructions.
+/// `tonk space agents` — read or update claim-backed space instructions.
 async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
@@ -1486,7 +1394,7 @@ async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitC
                 Ok(Some(claim)) => claim,
                 Ok(None) => {
                     return print_error(
-                        "this space has no AGENTS.md claim\ncreate one: tonk agents set AGENTS.md",
+                        "this space has no AGENTS.md claim\ncreate one: tonk space agents set AGENTS.md",
                     );
                 }
                 Err(err) => return print_error(format!("could not read AGENTS.md claim: {err:#}")),
@@ -1528,7 +1436,7 @@ async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitC
                         println!("asserted AGENTS.md claim");
                     } else {
                         println!(
-                            "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk agents get --json",
+                            "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk space agents get --json",
                             claim.source, claim.attribute, claim.entity, claim.revision
                         );
                     }
@@ -1580,7 +1488,7 @@ struct AccountStatusReport {
     schema_version: &'static str,
     /// Flattened rather than nested: this command's whole subject is the
     /// account, so a `account.signedIn` path would only repeat the name of
-    /// the command. Inside `tonk context` the same section is nested,
+    /// the command. Inside `tonk status` the same section is nested,
     /// where it sits beside `space` and `sync` and the name distinguishes.
     #[serde(flatten)]
     account: context::AccountContext,
@@ -1770,7 +1678,8 @@ async fn link_account(
     }
 }
 
-async fn account_op(command: AccountCommand) -> ExitCode {
+async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
+    let command = command.unwrap_or(AccountCommand::Status { json });
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
         Err(error) => return print_failure(error),
@@ -1869,73 +1778,67 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
-        AccountCommand::Spaces { command } => {
-            match command.unwrap_or(AccountSpacesCommand::List { json: false }) {
-                AccountSpacesCommand::List { json } => {
-                    match account_spaces::list(&profile, &store).await {
-                        Ok(rows) if json => print_json(&account_spaces_report(rows)),
-                        Ok(rows) => {
-                            let mut listing = Listing::new(
-                                &["STATE", "NAME", "SUBJECT"],
-                                "no spaces listed in the account directory",
-                            );
-                            for row in &rows {
-                                let state = if row.ambiguous {
-                                    "ambiguous"
-                                } else if row.local_name.is_some() {
-                                    "local"
-                                } else {
-                                    "remote"
-                                };
-                                listing.push([
-                                    state.to_owned(),
-                                    listing::cell(
-                                        row.remote_name.as_deref().or(row.local_name.as_deref()),
-                                    ),
-                                    row.subject.clone(),
-                                ]);
-                            }
-                            println!("{}", listing.render());
-                            ExitCode::Success
-                        }
-                        Err(error) => print_failure(error),
+        AccountCommand::Spaces { command, json } => match command {
+            None => match account_spaces::list(&profile, &store).await {
+                Ok(rows) if json => print_json(&account_spaces_report(rows)),
+                Ok(rows) => {
+                    let mut listing = Listing::new(
+                        &["STATE", "NAME", "SUBJECT"],
+                        "no spaces listed in the account directory",
+                    );
+                    for row in &rows {
+                        let state = if row.ambiguous {
+                            "ambiguous"
+                        } else if row.local_name.is_some() {
+                            "local"
+                        } else {
+                            "remote"
+                        };
+                        listing.push([
+                            state.to_owned(),
+                            listing::cell(row.remote_name.as_deref().or(row.local_name.as_deref())),
+                            row.subject.clone(),
+                        ]);
                     }
+                    println!("{}", listing.render());
+                    ExitCode::Success
                 }
-                AccountSpacesCommand::Pull { subject, name } => {
-                    match account_spaces::pull(&profile, &store, &subject, name.as_deref()).await {
-                        Ok(outcome) => {
-                            if outcome.already_local {
-                                println!("already local\t{}\t{}", outcome.name, outcome.subject);
-                            } else {
-                                println!("pulled\t{}\t{}", outcome.name, outcome.subject);
-                                println!("site: {}", outcome.site.display());
-                            }
-                            if let Some(warning) = outcome.warning {
-                                eprintln!("warning: {warning}");
-                            }
-                            ExitCode::Success
+                Err(error) => print_failure(error),
+            },
+            Some(AccountSpacesCommand::Pull { subject, name }) => {
+                match account_spaces::pull(&profile, &store, &subject, name.as_deref()).await {
+                    Ok(outcome) => {
+                        if outcome.already_local {
+                            println!("already local\t{}\t{}", outcome.name, outcome.subject);
+                        } else {
+                            println!("pulled\t{}\t{}", outcome.name, outcome.subject);
+                            println!("site: {}", outcome.site.display());
                         }
-                        Err(error) => print_failure(error),
-                    }
-                }
-                AccountSpacesCommand::Delete {
-                    subject,
-                    account_url,
-                    no_open,
-                } => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
-                    .await
-                {
-                    Ok(url) => {
-                        println!("Review permanent deletion of {subject} in your browser:\n{url}");
-                        println!(
-                            "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
-                        );
+                        if let Some(warning) = outcome.warning {
+                            eprintln!("warning: {warning}");
+                        }
                         ExitCode::Success
                     }
                     Err(error) => print_failure(error),
-                },
+                }
             }
-        }
+            Some(AccountSpacesCommand::Delete {
+                subject,
+                account_url,
+                no_open,
+            }) => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
+                .await
+            {
+                Ok(url) => {
+                    println!("Review permanent deletion of {subject} in your browser:\n{url}");
+                    println!(
+                        "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
+                    );
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            },
+        },
         AccountCommand::Devices { service_url, json } => {
             match account::devices_in(&profile, &store, service_url.as_deref()).await {
                 Ok(rows) => {
@@ -2003,76 +1906,47 @@ async fn record_space_best_effort(name: &str, site: &site::TonkSite) {
     }
 }
 
-/// `tonk space use [name]` — inspect the active space or bind this directory.
-async fn use_op(name: Option<String>, json: bool, flag: Option<&str>) -> ExitCode {
+/// `tonk space use <name>` — bind this directory to a registered space.
+async fn use_op(name: String, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
         Err(err) => return print_failure(err),
     };
     let cwd = working_directory();
-    match name {
-        Some(name) => {
-            if json {
-                return print_error(
-                    "`--json` reports the active space and cannot be combined with a name"
-                        .to_owned(),
-                );
-            }
-            let Some(cwd) = cwd else {
-                return print_error("could not read the current directory".to_owned());
-            };
-            match tonk_cli::space::bind(&store, &name, &cwd) {
-                Ok(outcome) => {
-                    let was = outcome
-                        .previous
-                        .filter(|previous| previous != &name)
-                        .map(|previous| format!(" (was {previous})"))
-                        .unwrap_or_default();
-                    println!(
-                        "binding: {name}{was}\ndirectory: {directory}",
-                        directory = outcome.directory.display(),
-                    );
-                    print_active_space_resolution(&store, flag, Some(&cwd));
-                    println!("next: tonk context");
-                    ExitCode::Success
-                }
-                Err(err) => print_failure(err),
-            }
-        }
-        None => {
-            let env = space_from_environment();
-            let active = match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
-                Ok(active) => Some(active),
-                Err(
-                    tonk_cli::space::SpaceError::NoSelection
-                    | tonk_cli::space::SpaceError::NothingRegistered,
-                ) => None,
-                Err(error) => return print_failure(error),
-            };
-            let section = active.as_ref().map(SpaceContext::new);
-            if json {
-                return print_json(&ActiveSpaceReport {
-                    schema_version: ACTIVE_SPACE_SCHEMA_VERSION,
-                    space: section,
-                });
-            }
-            match section {
-                Some(section) => print!("{}", section.render()),
-                None => println!("space: (none)"),
-            }
-            println!("next: tonk context");
+    let Some(cwd) = cwd else {
+        return print_error("could not read the current directory".to_owned());
+    };
+    match tonk_cli::space::bind(&store, &name, &cwd) {
+        Ok(outcome) => {
+            let was = outcome
+                .previous
+                .filter(|previous| previous != &name)
+                .map(|previous| format!(" (was {previous})"))
+                .unwrap_or_default();
+            println!(
+                "binding: {name}{was}\ndirectory: {directory}",
+                directory = outcome.directory.display(),
+            );
+            print_active_space_resolution(&store, flag, Some(&cwd));
+            println!("next: tonk status");
             ExitCode::Success
         }
+        Err(err) => print_failure(err),
     }
 }
 
-/// `tonk space new|list|link|rm` — registry management.
-async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
-    // `use` opens its own store and needs no site config; taking it here
-    // keeps it off the setup both of those cost.
-    if let SpaceCommand::Use { name, json } = command {
-        return use_op(name, json, flag).await;
-    }
+/// Bare `tonk space` lists; subcommands create, bind, link, or remove.
+async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>) -> ExitCode {
+    let command = match command {
+        Some(SpaceCommand::Use { name }) => return use_op(name, flag).await,
+        Some(SpaceCommand::Home {
+            models,
+            notation,
+            write,
+        }) => return home_op(models, notation, write, flag).await,
+        Some(SpaceCommand::Agents { command }) => return agents_op(command, flag).await,
+        command => command,
+    };
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
         Err(err) => return print_failure(err),
@@ -2082,8 +1956,12 @@ async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
         Err(error) => return print_failure(error),
     };
     match command {
-        SpaceCommand::Use { .. } => unreachable!("taken above"),
-        SpaceCommand::New { name, site } => {
+        Some(
+            SpaceCommand::Use { .. } | SpaceCommand::Home { .. } | SpaceCommand::Agents { .. },
+        ) => {
+            unreachable!("taken above")
+        }
+        Some(SpaceCommand::New { name, site }) => {
             // Signed in, a new space is the account's from birth: it is
             // provisioned, pushed, and listed for the account's other
             // devices. Signed out, it is local-only until `tonk space link`
@@ -2167,7 +2045,7 @@ async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
                 Err(err) => print_failure(err),
             }
         }
-        SpaceCommand::List { json } => {
+        None => {
             let report = match tonk_cli::inventory::list_local(&store, &config).await {
                 Ok(report) => report,
                 Err(error) => return print_failure(error),
@@ -2193,7 +2071,7 @@ async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
             print_orphaned_sites(&store.orphaned_sites(&registry));
             ExitCode::Success
         }
-        SpaceCommand::Link { name } => {
+        Some(SpaceCommand::Link { name }) => {
             match tonk_cli::space_link::execute(&store, &config, &name).await {
                 Ok(outcome) if outcome.already_linked => {
                     println!(
@@ -2211,12 +2089,12 @@ async fn space_op(command: SpaceCommand, flag: Option<&str>) -> ExitCode {
                 Err(error) => print_failure(error),
             }
         }
-        SpaceCommand::Rm {
+        Some(SpaceCommand::Rm {
             name,
             keep_data,
             yes,
-        } => space_rm(&store, &config, &name, keep_data, yes).await,
-        SpaceCommand::Unbind { path } => {
+        }) => space_rm(&store, &config, &name, keep_data, yes).await,
+        Some(SpaceCommand::Unbind { path }) => {
             let directory = match path.or_else(working_directory) {
                 Some(directory) => directory,
                 None => return print_error("could not read the current directory".to_owned()),
@@ -2443,7 +2321,11 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
     };
 
     let options = eval::Options {
-        format: args.format.into(),
+        format: if args.json {
+            Format::Json
+        } else {
+            Format::Notation
+        },
         quiet: args.quiet,
         dry_run: args.dry_run,
     };
@@ -2501,16 +2383,57 @@ fn resolve_source(args: &EvalArgs) -> Result<Source, String> {
     }
 }
 
-fn print_guide(topic: Option<&str>, item: Option<&str>) -> ExitCode {
-    let text = match guide::resolve(topic, item) {
-        Ok(text) => text,
-        Err(err) => return print_failure(err),
-    };
-    let mut stdout = std::io::stdout().lock();
-    if let Err(e) = stdout.write_all(text.as_bytes()) {
-        return print_error(format!("failed to write stdout: {e}"));
+fn print_help(all: bool, guides: bool, name: Option<&str>) -> ExitCode {
+    if all {
+        println!("commands:");
+        for command in Cli::command().get_subcommands() {
+            let summary = command
+                .get_about()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            println!("  {:<11} {summary}", command.get_name());
+        }
+        return ExitCode::Success;
     }
-    ExitCode::Success
+    if guides {
+        println!("guides:");
+        for topic in guide::TOPICS {
+            println!(
+                "  {topic:<13} {}",
+                guide::description(topic).expect("every topic has a description")
+            );
+        }
+        return ExitCode::Success;
+    }
+    let Some(name) = name else {
+        print!("{CLI_INDEX}");
+        return ExitCode::Success;
+    };
+    if name == "all" {
+        print!("{}", guide::GUIDE);
+        return ExitCode::Success;
+    }
+    if let Some(text) = guide::topic(name) {
+        print!("{text}");
+        return ExitCode::Success;
+    }
+    let mut root = Cli::command();
+    if let Some(command) = root.find_subcommand_mut(name) {
+        if let Err(error) = command.print_long_help() {
+            return print_error(format!("failed to write stdout: {error}"));
+        }
+        println!();
+        return ExitCode::Success;
+    }
+    eprintln!(
+        "error: no command or guide named '{name}'\ncommands: {}\nguides: {}",
+        root.get_subcommands()
+            .map(clap::Command::get_name)
+            .collect::<Vec<_>>()
+            .join(", "),
+        guide::TOPICS.join(", ")
+    );
+    ExitCode::ParseError
 }
 
 /// Selector for the [`sync_op`] handler. Both `tonk push` and
@@ -2677,37 +2600,59 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
         Ok(opened) => opened,
         Err(code) => return code,
     };
-    let status = match sync::status_with_hash(&site).await {
-        Ok(status) => status,
-        Err(err) => return print_coded(err),
+    let sync = match sync::status_with_hash(&site).await {
+        Ok(status) => sync_context(status),
+        Err(error) => {
+            eprintln!("warning: upstream status unavailable: {error}");
+            match sync::status_offline(&site).await {
+                Ok(sync) => sync,
+                Err(error) => return print_coded(error),
+            }
+        }
     };
     let space = SpaceContext::new(&resolved);
-    let sync = sync_context(status);
+    let account = match identity::open().await {
+        Ok(profile) => match tonk_cli::space::SpaceStore::open() {
+            Ok(store) => match account::status_in(&profile, &store).await {
+                Ok(status) => account_context(&status),
+                Err(error) => {
+                    eprintln!("warning: account status unavailable: {error:#}");
+                    account_context_unavailable()
+                }
+            },
+            Err(error) => {
+                eprintln!("warning: account status unavailable: {error:#}");
+                account_context_unavailable()
+            }
+        },
+        Err(error) => {
+            eprintln!("warning: account status unavailable: {error:#}");
+            account_context_unavailable()
+        }
+    };
     if json {
         return print_json(&StatusReport {
             schema_version: STATUS_SCHEMA_VERSION,
             space,
             sync,
+            account,
         });
     }
-    print!("{}{}", space.render(), sync.render());
+    print!("{}{}{}", space.render(), sync.render(), account.render());
     ExitCode::Success
 }
 
-/// `tonk status --json` — the sync section of the context document, with
-/// the space section that says which space it describes.
-///
-/// A projection rather than a separate contract: the keys and their
-/// spellings come from [`context`], so the two commands cannot drift.
+/// `tonk status --json` combines the selected space, sync, and account.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StatusReport {
     schema_version: &'static str,
     space: SpaceContext,
     sync: context::SyncContext,
+    account: context::AccountContext,
 }
 
-const STATUS_SCHEMA_VERSION: &str = "tonk.status.v1";
+const STATUS_SCHEMA_VERSION: &str = "tonk.status.v2";
 
 /// One row of `tonk account devices --json`.
 #[derive(serde::Serialize)]
@@ -2730,17 +2675,6 @@ fn account_devices_report(rows: Vec<DeviceRow>) -> Rows<DeviceRow> {
     Rows::new("tonk.account-devices.v1", rows)
 }
 
-/// `tonk space use --json` — the space section, and the no-selection case
-/// it has to be able to say.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ActiveSpaceReport {
-    schema_version: &'static str,
-    space: Option<SpaceContext>,
-}
-
-const ACTIVE_SPACE_SCHEMA_VERSION: &str = "tonk.space-use.v1";
-
 /// Write `value` to stdout as the pretty JSON every `--json` read prints.
 fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
     match serde_json::to_string_pretty(value) {
@@ -2759,19 +2693,19 @@ fn render_revision(revision: Option<&dialog_repository::Revision>) -> String {
     }
 }
 
-async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
+async fn remote_op(command: Option<RemoteCommand>, json: bool, space: Option<&str>) -> ExitCode {
     let (resolved, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
     match command {
-        RemoteCommand::Add {
+        Some(RemoteCommand::Add {
             name,
             url,
             revocation_url,
             subject,
-        } => {
+        }) => {
             let subject = match subject.as_deref() {
                 Some(raw) => match raw.parse() {
                     Ok(did) => Some(did),
@@ -2827,7 +2761,7 @@ async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
                 Err(err) => print_coded(err),
             }
         }
-        RemoteCommand::List { json } => match remote::list(&site).await {
+        None => match remote::list(&site).await {
             Ok(records) if json => print_json(&Rows::new("tonk.remote-list.v1", records)),
             Ok(records) => {
                 print_remote_list(&records);
@@ -2835,7 +2769,7 @@ async fn remote_op(command: RemoteCommand, space: Option<&str>) -> ExitCode {
             }
             Err(err) => print_coded(err),
         },
-        RemoteCommand::SetUpstream { remote: name } => {
+        Some(RemoteCommand::SetUpstream { remote: name }) => {
             match remote::set_upstream(&site, &name).await {
                 Ok(outcome) => {
                     print_set_upstream_outcome(&outcome);
@@ -2873,18 +2807,18 @@ fn print_remote_list(records: &[RemoteRecord]) {
     println!("{}", listing.render());
 }
 
-async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
+async fn blob_op(command: Option<BlobCommand>, json: bool, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
     match command {
-        BlobCommand::Add {
+        Some(BlobCommand::Add {
             file,
             content_type,
             write,
-        } => {
+        }) => {
             if write.dry_run {
                 return match blob::plan(&file, content_type).await {
                     Ok(plan) => {
@@ -2904,14 +2838,14 @@ async fn blob_op(command: BlobCommand, space: Option<&str>) -> ExitCode {
                 Err(err) => print_coded(err),
             }
         }
-        BlobCommand::Cat { reference } => {
+        Some(BlobCommand::Cat { reference }) => {
             let mut stdout = tokio::io::stdout();
             match blob::cat(&site, &reference, &mut stdout).await {
                 Ok(_) => ExitCode::Success,
                 Err(err) => print_coded(err),
             }
         }
-        BlobCommand::Ls { json } => match blob::ls(&site).await {
+        None => match blob::ls(&site).await {
             Ok(rows) if json => print_json(&Rows::new("tonk.blob-ls.v1", rows)),
             Ok(rows) => {
                 print_blob_ls(&rows);
@@ -3241,7 +3175,7 @@ fn print_claim_outcome(
         }
     }
     println!("binding: {}", directory.display());
-    println!("next: tonk context");
+    println!("next: tonk status");
 }
 
 /// `tonk migrate account` — drain the legacy certificate store.
@@ -3304,7 +3238,7 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
     }
 }
 
-/// List user-defined concepts (`tonk concept ls`), one
+/// List user-defined concepts (`tonk concept`), one
 /// tab-separated `name<TAB>description` row per concept.
 async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
     let concepts = match schema::list_concepts(site).await {
@@ -3316,7 +3250,7 @@ async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
     }
     let mut listing = Listing::new(
         &["NAME", "DESCRIPTION"],
-        "this space defines no concepts; add one with `tonk concept add <name> --attr <field>:<type>:<card>`",
+        "this space defines no concepts; add one with `tonk concept add <name> --field <field>:<type>:<card>`",
     );
     for concept in &concepts {
         listing.push([
@@ -3368,6 +3302,200 @@ async fn get_op(concept: String, entity: String, json: bool, space: Option<&str>
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowConceptReport {
+    schema_version: &'static str,
+    name: String,
+    entity: String,
+    description: Option<String>,
+    fields: Vec<ShowField>,
+    views: Vec<String>,
+    recipes: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowField {
+    name: String,
+    r#type: String,
+    cardinality: String,
+    optional: bool,
+    description: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowEntityReport {
+    schema_version: &'static str,
+    entity: String,
+    facts: Vec<views::EntityFact>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowViewReport {
+    schema_version: &'static str,
+    anchor: String,
+    entity: String,
+    model: Option<String>,
+    template: String,
+}
+
+async fn show_op(
+    name: Option<String>,
+    entity: Option<String>,
+    json: bool,
+    notation: bool,
+    space: Option<&str>,
+) -> ExitCode {
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let Some(name) = name else {
+        if json {
+            return match schema::list_all_concepts(&site).await {
+                Ok(rows) => print_json(&Rows::new("tonk.show-schema.v1", rows)),
+                Err(error) => print_failure(error),
+            };
+        }
+        return match schema::render(&site).await {
+            Ok(text) => write_stdout(&text),
+            Err(error) => print_failure(error),
+        };
+    };
+
+    let concept = match schema::find_concept(&site, &name).await {
+        Ok(concept) => concept,
+        Err(error) => return print_failure(error),
+    };
+    if let Some(concept) = concept {
+        if let Some(entity) = entity {
+            return get_op(name, entity, json, space).await;
+        }
+        if notation {
+            return match data_ops::schema_subset(&site, &name).await {
+                Ok(text) => write_stdout(&text),
+                Err(error) => print_coded(error),
+            };
+        }
+        let view_names = match views::list(&site).await {
+            Ok(rows) => rows
+                .into_iter()
+                .filter(|view| view.model.as_deref() == Some(name.as_str()))
+                .map(|view| view.name.unwrap_or_else(|| view.entity.to_string()))
+                .collect(),
+            Err(error) => return print_failure(error),
+        };
+        let fields = concept
+            .descriptor
+            .with()
+            .iter()
+            .map(|(name, field)| ShowField {
+                name: name.to_string(),
+                r#type: field
+                    .content_type()
+                    .map(|value| format!("{value:?}"))
+                    .unwrap_or_else(|| "Value".to_owned()),
+                cardinality: format!("{:?}", field.cardinality()).to_lowercase(),
+                optional: field.is_optional(),
+                description: field.description().to_owned(),
+            })
+            .collect();
+        let report = ShowConceptReport {
+            schema_version: "tonk.show-concept.v1",
+            name: name.clone(),
+            entity: concept.entity,
+            description: concept.description,
+            fields,
+            views: view_names,
+            recipes: vec![
+                format!("tonk query {name}"),
+                format!("tonk assert {name} --<field> <value>"),
+                format!("tonk assert {name} <entity> --<field> <value>"),
+            ],
+        };
+        if json {
+            return print_json(&report);
+        }
+        println!("concept: {}", report.name);
+        if let Some(description) = &report.description {
+            println!("description: {description}");
+        }
+        println!("entity: {}", report.entity);
+        println!("fields:");
+        for field in &report.fields {
+            let optional = if field.optional { " optional" } else { "" };
+            println!(
+                "  {}\t{}\t{}{}",
+                field.name, field.r#type, field.cardinality, optional
+            );
+        }
+        if !report.views.is_empty() {
+            println!("views: {}", report.views.join(", "));
+        }
+        println!("recipes:");
+        for recipe in &report.recipes {
+            println!("  {recipe}");
+        }
+        return ExitCode::Success;
+    }
+
+    if entity.is_some() {
+        return print_error(format!("no concept named '{name}'"));
+    }
+    let view = match views::describe(&site, &name).await {
+        Ok(view) => view,
+        Err(error) => return print_failure(error),
+    };
+    if let Some(view) = view {
+        let report = ShowViewReport {
+            schema_version: "tonk.show-view.v1",
+            anchor: view.anchor,
+            entity: view.entity.to_string(),
+            model: view.model,
+            template: view.template,
+        };
+        if json {
+            return print_json(&report);
+        }
+        println!("view: {}", report.anchor);
+        println!("entity: {}", report.entity);
+        if let Some(model) = &report.model {
+            println!("model: {model}");
+        }
+        println!("template:\n{}", report.template);
+        return ExitCode::Success;
+    }
+    let facts = match views::facts_for_entity(&site, &name).await {
+        Ok(Some(facts)) => facts,
+        Ok(None) => return print_error(format!("no concept, view, or entity named '{name}'")),
+        Err(error) => return print_failure(error),
+    };
+    let report = ShowEntityReport {
+        schema_version: "tonk.show-entity.v1",
+        entity: facts.0.to_string(),
+        facts: facts.1,
+    };
+    if json {
+        return print_json(&report);
+    }
+    println!("entity: {}", report.entity);
+    for fact in &report.facts {
+        println!("  {}\t{}", fact.attribute, fact.value);
+    }
+    ExitCode::Success
+}
+
+fn write_stdout(text: &str) -> ExitCode {
+    let mut stdout = std::io::stdout().lock();
+    match stdout.write_all(text.as_bytes()) {
+        Ok(()) => ExitCode::Success,
+        Err(error) => print_error(format!("failed to write stdout: {error}")),
+    }
+}
+
 /// Generic workflow for `tonk assert` before a live concept supplies fields.
 const ASSERT_USAGE: &str = "\
 Write facts: create an instance, or update fields on an existing entity.
@@ -3375,7 +3503,7 @@ Write facts: create an instance, or update fields on an existing entity.
 Workflow:
   1. tonk query <CONCEPT> --json
   2. tonk assert <CONCEPT> <ENTITY> --<field> <value>
-  3. tonk query <CONCEPT> <ENTITY> --json
+  3. tonk show <CONCEPT> <ENTITY> --json
 
 Create:
   tonk assert <CONCEPT> --<required-field> <value> ...
@@ -3386,7 +3514,7 @@ See the live typed flags:
 Example:
   tonk query task --json
   tonk assert task <ENTITY> --done true
-  tonk query task <ENTITY> --json
+  tonk show task <ENTITY> --json
 ";
 
 /// Split `rest` into the optional entity and the flag argv, then
@@ -3438,6 +3566,7 @@ async fn retract_op(
     concept: String,
     entity: String,
     field: Option<String>,
+    notation: bool,
     write: WriteArgs,
     space: Option<&str>,
 ) -> ExitCode {
@@ -3446,7 +3575,15 @@ async fn retract_op(
         Err(code) => return code,
     };
 
-    match data_ops::retract(&site, &concept, &entity, field.as_deref(), write.into()).await {
+    match data_ops::retract(
+        &site,
+        &concept,
+        &entity,
+        field.as_deref(),
+        write.options(notation),
+    )
+    .await
+    {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -3459,21 +3596,28 @@ async fn retract_op(
 }
 
 /// Author a new concept, as rendered by [`data_ops::concept_add`].
-async fn concept_op(command: ConceptCommand, space: Option<&str>) -> ExitCode {
+async fn concept_op(command: Option<ConceptCommand>, json: bool, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
     match command {
-        ConceptCommand::Add {
+        Some(ConceptCommand::Add {
             name,
-            attrs,
+            fields,
             description,
+            notation,
             write,
-        } => {
-            match data_ops::concept_add(&site, &name, &attrs, description.as_deref(), write.into())
-                .await
+        }) => {
+            match data_ops::concept_add(
+                &site,
+                &name,
+                &fields,
+                description.as_deref(),
+                write.options(notation),
+            )
+            .await
             {
                 Ok(text) => {
                     let mut stdout = std::io::stdout().lock();
@@ -3485,7 +3629,7 @@ async fn concept_op(command: ConceptCommand, space: Option<&str>) -> ExitCode {
                 Err(err) => print_coded(err),
             }
         }
-        ConceptCommand::Ls { json } => list_concepts_op(&site, json).await,
+        None => list_concepts_op(&site, json).await,
     }
 }
 
@@ -3494,20 +3638,21 @@ async fn concept_op(command: ConceptCommand, space: Option<&str>) -> ExitCode {
 /// missing or empty template surfaces as
 /// [`tonk_cli::authoring::AuthoringError::EmptyTemplate`] via
 /// `data_ops::view_add`'s own check.
-async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
+async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
     match command {
-        ViewCommand::Add {
+        Some(ViewCommand::Add {
             model,
             template,
             template_file,
             name,
+            notation,
             write,
-        } => {
+        }) => {
             let template = match (template, template_file) {
                 (Some(inline), _) => inline,
                 (None, Some(path)) => match tokio::fs::read_to_string(&path).await {
@@ -3525,7 +3670,14 @@ async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
                     );
                 }
             };
-            match data_ops::view_add(&site, &model, name.as_deref(), &template, write.into()).await
+            match data_ops::view_add(
+                &site,
+                &model,
+                name.as_deref(),
+                &template,
+                write.options(notation),
+            )
+            .await
             {
                 Ok(text) => {
                     let mut stdout = std::io::stdout().lock();
@@ -3537,19 +3689,24 @@ async fn view_op(command: ViewCommand, space: Option<&str>) -> ExitCode {
                 Err(err) => print_coded(err),
             }
         }
-        ViewCommand::Ls { json } => list_views_op(&site, json).await,
+        None => list_views_op(&site, json).await,
     }
 }
 
 /// Put one or more concepts' directories on the space home, as
 /// rendered by [`data_ops::home`].
-async fn home_op(models: Vec<String>, write: WriteArgs, space: Option<&str>) -> ExitCode {
+async fn home_op(
+    models: Vec<String>,
+    notation: bool,
+    write: WriteArgs,
+    space: Option<&str>,
+) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
-    match data_ops::home(&site, &models, write.into()).await {
+    match data_ops::home(&site, &models, write.options(notation)).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -3561,7 +3718,7 @@ async fn home_op(models: Vec<String>, write: WriteArgs, space: Option<&str>) -> 
     }
 }
 
-/// List renderable entities (`tonk view ls`), one tab-separated
+/// List renderable entities (`tonk view`), one tab-separated
 /// `name<TAB>entity<TAB>model<TAB>bytes` row per template-claim
 /// carrier.
 async fn list_views_op(site: &site::TonkSite, json: bool) -> ExitCode {
@@ -3585,28 +3742,6 @@ async fn list_views_op(site: &site::TonkSite, json: bool) -> ExitCode {
         ]);
     }
     println!("{}", listing.render());
-    ExitCode::Success
-}
-
-async fn print_schema(concept: Option<String>, space: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(space).await {
-        Ok(opened) => opened,
-        Err(code) => return code,
-    };
-    let rendered = match &concept {
-        Some(name) => match data_ops::schema_subset(&site, name).await {
-            Ok(text) => text,
-            Err(err) => return print_coded(err),
-        },
-        None => match schema::render(&site).await {
-            Ok(text) => text,
-            Err(err) => return print_failure(err),
-        },
-    };
-    let mut stdout = std::io::stdout().lock();
-    if let Err(e) = stdout.write_all(rendered.as_bytes()) {
-        return print_error(format!("failed to write stdout: {e}"));
-    }
     ExitCode::Success
 }
 
@@ -3807,8 +3942,15 @@ mod account_spaces_parser_tests {
     #[test]
     fn every_data_write_parser_accepts_the_shared_switches() {
         for args in [
-            vec!["tonk", "agents", "set", "AGENTS.md"],
-            vec!["tonk", "concept", "add", "note", "--attr", "title:text:one"],
+            vec!["tonk", "space", "agents", "set", "AGENTS.md"],
+            vec![
+                "tonk",
+                "concept",
+                "add",
+                "note",
+                "--field",
+                "title:text:one",
+            ],
             vec![
                 "tonk",
                 "view",
@@ -3817,7 +3959,7 @@ mod account_spaces_parser_tests {
                 "--template",
                 "<p>{title}</p>",
             ],
-            vec!["tonk", "home", "note"],
+            vec!["tonk", "space", "home", "note"],
             vec!["tonk", "retract", "note", "id:note"],
             vec!["tonk", "blob", "add", "note.txt"],
             vec!["tonk", "import", "data.csv"],
@@ -3832,12 +3974,231 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
+    fn macro_writes_expose_notation_and_eval_uses_json_directly() {
+        for args in [
+            &[
+                "tonk",
+                "concept",
+                "add",
+                "note",
+                "--field",
+                "title:text:one",
+                "--notation",
+            ][..],
+            &[
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--template",
+                "<p>{title}</p>",
+                "--notation",
+            ],
+            &["tonk", "space", "home", "note", "--notation"],
+            &["tonk", "retract", "note", "id:note", "--notation"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "new spelling rejected: {args:?}"
+            );
+        }
+        assert!(Cli::try_parse_from(["tonk", "eval", "-c", "note:", "--json"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["tonk", "concept", "add", "note", "--attr", "title:text:one"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["tonk", "eval", "-c", "note:", "--format", "json"]).is_err());
+    }
+
+    #[test]
+    fn nouns_list_bare_and_space_owns_home_and_agents() {
+        for args in [
+            &["tonk", "space"][..],
+            &["tonk", "remote"],
+            &["tonk", "concept"],
+            &["tonk", "view"],
+            &["tonk", "blob"],
+            &["tonk", "account"],
+            &["tonk", "account", "spaces"],
+            &["tonk", "space", "home", "note"],
+            &["tonk", "space", "agents"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "bare noun rejected: {args:?}"
+            );
+        }
+        for args in [
+            &["tonk", "space", "list"][..],
+            &["tonk", "remote", "list"],
+            &["tonk", "concept", "ls"],
+            &["tonk", "view", "ls"],
+            &["tonk", "blob", "ls"],
+            &["tonk", "account", "spaces", "list"],
+            &["tonk", "home", "note"],
+            &["tonk", "agents"],
+            &["tonk", "space", "use"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "retired spelling parsed: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_and_show_replace_context_schema_and_entity_query() {
+        for args in [
+            &["tonk", "show"][..],
+            &["tonk", "show", "task"],
+            &["tonk", "show", "task", "id:one"],
+            &["tonk", "show", "task", "--json"],
+            &["tonk", "show", "task", "--notation"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "show form rejected: {args:?}"
+            );
+        }
+        for args in [
+            &["tonk", "context"][..],
+            &["tonk", "schema"],
+            &["tonk", "query", "task", "id:one"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "retired form parsed: {args:?}"
+            );
+        }
+        assert_eq!(STATUS_SCHEMA_VERSION, "tonk.status.v2");
+    }
+
+    #[test]
+    fn index_and_parser_command_sets_cannot_drift() {
+        let mut indexed: Vec<_> = CLI_INDEX
+            .lines()
+            .filter_map(|line| line.strip_prefix("   "))
+            .filter_map(|line| line.split_whitespace().next())
+            .collect();
+        indexed.sort_unstable();
+        let command = Cli::command();
+        let mut visible: Vec<_> = command
+            .get_subcommands()
+            .filter(|command| !command.is_hide_set())
+            .map(clap::Command::get_name)
+            .collect();
+        visible.sort_unstable();
+        assert_eq!(indexed, visible);
+
+        for name in indexed {
+            if let Err(error) = Cli::try_parse_from(["tonk", name]) {
+                assert_ne!(
+                    error.kind(),
+                    clap::error::ErrorKind::InvalidSubcommand,
+                    "index command does not parse: {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_listed_guide_has_a_description_and_body() {
+        for topic in guide::TOPICS {
+            assert!(
+                guide::description(topic).is_some(),
+                "missing description: {topic}"
+            );
+            assert!(guide::topic(topic).is_some(), "missing body: {topic}");
+        }
+    }
+
+    #[test]
+    fn guides_do_not_teach_retired_cli_spellings() {
+        for retired in [
+            "tonk context",
+            "tonk guide",
+            "tonk schema",
+            "tonk home",
+            "tonk agents",
+            "tonk space list",
+            "tonk remote list",
+            "tonk concept ls",
+            "tonk view ls",
+            "tonk blob ls",
+            "tonk account spaces list",
+            "--attr",
+            "--format",
+        ] {
+            assert!(
+                !guide::GUIDE.contains(retired),
+                "guide still teaches retired spelling `{retired}`"
+            );
+        }
+    }
+
+    #[test]
+    fn representative_guide_commands_parse() {
+        for args in [
+            &[
+                "tonk",
+                "concept",
+                "add",
+                "note",
+                "--field",
+                "title:text:one",
+            ][..],
+            &["tonk", "assert", "note", "--title", "hello"],
+            &["tonk", "query", "note", "--json"],
+            &["tonk", "retract", "note", "id:note"],
+            &[
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--name",
+                "note-card",
+                "--template",
+                "<p>{title}</p>",
+            ],
+            &["tonk", "space", "home", "note"],
+            &["tonk", "space", "new", "scratch", "--site", "./scratch"],
+            &["tonk", "space", "use", "scratch"],
+            &["tonk", "space", "unbind"],
+            &["tonk", "show", "workspace/sheet"],
+            &["tonk", "render", "alice@person!tonk:view/label"],
+            &["tonk", "eval", "rust/tonk-core/assets/library/sheets.yaml"],
+            &[
+                "tonk",
+                "remote",
+                "add",
+                "prod",
+                "https://access.example.com",
+            ],
+            &["tonk", "remote", "set-upstream", "prod"],
+            &[
+                "tonk",
+                "join",
+                "https://example/#invite",
+                "--name",
+                "shared",
+            ],
+            &["tonk", "help", "views"],
+            &["tonk", "status", "--json"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "guide command no longer parses: {args:?}"
+            );
+        }
+    }
+
+    #[test]
     fn every_account_read_parser_owns_a_json_form() {
         for args in [
             &["tonk", "account", "status", "--json"][..],
-            &["tonk", "account", "spaces", "list", "--json"],
+            &["tonk", "account", "spaces", "--json"],
             &["tonk", "account", "devices", "--json"],
-            &["tonk", "agents", "get", "--json"],
+            &["tonk", "space", "agents", "get", "--json"],
         ] {
             assert!(
                 Cli::try_parse_from(args).is_ok(),
@@ -3876,7 +4237,7 @@ mod account_spaces_parser_tests {
             "signed in: no\naccount: did:root\naccount service: none\ndevice: did:device\n"
         );
         // `status:` became `account status:`. Bare `status:` was ambiguous
-        // once this section renders inside `tonk context` next to the sync
+        // once this section renders inside `tonk status` next to the sync
         // section, which has a state of its own.
         assert_eq!(
             account_context(&account::AccountStatus::Registered {
@@ -3894,7 +4255,8 @@ mod account_spaces_parser_tests {
     fn account_login_name_is_none_when_omitted() {
         let cli = Cli::try_parse_from(["tonk", "account", "login"]).unwrap();
         let Some(Command::Account {
-            command: AccountCommand::Login { name, .. },
+            command: Some(AccountCommand::Login { name, .. }),
+            ..
         }) = cli.command
         else {
             panic!("expected account login");
@@ -3907,7 +4269,8 @@ mod account_spaces_parser_tests {
         let cli =
             Cli::try_parse_from(["tonk", "account", "login", "--name", "workstation"]).unwrap();
         let Some(Command::Account {
-            command: AccountCommand::Login { name, .. },
+            command: Some(AccountCommand::Login { name, .. }),
+            ..
         }) = cli.command
         else {
             panic!("expected account login");
@@ -3919,7 +4282,8 @@ mod account_spaces_parser_tests {
     fn account_delete_is_a_browser_review_not_an_immediate_flag() {
         let cli = Cli::try_parse_from(["tonk", "account", "delete", "--no-open"]).unwrap();
         let Some(Command::Account {
-            command: AccountCommand::Delete { no_open, .. },
+            command: Some(AccountCommand::Delete { no_open, .. }),
+            ..
         }) = cli.command
         else {
             panic!("expected account delete");
@@ -3934,7 +4298,8 @@ mod account_spaces_parser_tests {
         assert!(matches!(
             command,
             Command::Account {
-                command: AccountCommand::Logout
+                command: Some(AccountCommand::Logout),
+                ..
             }
         ));
         assert_eq!(descriptor(command), ("account", Some("logout")));
@@ -3942,23 +4307,9 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn account_spaces_bare_and_list_are_the_same_operation() {
-        for args in [
-            vec!["tonk", "account", "spaces"],
-            vec!["tonk", "account", "spaces", "list"],
-            vec!["tonk", "account", "spaces"],
-        ] {
-            let cli = Cli::try_parse_from(args).unwrap();
-            let Some(Command::Account {
-                command: AccountCommand::Spaces { command },
-            }) = cli.command
-            else {
-                panic!("expected account spaces");
-            };
-            assert!(
-                command.is_none() || matches!(command, Some(AccountSpacesCommand::List { .. }))
-            );
-        }
+    fn account_spaces_lists_bare_and_rejects_list() {
+        assert!(Cli::try_parse_from(["tonk", "account", "spaces"]).is_ok());
+        assert!(Cli::try_parse_from(["tonk", "account", "spaces", "list"]).is_err());
     }
 
     #[test]
@@ -3978,26 +4329,33 @@ mod account_spaces_parser_tests {
 
     #[test]
     fn reading_the_agents_claim_is_a_subcommand_that_owns_its_json_flag() {
-        // `--json` used to sit on the parent, where `tonk agents --json set
+        // `--json` used to sit on the parent, where `tonk space agents --json set
         // AGENTS.md` parsed fine and then had to be refused at runtime. On
         // `get` the combination cannot be spelled.
         assert!(matches!(
-            Cli::try_parse_from(["tonk", "agents", "get", "--json"])
+            Cli::try_parse_from(["tonk", "space", "agents", "get", "--json"])
                 .unwrap()
                 .command,
-            Some(Command::Agents {
-                command: Some(AgentsCommand::Get { json: true })
+            Some(Command::Space {
+                command: Some(SpaceCommand::Agents {
+                    command: Some(AgentsCommand::Get { json: true })
+                }),
+                ..
             })
         ));
 
-        // Bare `tonk agents` still projects the Markdown.
+        // Bare `tonk space agents` still projects the Markdown.
         assert!(matches!(
-            Cli::try_parse_from(["tonk", "agents"]).unwrap().command,
-            Some(Command::Agents { command: None })
+            Cli::try_parse_from(["tonk", "space", "agents"])
+                .unwrap()
+                .command,
+            Some(Command::Space {
+                command: Some(SpaceCommand::Agents { command: None }),
+                ..
+            })
         ));
 
-        assert!(Cli::try_parse_from(["tonk", "agents", "--json"]).is_err());
-        assert!(Cli::try_parse_from(["tonk", "agents", "--json", "set", "AGENTS.md"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "agents"]).is_err());
     }
 
     #[test]
@@ -4010,11 +4368,12 @@ mod account_spaces_parser_tests {
         assert!(matches!(
             cli.command,
             Some(Command::Space {
-                command: SpaceCommand::Rm {
+                command: Some(SpaceCommand::Rm {
                     keep_data: true,
                     yes: false,
                     ..
-                }
+                }),
+                ..
             })
         ));
     }
@@ -4062,22 +4421,15 @@ mod account_spaces_parser_tests {
         // leave half the pair where it was, which is what the move fixes.
         let cli = Cli::try_parse_from(["tonk", "space", "use", "garden"]).unwrap();
         let Some(Command::Space {
-            command: SpaceCommand::Use { name, json },
+            command: Some(SpaceCommand::Use { name }),
+            ..
         }) = cli.command
         else {
             panic!("expected space use");
         };
-        assert_eq!(name.as_deref(), Some("garden"));
-        assert!(!json);
+        assert_eq!(name, "garden");
 
-        // No name inspects rather than binds.
-        let cli = Cli::try_parse_from(["tonk", "space", "use"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Space {
-                command: SpaceCommand::Use { name: None, .. }
-            })
-        ));
+        assert!(Cli::try_parse_from(["tonk", "space", "use"]).is_err());
 
         assert!(Cli::try_parse_from(["tonk", "use", "garden"]).is_err());
     }
@@ -4090,9 +4442,11 @@ mod account_spaces_parser_tests {
                 .unwrap();
         let Some(Command::Account {
             command:
-                AccountCommand::Spaces {
+                Some(AccountCommand::Spaces {
                     command: Some(AccountSpacesCommand::Pull { subject, name }),
-                },
+                    ..
+                }),
+            ..
         }) = cli.command
         else {
             panic!("expected account spaces pull");
@@ -4108,12 +4462,14 @@ mod account_spaces_parser_tests {
             Cli::try_parse_from(["tonk", "account", "spaces", "delete", did, "--no-open"]).unwrap();
         let Some(Command::Account {
             command:
-                AccountCommand::Spaces {
+                Some(AccountCommand::Spaces {
                     command:
                         Some(AccountSpacesCommand::Delete {
                             subject, no_open, ..
                         }),
-                },
+                    ..
+                }),
+            ..
         }) = cli.command
         else {
             panic!("expected account spaces delete");
@@ -4127,7 +4483,8 @@ mod account_spaces_parser_tests {
         let cli = Cli::try_parse_from(["tonk", "space", "link", "garden"]).unwrap();
         let command = cli.command.as_ref().expect("space command");
         let Command::Space {
-            command: SpaceCommand::Link { name },
+            command: Some(SpaceCommand::Link { name }),
+            ..
         } = command
         else {
             panic!("expected space link");
