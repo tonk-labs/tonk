@@ -529,15 +529,9 @@ fn load_summary(host: HtmlElement) {
 
 /// Land a signed-in device where it was going.
 ///
-/// The gate parks the operation it refused and sends the user here; this is
-/// the other half. [`crate::account_gate::finish`] replays that operation —
-/// which navigates into the space it created or joined — or, with nothing
-/// parked, returns to the `next` this page was opened with. Only when neither
-/// applies does the success panel show, which is the case where the user came
-/// to `/account` on their own.
-///
-/// A replay failure is shown rather than swallowed. The account is real, so
-/// the panel says so; the sentence underneath says the operation is not done.
+/// [`crate::account_gate::finish`] returns to the `next` this page was
+/// opened with; only without one does the success panel show, which is the
+/// case where the user came to `/account` on their own.
 fn settle(host: &HtmlElement) {
     settle_with(host, crate::account_gate::finish());
 }
@@ -550,7 +544,7 @@ fn settle(host: &HtmlElement) {
 /// link carries `next` so its Back goes home — stays on the page they asked
 /// for instead of being bounced straight back out of it.
 fn settle_on_load(host: &HtmlElement) {
-    settle_with(host, crate::account_gate::resume_pending());
+    settle_with(host, async { Ok(false) });
 }
 
 fn settle_with(
@@ -977,13 +971,6 @@ fn load_status(host: HtmlElement) {
     // A `?link=` query is the CLI callback sending the tab back with the
     // authorization outcome, reported here in the page's own styling.
     let link_outcome = query_value("link").map(|status| (status, query_value("message")));
-    // The gate always arrives with a `next`. Without one the user came here
-    // themselves, so anything parked belongs to an attempt they walked away
-    // from — replaying it on this sign-in would create a space nobody asked
-    // for. Drop it before any ceremony can pick it up.
-    if crate::account_gate::requested_next().is_none() {
-        crate::account_gate::discard_pending();
-    }
     set_busy(&host, true, "Checking this browser…");
     spawn_local(async move {
         if let Err(error) = service(&host).await {

@@ -4,17 +4,16 @@
 
 use serde_json::{Value, json};
 
-/// Build the membership endpoint with the repository DID as one path segment.
+/// Build the repository endpoint with the repository DID as one path
+/// segment: the bar's presence probe, answered 404 for a space this device
+/// does not hold.
 #[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn membership_endpoint(space: &str) -> Result<String, &'static str> {
+pub(crate) fn repository_endpoint(space: &str) -> Result<String, &'static str> {
     let space = space.trim();
     if space.is_empty() || space.contains('{') || space.contains('}') {
         return Err("repository binding is unresolved");
     }
-    Ok(format!(
-        "/api/repository/{}/membership",
-        urlencoding::encode(space)
-    ))
+    Ok(format!("/api/repository/{}", urlencoding::encode(space)))
 }
 
 // The bar addresses exactly one repository endpoint, above. It mints its open
@@ -24,21 +23,21 @@ pub(crate) fn membership_endpoint(space: &str) -> Result<String, &'static str> {
 // gets is the account page's device list.
 
 #[cfg(test)]
-mod membership_endpoint_tests {
-    use super::membership_endpoint;
+mod repository_endpoint_tests {
+    use super::repository_endpoint;
 
     #[test]
     fn it_encodes_a_repository_did_as_one_path_segment() {
         assert_eq!(
-            membership_endpoint("did:key:z6Mk/a").unwrap(),
-            "/api/repository/did%3Akey%3Az6Mk%2Fa/membership"
+            repository_endpoint("did:key:z6Mk/a").unwrap(),
+            "/api/repository/did%3Akey%3Az6Mk%2Fa"
         );
     }
 
     #[test]
     fn it_rejects_empty_and_unresolved_repository_bindings() {
         for value in ["", "  ", "{id}", "did:key:{id}"] {
-            assert!(membership_endpoint(value).is_err(), "{value:?}");
+            assert!(repository_endpoint(value).is_err(), "{value:?}");
         }
     }
 }
