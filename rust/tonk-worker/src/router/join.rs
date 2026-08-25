@@ -951,7 +951,7 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
 /// Best-effort: the join is complete once the authority is saved
 /// locally, and a member whose hop did not land here is still a member,
 /// just not individually removable until it does.
-async fn retain_claim_authority(tonk: &TonkState, key: &str, chain: &DelegationChain) {
+pub(super) async fn retain_claim_authority(tonk: &TonkState, key: &str, chain: &DelegationChain) {
     let session = match tonk
         .reactor
         .repository(key)

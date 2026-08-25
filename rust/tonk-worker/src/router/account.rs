@@ -366,11 +366,12 @@ pub async fn link(
     // spaces. Each account-service request is bounded by the shared HTTP
     // timeout, and awaiting the sequence keeps it inside the fetch lifetime.
     super::account_state::ensure_account_state(&state).await;
-    // Spaces created before this account existed delegate to the profile
-    // key; adopt them under the account root ahead of the backup sweep,
-    // so what gets backed up is the account-rooted authority.
+    // Everything created or joined before this account existed hangs off
+    // the onboarding account; re-issue it to the root from the custodied
+    // seeds ahead of the backup sweep, so what gets backed up is the
+    // account-rooted authority, and retire the onboarding account.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::repository::adopt_profile_spaces(&state).await;
+    super::accreditation::rotate_from_onboarding(&state).await;
 
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it

@@ -25,6 +25,10 @@ pub use account_state::AccountKeys;
 
 mod http;
 
+/// Accreditation: rotate the onboarding account's custody to the passkey
+/// account, then retire it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod accreditation;
 pub(crate) mod adopt;
 
 mod join;
@@ -913,8 +917,8 @@ pub mod tests {
         );
     }
 
-    /// A space created before any root existed is adopted once one does:
-    /// its own signer re-delegates to the root and the stored prefix is
+    /// A space created before any root existed is re-issued once one does:
+    /// its custodied seed re-delegates to the root and the stored prefix is
     /// replaced, so the account holds the authority going forward.
     #[dialog_common::test]
     async fn it_adopts_profile_spaces_once_a_root_exists() {
@@ -922,29 +926,9 @@ pub mod tests {
         let key = put_repo(&app, "adopted").await;
 
         let tonk = state.read().await;
-        let root = Ed25519Signer::import(&test_root_seed(&tonk.profile_name))
-            .await
-            .unwrap();
-        let root_did = {
-            use dialog_varsig::Principal as _;
-            root.did()
-        };
-        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
-            .await
-            .unwrap();
-        super::identity::persist_root(
-            &tonk,
-            tonk_worker_api::SaveRootRequest {
-                credential_id: "test-credential".to_string(),
-                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
-                passkey: None,
-                encryption_key: None,
-            },
-        )
-        .await
-        .unwrap();
+        let root_did = persist_test_root(&tonk).await;
 
-        super::repository::adopt_profile_spaces(&tonk).await;
+        super::accreditation::rotate_from_onboarding(&tonk).await;
 
         let repository = tonk
             .profile
