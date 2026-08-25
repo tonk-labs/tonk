@@ -733,6 +733,57 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct PasskeyCreatedOn(pub String);
+
+    /// The account's registration state with the access service, as one
+    /// of `Registered`, `Active`, or `Suspended`.
+    ///
+    /// A fact rather than a locally cached HTTP answer, so every device
+    /// on the account reads the same status through an ordinary query
+    /// and converges on it through sync. Cardinality-one: an account has
+    /// one registration state, and concurrent linked-device writes
+    /// converge deterministically rather than accumulating.
+    ///
+    /// A string rather than a typed enum because the value system stores
+    /// scalars; [`tonk_account::customer::CustomerStatus`] round-trips
+    /// through `as_str`/`parse`, so an unrecognised value read from a
+    /// newer build parses as absent rather than as a wrong status.
+    ///
+    /// [`tonk_account::customer::CustomerStatus`]: https://docs.rs/tonk-account
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct CustomerStatus(pub String);
+
+    /// The email address the account enrolled with.
+    ///
+    /// Recorded alongside the status so a device that never ran the
+    /// enrollment still knows which address the activation link went to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct CustomerEmail(pub String);
+
+    /// The account's provider: the UCAN access-service endpoint this
+    /// account is a customer of.
+    ///
+    /// Named for the account's relationship, not the space's plumbing. A
+    /// space has a *remote* (an `origin` its `main` tracks); the account
+    /// has a *provider*, which is who serves those remotes and who
+    /// `/provider/add` provisions consumers under. A space's remote
+    /// normally points at this address, but the two are different facts
+    /// about different subjects.
+    ///
+    /// A fact rather than a value re-derived per call site: the address
+    /// used to come from the page (`https://{origin}/ucan/`, filled into
+    /// a hidden form field) and from the signed account descriptor, so
+    /// two paths could disagree about where a space syncs. The service
+    /// names it in the registration receipt, so every attach path reads
+    /// one answer, and a device that never ran the registration reads
+    /// the same one through sync.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct ProviderAddress(pub String);
 }
 
 /// Attributes that describe a repository on its content branch, keyed by the

@@ -268,6 +268,19 @@ pub struct Receipt {
     pub customer: Did,
     /// The customer's lifecycle state after the act.
     pub status: CustomerStatus,
+    /// The provider serving this customer: the UCAN endpoint its
+    /// spaces attach their remotes to.
+    ///
+    /// The service decides which provider serves its customers and says
+    /// so here, rather than every client deriving an address from
+    /// whichever origin its request happened to reach. A client records
+    /// this and attaches spaces to it; it never has to guess.
+    ///
+    /// Optional so a receipt from a service that predates this field
+    /// still decodes. An absent address means "unchanged", not "no
+    /// provider": a client that already recorded one keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// A registration refusal. Serialized with the variant as a `code` tag,
