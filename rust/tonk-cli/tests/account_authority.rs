@@ -276,6 +276,87 @@ async fn it_installs_authority_from_a_callback_authorization(
     Ok(())
 }
 
+/// A profile can accept space authority before it has an account. Linking
+/// later adds the profile-to-account half of the union, so the same local
+/// space can authorize account-bound sync without being re-claimed or moved.
+#[dialog_common::test]
+async fn it_syncs_a_claimed_space_after_linking_an_account(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let account_owner = common::AccountFixture::with_account_remote(&remote).await?;
+    account_owner.activate_with(&env).await?;
+    let owner_operator = account_owner.pre_account_site.operator.inner();
+    let owner_account =
+        tonk_cli::account_state::open_account_branch(&account_owner.profile, owner_operator)
+            .await?
+            .expect("the account owner is hydrated");
+    owner_account.push().perform(owner_operator).await?;
+
+    let inviter = common::TestSite::new().await?;
+    let invitation = tonk_cli::invite::mint(&inviter.site, None, None).await?;
+    let claimer_tmp = tempfile::tempdir()?;
+    let claimer_parent = claimer_tmp.path().canonicalize()?;
+    let claimer_config = common::isolated_config(&claimer_parent)?;
+    let joined_root = claimer_parent.join("claimed-before-link");
+    let mut production_config = claimer_config.clone();
+    production_config.require_account = true;
+    let claimed =
+        tonk_cli::invite::claim(&joined_root, &invitation.url, production_config.clone()).await?;
+
+    let joined = TonkSite::open_with(&joined_root, production_config.clone()).await?;
+    assert_eq!(
+        tonk_cli::site::member_did(&joined).await?,
+        joined.profile.did(),
+        "the pre-link invite must terminate at the persistent profile"
+    );
+    let page = common::authorizing_page(account_owner.root_signer().await?, remote.clone()).await?;
+    let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+    let approving = tokio::spawn(async move {
+        if let Some(url) = announced.recv().await {
+            let _ = reqwest::Client::new().get(&url).send().await;
+        }
+    });
+    let linked = tonk_cli::account::link_with_operator(
+        &joined.profile,
+        joined.operator.inner(),
+        &tonk_cli::account::LinkOptions {
+            service_url: remote,
+            device_name: "pre-link-claimer".to_owned(),
+            open_browser: false,
+            via: Some(page.url.clone()),
+            announce: Some(announce),
+            store: Some(claimer_config.account_store.clone()),
+        },
+    )
+    .await?;
+    approving.await?;
+    assert_eq!(
+        linked.account_state,
+        tonk_account::AccountStateStatus::Ready,
+        "linking must hydrate the account: {:?}",
+        linked.warning
+    );
+    let account_root: dialog_varsig::Did = linked.root_did.parse()?;
+    tonk_cli::site::load_account_root_prefix_for(
+        &joined.profile,
+        joined.operator.inner(),
+        &claimed.subject,
+        &account_root,
+    )
+    .await
+    .context("linking must make the profile-ending invite chain reach the account root")?;
+
+    let joined = TonkSite::open_with(&joined_root, production_config).await?;
+    configure_upstream(&joined, &env.access_service_url).await?;
+    env.provision_subject(claimed.subject.as_str()).await?;
+    tonk_cli::sync::push(&joined)
+        .await
+        .context("the linked account must authorize the profile's pre-link invite")?;
+
+    Ok(())
+}
+
 /// Discovering a space through the account: the flow that makes linking
 /// worth anything.
 ///

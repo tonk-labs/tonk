@@ -19,7 +19,6 @@ use std::sync::LazyLock;
 use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
-use dialog_effects::Use;
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
 use dialog_operator::{DeriveOperator, Operator, Profile};
@@ -648,8 +647,10 @@ pub async fn mount_delegated_at(
 
 /// Mount with profile/operator state already prepared by the invite parser.
 ///
-/// Existing invites can contain subject-open device authority. It remains
-/// usable for this mount but is never persisted as a reusable account backup.
+/// An invite supplies its own authority, so this path does not impose the
+/// account precondition used when restoring an account-root prefix. Before an
+/// account is linked, a valid profile-ending prefix remains reusable on this
+/// device and can be connected to an account by the later profile union.
 pub(crate) async fn mount_delegated_with(
     root: &Path,
     profile: Profile,
@@ -668,10 +669,9 @@ async fn mount_delegated_inner(
     config: SiteConfig,
     require_reusable: bool,
 ) -> Result<TonkSite> {
-    let local_root = crate::identity::local_root_with_operator(&profile, &operator)
-        .await?
-        .context("local root provisioning did not produce a record")?;
-    if config.require_account {
+    let local_root = crate::identity::local_root_with_operator(&profile, &operator).await?;
+    let require_account = config.require_account && require_reusable;
+    if require_account {
         crate::account::require_account_with_operator_in(
             &profile,
             &operator,
@@ -679,10 +679,16 @@ async fn mount_delegated_inner(
         )
         .await?;
     }
-    let account_root: Did = local_root
-        .root_did
-        .parse()
-        .context("stored root DID is invalid")?;
+    let authority_root: Did = match local_root {
+        Some(root) => root
+            .root_did
+            .parse()
+            .context("stored root DID is invalid")?,
+        None if require_reusable => {
+            bail!("local root provisioning did not produce a record")
+        }
+        None => profile.did(),
+    };
     let subject = chain
         .subject()
         .cloned()
@@ -690,7 +696,7 @@ async fn mount_delegated_inner(
     let chain_bytes = chain
         .to_bytes()
         .context("failed to serialize delegated authority")?;
-    let reusable = verify_prefix(&chain_bytes, &account_root).await;
+    let reusable = verify_prefix(&chain_bytes, &authority_root).await;
     if require_reusable && let Err(error) = &reusable {
         anyhow::bail!("delegated prefix is not reusable account-root authority: {error}");
     }
@@ -708,7 +714,7 @@ async fn mount_delegated_inner(
             .context("failed to serialize delegated prefix")?;
         profile
             .credential()
-            .site(space_root_site(&subject, &account_root))
+            .site(space_root_site(&subject, &authority_root))
             .save(prefix_bytes)
             .perform(&operator)
             .await
@@ -737,7 +743,7 @@ async fn mount_delegated_inner(
         operator,
         profile.clone(),
         config.account_store.clone(),
-        config.require_account,
+        require_account,
     )
     .await?;
     Ok(TonkSite {
@@ -787,17 +793,14 @@ async fn optional_credential(
     }
 }
 
-/// Resolve the reusable `subject → … → account_root` prefix, minting it
-/// when this profile holds the subject's authority but no chain to the
-/// account reaches it yet.
+/// Resolve the reusable `subject → … → account_root` prefix, recovering it
+/// from retained delegations when no validated credential is stored yet.
 ///
 /// Every path that authorizes a remote request for a space needs this exact
-/// prefix, so all of them recover the same way. A space created before the
-/// account existed — or by a release that stored no prefix at all — has
-/// repository authority that stops at the profile, and refusing it would
-/// strand data the device demonstrably owns. Extending that authority to
-/// the account root is local bookkeeping: it delegates to the root this
-/// profile already holds a grant from, and publishes nothing.
+/// prefix, so all of them recover the same way. Authority claimed before the
+/// account existed stops at the profile until linking retains the profile →
+/// account union. Recovery composes that existing path without minting a new
+/// ownership edge; explicit ownership adoption remains a separate operation.
 pub async fn load_account_root_prefix_for(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
@@ -897,48 +900,50 @@ async fn save_prefix(
     Ok(())
 }
 
-/// Rebuild the prefix from certificates this profile already holds.
+/// Rebuild the prefix from delegations the profile's access branch retains.
+///
+/// Ask the branch prover for the account root directly. Proving as the
+/// profile would stop at the shorter `subject → … → profile` path and omit
+/// the union edge needed by account-bound authorization.
 pub(crate) async fn recover_prefix(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<Option<DelegationChain>> {
-    let proof = profile
-        .access()
-        .prove(Subject::from(subject.clone()).attenuate(Use))
+    let access = Repository::from(profile)
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
         .perform(operator)
         .await
-        .context("failed to recover repository authority")?;
-    let delegations: Vec<_> = proof
+        .context("failed to open the profile access branch")?;
+    let proof = match access
+        .delegations()
+        .prove(
+            account_root.clone(),
+            dialog_ucan::Scope {
+                subject: dialog_ucan_core::subject::Subject::Specific(subject.clone()),
+                command: dialog_ucan_core::command::Command::parse("/use")
+                    .expect("the use command is valid"),
+                parameters: dialog_ucan::Parameters::default(),
+            },
+        )
+        .perform(operator)
+        .await
+    {
+        Ok(proof) => proof,
+        Err(dialog_capability::access::AuthorizeError::UnprovenSubject { .. }) => return Ok(None),
+        Err(error) => return Err(error).context("failed to recover repository authority"),
+    };
+    let delegations = proof
         .proofs
         .into_iter()
         .map(|certificate| certificate.0)
-        .collect();
-    // Assemble `subject → … → account_root` by issuer/audience links:
-    // the prover's proof ordering is not guaranteed to start at the
-    // subject, and a chain sliced by position can drag device/session
-    // proofs past the root into what must stay a reusable prefix.
-    let mut chain = Vec::new();
-    let mut cursor = subject.clone();
-    while &cursor != account_root {
-        let Some(next) = delegations
-            .iter()
-            .find(|delegation| delegation.issuer() == &cursor)
-        else {
-            return Ok(None);
-        };
-        chain.push(next.clone());
-        cursor = next.audience().clone();
-        if chain.len() > delegations.len() {
-            // A cycle cannot reach the root.
-            return Ok(None);
-        }
-    }
-    if chain.is_empty() {
+        .collect::<Vec<_>>();
+    if delegations.is_empty() {
         return Ok(None);
     }
-    DelegationChain::try_from(chain)
+    DelegationChain::try_from(delegations)
         .context("recovered repository authority is not a valid chain")
         .map(Some)
 }

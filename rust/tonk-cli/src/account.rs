@@ -200,16 +200,8 @@ async fn decode_provider(
         .context("stored account provider is unusable")
 }
 
-/// Load the provider attachment through an already-mounted site operator.
-pub(crate) async fn stored_provider_with_operator(
-    profile: &Profile,
-    operator: &dialog_operator::Operator<NativeSpace>,
-) -> Result<Option<AccountProviderRecord>> {
-    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
-    stored_provider_for_store(profile, operator, &store).await
-}
-
-/// [`stored_provider_with_operator`] against a caller-supplied store.
+/// Load the provider attachment through an already-mounted site operator and
+/// caller-supplied profile store.
 pub(crate) async fn stored_provider_in(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
@@ -251,23 +243,6 @@ async fn stored_provider_for_store(
 /// authority. Names the one command that provisions both the root and the
 /// account it belongs to.
 const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account login`";
-
-/// Refuse unless this profile holds an account.
-///
-/// The precondition every durable operation shares, in the shape the browser
-/// worker uses it (`router::account::require_account`): durable authority is
-/// only ever issued to an account, so what it mints stays revocable and what
-/// it creates gets backed up. `Unhydrated` and `Unconfigured` accounts pass —
-/// an account that exists but has not synchronized is still an account.
-pub(crate) async fn require_account_with_operator(
-    profile: &Profile,
-    operator: &dialog_operator::Operator<NativeSpace>,
-) -> Result<()> {
-    match stored_provider_with_operator(profile, operator).await? {
-        Some(_) => Ok(()),
-        None => bail!(ACCOUNT_REQUIRED),
-    }
-}
 
 /// Refuse unless one explicit profile store holds an account attachment.
 pub(crate) async fn require_account_with_operator_in(
@@ -1306,22 +1281,26 @@ mod tests {
         std::fs::write(&sentinel, b"keep").unwrap();
 
         assert!(
-            stored_provider_with_operator(&profile, &operator)
+            stored_provider_in(&profile, &operator, &store)
                 .await
                 .unwrap()
                 .is_some()
         );
 
-        logout_with_operator(&profile, &operator).await.unwrap();
+        logout_with_operator_in(&profile, &operator, &store)
+            .await
+            .unwrap();
 
         assert!(
-            stored_provider_with_operator(&profile, &operator)
+            stored_provider_in(&profile, &operator, &store)
                 .await
                 .unwrap()
                 .is_none()
         );
 
-        logout_with_operator(&profile, &operator).await.unwrap();
+        logout_with_operator_in(&profile, &operator, &store)
+            .await
+            .unwrap();
 
         assert_eq!(
             profile
