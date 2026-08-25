@@ -348,6 +348,15 @@ pub async fn unlock_root(endpoint: &str) -> Result<Ed25519Signer> {
     secret.signer().await
 }
 
+/// Derive the account's X25519 recipient through a custody assertion,
+/// for a device whose root record predates the key: the worker asks the
+/// page for this when it needs custody set up and nothing recorded it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn publish_encryption_key(endpoint: &str) -> Result<String> {
+    let (secret, _) = assert_unlock(endpoint).await?;
+    Ok(secret.encryption_key().recipient().did().to_string())
+}
+
 /// A custody passkey enrollment's outcome: the custody DID and consent
 /// the worker provisions with, and the credential the browser records.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

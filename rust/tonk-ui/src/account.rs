@@ -1240,7 +1240,7 @@ async fn deployment_service_did() -> Option<String> {
 /// The account repository remote this browser proposes: its own origin's
 /// `/ucan/` endpoint. Only a ceremony ever signs one; the stored descriptor is
 /// always the service-selected winner.
-fn proposed_remote() -> Result<String, String> {
+pub(crate) fn proposed_remote() -> Result<String, String> {
     window()
         .and_then(|window| window.location().origin().ok())
         .map(|origin| format!("{}/ucan/", origin.trim_end_matches('/')))
@@ -2325,6 +2325,7 @@ mod tests {
             delegation_cid: "bafyold".into(),
             delegation_hex: "00".into(),
             passkey: None,
+            encryption_key: None,
         };
         let ceremony = CeremonyOutput {
             root_did: "did:key:zNewRoot".into(),

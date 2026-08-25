@@ -151,6 +151,7 @@ fn status(root: LocalRoot) -> RootStatus {
         delegation_cid: root.delegation.proof_cids()[0].to_string(),
         delegation_hex: hex::encode(root.bytes),
         passkey: root.passkey,
+        encryption_key: root.encryption_key.map(|did| did.to_string()),
     }
 }
 
@@ -164,6 +165,28 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, Tonk
         })),
         Some(_) => Ok(Json(status(local_root(&state).await?))),
     }
+}
+
+/// Rewrite the local root record without its recipient: the shape of a
+/// device linked before the encryption key existed, for tests of what
+/// such a device does when it needs one.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkWorkerError> {
+    let Some(mut record) = load_record(state).await? else {
+        return Err(TonkWorkerError::RootRequired);
+    };
+    record.encryption_key = None;
+    let encoded = serde_json::to_vec(&record).map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to serialize local root: {error}"))
+    })?;
+    state
+        .profile
+        .credential()
+        .site(LOCAL_ROOT_SITE)
+        .save(encoded)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("failed to save local root: {error}")))
 }
 
 pub(crate) async fn persist_root(
@@ -283,6 +306,16 @@ pub(crate) async fn persist_root(
             TonkWorkerError::Internal(format!("failed to save local root: {error}"))
         })?;
 
+    let encryption_key = record
+        .encryption_key
+        .as_deref()
+        .map(parse_encryption_key)
+        .transpose()?;
+    // An operation may be waiting on exactly this: a page answered the
+    // worker's request for a passkey assertion by saving the key.
+    if let Some(recipient) = &encryption_key {
+        super::custody::notify_encryption_key(recipient);
+    }
     Ok(status(LocalRoot {
         root_did: chain.issuer().clone(),
         device_did: state.profile.did(),
@@ -290,11 +323,7 @@ pub(crate) async fn persist_root(
         delegation: chain,
         bytes,
         passkey: record.passkey,
-        encryption_key: record
-            .encryption_key
-            .as_deref()
-            .map(parse_encryption_key)
-            .transpose()?,
+        encryption_key,
     }))
 }
 

@@ -664,6 +664,16 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             };
             log!("command CreateSpace name={} remote={:?}", name, remote);
 
+            // The space's seed is custodied under the account before the
+            // space exists. A linked device whose root record predates the
+            // encryption key asks the originating page for a passkey
+            // assertion here, outside the state lock, and resumes once the
+            // page has saved the key.
+            if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
+                log!("CreateSpace '{}' refused: {}", name, error);
+                return;
+            }
+
             // 1. Always create local-only first, so the space appears
             //    whether or not a remote was given (and never vanishes on
             //    a remote failure). The create mints a fresh identity and

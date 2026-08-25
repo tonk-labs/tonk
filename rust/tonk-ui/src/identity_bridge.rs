@@ -235,6 +235,27 @@ pub(crate) async fn unlock_with_passkey(
     call("unlockWithPasskey", input).await
 }
 
+/// Input for [`publish_encryption_key`]: the `/ucan/` endpoint the custody
+/// cell resolves through.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublishEncryptionKeyInput {
+    pub endpoint: String,
+}
+
+/// The account's X25519 recipient, derived through one assertion.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublishedEncryptionKey {
+    pub encryption_key: String,
+}
+
+pub(crate) async fn publish_encryption_key(
+    input: PublishEncryptionKeyInput,
+) -> Result<PublishedEncryptionKey, IdentityBridgeError> {
+    call("publishEncryptionKey", input).await
+}
+
 /// Input for [`authorize_device`].
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

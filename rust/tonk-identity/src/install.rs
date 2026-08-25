@@ -275,6 +275,19 @@ async fn publish_queued_custody(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(Object::new().into())
 }
 
+/// `publishEncryptionKey({ endpoint })` → `{ encryptionKey }`: one
+/// assertion, the account's X25519 recipient. The page saves it with the
+/// root so the worker can set up custody for what it creates.
+async fn publish_encryption_key(input: JsValue) -> Result<JsValue, JsValue> {
+    let endpoint = string_property(&input, "endpoint")?;
+    let key = crate::ceremony::publish_encryption_key(&endpoint)
+        .await
+        .map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(&result, &"encryptionKey".into(), &key.into())?;
+    Ok(result.into())
+}
+
 /// `unlockWithPasskey({ deviceDid, deviceName, endpoint, serviceDid? })`
 /// → the `linkDevice` result shape. One assertion, one presigned GET,
 /// and the unwrapped secret self-issues the device delegation.
@@ -373,6 +386,16 @@ pub fn install() {
         publish_queued.as_ref().unchecked_ref(),
     );
     publish_queued.forget();
+
+    let publish_encryption_key = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(publish_encryption_key(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"publishEncryptionKey".into(),
+        publish_encryption_key.as_ref().unchecked_ref(),
+    );
+    publish_encryption_key.forget();
 
     let unlock_with_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(unlock_with_passkey(input))

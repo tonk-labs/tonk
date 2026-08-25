@@ -1769,6 +1769,16 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
             let Some(command) = command else {
                 return;
             };
+            // The invite principal's seed is custodied under the account
+            // as part of the join. A linked device whose root record
+            // predates the encryption key asks the originating page for a
+            // passkey assertion here, before the state lock is taken.
+            if let Err(error) =
+                crate::router::custody::ensure_recipient(env.state(), env.client()).await
+            {
+                log!("join refused: {error}");
+                return;
+            }
             run_join(&env, command).await;
         })
     }

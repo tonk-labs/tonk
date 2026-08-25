@@ -77,3 +77,41 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
         }
     });
 }
+
+/// Ask the originating document to run a WebAuthn ceremony the worker
+/// cannot: it has no `window`. The page answers through the ordinary API
+/// (`POST /api/identity/root`), which is what the worker then waits on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn request_webauthn(
+    client: &crate::router::ClientId,
+    request: &str,
+) -> Result<(), crate::TonkWorkerError> {
+    use crate::TonkWorkerError;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service worker scope".to_string()))?;
+    let value = JsFuture::from(global.clients().get(&client.0))
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("clients.get failed: {error:?}")))?;
+    if value.is_undefined() || value.is_null() {
+        return Err(TonkWorkerError::Conflict(format!(
+            "the originating client {} is gone",
+            client.0
+        )));
+    }
+    let client: web_sys::Client = value
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("clients.get did not yield a Client".to_string()))?;
+    let message = tonk_worker_api::WebAuthnRequest {
+        message_type: tonk_worker_api::WEBAUTHN.to_string(),
+        request: request.to_string(),
+    };
+    let message = serde_wasm_bindgen::to_value(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
+    client
+        .post_message(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")))
+}

@@ -30,6 +30,8 @@ mod http;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) mod accreditation;
 pub(crate) mod adopt;
+/// Getting the account's encryption key onto a device that needs it.
+pub(crate) mod custody;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};

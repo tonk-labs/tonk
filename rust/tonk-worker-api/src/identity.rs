@@ -40,6 +40,11 @@ pub enum RootStatus {
         /// Creation details when this Tonk client created the passkey.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         passkey: Option<PasskeyMetadata>,
+        /// The account's X25519 recipient, when a ceremony on this device
+        /// has recorded it. Absent means custody cannot be set up until
+        /// a passkey assertion derives it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encryption_key: Option<String>,
     },
 }
 
@@ -60,6 +65,27 @@ pub struct SaveRootRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
 }
+
+/// Service-worker message asking the originating document to run a
+/// WebAuthn ceremony on the worker's behalf and answer through the
+/// ordinary API. The worker has no `window`, so a passkey assertion can
+/// only happen on the page that asked for the operation needing it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebAuthnRequest {
+    /// Fixed message discriminator: [`WEBAUTHN`].
+    #[serde(rename = "type")]
+    pub message_type: String,
+    /// What the ceremony must produce; see [`ENCRYPTION_KEY_REQUEST`].
+    pub request: String,
+}
+
+/// The `type` every [`WebAuthnRequest`] message carries.
+pub const WEBAUTHN: &str = "webauthn";
+
+/// Derive the account's encryption key from a passkey assertion and
+/// save it with the root (`POST /api/identity/root` with `encryptionKey`).
+/// The worker waits for that save before continuing.
+pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
 
 /// Request to create a durable space through the local root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
