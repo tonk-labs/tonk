@@ -169,6 +169,35 @@ pub async fn enroll(
     Ok(Json(receipt))
 }
 
+/// POST `/api/customer/activated` → record the receipt the activation
+/// page received.
+///
+/// Activation happens on a page that posts the emailed invocation
+/// straight to the service's `/ucan/` endpoint, so the receipt — and
+/// with it the provider address the service names — lands somewhere the
+/// worker never sees. Without this the fact is written only when
+/// something later calls the status probe, which leaves a just-activated
+/// account creating local-only spaces because nothing recorded who
+/// serves it.
+///
+/// Takes the receipt rather than re-deriving anything: the service
+/// already said who it is, and this is where that answer is kept.
+#[wasm_compat]
+pub async fn activated(
+    State(state): State<AppState>,
+    Json(receipt): Json<Receipt>,
+) -> Result<Json<()>, TonkWorkerError> {
+    let state = state.read().await;
+    let email = load_customer(&state)
+        .await?
+        .map(|record| record.email)
+        .unwrap_or_default();
+    record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref()).await?;
+    // Anything held back while the account was unserved can run now.
+    drain_pending(&state).await;
+    Ok(Json(()))
+}
+
 /// GET `/api/customer` → the account's registration state: the service's
 /// live answer joined with the locally recorded enrollment.
 #[wasm_compat]

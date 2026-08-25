@@ -1043,7 +1043,7 @@ mod tests {
             &driver,
             &format!("/api/repository/{key}/remote"),
             serde_json::json!({
-                "remote": { "origin": { "address": { "ucan": env.tonk_web.join("ucan/")? } } },
+                "remote": { "origin": { "address": { "Ucan": env.tonk_web.join("ucan/")? } } },
                 "branch": { "main": { "upstream": { "remote": "origin", "branch": "main" } } },
             }),
         )
