@@ -107,18 +107,18 @@ pub enum InviteError {
     InvalidInvite(String),
     /// `claim` was asked to bootstrap a site directory that
     /// already exists. The join must never clobber existing site
-    /// storage; the user removes it (or picks another spot name)
+    /// storage; the user removes it (or picks another space name)
     /// first.
     ///
     /// The likeliest way to reach this without having noticed is
-    /// `tonk spot rm --keep-data` under the same name, which leaves
+    /// `tonk space rm --keep-data` under the same name, which leaves
     /// data here that no registry entry mentions — so the message
     /// names both ways out rather than just "remove it".
     #[error(
         "a site already exists at {0}\n\
-         it belongs to no registered spot; adopt it with \
-         `tonk spot new <name> --site {0}`,\n\
-         delete the directory, or join under another spot name"
+         it belongs to no registered space; adopt it with \
+         `tonk space new <name> --site {0}`,\n\
+         delete the directory, or join under another space name"
     )]
     SiteAlreadyExists(PathBuf),
     /// Anything else — key generation, delegation building,
@@ -127,9 +127,9 @@ pub enum InviteError {
     Io(String),
 }
 
-impl InviteError {
+impl crate::Coded for InviteError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         ExitCode::IoError
     }
 }
@@ -196,7 +196,7 @@ async fn mint_for(
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
-    // `tonk spot new` committed before any upstream existed. No-op
+    // `tonk space new` committed before any upstream existed. No-op
     // when the branch has no upstream (a local-only invite).
     // Pull-before-push reconciles a possibly advanced upstream,
     // best-effort; the push error is authoritative.
@@ -336,7 +336,7 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
 
 /// Claim an invite, bootstrapping a fresh site at `root` (the
 /// site directory itself — the caller picks it, typically the
-/// canonical `spots/<name>/` dir) whose repository targets the
+/// canonical `spaces/<name>/` dir) whose repository targets the
 /// invited subject DID.
 ///
 /// Steps:
@@ -353,8 +353,8 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
 ///    subsequent push/pull operations.
 /// 5. Mint a verifier-only credential keyed to the invited
 ///    subject DID and create a local space at `name == "main"`,
-///    matching the layout `tonk spot new` produces (so all the
-///    later read paths work uniformly across spot-new- and
+///    matching the layout `tonk space new` produces (so all the
+///    later read paths work uniformly across space-new- and
 ///    join-bootstrapped sites).
 /// 6. If the invite carried a `remote=` URL, register it, set it
 ///    as the local `main`'s upstream, and pull once — a clean

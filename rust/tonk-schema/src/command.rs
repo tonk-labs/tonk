@@ -162,7 +162,7 @@ impl Command for Invite {
     type Output = ();
 }
 
-/// Attach a sync remote to an existing spot, and optionally mint an invite
+/// Attach a sync remote to an existing space, and optionally mint an invite
 /// once it is attached.
 ///
 /// Dispatched routelessly by the share control when a user accepts the offer
@@ -175,7 +175,7 @@ impl Command for Invite {
 /// This is deliberately NOT the `space/enable-sync` command seeded in
 /// `core.yaml`: that one shares `CreateSpace`'s trigger attribute, so a
 /// handler registered against it would fire alongside `CreateSpaceHandler`
-/// and mint a new spot instead of attaching to the existing one.
+/// and mint a new space instead of attaching to the existing one.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct EnableSync {
     /// The command entity (a fresh id per invocation).
@@ -391,7 +391,7 @@ pub struct Credential {
 }
 
 /// The overlay-only fact a refused `tonk:invite` asserts: why the mint did
-/// not happen, keyed by the spot's **subject** DID (`this`) — the same
+/// not happen, keyed by the space's **subject** DID (`this`) — the same
 /// entity [`Credential`] is keyed by, so one subject carries both the
 /// success and the refusal.
 ///
@@ -401,7 +401,7 @@ pub struct Credential {
 /// to avoid).
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct ShareBlocked {
-    /// The spot's subject DID.
+    /// The space's subject DID.
     pub this: Entity,
     /// Refusal class: `not-synced` | `unshareable-remote` | `attach-failed`.
     pub blocked: crate::domain::share::Blocked,

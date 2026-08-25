@@ -8,23 +8,19 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::listing::Listing;
+use crate::site::SiteConfig;
+use crate::space::SpaceStore;
 use anyhow::{Context as _, Result};
 use dialog_query::{Output as _, Query, Term};
 use serde::Serialize;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{MemberName, MemberRole, Membership};
-use unicode_width::UnicodeWidthStr as _;
-
-use crate::site::SiteConfig;
-use crate::spot::SpotStore;
 
 /// Shortest DID abbreviation a listing starts from. The first four
 /// characters of a `did:key` identifier are the shared ed25519 multibase
 /// prefix, so anything shorter renders every row identically.
 const ABBREVIATION: usize = 8;
-
-/// The gutter between rendered columns.
-const GUTTER: usize = 3;
 
 /// One replica's relationship to the roster its space carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -135,17 +131,13 @@ impl Roster {
     }
 }
 
-/// Version-two local-replica row.
+/// One local-replica row.
 ///
-/// Version two is where ownership stopped being a registry tag: `account`
-/// and `access` are gone, and `owner` / `ownerName` / `ownerIsYou` — read
-/// from the space's own roster — take their place. A reader written against
-/// version one cannot be fed this, so the number moves with the shape.
+/// Ownership is read from the space's own roster through `owner`,
+/// `ownerName`, and `ownerIsYou`, rather than from a registry tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LocalSpaceInventoryRowV2 {
-    /// Schema version, exactly two.
-    pub version: u8,
+pub struct LocalSpaceInventoryRow {
     /// Registered space name.
     pub name: String,
     /// Repository subject DID.
@@ -169,7 +161,7 @@ pub struct LocalSpaceInventoryRowV2 {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocalSpaceInventory {
     /// Every valid local replica.
-    pub rows: Vec<LocalSpaceInventoryRowV2>,
+    pub rows: Vec<LocalSpaceInventoryRow>,
     /// One space-qualified message per skipped replica.
     pub diagnostics: Vec<String>,
 }
@@ -243,76 +235,39 @@ fn sanitize(name: &str) -> String {
 ///
 /// Lives here rather than in the binary so the text a person actually reads
 /// can be pinned by a test that builds real replicas.
-pub fn render(rows: &[LocalSpaceInventoryRowV2]) -> String {
-    if rows.is_empty() {
-        return "(no spaces registered; create one with `tonk space new <name>`)".to_owned();
-    }
+pub fn render(rows: &[LocalSpaceInventoryRow]) -> String {
     let length = abbreviation_length(
         rows.iter()
             .map(|row| row.subject.as_str())
             .chain(rows.iter().filter_map(|row| row.owner.as_deref())),
     );
-    let cells: Vec<[String; 3]> = rows
-        .iter()
-        .map(|row| {
-            [
-                format!("{} ({})", row.name, abbreviate(&row.subject, length)),
-                match &row.owner {
-                    None => "-".to_owned(),
-                    Some(owner) if row.owner_is_you => describe(owner, Some("you"), length),
-                    Some(owner) => describe(owner, row.owner_name.as_deref(), length),
-                },
-                row.role.column().to_owned(),
-            ]
-        })
-        .collect();
-    let headers = ["NAME", "OWNER", "ROLE"];
-    let widths: Vec<usize> = (0..headers.len())
-        .map(|column| {
-            cells
-                .iter()
-                .map(|row| row[column].width())
-                .chain(std::iter::once(headers[column].width()))
-                .max()
-                .unwrap_or_default()
-        })
-        .collect();
-    let mut out = String::new();
-    for (index, header) in headers.iter().enumerate() {
-        push_cell(&mut out, header, widths[index], index + 1 == headers.len());
+    let mut listing = Listing::new(
+        &["NAME", "OWNER", "ROLE"],
+        "no spaces registered; create one with `tonk space new <name>`",
+    );
+    for row in rows {
+        listing.push([
+            format!("{} ({})", row.name, abbreviate(&row.subject, length)),
+            match &row.owner {
+                None => "-".to_owned(),
+                Some(owner) if row.owner_is_you => describe(owner, Some("you"), length),
+                Some(owner) => describe(owner, row.owner_name.as_deref(), length),
+            },
+            row.role.column().to_owned(),
+        ]);
     }
-    for row in &cells {
-        out.push('\n');
-        for (index, cell) in row.iter().enumerate() {
-            push_cell(&mut out, cell, widths[index], index + 1 == row.len());
-        }
-    }
-    out
-}
-
-/// Append one cell, padded to `width` plus the gutter unless it ends the row.
-///
-/// Padding counts terminal columns, not characters: a member's display name
-/// can hold wide (CJK) or zero-width (combining) characters, and counting
-/// those as one column each would leave the columns after it ragged.
-fn push_cell(out: &mut String, cell: &str, width: usize, last: bool) {
-    out.push_str(cell);
-    if last {
-        return;
-    }
-    let pad = width.saturating_sub(cell.width()) + GUTTER;
-    out.extend(std::iter::repeat_n(' ', pad));
+    listing.render()
 }
 
 /// Inspect the registry and every replica it names without remote I/O.
-pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalSpaceInventory> {
+pub async fn list_local(store: &SpaceStore, config: &SiteConfig) -> Result<LocalSpaceInventory> {
     let registry = store.load()?;
     // Resolved from the first replica that opens and reused for the rest:
     // the account and the local root belong to the installation, not to any
     // one space, and a listing must not answer "who are we" per row.
     let mut identity = None;
     let mut report = LocalSpaceInventory::default();
-    for (name, entry) in &registry.spots {
+    for (name, entry) in &registry.spaces {
         match inspect_replica(config, name, entry, &mut identity).await {
             Ok((row, note)) => {
                 report.rows.push(row);
@@ -336,9 +291,9 @@ pub async fn list_local(store: &SpotStore, config: &SiteConfig) -> Result<LocalS
 async fn inspect_replica(
     config: &SiteConfig,
     name: &str,
-    entry: &crate::spot::SpotEntry,
+    entry: &crate::space::SpaceEntry,
     identity: &mut Option<crate::site::Identity>,
-) -> Result<(LocalSpaceInventoryRowV2, Option<String>)> {
+) -> Result<(LocalSpaceInventoryRow, Option<String>)> {
     let mut config = config.clone();
     config.require_account = false;
     let site = crate::site::TonkSite::open_with(&entry.site, config)
@@ -369,8 +324,7 @@ async fn inspect_replica(
         Some(roster) => classify(roster, identity),
     };
     Ok((
-        LocalSpaceInventoryRowV2 {
-            version: 2,
+        LocalSpaceInventoryRow {
             name: name.to_owned(),
             subject,
             // The account slot, not every identity this device holds: the

@@ -34,7 +34,8 @@ use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 use crate::site::TonkSite;
 
 /// One row of `tonk view ls`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ViewSummary {
     /// `db.meta/name` claim on the entity, when one is
     /// asserted. The same name might be reused across the

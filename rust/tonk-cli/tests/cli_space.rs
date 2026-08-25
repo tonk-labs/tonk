@@ -1,8 +1,8 @@
-//! CLI-level spot resolution: spawns the real `tonk` binary against
-//! an isolated registry (`TONK_SPOTS_STATE`) and pins `TONK_SPOT` /
-//! `--spot` explicitly, so these exercise the same precedence and
+//! CLI-level space resolution: spawns the real `tonk` binary against
+//! an isolated registry (`TONK_SPACES_STATE`) and pins `TONK_SPACE` /
+//! `--space` explicitly, so these exercise the same precedence and
 //! error text a human or an agent actually sees — not just the
-//! `spot` module's in-process ops (covered by `tests/spot.rs`).
+//! `space` module's in-process ops (covered by `tests/space.rs`).
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -23,13 +23,13 @@ fn tonk_bin() -> std::path::PathBuf {
 /// `tests/telemetry.rs`'s `run_tonk_guide`. `HOME` is redirected too,
 /// because the profile directory has no env override of its own and
 /// resolves off the home dir; a test that actually opens a site would
-/// otherwise write keys into the developer's real profile. `TONK_SPOT`
+/// otherwise write keys into the developer's real profile. `TONK_SPACE`
 /// is always removed first so the outer environment never leaks in;
 /// pass it via `extra_env` to pin it explicitly.
 fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Command {
     let mut cmd = Command::new(tonk_bin());
     cmd.args(args)
-        .env("TONK_SPOTS_STATE", state_dir)
+        .env("TONK_SPACES_STATE", state_dir)
         .env("TONK_TELEMETRY_STATE", state_dir)
         .env("DO_NOT_TRACK", "1")
         .env_remove("TONK_TELEMETRY")
@@ -39,8 +39,7 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         // These fixtures exercise remote selection, not identity provisioning.
         // Production omits this explicit unsafe compatibility override.
         .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
-        .env_remove("TONK_SPOT");
-    cmd.env_remove("TONK_SPACE");
+        .env_remove("TONK_SPACE");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -101,7 +100,7 @@ mod when_one_account_is_signed_in {
         let Some(signed_in) = signed_in else {
             return;
         };
-        let path = state.join("spots.json");
+        let path = state.join("spaces.json");
         let mut registry: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).expect("registry"))
                 .expect("registry JSON");
@@ -187,7 +186,7 @@ mod when_no_account_is_signed_in {
         assert!(spaces.status.success(), "{}", stderr_of(&spaces));
         assert!(stdout_of(&spaces).contains("no spaces registered"));
 
-        assert!(!state.path().join("spots.json").exists());
+        assert!(!state.path().join("spaces.json").exists());
     }
 
     #[dialog_common::test]
@@ -207,19 +206,21 @@ mod when_no_account_is_signed_in {
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
 
-        let spots: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(state.path().join("spots.json")).expect("space registry"),
+        let spaces: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(state.path().join("spaces.json")).expect("space registry"),
         )
-        .expect("spots JSON");
-        let entry = spots["spots"]["scratch"].as_object().expect("space entry");
+        .expect("spaces JSON");
+        let entry = spaces["spaces"]["scratch"]
+            .as_object()
+            .expect("space entry");
         assert_eq!(
             entry.keys().collect::<Vec<_>>(),
             vec!["site"],
-            "the registry records a binding and nothing more: {spots}"
+            "the registry records a binding and nothing more: {spaces}"
         );
         assert!(
-            spots["account"].is_null(),
-            "no account is signed in: {spots}"
+            spaces["account"].is_null(),
+            "no account is signed in: {spaces}"
         );
     }
 }
@@ -229,32 +230,32 @@ mod when_no_account_is_signed_in {
 #[cfg(feature = "integration-tests")]
 const DEAD_RELAY: &str = "http://127.0.0.1:9/revocations";
 
-/// Stand up a real spot through the CLI — `tonk spot new` writes the
+/// Stand up a real space through the CLI — `tonk space new` writes the
 /// site the rest of these invocations read — then register `remotes`
 /// in order. `tonk remote add` wires the *first* remote as `main`'s
 /// upstream and leaves it alone after that, so `remotes[0]` is the one
 /// the repo pushes to.
-fn spot_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) -> String {
+fn space_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) -> String {
     let relayed: Vec<(&str, &str, Option<&str>)> = remotes
         .iter()
         .map(|(name, endpoint)| (*name, *endpoint, None))
         .collect();
-    spot_with_relayed_remotes(state_dir, &relayed)
+    space_with_relayed_remotes(state_dir, &relayed)
 }
 
 /// The same, with an explicit revocation relay per remote. A deployment no
 /// longer advertises one and a mint no longer needs one, but a remote may
 /// still be configured with a relay by hand, and that stays carried into the
 /// link.
-fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&str>)]) -> String {
+fn space_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&str>)]) -> String {
     let site = state_dir.join("site");
     let site = site.to_str().expect("utf-8 site path");
-    let output = run(state_dir, &["spot", "new", "demo", "--site", site], &[]);
+    let output = run(state_dir, &["space", "new", "demo", "--site", site], &[]);
     assert!(output.status.success(), "{}", stderr_of(&output));
     let did = stdout_of(&output)
         .lines()
         .find_map(|line| line.strip_prefix("DID: "))
-        .expect("spot new reports the new spot's DID")
+        .expect("space new reports the new space's DID")
         .to_owned();
 
     for (name, endpoint, relay) in remotes {
@@ -268,13 +269,13 @@ fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&s
     did
 }
 
-/// Write a `spots.json` registry directly (bypassing the CLI) so
+/// Write a `spaces.json` registry directly (bypassing the CLI) so
 /// each test starts from a known, isolated fixture. `entries` are
 /// `(name, absolute site path)` pairs; site paths need not contain a
 /// real repo — resolution and its error text are what's under test,
 /// not site opening.
 fn write_registry(state_dir: &Path, entries: &[(&str, &Path)], current: Option<&str>) {
-    let spots: String = entries
+    let spaces: String = entries
         .iter()
         .map(|(name, site)| {
             format!(
@@ -289,8 +290,8 @@ fn write_registry(state_dir: &Path, entries: &[(&str, &Path)], current: Option<&
         Some(name) => format!("\"current\":\"{name}\","),
         None => String::new(),
     };
-    let json = format!("{{{current}\"spots\":{{{spots}}}}}");
-    std::fs::write(state_dir.join("spots.json"), json).expect("write spots.json");
+    let json = format!("{{{current}\"spaces\":{{{spaces}}}}}");
+    std::fs::write(state_dir.join("spaces.json"), json).expect("write spaces.json");
 }
 
 mod when_nothing_is_registered {
@@ -302,12 +303,12 @@ mod when_nothing_is_registered {
         let output = run(state.path(), &[], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("no spots registered"), "{stderr}");
+        assert!(stderr.contains("no spaces registered"), "{stderr}");
         assert!(!stderr.contains("Usage: tonk"), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn generic_assert_help_is_available_without_a_spot() {
+    fn generic_assert_help_is_available_without_a_space() {
         let state = tempfile::tempdir().expect("tempdir");
         let output = run(state.path(), &["assert", "--help"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
@@ -330,12 +331,12 @@ mod when_nothing_is_registered {
     }
 
     #[dialog_common::test]
-    fn it_errors_with_spot_new_hint_when_nothing_registered() {
+    fn it_errors_with_space_new_hint_when_nothing_registered() {
         let state = tempfile::tempdir().expect("tempdir");
         let output = run(state.path(), &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("no spots registered"), "{stderr}");
+        assert!(stderr.contains("no spaces registered"), "{stderr}");
         assert!(stderr.contains("--site"), "{stderr}");
     }
 }
@@ -350,7 +351,7 @@ mod when_asking_for_unbind_help {
     #[dialog_common::test]
     fn it_says_the_path_must_be_absolute() {
         let state = tempfile::tempdir().expect("tempdir");
-        let output = run(state.path(), &["spot", "unbind", "--help"], &[]);
+        let output = run(state.path(), &["space", "unbind", "--help"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("absolute"), "{stdout}");
@@ -360,7 +361,7 @@ mod when_asking_for_unbind_help {
 mod when_resolving_with_precedence {
     use super::*;
 
-    fn two_spot_registry(state: &Path) {
+    fn two_space_registry(state: &Path) {
         let a = state.join("site-a");
         let b = state.join("site-b");
         std::fs::create_dir_all(&a).expect("mkdir a");
@@ -371,47 +372,89 @@ mod when_resolving_with_precedence {
     #[dialog_common::test]
     fn it_prefers_the_flag_over_env() {
         let state = tempfile::tempdir().expect("tempdir");
-        two_spot_registry(state.path());
+        two_space_registry(state.path());
 
         let output = run(
             state.path(),
-            &["--spot", "a", "status"],
-            &[("TONK_SPOT", "b")],
+            &["--space", "a", "status"],
+            &[("TONK_SPACE", "b")],
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: a (flag)"), "{stderr}");
+        assert!(stderr.contains("active space: a (flag)"), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn it_reads_tonk_spot_from_the_environment() {
+    fn it_reads_tonk_space_from_the_environment() {
         let state = tempfile::tempdir().expect("tempdir");
-        two_spot_registry(state.path());
+        two_space_registry(state.path());
 
-        let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
+        let output = run(state.path(), &["status"], &[("TONK_SPACE", "a")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: a (env)"), "{stderr}");
+        assert!(stderr.contains("active space: a (env)"), "{stderr}");
     }
 
     #[dialog_common::test]
     fn it_accepts_canonical_space_flag_and_environment_names() {
         let state = tempfile::tempdir().expect("tempdir");
-        two_spot_registry(state.path());
+        two_space_registry(state.path());
 
         let output = run(state.path(), &["--space", "a", "status"], &[]);
         assert!(!output.status.success());
-        assert!(stderr_of(&output).contains("active spot: a (flag)"));
+        assert!(stderr_of(&output).contains("active space: a (flag)"));
 
         let output = run(state.path(), &["status"], &[("TONK_SPACE", "a")]);
         assert!(!output.status.success());
-        assert!(stderr_of(&output).contains("active spot: a (env)"));
+        assert!(stderr_of(&output).contains("active space: a (env)"));
     }
 
     #[dialog_common::test]
-    fn it_rejects_conflicting_space_environment_aliases() {
+    fn it_rejects_the_pre_rename_flag_and_environment_name() {
         let state = tempfile::tempdir().expect("tempdir");
-        two_spot_registry(state.path());
+        two_space_registry(state.path());
+
+        let output = run(state.path(), &["--spot", "a", "status"], &[]);
+        assert!(!output.status.success());
+        assert!(stderr_of(&output).contains("unexpected argument '--spot'"));
+
+        let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
+        assert!(!output.status.success());
+        assert!(
+            stderr_of(&output).contains("TONK_SPOT was removed; use TONK_SPACE"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_the_pre_rename_state_directory_variable() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_space_registry(state.path());
+
+        let mut cmd = Command::new(tonk_bin());
+        cmd.args(["status"])
+            .env_remove("TONK_SPACES_STATE")
+            .env("TONK_SPOTS_STATE", state.path())
+            .env("TONK_TELEMETRY_STATE", state.path())
+            .env("DO_NOT_TRACK", "1")
+            .env("TONK_NO_UPDATE_CHECK", "1")
+            .env("HOME", state.path())
+            .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
+            .env("TONK_SPACE", "a");
+        let output = cmd.output().expect("run tonk");
+        assert!(!output.status.success());
+        assert!(
+            stderr_of(&output).contains("TONK_SPOTS_STATE was removed; use TONK_SPACES_STATE"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+
+    #[dialog_common::test]
+    fn canonical_and_pre_rename_environment_names_do_not_compete_silently() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_space_registry(state.path());
 
         let output = run(
             state.path(),
@@ -420,19 +463,22 @@ mod when_resolving_with_precedence {
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("TONK_SPACE and TONK_SPOT"), "{stderr}");
+        assert!(
+            stderr.contains("TONK_SPOT was removed; use TONK_SPACE"),
+            "{stderr}"
+        );
     }
 
     #[dialog_common::test]
     fn it_does_not_fall_back_to_the_legacy_global_selection() {
         let state = tempfile::tempdir().expect("tempdir");
-        two_spot_registry(state.path());
+        two_space_registry(state.path());
 
-        let output = run(state.path(), &["status"], &[("TONK_SPOT", "")]);
+        let output = run(state.path(), &["status"], &[("TONK_SPACE", "")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
         assert!(
-            stderr.contains("no spot active for this directory"),
+            stderr.contains("no space active for this directory"),
             "{stderr}"
         );
     }
@@ -440,38 +486,38 @@ mod when_resolving_with_precedence {
     #[dialog_common::test]
     fn bare_use_reports_the_effective_selection() {
         let state = tempfile::tempdir().expect("tempdir");
-        two_spot_registry(state.path());
+        two_space_registry(state.path());
 
-        let output = run(state.path(), &["use"], &[("TONK_SPOT", "a")]);
+        let output = run(state.path(), &["space", "use"], &[("TONK_SPACE", "a")]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("current space: a"), "{stdout}");
+        assert!(stdout.contains("space: a\n"), "{stdout}");
         assert!(stdout.contains("selected via: env"), "{stdout}");
         assert!(stdout.contains("next: tonk context"), "{stdout}");
     }
 
     #[dialog_common::test]
-    fn it_errors_on_an_unknown_spot_naming_available() {
+    fn it_errors_on_an_unknown_space_naming_available() {
         let state = tempfile::tempdir().expect("tempdir");
         let a = state.path().join("site-a");
         std::fs::create_dir_all(&a).expect("mkdir a");
         write_registry(state.path(), &[("a", &a)], None);
 
-        let output = run(state.path(), &["status"], &[("TONK_SPOT", "nope")]);
+        let output = run(state.path(), &["status"], &[("TONK_SPACE", "nope")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("unknown spot 'nope'"), "{stderr}");
+        assert!(stderr.contains("unknown space 'nope'"), "{stderr}");
         assert!(stderr.contains("registered: a"), "{stderr}");
     }
 }
 
-mod when_using_spot_agent_context {
+mod when_using_space_agent_context {
     use super::*;
 
     #[dialog_common::test]
     fn it_explains_how_to_create_a_missing_claim() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[]);
+        space_with_remotes(state.path(), &[]);
 
         let output = run(state.path(), &["agents"], &[]);
         assert!(!output.status.success());
@@ -483,9 +529,9 @@ mod when_using_spot_agent_context {
     #[dialog_common::test]
     fn it_round_trips_the_repository_claim_as_raw_markdown_and_json() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[]);
+        space_with_remotes(state.path(), &[]);
         let source = state.path().join("source.md");
-        let expected = "# Demo spot\n\n1. Run `tonk query task --json`.\n";
+        let expected = "# Demo space\n\n1. Run `tonk query task --json`.\n";
         std::fs::write(&source, expected).expect("write source");
 
         let output = run(
@@ -503,24 +549,171 @@ mod when_using_spot_agent_context {
         assert!(output.status.success(), "{}", stderr_of(&output));
         assert_eq!(stdout_of(&output), expected);
 
-        let output = run(state.path(), &["agents", "--json"], &[]);
+        let output = run(state.path(), &["agents", "get", "--json"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let value: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("valid claim JSON");
-        assert_eq!(value["source"], "dialog-claim");
-        assert_eq!(value["attribute"], "xyz.tonk.repo/agents");
-        assert_eq!(value["markdown"], expected);
+        assert_eq!(value["schemaVersion"], "tonk.agents-get.v1");
+        assert_eq!(value["rows"][0]["source"], "dialog-claim");
+        assert_eq!(value["rows"][0]["attribute"], "xyz.tonk.repo/agents");
+        assert_eq!(value["rows"][0]["markdown"], expected);
         assert!(
-            value["entity"]
+            value["rows"][0]["entity"]
                 .as_str()
                 .is_some_and(|entity| entity.starts_with("did:key:"))
         );
         assert!(
-            value["revision"]
+            value["rows"][0]["revision"]
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
         );
     }
+
+    #[dialog_common::test]
+    fn quiet_agents_set_suppresses_the_claim_rows() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_with_remotes(state.path(), &[]);
+        let source = state.path().join("source.md");
+        std::fs::write(&source, "# Demo space\n").expect("write source");
+
+        let output = run(
+            state.path(),
+            &[
+                "agents",
+                "set",
+                source.to_str().expect("utf-8 path"),
+                "--quiet",
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert_eq!(stdout_of(&output), "asserted AGENTS.md claim\n");
+    }
+
+    #[dialog_common::test]
+    fn no_sync_on_a_noun_write_does_not_touch_the_remote() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
+        let source = state.path().join("source.md");
+        std::fs::write(&source, "# Demo space\n").expect("write source");
+
+        let output = run(
+            state.path(),
+            &[
+                "agents",
+                "set",
+                source.to_str().expect("utf-8 path"),
+                "--no-sync",
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert!(
+            !stderr_of(&output).contains("auto-sync"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+}
+
+mod when_importing {
+    use super::*;
+
+    #[dialog_common::test]
+    fn dry_run_reads_the_csv_without_committing_it() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let created = run(state.path(), &["space", "new", "demo"], &[]);
+        assert!(created.status.success(), "{}", stderr_of(&created));
+        let csv = state.path().join("export.csv");
+        let exported = run(
+            state.path(),
+            &["export", "--out", csv.to_str().expect("utf-8 export path")],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(exported.status.success(), "{}", stderr_of(&exported));
+        let before = run(
+            state.path(),
+            &["status", "--json"],
+            &[("TONK_SPACE", "demo")],
+        );
+        let before: serde_json::Value =
+            serde_json::from_slice(&before.stdout).expect("status JSON before");
+
+        let imported = run(
+            state.path(),
+            &[
+                "import",
+                csv.to_str().expect("utf-8 export path"),
+                "--dry-run",
+            ],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(imported.status.success(), "{}", stderr_of(&imported));
+        assert!(stdout_of(&imported).contains("dry run"));
+
+        let after = run(
+            state.path(),
+            &["status", "--json"],
+            &[("TONK_SPACE", "demo")],
+        );
+        let after: serde_json::Value =
+            serde_json::from_slice(&after.stdout).expect("status JSON after");
+        assert_eq!(before["sync"]["hash"], after["sync"]["hash"]);
+    }
+
+    #[dialog_common::test]
+    fn no_sync_import_does_not_touch_the_configured_remote() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let created = run(state.path(), &["space", "new", "demo"], &[]);
+        assert!(created.status.success(), "{}", stderr_of(&created));
+        let csv = state.path().join("export.csv");
+        let exported = run(
+            state.path(),
+            &["export", "--out", csv.to_str().expect("utf-8 path")],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(exported.status.success(), "{}", stderr_of(&exported));
+        let remote = run(
+            state.path(),
+            &["remote", "add", "origin", DEAD_REMOTE],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(remote.status.success(), "{}", stderr_of(&remote));
+
+        let imported = run(
+            state.path(),
+            &["import", csv.to_str().expect("utf-8 path"), "--no-sync"],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(imported.status.success(), "{}", stderr_of(&imported));
+        assert!(
+            !stderr_of(&imported).contains("auto-sync"),
+            "{}",
+            stderr_of(&imported)
+        );
+    }
+}
+
+#[dialog_common::test]
+fn context_reports_a_configured_dead_remote_without_fetching_it() {
+    let state = tempfile::tempdir().expect("tempdir");
+    space_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
+
+    let started = std::time::Instant::now();
+    let output = run(
+        state.path(),
+        &["context", "--json"],
+        &[("TONK_SPACE", "demo")],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "offline context took {:?}",
+        started.elapsed()
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("context JSON");
+    assert_eq!(value["sync"]["state"], "not-fetched");
+    assert_eq!(value["sync"]["fetched"], false);
 }
 
 mod when_joining {
@@ -554,7 +747,7 @@ mod when_the_invite_remote_differs_from_the_upstream {
     #[dialog_common::test]
     fn it_warns_the_recipient_may_miss_the_data() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(
+        space_with_remotes(
             state.path(),
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
@@ -588,7 +781,7 @@ mod when_a_remote_carries_no_revocation_relay {
     #[dialog_common::test]
     fn it_mints_an_invite_that_embeds_it() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
+        space_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
 
         let output = run(state.path(), &["invite"], &[]);
         let stderr = stderr_of(&output);
@@ -609,7 +802,7 @@ mod when_the_invite_remote_is_the_upstream {
     #[dialog_common::test]
     fn it_mints_without_a_mismatch_warning() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(
+        space_with_remotes(
             state.path(),
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
@@ -638,7 +831,7 @@ mod when_no_remote_is_registered_at_all {
     #[dialog_common::test]
     fn it_refuses_rather_than_minting_a_link_to_production() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[]);
+        space_with_remotes(state.path(), &[]);
 
         let output = run(state.path(), &["invite", "--no-shorten"], &[]);
 
@@ -661,12 +854,12 @@ mod when_no_remote_is_registered_at_all {
     #[dialog_common::test]
     fn it_names_each_way_to_give_the_space_an_origin() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[]);
+        space_with_remotes(state.path(), &[]);
 
         let output = run(state.path(), &["invite", "--no-shorten"], &[]);
         let stderr = stderr_of(&output);
 
-        assert!(stderr.contains("tonk account link"), "{stderr}");
+        assert!(stderr.contains("tonk account login"), "{stderr}");
         assert!(stderr.contains("tonk space link demo"), "{stderr}");
         assert!(stderr.contains("tonk remote add"), "{stderr}");
         assert!(stderr.contains("--base-url"), "{stderr}");
@@ -677,7 +870,7 @@ mod when_no_remote_is_registered_at_all {
     #[dialog_common::test]
     fn it_mints_on_an_explicitly_named_base() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[]);
+        space_with_remotes(state.path(), &[]);
 
         let output = run(
             state.path(),
@@ -697,7 +890,7 @@ mod when_no_remote_is_registered_at_all {
     #[dialog_common::test]
     fn it_honours_the_environment_switch() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(state.path(), &[]);
+        space_with_remotes(state.path(), &[]);
 
         let output = run(
             state.path(),
@@ -719,7 +912,7 @@ mod when_inviting_without_a_remote {
     #[dialog_common::test]
     fn it_mints_without_a_mismatch_warning() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(
+        space_with_remotes(
             state.path(),
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
@@ -735,7 +928,7 @@ mod when_inviting_without_a_remote {
     #[dialog_common::test]
     fn it_warns_and_falls_back_when_several_remotes_are_registered() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(
+        space_with_remotes(
             state.path(),
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
@@ -763,7 +956,7 @@ mod when_several_remotes_are_registered {
     #[dialog_common::test]
     fn it_names_both_ways_out_of_the_ambiguity() {
         let state = tempfile::tempdir().expect("tempdir");
-        spot_with_remotes(
+        space_with_remotes(
             state.path(),
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
@@ -790,7 +983,7 @@ mod when_minting_against_a_live_remote {
 
     use super::*;
 
-    /// Set a spot up and run one `tonk` invocation against it, all on
+    /// Set a space up and run one `tonk` invocation against it, all on
     /// the blocking pool. `#[dialog_common::test]` expands to
     /// `#[tokio::test]`, whose current-thread runtime is also hosting
     /// the access service — block that thread on a subprocess and the
@@ -804,18 +997,18 @@ mod when_minting_against_a_live_remote {
         let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
         let setup_dir = state_dir.clone();
         let setup_endpoint = endpoint.clone();
-        // Create the spot first so its DID can be provisioned: minting
+        // Create the space first so its DID can be provisioned: minting
         // pushes, and the access service serves no unprovisioned space.
         let did = tokio::task::spawn_blocking(move || {
             // With a relay, to keep the hand-configured path exercised
             // end-to-end against a live service.
-            spot_with_relayed_remotes(&setup_dir, &[("origin", &setup_endpoint, Some(DEAD_RELAY))])
+            space_with_relayed_remotes(&setup_dir, &[("origin", &setup_endpoint, Some(DEAD_RELAY))])
         })
         .await
-        .expect("blocking spot setup joins");
+        .expect("blocking space setup joins");
         env.provision_subject(&did)
             .await
-            .expect("the spot provisions");
+            .expect("the space provisions");
 
         tokio::task::spawn_blocking(move || {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -958,13 +1151,13 @@ mod when_status_is_synced {
         let setup_dir = state_dir.clone();
         let setup_endpoint = endpoint.clone();
         let did = tokio::task::spawn_blocking(move || {
-            spot_with_remotes(&setup_dir, &[("origin", &setup_endpoint)])
+            space_with_remotes(&setup_dir, &[("origin", &setup_endpoint)])
         })
         .await
-        .expect("blocking spot setup joins");
+        .expect("blocking space setup joins");
         env.provision_subject(&did)
             .await
-            .expect("the spot provisions");
+            .expect("the space provisions");
 
         let (expected_hash, status) = tokio::task::spawn_blocking(move || {
             let pushed = run(&state_dir, &["push"], &[]);
@@ -983,7 +1176,7 @@ mod when_status_is_synced {
         .await
         .expect("blocking tonk invocations join");
 
-        assert!(status.contains("\nsynced\n"), "{status}");
+        assert!(status.contains("sync: synced\n"), "{status}");
         assert!(
             status.contains(&format!("hash: {expected_hash}")),
             "current hash {expected_hash} missing from status output:\n{status}"
@@ -995,7 +1188,7 @@ mod when_status_is_synced {
 mod when_a_directory_is_bound {
     use super::*;
 
-    /// Two registered spots plus a real `work/nested/` tree to bind
+    /// Two registered spaces plus a real `work/nested/` tree to bind
     /// and run from. Site paths need
     /// not hold a repo: resolution and its error text are what is
     /// under test, not site opening.
@@ -1023,7 +1216,7 @@ mod when_a_directory_is_bound {
     }
 
     fn bind(state: &Path, cwd: &Path, name: &str) {
-        let output = run_in(state, cwd, &["use", name], &[]);
+        let output = run_in(state, cwd, &["space", "use", name], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
     }
 
@@ -1036,7 +1229,7 @@ mod when_a_directory_is_bound {
         let output = run_in(state.path(), &nested, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: a (directory"), "{stderr}");
+        assert!(stderr.contains("active space: a (directory"), "{stderr}");
         assert!(stderr.contains(&shown(&work)), "{stderr}");
     }
 
@@ -1048,21 +1241,21 @@ mod when_a_directory_is_bound {
 
         let elsewhere = state.path().join("elsewhere");
         std::fs::create_dir_all(&elsewhere).expect("mkdir elsewhere");
-        let output = run_in(state.path(), &elsewhere, &["spot", "list"], &[]);
+        let output = run_in(state.path(), &elsewhere, &["space", "list"], &[]);
         let stdout = stdout_of(&output);
         assert!(!stdout.contains("active here:"), "{stdout}");
     }
 
     #[dialog_common::test]
-    fn it_prefers_tonk_spot_over_a_binding() {
+    fn it_prefers_tonk_space_over_a_binding() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, nested) = fixture(state.path());
         bind(state.path(), &work, "a");
 
-        let output = run_in(state.path(), &nested, &["status"], &[("TONK_SPOT", "b")]);
+        let output = run_in(state.path(), &nested, &["status"], &[("TONK_SPACE", "b")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: b (env)"), "{stderr}");
+        assert!(stderr.contains("active space: b (env)"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -1070,7 +1263,12 @@ mod when_a_directory_is_bound {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
 
-        let output = run_in(state.path(), &work, &["use", "a"], &[("TONK_SPOT", "b")]);
+        let output = run_in(
+            state.path(),
+            &work,
+            &["space", "use", "a"],
+            &[("TONK_SPACE", "b")],
+        );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: a"), "{stdout}");
@@ -1087,7 +1285,7 @@ mod when_a_directory_is_bound {
         let output = run_in(state.path(), &nested, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("active spot: b (directory"), "{stderr}");
+        assert!(stderr.contains("active space: b (directory"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -1096,7 +1294,7 @@ mod when_a_directory_is_bound {
         let (work, _nested) = fixture(state.path());
         bind(state.path(), &work, "a");
 
-        let output = run_in(state.path(), state.path(), &["spot", "list"], &[]);
+        let output = run_in(state.path(), state.path(), &["space", "list"], &[]);
         let stdout = stdout_of(&output);
         assert!(stdout.contains("directories:"), "{stdout}");
         assert!(stdout.contains(&shown(&work)), "{stdout}");
@@ -1108,18 +1306,18 @@ mod when_a_directory_is_bound {
         let (work, nested) = fixture(state.path());
         bind(state.path(), &work, "a");
 
-        let refused = run_in(state.path(), &nested, &["spot", "unbind"], &[]);
+        let refused = run_in(state.path(), &nested, &["space", "unbind"], &[]);
         assert!(!refused.status.success());
         let stderr = stderr_of(&refused);
         assert!(stderr.contains("is bound to a"), "{stderr}");
 
-        let unbound = run_in(state.path(), &work, &["spot", "unbind"], &[]);
+        let unbound = run_in(state.path(), &work, &["space", "unbind"], &[]);
         assert!(unbound.status.success(), "{}", stderr_of(&unbound));
 
         let output = run_in(state.path(), &nested, &["status"], &[]);
         let stderr = stderr_of(&output);
         assert!(
-            stderr.contains("no spot active for this directory"),
+            stderr.contains("no space active for this directory"),
             "{stderr}"
         );
     }
@@ -1130,7 +1328,7 @@ mod when_a_directory_is_bound {
         let (work, _nested) = fixture(state.path());
         bind(state.path(), &work, "a");
 
-        let output = run_in(state.path(), &work, &["use", "b"], &[]);
+        let output = run_in(state.path(), &work, &["space", "use", "b"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
@@ -1144,7 +1342,7 @@ mod when_a_directory_is_bound {
         bind(state.path(), &work, "a");
 
         // `use` rewrites this directory's one binding.
-        let output = run_in(state.path(), &work, &["use", "b"], &[]);
+        let output = run_in(state.path(), &work, &["space", "use", "b"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("binding: b (was a)"), "{stdout}");
@@ -1152,7 +1350,7 @@ mod when_a_directory_is_bound {
 
         let status = run_in(state.path(), &work, &["status"], &[]);
         let stderr = stderr_of(&status);
-        assert!(stderr.contains("active spot: b (directory"), "{stderr}");
+        assert!(stderr.contains("active space: b (directory"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -1160,14 +1358,14 @@ mod when_a_directory_is_bound {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
 
-        let output = run_in(state.path(), &work, &["use", "a"], &[]);
+        let output = run_in(state.path(), &work, &["space", "use", "a"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stderr = stderr_of(&output);
         assert!(stderr.is_empty(), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn spot_new_rebinds_the_invocation_directory() {
+    fn space_new_rebinds_the_invocation_directory() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
         bind(state.path(), &work, "a");
@@ -1177,7 +1375,7 @@ mod when_a_directory_is_bound {
         let output = run_in(
             state.path(),
             &work,
-            &["spot", "new", "c", "--site", site],
+            &["space", "new", "c", "--site", site],
             &[],
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
@@ -1187,7 +1385,8 @@ mod when_a_directory_is_bound {
         let status = run_in(state.path(), &work, &["status"], &[]);
         assert!(status.status.success(), "{}", stderr_of(&status));
         let stdout = stdout_of(&status);
-        assert!(stdout.contains("spot: c (directory"), "{stdout}");
+        assert!(stdout.contains("space: c\n"), "{stdout}");
+        assert!(stdout.contains("selected via: directory"), "{stdout}");
     }
 }
 
@@ -1195,12 +1394,12 @@ mod when_a_binding_is_orphaned {
     use super::*;
 
     /// A directory bound to a name that isn't registered — the
-    /// hand-edited-`spots.json` scenario `spot rm`'s own pruning
+    /// hand-edited-`spaces.json` scenario `space rm`'s own pruning
     /// normally prevents. The resulting error must say the name came
-    /// from the binding and point at `spot unbind`, not read as
-    /// an unexplained `unknown spot`.
+    /// from the binding and point at `space unbind`, not read as
+    /// an unexplained `unknown space`.
     #[dialog_common::test]
-    fn it_blames_the_binding_in_the_unknown_spot_error() {
+    fn it_blames_the_binding_in_the_unknown_space_error() {
         let state = tempfile::tempdir().expect("tempdir");
         let b = state.path().join("site-b");
         std::fs::create_dir_all(&b).expect("mkdir b");
@@ -1209,39 +1408,39 @@ mod when_a_binding_is_orphaned {
         let work_canon = work.canonicalize().expect("canonicalize work");
 
         let json = format!(
-            "{{\"current\":\"b\",\"spots\":{{\"b\":{{\"site\":{site:?}}}}},\
+            "{{\"current\":\"b\",\"spaces\":{{\"b\":{{\"site\":{site:?}}}}},\
              \"bindings\":{{{dir:?}:\"a\"}}}}",
             site = b.display().to_string(),
             dir = work_canon.display().to_string(),
         );
-        std::fs::write(state.path().join("spots.json"), json).expect("write spots.json");
+        std::fs::write(state.path().join("spaces.json"), json).expect("write spaces.json");
 
         let output = run_in(state.path(), &work, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("unknown spot 'a'"), "{stderr}");
+        assert!(stderr.contains("unknown space 'a'"), "{stderr}");
         assert!(
             stderr.contains(&work_canon.display().to_string()),
             "{stderr}"
         );
-        assert!(stderr.contains("spot unbind"), "{stderr}");
+        assert!(stderr.contains("space unbind"), "{stderr}");
     }
 }
 
-/// `tonk spot rm` is the only command that destroys facts, so its
+/// `tonk space rm` is the only command that destroys facts, so its
 /// guard rails are worth exercising through the real binary: the
 /// prompt, the non-interactive refusal, and what each mode leaves on
 /// disk. `run` pipes stdin, so every invocation here is exactly the
 /// non-terminal case a script would hit.
-mod when_deleting_a_spot {
+mod when_deleting_a_space {
     use super::*;
 
-    /// Create a spot at its canonical path, bound to `cwd`, and
+    /// Create a space at its canonical path, bound to `cwd`, and
     /// return where its data landed.
-    fn canonical_spot(state_dir: &Path, cwd: &Path, name: &str) -> std::path::PathBuf {
-        let output = run_in(state_dir, cwd, &["spot", "new", name], &[]);
+    fn canonical_space(state_dir: &Path, cwd: &Path, name: &str) -> std::path::PathBuf {
+        let output = run_in(state_dir, cwd, &["space", "new", name], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
-        let site = state_dir.join("spots").join(name);
+        let site = state_dir.join("spaces").join(name);
         assert!(site.is_dir(), "site data at {}", site.display());
         site
     }
@@ -1256,19 +1455,19 @@ mod when_deleting_a_spot {
     fn it_refuses_to_delete_when_the_prompt_cannot_be_answered() {
         let state = tempfile::tempdir().expect("tempdir");
         let work = work_dir(&state);
-        let site = canonical_spot(state.path(), &work, "garden");
+        let site = canonical_space(state.path(), &work, "garden");
 
-        let output = run_in(state.path(), &work, &["spot", "rm", "garden"], &[]);
+        let output = run_in(state.path(), &work, &["space", "rm", "garden"], &[]);
         assert!(!output.status.success(), "{}", stdout_of(&output));
         let stderr = stderr_of(&output);
         assert!(stderr.contains("stdin is not a terminal"), "{stderr}");
         assert!(stderr.contains("--yes"), "{stderr}");
         assert!(stderr.contains("--keep-data"), "{stderr}");
 
-        // Nothing moved: the spot is still registered and its data
+        // Nothing moved: the space is still registered and its data
         // is untouched.
         assert!(site.is_dir(), "data survives the refusal");
-        let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
+        let listed = stdout_of(&run(state.path(), &["space", "list"], &[]));
         assert!(listed.contains("garden"), "{listed}");
     }
 
@@ -1276,18 +1475,23 @@ mod when_deleting_a_spot {
     fn it_deletes_the_data_with_yes() {
         let state = tempfile::tempdir().expect("tempdir");
         let work = work_dir(&state);
-        let site = canonical_spot(state.path(), &work, "garden");
+        let site = canonical_space(state.path(), &work, "garden");
 
-        let output = run_in(state.path(), &work, &["spot", "rm", "garden", "--yes"], &[]);
+        let output = run_in(
+            state.path(),
+            &work,
+            &["space", "rm", "garden", "--yes"],
+            &[],
+        );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(
-            stdout.contains("Deleted spot 'garden' and its data"),
+            stdout.contains("Deleted space 'garden' and its data"),
             "{stdout}"
         );
         assert!(!site.exists(), "data deleted");
 
-        let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
+        let listed = stdout_of(&run(state.path(), &["space", "list"], &[]));
         assert!(listed.contains("no spaces registered"), "{listed}");
         assert!(!listed.contains("unregistered site data"), "{listed}");
     }
@@ -1298,21 +1502,21 @@ mod when_deleting_a_spot {
     fn it_reports_kept_data_as_unregistered_and_re_adoptable() {
         let state = tempfile::tempdir().expect("tempdir");
         let work = work_dir(&state);
-        let site = canonical_spot(state.path(), &work, "garden");
+        let site = canonical_space(state.path(), &work, "garden");
 
         let output = run_in(
             state.path(),
             &work,
-            &["spot", "rm", "garden", "--keep-data"],
+            &["space", "rm", "garden", "--keep-data"],
             &[],
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("Unregistered spot 'garden'"), "{stdout}");
+        assert!(stdout.contains("Unregistered space 'garden'"), "{stdout}");
         assert!(stdout.contains("data kept at"), "{stdout}");
         assert!(site.is_dir(), "data kept");
 
-        let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
+        let listed = stdout_of(&run(state.path(), &["space", "list"], &[]));
         assert!(listed.contains("unregistered site data"), "{listed}");
         let canonical = site.canonicalize().expect("canonicalize site");
         assert!(
@@ -1322,27 +1526,194 @@ mod when_deleting_a_spot {
     }
 
     /// Re-using the name after `--keep-data` silently picks the old
-    /// facts back up. Useful, but it must say so — otherwise a spot
+    /// facts back up. Useful, but it must say so — otherwise a space
     /// that was just "removed" comes back full of data.
     #[dialog_common::test]
-    fn it_says_when_a_new_spot_adopted_leftover_data() {
+    fn it_says_when_a_new_space_adopted_leftover_data() {
         let state = tempfile::tempdir().expect("tempdir");
         let work = work_dir(&state);
-        canonical_spot(state.path(), &work, "garden");
+        canonical_space(state.path(), &work, "garden");
         let removed = run_in(
             state.path(),
             &work,
-            &["spot", "rm", "garden", "--keep-data"],
+            &["space", "rm", "garden", "--keep-data"],
             &[],
         );
         assert!(removed.status.success(), "{}", stderr_of(&removed));
 
-        let output = run_in(state.path(), &work, &["spot", "new", "garden"], &[]);
+        let output = run_in(state.path(), &work, &["space", "new", "garden"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(
             stdout.contains("on the site data already at that path"),
             "{stdout}"
         );
+    }
+}
+
+/// Every listing verb speaks the one format, and every read verb has a
+/// machine-readable form.
+///
+/// These are pinned end to end through the binary rather than through
+/// `listing::Listing`, because the thing that regressed before was not the
+/// renderer — it was seven call sites each choosing whether to use one.
+mod when_reading {
+    use super::*;
+
+    /// A space with something in every listing this can populate without
+    /// a network or a file on disk.
+    ///
+    /// `remote` is separate because registering one also wires it as the
+    /// upstream, after which `tonk status` reaches for the wire — and the
+    /// remote here has nothing behind it.
+    fn populated(state: &Path, remote: bool) {
+        let run = |args: &[&str]| {
+            let out = run(state, args, &[("TONK_SPACE", "demo")]);
+            assert!(out.status.success(), "{args:?} failed: {}", stderr_of(&out));
+        };
+        run(&["space", "new", "demo"]);
+        run(&["concept", "add", "task", "--attr", "title:text:one"]);
+        run(&["view", "add", "task", "--template", "<b>{title}</b>"]);
+        let agents = state.join("AGENTS.md");
+        std::fs::write(&agents, "# Demo space\n").expect("write AGENTS.md");
+        run(&["agents", "set", agents.to_str().expect("utf-8 path")]);
+        if remote {
+            run(&["remote", "add", "origin", DEAD_REMOTE]);
+        }
+    }
+
+    const LISTINGS: [&[&str]; 5] = [
+        &["concept", "ls"],
+        &["view", "ls"],
+        &["blob", "ls"],
+        &["remote", "list"],
+        &["space", "list"],
+    ];
+
+    /// An empty listing is one parenthesised sentence, not silence. The
+    /// silent ones read as a broken command to anyone who ran them before
+    /// there was anything to see.
+    #[dialog_common::test]
+    fn it_says_so_when_a_listing_is_empty() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let created = run(state.path(), &["space", "new", "demo"], &[]);
+        assert!(created.status.success(), "{}", stderr_of(&created));
+
+        for args in LISTINGS {
+            let out = run(state.path(), args, &[("TONK_SPACE", "demo")]);
+            let stdout = stdout_of(&out);
+            if args == ["space", "list"] {
+                // The one listing that is never empty: the space just
+                // created is in it.
+                continue;
+            }
+            assert!(
+                stdout.starts_with('(') && stdout.trim_end().ends_with(')'),
+                "{args:?} should print one parenthesised line when empty, saw:\n{stdout}"
+            );
+        }
+    }
+
+    /// One header row, tab separated, with the same column count on every
+    /// row under it.
+    #[dialog_common::test]
+    fn it_heads_every_populated_listing_with_its_columns() {
+        let state = tempfile::tempdir().expect("tempdir");
+        populated(state.path(), true);
+
+        for args in LISTINGS {
+            if args == ["blob", "ls"] {
+                continue; // nothing ingests a blob without a file to read
+            }
+            let out = run(state.path(), args, &[("TONK_SPACE", "demo")]);
+            let stdout = stdout_of(&out);
+            let mut lines = stdout.lines();
+            let header = lines.next().unwrap_or_default();
+            assert!(
+                header.split('\t').all(|c| c == c.to_uppercase()),
+                "{args:?} should lead with an upper-case header, saw:\n{stdout}"
+            );
+            let columns = header.split('\t').count();
+            for row in lines.take_while(|line| !line.is_empty()) {
+                assert_eq!(
+                    row.split('\t').count(),
+                    columns,
+                    "{args:?} row {row:?} does not match its header {header:?}"
+                );
+            }
+        }
+    }
+
+    /// The gap this closes was four of thirteen reads, so the guard is
+    /// the whole list rather than the ones that happened to get one.
+    #[dialog_common::test]
+    fn it_offers_json_on_every_read() {
+        let state = tempfile::tempdir().expect("tempdir");
+        populated(state.path(), false);
+
+        for args in [
+            vec!["context", "--json"],
+            vec!["status", "--json"],
+            vec!["account", "status", "--json"],
+            vec!["space", "use", "--json"],
+            vec!["agents", "get", "--json"],
+            vec!["query", "task", "--json"],
+            vec!["concept", "ls", "--json"],
+            vec!["view", "ls", "--json"],
+            vec!["blob", "ls", "--json"],
+            vec!["space", "list", "--json"],
+        ] {
+            let out = run(state.path(), &args, &[("TONK_SPACE", "demo")]);
+            assert!(out.status.success(), "{args:?} failed: {}", stderr_of(&out));
+            let stdout = stdout_of(&out);
+            let document: serde_json::Value = serde_json::from_str(&stdout)
+                .unwrap_or_else(|e| panic!("{args:?} did not emit JSON ({e}):\n{stdout}"));
+
+            // One envelope for every read. `tonk query` is the exception
+            // and says so: it emits an EvaluateResponse, the same shape
+            // `tonk eval --format json` emits, which is a transaction
+            // envelope rather than a listing.
+            if args[0] != "query" {
+                let version = document["schemaVersion"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{args:?} carries no schemaVersion:\n{stdout}"));
+                assert!(
+                    version.starts_with("tonk.") && version.contains(".v"),
+                    "{args:?} schemaVersion {version:?} is not tonk.<command>.v<n>"
+                );
+            }
+            if matches!(
+                args.as_slice(),
+                ["agents", "get", "--json"]
+                    | ["concept", "ls", "--json"]
+                    | ["view", "ls", "--json"]
+                    | ["blob", "ls", "--json"]
+                    | ["space", "list", "--json"]
+            ) {
+                assert!(
+                    document["rows"].is_array(),
+                    "{args:?} carries no rows: {stdout}"
+                );
+            }
+        }
+
+        // Separate state: registering a remote wires the upstream, which
+        // is what `status` above must not have.
+        let with_remote = tempfile::tempdir().expect("tempdir");
+        populated(with_remote.path(), true);
+        let out = run(
+            with_remote.path(),
+            &["remote", "list", "--json"],
+            &[("TONK_SPACE", "demo")],
+        );
+        assert!(out.status.success(), "{}", stderr_of(&out));
+        let stdout = stdout_of(&out);
+        let document: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("remote list --json ({e}):\n{stdout}"));
+        assert_eq!(document["schemaVersion"], "tonk.remote-list.v1", "{stdout}");
+        assert_eq!(document["rows"][0]["name"], "origin", "{stdout}");
+        // The version used to be repeated on every row, saying something
+        // true of the whole response once per element.
+        assert!(document["rows"][0]["version"].is_null(), "{stdout}");
     }
 }

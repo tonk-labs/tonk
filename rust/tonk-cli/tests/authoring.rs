@@ -15,6 +15,7 @@ mod when_adding_a_concept {
             "habit",
             &["name:text:one".into(), "target:text:one".into()],
             Some("a tracked habit"),
+            Default::default(),
         )
         .await?;
         // The anchored concept is immediately usable end to end:
@@ -39,12 +40,23 @@ mod when_adding_a_concept {
     #[dialog_common::test]
     async fn it_rejects_an_existing_concept_name() -> Result<()> {
         let test = TestSite::new().await?;
-        tonk_cli::data_ops::concept_add(&test.site, "habit", &["name:text:one".into()], None)
-            .await?;
-        let err =
-            tonk_cli::data_ops::concept_add(&test.site, "habit", &["name:text:one".into()], None)
-                .await
-                .unwrap_err();
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+        let err = tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await
+        .unwrap_err();
         assert!(format!("{err}").contains("already exists"), "{err}");
         Ok(())
     }
@@ -52,10 +64,15 @@ mod when_adding_a_concept {
     #[dialog_common::test]
     async fn it_enumerates_valid_types_on_a_bad_attr() -> Result<()> {
         let test = TestSite::new().await?;
-        let err =
-            tonk_cli::data_ops::concept_add(&test.site, "habit", &["name:string:one".into()], None)
-                .await
-                .unwrap_err();
+        let err = tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:string:one".into()],
+            None,
+            Default::default(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("UnsignedInteger") && msg.contains("Text"),
@@ -71,6 +88,7 @@ async fn seed_habit(test: &TestSite) -> Result<()> {
         "habit",
         &["name:text:one".into()],
         Some("a habit"),
+        Default::default(),
     )
     .await?;
     tonk_cli::data_ops::assert_op(&test.site, "habit", None, &["--name".into(), "Run".into()])
@@ -88,8 +106,16 @@ mod when_setting_the_home {
         // The verified recipe (repoint-findings recipe 3) always pairs
         // the data concept with a view — the headless renderer has no
         // default item view (`no view found for model` without one).
-        tonk_cli::data_ops::view_add(&test.site, "habit", None, "<b>{name}</b>").await?;
-        let out = tonk_cli::data_ops::home(&test.site, &["habit".into()]).await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            None,
+            "<b>{name}</b>",
+            Default::default(),
+        )
+        .await?;
+        let out =
+            tonk_cli::data_ops::home(&test.site, &["habit".into()], Default::default()).await?;
         assert!(
             out.contains("/space/"),
             "home should print the live path:\n{out}"
@@ -114,7 +140,7 @@ mod when_setting_the_home {
     #[dialog_common::test]
     async fn it_errors_on_an_unknown_model() -> Result<()> {
         let test = TestSite::new().await?;
-        let err = tonk_cli::data_ops::home(&test.site, &["nope".into()])
+        let err = tonk_cli::data_ops::home(&test.site, &["nope".into()], Default::default())
             .await
             .unwrap_err();
         assert!(
@@ -132,10 +158,40 @@ mod when_adding_a_view {
     async fn it_asserts_the_view_and_auto_surfaces_an_unset_home() -> Result<()> {
         let test = TestSite::new().await?;
         super::seed_habit(&test).await?;
-        let out = tonk_cli::data_ops::view_add(&test.site, "habit", None, "<b>{name}</b>").await?;
+        let before = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("seed revision")
+            .edition
+            .value();
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            None,
+            "<b>{name}</b>",
+            Default::default(),
+        )
+        .await?;
         assert!(
             out.contains("/space/"),
             "auto-surface should print the live path:\n{out}"
+        );
+        let after = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("view revision")
+            .edition
+            .value();
+        assert_eq!(
+            after,
+            before + 1,
+            "the view and automatic home update should commit together"
         );
         Ok(())
     }
@@ -144,10 +200,15 @@ mod when_adding_a_view {
     async fn it_does_not_repoint_an_already_set_home() -> Result<()> {
         let test = TestSite::new().await?;
         super::seed_habit(&test).await?;
-        tonk_cli::data_ops::home(&test.site, &["habit".into()]).await?;
-        let out =
-            tonk_cli::data_ops::view_add(&test.site, "habit", Some("habit-alt"), "<i>{name}</i>")
-                .await?;
+        tonk_cli::data_ops::home(&test.site, &["habit".into()], Default::default()).await?;
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            Some("habit-alt"),
+            "<i>{name}</i>",
+            Default::default(),
+        )
+        .await?;
         assert!(
             !out.contains("home set:"),
             "an explicitly set home must not be re-pointed by view add:\n{out}"

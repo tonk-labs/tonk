@@ -36,9 +36,9 @@ pub enum BlobError {
     NotFound(String),
 }
 
-impl BlobError {
+impl crate::Coded for BlobError {
     /// Map to a process exit code.
-    pub fn exit_code(&self) -> crate::ExitCode {
+    fn exit_code(&self) -> crate::ExitCode {
         match self {
             BlobError::Io(_) => crate::ExitCode::IoError,
             BlobError::Site(_) => crate::ExitCode::CommitError,
@@ -116,6 +116,55 @@ fn mime_for_extension(ext: &str) -> String {
     }
 }
 
+/// What an add would write, without writing any of it.
+///
+/// The `--dry-run` counterpart to [`add`]. It deliberately carries no
+/// `blob:<hash>`: the hash is a property of the imported bytes, and the
+/// import is the write. Reporting one would mean writing the blob and
+/// then declining to commit the metadata that makes it findable, which
+/// leaves an orphan in the store — the opposite of what a dry run
+/// promises.
+#[derive(Debug, Clone)]
+pub struct AddPlan {
+    /// Size in bytes of the file that would be imported.
+    pub size: u64,
+    /// The MIME type that would be asserted.
+    pub content_type: String,
+    /// The name that would be asserted.
+    pub name: String,
+}
+
+/// Resolve what [`add`] would do to `path`, touching neither the blob
+/// store nor the branch.
+///
+/// Still opens the file, so an unreadable path fails here as it would
+/// in a real add rather than being reported as a successful preview.
+pub async fn plan(path: &Path, content_type: Option<String>) -> Result<AddPlan, BlobError> {
+    let content_type = resolve_content_type(path, content_type);
+    let file = tokio::fs::File::open(path).await?;
+    Ok(AddPlan {
+        size: file.metadata().await?.len(),
+        content_type,
+        name: file_name(path).unwrap_or_else(|| path.display().to_string()),
+    })
+}
+
+/// The MIME type to assert: the override if given, else inferred from
+/// the extension, else a generic binary type.
+fn resolve_content_type(path: &Path, content_type: Option<String>) -> String {
+    content_type.unwrap_or_else(|| {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(mime_for_extension)
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    })
+}
+
+/// The file name to assert, absent for a path that has none (`.`, `..`).
+fn file_name(path: &Path) -> Option<String> {
+    path.file_name().and_then(|n| n.to_str()).map(str::to_owned)
+}
+
 /// Ingest `path` into the site's blob store, returning its
 /// content-addressed reference. Idempotent: adding the same bytes
 /// twice yields the same `blob:<hash>` entity both times.
@@ -124,18 +173,17 @@ fn mime_for_extension(ext: &str) -> String {
 /// Asserts `xyz.tonk.blob/content-type` (always) and
 /// `xyz.tonk.blob/name` (always; defaults to the entity string when
 /// `path` has no file name) on the blob entity in one transaction.
+///
+/// Commits but does not sync. Callers that want the pull-before /
+/// push-after every other write verb performs wrap this in
+/// [`crate::auto_sync::around_commit`], which is what the CLI does.
 pub async fn add(
     site: &TonkSite,
     path: &Path,
     content_type: Option<String>,
 ) -> Result<AddOutcome, BlobError> {
-    let content_type = content_type.unwrap_or_else(|| {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(mime_for_extension)
-            .unwrap_or_else(|| "application/octet-stream".to_string())
-    });
-    let name = path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+    let content_type = resolve_content_type(path, content_type);
+    let name = file_name(path);
 
     let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
@@ -247,6 +295,8 @@ pub async fn cat(
 
 /// One row of [`ls`]: a blob's entity, plus the metadata facts
 /// [`add`] asserted alongside it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LsRow {
     /// The blob's `blob:<hash>` entity.
     pub entity: Entity,

@@ -117,6 +117,58 @@ mod when_evaluating_with_an_upstream {
     }
 }
 
+mod when_adding_a_blob_with_an_upstream {
+    use super::*;
+    use tonk_cli::blob;
+
+    /// `blob add` was the one write verb that never synced: it committed
+    /// its metadata transaction directly, so a blob added to a synced
+    /// space sat local until some unrelated write pushed it.
+    #[dialog_common::test]
+    async fn it_auto_pushes_the_metadata_commit() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        assert!(
+            upstream_revision(&test).await?.is_none(),
+            "upstream starts empty"
+        );
+
+        let file = test.parent.join("pixel.png");
+        tokio::fs::write(&file, b"\x89PNG fake").await?;
+        auto_sync::around_commit(&test.site, true, blob::add(&test.site, &file, None)).await?;
+
+        let pushed = upstream_revision(&test)
+            .await?
+            .expect("auto-sync should have pushed the blob metadata");
+        let session = test.site.branch().await?;
+        let local = session
+            .handle()
+            .revision()
+            .expect("blob add committed locally");
+        assert_eq!(
+            pushed.tree, local.tree,
+            "the upstream head matches the local head after auto-push"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_push_when_sync_is_disabled() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+
+        let file = test.parent.join("pixel.png");
+        tokio::fs::write(&file, b"\x89PNG fake").await?;
+        auto_sync::around_commit(&test.site, false, blob::add(&test.site, &file, None)).await?;
+
+        assert!(
+            upstream_revision(&test).await?.is_none(),
+            "nothing reaches the upstream when sync is disabled"
+        );
+        Ok(())
+    }
+}
+
 mod when_asserting_with_an_upstream {
     use super::*;
     use dialog_query::{Output as _, Query, Term};
@@ -156,9 +208,11 @@ mod when_asserting_with_an_upstream {
     async fn it_carries_agent_context_on_the_synced_content_branch() -> Result<()> {
         let test = TestSite::new().await?;
         wire_sibling_upstream(&test).await?;
-        let expected = "# Shared spot context\n";
+        let expected = "# Shared space context\n";
 
-        let stored = agents::set(&test.site, expected, true).await?;
+        let stored = agents::set(&test.site, expected, Default::default())
+            .await?
+            .expect("committed");
         let upstream = test
             .site
             .repository

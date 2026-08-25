@@ -24,7 +24,7 @@ use tonk_schema::Invitation;
 use crate::inventory::{Roster, SpaceRole};
 use crate::remote::DEFAULT_REMOTE;
 use crate::site::SiteConfig;
-use crate::spot::SpotStore;
+use crate::space::SpaceStore;
 
 /// Successful link result.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,14 +53,14 @@ pub fn already_owned_message(name: &str, owner: &str) -> String {
 }
 
 /// Link one genuinely local-only space into the signed-in account.
-pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Result<LinkOutcome> {
+pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Result<LinkOutcome> {
     let registry = store.load()?;
     let account = registry
         .account
         .clone()
-        .context("no account is signed in; run `tonk account link` first")?;
+        .context("no account is signed in; run `tonk account login` first")?;
     let entry = registry
-        .spots
+        .spaces
         .get(name)
         .with_context(|| format!("unknown space '{name}'"))?
         .clone();
@@ -133,7 +133,7 @@ pub async fn execute(store: &SpotStore, config: &SiteConfig, name: &str) -> Resu
     }
     crate::account_state::retain_space_delegation_in(&site.profile, &operator, store, &prefix)
         .await?;
-    crate::account_spots::record_site_pushed(name, &site, store).await?;
+    crate::account_spaces::record_site_pushed(name, &site, store).await?;
 
     if crate::inventory::role_for_site(&site).await? != SpaceRole::Owner {
         bail!("the space is not signed as owned by this device after linking");

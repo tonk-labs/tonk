@@ -778,7 +778,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     );
 
     // A command-line profile is registered through the same root ceremony
-    // the browser runs when it approves a `tonk account link` callback.
+    // the browser runs when it approves a `tonk account login` callback.
     let cli = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
     let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await

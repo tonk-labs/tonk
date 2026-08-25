@@ -60,7 +60,7 @@ pub async fn local_root(profile: &Profile) -> Result<Option<LocalRoot>> {
 /// Load the local root from one explicit native profile store.
 pub async fn local_root_in(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Option<LocalRoot>> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     local_root_with_operator(profile, &operator).await

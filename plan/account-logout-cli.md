@@ -5,11 +5,11 @@
 **Approach:** Replace the current `LocalRoot` plus provider tombstone as the login authority with one durable account-session record whose `active` field is either absent or names exactly one provider/root/delegation from the latest handoff. Keep historical UCAN certificates for local repository authority, but put an owned `AccountBoundOperator` in front of every repository network fork; it constructs the outgoing chain from the active grant and an account-root-specific space prefix and never forwards a chain selected from historical authority. Logout performs one local state transition from `active` to a signed, narrowly scoped detach outbox entry, so it succeeds offline and immediately closes the network boundary; later online account operations flush that intent to the account service.
 
 **Constraints:**
-- Every `tonk account link` must complete a browser/passkey handoff. A previously used grant must never reactivate an account locally.
-- The CLI has exactly zero or one active remote account. `account link` refuses while one is active; switching accounts is logout followed by a fresh handoff.
-- Logged out means no UCAN invocation can reach a UCAN-S3 access service from spot sync, account-state hydration, status fetches, auto-sync, invite sync, or any other `dialog_repository` network path.
-- Historical root-to-device and space-to-root certificates may remain in local storage because existing spots can require them for local writes. They must be unreachable as outgoing remote authorization unless they are also the latest active grant.
-- Reading, querying, editing, and committing existing local spots must continue while logged out. Remote configuration metadata may remain intact.
+- Every `tonk account login` must complete a browser/passkey handoff. A previously used grant must never reactivate an account locally.
+- The CLI has exactly zero or one active remote account. `account login` refuses while one is active; switching accounts is logout followed by a fresh handoff.
+- Logged out means no UCAN invocation can reach a UCAN-S3 access service from space sync, account-state hydration, status fetches, auto-sync, invite sync, or any other `dialog_repository` network path.
+- Historical root-to-device and space-to-root certificates may remain in local storage because existing spaces can require them for local writes. They must be unreachable as outgoing remote authorization unless they are also the latest active grant.
+- Reading, querying, editing, and committing existing local spaces must continue while logged out. Remote configuration metadata may remain intact.
 - Remote access under account B requires a reusable space prefix rooted in B plus B's latest root-to-device grant. Authority rooted in A must not satisfy or be sent for a B session.
 - Logout is not revocation. Detachment hides an attachment and releases the device DID for a later handoff; it does not publish a revocation artifact. Revoked delegation CIDs remain revoked permanently.
 - Logout must succeed without network access. Provider/device-list staleness until an outbox retry is acceptable.
@@ -18,7 +18,7 @@
 - Account-session mutation and access-service dispatch must be serialized across CLI processes with a native shared/exclusive file lock. Network forks hold a shared lock from active-state read through HTTP dispatch; login/logout/outbox writes hold the exclusive lock. Once logout returns, no invocation authorized before that logout may still be dispatched.
 - An interrupted handoff must be resumable and must not strand an active service attachment unknown to local state. Browser completion records grant material but does not activate the device; activation is a separate idempotent CLI step performed only after `PendingLogin::Activating` is durable.
 - Keep the native SQLite helper and Cloudflare D1 behavior identical and driven by the ordered account-service migrations.
-- Preserve the current CLI profile DID, spots, account repository bytes, remote/upstream metadata, trusted markers, and unpushed revisions across logout and account switching.
+- Preserve the current CLI profile DID, spaces, account repository bytes, remote/upstream metadata, trusted markers, and unpushed revisions across logout and account switching.
 - The current uncommitted `0006_account_scoped_devices.sql` and associated account-scoped lookup changes are superseded. Account-scoped history is useful, but the final schema must additionally enforce at most one active attachment globally for a device DID.
 - Do not change `Cargo.lock` unless implementation proves a dependency change is unavoidable. The required Dialog provider, UCAN authorization, and network-fork APIs are already dependencies.
 
@@ -290,15 +290,15 @@ pub async fn flush_pending(profile: &Profile, operator: &AccountBoundOperator) -
 `logout_transition` runs under the exclusive transition guard. For `active`, it signs and queues the exact detach. For `PendingLogin::Waiting`, it clears the unactivated ceremony. For `PendingLogin::Activating`, it signs and queues a detach that either cancels the completed link or detaches an activation whose response was lost. It then saves `active: None` and `pending_login: None`; `false` means neither active nor pending login existed. State mutation and legacy initialization hold the exclusive native file lock; guarded reads accept an already-held shared guard and never migrate or write. Remote dispatch holds that shared guard through the HTTP response, so no lock upgrade occurs, a stale flush cannot overwrite logout, and logout cannot return while an older invocation is still dispatching.
 
 - [ ] Add `it_migrates_a_legacy_attachment_once`. Seed the existing non-empty `LOCAL_ROOT_SITE` and `ACCOUNT_LINK_SITE` records, load the new state, and assert one matching active session with legacy `attachment_id = delegation_cid`; seed an empty provider tombstone and assert migration produces no active session.
-- [ ] Add `it_logs_out_in_one_state_write`. Seed active state and unrelated root, trusted marker, spot/account files, and certificates; perform the transition; assert active is absent, one valid exact detach intent exists with A's provider routing metadata, and every unrelated byte/revision remains unchanged. Repeat logout and assert no duplicate intent. Repeat from `PendingLogin::Waiting` and `PendingLogin::Activating`: waiting is cancelled without an intent, while activating queues its exact generation for cancel/detach.
+- [ ] Add `it_logs_out_in_one_state_write`. Seed active state and unrelated root, trusted marker, space/account files, and certificates; perform the transition; assert active is absent, one valid exact detach intent exists with A's provider routing metadata, and every unrelated byte/revision remains unchanged. Repeat logout and assert no duplicate intent. Repeat from `PendingLogin::Waiting` and `PendingLogin::Activating`: waiting is cancelled without an intent, while activating queues its exact generation for cancel/detach.
 - [ ] Add `it_serializes_flush_logout_and_activation_across_processes`. Use two independently opened lock handles: hold a stale flush/read, start logout, and prove logout waits; then release and assert no stale save can restore `active`. Repeat with activation versus logout and verify the final state follows lock acquisition order rather than last unguarded write.
 - [ ] Add a fault-injection test at the session-store seam: a failed save leaves the prior active state authoritative and returns an error; a successful save makes remote authority absent even if later best-effort legacy tombstone or HTTP work fails.
 - [ ] Add `it_replaces_the_latest_root_record_without_deleting_old_certificates`. Install A, then B after logout; assert `save_local_root` no longer returns `this device already has a different local root`, B is the latest record, and a local proof dependent on A remains available.
 - [ ] Run `cargo test -p tonk-cli --lib account_session`; expect failure because the module is absent.
 - [ ] Implement versioned serialization, migration, and a cross-process shared/exclusive lock file under the CLI account directory using stable `std::fs::File::{lock_shared, lock}` APIs. Run `ensure_initialized` under an exclusive guard before constructing site/account operators. `load_guarded` and `active_guarded` require the caller's existing shared guard and are strictly read-only, avoiding shared→exclusive lock upgrades. Make `ACCOUNT_SESSION_SITE` the sole authority for account status/connections once present; keep `LOCAL_ROOT_SITE` and `ACCOUNT_LINK_SITE` as compatibility projections, not as the remote gate.
-- [ ] Implement the recoverable login phases. Persist `PendingLogin::Waiting { provider, secret, token_hash }` before creating the remote link. After replayable consumption, validate/retain the grant and persist `PendingLogin::Activating { account }` before calling idempotent `/links/activate`. Only a confirmed activation may atomically move that account to `active`; startup and the next `account link` resume either pending phase instead of starting another ceremony.
+- [ ] Implement the recoverable login phases. Persist `PendingLogin::Waiting { provider, secret, token_hash }` before creating the remote link. After replayable consumption, validate/retain the grant and persist `PendingLogin::Activating { account }` before calling idempotent `/links/activate`. Only a confirmed activation may atomically move that account to `active`; startup and the next `account login` resume either pending phase instead of starting another ceremony.
 - [ ] Add crash-point tests after pending-link save, browser completion, consume response, activating-state save, service activation, and final active-state save. Every restart must either resume to the same active attachment or remain logged out with enough information to detach/retry; none may leave an untracked active service row.
-- [ ] Change `account link` to reject when `session.active.is_some()`, resume when `pending_login.is_some()`, and otherwise always run a new browser handoff. It must never reactivate a remembered historical grant.
+- [ ] Change `account login` to reject when `session.active.is_some()`, resume when `pending_login.is_some()`, and otherwise always run a new browser handoff. It must never reactivate a remembered historical grant.
 - [ ] Run `cargo test -p tonk-cli --lib account::tests` and `cargo test -p tonk-cli --lib account_session`; expect success.
 
 ### Task 5: Store each reusable space prefix under its account root
@@ -315,7 +315,7 @@ pub async fn flush_pending(profile: &Profile, operator: &AccountBoundOperator) -
 - Produces `space_root_site(repository_did: &Did, account_root: &Did) -> String`, yielding `tonk-space-root-v2/<repository>/<account-root>`.
 - Keeps read-only fallback for the legacy `tonk-space-root-v1/<repository>` key; a valid legacy prefix is copied to its validated root-specific v2 key.
 
-- [ ] Add `it_keeps_distinct_reusable_prefixes_for_two_account_roots`. Save valid A→spot and B→spot authority for one repository, then load each by explicit root and assert neither overwrites or satisfies the other.
+- [ ] Add `it_keeps_distinct_reusable_prefixes_for_two_account_roots`. Save valid A→space and B→space authority for one repository, then load each by explicit root and assert neither overwrites or satisfies the other.
 - [ ] Add `it_migrates_a_legacy_prefix_only_to_the_root_that_validates_it` and assert a B lookup cannot relabel an A prefix.
 - [ ] Run `cargo test -p tonk-cli --features integration-tests --test account_spots prefix`; expect failure because the key is currently repository-only.
 - [ ] Introduce the v2 helper and update every prefix write to include the validated account root. Preserve the v1 fallback only for migration; never use generic proof selection to relabel a prefix for another root.
@@ -337,7 +337,7 @@ pub async fn flush_pending(profile: &Profile, operator: &AccountBoundOperator) -
 
 The guarded authorization algorithm is:
 
-1. After startup has completed exclusive legacy initialization, acquire the account-session shared remote guard, call the strictly read-only `active_guarded` with that guard, and retain it until network dispatch completes; if `active` is absent, return `AuthorizeError::Denied("log in with `tonk account link` before accessing a remote")`.
+1. After startup has completed exclusive legacy initialization, acquire the account-session shared remote guard, call the strictly read-only `active_guarded` with that guard, and retain it until network dispatch completes; if `active` is absent, return `AuthorizeError::Denied("log in with `tonk account login` before accessing a remote")`.
 2. Ask the inner operator only for the fresh signer, scope, duration, and operator session context; discard its historically selected delegation chain.
 3. Decode and validate the exact active `root → profile` grant and require its CID, issuer, and audience to match the active state and profile DID.
 4. If the requested UCAN subject is the active account root (the account repository), use the active grant directly. Otherwise load `space_root_site(subject, active_root)`, validate it with `AccountSpotBackup::validate_for(active_root)`, and prepend it.
@@ -349,7 +349,7 @@ The guarded authorization algorithm is:
 - [ ] Add `it_sends_no_request_after_logout` with a counting TCP listener as the UCAN endpoint. Open the site while active, logout without rebuilding it, attempt fetch/pull and push, and assert an authorization error plus zero accepted HTTP requests. This proves the gate is re-read per request rather than snapshotted at site open.
 - [ ] Add `it_orders_concurrent_logout_after_in_flight_dispatch`. Pause a remote fork after authorization but before HTTP, start logout in another process/task, and assert logout cannot complete until dispatch releases the shared guard. After logout returns, start another fork and assert the listener receives no additional request.
 - [ ] Add `it_sends_only_the_latest_account_chain`. Retain valid A and B histories, activate B, capture the CBOR request at the listener, decode its invocation proofs, and assert B's active CID is present and A's is absent.
-- [ ] Add `it_denies_a_spot_not_delegated_to_the_active_account_before_http`. Keep local A authority, activate B without a B prefix for that spot, and assert local commit succeeds while fetch/push accepts zero requests.
+- [ ] Add `it_denies_a_spot_not_delegated_to_the_active_account_before_http`. Keep local A authority, activate B without a B prefix for that space, and assert local commit succeeds while fetch/push accepts zero requests.
 - [ ] Run `cargo test -p tonk-cli --lib account_authority`; expect failures before the wrapper exists.
 - [ ] Implement the owned wrapper. Replace `TonkSite.operator` rather than keeping a public raw operator beside it. Return the wrapper from account-state operator builders as well, closing direct `branch.pull()`/`branch.push()` paths in `account_state.rs`. Change those builders to mint and retain the exact profile→operator session delegation explicitly so the wrapper never rediscovers a historical operator session.
 - [ ] Update isolated providerless UCAN integration fixtures: tests intended to exercise remote access must install an explicit active test account; tests intended to exercise local-only unsafe fixtures must expect remote denial. Do not add an unsafe bypass to production authorization.
@@ -373,7 +373,7 @@ The guarded authorization algorithm is:
 - [ ] Add `it_cannot_switch_accounts_without_detaching_the_active_generation`. Account A is active; direct B link is rejected locally. Logout A offline; B link against the same service cannot start while A detach cannot flush. Once flushing succeeds, a fresh B passkey handoff and idempotent activation succeed.
 - [ ] Add `it_ignores_a_stale_detach_after_reattachment`. Queue generation A, detach and complete generation B, replay A's intent, and assert B remains active.
 - [ ] Run `cargo test -p tonk-cli --features integration-tests --test account_session`; expect failures before retry integration exists.
-- [ ] Implement bounded HTTP retry semantics without background daemons. Retry at logout when online and at the beginning of later `account link`, `account status` hydration, device-list, revoke, and account-spots network operations; never retry during purely local spot commands.
+- [ ] Implement bounded HTTP retry semantics without background daemons. Retry at logout when online and at the beginning of later `account login`, `account status` hydration, device-list, revoke, and account-spaces network operations; never retry during purely local space commands.
 - [ ] Keep successful CLI output `logged out` immediate. Print a warning, not an error exit, when remote detachment remains queued.
 - [ ] Run the focused integration test; expect success.
 
@@ -391,9 +391,9 @@ The guarded authorization algorithm is:
 ```text
 logged out + local query/edit/commit       allowed
 logged out + fetch/pull/push/account sync  denied before HTTP
-active A + A-rooted spot                   allowed using only A chain
-active B + A-only spot                     local work allowed; remote denied
-active B + B-rooted spot                   allowed using only B chain
+active A + A-rooted space                   allowed using only A chain
+active B + A-only space                     local work allowed; remote denied
+active B + B-rooted space                   allowed using only B chain
 offline logout A                           local detach succeeds; remote row temporarily stale
 later successful outbox flush              A attachment hidden/detached
 return to A                                fresh passkey handoff required
@@ -401,8 +401,8 @@ replay old detach after new login          new attachment remains active
 revoked grant                              never reactivated; detach publishes no revocation
 ```
 
-- [ ] Add an end-to-end test that links A, creates and pushes a spot, disconnects the service, logs out, edits and commits locally, and proves the revision and data survive process reopen.
-- [ ] Continue that test by linking B with a fresh handoff. Assert B cannot push the A-only spot; grant B independent spot authority, retry, and inspect the received invocation to prove only B's chain was sent.
+- [ ] Add an end-to-end test that links A, creates and pushes a space, disconnects the service, logs out, edits and commits locally, and proves the revision and data survive process reopen.
+- [ ] Continue that test by linking B with a fresh handoff. Assert B cannot push the A-only space; grant B independent space authority, retry, and inspect the received invocation to prove only B's chain was sent.
 - [ ] Logout B, return to A, and assert a browser/passkey handoff is required even though A's historical certificates remain. After the handoff, push the offline revision and verify the remote converges without rewriting local history.
 - [ ] Add a revocation regression proving detach creates no immutable revocation artifact, while `tonk account revoke` still publishes one and permanently invalidates the exact delegation CID.
 - [ ] Update both READMEs with the state matrix, delayed device-list convergence, mandatory handoff on every login, one-active-account rule, and distinction between detach and revoke. Remove current claims that logout only writes a provider tombstone or deliberately leaves the device active indefinitely.

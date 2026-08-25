@@ -20,7 +20,7 @@ serialized gate queues concurrent requests, restores focus after cancel or
 failure, and replays a successful operation exactly once.
 
 Opening an audience-open invite first installs only bounded guest authority.
-“Join this spot” explicitly claims to the root. Targeted invites go directly
+“Join this space” explicitly claims to the root. Targeted invites go directly
 through the durable root gate. A remote-backed join stages its authority and
 content first; the replica becomes visible, guest state is cleared, backup is
 started, and navigation occurs only after that stage is usable. Failed,

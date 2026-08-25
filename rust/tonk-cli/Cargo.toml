@@ -18,11 +18,6 @@ path = "src/bin/tonk.rs"
 # `tests/common.rs` from being built as its own empty test
 # binary; list the real test binaries here explicitly.
 [[test]]
-name = "legacy_migration"
-path = "tests/legacy_migration.rs"
-required-features = ["integration-tests"]
-
-[[test]]
 name = "live_migration"
 path = "tests/live_migration.rs"
 
@@ -80,12 +75,12 @@ name = "authoring"
 path = "tests/authoring.rs"
 
 [[test]]
-name = "spot"
-path = "tests/spot.rs"
+name = "space"
+path = "tests/space.rs"
 
 [[test]]
-name = "cli_spot"
-path = "tests/cli_spot.rs"
+name = "cli_space"
+path = "tests/cli_space.rs"
 
 [[test]]
 name = "context"
@@ -96,8 +91,8 @@ name = "agents"
 path = "tests/agents.rs"
 
 [[test]]
-name = "account_spots"
-path = "tests/account_spots.rs"
+name = "account_spaces"
+path = "tests/account_spaces.rs"
 required-features = ["integration-tests"]
 
 [[test]]
@@ -125,10 +120,6 @@ required-features = ["integration-tests"]
 
 [features]
 integration-tests = []
-# Downloads a published release archive to exercise the pre-dialog-upgrade
-# migration for real. Off by default: the ordinary test run should not
-# depend on the network or on a release existing.
-legacy-migration = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

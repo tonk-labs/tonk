@@ -81,11 +81,11 @@ JOURNEY_DEF='
   def has_subcommand($pattern):
     test(
       "(tonk|@tonk/cli)"
-      + "([[:space:]]+--spot[[:space:]]+[^[:space:]\u0027\"]+)?"
+      + "([[:space:]]+--space[[:space:]]+[^[:space:]\u0027\"]+)?"
       + "[[:space:]]+(" + $pattern + ")([[:space:]\u0027\"]|$)"
     );
   def is_bare_tonk:
-    is_tonk and test("(tonk|@tonk/cli)([[:space:]]+--spot[[:space:]]+[^[:space:]]+)?[^A-Za-z0-9_.-]*$");
+    is_tonk and test("(tonk|@tonk/cli)([[:space:]]+--space[[:space:]]+[^[:space:]]+)?[^A-Za-z0-9_.-]*$");
   def is_agents_set:
     is_tonk and has_subcommand("agents[[:space:]]+set");
   def is_agents_read:

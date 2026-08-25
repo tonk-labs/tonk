@@ -846,7 +846,7 @@ pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
     }
 }
 
-/// Sign out on this device while preserving its local profile and spots.
+/// Sign out on this device while preserving its local profile and spaces.
 pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()

@@ -1,16 +1,15 @@
 # tonk CLI — Agent Reference
 
-tonk is a headless CLI for reading and writing data and views in a spot
+tonk is a headless CLI for reading and writing data and views in a space
 (a named local dialog repository). Data lives as claims: you **assert**
 claims and **retract** them — a retraction is itself an assertion that
 invalidates an old claim, not a deletion.
 
-Commands run from anywhere, against whichever spot is selected —
-resolution is `--spot` > `TONK_SPOT` > a directory attached with
-`tonk use <name> --here` > `tonk use`. Automation (agents, CI) should
-set `TONK_SPOT` or pass `--spot` rather than relying on the global
-`tonk use` selection; an agent working out of a fixed directory can
-attach it once instead.
+Commands run from anywhere, against whichever space is selected — resolution
+is `--space` > `TONK_SPACE` > the nearest directory binding created with
+`tonk space use <name>`. Automation (agents, CI) should set `TONK_SPACE` or
+pass `--space`; an agent working out of a fixed directory can bind it once
+instead.
 
 ## Orientation
 
@@ -87,17 +86,17 @@ tonk remote set-upstream <name>             # re-point which remote main tracks
 tonk invite                                 # invite URL on the resolved remote's own origin (pushes first)
 tonk invite --remote <name>                 # pick the remote when several are registered
 tonk invite --no-remote                     # omit remote= (still pushes); the claimer wires one by hand
-tonk join '<invite-url>' --name <spot>      # claim an invite into a fresh spot
+tonk join '<invite-url>' --name <space>     # claim an invite into a fresh space
 tonk render <route>                         # headless HTML render (e.g. alice@person!card)
 ```
 
 ## Setup
 
 ```bash
-tonk spot new <name>              # create a spot (site) and select it
-tonk spot new <name> --site <path>  # adopt an existing .tonk directory as a spot
-tonk spot list                    # registered spots, with the resolved current
-tonk use <name>                   # set the global current spot
+tonk space new <name>               # create a space (site) and bind this directory
+tonk space new <name> --site <path> # adopt an existing .tonk directory as a space
+tonk space list                     # registered spaces and directory bindings
+tonk space use <name>               # bind this directory to a space
 tonk identity                     # show the local profile DID
-tonk migrate                      # convert a .carry/ site to .tonk/
+tonk migrate carry                # convert a .carry/ site to .tonk/
 ```

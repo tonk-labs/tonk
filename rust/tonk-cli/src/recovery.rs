@@ -1,13 +1,13 @@
-//! Whether a spot's data survives being deleted.
+//! Whether a space's data survives being deleted.
 //!
-//! `tonk spot rm` destroys a site directory, and how bad that is
-//! depends entirely on where else the facts exist. A spot the account
-//! directory lists can be pulled down again; a spot that only ever
+//! `tonk space rm` destroys a site directory, and how bad that is
+//! depends entirely on where else the facts exist. A space the account
+//! directory lists can be pulled down again; a space that only ever
 //! pushed to a remote can be recovered from that remote if the
-//! operator still holds authority over it; a spot with no upstream at
+//! operator still holds authority over it; a space with no upstream at
 //! all exists nowhere else, and deleting it is final.
 //!
-//! The registry cannot answer this — [`crate::spot::SpotEntry`] is a
+//! The registry cannot answer this — [`crate::space::SpaceEntry`] is a
 //! path and nothing more — so the answer is read out of the site
 //! itself: the `main` branch's upstream, plus the account branch's
 //! local copy of the directory. Both are local reads. Deliberately no
@@ -19,13 +19,13 @@ use std::path::Path;
 
 use crate::site::{SiteConfig, TonkSite};
 
-/// Where a spot's data exists besides this directory.
+/// Where a space's data exists besides this directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recovery {
     /// Listed in the linked account's directory, and pullable again
     /// by subject.
     Account {
-        /// Repository subject DID, the argument `tonk account spots
+        /// Repository subject DID, the argument `tonk account spaces
         /// pull` takes.
         subject: String,
     },
@@ -89,7 +89,7 @@ impl Recovery {
     pub fn restore_hint(&self) -> Option<String> {
         match self {
             Recovery::Account { subject } => Some(format!(
-                "restore it later with `tonk account spots pull {subject}`"
+                "restore it later with `tonk account spaces pull {subject}`"
             )),
             Recovery::Remote { .. } | Recovery::LocalOnly | Recovery::Unknown { .. } => None,
         }
@@ -126,7 +126,7 @@ pub async fn inspect(path: &Path, config: SiteConfig) -> Recovery {
 
     // A directory mount record is only ever written for a site that
     // has an upstream, so this is checked second and only here.
-    match crate::account_spots::directory_lists(&site).await {
+    match crate::account_spaces::directory_lists(&site).await {
         Ok(true) => {
             return Recovery::Account {
                 subject: site.repository.did().to_string(),

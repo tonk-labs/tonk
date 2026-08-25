@@ -50,7 +50,8 @@ use crate::site::TonkSite;
 /// for `tonk concept ls` to print. The full descriptor stays internal
 /// to [`render`] (which needs it to re-emit the `with:` map as
 /// notation).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConceptSummary {
     /// Bookmark name published via `db.name/referent` on
     /// the matching `id:<name>` entity.
@@ -69,7 +70,8 @@ pub struct ConceptSummary {
 }
 
 /// Agent-facing summary of one concept field.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FieldSummary {
     /// Flag name accepted by `tonk assert`.
     pub name: String,

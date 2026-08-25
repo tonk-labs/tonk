@@ -1091,7 +1091,14 @@ mod when_listing_views {
         let test = common::TestSite::new().await?;
         test.eval_inline(common::ATTRIBUTE_DECL).await?;
         test.eval_inline(common::CONCEPT_DECL).await?;
-        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "task",
+            None,
+            "<b>{title}</b>",
+            Default::default(),
+        )
+        .await?;
 
         let listed = views::list(&test.site).await?;
         let row = listed
@@ -1113,7 +1120,14 @@ mod when_listing_views {
 
         test.eval_inline(common::ATTRIBUTE_DECL).await?;
         test.eval_inline(common::CONCEPT_DECL).await?;
-        tonk_cli::data_ops::view_add(&test.site, "task", None, "<b>{title}</b>").await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "task",
+            None,
+            "<b>{title}</b>",
+            Default::default(),
+        )
+        .await?;
 
         let listed = views::list(&test.site).await?;
         assert!(
@@ -1206,7 +1220,7 @@ mod when_a_device_has_no_account {
 
     use crate::common;
 
-    /// Creating a spot mints durable authority: a `space → root` chain that a
+    /// Creating a space mints durable authority: a `space → root` chain that a
     /// later `tonk invite` delegates from. Rooted in an anonymous key that
     /// chain has no owner, nothing can revoke it, and nothing backs up what it
     /// creates — so the account is the precondition, not the passkey.
@@ -1214,18 +1228,18 @@ mod when_a_device_has_no_account {
     /// The error has to name the command that fixes it. `tonk identity link`,
     /// which the old message named, no longer exists.
     #[dialog_common::test]
-    async fn it_refuses_to_create_a_spot() -> Result<()> {
+    async fn it_refuses_to_create_a_space() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let parent = tmp.path().canonicalize()?;
         let mut config = common::isolated_config(&parent)?;
         config.require_account = true;
 
         let Err(error) = TonkSite::init_with(&parent, config).await else {
-            panic!("a device with no account cannot create a spot");
+            panic!("a device with no account cannot create a space");
         };
         let rendered = format!("{error:#}");
         assert!(
-            rendered.contains("tonk account link"),
+            rendered.contains("tonk account login"),
             "the refusal must name the command that fixes it: {rendered}"
         );
         Ok(())
@@ -1317,7 +1331,7 @@ mod when_initializing_at_an_explicit_root {
 
     use crate::common;
 
-    /// Canonical spots put repo blocks directly in the registered
+    /// Canonical spaces put repo blocks directly in the registered
     /// site directory — no `.tonk/` nesting. `init_at_with` must
     /// root the site at exactly the path it is given.
     #[dialog_common::test]
@@ -1325,7 +1339,7 @@ mod when_initializing_at_an_explicit_root {
         let tmp = tempfile::tempdir()?;
         let parent = tmp.path().canonicalize()?;
         let config = common::isolated_config(&parent)?;
-        let root = parent.join("spots").join("garden");
+        let root = parent.join("spaces").join("garden");
 
         let site = TonkSite::init_at_with(&root, config.clone()).await?;
         assert_eq!(site.root, root.canonicalize()?);
@@ -1495,12 +1509,12 @@ mod when_mounting_account_authority {
         Ok(())
     }
 
-    /// A spot created before this account existed has repository authority
+    /// A space created before this account existed has repository authority
     /// that stops at the profile and reaches no account root at all. The
     /// profile holds that authority, so it can extend it rather than
-    /// stranding the spot with nothing that can authorize its remote.
+    /// stranding the space with nothing that can authorize its remote.
     #[dialog_common::test]
-    async fn it_adopts_a_spot_whose_authority_reaches_no_account_root() -> Result<()> {
+    async fn it_adopts_a_space_whose_authority_reaches_no_account_root() -> Result<()> {
         let test = common::TestSite::new().await?;
         let account_root = Ed25519Signer::import(&[73; 32]).await?.did();
         assert_ne!(local_root(&test.site).await?, account_root);

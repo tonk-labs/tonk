@@ -17,13 +17,13 @@ drive the same code paths as the binary.
 # Create a local space and bind this directory to it.
 tonk space new garden
 # Use an existing space in another project directory:
-tonk use garden
+tonk space use garden
 
 # Every local replica, with the owner each space names.
 tonk space list
 
 # Sign in. Tonk holds one account at a time.
-tonk account link
+tonk account login
 tonk account logout
 
 # A local space can move into your account. Once it belongs to one, it stays.
@@ -79,7 +79,7 @@ tonk status       # synced | ahead | behind | diverged | no-upstream
 
 # Sign in to a passkey-backed account.
 tonk account status
-tonk account link --name workstation
+tonk account login --name workstation
 tonk account logout
 
 # Delegate access to the space.
@@ -102,12 +102,12 @@ nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
 
 ### Spaces and sites
 
-A **space** is a named entry in `spots.json`, a registry kept under the
+A **space** is a named entry in `spaces.json`, a registry kept under the
 platform data dir (`~/Library/Application Support/tonk/` on macOS). Each entry
 points at a **site**: the working directory holding the actual dialog
 repository (`main`, opened on the `main` branch — multi-branch and multi-repo
 workflows are intentionally not exposed). Sites live canonically under
-`spots/<name>/`, or anywhere you like via `tonk space new --site <path>`.
+`spaces/<name>/`, or anywhere you like via `tonk space new --site <path>`.
 
 A space either belongs to no account, or to exactly one. Which one is read
 from the space itself — the founder row of the roster it carries on `main` —
@@ -139,15 +139,15 @@ there, and reaches other people through `tonk invite`.
 tag and the `access` flag that went with it, and added `owner`, `ownerName`,
 and `ownerIsYou` read from the roster.
 
-Commands resolve `--space` > `TONK_SPACE` > the visible `--spot` / `TONK_SPOT`
-compatibility aliases > the nearest directory bound by `tonk use <name>`.
+Commands resolve `--space` > `TONK_SPACE` > the nearest directory bound by
+`tonk space use <name>`.
 There is no machine-global fallback, so parallel sessions in separate
 directories hold their own space without repeating a flag. The directory is
 only a key into the registry — no site data or pointer file is stored there.
-`tonk space unbind` removes an exact binding. `spots.json` is plain JSON, so
+`tonk space unbind` removes an exact binding. `spaces.json` is plain JSON, so
 any application can read the registry without going through the CLI.
 
-To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
+To adopt an existing `.tonk/` directory (from an older checkout, or
 somewhere you keep data outside the canonical store) as a space, point
 `--site` at it: `tonk space new proj --site ~/proj/.tonk`. The local identity
 is a shared profile (`tonk identity` prints its DID; `--reset` mints a fresh
@@ -170,9 +170,9 @@ pull-before / push-after. `--no-sync` (or `TONK_NO_SYNC`) skips it; manual
 
 ### Accounts
 
-The CLI holds at most one account at a time. `tonk account link` (also spelled
+The CLI holds at most one account at a time. `tonk account login` (also spelled
 `login`) runs a browser/passkey handoff and records that account; signing in as
-someone else is `tonk account logout` followed by `tonk account link`. Linking
+someone else is `tonk account logout` followed by `tonk account login`. Linking
 an account never enrolls the spaces already on this device.
 
 Creating a space while signed out stays offline. Creating while signed in
@@ -209,7 +209,7 @@ used, its local bytes). It does not remove signed account directory facts,
 revoke memberships or invitations, deprovision hosting, delete remote objects,
 or erase a peer's replica.
 
-Interrupting `tonk account link` leaves the handoff recorded so the next run
+Interrupting `tonk account login` leaves the handoff recorded so the next run
 resumes it. A link token is one-time, so a service that refuses to reissue it
 has ended that handoff and not this profile's ability to link: the next run
 takes the completed grant if the browser approved in the meantime, and
@@ -227,7 +227,7 @@ disagrees with, or a service with no detach route can never accept that
 intent, and the CLI drops it rather than retrying forever. Timeouts, rate
 limits, and server errors are retried instead, and while one is still
 queued for a provider, linking to that same provider is refused because its
-one-active-generation rule would reject the activation. `tonk account link
+one-active-generation rule would reject the activation. `tonk account login
 --abandon-detach` drops those undelivered intents and links anyway; the
 earlier device can stay listed until `tonk account revoke` removes it.
 
@@ -256,8 +256,8 @@ carry a separate artifact relay, supplied by hand with `tonk remote add
 --revocation-url`; it is never inferred and never required.
 `tonk invite` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
-embedded ephemeral key); `tonk join` claims one into a fresh spot
-(`tonk join <url> --name <spot>`).
+embedded ephemeral key); `tonk join` claims one into a fresh space
+(`tonk join <url> --name <space>`).
 
 A bare `tonk invite` resolves the repo's remote, builds the link on that
 remote's origin, and embeds it so the claimer auto-configures the same access

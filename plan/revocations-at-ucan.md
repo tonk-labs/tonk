@@ -82,7 +82,7 @@ invocation.prf.forEach(delegation => {
 })
 ```
 
-So the store cannot hold bare CIDs: matching requires the revocation's **issuer** (to test chain membership) and enough of it to spot a delegated revocation. The stored value is the revocation, not just the fact that one exists.
+So the store cannot hold bare CIDs: matching requires the revocation's **issuer** (to test chain membership) and enough of it to space a delegated revocation. The stored value is the revocation, not just the fact that one exists.
 
 Consequences:
 
@@ -417,4 +417,4 @@ This unblocks the rest:
 revocations at /ucan/  →  decommission the account service  →  /customer/purge
 ```
 
-The account service's remaining surface after this lands is `/devices/*`, `/account/summary`, `/accounts`, `/accounts/preflight`, `/codes`, and `/links/*`. Device rows become facts on the account space (the CLI already reads spaces that way); email availability and verification move to the access service, which already owns enroll and activate; `/links/*` is deleted, since `tonk account link` uses the loopback-callback flow and never touches it.
+The account service's remaining surface after this lands is `/devices/*`, `/account/summary`, `/accounts`, `/accounts/preflight`, `/codes`, and `/links/*`. Device rows become facts on the account space (the CLI already reads spaces that way); email availability and verification move to the access service, which already owns enroll and activate; `/links/*` is deleted, since `tonk account login` uses the loopback-callback flow and never touches it.

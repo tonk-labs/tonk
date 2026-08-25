@@ -234,7 +234,7 @@ mod when_asserting_a_new_instance {
             .unwrap_err()
             .to_string();
         assert!(
-            mint.contains("Usage: tonk assert task --"),
+            mint.contains("Usage: tonk assert task "),
             "mint form should name the verb and the concept:\n{mint}"
         );
         assert!(
@@ -323,7 +323,8 @@ mod when_superseding_and_retracting {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!: &t2\n  title: \"retract-me\"\n  done: false\n")
             .await?;
-        tonk_cli::data_ops::retract(&test.site, "task", "t2", Some("title")).await?;
+        tonk_cli::data_ops::retract(&test.site, "task", "t2", Some("title"), Default::default())
+            .await?;
         // After retracting its only declared field, the concept
         // query no longer matches it (a concept query requires
         // every field present).
@@ -358,7 +359,7 @@ mod when_superseding_and_retracting {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!: &t3\n  title: \"gone-entirely\"\n  done: false\n")
             .await?;
-        tonk_cli::data_ops::retract(&test.site, "task", "t3", None).await?;
+        tonk_cli::data_ops::retract(&test.site, "task", "t3", None, Default::default()).await?;
         let out = tonk_cli::data_ops::query(&test.site, "task", false).await?;
         assert!(
             !out.contains("gone-entirely"),
@@ -387,9 +388,10 @@ mod when_superseding_and_retracting {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!: &t4\n  title: \"x\"\n  done: false\n")
             .await?;
-        let err = tonk_cli::data_ops::retract(&test.site, "task", "t4", Some("nope"))
-            .await
-            .unwrap_err();
+        let err =
+            tonk_cli::data_ops::retract(&test.site, "task", "t4", Some("nope"), Default::default())
+                .await
+                .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("title"),
@@ -522,7 +524,8 @@ mod when_asserting_many_cardinality_fields {
         test.eval_inline(NOTE_CONCEPT_DECL).await?;
         test.eval_inline("note!: &n2\n  body: \"hello\"\n  tag: \"a\"\n  tag: \"b\"\n")
             .await?;
-        tonk_cli::data_ops::retract(&test.site, "note", "n2", Some("tag")).await?;
+        tonk_cli::data_ops::retract(&test.site, "note", "n2", Some("tag"), Default::default())
+            .await?;
         let tag_claims = select_claims(&test, "xyz.tonk.note/tag").await?;
         assert!(
             tag_claims.is_empty(),
@@ -548,6 +551,198 @@ mod when_asserting_many_cardinality_fields {
             help.contains("appends a value"),
             "many-cardinality fields should be marked in --help:\n{help}"
         );
+        Ok(())
+    }
+}
+
+mod when_previewing_a_write {
+    use super::*;
+    use tonk_cli::data_ops::WriteOptions;
+
+    fn preview() -> WriteOptions {
+        WriteOptions {
+            dry_run: true,
+            ..Default::default()
+        }
+    }
+
+    /// The whole promise of `--dry-run` is that the branch is where it was.
+    /// Asserting on the revision rather than on a later read is what
+    /// catches a write that landed and was then made invisible some other
+    /// way.
+    async fn revision(test: &TestSite) -> Result<String> {
+        let session = test.site.branch().await?;
+        Ok(format!("{:?}", session.handle().revision()))
+    }
+
+    #[dialog_common::test]
+    async fn it_mints_nothing_when_asserting() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let before = revision(&test).await?;
+
+        let out = tonk_cli::data_ops::assert_op(
+            &test.site,
+            "task",
+            None,
+            &[
+                "--title".into(),
+                "Never committed".into(),
+                "--done".into(),
+                "false".into(),
+                "--dry-run".into(),
+            ],
+        )
+        .await?;
+
+        assert!(out.contains("dry run"), "{out}");
+        assert_eq!(revision(&test).await?, before);
+        let listed = tonk_cli::data_ops::query(&test.site, "task", false).await?;
+        assert!(!listed.contains("Never committed"), "{listed}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_instance_when_retracting() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline("task!: &t1\n  title: \"Still here\"\n  done: false\n")
+            .await?;
+        let before = revision(&test).await?;
+
+        let out =
+            tonk_cli::data_ops::retract(&test.site, "task", "t1", Some("title"), preview()).await?;
+
+        assert!(out.contains("dry run"), "{out}");
+        assert_eq!(revision(&test).await?, before);
+        let listed = tonk_cli::data_ops::query(&test.site, "task", false).await?;
+        assert!(listed.contains("Still here"), "{listed}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_declares_no_concept() -> Result<()> {
+        let test = TestSite::new().await?;
+        let before = revision(&test).await?;
+
+        let out = tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            preview(),
+        )
+        .await?;
+
+        assert!(out.contains("dry run"), "{out}");
+        assert_eq!(revision(&test).await?, before);
+        // The name is still free, which is the observable consequence:
+        // a previewed declaration that reserved it would make the real
+        // command fail with "already exists".
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_authors_no_view_and_leaves_the_home_alone() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+        let before = revision(&test).await?;
+
+        let out =
+            tonk_cli::data_ops::view_add(&test.site, "habit", None, "<b>{name}</b>", preview())
+                .await?;
+
+        assert!(out.contains("dry run"), "{out}");
+        // `view_add` auto-surfaces onto an unset home, so a preview that
+        // committed would show up here even if the view itself did not.
+        assert_eq!(revision(&test).await?, before);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_repoints_no_home() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "habit",
+            &["name:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+        let before = revision(&test).await?;
+
+        let out = tonk_cli::data_ops::home(&test.site, &["habit".into()], preview()).await?;
+
+        assert!(out.contains("dry run"), "{out}");
+        assert_eq!(revision(&test).await?, before);
+        Ok(())
+    }
+
+    /// A concept with a field named like one of the switches keeps its
+    /// field: the schema is the thing that cannot be spelled another way.
+    #[dialog_common::test]
+    async fn it_lets_a_field_win_a_name_collision() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "run",
+            &["quiet:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+
+        tonk_cli::data_ops::assert_op(&test.site, "run", None, &["--quiet".into(), "yes".into()])
+            .await?;
+
+        let listed = tonk_cli::data_ops::query(&test.site, "run", false).await?;
+        assert!(listed.contains("yes"), "{listed}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn a_field_beginning_with_q_does_not_steal_the_quiet_short_flag() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "survey",
+            &["question:text:one".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+
+        tonk_cli::data_ops::assert_op(
+            &test.site,
+            "survey",
+            None,
+            &[
+                "--question".into(),
+                "yes".into(),
+                "--dry-run".into(),
+                "--no-sync".into(),
+                "-q".into(),
+            ],
+        )
+        .await?;
         Ok(())
     }
 }
