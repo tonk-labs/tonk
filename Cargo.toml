@@ -181,6 +181,7 @@ web-time = "1"
 webbrowser = "1.0"
 worker = "0.8.5"
 worker-macros = "0.8.5"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1"
 
 js-sys = "0.3"

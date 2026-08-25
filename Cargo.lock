@@ -5036,6 +5036,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "blake3",
+ "bs58",
  "dialog-common",
  "dialog-credentials",
  "dialog-ucan-core",
@@ -5058,6 +5059,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+ "x25519-dalek",
  "zeroize",
 ]
 
