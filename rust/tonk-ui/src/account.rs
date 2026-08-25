@@ -2345,6 +2345,7 @@ mod tests {
             delegation_hex: "11".into(),
             invocation_hex: "22".into(),
             deposits_hex: Vec::new(),
+            encryption_key: None,
         };
 
         assert_eq!(
@@ -2374,6 +2375,7 @@ mod tests {
             delegation_hex: "11".into(),
             invocation_hex: "22".into(),
             deposits_hex: Vec::new(),
+            encryption_key: None,
         };
 
         assert_eq!(
