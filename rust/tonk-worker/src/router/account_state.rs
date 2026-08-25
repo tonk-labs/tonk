@@ -1129,16 +1129,35 @@ async fn custody_recipient(
 ) -> Result<(dialog_varsig::Did, Option<ReadyAccountBranch>), TonkWorkerError> {
     match super::identity::local_root(tonk).await {
         Ok(root) => {
-            let recipient = published_encryption_key(tonk, &root.root_did)
-                .await?
-                .ok_or_else(|| {
-                    TonkWorkerError::Conflict(
-                        "the account has not published its encryption key on this device; \
-                         signing in with the passkey once publishes it"
-                            .to_string(),
-                    )
+            let ready = require_ready_account_state(tonk).await.ok();
+            if let Some(recipient) = published_encryption_key(tonk, &root.root_did).await? {
+                return Ok((recipient, ready));
+            }
+            // A ceremony recorded the key with the root but the sweep has
+            // not published it yet (the account branch may not be ready).
+            // Publish it here: profile main is where it lives either way.
+            let Some(recipient) = root.encryption_key else {
+                return Err(TonkWorkerError::Conflict(
+                    "the account has not published its encryption key on this device; a \
+                     passkey assertion derives it"
+                        .to_string(),
+                ));
+            };
+            tonk.reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .transaction()
+                .assert(AccountEncryptionKey::new(
+                    root.root_did.this(),
+                    recipient.this(),
+                ))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("publish account encryption key: {error}"))
                 })?;
-            Ok((recipient, require_ready_account_state(tonk).await.ok()))
+            Ok((recipient, ready))
         }
         Err(TonkWorkerError::RootRequired) => {
             let secret = crate::onboarding::account(tonk).await?;
