@@ -564,13 +564,13 @@ enum AccountCommand {
     },
 
     /// List or pull the spaces your account directory lists
-    #[command(name = "spaces")]
-    Spaces {
+    #[command(name = "space")]
+    Space {
         /// Emit versioned camelCase JSON when listing.
         #[arg(long)]
         json: bool,
         #[command(subcommand)]
-        command: Option<AccountSpacesCommand>,
+        command: Option<AccountSpaceCommand>,
     },
 
     /// List the devices linked to this profile's account
@@ -606,12 +606,12 @@ enum AccountCommand {
 }
 
 #[derive(Subcommand, Debug)]
-enum AccountSpacesCommand {
-    /// Pull one exact repository subject into canonical local storage
+enum AccountSpaceCommand {
+    /// Pull one account-directory space by unique name or exact subject
     Pull {
-        /// Full repository subject DID.
-        #[arg(value_name = "SUBJECT")]
-        subject: String,
+        /// Unique directory name or full repository subject DID.
+        #[arg(value_name = "NAME_OR_SUBJECT")]
+        name_or_subject: String,
         /// Explicit local space slug.
         #[arg(long, value_name = "SLUG")]
         name: Option<String>,
@@ -770,7 +770,7 @@ enum SpaceCommand {
         /// The data then belongs to no space: `tonk space` reports
         /// it, `tonk space new <name> --site <path>` adopts it back,
         /// and it keeps its canonical name reserved against `tonk
-        /// join` and `tonk account spaces pull`.
+        /// join` and `tonk account space pull`.
         #[arg(long)]
         keep_data: bool,
         /// Delete without asking for confirmation.
@@ -1055,10 +1055,10 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 Some(AccountCommand::Login { .. }) => "login",
                 Some(AccountCommand::Logout) => "logout",
                 Some(AccountCommand::Delete { .. }) => "delete",
-                Some(AccountCommand::Spaces { command, .. }) => match command {
-                    None => "spaces-list",
-                    Some(AccountSpacesCommand::Pull { .. }) => "spaces-pull",
-                    Some(AccountSpacesCommand::Delete { .. }) => "spaces-delete",
+                Some(AccountCommand::Space { command, .. }) => match command {
+                    None => "space-list",
+                    Some(AccountSpaceCommand::Pull { .. }) => "space-pull",
+                    Some(AccountSpaceCommand::Delete { .. }) => "space-delete",
                 },
                 Some(AccountCommand::Sync) => "sync",
                 Some(AccountCommand::Devices { .. }) => "devices",
@@ -1693,7 +1693,7 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
     {
         return link_account(&store, name, service_url, no_open, via).await;
     }
-    if matches!(command, AccountCommand::Spaces { .. }) && matches!(store.account(), Ok(None)) {
+    if matches!(command, AccountCommand::Space { .. }) && matches!(store.account(), Ok(None)) {
         return print_error("no account is signed in; run `tonk account login`".to_owned());
     }
     let profile = match identity::open().await {
@@ -1778,7 +1778,7 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
-        AccountCommand::Spaces { command, json } => match command {
+        AccountCommand::Space { command, json } => match command {
             None => match account_spaces::list(&profile, &store).await {
                 Ok(rows) if json => print_json(&account_spaces_report(rows)),
                 Ok(rows) => {
@@ -1805,8 +1805,13 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
                 }
                 Err(error) => print_failure(error),
             },
-            Some(AccountSpacesCommand::Pull { subject, name }) => {
-                match account_spaces::pull(&profile, &store, &subject, name.as_deref()).await {
+            Some(AccountSpaceCommand::Pull {
+                name_or_subject,
+                name,
+            }) => {
+                match account_spaces::pull(&profile, &store, &name_or_subject, name.as_deref())
+                    .await
+                {
                     Ok(outcome) => {
                         if outcome.already_local {
                             println!("already local\t{}\t{}", outcome.name, outcome.subject);
@@ -1822,7 +1827,7 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
                     Err(error) => print_failure(error),
                 }
             }
-            Some(AccountSpacesCommand::Delete {
+            Some(AccountSpaceCommand::Delete {
                 subject,
                 account_url,
                 no_open,
@@ -2174,7 +2179,7 @@ fn print_active_space_resolution(
 /// Silent when there is none, so the common listing stays clean. When
 /// there is some it belongs on screen: it is otherwise entirely
 /// invisible, and it is the thing that will refuse a later `tonk
-/// join` or `tonk account spaces pull` on the same name.
+/// join` or `tonk account space pull` on the same name.
 fn print_orphaned_sites(orphans: &[PathBuf]) {
     if orphans.is_empty() {
         return;
@@ -2193,7 +2198,7 @@ fn print_orphaned_sites(orphans: &[PathBuf]) {
 /// Deleting is the default because the alternative is worse: an
 /// unregistered site directory is invisible to every command that
 /// reads the registry, yet still holds the canonical name against
-/// `tonk join --name` and `tonk account spaces pull --name`. Making
+/// `tonk join --name` and `tonk account space pull --name`. Making
 /// that the accident-shaped path instead of the deliberate one is
 /// what this command is for.
 async fn space_rm(
@@ -3239,7 +3244,7 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
 }
 
 /// List user-defined concepts (`tonk concept`), one
-/// tab-separated `name<TAB>description` row per concept.
+/// aligned `name  description` row per concept.
 async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
     let concepts = match schema::list_concepts(site).await {
         Ok(c) => c,
@@ -3718,8 +3723,8 @@ async fn home_op(
     }
 }
 
-/// List renderable entities (`tonk view`), one tab-separated
-/// `name<TAB>entity<TAB>model<TAB>bytes` row per template-claim
+/// List renderable entities (`tonk view`), one aligned
+/// `name  entity  model  bytes` row per template-claim
 /// carrier.
 async fn list_views_op(site: &site::TonkSite, json: bool) -> ExitCode {
     let listed = match views::list(site).await {
@@ -4019,7 +4024,7 @@ mod account_spaces_parser_tests {
             &["tonk", "view"],
             &["tonk", "blob"],
             &["tonk", "account"],
-            &["tonk", "account", "spaces"],
+            &["tonk", "account", "space"],
             &["tonk", "space", "home", "note"],
             &["tonk", "space", "agents"],
         ] {
@@ -4034,7 +4039,8 @@ mod account_spaces_parser_tests {
             &["tonk", "concept", "ls"],
             &["tonk", "view", "ls"],
             &["tonk", "blob", "ls"],
-            &["tonk", "account", "spaces", "list"],
+            &["tonk", "account", "space", "list"],
+            &["tonk", "account", "spaces"],
             &["tonk", "home", "note"],
             &["tonk", "agents"],
             &["tonk", "space", "use"],
@@ -4125,7 +4131,8 @@ mod account_spaces_parser_tests {
             "tonk concept ls",
             "tonk view ls",
             "tonk blob ls",
-            "tonk account spaces list",
+            "tonk account space list",
+            "tonk account spaces",
             "--attr",
             "--format",
         ] {
@@ -4196,7 +4203,7 @@ mod account_spaces_parser_tests {
     fn every_account_read_parser_owns_a_json_form() {
         for args in [
             &["tonk", "account", "status", "--json"][..],
-            &["tonk", "account", "spaces", "--json"],
+            &["tonk", "account", "space", "--json"],
             &["tonk", "account", "devices", "--json"],
             &["tonk", "space", "agents", "get", "--json"],
         ] {
@@ -4307,9 +4314,10 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn account_spaces_lists_bare_and_rejects_list() {
-        assert!(Cli::try_parse_from(["tonk", "account", "spaces"]).is_ok());
-        assert!(Cli::try_parse_from(["tonk", "account", "spaces", "list"]).is_err());
+    fn account_space_lists_bare_and_rejects_plural_and_list() {
+        assert!(Cli::try_parse_from(["tonk", "account", "space"]).is_ok());
+        assert!(Cli::try_parse_from(["tonk", "account", "space", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tonk", "account", "spaces"]).is_err());
     }
 
     #[test]
@@ -4435,36 +4443,40 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn account_spaces_pull_captures_the_full_subject_and_optional_name() {
+    fn account_space_pull_captures_a_name_or_subject_and_optional_local_name() {
         let did = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL";
         let cli =
-            Cli::try_parse_from(["tonk", "account", "spaces", "pull", did, "--name", "garden"])
+            Cli::try_parse_from(["tonk", "account", "space", "pull", did, "--name", "garden"])
                 .unwrap();
         let Some(Command::Account {
             command:
-                Some(AccountCommand::Spaces {
-                    command: Some(AccountSpacesCommand::Pull { subject, name }),
+                Some(AccountCommand::Space {
+                    command:
+                        Some(AccountSpaceCommand::Pull {
+                            name_or_subject,
+                            name,
+                        }),
                     ..
                 }),
             ..
         }) = cli.command
         else {
-            panic!("expected account spaces pull");
+            panic!("expected account space pull");
         };
-        assert_eq!(subject, did);
+        assert_eq!(name_or_subject, did);
         assert_eq!(name.as_deref(), Some("garden"));
     }
 
     #[test]
-    fn account_spaces_delete_requires_an_exact_subject_and_browser_review() {
+    fn account_space_delete_requires_an_exact_subject_and_browser_review() {
         let did = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL";
         let cli =
-            Cli::try_parse_from(["tonk", "account", "spaces", "delete", did, "--no-open"]).unwrap();
+            Cli::try_parse_from(["tonk", "account", "space", "delete", did, "--no-open"]).unwrap();
         let Some(Command::Account {
             command:
-                Some(AccountCommand::Spaces {
+                Some(AccountCommand::Space {
                     command:
-                        Some(AccountSpacesCommand::Delete {
+                        Some(AccountSpaceCommand::Delete {
                             subject, no_open, ..
                         }),
                     ..
@@ -4472,7 +4484,7 @@ mod account_spaces_parser_tests {
             ..
         }) = cli.command
         else {
-            panic!("expected account spaces delete");
+            panic!("expected account space delete");
         };
         assert_eq!(subject, did);
         assert!(no_open);

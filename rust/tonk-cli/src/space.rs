@@ -371,7 +371,7 @@ impl SpaceStore {
     /// These are left by `tonk space rm --keep-data` (and by a
     /// hand-edited `spaces.json`). They are invisible to every other
     /// command yet still occupy their names: `tonk join --name x` and
-    /// `tonk account spaces pull --name x` both refuse to write over
+    /// `tonk account space pull --name x` both refuse to write over
     /// one. Listing them is what makes that state recoverable instead
     /// of merely confusing.
     ///
@@ -946,7 +946,7 @@ pub fn listing(
 /// order looks more cautious and is worse: a delete that fails after
 /// the entry is already gone leaves data on disk that nothing names,
 /// which is precisely the state that later blocks `tonk join` and
-/// `tonk account spaces pull` on the same name. Deleting first means a
+/// `tonk account space pull` on the same name. Deleting first means a
 /// failure leaves the space fully registered and the command safe to
 /// retry.
 ///

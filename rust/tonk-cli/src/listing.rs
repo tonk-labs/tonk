@@ -1,20 +1,21 @@
 //! One shape for every listing the CLI prints.
 //!
 //! `concept`, `view`, `blob`, `remote`, `space`,
-//! `account spaces` and `account devices` each used to roll their own:
+//! `account space` and `account devices` each used to roll their own:
 //! some carried a header row, most did not; some printed a parenthesised
 //! line when there was nothing to show, most printed nothing at all; an
 //! absent value was `-` in three of them and an empty cell in the rest.
 //! Seven listings meant seven formats to learn.
 //!
 //! The one format here is `space`'s, the newest of them and the only
-//! one that was designed rather than accumulated: a header row, tab
-//! separated cells, [`ABSENT`] where a value is missing, and a
-//! parenthesised sentence when there are no rows at all. Tabs rather than
-//! aligned columns because `cut -f` is the thing scripts reach for; the
-//! stable machine-readable form is `--json`, which every one of these
-//! verbs now takes; each serializes its own row type there, so a boolean
-//! stays a boolean and an absent value is `null` rather than [`ABSENT`].
+//! one that was designed rather than accumulated: a header row, columns
+//! aligned to their widest visible cell, [`ABSENT`] where a value is missing,
+//! and a parenthesised sentence when there are no rows at all. The stable
+//! machine-readable form is `--json`, which every one of these verbs takes;
+//! each serializes its own row type there, so a boolean stays a boolean and an
+//! absent value is `null` rather than [`ABSENT`].
+
+use unicode_width::UnicodeWidthStr;
 
 /// Printed for a cell whose value is absent.
 ///
@@ -77,16 +78,43 @@ impl Listing {
         if self.rows.is_empty() {
             return format!("({})", self.empty);
         }
-        let mut out = self.columns.join("\t");
+        let mut widths: Vec<usize> = self
+            .columns
+            .iter()
+            .map(|column| UnicodeWidthStr::width(*column))
+            .collect();
+        for row in &self.rows {
+            for (width, cell) in widths.iter_mut().zip(row) {
+                *width = (*width).max(UnicodeWidthStr::width(cell.as_str()));
+            }
+        }
+
+        let mut out = String::new();
+        push_aligned_row(&mut out, self.columns.iter().copied(), &widths);
         for row in &self.rows {
             out.push('\n');
-            out.push_str(&row.join("\t"));
+            push_aligned_row(&mut out, row.iter().map(String::as_str), &widths);
         }
         for note in &self.notes {
             out.push_str("\n\n");
             out.push_str(note);
         }
         out
+    }
+}
+
+fn push_aligned_row<'a>(
+    out: &mut String,
+    cells: impl IntoIterator<Item = &'a str>,
+    widths: &[usize],
+) {
+    let cells: Vec<&str> = cells.into_iter().collect();
+    for (index, cell) in cells.iter().enumerate() {
+        out.push_str(cell);
+        if index + 1 < cells.len() {
+            let padding = widths[index] - UnicodeWidthStr::width(*cell) + 2;
+            out.extend(std::iter::repeat_n(' ', padding));
+        }
     }
 }
 
@@ -109,11 +137,22 @@ mod tests {
     use super::*;
 
     #[dialog_common::test]
-    fn it_renders_a_header_then_tab_separated_rows() {
+    fn it_renders_a_header_then_aligned_rows() {
         let mut listing = Listing::new(&["NAME", "KIND"], "nothing here");
         listing.push(["a", "first"]);
         listing.push(["b", "second"]);
-        assert_eq!(listing.render(), "NAME\tKIND\na\tfirst\nb\tsecond");
+        assert_eq!(listing.render(), "NAME  KIND\na     first\nb     second");
+    }
+
+    #[dialog_common::test]
+    fn it_aligns_each_column_after_the_widest_visible_cell() {
+        let mut listing = Listing::new(&["NAME", "OWNER", "ROLE"], "nothing here");
+        listing.push(["x", "alice", "owner"]);
+        listing.push(["long-name", "bob", "member"]);
+        assert_eq!(
+            listing.render(),
+            "NAME       OWNER  ROLE\nx          alice  owner\nlong-name  bob    member"
+        );
     }
 
     #[dialog_common::test]
@@ -149,7 +188,7 @@ mod tests {
     fn it_marks_an_absent_cell_rather_than_leaving_it_blank() {
         let mut listing = Listing::new(&["NAME", "ACCOUNT"], "nothing here");
         listing.push([cell(Some("garden")), cell(None)]);
-        assert_eq!(listing.render(), "NAME\tACCOUNT\ngarden\t-");
+        assert_eq!(listing.render(), "NAME    ACCOUNT\ngarden  -");
     }
 
     #[dialog_common::test]
@@ -158,7 +197,7 @@ mod tests {
         listing.push(["work\tstation\nupstairs", "did:key:device"]);
         assert_eq!(
             listing.render(),
-            "NAME\tDID\nwork\\tstation\\nupstairs\tdid:key:device"
+            "NAME                     DID\nwork\\tstation\\nupstairs  did:key:device"
         );
     }
 }

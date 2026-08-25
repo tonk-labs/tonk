@@ -25,7 +25,7 @@ pub enum Recovery {
     /// Listed in the linked account's directory, and pullable again
     /// by subject.
     Account {
-        /// Repository subject DID, the argument `tonk account spaces
+        /// Repository subject DID, the argument `tonk account space
         /// pull` takes.
         subject: String,
     },
@@ -89,7 +89,7 @@ impl Recovery {
     pub fn restore_hint(&self) -> Option<String> {
         match self {
             Recovery::Account { subject } => Some(format!(
-                "restore it later with `tonk account spaces pull {subject}`"
+                "restore it later with `tonk account space pull {subject}`"
             )),
             Recovery::Remote { .. } | Recovery::LocalOnly | Recovery::Unknown { .. } => None,
         }

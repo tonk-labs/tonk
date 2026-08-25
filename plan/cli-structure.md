@@ -227,12 +227,12 @@ the summary line says so; it is still one `show`, and `query <concept>
 | `concept` | list | `add <name> --field f:t:c…` |
 | `view` | list | `add <concept> --template …` |
 | `blob` | list | `add`, `cat` |
-| `account` | status | `login`, `logout`, `status`, `sync`, `delete`, `devices`, `revoke`, `spaces [pull\|delete]` |
+| `account` | status | `login`, `logout`, `status`, `sync`, `delete`, `devices`, `revoke`, `space [pull\|delete]` |
 
 Removed: `space list`, `remote list`, `concept ls`, `view ls`, `blob ls`,
-`account spaces list`. No aliases — an alias keeps the second grammar alive,
-which is the thing being fixed. Listing output keeps the one renderer from
-consistency item 0.4.
+`account space list`, and the plural `account spaces`. No aliases — an alias
+keeps the second grammar alive, which is the thing being fixed. Listing output
+keeps the one renderer from consistency item 0.4.
 
 **`home` moves under `space`.** It pins concept directories on the space
 home and re-points the `tonk/space` alias: a property of the space, not a
@@ -294,9 +294,9 @@ inventory rather than a search.
 
 **Spellings removed:** `tonk context`, `tonk guide`, `tonk schema`, `tonk
 home`, `tonk agents`, `tonk concept ls`, `tonk view ls`, `tonk blob ls`,
-`tonk remote list`, `tonk space list`, `tonk account spaces list`, `tonk
-query <concept> <entity>`, `tonk eval --format`, `tonk concept add --attr`,
-bare `tonk space use` as a report.
+`tonk remote list`, `tonk space list`, `tonk account space list`, `tonk
+account spaces`, `tonk query <concept> <entity>`, `tonk eval --format`, `tonk
+concept add --attr`, bare `tonk space use` as a report.
 
 **Contracts retired:** `tonk.context.v3`. Its sections continue as
 `tonk.status.v2`, `tonk concept --json`, and `tonk show <concept> --json`.

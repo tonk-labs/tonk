@@ -882,7 +882,7 @@ mod tests {
     /// services bind a fresh port every restart): the stored `origin`
     /// remote cell is repointed to the current descriptor instead of
     /// refusing forever with "profile main already follows a different
-    /// account remote" — the failure that left `tonk account spaces`
+    /// account remote" — the failure that left `tonk account space`
     /// reporting no account while `tonk account status` said signed in.
     #[dialog_common::test]
     async fn it_repoints_the_account_remote_when_the_link_moves() {
