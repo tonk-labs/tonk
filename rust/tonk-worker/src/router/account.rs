@@ -304,7 +304,6 @@ pub async fn set_display_name(
         Some(response) => Ok(Json(response)),
         None => Ok(Json(AccountDisplayNameResponse {
             name: crate::router::profile_name::resolve_display_name(&tonk).await,
-            convergence: Default::default(),
         })),
     }
 }
@@ -557,7 +556,11 @@ mod tests {
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
         {
             let tonk = state.read().await;
-            let roster = tonk.registry.read_roster(&tonk.storage).await.unwrap();
+            let roster = tonk
+                .registry
+                .read_roster(&tonk.storage, &tonk.operator)
+                .await
+                .unwrap();
             let entry = roster
                 .iter()
                 .find(|entry| entry.profile_name == tonk.profile_name)
@@ -569,7 +572,11 @@ mod tests {
         let _ = unlink(State(state.clone())).await.unwrap();
 
         let tonk = state.read().await;
-        let roster = tonk.registry.read_roster(&tonk.storage).await.unwrap();
+        let roster = tonk
+            .registry
+            .read_roster(&tonk.storage, &tonk.operator)
+            .await
+            .unwrap();
         let entry = roster
             .iter()
             .find(|entry| entry.profile_name == tonk.profile_name)

@@ -18,8 +18,6 @@ pub struct ProfileRosterEntry {
     pub email: Option<String>,
     /// Display name at last refresh.
     pub display_name: Option<String>,
-    /// When the profile was last activated, seconds since the epoch.
-    pub last_active_at: u64,
     /// Whether this entry is the profile currently being served.
     pub active: bool,
 }
@@ -54,14 +52,12 @@ mod tests {
             provider: Some("https://accounts.example".into()),
             email: Some("person@example.com".into()),
             display_name: Some("Alice".into()),
-            last_active_at: 1_754_380_800,
             active: true,
         })
         .unwrap();
         assert_eq!(json["profileName"], "tonk");
         assert_eq!(json["rootDid"], "did:key:root");
         assert_eq!(json["displayName"], "Alice");
-        assert_eq!(json["lastActiveAt"], 1_754_380_800u64);
         assert_eq!(json["active"], true);
         assert!(json.get("profile_name").is_none());
     }
@@ -76,7 +72,6 @@ mod tests {
                 provider: None,
                 email: None,
                 display_name: None,
-                last_active_at: 0,
                 active: false,
             }],
         };
