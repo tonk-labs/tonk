@@ -396,6 +396,126 @@
                 sendVisibility().catch(() => {});
             });
         </script>
+
+        <!-- Boot watchdog. A boot occasionally wedges — a wasm fetch that
+         dies quietly, a worker install that never finishes, the cache
+         poisonings of old — and every one of those left the shell at
+         "loading…" forever with a reload as the only cure. The page can
+         run that cure itself.
+
+         Stall detection, not a timer on elapsed time: download progress
+         (reported by boot-progress.mjs via tonkBootLife), the wasm
+         starting, and service-worker state transitions all count as
+         life, so a slow connection mid-download is never reloaded. Only
+         30 quiet seconds with the app unmounted or uncontrolled trigger
+         recovery.
+
+         The recovery ladder is bounded per tab (sessionStorage): first a
+         plain reload; then a reload after clearing CacheStorage and
+         unregistering the workers — the two poison sources boots have
+         actually wedged on; then give up honestly and leave the shell's
+         failure line for the person. A detected wasm load failure
+         (boot-progress.mjs onFailure) jumps straight onto the ladder via
+         tonkBootRecover instead of waiting out the stall window. -->
+        <script>
+            (() => {
+                if (!("serviceWorker" in navigator)) return;
+                const RETRIES = "tonk:boot-retries";
+                const STALL_MS = 30_000;
+                let lastLife = Date.now();
+                self.tonkBootLife = () => {
+                    lastLife = Date.now();
+                };
+
+                const attempts = () => {
+                    try {
+                        return Number(sessionStorage.getItem(RETRIES)) || 0;
+                    } catch {
+                        return 0;
+                    }
+                };
+                const booted = () =>
+                    !!navigator.serviceWorker.controller &&
+                    !!document.querySelector(
+                        "tonk-site, tonk-account, tonk-activate",
+                    );
+
+                // A worker whose install is advancing is a live boot even
+                // while nothing else moves: state flips count as life.
+                let swState = "";
+                const swLife = async () => {
+                    try {
+                        const reg =
+                            await navigator.serviceWorker.getRegistration();
+                        const state = reg
+                            ? ["installing", "waiting", "active"]
+                                  .map((k) => (reg[k] ? reg[k].state : "-"))
+                                  .join(",")
+                            : "none";
+                        if (state !== swState) {
+                            swState = state;
+                            lastLife = Date.now();
+                        }
+                    } catch {}
+                };
+
+                const recover = (why) => {
+                    clearInterval(timer);
+                    const n = attempts();
+                    if (n >= 2) {
+                        console.error(
+                            `boot: still stuck after ${n} recoveries (${why}); giving up`,
+                        );
+                        const status =
+                            document.querySelector("[data-boot-status]");
+                        if (status)
+                            status.textContent =
+                                "failed to load — check your connection and reload";
+                        return;
+                    }
+                    try {
+                        sessionStorage.setItem(RETRIES, String(n + 1));
+                    } catch {}
+                    console.warn(`boot: ${why}; recovery ${n + 1}`);
+                    const status =
+                        document.querySelector("[data-boot-status]");
+                    if (status) status.textContent = "recovering…";
+                    const reload = () => location.reload();
+                    if (n === 0) return reload();
+                    Promise.allSettled([
+                        caches
+                            .keys()
+                            .then((keys) =>
+                                Promise.all(
+                                    keys.map((key) => caches.delete(key)),
+                                ),
+                            ),
+                        navigator.serviceWorker
+                            .getRegistrations()
+                            .then((regs) =>
+                                Promise.all(
+                                    regs.map((reg) => reg.unregister()),
+                                ),
+                            ),
+                    ]).then(reload, reload);
+                };
+                self.tonkBootRecover = recover;
+
+                const timer = setInterval(() => {
+                    if (booted()) {
+                        clearInterval(timer);
+                        try {
+                            sessionStorage.removeItem(RETRIES);
+                        } catch {}
+                        return;
+                    }
+                    swLife();
+                    if (Date.now() - lastLife > STALL_MS) {
+                        recover("no boot progress for 30s");
+                    }
+                }, 5_000);
+            })();
+        </script>
         <!-- The following are load-bearing configuration for the Trunk build tool
          (https://trunkrs.dev/assets/); if you need to add build steps or copy
          static assets, you will want to modify this condiguration here. -->

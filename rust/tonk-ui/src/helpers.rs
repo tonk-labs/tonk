@@ -140,14 +140,12 @@ mod native {
             .to_string();
         // Polled from the test side: a single waiting script is bounded
         // by chromedriver's script timeout, which a cold machine still
-        // compiling the app's wasm can outlast. One mid-wait reload: a
-        // boot that merely runs slow is unhurt by more waiting, while
-        // one that WEDGED (a failed wasm fetch, an interrupted
-        // service-worker install) heals on reload — which is exactly
-        // what the boot shell's own failure line tells a person to do.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-        let reload_at = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
-        let mut reloaded = false;
+        // compiling the app's wasm can outlast. A boot that WEDGES
+        // rather than runs slow is the page's own problem now — its
+        // watchdog (index.html) reloads a boot with no signs of life
+        // and escalates to clearing caches and workers — so this wait
+        // only has to outlast the ladder, not run it.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(150);
         loop {
             let ready = driver
                 .execute("return !!window.tonkIdentity;", vec![])
@@ -156,10 +154,6 @@ mod native {
                 .and_then(|ret| ret.json().as_bool());
             if ready == Some(true) {
                 break;
-            }
-            if !reloaded && tokio::time::Instant::now() >= reload_at {
-                let _ = driver.refresh().await;
-                reloaded = true;
             }
             if tokio::time::Instant::now() >= deadline {
                 // Say where boot stopped, not just that it did: the
