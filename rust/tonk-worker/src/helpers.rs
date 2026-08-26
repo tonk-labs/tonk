@@ -5,9 +5,9 @@
 //! `helpers` cargo feature.
 
 use dialog_query::{ConceptQuery, Query as ConceptPattern};
-use tonk_schema::Remote;
 use tonk_schema::meta::Name;
 use tonk_schema::query::Query as WireQuery;
+use tonk_schema::{Remote, Replica};
 
 /// Wire-form `/query` body that selects every published [`Name`]
 /// on a branch — `this` (the `id:<n>` name entity) plus `entity`
@@ -39,4 +39,16 @@ pub fn remote_concept_wire_query() -> serde_json::Value {
     let query = ConceptQuery::from(pattern);
     let wire = WireQuery::from(&query);
     serde_json::to_value(&wire).expect("Remote query serializes")
+}
+
+/// Wire-form `/query` body selecting every [`Replica`] on a branch.
+///
+/// A created space lands here as a replica row on profile main, so a
+/// test that dispatched `space/create` waits on this rather than asking
+/// the profile listing again on a timer.
+pub fn replica_concept_wire_query() -> serde_json::Value {
+    let pattern = ConceptPattern::<Replica>::default();
+    let query = ConceptQuery::from(pattern);
+    let wire = WireQuery::from(&query);
+    serde_json::to_value(&wire).expect("Replica query serializes")
 }

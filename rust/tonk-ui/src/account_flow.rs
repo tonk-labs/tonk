@@ -865,19 +865,36 @@ mod tests {
         let dispatched = post_json(driver, "/api/profile/branch/main/transact", claim).await?;
         successful_body("dispatch space/create", &dispatched);
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let key = loop {
-            let now = space_keys(driver).await?;
-            if let Some(key) = now.iter().find(|key| !before.contains(key)) {
-                break key.clone();
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "the created space never appeared; before={before:?} now={now:?}"
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        };
+        // Subscribe for the replica rather than re-reading the profile
+        // listing on a timer: the space lands as a `Replica` fact on
+        // profile main, and the subscription delivers it on commit.
+        let known = serde_json::to_string(&before).unwrap_or_else(|_| "[]".to_owned());
+        await_subscription(
+            driver,
+            "/api/profile/branch/main/query",
+            tonk_worker::helpers::replica_concept_wire_query(),
+            &format!(
+                r#"const before = new Set({known});
+                   const rows = frame.conclusions || frame.asserted || [];
+                   return rows.some((row) => {{
+                       const text = JSON.stringify(row);
+                       return [...text.matchAll(/did:key:[A-Za-z0-9]+/g)]
+                           .some((m) => !before.has(m[0].slice("did:key:".length))
+                                     && !before.has(m[0]));
+                   }});"#
+            ),
+            30_000,
+        )
+        .await
+        .context("the created space never appeared on profile main")?;
+
+        // The subscription says a replica landed; the listing says which
+        // key it is, in the shape callers use.
+        let key = space_keys(driver)
+            .await?
+            .into_iter()
+            .find(|key| !before.contains(key))
+            .ok_or_else(|| anyhow!("a replica landed but no new key is listed"))?;
 
         // The handler navigates the client and attaches the remote
         // AFTER, so the navigation does not wait on the network. The
@@ -1151,20 +1168,25 @@ mod tests {
         // attaches the remote AFTER — deliberately, so the navigation
         // does not wait on the network. The space existing is therefore
         // not the attach having landed, so poll rather than read once.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let info = loop {
-            let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
-            let info = successful_body("read the space configuration", &info).clone();
-            if info["remote"]["origin"].is_object() {
-                break info;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "an activated account's space must wire the origin remote, got {}",
-                info["remote"],
-            );
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        };
+        await_subscription(
+            &driver,
+            "/api/profile/branch/main/query",
+            tonk_worker::helpers::remote_concept_wire_query(),
+            &format!(
+                r#"const rows = frame.conclusions || frame.asserted || [];
+                   return rows.some((row) => JSON.stringify(row).includes({key:?}));"#
+            ),
+            30_000,
+        )
+        .await
+        .context("an activated account's space must wire the origin remote")?;
+        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let info = successful_body("read the space configuration", &info);
+        assert!(
+            info["remote"]["origin"].is_object(),
+            "the attached remote must be `origin`, got {}",
+            info["remote"],
+        );
         let upstream = &info["branch"]["main"]["upstream"];
         assert_eq!(
             upstream["remote"].as_str(),

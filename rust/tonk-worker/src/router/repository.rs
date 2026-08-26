@@ -988,6 +988,9 @@ async fn run_invite(
         match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
             super::create_invite::RemoteRequirement::Ready(execution) => execution,
             super::create_invite::RemoteRequirement::Refused(reason) => {
+                // Say WHY there is no remote. "Attach one" is the right
+                // offer only when a provider exists to attach to.
+                let reason = super::create_invite::explain_refusal(&tonk, reason).await;
                 log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
                 drop(tonk);
                 publish_share_blocked(
@@ -6119,8 +6122,65 @@ mod tests {
         );
     }
 
+    /// The refusal class follows the account's registration state.
+    ///
+    /// Same spot, same missing upstream, three different remedies: an
+    /// account that is served can attach one, an enrolled account is
+    /// waiting on its email, and an unregistered one has to register.
+    #[dialog_common::test]
+    async fn it_names_the_refusal_by_registration_state() {
+        use crate::router::create_invite::{RemoteRefusal, explain_refusal};
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-refusal-by-state").await;
+        let tonk = state.read().await;
+
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "needs-account",
+            "nothing registered, so the remedy is to register",
+        );
+
+        crate::router::customer::record_test_customer(&tonk, CustomerStatus::Registered)
+            .await
+            .expect("the customer records");
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "needs-activation",
+            "enrolled but unconfirmed: the remedy is in the inbox",
+        );
+
+        crate::router::customer::record_test_customer(&tonk, CustomerStatus::Active)
+            .await
+            .expect("the customer records");
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "not-synced",
+            "served, so attaching a remote is the remedy after all",
+        );
+
+        // A refusal that already knows its cause is left alone.
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::UnshareableRemote)
+                .await
+                .code(),
+            "unshareable-remote",
+        );
+    }
+
     /// A share click on a spot with no upstream mints nothing and leaves a
     /// refusal on the overlay instead.
+    ///
+    /// The class says WHY there is no upstream. This profile has never
+    /// registered, so there is no provider to attach one to and the
+    /// remedy is to register — not "turn on sync", which would offer an
+    /// attach with nothing to attach to.
     #[dialog_common::test]
     async fn it_refuses_to_mint_without_a_remote() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -6130,8 +6190,7 @@ mod tests {
 
         let blocked = share_blocked_rows(&state, &key).await;
         assert_eq!(blocked.len(), 1, "one refusal recorded");
-        assert_eq!(blocked[0].0, "not-synced");
-        assert_eq!(blocked[0].1, "This spot only exists on this device.");
+        assert_eq!(blocked[0].0, "needs-account");
         assert_eq!(blocked[0].2, 1234.0, "echoes the command's timestamp");
 
         let invitations = content_invitations(&state, &key).await;

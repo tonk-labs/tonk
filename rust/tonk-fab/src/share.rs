@@ -160,6 +160,14 @@ struct Blocked {
 /// shared with the worker that publishes it.
 const BLOCKED_NOT_SYNCED: &str = tonk_worker_api::share::BLOCKED_NOT_SYNCED;
 
+/// No account has registered with a provider, so there is nothing to
+/// attach this spot to. Repairable by registering.
+const BLOCKED_NEEDS_ACCOUNT: &str = tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT;
+
+/// The account enrolled but never confirmed the emailed link, so the
+/// service serves it nothing yet. Repairable in the user's inbox.
+const BLOCKED_NEEDS_ACTIVATION: &str = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION;
+
 /// Subscription tag for the refusal query, distinct from [`SUB_TAG`] so the
 /// scaffolding can tell the two subscriptions' frames apart.
 const BLOCKED_TAG: &str = "tonk-share-blocked";
@@ -176,6 +184,11 @@ const BLOCKED_TAG: &str = "tonk-share-blocked";
 const DIALOG_ID: &str = "fab-enable-sync";
 const DIALOG_CONFIRM: &str = "[data-enable-sync-confirm]";
 const DIALOG_DETAIL: &str = "[data-enable-sync-detail]";
+
+/// Marks the dialog as answering a refusal whose repair is registration
+/// rather than an attach, so the confirm handler navigates instead of
+/// dispatching enable-sync.
+const DIALOG_OUTCOME: &str = "data-repair-register";
 const DIALOG_ACTION: &str = "[data-enable-sync-action]";
 
 /// Heading and confirm label for a refusal with no repair. The button stays
@@ -203,6 +216,21 @@ struct Repair {
     action: &'static str,
     /// The confirm button's text.
     confirm: &'static str,
+    /// What confirming does.
+    outcome: RepairOutcome,
+}
+
+/// What the dialog's confirm button carries out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RepairOutcome {
+    /// Attach the account's remote to this spot, then mint — the
+    /// one-click path that has always existed.
+    EnableSync,
+    /// Leave for `/account`, where registration lives. The bar is a
+    /// sealed guest with no ceremony of its own, so this hands off
+    /// rather than pretending to run one; the user shares again once
+    /// they have an account.
+    Register,
 }
 
 impl Repair {
@@ -213,6 +241,19 @@ impl Repair {
                 label: "Turn on sync?",
                 action: "Turn on sync so the people you share with can open it.",
                 confirm: "Turn on sync & copy link",
+                outcome: RepairOutcome::EnableSync,
+            }),
+            BLOCKED_NEEDS_ACCOUNT => Some(Self {
+                label: "Create an account to share?",
+                action: "Sharing needs an account, so the people you share with have somewhere to sync from.",
+                confirm: "Create an account",
+                outcome: RepairOutcome::Register,
+            }),
+            BLOCKED_NEEDS_ACTIVATION => Some(Self {
+                label: "Confirm your email to share",
+                action: "We sent you a link. Confirm your address, then share again.",
+                confirm: "Open account settings",
+                outcome: RepairOutcome::Register,
             }),
             _ => None,
         }
@@ -577,6 +618,17 @@ impl TonkShare {
             let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) else {
                 return;
             };
+            // Registration does not happen here. The bar is a sealed
+            // guest with no ceremony of its own, so confirming hands off
+            // to `/account` and the user shares again once they have an
+            // account. Abandon the copy first: nothing is going to
+            // settle a clipboard write across a navigation.
+            if enable_sync_dialog().is_some_and(|dialog| dialog.has_attribute(DIALOG_OUTCOME)) {
+                fail_copy(&host, &state, "");
+                close_enable_sync_dialog();
+                tonk_host::navigate_to("/account");
+                return;
+            }
             // No remote: the worker resolves where this account syncs.
             // Deriving it here meant asking a sealed guest for its own
             // origin — `about:srcdoc`, so `location.origin` is the
@@ -933,6 +985,16 @@ fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
         slot.set_text_content(Some(action));
     }
     let _ = dialog.set_attribute("label", label);
+    // Stamp what confirming does, so the confirm handler branches on the
+    // refusal it is answering rather than assuming enable-sync.
+    match repair.as_ref().map(|repair| repair.outcome) {
+        Some(RepairOutcome::Register) => {
+            let _ = dialog.set_attribute(DIALOG_OUTCOME, "register");
+        }
+        _ => {
+            let _ = dialog.remove_attribute(DIALOG_OUTCOME);
+        }
+    }
     if let Ok(Some(confirm)) = dialog.query_selector(DIALOG_CONFIRM) {
         confirm.set_text_content(Some(confirm_label));
         // Visible either way — an unrepairable refusal greys the button rather
