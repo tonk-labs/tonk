@@ -3053,11 +3053,17 @@ mod tests {
                 .is_some(),
             "the account masthead should offer a conventional return link"
         );
+        assert!(
+            host.query_selector(".account__logo[role=img][aria-label=tonk]")
+                .unwrap()
+                .is_some(),
+            "settings should carry the Tonk wordmark"
+        );
 
         let copy = dashboard.text_content().unwrap();
         assert!(copy.contains("device, browser profile, or password manager"));
         assert!(copy.contains("Spaces created by other people will not be deleted"));
-        assert!(copy.contains("cannot erase copies that other devices have already replicated"));
+        assert!(copy.contains("cannot erase copies already replicated to other devices"));
         for technical in ["authority", "grant", "relink required"] {
             assert!(
                 !copy.contains(technical),

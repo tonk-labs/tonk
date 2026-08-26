@@ -86,6 +86,15 @@ tonk-account :focus-visible {
     width: min(576px, calc(100vw - 32px));
 }
 
+.account__logo {
+    width: 132px;
+    aspect-ratio: 1024 / 343;
+    margin: 0 auto clamp(36px, 6vh, 56px);
+    background: currentcolor;
+    -webkit-mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
+    mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
+}
+
 .account [hidden] {
     display: none;
 }
@@ -364,8 +373,7 @@ tonk-account :focus-visible {
     position: relative;
     z-index: 1;
     width: 100%;
-    min-height: 408px;
-    max-height: min(72vh, 720px);
+    height: clamp(408px, 60vh, 640px);
     padding: 8px 18px 18px;
     overflow: auto;
     border: 1px solid var(--ring);
@@ -408,10 +416,20 @@ tonk-account :focus-visible {
     overflow-wrap: anywhere;
 }
 
-.account__status {
+.account__status,
+.account__success > .account__ghost,
+tonk-account[data-mode="success"] .account__error,
+tonk-account[data-mode="success"] .account__working {
     width: 432px;
     margin: 7px 0 0 auto;
+}
+
+.account__status {
     text-align: right;
+}
+
+.account__success > .account__ghost {
+    justify-content: flex-end;
 }
 
 .account__inline-error {
@@ -726,7 +744,10 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
         width: 100%;
     }
 
-    .account__status {
+    .account__status,
+    .account__success > .account__ghost,
+    tonk-account[data-mode="success"] .account__error,
+    tonk-account[data-mode="success"] .account__working {
         width: 324px;
     }
 }
@@ -765,12 +786,19 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     }
 
     .account__settings-body {
-        max-height: none;
-        min-height: min(408px, 60vh);
+        height: min(408px, 60vh);
     }
 
-    .account__status {
+    .account__status,
+    .account__success > .account__ghost,
+    tonk-account[data-mode="success"] .account__error,
+    tonk-account[data-mode="success"] .account__working {
         width: 100%;
+    }
+
+    .account__logo {
+        width: 98px;
+        margin-bottom: 32px;
     }
 
     .account__dialog {

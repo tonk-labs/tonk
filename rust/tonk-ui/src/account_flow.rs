@@ -453,6 +453,23 @@ mod tests {
             settings_dark, hub_dark,
             "dark settings tokens drifted from Hub"
         );
+        let hub_heights = driver
+            .execute(
+                r#"document.querySelector('[data-open-settings]').click();
+                    const body = document.querySelector('.hub-settings__body');
+                    document.querySelector('[data-settings-tab="account"]').click();
+                    const account = Math.round(body.getBoundingClientRect().height);
+                    document.querySelector('[data-settings-tab="devices"]').click();
+                    const devices = Math.round(body.getBoundingClientRect().height);
+                    return {account, devices};"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            hub_heights.json()["account"],
+            hub_heights.json()["devices"],
+            "Hub Account and Devices tabs must keep one panel height"
+        );
 
         driver.enter_default_frame().await?;
         driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
@@ -466,19 +483,44 @@ mod tests {
                     r#"const settings = document.querySelector('.account__settings').getBoundingClientRect();
                         const rail = document.querySelector('.account__rail').getBoundingClientRect();
                         const body = document.querySelector('.account__settings-body').getBoundingClientRect();
-                        return {settings: Math.round(settings.width), rail: Math.round(rail.width), body: Math.round(body.width)};"#,
+                        document.querySelector('#account-tab-account').click();
+                        const accountHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
+                        document.querySelector('#account-tab-devices').click();
+                        const devicesHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
+                        const error = document.querySelector('#account-error');
+                        error.hidden = false;
+                        const errorRight = Math.round(error.getBoundingClientRect().right);
+                        error.hidden = true;
+                        const logo = document.querySelector('.account__logo').getBoundingClientRect();
+                        return {
+                          settings: Math.round(settings.width),
+                          rail: Math.round(rail.width),
+                          body: Math.round(body.width),
+                          accountHeight,
+                          devicesHeight,
+                          bodyRight: Math.round(body.right),
+                          errorRight,
+                          logoVisible: logo.width > 0 && logo.height > 0
+                        };"#,
                     Vec::new(),
                 )
                 .await?;
+            let geometry = geometry.json();
             assert_eq!(
-                geometry.json(),
-                &serde_json::json!({
-                    "settings": expected_total,
-                    "rail": expected_rail,
-                    "body": expected_body,
-                }),
+                geometry["settings"], expected_total,
                 "settings geometry drifted at {window_width}px"
             );
+            assert_eq!(geometry["rail"], expected_rail);
+            assert_eq!(geometry["body"], expected_body);
+            assert_eq!(
+                geometry["accountHeight"], geometry["devicesHeight"],
+                "Account and Devices tabs must keep one panel height at {window_width}px"
+            );
+            assert_eq!(
+                geometry["errorRight"], geometry["bodyRight"],
+                "settings notices must align with the panel body at {window_width}px"
+            );
+            assert_eq!(geometry["logoVisible"], true);
         }
 
         driver.set_window_rect(0, 0, 390, 844).await?;

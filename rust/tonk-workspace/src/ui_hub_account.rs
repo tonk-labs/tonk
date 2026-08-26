@@ -1015,6 +1015,10 @@ mod tests {
             display_name.get_attribute("name").as_deref(),
             Some("display-name")
         );
+        let copy = host.text_content().unwrap_or_default();
+        assert!(copy.contains("passkeys and account"));
+        assert!(copy.contains("manage account"));
+        assert!(!copy.contains("passkeys and destructive account actions"));
         host.remove();
     }
 

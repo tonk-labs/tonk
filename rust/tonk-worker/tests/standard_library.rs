@@ -320,8 +320,8 @@ fn it_adapts_the_gooey_settings_hierarchy_to_the_wider_launcher() {
     );
     let body = css_rule(PROFILE_LIBRARY, ".hub-settings__body {");
     assert!(
-        body.contains("min-height:408px"),
-        "the settings body must preserve the reference panel's information capacity",
+        body.contains("height:clamp(408px, 60vh, 640px)"),
+        "the settings body must preserve its capacity and fixed tab geometry",
     );
     let medium = PROFILE_LIBRARY
         .split("@media (max-width:607px)")
@@ -357,7 +357,8 @@ fn it_adapts_the_gooey_settings_hierarchy_to_the_wider_launcher() {
         "class=\"settings-section\">passkeys",
         "class=\"settings-section\">account management",
         "Your passkey replaces a password",
-        "manage passkeys and account",
+        "passkeys and account",
+        "manage account",
     ] {
         assert!(
             HUB_ACCOUNT_MARKUP.contains(contract),
