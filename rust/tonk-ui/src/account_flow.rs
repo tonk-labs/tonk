@@ -256,7 +256,8 @@ mod tests {
         // receipt. The registration row is what says it landed, and a
         // caller about to read the activation inbox has to wait for that
         // rather than for the panel that no longer implies it.
-        wait_for_text_containing(driver, "#account-registration-value", "Waiting for email").await?;
+        wait_for_text_containing(driver, "#account-registration-value", "Waiting for email")
+            .await?;
         Ok(())
     }
 
