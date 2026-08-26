@@ -389,7 +389,12 @@ mod tests {
         // that generates and seals the secret, so the dashboard
         // describes it immediately.
         wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
+        // The device list lives on the Devices tab, whose pane is
+        // hidden until selected — and hidden text reads as empty.
+        click(&driver, "#account-tab-devices").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
+        // Back to the Account tab: everything below reads from it.
+        click(&driver, "#account-tab-account").await?;
         let first = get_json(&driver, "/api/account/summary").await?;
         let again = get_json(&driver, "/api/account/summary").await?;
         let first = successful_body("account summary", &first);
@@ -1117,6 +1122,10 @@ mod tests {
         }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
+        // The DID is tucked behind the "technical details" disclosure,
+        // and collapsed text reads as empty — open it the way a person
+        // checking the fingerprint would.
+        click(driver, "#account-handoff details summary").await?;
         let handoff_did = element(driver, "#account-handoff-did")
             .await?
             .text()
@@ -2371,8 +2380,10 @@ mod tests {
         driver.goto(url.as_str()).await?;
 
         // The panel names the profile that is waiting, so the user knows what
-        // they are approving.
+        // they are approving. The DID sits behind the "technical
+        // details" disclosure; collapsed text reads as empty.
         element(&driver, "tonk-account[data-mode=\"handoff\"]").await?;
+        click(&driver, "#account-handoff details summary").await?;
         let shown = element(&driver, "#account-handoff-did")
             .await?
             .text()
@@ -2673,6 +2684,9 @@ mod tests {
 
         driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        // The device list lives on the Devices tab, whose pane is
+        // hidden until selected — and hidden text reads as empty.
+        click(&driver, "#account-tab-devices").await?;
         wait_for_text_containing(&driver, "#account-device-list", "e2e terminal").await?;
         let selector = format!("#account-device-list button[data-revoke=\"{cli_did}\"]");
         click(&driver, &selector).await?;

@@ -1,3 +1,12 @@
+/* Reserve the scrollbar gutter while the settings page is up: a notice
+   revealing itself (or a tab switch) can tip the page past the viewport
+   height, and in browsers with classic scrollbars that reflows the whole
+   centered column sideways mid-read. Reserving the gutter keeps the
+   layout still either way; overlay-scrollbar browsers are unaffected. */
+html:has(:is(tonk-account, tonk-activate)) {
+    scrollbar-gutter: stable;
+}
+
 :is(tonk-account, tonk-activate) {
     --page: #ececec;
     --ink: #131313;
@@ -564,6 +573,26 @@ tonk-account[data-mode="success"] .account__working {
     width: min(432px, calc(100vw - 88px));
     transform: translateX(-50%);
     font-family: var(--cond);
+}
+
+/* A viewport shorter than the dialog must scroll the dialog, not lose
+   its footer: the surface is fixed, so page scrolling can never bring
+   the buttons back into reach. The destructive confirmation (plan,
+   email field, checkbox) outgrows a 600px-tall window, which left
+   cancel and confirm unreachable there. The head gives up its close-
+   button overhang in this mode — the overhang is horizontal overflow,
+   and a scroll container would answer it with a second scrollbar. */
+@media (max-height: 700px) {
+    .account__dialog {
+        top: 16px;
+        max-height: calc(100vh - 32px);
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    .account__dialog-head {
+        margin-right: 0;
+    }
 }
 
 .account__dialog-head {

@@ -66,6 +66,26 @@ impl CustomElement for TonkAccount {
         let _ = Reflect::set(this.as_ref(), &"__tonkAccountBound".into(), &JsValue::TRUE);
         bind(this);
         load_status(this.clone());
+        // The panel's state is a function of the URL — /settings,
+        // /settings?add=1, /settings/link — and Add account moves
+        // between those with a client-side navigation (a history push
+        // plus a synthetic popstate), never a reload. The top-document
+        // router keeps this element mounted across account routes, so
+        // nothing else re-reads the location: the panel re-derives its
+        // own state whenever history changes under it.
+        {
+            let host = this.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+                if host.is_connected() {
+                    load_status(host.clone());
+                }
+            });
+            if let Some(window) = window() {
+                let _ = window
+                    .add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref());
+            }
+            closure.forget();
+        }
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {}
@@ -1867,14 +1887,22 @@ async fn complete_remote(
     settle(host);
     // An unhydrated account right after signup is the expected state
     // while the email activation is pending — the access service
-    // refuses the pull until then, the activation banner already says
-    // so, and the background sweep hydrates once it lands. The alert is
-    // for the unexpected case: activation is not what's in the way.
-    if initialize_name && is_unhydrated(&status) && !activation_pending().await {
-        show_error(
-            host,
-            "Your account was created. Check your email and open the verification link to verify your email address.",
-        );
+    // refuses the pull until the emailed link is opened — so the notice
+    // for that state names the one step that unblocks it, in the
+    // person's terms. Only when activation is NOT what's in the way is
+    // the failure unexpected, and then the notice says so instead.
+    if initialize_name && is_unhydrated(&status) {
+        if activation_pending().await {
+            show_error(
+                host,
+                "Your account was created. Check your email and open the verification link to verify your email address.",
+            );
+        } else {
+            show_error(
+                host,
+                "Your account was created, but this browser could not finish syncing it. Reload to retry.",
+            );
+        }
     }
     Ok(())
 }
@@ -3323,6 +3351,12 @@ mod tests {
     #[dialog_common::test]
     async fn it_opens_and_closes_the_authored_confirmation_with_focus_restoration() {
         let host = mounted_account_host().await;
+        // The trigger lives on the success panel, which the template
+        // keeps `hidden` until a mode selects it — and focusing an
+        // element inside a hidden subtree silently no-ops, which would
+        // leave nothing real to restore. Reach the state the button is
+        // actually pressed in.
+        set_mode(&host, "success");
         let trigger: HtmlElement = host
             .query_selector("#account-unlink")
             .unwrap()
