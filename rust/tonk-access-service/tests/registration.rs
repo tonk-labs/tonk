@@ -1028,9 +1028,7 @@ async fn it_publishes_and_resolves_the_custody_cell(
 /// registration ceremonies, not the memory permit an owner signs for
 /// its own cell.
 #[dialog_common::test]
-async fn it_redeems_a_deferred_publish_invocation(
-    env: AccessServiceAddress,
-) -> anyhow::Result<()> {
+async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> anyhow::Result<()> {
     use dialog_remote_s3::Permit;
     use tonk_identity::envelope::{
         AccountSecret, Envelope, KekMethod, custody_kek, custody_signer,
