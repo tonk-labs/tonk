@@ -85,3 +85,154 @@ pub async fn custody_space_seed(
     }
     Ok(())
 }
+
+/// Whether the account branch already holds a custody row for `subject`.
+pub async fn has_custody(
+    account: &Branch,
+    subject: &Did,
+    operator: &Operator<NativeSpace>,
+) -> Result<bool> {
+    let rows: Vec<CustodiedSeed> = account
+        .query()
+        .select(Query::<CustodiedSeed> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            kind: Term::var("kind"),
+            recipient: Term::var("recipient"),
+            sealed: Term::var("sealed"),
+        })
+        .perform(operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to read custodied seeds: {error:?}"))?;
+    Ok(!rows.is_empty())
+}
+
+/// The signing seed a locally created space's stored credential carries.
+/// `None` for a space this machine only ever held a verifier for — a
+/// joined or delegated space, whose seed is someone else's to custody.
+pub async fn site_seed(site: &crate::site::TonkSite) -> Result<Option<Zeroizing<[u8; 32]>>> {
+    let Some(signer) = site.repository.credential().signer() else {
+        return Ok(None);
+    };
+    // `Signer` gains arms only when dialog-credentials is built with
+    // another algorithm, which this crate never enables.
+    let dialog_credentials::Signer::Ed25519(signer) = signer;
+    let exported = signer
+        .export()
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to export the space signer: {error:?}"))?;
+    let dialog_credentials::KeyExport::Extractable(bytes) = exported;
+    let seed: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .context("the exported space seed is not 32 bytes")?;
+    Ok(Some(Zeroizing::new(seed)))
+}
+
+/// One space's outcome under [`accredit_local_spaces`].
+#[derive(Debug)]
+pub enum Accreditation {
+    /// Authority and custody now reach the account.
+    Moved,
+    /// Nothing to do: the account already holds this space's custody.
+    Already,
+    /// Skipped, with the reason: no signer (a joined space), or a
+    /// founder row naming a different account.
+    Skipped(String),
+}
+
+/// Move custody of every registered local space to the signed-in
+/// account — the CLI's accreditation, mirroring what the browser's
+/// rotation does at sign-in. Authority (`space → root`, retained into
+/// the account) and the sealed seed move; hosting does not: a space
+/// gains its remote and provisioning through `tonk space link`.
+///
+/// Best-effort per space: a failure is reported and the rest continue,
+/// and running again converges.
+pub async fn accredit_local_spaces(
+    store: &crate::space::SpaceStore,
+    config: &crate::site::SiteConfig,
+) -> Result<Vec<(String, Accreditation)>> {
+    let registry = store.load()?;
+    let Some(account) = registry.account.clone() else {
+        return Ok(Vec::new());
+    };
+    let account_root: Did = account
+        .root
+        .parse()
+        .context("the signed-in account root is invalid")?;
+
+    let mut outcomes = Vec::new();
+    for (name, entry) in &registry.spaces {
+        let mut site_config = config.clone();
+        site_config.require_account = false;
+        let site = match crate::site::TonkSite::open_with(&entry.site, site_config).await {
+            Ok(site) => site,
+            Err(error) => {
+                outcomes.push((
+                    name.clone(),
+                    Accreditation::Skipped(format!("could not open: {error:#}")),
+                ));
+                continue;
+            }
+        };
+        match accredit_site(&site, &account_root, store).await {
+            Ok(outcome) => outcomes.push((name.clone(), outcome)),
+            Err(error) => outcomes.push((
+                name.clone(),
+                Accreditation::Skipped(format!("failed: {error:#}")),
+            )),
+        }
+    }
+    Ok(outcomes)
+}
+
+async fn accredit_site(
+    site: &crate::site::TonkSite,
+    account_root: &Did,
+    store: &crate::space::SpaceStore,
+) -> Result<Accreditation> {
+    let subject = site.repository.did();
+    // Ownership is the space's own answer: a founder row naming another
+    // account is final — a synced space stays with its owner.
+    let roster = crate::inventory::read_roster(site).await?;
+    if let Some(founder) = roster.founder()
+        && founder.did != account_root.to_string()
+    {
+        return Ok(Accreditation::Skipped(format!("owned by {}", founder.did)));
+    }
+    let Some(seed) = site_seed(site).await? else {
+        return Ok(Accreditation::Skipped(
+            "no local signer (a joined space)".to_string(),
+        ));
+    };
+
+    let operator =
+        crate::account_state::credential_operator_for_store(&site.profile, store).await?;
+    let account = crate::account_state::open_account_branch_in(&site.profile, &operator, store)
+        .await?
+        .context("the account repository is not ready to custody spaces")?;
+    let recipient = account_recipient(&account, account_root, &operator)
+        .await?
+        .context(
+            "the account has not published its encryption key yet; \
+             open /account in a signed-in browser once, then run `tonk account status`",
+        )?;
+
+    let prefix = crate::site::adopt_account_root_prefix_for(
+        &site.profile,
+        site.operator.local(),
+        &subject,
+        account_root,
+    )
+    .await?;
+    crate::account_state::retain_space_delegation_in(&site.profile, &operator, store, &prefix)
+        .await?;
+
+    if has_custody(&account, &subject, &operator).await? {
+        return Ok(Accreditation::Already);
+    }
+    custody_space_seed(&account, &subject, &recipient, &seed, &operator).await?;
+    Ok(Accreditation::Moved)
+}

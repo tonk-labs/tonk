@@ -1700,6 +1700,32 @@ async fn link_account(
                     "spaces stay local-only until `tonk account logout` and `tonk account login` reach it"
                 );
             }
+            // Custody moves with the sign-in, the way browser accreditation
+            // rotates: every local space this account may own gets its
+            // authority and sealed seed onto the account. Hosting does not
+            // move — `tonk space link` remains the boundary that provisions
+            // and attaches a remote.
+            match site::default_config() {
+                Ok(config) => {
+                    match tonk_cli::custody::accredit_local_spaces(store, &config).await {
+                        Ok(outcomes) => {
+                            for (name, outcome) in outcomes {
+                                match outcome {
+                                    tonk_cli::custody::Accreditation::Moved => {
+                                        println!("custody: '{name}' moved to the account");
+                                    }
+                                    tonk_cli::custody::Accreditation::Already => {}
+                                    tonk_cli::custody::Accreditation::Skipped(reason) => {
+                                        eprintln!("custody: '{name}' not moved: {reason}");
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => eprintln!("warning: space custody did not move: {error:#}"),
+                    }
+                }
+                Err(error) => eprintln!("warning: space custody did not move: {error:#}"),
+            }
             print_customer_line(&profile, store).await;
             ExitCode::Success
         }
