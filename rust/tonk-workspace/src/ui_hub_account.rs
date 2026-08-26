@@ -5,7 +5,9 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::Date;
-use tonk_worker_api::{AccountDevice, AccountSummary, ProfileRosterEntry, ProfilesResponse};
+use tonk_worker_api::{
+    AccountDevice, AccountSummary, IdentifyResponse, ProfileRosterEntry, ProfilesResponse,
+};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -70,14 +72,13 @@ fn render_account_summary(this: &HtmlElement, summary: &AccountSummary) {
 fn revoke_path(device: &AccountDevice) -> String {
     let params = UrlSearchParams::new().expect("URLSearchParams is available in browsers");
     params.append("revoke", &device.did);
-    params.append("attachment", &device.attachment_id);
     format!(
         "/account?{}",
         params.to_string().as_string().unwrap_or_default()
     )
 }
 
-fn render_devices(this: &HtmlElement, devices: &[AccountDevice]) {
+fn render_devices(this: &HtmlElement, devices: &[AccountDevice], own: &str) {
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
     };
@@ -95,7 +96,7 @@ fn render_devices(this: &HtmlElement, devices: &[AccountDevice]) {
         };
         row.set_class_name("device-row");
         let _ = row.set_attribute("data-device", &device.did);
-        let _ = row.set_attribute("data-status", &device.status);
+        let _ = row.set_attribute("data-status", "active");
 
         let Ok(heading) = document.create_element("div") else {
             continue;
@@ -110,10 +111,11 @@ fn render_devices(this: &HtmlElement, devices: &[AccountDevice]) {
             continue;
         };
         state.set_class_name("device-row__state");
-        state.set_text_content(Some(if device.this_device {
+        let this_device = device.did == own;
+        state.set_text_content(Some(if this_device {
             "current device"
         } else {
-            &device.status
+            "active"
         }));
         let _ = heading.append_child(&state);
         let _ = row.append_child(&heading);
@@ -125,13 +127,7 @@ fn render_devices(this: &HtmlElement, devices: &[AccountDevice]) {
         added.set_text_content(Some(&format!("added {}", format_date(device.created_at))));
         let _ = row.append_child(&added);
 
-        let revocable = !device.this_device
-            && device.status == "active"
-            && device
-                .delegation_hex
-                .as_deref()
-                .is_some_and(|proof| !proof.is_empty());
-        if revocable {
+        if !this_device {
             let Ok(remove) = document.create_element("button") else {
                 continue;
             };
@@ -568,21 +564,35 @@ fn load_settings(this: HtmlElement, generation: Rc<Cell<u64>>, token: u64) {
     });
 
     spawn_local(async move {
-        let result = tonk_host::get_json("/api/account/devices")
-            .await
-            .and_then(|body| {
-                serde_json::from_str::<Vec<AccountDevice>>(&body).map_err(|error| {
-                    tonk_host::error::ErrorDetail::new(
-                        tonk_host::error::ErrorKind::Parse,
-                        format!("parse account devices: {error}"),
-                    )
-                })
-            });
+        let result = async {
+            let identity = tonk_host::get_json("/api/identify")
+                .await
+                .and_then(|body| {
+                    serde_json::from_str::<IdentifyResponse>(&body).map_err(|error| {
+                        tonk_host::error::ErrorDetail::new(
+                            tonk_host::error::ErrorKind::Parse,
+                            format!("parse current identity: {error}"),
+                        )
+                    })
+                })?;
+            let devices = tonk_host::get_json("/api/account/devices")
+                .await
+                .and_then(|body| {
+                    serde_json::from_str::<Vec<AccountDevice>>(&body).map_err(|error| {
+                        tonk_host::error::ErrorDetail::new(
+                            tonk_host::error::ErrorKind::Parse,
+                            format!("parse account devices: {error}"),
+                        )
+                    })
+                })?;
+            Ok::<_, tonk_host::error::ErrorDetail>((devices, identity.did))
+        }
+        .await;
         if !current(&generation, token) {
             return;
         }
         match result {
-            Ok(devices) => render_devices(&this, &devices),
+            Ok((devices, own)) => render_devices(&this, &devices, &own),
             Err(error) => show_error(&this, "[data-devices-error]", &error.message),
         }
     });
@@ -949,7 +959,6 @@ mod tests {
             provider: provider.map(str::to_owned),
             email: email.map(str::to_owned),
             display_name: display_name.map(str::to_owned),
-            last_active_at: 0,
             active,
         }
     }
@@ -1332,40 +1341,20 @@ mod tests {
 
         let devices = vec![
             AccountDevice {
-                attachment_id: "current/1".into(),
                 did: "did:key:current".into(),
                 name: "This browser".into(),
-                status: "active".into(),
                 created_at: 1_754_380_800,
-                delegation_cid: "cid-current".into(),
-                delegation_hex: Some("aa".into()),
-                this_device: true,
             },
             AccountDevice {
-                attachment_id: "other & one".into(),
                 did: "did:key:other/one".into(),
                 name: "Other browser".into(),
-                status: "active".into(),
                 created_at: 1_754_380_800,
-                delegation_cid: "cid-other".into(),
-                delegation_hex: Some("bb".into()),
-                this_device: false,
-            },
-            AccountDevice {
-                attachment_id: "revoked".into(),
-                did: "did:key:revoked".into(),
-                name: "Old browser".into(),
-                status: "revoked".into(),
-                created_at: 1_754_380_800,
-                delegation_cid: "cid-revoked".into(),
-                delegation_hex: Some("cc".into()),
-                this_device: false,
             },
         ];
-        super::render_devices(&host, &devices);
+        super::render_devices(&host, &devices, "did:key:current");
         assert_eq!(
             host.query_selector_all("[data-device]").unwrap().length(),
-            3
+            2
         );
         assert_eq!(
             host.query_selector_all("[data-revoke]").unwrap().length(),
@@ -1374,11 +1363,11 @@ mod tests {
         let revoke = host.query_selector("[data-revoke]").unwrap().unwrap();
         assert_eq!(
             revoke.get_attribute("data-navigate").as_deref(),
-            Some("/account?revoke=did%3Akey%3Aother%2Fone&attachment=other+%26+one")
+            Some("/account?revoke=did%3Akey%3Aother%2Fone")
         );
         let text = host.text_content().unwrap_or_default();
         assert!(text.contains("current device"));
-        assert!(text.contains("revoked"));
+        assert!(text.contains("active"));
         assert_eq!(
             host.query_selector_all("[data-settings-tab]")
                 .unwrap()
