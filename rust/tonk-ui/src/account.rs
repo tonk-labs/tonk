@@ -1305,12 +1305,23 @@ fn is_unhydrated(status: &AccountStatus) -> bool {
     )
 }
 
+/// The custody rows a creation ceremony must record before the panel
+/// settles: the consent that provisions the custody space, and the
+/// sealed cell with its pre-signed publish.
+struct CustodyRecord {
+    custody_did: String,
+    consent_hex: String,
+    sealed_hex: String,
+    publish_invocation_hex: String,
+}
+
 async fn complete_remote(
     host: &HtmlElement,
     path: &str,
     ceremony: CeremonyOutput,
     initialize_name: bool,
     enroll_email: Option<&str>,
+    custody: Option<&CustodyRecord>,
 ) -> Result<(), String> {
     let provider = service(host).await?;
     let response = crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
@@ -1357,6 +1368,34 @@ async fn complete_remote(
                 host,
                 "Your account is ready, but registering it with the sync service failed. Reload /account to retry.",
             );
+        }
+    }
+    // The custody rows are recorded before ANY settled state renders —
+    // success and the handoff panel alike. The sealed secret and its
+    // pre-signed publish exist only in this page's memory until the
+    // worker records them: a caller who navigates away the moment the
+    // panel looks done (the e2e suite does; a person closing the tab
+    // does too) must not lose the account's backup to the two round
+    // trips that used to follow the render. Neither row can land with
+    // the service before the emailed link is clicked; both queue and
+    // the worker replays them on activation.
+    if let Some(custody) = custody {
+        if let Err(error) =
+            crate::api::provision_custody(&custody.custody_did, &custody.consent_hex).await
+        {
+            web_sys::console::warn_1(&format!("custody provisioning deferred: {error}").into());
+        }
+        if let Err(error) = crate::api::queue_custody_publish(
+            &custody.custody_did,
+            &custody.sealed_hex,
+            &custody.publish_invocation_hex,
+        )
+        .await
+        {
+            // The sealed secret is only in this page's memory until it
+            // is recorded, so failing to queue it is the one loss worth
+            // surfacing.
+            return Err(format!("could not record the account secret: {error}"));
         }
     }
     // A pending callback approval takes precedence over settling: the
@@ -1519,31 +1558,22 @@ fn bind(host: &HtmlElement) {
                     deposits_hex: created.deposits_hex,
                     encryption_key: created.encryption_key,
                 };
+                let custody = CustodyRecord {
+                    custody_did: created.custody_did,
+                    consent_hex: created.consent_hex,
+                    sealed_hex: created.sealed_hex,
+                    publish_invocation_hex: created.publish_invocation_hex,
+                };
                 set_busy(&host, true, "Creating your account…");
-                complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await?;
-                // Neither of these can land before the emailed link is
-                // clicked: the service provisions nothing, and serves
-                // nothing, for a customer that has not confirmed its
-                // email. Both queue instead, and replay on activation.
-                if let Err(error) =
-                    crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
-                {
-                    web_sys::console::warn_1(
-                        &format!("custody provisioning deferred: {error}").into(),
-                    );
-                }
-                if let Err(error) = crate::api::queue_custody_publish(
-                    &created.custody_did,
-                    &created.sealed_hex,
-                    &created.publish_invocation_hex,
+                complete_remote(
+                    &host,
+                    "/accounts",
+                    ceremony,
+                    true,
+                    Some(&email),
+                    Some(&custody),
                 )
-                .await
-                {
-                    // The sealed secret is only in this page's memory
-                    // until it is recorded, so failing to queue it is
-                    // the one loss worth surfacing.
-                    return Err(format!("could not record the account secret: {error}"));
-                }
+                .await?;
                 Ok::<(), String>(())
             }
             .await;
@@ -1682,7 +1712,7 @@ fn bind(host: &HtmlElement) {
                 .await
                 .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking this browser…");
-                complete_remote(&host, "/devices/link", ceremony, false, None).await
+                complete_remote(&host, "/devices/link", ceremony, false, None, None).await
             }
             .await;
             if let Err(error) = result {
