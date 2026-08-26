@@ -292,6 +292,13 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
+                if let Some(path) = crate::hub_account::account_trigger_destination(
+                    host.get_attribute("data-active-provider").as_deref(),
+                ) {
+                    close_menu(&host, false);
+                    tonk_host::navigate_to(path);
+                    return;
+                }
                 let expanded = account_trigger(&host)
                     .and_then(|trigger| trigger.get_attribute("aria-expanded"))
                     .as_deref()
@@ -1460,6 +1467,7 @@ mod tests {
             Some("log in"),
             "an unattached first-run profile must not present its storage name as an account"
         );
+        let original_url = window().unwrap().location().href().unwrap();
         account.click();
         let menu: HtmlElement = host
             .query_selector("[data-account-menu]")
@@ -1467,7 +1475,18 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        assert!(!menu.hidden(), "the local profile still opens its roster");
+        assert!(menu.hidden(), "login must not open the profile roster");
+        assert_eq!(
+            window().unwrap().location().pathname().unwrap(),
+            "/account",
+            "login must navigate directly to account setup"
+        );
+        window()
+            .unwrap()
+            .history()
+            .unwrap()
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original_url))
+            .unwrap();
 
         let settings: HtmlElement = host
             .query_selector("[data-open-settings]")

@@ -19,6 +19,8 @@ mod binder;
 mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+mod hub_account;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod invite_link;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
