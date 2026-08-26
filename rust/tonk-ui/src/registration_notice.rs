@@ -161,20 +161,12 @@ fn query_body(account: &str) -> Result<JsValue, String> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn subscribe_email_status(host: &HtmlElement) -> Result<Subscription, String> {
     let consumer: Element = host.clone().into();
-    let body = JSON::parse(
-        r#"{
-      "predicate": { "with": {
-        "address": { "the": "xyz.tonk.email-status/address", "as": "String", "cardinality": "one" },
-        "state": { "the": "xyz.tonk.email-status/state", "as": "String", "cardinality": "one" }
-      } },
-      "terms": {
-        "this": "state:email-status",
-        "address": { "?": { "name": "address" } },
-        "state": { "?": { "name": "state" } }
-      }
-    }"#,
-    )
-    .map_err(|error| format!("email status query did not parse: {error:?}"))?;
+    // Derived from the concept rather than written here: a body that
+    // names an attribute slightly differently matches nothing, and a
+    // subscription that matches nothing looks exactly like a service
+    // that never answered.
+    let body = JSON::parse(&tonk_worker::query::email_status_wire_query().to_string())
+        .map_err(|error| format!("email status query did not parse: {error:?}"))?;
     let tag = JsValue::from_str("account-email-status");
     consumer::subscribe_with_route(&consumer, &body, Some(&tag), None, Some(PROFILE_MAIN), true)
         .map_err(|error| format!("email status subscribe failed: {error:?}"))

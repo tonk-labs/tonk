@@ -7,7 +7,7 @@
 use dialog_query::{ConceptQuery, Query as ConceptPattern};
 use tonk_schema::meta::Name;
 use tonk_schema::query::Query as WireQuery;
-use tonk_schema::{EmailStatus, Remote, Replica};
+use tonk_schema::{Remote, Replica};
 
 /// Wire-form `/query` body that selects every published [`Name`]
 /// on a branch — `this` (the `id:<n>` name entity) plus `entity`
@@ -55,12 +55,6 @@ pub fn replica_concept_wire_query() -> serde_json::Value {
 
 /// Wire-form `/query` body selecting the email-status overlay row.
 ///
-/// Derived from the concept like its neighbours, so the registration
-/// form and a test asking the same question cannot drift from the shape
-/// the worker writes.
-pub fn email_status_wire_query() -> serde_json::Value {
-    let pattern = ConceptPattern::<EmailStatus>::default();
-    let query = ConceptQuery::from(pattern);
-    let wire = WireQuery::from(&query);
-    serde_json::to_value(&wire).expect("EmailStatus query serializes")
-}
+/// Re-exported from [`crate::query`], where it lives so the account
+/// panel can ask the same question a test does.
+pub use crate::query::email_status_wire_query;

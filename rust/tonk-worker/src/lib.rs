@@ -183,3 +183,6 @@ pub use dialog_reactor::*;
 
 #[cfg(any(test, feature = "helpers"))]
 pub mod helpers;
+
+/// Wire-form query bodies derived from their concepts.
+pub mod query;
