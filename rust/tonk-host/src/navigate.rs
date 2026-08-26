@@ -100,6 +100,17 @@ fn dispatch_committed() {
 ///
 /// Public: the portal bridge performs a guest's relayed link click through
 /// this too, so an in-guest navigation stays a client-side route change.
+/// Ask the host page to raise its registration dialog.
+///
+/// Sharing needs an account and only the top page can run the ceremony,
+/// so a guest that hits a `needs-account` refusal forwards the class
+/// rather than trying to register where it cannot. A page with no
+/// bridge (the shell itself) does nothing: it would already have raised
+/// the dialog directly.
+pub fn request_registration(reason: &str) {
+    crate::page_effect::forward("register", reason);
+}
+
 pub fn navigate_to(href: &str) {
     use wasm_bindgen::JsValue;
     if crate::page_effect::forward("navigate", href) {

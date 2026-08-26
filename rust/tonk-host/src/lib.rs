@@ -76,7 +76,7 @@ mod navigate;
 #[cfg(target_arch = "wasm32")]
 mod page_effect;
 #[cfg(target_arch = "wasm32")]
-pub use navigate::navigate_to;
+pub use navigate::{navigate_to, request_registration};
 #[cfg(target_arch = "wasm32")]
 mod open;
 #[cfg(target_arch = "wasm32")]

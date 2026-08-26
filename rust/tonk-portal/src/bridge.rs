@@ -267,6 +267,14 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     open:function(href){
       ready.then(function(){port.postMessage({v:1,type:"open",href:href});});
     },
+    // Raise the registration dialog on the HOST page. Sharing needs an
+    // account, and only the top page can run the ceremony: WebAuthn wants
+    // a `window` and a user gesture, which the guest's opaque realm and
+    // the service worker both lack. The guest posts the refusal class so
+    // the host can word the prompt. Fire-and-forget (no response).
+    register:function(reason){
+      ready.then(function(){port.postMessage({v:1,type:"register",reason:reason});});
+    },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
     // request on its real origin and streams the response back; we rebuild a
@@ -1555,6 +1563,7 @@ fn make_dispatcher(
             "navigate" => handle_navigate(&state, &data),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
+            "register" => handle_register(&data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
             _ => {}
@@ -1849,6 +1858,53 @@ fn is_top_level_route(rest: &str) -> bool {
 /// Set the host page's tab title on the guest's behalf. The guest's
 /// `<tonk-title>` posts `{v:1, type:"title", text}`; this runs in the
 /// parent document, which is where `document.title` lives.
+/// Raise the host's registration dialog for a share that needs an
+/// account.
+///
+/// The dialog itself lives in `tonk-ui`, which depends on this crate, so
+/// it cannot be called by name from here. The top page registers a
+/// handler at boot instead — the same shape as the other page effects,
+/// where this crate carries the transport and the shell supplies the
+/// behaviour.
+fn handle_register(data: &JsValue) {
+    let Some(reason) = register_reason(data) else {
+        return;
+    };
+    REGISTER_HANDLER.with(|handler| {
+        if let Some(handler) = handler.borrow().as_ref() {
+            handler(&reason);
+        }
+    });
+}
+
+thread_local! {
+    /// What to do when a guest asks for registration. `None` until the
+    /// shell installs one, which is correct for a page with no account
+    /// UI: the ask is dropped rather than half-performed.
+    static REGISTER_HANDLER: std::cell::RefCell<Option<Box<dyn Fn(&str)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install what runs when a guest asks the host to register an account.
+///
+/// Called once by the shell at boot. Later calls replace the handler,
+/// which keeps a hot reload from stacking dialogs.
+pub fn on_register(handler: impl Fn(&str) + 'static) {
+    REGISTER_HANDLER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(handler));
+    });
+}
+
+/// Read `reason` out of a `{ type: "register", reason }` message, or
+/// `None` when the message is not one. Split out so the parse is
+/// testable on its own, the way [`title_text`] is.
+fn register_reason(data: &JsValue) -> Option<String> {
+    if get_str(data, "type")? != "register" {
+        return None;
+    }
+    get_str(data, "reason").filter(|reason| !reason.is_empty())
+}
+
 fn handle_title(data: &JsValue) {
     let Some(text) = title_text(data) else {
         return;
