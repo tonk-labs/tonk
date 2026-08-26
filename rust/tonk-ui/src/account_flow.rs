@@ -1307,7 +1307,9 @@ mod tests {
     /// passkey user-verification gesture is UI-side and out of scope;
     /// everything destructive runs here exactly as in production.
     #[dialog_common::test]
-    async fn it_deletes_the_account_and_its_hosted_spaces(env: TestEnvironment) -> Result<()> {
+    async fn it_deletes_the_account_and_releases_its_email_and_profile(
+        env: TestEnvironment,
+    ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         let email = "goner@example.com";
         sign_up(&driver, &env, email).await?;
@@ -1381,6 +1383,18 @@ mod tests {
         assert_eq!(
             after["status"], 404,
             "a deleted account leaves nothing to plan against: {after}"
+        );
+
+        // Permanent deletion retires this account's local profile rather
+        // than rebinding its retained authority to another root. The browser
+        // must already be on a fresh profile so the released email can create
+        // a genuinely new account without the user finding the hidden
+        // "different account" root conflict.
+        sign_up(&driver, &env, email).await?;
+        let recreated = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("load the recreated account", &recreated)["email"],
+            email
         );
 
         driver.quit().await?;
