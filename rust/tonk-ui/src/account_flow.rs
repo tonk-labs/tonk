@@ -375,6 +375,12 @@ mod tests {
             passkey.contains(" on "),
             "the passkey row names the device, got {passkey:?}",
         );
+        // The ceremony hands enrollment off rather than awaiting a
+        // receipt — it is a command now — so the row asking for the
+        // emailed link is what says it landed. A caller that goes
+        // straight to the inbox would otherwise read it before the
+        // service had been asked to send anything.
+        await_narrator_containing(driver, "confirmation link").await?;
         Ok(())
     }
 
