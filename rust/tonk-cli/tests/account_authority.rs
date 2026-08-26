@@ -139,6 +139,77 @@ async fn it_retains_a_created_space_into_the_account_space(
     Ok(())
 }
 
+/// Every account ensure repairs both halves of the account/profile union.
+///
+/// Login can be cancelled after its durable handoff but before these edges
+/// are retained. Keeping convergence in ensure means `account status` and
+/// `account sync` repair that interrupted work without minting another
+/// semantically identical return edge on every retry.
+#[dialog_common::test]
+async fn it_converges_the_linked_account_union_during_every_ensure(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let operator = fixture.operator().await?;
+    let account = fixture.account_branch().await?;
+    let root = fixture.link.issuer().clone();
+    let return_scope = dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Specific(fixture.profile.did()),
+        command: dialog_ucan_core::command::Command::parse("/")?,
+        parameters: dialog_ucan::Parameters::default(),
+    };
+
+    assert!(
+        account
+            .delegations()
+            .prove(root.clone(), return_scope.clone())
+            .perform(&operator)
+            .await
+            .is_err(),
+        "the fixture must begin without the profile return edge"
+    );
+
+    let outcome = tonk_cli::account_state::ensure_with_operator_and_store(
+        &fixture.profile,
+        operator.clone(),
+        fixture.store.clone(),
+    )
+    .await?;
+    assert_eq!(outcome.status, tonk_account::AccountStateStatus::Ready);
+    let account = fixture.account_branch().await?;
+    assert!(
+        !tonk_account::delegations::retain_space_delegation(&account, &fixture.link, &operator)
+            .await?,
+        "ensure must already have retained the exact account-to-profile grant"
+    );
+    assert!(
+        account
+            .delegations()
+            .prove(root, return_scope)
+            .perform(&operator)
+            .await
+            .is_ok(),
+        "ensure must retain a profile-to-account return edge"
+    );
+
+    let revision = account.revision();
+    tonk_cli::account_state::ensure_with_operator_and_store(
+        &fixture.profile,
+        operator,
+        fixture.store.clone(),
+    )
+    .await?;
+    let account = fixture.account_branch().await?;
+    assert_eq!(
+        account.revision(),
+        revision,
+        "a repeated ensure must not mint a duplicate return edge"
+    );
+    Ok(())
+}
+
 /// `account link --via` installs the authority a browser hands back.
 ///
 /// The ceremony itself needs a browser, but the CONTRACT does not: the page
