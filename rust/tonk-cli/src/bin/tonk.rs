@@ -65,7 +65,7 @@ collaborate (see also: tonk help sync)
    account    Sign in to a Tonk account; manage devices and spaces
 
 'tonk help -a' lists every command; 'tonk help -g' lists the guides
-(glossary, notation, spaces, tutorial, sync, views, events, workspace,
+(glossary, notation, spaces, tutorial, sync, views, events,
 and built-in elements). See 'tonk help <command>'
 or 'tonk help <guide>' for details.
 ";
@@ -4231,9 +4231,7 @@ mod account_spaces_parser_tests {
             &["tonk", "space", "new", "scratch", "--site", "./scratch"],
             &["tonk", "space", "use", "scratch"],
             &["tonk", "space", "unbind"],
-            &["tonk", "show", "workspace/sheet"],
             &["tonk", "render", "alice@person!tonk:view/label"],
-            &["tonk", "eval", "rust/tonk-core/assets/library/sheets.yaml"],
             &[
                 "tonk",
                 "remote",
