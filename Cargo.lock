@@ -4863,6 +4863,7 @@ dependencies = [
  "urlencoding",
  "wasm-bindgen-test",
  "webbrowser",
+ "zeroize",
 ]
 
 [[package]]
