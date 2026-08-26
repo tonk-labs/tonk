@@ -157,7 +157,7 @@ fn set_mode(host: &HtmlElement, mode: &str) {
 
 fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
     for selector in [
-        "#account-choose-create",
+        "#account-entry-submit",
         "#account-choose-link",
         "#account-create-submit",
         "#account-create-back",
@@ -2647,13 +2647,22 @@ mod tests {
                 "{selector}"
             );
         }
+        // The entry is one field, not a fork, so this button is no
+        // longer half of a choice: it is the way past typing an address
+        // at all, for someone whose authenticator already knows them.
         assert_eq!(
             host.query_selector("#account-choose-link")
                 .unwrap()
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("Log in")
+            Some("Sign in with a passkey")
+        );
+        assert!(
+            host.query_selector("#account-entry-email")
+                .unwrap()
+                .is_some(),
+            "the address is asked for before either ceremony"
         );
         assert!(
             host.query_selector("#account-retry-local")
@@ -2748,7 +2757,7 @@ mod tests {
         set_busy(&host, true, "Creating your account…");
 
         for selector in [
-            "#account-choose-create",
+            "#account-entry-submit",
             "#account-choose-link",
             "#account-create-back",
             "#account-link-back",
