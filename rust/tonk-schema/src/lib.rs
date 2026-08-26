@@ -69,7 +69,7 @@ pub use account::{
 };
 
 pub mod custody;
-pub use custody::{CustodiedSeed, SeedKind};
+pub use custody::{CustodiedSeed, CustodyCell, SeedKind};
 
 pub mod device_link;
 pub mod replica;

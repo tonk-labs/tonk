@@ -833,6 +833,20 @@ pub mod custody {
     #[domain("xyz.tonk.custody")]
     #[cardinality(one)]
     pub struct Sealed(pub Vec<u8>);
+
+    /// The account a custody cell recovers.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Account(pub Entity);
+
+    /// A custody cell's envelope bytes
+    /// (`tonk_identity::envelope::Envelope`, sealed under a passkey's
+    /// KEK).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Cell(pub Vec<u8>);
 }
 
 /// Attributes that describe a repository on its content branch, keyed by the

@@ -218,9 +218,12 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     set_deposits(&result, &ceremony.deposits_hex)?;
     Reflect::set(&result, &"custodyDid".into(), &ceremony.custody_did.into())?;
     Reflect::set(&result, &"consentHex".into(), &ceremony.consent_hex.into())?;
-    if let Some(sealed_hex) = ceremony.sealed_hex {
-        Reflect::set(&result, &"sealedHex".into(), &sealed_hex.into())?;
-    }
+    Reflect::set(&result, &"sealedHex".into(), &ceremony.sealed_hex.into())?;
+    Reflect::set(
+        &result,
+        &"publishInvocationHex".into(),
+        &ceremony.publish_invocation_hex.into(),
+    )?;
     Ok(result)
 }
 
@@ -254,33 +257,11 @@ async fn enroll_custody_passkey(input: JsValue) -> Result<JsValue, JsValue> {
         &"consentHex".into(),
         &enrollment.consent_hex.into(),
     )?;
-    if let Some(sealed_hex) = enrollment.sealed_hex {
-        Reflect::set(&result, &"sealedHex".into(), &sealed_hex.into())?;
+    Reflect::set(&result, &"sealedHex".into(), &enrollment.sealed_hex.into())?;
+    if let Some(invocation) = enrollment.publish_invocation_hex {
+        Reflect::set(&result, &"publishInvocationHex".into(), &invocation.into())?;
     }
     Ok(result.into())
-}
-
-/// `publishQueuedCustody({ custodyDid, sealedHex, endpoint, credentialId? })`
-/// → `{}`. Publishes a custody cell that could not be written when its
-/// ceremony ran, using a fresh assertion of the same passkey —
-/// pinned to `credentialId` (hex) when the caller recorded one, so a
-/// browser holding several passkeys cannot assert the wrong one.
-async fn publish_queued_custody(input: JsValue) -> Result<JsValue, JsValue> {
-    let custody_did = string_property(&input, "custodyDid")?;
-    let sealed_hex = string_property(&input, "sealedHex")?;
-    let endpoint = string_property(&input, "endpoint")?;
-    let credential_id = credential_id_property(&input)?;
-    let sealed = hex::decode(&sealed_hex)
-        .map_err(|error| JsValue::from_str(&format!("sealedHex is not hex: {error}")))?;
-    crate::ceremony::publish_queued_custody(
-        &custody_did,
-        &sealed,
-        &endpoint,
-        credential_id.as_deref(),
-    )
-    .await
-    .map_err(js_error)?;
-    Ok(Object::new().into())
 }
 
 /// `publishEncryptionKey({ endpoint, credentialId? })` → `{ encryptionKey }`:
@@ -396,16 +377,6 @@ pub fn install() {
         enroll_custody_passkey.as_ref().unchecked_ref(),
     );
     enroll_custody_passkey.forget();
-
-    let publish_queued = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(publish_queued_custody(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"publishQueuedCustody".into(),
-        publish_queued.as_ref().unchecked_ref(),
-    );
-    publish_queued.forget();
 
     let publish_encryption_key = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(publish_encryption_key(input))

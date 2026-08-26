@@ -46,10 +46,12 @@ pub(crate) struct CreateAccountOutput {
     pub deposits_hex: Vec<String>,
     pub custody_did: String,
     pub consent_hex: String,
-    /// The sealed account secret, queued until provisioning and
-    /// activation let it publish.
-    #[serde(default)]
-    pub sealed_hex: Option<String>,
+    /// The sealed account secret, recorded on profile main and queued
+    /// for the vault publish.
+    pub sealed_hex: String,
+    /// The ceremony's pre-signed publish invocation, drained by the
+    /// worker once activation lands.
+    pub publish_invocation_hex: String,
 }
 
 /// Input for enrolling a custody passkey for a locally held account.
@@ -72,10 +74,12 @@ pub(crate) struct EnrollCustodyOutput {
     pub custody_did: String,
     pub credential_id: String,
     pub consent_hex: String,
-    /// Present when the cell could not publish yet, because the new
-    /// custody DID is not provisioned until the consent is deposited.
+    /// The sealed account secret — recorded on profile main either way.
+    pub sealed_hex: String,
+    /// Pre-signed publish invocation, present when the ceremony's own
+    /// publish was refused (the custody DID awaits provisioning).
     #[serde(default)]
-    pub sealed_hex: Option<String>,
+    pub publish_invocation_hex: Option<String>,
 }
 
 /// Input for unlocking an account with a custody passkey on this browser.
@@ -208,28 +212,6 @@ pub(crate) async fn enroll_custody_passkey(
     input: EnrollCustodyInput,
 ) -> Result<EnrollCustodyOutput, IdentityBridgeError> {
     call("enrollCustodyPasskey", input).await
-}
-
-/// Input for publishing a custody cell that was queued when its
-/// ceremony could not write it.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PublishQueuedCustodyInput {
-    pub custody_did: String,
-    pub sealed_hex: String,
-    /// The access service's `/ucan/` endpoint.
-    pub endpoint: String,
-    /// Hex credential id to pin the assertion to, from the root record.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential_id: Option<String>,
-}
-
-pub(crate) async fn publish_queued_custody(
-    input: PublishQueuedCustodyInput,
-) -> Result<(), IdentityBridgeError> {
-    call::<_, serde::de::IgnoredAny>("publishQueuedCustody", input)
-        .await
-        .map(|_| ())
 }
 
 pub(crate) async fn unlock_with_passkey(
