@@ -86,3 +86,13 @@ pub const WEBAUTHN: &str = "webauthn";
 /// save it with the root (`POST /api/identity/root` with `encryptionKey`).
 /// The worker waits for that save before continuing.
 pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
+
+/// Create an account: the full signup ceremony, run in the top page
+/// because WebAuthn needs a `window` and a user gesture and the service
+/// worker has neither.
+///
+/// Raised by the registration form's `account/register` command. The
+/// page runs the ceremony, saves the root, links the account and
+/// enrolls it, and the outcome reaches every reader as facts — the
+/// worker is not waiting on a response body.
+pub const CREATE_ACCOUNT_REQUEST: &str = "create-account";

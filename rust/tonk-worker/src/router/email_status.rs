@@ -49,6 +49,10 @@ pub(crate) mod state {
     /// The service could not be reached, so this says nothing about the
     /// address itself.
     pub(crate) const UNAVAILABLE: &str = "unavailable";
+    /// A ceremony was raised for this address and has not finished. The
+    /// form shows it as in-progress rather than offering to start
+    /// another one.
+    pub(crate) const PENDING_CEREMONY: &str = "registering";
 }
 
 /// Split an address into the `(domain, local)` pair the lookup path
@@ -77,6 +81,16 @@ pub(crate) fn split_address(email: &str) -> Option<(String, String)> {
 /// leaves this worker.
 pub(crate) fn state_for_address(email: &str) -> Option<&'static str> {
     split_address(email).is_none().then_some(state::INVALID)
+}
+
+/// Whether a state means the form should keep out of the way rather
+/// than offer an action.
+///
+/// `registering` is a ceremony already up; `unavailable` is a service
+/// that did not answer. Neither is a fact about the address, so neither
+/// should render as "create an account" or "sign in".
+pub(crate) fn is_transient(state: &str) -> bool {
+    matches!(state, state::PENDING_CEREMONY | state::UNAVAILABLE)
 }
 
 /// Map the lookup's HTTP status onto the state the form reads.
@@ -205,6 +219,87 @@ async fn publish(env: &crate::router::CommandEnv, email: &str, state: &'static s
     }
 }
 
+/// Runs `account/register`: raises the signup ceremony in the page.
+///
+/// The worker cannot create an account. WebAuthn needs a `window` and a
+/// user gesture, and a service worker has neither, so this asks the
+/// originating client to authorize with a passkey and stops there.
+///
+/// Nothing is awaited. The ceremony's outcome reaches every reader as
+/// facts — `AccountCustomer` appears at enrollment and gains a provider
+/// at activation — and the form is already subscribed to them. A handler
+/// that blocked on the ceremony would be holding a command open across a
+/// dialog the user might never finish.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct RegisterAccountHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl RegisterAccountHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::RegisterAccount::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn decode_registration(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use crate::reactor::Decode as _;
+    facts
+        .first()
+        .map(|artifact| artifact.of.clone())
+        .and_then(|entity| tonk_schema::command::RegisterAccount::decode(entity, facts))
+        .map(|command| command.email.0)
+        .filter(|email| split_address(email).is_some())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RegisterAccountHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        decode_registration(facts).is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use tonk_common::log;
+
+        let email = decode_registration(facts);
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(email) = email else {
+                return;
+            };
+            let Some(client) = env.client() else {
+                log!("account/register: no page asked for this, so no ceremony can run");
+                return;
+            };
+            // The address rides on the overlay rather than in the
+            // request: `WebAuthnRequest` carries a discriminator and
+            // nothing else, and the page reads what it needs from the
+            // row it is already watching.
+            publish(&env, &email, state::PENDING_CEREMONY).await;
+            if let Err(error) =
+                super::navigate::request_webauthn(client, tonk_worker_api::CREATE_ACCOUNT_REQUEST)
+                    .await
+            {
+                log!("account/register: the page could not be asked: {error}");
+                publish(&env, &email, state::UNAVAILABLE).await;
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +358,18 @@ mod tests {
             None,
             "a real address has no answer until the service gives one",
         );
+    }
+
+    /// A state the form should not turn into an offer.
+    #[dialog_common::test]
+    fn it_knows_which_states_carry_no_offer() {
+        assert!(is_transient(state::PENDING_CEREMONY), "a ceremony is up");
+        assert!(is_transient(state::UNAVAILABLE), "nobody answered");
+        // These are answers about the address, so each names an action.
+        assert!(!is_transient(state::UNREGISTERED));
+        assert!(!is_transient(state::ACTIVE));
+        assert!(!is_transient(state::PENDING));
+        assert!(!is_transient(state::SUSPENDED));
     }
 
     /// Anything else is the service failing to answer. Reading a 429 or

@@ -40,7 +40,8 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    ENCRYPTION_KEY_REQUEST, PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnRequest,
+    CREATE_ACCOUNT_REQUEST, ENCRYPTION_KEY_REQUEST, PasskeyMetadata, RootStatus, SaveRootRequest,
+    WEBAUTHN, WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
