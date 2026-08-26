@@ -152,10 +152,15 @@ mod tests {
     /// by chromedriver's script timeout, and a cold CI runner spends
     /// longer than that installing the worker (compiling its wasm is the
     /// long pole), which surfaced as "script timeout" flakes. A poll has
-    /// no long-running script to time out. No reload is needed: the
-    /// page's boot path nudges an already-active worker to claim it.
+    /// no long-running script to time out. The page's boot path nudges
+    /// an already-active worker to claim it, so control normally
+    /// arrives without a reload; the one mid-wait reload is for a boot
+    /// that wedged (a failed fetch, an interrupted install), which a
+    /// reload restarts.
     async fn wait_for_service_worker(driver: &WebDriver) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let reload_at = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut reloaded = false;
         loop {
             let controlled = driver
                 .execute(
@@ -167,6 +172,10 @@ mod tests {
                 .and_then(|ret| ret.json().as_bool());
             if controlled == Some(true) {
                 return Ok(());
+            }
+            if !reloaded && tokio::time::Instant::now() >= reload_at {
+                let _ = driver.refresh().await;
+                reloaded = true;
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
