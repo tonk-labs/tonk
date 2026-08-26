@@ -152,6 +152,51 @@ fn query_body(account: &str) -> Result<JsValue, String> {
     JSON::parse(&body).map_err(|error| format!("registration query JSON parse: {error:?}"))
 }
 
+/// Subscribe `host` to the answer the worker publishes about a typed
+/// address.
+///
+/// One entity, replaced per answer, on an overlay: the entry only ever
+/// cares about the latest one, and nothing about a half-typed address
+/// belongs in replicated history.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn subscribe_email_status(host: &HtmlElement) -> Result<Subscription, String> {
+    let consumer: Element = host.clone().into();
+    let body = JSON::parse(
+        r#"{
+      "predicate": { "with": {
+        "address": { "the": "xyz.tonk.email-status/address", "as": "String", "cardinality": "one" },
+        "state": { "the": "xyz.tonk.email-status/state", "as": "String", "cardinality": "one" }
+      } },
+      "terms": {
+        "this": "state:email-status",
+        "address": { "?": { "name": "address" } },
+        "state": { "?": { "name": "state" } }
+      }
+    }"#,
+    )
+    .map_err(|error| format!("email status query did not parse: {error:?}"))?;
+    let tag = JsValue::from_str("account-email-status");
+    consumer::subscribe_with_route(&consumer, &body, Some(&tag), None, Some(PROFILE_MAIN), true)
+        .map_err(|error| format!("email status subscribe failed: {error:?}"))
+}
+
+/// The `(address, state)` a frame carries, if it carries one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn read_email_status(payload: &JsValue) -> Option<(String, String)> {
+    let rows = js_sys::Array::from(payload);
+    let row = rows.get(rows.length().checked_sub(1)?);
+    if row.is_undefined() || row.is_null() {
+        return None;
+    }
+    let field = |name: &str| -> Option<String> {
+        Reflect::get(&row, &"fields".into())
+            .ok()
+            .and_then(|fields| Reflect::get(&fields, &name.into()).ok())
+            .and_then(|value| value.as_string())
+    };
+    Some((field("address")?, field("state")?))
+}
+
 /// Read a registration out of a `reset` frame.
 ///
 /// The frame is the conclusion list. An empty one means no fact has been

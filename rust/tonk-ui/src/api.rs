@@ -45,106 +45,66 @@ pub fn origin() -> String {
         .expect("Could not read window location")
 }
 
-/// What the access service knows about an email address.
+/// Ask the worker what it knows about an email address.
 ///
-/// The three answers the sign-in entry needs, and the reason it can ask
-/// before running a ceremony: creating a passkey for an address that
-/// already has one leaves an orphan credential in the authenticator.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AddressLookup {
-    /// No customer holds this address. Signing up is the path.
-    Unknown,
-    /// A customer holds it and has confirmed the address.
-    Registered {
-        /// The account's `did:key`, from the document's `alsoKnownAs`.
-        account: String,
-    },
-    /// A customer holds it and has not opened the activation email. The
-    /// passkey exists, so this is still a sign-in: creating a second one
-    /// is the thing being avoided.
-    AwaitingActivation {
-        /// The account's `did:key`.
-        account: String,
-    },
+/// A command, not a request: the answer lands as the `EmailStatus`
+/// overlay fact the entry screen subscribes to, which is also where the
+/// share dialog's registration form reads it. One implementation of the
+/// mapping, one place the states are named.
+///
+/// The attribute the command reads is normally filled from a form's
+/// submit event; the entry screen asks while someone is still typing, so
+/// it supplies the value directly.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn check_email(email: &str) -> Result<(), TonkUiError> {
+    use wasm_bindgen::JsValue;
+
+    tonk_host::ready::wait().await;
+    let consumer = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+        .ok_or_else(|| TonkUiError::ApiError("no document to dispatch from".to_string()))?;
+    let request = js_sys::JSON::parse(&check_email_claim(email).to_string())
+        .map_err(|error| TonkUiError::ApiError(format!("check claim did not parse: {error:?}")))?;
+    tonk_host::consumer::claim_with_route(
+        &consumer,
+        &request,
+        None,
+        Some(tonk_account::MAIN_BRANCH),
+        true,
+    )
+    .await
+    .map(|_: JsValue| ())
+    .map_err(|error| TonkUiError::ApiError(format!("check was not dispatched: {error:?}")))
 }
 
-impl AddressLookup {
-    /// Whether an account already exists, whatever its state.
-    pub fn is_known(&self) -> bool {
-        !matches!(self, Self::Unknown)
-    }
-}
-
-/// Resolve an email address to the account behind it.
-///
-/// `did:web:{host}:customer:{domain}:{local}` resolves to this
-/// service's `/customer/{domain}/{local}/did.json`, so the lookup is a
-/// same-origin GET. A suspended account answers 410 and reads as
-/// [`AddressLookup::Unknown`] here: there is no sign-in to offer and no
-/// second account to create, and the refusal a suspended user meets is
-/// the service's, said in full, rather than a hint dropped on a form.
-///
-/// Errors are the caller's to shrug off. A lookup that cannot be made
-/// should leave the entry usable, because the ceremonies behind it
-/// still refuse correctly on their own.
-pub async fn lookup_address(email: &str) -> Result<AddressLookup, TonkUiError> {
-    let address = email.trim().to_lowercase();
-    let Some((local, domain)) = address.rsplit_once('@') else {
-        return Ok(AddressLookup::Unknown);
-    };
-    if local.is_empty() || domain.is_empty() {
-        return Ok(AddressLookup::Unknown);
-    }
-    let url = format!(
-        "{}/customer/{}/{}/did.json",
-        origin(),
-        encode_segment(domain),
-        encode_segment(local)
-    );
-    let response = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    let status = response.status().as_u16();
-    // 404 is an answer, not a failure: nobody has this address.
-    if status == 404 || status == 410 {
-        return Ok(AddressLookup::Unknown);
-    }
-    if status != 200 && status != 202 {
-        return Err(TonkUiError::ApiError(format!(
-            "address lookup answered {status}"
-        )));
-    }
-    let document: serde_json::Value = response.json().await.map_err(into_api_error)?;
-    let account = document["alsoKnownAs"][0]
-        .as_str()
-        .ok_or_else(|| TonkUiError::ApiError("the DID document names no account".to_string()))?
-        .to_string();
-    Ok(if status == 202 {
-        AddressLookup::AwaitingActivation { account }
-    } else {
-        AddressLookup::Registered { account }
+/// The `TransactRequest` body for `account/check-email`.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+fn check_email_claim(email: &str) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Ask what is registered under an email address.",
+                        "with": {
+                            "email": {
+                                "the": "dom.event.current-target.elements.email/value",
+                                "cardinality": "one",
+                                "as": "Text"
+                            }
+                        }
+                    }
+                },
+                "parameters": { "email": email }
+            }
+        }]
     })
-}
-
-/// Percent-encode one path segment of a `did:web` lookup.
-///
-/// The DID's own encoding is percent-encoding and resolution decodes it
-/// when building the URL, so what the service reads is this. Anything
-/// outside the `did:mailto` unreserved set is escaped, `/` and `%`
-/// included, which is what keeps a local part from opening a path
-/// segment of its own.
-fn encode_segment(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
 }
 
 /// Fetches the repository record at `GET /api/repository/{name}`.
@@ -1162,6 +1122,37 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
+        );
+    }
+}
+
+#[cfg(test)]
+mod check_claim {
+    use super::check_email_claim;
+
+    /// The command reads the address off a form's submit event. The
+    /// entry asks while someone is still typing, so it supplies the
+    /// value under the same attribute rather than through the DOM.
+    #[dialog_common::test]
+    fn it_carries_the_address_under_the_form_attribute() {
+        let claim = check_email_claim("a@example.com");
+        assert_eq!(
+            claim["claims"][0]["application"]["parameters"]["email"],
+            "a@example.com"
+        );
+        assert_eq!(
+            claim["claims"][0]["application"]["predicate"]["concept"]["with"]["email"]["the"],
+            "dom.event.current-target.elements.email/value"
+        );
+    }
+
+    /// Transient: an answer about a half-typed address has no business
+    /// in replicated history.
+    #[dialog_common::test]
+    fn it_asks_transiently() {
+        assert_eq!(
+            check_email_claim("a@example.com")["claims"][0]["application"]["predicate"]["kind"],
+            "transient"
         );
     }
 }

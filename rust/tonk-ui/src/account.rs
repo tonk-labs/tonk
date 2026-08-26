@@ -356,14 +356,19 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
     let _ = show(host, "#account-resend-activation");
 }
 
-/// Resolve after `ms` milliseconds.
-async fn wait_for(ms: i32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        if let Some(win) = window() {
-            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
-        }
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+/// The tag the registration row's subscription carries.
+const REGISTRATION_TAG: &str = "account-registration";
+
+/// The tag the entry's address lookup carries.
+const ENTRY_TAG: &str = "account-email-status";
+
+/// Which subscription a frame belongs to.
+///
+/// Both subscriptions land on this one element, so every delegate is
+/// handed every frame and has to recognise its own. The tag is what the
+/// subscription asked to be called back with.
+fn frame_tag(opts: &JsValue) -> Option<String> {
+    Reflect::get(opts, &"tag".into()).ok()?.as_string()
 }
 
 /// Keep the registration row following the fact.
@@ -401,15 +406,25 @@ fn watch_registration(host: &HtmlElement) {
 
         let painter = host.clone();
         let reset: Closure<dyn FnMut(JsValue, JsValue)> =
-            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+            Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+                if frame_tag(&opts).as_deref() != Some(REGISTRATION_TAG) {
+                    return;
+                }
                 paint_registration(&painter, registration_notice::read_frame(&payload));
             }));
-        let _ = Reflect::set(host.as_ref(), &"__tonkReset".into(), reset.as_ref());
+        let _ = Reflect::set(
+            host.as_ref(),
+            &"__tonkRegistrationReset".into(),
+            reset.as_ref(),
+        );
         reset.forget();
 
         let painter = host.clone();
         let update: Closure<dyn FnMut(JsValue, JsValue)> =
-            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+            Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+                if frame_tag(&opts).as_deref() != Some(REGISTRATION_TAG) {
+                    return;
+                }
                 // A delta with no assertion is a moment mid-write, not a
                 // state: leave the row where it is rather than blanking
                 // it and flickering.
@@ -417,7 +432,11 @@ fn watch_registration(host: &HtmlElement) {
                     paint_registration(&painter, registration);
                 }
             }));
-        let _ = Reflect::set(host.as_ref(), &"__tonkUpdate".into(), update.as_ref());
+        let _ = Reflect::set(
+            host.as_ref(),
+            &"__tonkRegistrationUpdate".into(),
+            update.as_ref(),
+        );
         update.forget();
 
         match registration_notice::subscribe(&host, &root_did) {
@@ -1554,6 +1573,7 @@ fn bind_entry_lookup(host: &HtmlElement) {
     let Ok(Some(field)) = host.query_selector("#account-entry-email") else {
         return;
     };
+    watch_entry_status(host);
     let host = host.clone();
     let pending: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
@@ -1597,47 +1617,134 @@ fn clear_entry_answer(host: &HtmlElement) {
     }
 }
 
-/// Ask the access service about the typed address and record the answer.
+/// Follow the answers the worker publishes about typed addresses.
+///
+/// Installed once, before the first question is asked, so no answer can
+/// land before there is something listening for it.
+fn watch_entry_status(host: &HtmlElement) {
+    if Reflect::get(host.as_ref(), &"__tonkEntryWatch".into())
+        .map(|value| value.is_truthy())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let _ = Reflect::set(host.as_ref(), &"__tonkEntryWatch".into(), &JsValue::TRUE);
+
+    let painter = host.clone();
+    let paint = move |payload: JsValue| {
+        if let Some((address, state)) = registration_notice::read_email_status(&payload) {
+            apply_entry_status(&painter, &address, &state);
+        }
+    };
+    let reset_paint = paint.clone();
+    let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+            if frame_tag(&opts).as_deref() != Some(ENTRY_TAG) {
+                return;
+            }
+            reset_paint(payload);
+        }));
+    let _ = Reflect::set(host.as_ref(), &"__tonkEntryReset".into(), reset.as_ref());
+    reset.forget();
+
+    let update: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+            if frame_tag(&opts).as_deref() != Some(ENTRY_TAG) {
+                return;
+            }
+            // A delta carries the assertion that replaced the last
+            // answer; the entity is cardinality-one, so that is it.
+            let asserted = Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+            paint(asserted);
+        }));
+    let _ = Reflect::set(host.as_ref(), &"__tonkEntryUpdate".into(), update.as_ref());
+    update.forget();
+
+    match registration_notice::subscribe_email_status(host) {
+        Ok(subscription) => {
+            let kept = Closure::<dyn FnMut()>::new(move || {
+                let _ = &subscription;
+            });
+            let _ = Reflect::set(host.as_ref(), &"__tonkEntrySub".into(), kept.as_ref());
+            kept.forget();
+        }
+        Err(error) => web_sys::console::warn_1(&format!("entry status watch: {error}").into()),
+    }
+}
+
+/// Ask what is registered under the typed address.
+///
+/// The answer is not returned: the command publishes it as the
+/// `EmailStatus` overlay fact, and [`watch_entry_status`] paints from
+/// there. That is the same fact the share dialog's registration form
+/// reads, so there is one implementation of what an address means.
 fn run_entry_lookup(host: HtmlElement) {
     let Ok(email) = input(&host, "#account-entry-email") else {
         return;
     };
     spawn_local(async move {
-        let Ok(answer) = crate::api::lookup_address(&email).await else {
-            // A lookup that cannot be made leaves the entry as it was.
-            // Both ceremonies still refuse correctly on their own, so a
-            // missing label costs a surprise, not a wrong outcome.
-            return;
-        };
-        // The field may have moved on while the request was in flight.
-        if input(&host, "#account-entry-email").ok().as_deref() != Some(email.as_str()) {
-            return;
-        }
-        let route = if answer.is_known() {
-            EntryRoute::SignIn
-        } else {
-            EntryRoute::SignUp
-        };
-        if let Ok(Some(form)) = host.query_selector("#account-entry-form") {
-            let _ = form.set_attribute("data-route", route.stamp());
-        }
-        set_text(&host, "#account-entry-submit", route.label());
-        // The pending case is worth saying out loud: the account exists
-        // and does not work yet, and signing in is still the way to it.
-        if let Ok(Some(status)) = host.query_selector("#account-entry-status") {
-            match answer {
-                crate::api::AddressLookup::AwaitingActivation { .. } => {
-                    status.set_text_content(Some(
-                        "This account is waiting for its email to be confirmed. Sign in to pick up where you left off.",
-                    ));
-                    let _ = status.remove_attribute("hidden");
-                }
-                _ => {
-                    let _ = status.set_attribute("hidden", "");
-                }
-            }
+        if let Err(error) = crate::api::check_email(&email).await {
+            // A question that could not be asked leaves the entry as it
+            // was. Both ceremonies still refuse correctly on their own,
+            // so a missing label costs a surprise, not a wrong outcome.
+            web_sys::console::warn_1(&format!("address lookup: {error}").into());
         }
     });
+}
+
+/// Paint the entry from an answer the worker published.
+///
+/// `address` guards against a stale frame: answers are written to one
+/// entity, so a reply about what was typed two characters ago would
+/// otherwise relabel the button under someone mid-edit.
+fn apply_entry_status(host: &HtmlElement, address: &str, state: &str) {
+    let typed = input(host, "#account-entry-email").unwrap_or_default();
+    if typed.trim().to_lowercase() != address.trim().to_lowercase() {
+        return;
+    }
+    // `invalid` and `unavailable` are not facts about the address: one
+    // is a string that cannot be looked up, the other a service that did
+    // not answer. Neither should offer an action, and reading either as
+    // "nobody has this" would send someone into a ceremony that fails at
+    // the end.
+    let route = match state {
+        "active" | "pending" => Some(EntryRoute::SignIn),
+        "unregistered" => Some(EntryRoute::SignUp),
+        _ => None,
+    };
+    if let Ok(Some(form)) = host.query_selector("#account-entry-form") {
+        match route {
+            Some(route) => {
+                let _ = form.set_attribute("data-route", route.stamp());
+                set_text(host, "#account-entry-submit", route.label());
+            }
+            None => {
+                let _ = form.remove_attribute("data-route");
+                set_text(host, "#account-entry-submit", "Continue");
+            }
+        }
+    }
+    if let Ok(Some(status)) = host.query_selector("#account-entry-status") {
+        let message = match state {
+            // The account exists and does not work yet, and signing in
+            // is still the way to it.
+            "pending" => Some(
+                "This account is waiting for its email to be confirmed. Sign in to pick up where you left off.",
+            ),
+            "suspended" => Some("This account is no longer served. Contact support to restore it."),
+            "unavailable" => Some("Could not reach the sign-in service. Try again in a moment."),
+            _ => None,
+        };
+        match message {
+            Some(message) => {
+                status.set_text_content(Some(message));
+                let _ = status.remove_attribute("hidden");
+            }
+            None => {
+                let _ = status.set_attribute("hidden", "");
+            }
+        }
+    }
 }
 
 fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) + 'static) {
@@ -2483,15 +2590,24 @@ fn install_subscription_shim() {
     let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
         return;
     };
-    for (method, delegate) in [
-        ("reset", "__tonkReset"),
-        ("update", "__tonkUpdate"),
-        ("error", "__tonkError"),
+    // Two subscriptions share this element -- the registration row and
+    // the entry's address lookup -- so one method fans out to both and
+    // each delegate ignores what is not its own (see `frame_tag`).
+    for (method, delegates) in [
+        ("reset", ["__tonkRegistrationReset", "__tonkEntryReset"]),
+        ("update", ["__tonkRegistrationUpdate", "__tonkEntryUpdate"]),
+        ("error", ["__tonkRegistrationError", "__tonkEntryError"]),
     ] {
-        let forwarder = js_sys::Function::new_with_args(
-            "payload, opts",
-            &format!("if (typeof this.{delegate} === 'function') this.{delegate}(payload, opts);"),
-        );
+        let body = delegates
+            .iter()
+            .map(|delegate| {
+                format!(
+                    "if (typeof this.{delegate} === 'function') this.{delegate}(payload, opts);"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let forwarder = js_sys::Function::new_with_args("payload, opts", &body);
         let _ = Reflect::set(&proto, &method.into(), &forwarder);
     }
 }
