@@ -401,12 +401,22 @@
          static assets, you will want to modify this condiguration here. -->
         <!-- `data-initializer` gives the static boot shell (see <body>) real
          progress callbacks for the multi-megabyte wasm fetch. -->
+        <!-- `data-integrity="none"`: trunk otherwise stamps SRI hashes
+         into this page, and any rebuild window where the served page
+         and the served bundle come from different builds makes the
+         browser BLOCK the app script — the boot shell then shows
+         "loading…" forever with only a console error to explain. The
+         content-hashed filename already pins which bytes belong to
+         this page, so the SRI added no protection worth that failure
+         mode, in dev (where trunk watch rebuilds constantly) or in a
+         deploy window. -->
         <link
             data-trunk
             rel="rust"
             data-bin="ui"
             data-type="main"
             data-wasm-opt="z"
+            data-integrity="none"
             data-initializer="assets/boot-progress.mjs"
         />
         <link
@@ -416,6 +426,7 @@
             data-type="worker"
             data-bindgen-target="web"
             data-wasm-opt="z"
+            data-integrity="none"
         />
 
         <!-- Bridge module injected by host::wrap_html_body into iframe srcdoc.
