@@ -122,7 +122,21 @@ fn input(host: &HtmlElement, selector: &str) -> Result<String, String> {
     }
 }
 
+/// The mode that shows no panel at all.
+///
+/// Reached when the deployment cannot be resolved, so there is no
+/// service to sign into and nothing any panel could usefully offer. The
+/// error text is the whole message. Named rather than left to fall out
+/// of matching no panel, because that made "every panel hidden" the
+/// behaviour of any unrecognised mode — a typo included — instead of a
+/// state someone chose.
+const NO_PANEL_MODE: &str = "blocked";
+
 fn set_mode(host: &HtmlElement, mode: &str) {
+    debug_assert!(
+        mode == NO_PANEL_MODE || ["choice", "create", "link", "handoff", "success"].contains(&mode),
+        "unknown account mode {mode:?} would hide every panel"
+    );
     let _ = host.set_attribute("data-mode", mode);
     for (name, selector) in [
         ("choice", "#account-choice"),
@@ -1094,7 +1108,7 @@ fn load_status(host: HtmlElement) {
     spawn_local(async move {
         if let Err(error) = service(&host).await {
             set_busy(&host, false, "");
-            set_mode(&host, "blocked");
+            set_mode(&host, NO_PANEL_MODE);
             show_error(&host, error);
             return;
         }
