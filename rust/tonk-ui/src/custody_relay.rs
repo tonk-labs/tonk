@@ -4,23 +4,51 @@
 //! the account secret (to derive the recipient custodied seeds are
 //! sealed to) on a device whose root record predates that key, it posts a
 //! `webauthn` message to the document that asked for the operation. This
-//! module answers: one passkey assertion derives the key, and saving it
-//! with the root (`POST /api/identity/root`) is what the worker is
-//! waiting on. Nothing is replayed; the worker's operation resumes.
+//! module answers — but never silently: a passkey prompt with no
+//! surrounding context reads as a phishing attempt and teaches people to
+//! dismiss it, and `credentials.get` wants a user gesture anyway. The
+//! request raises a consent card naming what is being asked and why; the
+//! card's button runs the assertion inside the click, saves the derived
+//! key with the root (`POST /api/identity/root`, what the worker is
+//! waiting on), and stays up to say what happened.
 
 use std::cell::Cell;
 
 use tonk_worker_api::{ENCRYPTION_KEY_REQUEST, RootStatus, WEBAUTHN, WebAuthnRequest};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::MessageEvent;
+use web_sys::{Element, MessageEvent};
 
 thread_local! {
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
-    /// One assertion at a time: a second request arriving while the
-    /// prompt is up would stack a second prompt on the same answer.
+    /// One card at a time: a second request arriving while the card is
+    /// up is already answered by the save the first one performs.
     static BUSY: Cell<bool> = const { Cell::new(false) };
 }
+
+const CARD_ID: &str = "tonk-custody-consent";
+
+const CARD_HTML: &str = r#"
+<div style="position:fixed;right:1rem;bottom:1rem;z-index:2147483647;max-width:22rem;
+            background:#1c1c1e;color:#f2f2f4;border:1px solid #3a3a3d;border-radius:12px;
+            padding:1rem 1.25rem;font:14px/1.45 system-ui,sans-serif;
+            box-shadow:0 8px 30px rgba(0,0,0,.45)">
+  <strong style="display:block;margin-bottom:.35rem">Passkey needed</strong>
+  <p id="tonk-custody-text" style="margin:0 0 .8rem">
+    Tonk is securing something to your account and needs your passkey to
+    unlock the account&rsquo;s custody key on this device.
+  </p>
+  <div id="tonk-custody-actions" style="display:flex;gap:.5rem;justify-content:flex-end">
+    <button id="tonk-custody-dismiss"
+            style="background:none;border:none;color:#9a9aa0;cursor:pointer;font:inherit">
+      Not now</button>
+    <button id="tonk-custody-continue"
+            style="background:#4a7dff;border:none;color:white;border-radius:8px;
+                   padding:.4rem .9rem;cursor:pointer;font:inherit">
+      Use passkey</button>
+  </div>
+</div>
+"#;
 
 /// Derive the account's encryption key through a passkey assertion and
 /// save it with the root. `Ok(false)` when there was nothing to do: no
@@ -57,6 +85,87 @@ pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
     Ok(true)
 }
 
+fn remove_card() {
+    if let Some(card) = card() {
+        card.remove();
+    }
+    BUSY.with(|busy| busy.set(false));
+}
+
+fn card() -> Option<Element> {
+    web_sys::window()?.document()?.get_element_by_id(CARD_ID)
+}
+
+fn set_card_text(text: &str) {
+    if let Some(card) = card()
+        && let Ok(Some(message)) = card.query_selector("#tonk-custody-text")
+    {
+        message.set_text_content(Some(text));
+    }
+    if let Some(card) = card()
+        && let Ok(Some(actions)) = card.query_selector("#tonk-custody-actions")
+    {
+        actions.remove();
+    }
+}
+
+fn remove_card_after(milliseconds: i32) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let closure = Closure::once(remove_card);
+    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        closure.as_ref().unchecked_ref(),
+        milliseconds,
+    );
+    closure.forget();
+}
+
+fn on_click(card: &Element, selector: &str, callback: impl FnMut() + 'static) {
+    let Ok(Some(button)) = card.query_selector(selector) else {
+        return;
+    };
+    let closure = Closure::<dyn FnMut()>::new(callback);
+    let _ = button.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+    closure.forget();
+}
+
+/// Raise the consent card. The continue button runs the assertion inside
+/// the click and reports the outcome on the card; dismissing leaves the
+/// worker's wait to time out, failing the operation that asked.
+fn show_consent() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    let (Some(body), Ok(host)) = (document.body(), document.create_element("div")) else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    host.set_id(CARD_ID);
+    host.set_inner_html(CARD_HTML);
+    let _ = body.append_child(&host);
+
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    on_click(&host, "#tonk-custody-continue", move || {
+        set_card_text("Waiting for your passkey…");
+        wasm_bindgen_futures::spawn_local(async move {
+            match publish_encryption_key().await {
+                Ok(true) => {
+                    tonk_common::log!("custody: encryption key published for the worker");
+                    set_card_text("Account key saved on this device.");
+                }
+                Ok(false) => set_card_text("Nothing was needed after all."),
+                Err(error) => {
+                    tonk_common::log!("custody: encryption key not published: {error}");
+                    set_card_text("The passkey check did not complete. Reload and try again.");
+                }
+            }
+            remove_card_after(4000);
+        });
+    });
+}
+
 /// Install the service-worker message listener on the top document.
 pub fn install() {
     if INSTALLED.with(|installed| installed.replace(true)) {
@@ -76,14 +185,7 @@ pub fn install() {
         if BUSY.with(|busy| busy.replace(true)) {
             return;
         }
-        wasm_bindgen_futures::spawn_local(async move {
-            match publish_encryption_key().await {
-                Ok(true) => tonk_common::log!("custody: encryption key published for the worker"),
-                Ok(false) => {}
-                Err(error) => tonk_common::log!("custody: encryption key not published: {error}"),
-            }
-            BUSY.with(|busy| busy.set(false));
-        });
+        show_consent();
     });
     let _ = service_worker
         .add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());

@@ -2149,6 +2149,21 @@ mod tests {
         .await?;
         successful_body("create space command", &created);
 
+        // The worker's request raises a consent card; the assertion only
+        // runs from its button, inside a user gesture.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let consent = loop {
+            if let Ok(button) = creator.find(By::Css("#tonk-custody-continue")).await {
+                break button;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the custody consent card never appeared"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        consent.click().await?;
+
         let root = poll_json(
             &creator,
             "/api/identity/root",
