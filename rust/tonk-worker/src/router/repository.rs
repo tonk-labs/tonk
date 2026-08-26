@@ -1972,82 +1972,25 @@ async fn remove_replica_from_profile(
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
 
-    // Removal is account-wide: profile main is shared account state, so
-    // EVERY device's replica row for this subject is swept, not just
-    // this device's — a surviving foreign row would resurrect the
-    // directory entry through the next sweep's backfill. This device's
-    // derived entity rides along in case its row is gone but stray
-    // stamps remain.
-    let rows: Vec<Replica> = meta
-        .handle()
-        .query()
-        .select(Query::<Replica> {
-            this: Term::var("this"),
-            subject: Term::from(tonk_schema::domain::replica::Subject(subject.this())),
-            profile: Term::var("profile"),
-            kind: Term::var("kind"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("replica rows query: {e:?}")))?;
-    let mut entities: Vec<dialog_artifacts::Entity> =
-        rows.into_iter().map(|row| row.this).collect();
-    if !entities.contains(&entity) {
-        entities.push(entity);
-    }
-
     let mut transaction = tonk
         .reactor
         .profile_repository()
         .branch(PROFILE_BRANCH)
         .transaction();
     let mut found = false;
-    for row_entity in entities {
-        let stream = meta
-            .handle()
-            .claims()
-            .select(ArtifactSelector::new().of(row_entity))
-            .perform(&tonk.operator)
-            .await
-            .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
-        tokio::pin!(stream);
-        while let Some(artifact) = stream.next().await {
-            let artifact = artifact
-                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
-                .to_owned()
-                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
-            found = true;
-            transaction = transaction.retract(super::claim::RawClaim {
-                the: artifact.the,
-                of: artifact.of,
-                is: artifact.is,
-                unique: false,
-            });
-        }
-    }
-
-    // The account-level directory entry hangs on the repository's own
-    // entity, so it needs its own sweep — filtered to the space
-    // namespace, because other facts may key on that entity too.
-    // Removing it is what makes "delete spot" account-wide: every
-    // device's Hub lists the directory, not this device's replica row.
-    let directory = meta
+    let stream = meta
         .handle()
         .claims()
-        .select(ArtifactSelector::new().of(subject.this()))
+        .select(ArtifactSelector::new().of(entity))
         .perform(&tonk.operator)
         .await
-        .map_err(|e| RepositoryError::Internal(format!("select directory claims: {e}")))?;
-    tokio::pin!(directory);
-    while let Some(artifact) = directory.next().await {
+        .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
+    tokio::pin!(stream);
+    while let Some(artifact) = stream.next().await {
         let artifact = artifact
-            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?
+            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
             .to_owned()
-            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?;
-        if !artifact.the.to_string().starts_with("xyz.tonk.space/") {
-            continue;
-        }
+            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
         found = true;
         transaction = transaction.retract(super::claim::RawClaim {
             the: artifact.the,

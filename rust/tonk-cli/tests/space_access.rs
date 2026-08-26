@@ -51,6 +51,29 @@ async fn founded_by(
 mod when_opening_a_replica {
     use super::*;
 
+    #[dialog_common::test]
+    async fn local_operations_ignore_account_session() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let (store, mut config) = fixture(tmp.path())?;
+        config.authorize_remote_with_account = true;
+
+        let outcome = tonk_cli::space::create(&store, "garden", None, None, config.clone()).await?;
+        let site = TonkSite::open_with(&outcome.site, config).await?;
+        let session = site.branch().await?;
+        session
+            .handle()
+            .transaction()
+            .commit()
+            .perform(&site.operator)
+            .await?;
+
+        assert!(
+            !store.account_dir().exists(),
+            "local work must not initialize account-session state"
+        );
+        Ok(())
+    }
+
     /// Possession is not permission, but it is not a lock either: a replica
     /// on this device opens signed out, signed into its own account, and
     /// signed into somebody else's. Nothing consults the account slot.

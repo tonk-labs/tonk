@@ -381,7 +381,7 @@ mod when_claiming_before_account_linking {
         let claimer_parent = claimer_tmp.path().canonicalize()?;
         let claimer_root = claimer_parent.join("joined-site");
         let mut claimer_config = common::isolated_config(&claimer_parent)?;
-        claimer_config.require_account = true;
+        claimer_config.authorize_remote_with_account = true;
 
         let outcome = invite::claim(&claimer_root, &invitation.url, claimer_config).await?;
 
@@ -584,16 +584,8 @@ mod when_recording_roster_facts {
         assert_eq!(roles.len(), 1);
         assert_eq!(roles[0].this, memberships[0].this);
         assert_eq!(roles[0].role.0.to_string(), MemberRole::MEMBER);
-        let root_bytes = joined
-            .profile
-            .credential()
-            .site(tonk_cli::identity::LOCAL_ROOT_SITE)
-            .load::<Vec<u8>>()
-            .perform(&joined.operator)
-            .await?;
-        let root: tonk_cli::identity::LocalRoot = serde_json::from_slice(&root_bytes)?;
-        let root_did: dialog_varsig::Did = root.root_did.parse()?;
-        assert_eq!(memberships[0].member.0, root_did.this());
+        let member_did = joined.profile.did();
+        assert_eq!(memberships[0].member.0, member_did.this());
 
         let stamps: Vec<InvitedVia> = claimer_content
             .query()
@@ -614,7 +606,7 @@ mod when_recording_roster_facts {
         let proof = claimer_content
             .delegations()
             .prove(
-                root_did.clone(),
+                member_did.clone(),
                 dialog_ucan::Scope {
                     subject: dialog_ucan_core::subject::Subject::Specific(
                         joined.repository.did().clone(),
@@ -629,7 +621,7 @@ mod when_recording_roster_facts {
             .proofs
             .last()
             .expect("the claimed chain reaches the member");
-        assert_eq!(leaf.0.audience(), &root_did, "the leaf admits the member");
+        assert_eq!(leaf.0.audience(), &member_did, "the leaf admits the member");
         assert!(
             proof.proofs.len() > 1,
             "the member's own hop sits below the invite hop"
@@ -1263,31 +1255,45 @@ mod when_listing_views {
 
 mod when_a_device_has_no_account {
     use anyhow::Result;
+    use dialog_credentials::Credential;
+    use dialog_ucan_core::DelegationChain;
+    use tonk_account::prefix::{space_root_site, validate_prefix};
     use tonk_cli::site::TonkSite;
 
     use crate::common;
 
-    /// Creating a space mints durable authority: a `space → root` chain that a
-    /// later `tonk invite` delegates from. Rooted in an anonymous key that
-    /// chain has no owner, nothing can revoke it, and nothing backs up what it
-    /// creates — so the account is the precondition, not the passkey.
-    ///
-    /// The error has to name the command that fixes it. `tonk identity link`,
-    /// which the old message named, no longer exists.
     #[dialog_common::test]
-    async fn it_refuses_to_create_a_space() -> Result<()> {
+    async fn fresh_space_uses_device_profile() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let parent = tmp.path().canonicalize()?;
         let mut config = common::isolated_config(&parent)?;
-        config.require_account = true;
+        config.authorize_remote_with_account = true;
 
-        let Err(error) = TonkSite::init_with(&parent, config).await else {
-            panic!("a device with no account cannot create a space");
-        };
-        let rendered = format!("{error:#}");
+        let site = TonkSite::init_with(&parent, config).await?;
+        assert!(matches!(
+            site.repository.credential(),
+            Credential::Signer(_)
+        ));
+
+        let subject = site.repository.did();
+        let profile = site.profile.did();
+        let bytes = site
+            .profile
+            .credential()
+            .site(space_root_site(&subject, &profile))
+            .load::<Vec<u8>>()
+            .perform(&site.operator)
+            .await?;
+        let prefix: DelegationChain = validate_prefix(&bytes, &profile).await?.chain;
+        assert_eq!(prefix.subject(), Some(&subject));
+        assert_eq!(prefix.audience(), &profile);
         assert!(
-            rendered.contains("tonk account login"),
-            "the refusal must name the command that fixes it: {rendered}"
+            tonk_cli::remote::upstream_remote(&site).await?.is_none(),
+            "fresh local creation must not configure a hosted upstream"
+        );
+        assert!(
+            tonk_cli::inventory::read_roster(&site).await?.is_empty(),
+            "fresh local creation must not write an account founder"
         );
         Ok(())
     }
@@ -1417,18 +1423,6 @@ mod when_mounting_account_authority {
 
     use crate::common;
 
-    async fn local_root(site: &TonkSite) -> Result<dialog_varsig::Did> {
-        let bytes = site
-            .profile
-            .credential()
-            .site(tonk_cli::identity::LOCAL_ROOT_SITE)
-            .load::<Vec<u8>>()
-            .perform(&site.operator)
-            .await?;
-        let root: tonk_cli::identity::LocalRoot = serde_json::from_slice(&bytes)?;
-        Ok(root.root_did.parse()?)
-    }
-
     async fn delegated_prefix(
         account_root: &dialog_varsig::Did,
     ) -> Result<(dialog_varsig::Did, DelegationChain)> {
@@ -1450,7 +1444,7 @@ mod when_mounting_account_authority {
         let parent = tmp.path().canonicalize()?;
         let config = common::isolated_config(&parent)?;
         let seed = TonkSite::init_at_with(&parent.join("seed"), config.clone()).await?;
-        let account_root = local_root(&seed).await?;
+        let account_root = seed.profile.did();
         let (subject, chain) = delegated_prefix(&account_root).await?;
         let expected = chain.to_bytes()?;
         let root = parent.join("mounted");
@@ -1531,7 +1525,7 @@ mod when_mounting_account_authority {
     #[dialog_common::test]
     async fn it_recovers_a_pre_feature_prefix_from_profile_authority() -> Result<()> {
         let test = common::TestSite::new().await?;
-        let root = local_root(&test.site).await?;
+        let root = test.site.profile.did();
         let key = space_root_site(&test.site.repository.did(), &root);
         test.site
             .profile
@@ -1564,7 +1558,7 @@ mod when_mounting_account_authority {
     async fn it_adopts_a_space_whose_authority_reaches_no_account_root() -> Result<()> {
         let test = common::TestSite::new().await?;
         let account_root = Ed25519Signer::import(&[73; 32]).await?.did();
-        assert_ne!(local_root(&test.site).await?, account_root);
+        assert_ne!(test.site.profile.did(), account_root);
 
         let adopted = site::account_root_prefix(&test.site, &account_root).await?;
 

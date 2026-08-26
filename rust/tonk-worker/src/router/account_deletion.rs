@@ -126,6 +126,35 @@ async fn load_plan(
     })
 }
 
+async fn remove_directory_entry(
+    state: &AppState,
+    subject: &dialog_varsig::Did,
+) -> Result<(), TonkWorkerError> {
+    let tonk = state.read().await;
+    let main = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("open the account directory: {error}"))
+        })?;
+    tonk_schema::directory::remove(main.handle(), subject, &tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("remove the account directory entry: {error}"))
+        })?;
+    main.handle()
+        .push()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("push the account directory removal: {error}"))
+        })?;
+    Ok(())
+}
+
 /// GET `/api/account/deletion/plan` returns the exact destructive scope.
 #[wasm_compat]
 pub async fn plan(
@@ -156,21 +185,15 @@ pub async fn delete_space(
         .iter()
         .find(|space| space.subject == request.subject)
         .ok_or_else(|| TonkWorkerError::Forbidden("space is not owned by this account".into()))?;
-    if selected.state == "deleted" {
-        return Ok(Json(HostedSpaceDeletionResult {
-            subject: request.subject,
-        }));
-    }
     let subject: dialog_varsig::Did = request.subject.parse().map_err(|error| {
         TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
     })?;
-    {
+    if selected.state != "deleted" {
         let state = state.read().await;
         super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
     }
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::repository::remove_space_inner(&state, &subject).await?;
+    remove_directory_entry(&state, &subject).await?;
     Ok(Json(HostedSpaceDeletionResult {
         subject: request.subject,
     }))
@@ -215,12 +238,15 @@ pub async fn delete(
     // account's chain reaches this device, and possession of that
     // chain is the deletion policy. The passkey assertion the UI
     // performed is a user-verification gate, not a signing ceremony.
-    for space in &request.spaces {
+    for space in &current.spaces {
         let subject: dialog_varsig::Did = space.subject.parse().map_err(|error| {
             TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
         })?;
-        let state = state.read().await;
-        super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
+        if space.state != "deleted" {
+            let current_state = state.read().await;
+            super::customer::deprovision_consumer(&current_state, origin.url(), &subject).await?;
+        }
+        remove_directory_entry(&state, &subject).await?;
     }
     let (link, device) = {
         let state = state.read().await;
@@ -274,13 +300,6 @@ pub async fn delete(
     .map_err(|error| TonkWorkerError::Internal(format!("build account deletion: {error}")))?;
     super::http::post_cbor(&account_endpoint, &account).await?;
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    for space in &request.spaces {
-        let subject = space.subject.parse().map_err(|error| {
-            TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error}"))
-        })?;
-        super::repository::remove_space_inner(&state, &subject).await?;
-    }
     {
         let current_state = state.read().await;
         super::customer::clear_customer(&current_state).await?;

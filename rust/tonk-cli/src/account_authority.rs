@@ -1,6 +1,6 @@
 //! Account-bound authorization and remote-dispatch boundary.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dialog_capability::access::{Access, Authorize, AuthorizeError, Prove, Retain, TimeRange};
 use dialog_capability::{
     Capability, Command, Effect, Fork, ForkInvocation, Policy as _, Provider, Site, SiteFork,
@@ -281,12 +281,7 @@ impl Provider<Authorize<Ucan>> for AccountBoundOperator {
         &self,
         input: Capability<Authorize<Ucan>>,
     ) -> Result<UcanAuthorization, AuthorizeError> {
-        let guard = crate::account_session::shared_remote_guard(&self.store).map_err(|error| {
-            AuthorizeError::Unavailable {
-                detail: error.to_string(),
-            }
-        })?;
-        self.authorize_guarded(input, &guard).await
+        input.perform(&self.inner).await
     }
 }
 
@@ -358,7 +353,7 @@ where
     Network: Provider<ForkInvocation<At, Fx>> + ConditionalSync,
 {
     async fn execute(&self, input: Fork<At, Fx>) -> Fx::Output {
-        let guard = match crate::account_session::shared_remote_guard(&self.store) {
+        let mut guard = match crate::account_session::shared_remote_guard(&self.store) {
             Ok(guard) => guard,
             Err(error) => {
                 return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
@@ -366,6 +361,54 @@ where
                 });
             }
         };
+        if self.require_account {
+            let initialized = match crate::account_session::load_optional_guarded(
+                &self.profile,
+                &self.inner,
+                &guard,
+            )
+            .await
+            {
+                Ok(state) => state.is_some(),
+                Err(error) => {
+                    return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
+                        detail: error.to_string(),
+                    });
+                }
+            };
+            if !initialized {
+                drop(guard);
+                let exclusive =
+                    match crate::account_session::exclusive_transition_guard(&self.store) {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
+                                detail: error.to_string(),
+                            });
+                        }
+                    };
+                if let Err(error) = crate::account_session::ensure_initialized(
+                    &self.profile,
+                    &self.inner,
+                    &exclusive,
+                )
+                .await
+                {
+                    return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
+                        detail: error.to_string(),
+                    });
+                }
+                drop(exclusive);
+                guard = match crate::account_session::shared_remote_guard(&self.store) {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
+                            detail: error.to_string(),
+                        });
+                    }
+                };
+            }
+        }
         let env = Guarded {
             operator: self,
             guard: &guard,
@@ -377,20 +420,14 @@ where
     }
 }
 
-/// Initialize canonical session state before exposing an account-bound
-/// operator.
+/// Wrap a local operator. Account-session state is initialized lazily at the
+/// remote fork boundary.
 pub async fn wrap(
     inner: Operator<NativeSpace>,
     profile: Profile,
     store: SpaceStore,
     require_account: bool,
 ) -> Result<AccountBoundOperator> {
-    if require_account {
-        let guard = crate::account_session::exclusive_transition_guard(&store)?;
-        crate::account_session::ensure_initialized(&profile, &inner, &guard)
-            .await
-            .context("failed to initialize account-session state")?;
-    }
     Ok(AccountBoundOperator::new(
         inner,
         profile,

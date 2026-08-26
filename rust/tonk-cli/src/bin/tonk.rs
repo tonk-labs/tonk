@@ -680,10 +680,9 @@ enum RemoteCommand {
 enum SpaceCommand {
     /// Create (or adopt) a space, register it, and use it here
     ///
-    /// Signed out, the space is local-only until `tonk space link`
-    /// hands it to an account. Signed in, it belongs to that account
-    /// from the start: hosted, synced, and listed for your other
-    /// devices.
+    /// The space is local-only until `tonk space link` hands it to an
+    /// account. Creation has the same device-local result whether this
+    /// installation is signed in or signed out.
     ///
     /// The site lands in the canonical store
     /// (`~/Library/Application Support/tonk/spaces/<name>` on macOS)
@@ -1629,21 +1628,6 @@ async fn link_account(
     no_open: bool,
     via: Option<String>,
 ) -> ExitCode {
-    let signed_in = match store.account() {
-        Ok(account) => account,
-        Err(error) => return print_failure(error),
-    };
-    if let Some(account) = &signed_in
-        && matches!(
-            tonk_cli::account::sign_in_phase(store),
-            Ok(tonk_cli::account::SignInPhase::Active)
-        )
-    {
-        return print_error(format!(
-            "already signed in as {}\nrun `tonk account logout` first to sign in as another account",
-            account.root
-        ));
-    }
     let profile = match identity::open().await {
         Ok(profile) => profile,
         Err(error) => return print_failure(error),
@@ -1699,32 +1683,6 @@ async fn link_account(
                 eprintln!(
                     "spaces stay local-only until `tonk account logout` and `tonk account login` reach it"
                 );
-            }
-            // Custody moves with the sign-in, the way browser accreditation
-            // rotates: every local space this account may own gets its
-            // authority and sealed seed onto the account. Hosting does not
-            // move — `tonk space link` remains the boundary that provisions
-            // and attaches a remote.
-            match site::default_config() {
-                Ok(config) => {
-                    match tonk_cli::custody::accredit_local_spaces(store, &config).await {
-                        Ok(outcomes) => {
-                            for (name, outcome) in outcomes {
-                                match outcome {
-                                    tonk_cli::custody::Accreditation::Moved => {
-                                        println!("custody: '{name}' moved to the account");
-                                    }
-                                    tonk_cli::custody::Accreditation::Already => {}
-                                    tonk_cli::custody::Accreditation::Skipped(reason) => {
-                                        eprintln!("custody: '{name}' not moved: {reason}");
-                                    }
-                                }
-                            }
-                        }
-                        Err(error) => eprintln!("warning: space custody did not move: {error:#}"),
-                    }
-                }
-                Err(error) => eprintln!("warning: space custody did not move: {error:#}"),
             }
             print_customer_line(&profile, store).await;
             ExitCode::Success
@@ -2022,29 +1980,11 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
             unreachable!("taken above")
         }
         Some(SpaceCommand::New { name, site }) => {
-            // Signed in, a new space is the account's from birth: it is
-            // provisioned, pushed, and listed for the account's other
-            // devices. Signed out, it is local-only until `tonk space link`
-            // says otherwise.
-            let account = match account_for_new_space(&store) {
-                Ok(account) => account,
-                Err(exit) => return exit,
-            };
             let Some(cwd) = working_directory() else {
                 return print_error("could not read the current directory".to_owned());
             };
-            let mut create_config = config.clone();
-            create_config.require_account =
-                account.is_some() && std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none();
-            create_config.provision_account_spaces = account.is_some();
-            match tonk_cli::space::create(
-                &store,
-                &name,
-                site.as_deref(),
-                None,
-                create_config.clone(),
-            )
-            .await
+            match tonk_cli::space::create(&store, &name, site.as_deref(), None, config.clone())
+                .await
             {
                 Ok(outcome) => {
                     if let Err(error) = tonk_cli::space::bind(&store, &outcome.name, &cwd) {
@@ -2062,45 +2002,7 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
                     println!("DID: {}", outcome.did);
                     println!("binding: {}", cwd.display());
                     print_active_space_resolution(&store, flag, Some(&cwd));
-                    let Some(account) = account else {
-                        return ExitCode::Success;
-                    };
-                    let Some(access) = &account.access_remote else {
-                        unreachable!("checked before the space was created");
-                    };
-                    match site::TonkSite::open_with(&outcome.site, create_config).await {
-                        Ok(site) => {
-                            if let Err(error) = site::record_founder_membership(&site).await {
-                                return print_failure(error);
-                            }
-                            if let Err(error) = remote::add(
-                                &site,
-                                remote::DEFAULT_REMOTE,
-                                access,
-                                Some(site.repository.did()),
-                            )
-                            .await
-                            {
-                                return print_failure(error);
-                            }
-                            if let Err(error) =
-                                remote::set_upstream(&site, remote::DEFAULT_REMOTE).await
-                            {
-                                return print_failure(error);
-                            }
-                            if let Err(error) = sync::push(&site).await {
-                                return print_failure(error);
-                            }
-                            if let Err(error) =
-                                account_spaces::record_site_in(&outcome.name, &site, &store).await
-                            {
-                                return print_failure(error);
-                            }
-                            println!("account: {}", account.root);
-                            ExitCode::Success
-                        }
-                        Err(error) => print_failure(error),
-                    }
+                    ExitCode::Success
                 }
                 Err(err) => print_failure(err),
             }
@@ -2172,42 +2074,6 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
             }
         }
     }
-}
-
-/// The account a fresh `tonk space new` should belong to.
-///
-/// A recorded account that is not actually signed in is an error rather than
-/// a quiet fallback to local-only: creating a local space when the user
-/// expects an account-owned one is exactly the surprise `tonk space link`
-/// exists to undo.
-fn account_for_new_space(
-    store: &tonk_cli::space::SpaceStore,
-) -> Result<Option<tonk_cli::space::AccountRecord>, ExitCode> {
-    let account = match store.account() {
-        Ok(account) => account,
-        Err(error) => return Err(print_failure(error)),
-    };
-    let Some(account) = account else {
-        return Ok(None);
-    };
-    match tonk_cli::account::sign_in_phase(store) {
-        Ok(tonk_cli::account::SignInPhase::Active) => {}
-        Ok(_) => {
-            return Err(print_error(format!(
-                "this device is signed out of {}; run `tonk account login`",
-                account.root
-            )));
-        }
-        Err(error) => return Err(print_failure(error)),
-    }
-    // Checked before the space exists: creating one and only then finding
-    // out it cannot be hosted leaves a half-made thing to explain.
-    if account.access_remote.is_none() {
-        return Err(print_error(
-            "the account has no content endpoint; sign in again".to_owned(),
-        ));
-    }
-    Ok(Some(account))
 }
 
 fn print_active_space_resolution(

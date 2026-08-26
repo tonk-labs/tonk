@@ -444,8 +444,7 @@ mod tests {
             .env("DO_NOT_TRACK", "1")
             .env("NO_PROXY", "127.0.0.1,localhost,tonk.network")
             .env_remove("TONK_TELEMETRY")
-            .env_remove("TONK_SPACE")
-            .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");
+            .env_remove("TONK_SPACE");
         command
     }
 
@@ -1376,6 +1375,27 @@ mod tests {
         let receipt = successful_body("delete the account", &deleted);
         assert_eq!(receipt["deletedSpaces"], 1, "one hosted space purged");
         assert_eq!(receipt["retainedJoinedSpaces"], 0);
+
+        let local = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        assert_eq!(
+            local["status"], 200,
+            "account deletion must leave this device's local replica open: {local}"
+        );
+        let local_write = post_yaml(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/evaluate"),
+            r#"attribute!: &after-account-deletion
+  the:         xyz.tonk.e2e/after-account-deletion
+  as:          text
+  cardinality: one
+  description: local survival after hosted deletion
+"#,
+        )
+        .await?;
+        assert_eq!(
+            local_write["status"], 200,
+            "the surviving local replica must remain editable: {local_write}"
+        );
 
         // The profile is unlinked: the deletion plan is no longer
         // reviewable because there is no account to review.

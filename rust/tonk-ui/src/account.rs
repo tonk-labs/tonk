@@ -368,7 +368,7 @@ fn configure_deletion_entry(host: &HtmlElement) {
     set_text(
         host,
         "#account-delete-boundary",
-        "Tonk cannot erase copies that other devices have already replicated.",
+        "Copies on this and other devices stay local and editable; Tonk hosting and future sync are removed.",
     );
     set_text(
         host,
@@ -1863,7 +1863,7 @@ fn bind(host: &HtmlElement) {
         }
         let final_confirmation = if requested.is_some() {
             format!(
-                "Permanently delete {} and its hosted content from Tonk services?\n\nYour account and every other space will remain. Copies already replicated to other devices cannot be erased by Tonk. This cannot be undone.",
+                "Permanently delete {} and its hosted content from Tonk services?\n\nYour account and every other space will remain. Copies on this and other devices stay local and editable, but future sync is removed. This cannot be undone.",
                 destructive[0]
                     .name
                     .as_deref()
@@ -1871,7 +1871,7 @@ fn bind(host: &HtmlElement) {
             )
         } else {
             format!(
-                "Permanently delete {} owned space{}, their hosted content from Tonk services, all account backups, and the account for {}?\n\nJoined spaces will not be deleted. Copies already replicated to other devices cannot be erased by Tonk. This cannot be undone.",
+                "Permanently delete {} owned space{}, their hosted content from Tonk services, all account backups, and the account for {}?\n\nJoined spaces will not be deleted. Copies on this and other devices stay local and editable, but future sync is removed. This cannot be undone.",
                 destructive.len(),
                 if destructive.len() == 1 { "" } else { "s" },
                 plan.email,
@@ -1946,7 +1946,7 @@ fn bind(host: &HtmlElement) {
                 Ok((Some(subject), None)) => {
                     let _ = window().map(|window| {
                         window.alert_with_message(&format!(
-                            "Owned space {subject} deleted from Tonk services. Your account and other spaces remain. Tonk cannot erase copies already replicated to other devices."
+                            "Owned space {subject} deleted from Tonk services. Your account and other spaces remain. Copies on this and other devices stay local and editable; future sync is removed."
                         ))
                     });
                     if let Some(window) = window() {
@@ -2447,7 +2447,7 @@ mod tests {
         assert!(copy.contains("syncing will stop until you sign in again"));
         assert!(copy.contains("This is not sign out"));
         assert!(copy.contains("Spaces created by other people will not be deleted"));
-        assert!(copy.contains("cannot erase copies that other devices have already replicated"));
+        assert!(copy.contains("Copies on this and other devices stay local and editable"));
         for technical in ["authority", "grant", "relink required"] {
             assert!(
                 !copy.contains(technical),

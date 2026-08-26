@@ -124,18 +124,6 @@ pub enum AccountStatus {
     },
 }
 
-/// Local sign-in phase, readable without opening a Dialog profile.
-pub use crate::account_session::LocalPhase as SignInPhase;
-
-/// Inspect one store's sign-in phase without creating profile state.
-///
-/// Cheap enough for read-only commands: it reads the session sidecar and
-/// nothing else, so bare `tonk space` can say whether an account is signed in
-/// without provisioning an identity for an installation that has none.
-pub fn sign_in_phase(store: &crate::space::SpaceStore) -> Result<SignInPhase> {
-    crate::account_session::inspect_local(store)
-}
-
 /// Inputs controlling a browser handoff.
 #[derive(Debug, Clone)]
 pub struct LinkOptions {
@@ -291,7 +279,7 @@ async fn logout_with_operator_in(
     {
         if let Err(error) = crate::account_session::deliver_detach(profile, &account, now).await {
             eprintln!(
-                "warning: logged out locally; the provider was not notified                  and may list this device until it is revoked: {error:#}"
+                "warning: logged out locally; the provider was not notified and may list this device until it is revoked: {error:#}"
             );
         }
     }
@@ -930,7 +918,7 @@ async fn account_branch(
 /// syncs through. Every endpoint must accept it: a partial publication
 /// is the dangerous outcome, so a refusal anywhere is reported rather
 /// than swallowed.
-async fn publish_revocation(
+pub(crate) async fn publish_revocation(
     profile: &Profile,
     branch: &dialog_repository::Branch,
     operator: &dialog_operator::Operator<NativeSpace>,

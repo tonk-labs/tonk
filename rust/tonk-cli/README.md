@@ -183,16 +183,19 @@ The CLI holds at most one account at a time. `tonk account login` (also spelled
 someone else is `tonk account logout` followed by `tonk account login`. Linking
 an account never enrolls the spaces already on this device.
 
-Creating a space while signed out stays offline. Creating while signed in
-provisions and publishes only that new space. `tonk space link <space>` moves
-one local-only space into your account: it keeps its name, site, and binding,
-and gains hosting, retained authority, and a row in the account directory your
-other devices pull from. Nothing is deleted along the way, so an interrupted
-link leaves a working local space and can simply be re-run.
+Every `tonk space new` is device-first and local, whether signed out or signed
+in. Creation keeps the space signer on this device and does not contact an
+account, create custody, provision hosting, or publish a directory row.
+`tonk space link <space>` is the only ownership and hosting boundary: it keeps
+the subject, name, site, bytes, and binding; moves encrypted key custody to the
+account; establishes direct `space → account` authority; provisions and pushes
+the remote; revokes the old device grant; demotes the stored signer; and finally
+publishes the account-directory row. An interrupted link leaves local data
+editable and can be re-run to converge.
 
-The signed-in account parameterizes account-service operations and nothing
-else: creating a hosted space, linking, pulling the directory, listing and
-revoking devices, deletion. Editing is unrestricted — every replica this
+The signed-in account parameterizes account-service and remote operations and
+nothing else: linking, pulling the directory, listing and revoking devices,
+and deletion. Editing is unrestricted — every replica this
 device holds opens, reads, and writes whether you are signed out, signed in,
 or signed into an account other than the space's owner. Spaces that belong to
 another account stay on disk and stay listed across a switch; the `OWNER`
@@ -208,15 +211,22 @@ device may have been revoked. The reason is the part that came from the
 boundary that actually said no; the fix is this CLI's inference from local
 state, and it can be wrong.
 
-`tonk account space` reads the signed remote directory of the account you are
-signed in to. `tonk account space pull <name-or-subject>` mounts one of those
-spaces here as an owner or member replica; a name works when it identifies one
-directory row, while the subject DID disambiguates duplicate names.
+`tonk account space` refreshes and reads only the signed account inventory; it
+does not create a local replica or pull user-space content. `tonk account space
+pull <name-or-subject>` is the explicit materialization boundary: it mounts and
+pulls one verified owner/member replica, then registers it locally. A name
+works when it identifies one directory row, while the subject DID
+disambiguates duplicate names.
 
 `tonk space rm` removes only the local replica (and, unless `--keep-data` is
 used, its local bytes). It does not remove signed account directory facts,
 revoke memberships or invitations, deprovision hosting, delete remote objects,
 or erase a peer's replica.
+
+Deleting a hosted space or the account from the browser removes Tonk hosting
+and the shared account-directory projection. Existing copies on this and other
+devices stay local and editable; later remote sync receives the service's
+deleted/deprovisioned refusal.
 
 Interrupting `tonk account login` leaves the handoff recorded so the next run
 resumes it. A link token is one-time, so a service that refuses to reissue it

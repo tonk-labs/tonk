@@ -36,9 +36,6 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         .env("TONK_NO_UPDATE_CHECK", "1")
         .env("TONK_UPDATE_STATE", state_dir)
         .env("HOME", state_dir)
-        // These fixtures exercise remote selection, not identity provisioning.
-        // Production omits this explicit unsafe compatibility override.
-        .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
         .env_remove("TONK_SPACE");
     for (key, value) in extra_env {
         cmd.env(key, value);
@@ -190,7 +187,7 @@ mod when_no_account_is_signed_in {
     }
 
     #[dialog_common::test]
-    fn a_new_space_is_local_only_until_it_is_linked() {
+    fn when_space_is_created_without_account_it_is_local_only_until_linked() {
         let state = tempfile::tempdir().expect("tempdir");
         let site = state.path().join("scratch-site");
         let output = run(
@@ -222,6 +219,114 @@ mod when_no_account_is_signed_in {
             spaces["account"].is_null(),
             "no account is signed in: {spaces}"
         );
+    }
+}
+
+mod when_space_is_created_with_account_state {
+    use super::*;
+    use std::collections::BTreeMap;
+    use tonk_cli::space::{AccountRecord, SpaceStore};
+
+    fn snapshot(path: &Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+        fn visit(root: &Path, path: &Path, files: &mut BTreeMap<std::path::PathBuf, Vec<u8>>) {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root).expect("under root").to_path_buf(),
+                        std::fs::read(path).expect("snapshot file"),
+                    );
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        visit(path, path, &mut files);
+        files
+    }
+
+    fn recorded_account(state: &Path, active: bool) -> SpaceStore {
+        let store = SpaceStore::at(state);
+        let mut account =
+            AccountRecord::new("did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        account.access_remote = Some("http://127.0.0.1:9/ucan/".to_string());
+        store.set_account(Some(account)).expect("record account");
+        if active {
+            std::fs::create_dir_all(store.account_dir()).expect("account dir");
+            let session = serde_json::json!({
+                "version": 1,
+                "active": {
+                    "provider": "http://127.0.0.1:9",
+                    "credential_id": "fixture",
+                    "root_did": "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "delegation_cid": "bafyfixture",
+                    "delegation_hex": "00",
+                    "descriptor_hex": null,
+                    "attachment_id": "fixture",
+                    "attached_at": 1
+                },
+                "pending_login": null
+            });
+            std::fs::write(
+                store
+                    .account_dir()
+                    .join("tonk-account-session-v1-fixture.json"),
+                serde_json::to_vec(&session).expect("session JSON"),
+            )
+            .expect("write session");
+        }
+        store
+    }
+
+    fn assert_local_create_with_account_state(active: bool) {
+        let state = tempfile::tempdir().expect("tempdir");
+        let store = recorded_account(state.path(), active);
+        let before = snapshot(&store.account_dir());
+        let site = state.path().join("scratch-site");
+
+        let output = run(
+            state.path(),
+            &[
+                "space",
+                "new",
+                "scratch",
+                "--site",
+                site.to_str().expect("utf-8 site"),
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert_eq!(snapshot(&store.account_dir()), before);
+
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(store.registry_path()).expect("registry"))
+                .expect("registry JSON");
+        assert_eq!(
+            registry["spaces"]["scratch"]
+                .as_object()
+                .expect("space entry")
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["site"]
+        );
+        assert_eq!(
+            registry["account"]["root"],
+            "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
+    }
+
+    #[dialog_common::test]
+    fn when_space_is_created_with_an_active_account_it_stays_local() {
+        assert_local_create_with_account_state(true);
+    }
+
+    #[dialog_common::test]
+    fn when_space_is_created_with_a_stale_account_record_it_stays_local() {
+        assert_local_create_with_account_state(false);
     }
 }
 
@@ -442,7 +547,6 @@ mod when_resolving_with_precedence {
             .env("DO_NOT_TRACK", "1")
             .env("TONK_NO_UPDATE_CHECK", "1")
             .env("HOME", state.path())
-            .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
             .env("TONK_SPACE", "a");
         let output = cmd.output().expect("run tonk");
         assert!(!output.status.success());

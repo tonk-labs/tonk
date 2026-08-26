@@ -78,8 +78,7 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
     Ok(SiteConfig {
         profile_name: format!("tonk-test-{suffix:x}"),
         profile_directory: Directory::At(profile_dir.to_string_lossy().into_owned()),
-        require_account: false,
-        provision_account_spaces: false,
+        authorize_remote_with_account: false,
         account_store: tonk_cli::space::SpaceStore::at(parent.join("_state")),
     })
 }

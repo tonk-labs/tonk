@@ -18,6 +18,7 @@ use anyhow::{Context as _, Result, bail};
 use dialog_capability::Subject;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
+use dialog_ucan::UcanDelegation;
 use dialog_varsig::Did;
 use tonk_schema::Invitation;
 
@@ -64,17 +65,12 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
         .get(name)
         .with_context(|| format!("unknown space '{name}'"))?
         .clone();
-    if crate::account::sign_in_phase(store)? != crate::account::SignInPhase::Active {
-        bail!("this account is signed out; run `tonk account login` first");
-    }
     let account_root: Did = account
         .root
         .parse()
         .context("the signed-in account root is invalid")?;
 
-    let mut site_config = config.clone();
-    site_config.require_account = false;
-    let site = crate::site::TonkSite::open_with(&entry.site, site_config).await?;
+    let site = crate::site::TonkSite::open_with(&entry.site, config.clone()).await?;
     let subject = site.repository.did();
 
     // Ownership is the space's own answer, not the registry's, and it is
@@ -88,40 +84,41 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
         if founder.did != account.root {
             bail!(already_owned_message(name, &founder.did));
         }
-        if holds_account_chain(&site, &subject, &account_root).await {
-            return Ok(LinkOutcome {
-                subject: subject.to_string(),
-                name: name.to_owned(),
-                site: site.root,
-                account: account.root,
-                already_linked: true,
-            });
-        }
+    }
+    let connection = crate::account::optional_connection_in(&site.profile, store)
+        .await?
+        .context("this account is signed out; run `tonk account login` first")?;
+    if connection.root_did != account_root {
+        bail!(
+            "the active account does not match the registry; run `tonk account logout` and sign in again"
+        );
     }
 
     let access = account
         .access_remote
         .as_deref()
         .context("the account has no content endpoint; sign in again")?;
-    preflight(&site, &roster, access).await?;
-
-    // Authority first: the account root can only host what it can prove it
-    // was given, and this is the one boundary allowed to mint that grant.
-    let prefix = crate::site::adopt_account_root_prefix_for(
-        &site.profile,
-        site.operator.local(),
-        &subject,
-        &account_root,
-    )
-    .await?;
-    crate::customer::provision_in(&site.profile, store, &subject, &prefix).await?;
-
-    if crate::remote::upstream_remote(&site).await?.is_none() {
-        crate::remote::add(&site, DEFAULT_REMOTE, access, Some(subject.clone())).await?;
-        crate::remote::set_upstream(&site, DEFAULT_REMOTE).await?;
+    let existing_cutover = crate::site::load_link_cutover(&site, &account_root).await?;
+    let already_linked = roster
+        .founder()
+        .is_some_and(|founder| founder.did == account.root)
+        && existing_cutover
+            .as_ref()
+            .is_some_and(|cutover| cutover.revocation_published)
+        && site.repository.credential().signer().is_none();
+    if !already_linked {
+        preflight(&site, &roster, access).await?;
     }
-    crate::site::record_founder_membership(&site).await?;
-    crate::sync::push(&site).await?;
+
+    // Every signer-dependent artifact is durable before account or network
+    // state changes. A retry after demotion loads this record.
+    let (mut cutover, prefix) = crate::site::prepare_link_cutover(&site, &account_root).await?;
+    site.profile
+        .access()
+        .save(UcanDelegation(prefix.clone()))
+        .perform(site.operator.local())
+        .await
+        .context("failed to retain direct account authority locally")?;
 
     let operator =
         crate::account_state::credential_operator_for_store(&site.profile, store).await?;
@@ -132,31 +129,64 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
     };
     crate::account_state::retain_space_delegation_in(&site.profile, &operator, store, &prefix)
         .await?;
-    // The seed rides the same boundary: a space the account hosts is a
-    // space the account can re-derive. Sealing needs only the published
-    // public key; an account that predates it links anyway — custody
-    // catches up at the next `tonk account login`.
-    if !crate::custody::has_custody(&account_branch, &subject, &operator).await? {
-        match crate::custody::account_recipient(&account_branch, &account_root, &operator).await? {
-            Some(recipient) => {
-                if let Some(seed) = crate::custody::site_seed(&site).await? {
-                    crate::custody::custody_space_seed(
-                        &account_branch,
-                        &subject,
-                        &recipient,
-                        &seed,
-                        &operator,
-                    )
-                    .await?;
-                }
-            }
-            None => eprintln!(
-                "warning: the account has not published its encryption key; \
-                 the space seed stays uncustodied until it does"
-            ),
-        }
+
+    let recipient = crate::custody::account_recipient(&account_branch, &account_root, &operator)
+        .await?
+        .context(
+            "the account has not published its encryption key; open /account in a signed-in browser, then retry",
+        )?;
+    if !crate::custody::has_custody(&account_branch, &subject, &recipient, &operator).await? {
+        let seed = crate::custody::site_seed(&site)
+            .await?
+            .context("the space seed is not custodied and the local signer is unavailable")?;
+        crate::custody::custody_space_seed(&account_branch, &subject, &recipient, &seed, &operator)
+            .await?;
     }
-    crate::account_spaces::record_site_pushed(name, &site, store).await?;
+    account_branch
+        .push()
+        .perform(&operator)
+        .await
+        .context("failed to push account authority and custody")?;
+
+    crate::customer::provision_in(&site.profile, store, &subject, &prefix).await?;
+
+    if crate::remote::upstream_remote(&site).await?.is_none() {
+        crate::remote::add(&site, DEFAULT_REMOTE, access, Some(subject.clone())).await?;
+        crate::remote::set_upstream(&site, DEFAULT_REMOTE).await?;
+    }
+    crate::site::record_founder_membership_for(&site, account_root.clone()).await?;
+    crate::sync::push(&site).await?;
+
+    if !cutover.revocation_published {
+        let artifact =
+            hex::decode(&cutover.revocation_hex).context("stored link revocation is not hex")?;
+        crate::account::publish_revocation(
+            &site.profile,
+            &account_branch,
+            &operator,
+            store,
+            &artifact,
+        )
+        .await
+        .context("the old device grant was not revoked; retry `tonk space link`")?;
+        crate::site::mark_link_revocation_published(&site, &mut cutover).await?;
+    }
+
+    crate::site::demote_repository_signer(&site)
+        .await
+        .context("the local signer was not demoted; retry `tonk space link`")?;
+    let reopened = crate::site::TonkSite::open_with(&entry.site, config.clone()).await?;
+    if reopened.repository.credential().signer().is_some() {
+        bail!("the local space signer is still present; retry `tonk space link`");
+    }
+
+    // Directory publication is last: discovery implies the authority,
+    // custody, remote, revocation, and signer cutover are complete.
+    match crate::account_spaces::record_site_pushed(name, &site, store).await? {
+        crate::account_spaces::RecordOutcome::Recorded
+        | crate::account_spaces::RecordOutcome::Unchanged => {}
+        outcome => bail!("account directory publication did not complete: {outcome:?}"),
+    }
 
     if crate::inventory::role_for_site(&site).await? != SpaceRole::Owner {
         bail!("the space is not signed as owned by this device after linking");
@@ -166,30 +196,8 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
         name: name.to_owned(),
         site: site.root,
         account: account.root,
-        already_linked: false,
+        already_linked,
     })
-}
-
-/// Whether the retained `subject → … → account root` chain is on this device.
-///
-/// The chain is what the access service validates and the roster is its
-/// legible, synced mirror, so a founder row with no chain behind it is an
-/// unfinished link rather than an ownership claim. This reads only what the
-/// profile already holds — it never mints, so it cannot answer yes by
-/// establishing the ownership it was asked to confirm.
-async fn holds_account_chain(
-    site: &crate::site::TonkSite,
-    subject: &Did,
-    account_root: &Did,
-) -> bool {
-    crate::site::load_account_root_prefix_for(
-        &site.profile,
-        site.operator.local(),
-        subject,
-        account_root,
-    )
-    .await
-    .is_ok()
 }
 
 /// Refuse anything that is not genuinely local-only.

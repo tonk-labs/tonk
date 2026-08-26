@@ -295,7 +295,7 @@ async fn inspect_replica(
     identity: &mut Option<crate::site::Identity>,
 ) -> Result<(LocalSpaceInventoryRow, Option<String>)> {
     let mut config = config.clone();
-    config.require_account = false;
+    config.authorize_remote_with_account = false;
     let site = crate::site::TonkSite::open_with(&entry.site, config)
         .await
         .with_context(|| format!("could not open {}", entry.site.display()))?;

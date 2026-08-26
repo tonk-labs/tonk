@@ -29,7 +29,8 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
-use dialog_varsig::{Did, Principal};
+use dialog_varsig::Did;
+use serde::{Deserialize, Serialize};
 use tonk_account::prefix::{
     SPACE_ROOT_SITE_PREFIX, space_root_site, validate_prefix as verify_prefix,
 };
@@ -130,6 +131,32 @@ const OPERATOR_CONTEXT: &[u8] = b"slide";
 
 /// Name of the `.tonk/` sub-directory holding repository data.
 pub const SITE_DIRNAME: &str = ".tonk";
+
+const LINK_CUTOVER_SITE_PREFIX: &str = "tonk-link-cutover-v1/";
+
+/// Durable, signer-free state for an explicit account ownership cutover.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkCutoverV1 {
+    /// Record schema version.
+    pub version: u8,
+    /// Space DID being transferred.
+    pub subject: String,
+    /// Account root receiving direct authority.
+    pub account_root: String,
+    /// Serialized direct delegation prefix, hex encoded.
+    pub direct_prefix_hex: String,
+    /// CID of the superseded space-to-profile grant.
+    pub old_grant_cid: String,
+    /// Space-signed revocation artifact, hex encoded.
+    pub revocation_hex: String,
+    /// Whether every known access service accepted the revocation.
+    pub revocation_published: bool,
+}
+
+fn link_cutover_site(subject: &Did, account_root: &Did) -> String {
+    format!("{LINK_CUTOVER_SITE_PREFIX}{subject}/{account_root}")
+}
 
 /// Whether `root` already holds site data.
 ///
@@ -236,7 +263,7 @@ impl TonkSite {
             operator,
             profile.clone(),
             config.account_store.clone(),
-            config.require_account,
+            config.authorize_remote_with_account,
         )
         .await?;
 
@@ -300,15 +327,9 @@ impl TonkSite {
         {
             Ok(repository) => (repository, false),
             Err(_) => (
-                bootstrap_repository(
-                    &profile,
-                    &operator,
-                    &config.account_store,
-                    config.require_account,
-                    config.provision_account_spaces,
-                )
-                .await
-                .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
+                bootstrap_repository(&profile, &operator)
+                    .await
+                    .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
                 true,
             ),
         };
@@ -318,7 +339,7 @@ impl TonkSite {
             operator,
             profile.clone(),
             config.account_store.clone(),
-            config.require_account,
+            config.authorize_remote_with_account,
         )
         .await?;
 
@@ -543,57 +564,13 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
 async fn bootstrap_repository(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    account_store: &crate::space::SpaceStore,
-    require_account: bool,
-    provision_account_spaces: bool,
 ) -> Result<Repository> {
-    let local_root = crate::identity::local_root_with_operator(profile, operator).await?;
-    let account_operator = if require_account {
-        crate::account::require_account_with_operator_in(profile, operator, account_store).await?;
-        let account_operator =
-            crate::account_state::credential_operator_for_store(profile, account_store).await?;
-        Some(account_operator)
-    } else {
-        None
-    };
-    let durable_did: dialog_varsig::Did = local_root
-        .context("local root provisioning did not produce a record")?
-        .root_did
-        .parse()
-        .context("stored root DID is invalid")?;
-
-    // The signer comes from an explicit seed so the seed can be sealed
-    // to the account BEFORE the space exists: the custody row is the
-    // copy the account's other devices recover the space from, and a
-    // create that cannot record it must not produce a space that only
-    // this machine can ever re-derive.
+    // Keep the signer in the repository credential until explicit linking
+    // has durably moved encrypted custody to an account.
     let seed = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
     let signer = Ed25519Signer::import(&*seed)
         .await
         .context("failed to derive the space signer")?;
-    if require_account {
-        let account_operator = account_operator
-            .as_ref()
-            .expect("account operator exists when an account is required");
-        let account =
-            crate::account_state::open_account_branch_in(profile, account_operator, account_store)
-                .await?
-                .context("the account repository is not ready to custody this space")?;
-        let recipient = crate::custody::account_recipient(&account, &durable_did, account_operator)
-            .await?
-            .context(
-                "the account has not published its encryption key yet; \
-                     open /account in a signed-in browser once, then retry",
-            )?;
-        crate::custody::custody_space_seed(
-            &account,
-            &signer.did(),
-            &recipient,
-            &seed,
-            account_operator,
-        )
-        .await?;
-    }
 
     let signer_repo = profile
         .repository(REPO_NAME)
@@ -605,7 +582,7 @@ async fn bootstrap_repository(
     let delegation = signer_repo
         .access()
         .claim(&signer_repo)
-        .delegate(durable_did.clone())
+        .delegate(profile.did())
         .perform(operator)
         .await
         .context("failed to mint repo→profile delegation")?;
@@ -615,7 +592,7 @@ async fn bootstrap_repository(
         .context("failed to serialize repo→root delegation")?;
     profile
         .credential()
-        .site(space_root_site(&signer_repo.did(), &durable_did))
+        .site(space_root_site(&signer_repo.did(), &profile.did()))
         .save(prefix_bytes)
         .perform(operator)
         .await
@@ -627,30 +604,6 @@ async fn bootstrap_repository(
         .perform(operator)
         .await
         .context("failed to persist repo→profile delegation")?;
-
-    if require_account {
-        let account_operator = account_operator
-            .as_ref()
-            .expect("account operator exists when an account is required");
-        if crate::account_state::open_account_branch_in(profile, account_operator, account_store)
-            .await?
-            .is_none()
-        {
-            bail!("the account repository is not ready to retain this space");
-        }
-        crate::account_state::retain_space_delegation_in(
-            profile,
-            account_operator,
-            account_store,
-            &prefix,
-        )
-        .await?;
-        if provision_account_spaces {
-            crate::customer::provision_in(profile, account_store, &signer_repo.did(), &prefix)
-                .await
-                .context("failed to provision the account-owned space")?;
-        }
-    }
 
     profile
         .repository(REPO_NAME)
@@ -704,7 +657,7 @@ async fn mount_delegated_inner(
     require_reusable: bool,
 ) -> Result<TonkSite> {
     let local_root = crate::identity::local_root_with_operator(&profile, &operator).await?;
-    let require_account = config.require_account && require_reusable;
+    let require_account = config.authorize_remote_with_account && require_reusable;
     if require_account {
         crate::account::require_account_with_operator_in(
             &profile,
@@ -718,9 +671,6 @@ async fn mount_delegated_inner(
             .root_did
             .parse()
             .context("stored root DID is invalid")?,
-        None if require_reusable => {
-            bail!("local root provisioning did not produce a record")
-        }
         None => profile.did(),
     };
     let subject = chain
@@ -800,6 +750,163 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
         account_root,
     )
     .await
+}
+
+/// Load a saved explicit-link cutover, if this profile has started one.
+pub async fn load_link_cutover(
+    site: &TonkSite,
+    account_root: &Did,
+) -> Result<Option<LinkCutoverV1>> {
+    let Some(bytes) = optional_credential(
+        &site.profile,
+        site.operator.local(),
+        link_cutover_site(&site.repository.did(), account_root),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let record: LinkCutoverV1 =
+        serde_json::from_slice(&bytes).context("stored link cutover is malformed")?;
+    if record.version != 1
+        || record.subject != site.repository.did().to_string()
+        || record.account_root != account_root.to_string()
+    {
+        bail!("stored link cutover does not match this space and account");
+    }
+    Ok(Some(record))
+}
+
+async fn save_link_cutover(site: &TonkSite, record: &LinkCutoverV1) -> Result<()> {
+    site.profile
+        .credential()
+        .site(link_cutover_site(
+            &site.repository.did(),
+            &record.account_root.parse()?,
+        ))
+        .save(serde_json::to_vec(record)?)
+        .perform(site.operator.local())
+        .await
+        .context("failed to persist link cutover")?;
+    Ok(())
+}
+
+/// Mint the direct, full `space -> account root` ownership prefix.
+pub async fn mint_direct_account_prefix_for(
+    site: &TonkSite,
+    account_root: &Did,
+) -> Result<DelegationChain> {
+    let access = site.repository.try_access().context(
+        "the local space signer is unavailable; complete migration on a device that still holds it",
+    )?;
+    let delegation = access
+        .claim(&site.repository)
+        .delegate(account_root.clone())
+        .perform(site.operator.local())
+        .await
+        .context("failed to mint direct space-to-account authority")?;
+    Ok(delegation.into_chain())
+}
+
+/// Persist all signer-dependent cutover artifacts before any remote effect.
+pub async fn prepare_link_cutover(
+    site: &TonkSite,
+    account_root: &Did,
+) -> Result<(LinkCutoverV1, DelegationChain)> {
+    if let Some(record) = load_link_cutover(site, account_root).await? {
+        let bytes = hex::decode(&record.direct_prefix_hex)
+            .context("stored direct account prefix is not hex")?;
+        let prefix = validate_prefix(bytes.clone(), account_root)
+            .await
+            .context("stored direct account prefix is invalid")?;
+        if prefix.proof_cids().len() != 1 || prefix.issuer() != &site.repository.did() {
+            bail!("stored account authority is not a direct space-to-account prefix");
+        }
+        save_prefix(
+            &site.profile,
+            site.operator.local(),
+            &space_root_site(&site.repository.did(), account_root),
+            bytes,
+        )
+        .await
+        .context("failed to restore the direct account-root prefix")?;
+        return Ok((record, prefix));
+    }
+
+    let signer = site.repository.credential().signer().cloned().context(
+        "the local space signer is unavailable; complete migration on a device that still holds it",
+    )?;
+    let old_prefix = load_account_root_prefix_for(
+        &site.profile,
+        site.operator.local(),
+        &site.repository.did(),
+        &site.profile.did(),
+    )
+    .await
+    .context("failed to load the original device grant")?;
+    let old_grant = *old_prefix
+        .proof_cids()
+        .first()
+        .context("the original device grant is empty")?;
+    let prefix = mint_direct_account_prefix_for(site, account_root).await?;
+    if prefix.proof_cids().len() != 1 || prefix.issuer() != &site.repository.did() {
+        bail!("minted account authority is not a direct space-to-account prefix");
+    }
+    let revocation =
+        tonk_identity::revocation::mint_root_revocation(signer, &old_prefix, &old_grant)
+            .await
+            .context("failed to sign the old device-grant revocation")?;
+    let record = LinkCutoverV1 {
+        version: 1,
+        subject: site.repository.did().to_string(),
+        account_root: account_root.to_string(),
+        direct_prefix_hex: hex::encode(prefix.to_bytes()?),
+        old_grant_cid: old_grant.to_string(),
+        revocation_hex: hex::encode(revocation),
+        revocation_published: false,
+    };
+    save_link_cutover(site, &record).await?;
+    save_prefix(
+        &site.profile,
+        site.operator.local(),
+        &space_root_site(&site.repository.did(), account_root),
+        prefix.to_bytes()?,
+    )
+    .await
+    .context("failed to persist the direct account-root prefix")?;
+    Ok((record, prefix))
+}
+
+/// Mark the saved revocation as published after every access service accepts it.
+pub async fn mark_link_revocation_published(
+    site: &TonkSite,
+    record: &mut LinkCutoverV1,
+) -> Result<()> {
+    record.revocation_published = true;
+    save_link_cutover(site, record).await
+}
+
+/// Replace the stored repository signer with its verifier-only credential.
+pub async fn demote_repository_signer(site: &TonkSite) -> Result<()> {
+    use dialog_effects::credential::prelude::{
+        CredentialCapabilityExt as _, CredentialKeyExt as _, CredentialSubjectExt as _,
+    };
+
+    let Some(signer) = site.repository.credential().signer() else {
+        return Ok(());
+    };
+    let credential = Credential::Verifier(dialog_credentials::VerifierCredential::from(
+        signer.verifier(),
+    ));
+    site.repository
+        .did()
+        .credential()
+        .key("self")
+        .save(credential)
+        .perform(site.operator.local())
+        .await
+        .context("failed to demote the local space signer")?;
+    Ok(())
 }
 
 /// Decode a stored prefix for `account_root`.
@@ -1011,15 +1118,9 @@ pub struct SiteConfig {
     /// is the platform default; tests pick `Directory::At(...)`
     /// to redirect onto a temp dir.
     pub profile_directory: Directory,
-    /// Whether minting durable authority must have an account behind it.
-    /// Production enables this; legacy-isolation test fixtures disable it,
-    /// and get a software-generated root instead (see
-    /// [`build_profile_and_operator`]).
-    pub require_account: bool,
-    /// Whether fresh account-owned repositories call `/provider/add`.
-    /// Production account profiles enable this; authority-only fixtures may
-    /// disable it while still exercising account-bound authorization.
-    pub provision_account_spaces: bool,
+    /// Whether remote forks authorize through the active account session.
+    /// Local repository construction and local operations ignore this switch.
+    pub authorize_remote_with_account: bool,
     /// Profile-scoped account repository and session state.
     pub account_store: crate::space::SpaceStore,
 }
@@ -1032,8 +1133,7 @@ impl SiteConfig {
         Ok(Self {
             profile_name: name.into(),
             profile_directory: Directory::Profile,
-            require_account: false,
-            provision_account_spaces: false,
+            authorize_remote_with_account: false,
             account_store: crate::space::SpaceStore::open()
                 .context("failed to locate account state")?,
         })
@@ -1049,8 +1149,7 @@ pub fn default_config() -> Result<SiteConfig> {
     Ok(SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
         profile_directory: Directory::Profile,
-        require_account: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
-        provision_account_spaces: true,
+        authorize_remote_with_account: true,
         account_store: crate::space::SpaceStore::open()
             .context("failed to locate account state")?,
     })
@@ -1113,43 +1212,6 @@ pub(crate) async fn build_profile_and_operator(
         .await
         .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
     let operator = derive_operator_for_profile(root, &profile, storage).await?;
-
-    // Isolated legacy test fixtures opt into a software-generated root so they
-    // still exercise the same space → root → device chain shape. Production
-    // never enters this path and requires a browser/passkey handoff.
-    if !config.require_account
-        && crate::identity::local_root_with_operator(&profile, &operator)
-            .await?
-            .is_none()
-    {
-        let root = Ed25519Signer::generate()
-            .await
-            .context("failed to generate the isolated fixture root")?;
-        let delegation =
-            tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did()).await?;
-        let bytes = delegation
-            .to_bytes()
-            .context("failed to serialize fixture root")?;
-        let record = crate::identity::LocalRoot {
-            credential_id: "isolated-software-root".to_string(),
-            root_did: root.did().to_string(),
-            delegation_cid: delegation.proof_cids()[0].to_string(),
-            delegation_hex: hex::encode(&bytes),
-        };
-        profile
-            .access()
-            .save(UcanDelegation(delegation))
-            .perform(&operator)
-            .await
-            .context("failed to install fixture root grant")?;
-        profile
-            .credential()
-            .site(crate::identity::LOCAL_ROOT_SITE)
-            .save(serde_json::to_vec(&record)?)
-            .perform(&operator)
-            .await
-            .context("failed to persist fixture root")?;
-    }
 
     Ok((profile, operator))
 }

@@ -71,6 +71,17 @@ pub struct MountRecord {
     pub branches: Vec<MountBranch>,
 }
 
+/// Failure while retracting a directory entry.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoveError {
+    /// Existing directory facts could not be queried.
+    #[error("directory query failed: {0:?}")]
+    Query(#[from] EvaluationError),
+    /// The retraction transaction could not commit.
+    #[error("directory retraction failed: {0}")]
+    Commit(#[from] CommitError),
+}
+
 /// Anchor wrapper so branch concepts can hang off the space's
 /// directory entity (`subject.this()`), giving every device the same
 /// derived entities.
@@ -146,6 +157,141 @@ where
                 .assert(upstream.clone())
                 .assert(TrackingBranch::new(&local, &upstream));
         }
+    }
+    transaction.commit().perform(env).await?;
+    Ok(())
+}
+
+/// Retract one account-directory entry without touching unrelated facts on
+/// the space entity. Repeating removal is a no-op.
+pub async fn remove<Env>(account: &Branch, subject: &Did, env: &Env) -> Result<(), RemoveError>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Import>
+        + Provider<Resolve>
+        + Provider<Publish>
+        + Provider<Identify>
+        + Provider<Attest>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static,
+{
+    let anchor = subject.this();
+    let spaces: Vec<Space> = account
+        .query()
+        .select(Query::<Space> {
+            this: Term::from(anchor.clone()),
+            subject: Term::var("subject"),
+            status: Term::var("status"),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+    let names: Vec<SpaceName> = account
+        .query()
+        .select(Query::<SpaceName> {
+            this: Term::from(anchor.clone()),
+            name: Term::var("name"),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+    let remotes: Vec<Remote> = account
+        .query()
+        .select(Query::<Remote> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(RemoteOrigin::from(anchor.clone())),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+    let local_branches: Vec<BranchConcept> = account
+        .query()
+        .select(Query::<BranchConcept> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(BranchOrigin::from(anchor)),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+
+    let mut executions = Vec::new();
+    let mut remote_branches = Vec::new();
+    for remote in &remotes {
+        executions.extend(
+            account
+                .query()
+                .select(Query::<RemoteExecution> {
+                    this: Term::from(remote.this.clone()),
+                    revocation_url: Term::var("revocation_url"),
+                })
+                .perform(env)
+                .try_vec()
+                .await?,
+        );
+        remote_branches.extend(
+            account
+                .query()
+                .select(Query::<BranchConcept> {
+                    this: Term::var("this"),
+                    name: Term::var("name"),
+                    origin: Term::from(BranchOrigin::from(remote.this.clone())),
+                })
+                .perform(env)
+                .try_vec()
+                .await?,
+        );
+    }
+    let mut tracking = Vec::new();
+    for branch in &local_branches {
+        tracking.extend(
+            account
+                .query()
+                .select(Query::<TrackingBranch> {
+                    this: Term::from(branch.this.clone()),
+                    upstream: Term::var("upstream"),
+                    origin: Term::var("origin"),
+                })
+                .perform(env)
+                .try_vec()
+                .await?,
+        );
+    }
+
+    if spaces.is_empty()
+        && names.is_empty()
+        && remotes.is_empty()
+        && executions.is_empty()
+        && local_branches.is_empty()
+        && remote_branches.is_empty()
+        && tracking.is_empty()
+    {
+        return Ok(());
+    }
+    let mut transaction = account.transaction();
+    for row in spaces {
+        transaction = transaction.retract(row);
+    }
+    for row in names {
+        transaction = transaction.retract(row);
+    }
+    for row in executions {
+        transaction = transaction.retract(row);
+    }
+    for row in tracking {
+        transaction = transaction.retract(row);
+    }
+    for row in local_branches.into_iter().chain(remote_branches) {
+        transaction = transaction.retract(row);
+    }
+    for row in remotes {
+        transaction = transaction.retract(row);
     }
     transaction.commit().perform(env).await?;
     Ok(())

@@ -12,6 +12,41 @@ use tonk_cli::space::SpaceEntry;
 use tonk_schema::RepositoryName;
 use tonk_schema::prelude::DidExt as _;
 
+async fn record_account_relationship(
+    fixture: &common::AccountFixture,
+    site: &TonkSite,
+    founder: bool,
+) -> Result<()> {
+    use dialog_ucan::UcanDelegation;
+    use tonk_schema::{MemberRole, Membership};
+
+    let root = fixture.link.issuer().clone();
+    if site.repository.credential().signer().is_some() {
+        let prefix = tonk_cli::site::mint_direct_account_prefix_for(site, &root).await?;
+        site.profile
+            .access()
+            .save(UcanDelegation(prefix))
+            .perform(site.operator.inner())
+            .await?;
+    }
+    let membership = Membership::new(root, site.repository.did());
+    let role = if founder {
+        MemberRole::founder(membership.this().clone())
+    } else {
+        MemberRole::member(membership.this().clone())
+    };
+    site.branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(membership)
+        .assert(role)
+        .commit()
+        .perform(&site.operator)
+        .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn list_reports_named_unnamed_and_pullable_rows() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
@@ -39,6 +74,55 @@ async fn list_reports_named_unnamed_and_pullable_rows() -> Result<()> {
 }
 
 #[tokio::test]
+async fn directory_removal_is_scoped_and_idempotent() -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    let subject = fixture
+        .record_directory_space(80, Some("garden"), Some("http://127.0.0.1:9/ucan/"))
+        .await?;
+    let operator = fixture.operator().await?;
+    let account = fixture.account_branch().await?;
+    account
+        .transaction()
+        .assert(RepositoryName {
+            this: subject.this(),
+            name: tonk_schema::domain::repo::Name("unrelated".to_string()),
+        })
+        .commit()
+        .perform(&operator)
+        .await?;
+
+    tonk_schema::directory::remove(&account, &subject, &operator).await?;
+    tonk_schema::directory::remove(&account, &subject, &operator).await?;
+
+    assert!(
+        tonk_schema::directory::spaces(&account, &operator)
+            .await
+            .map_err(|error| anyhow::anyhow!("directory query: {error:?}"))?
+            .iter()
+            .all(|row| row.subject != subject)
+    );
+    assert!(
+        tonk_schema::directory::mount_record(&account, &subject, &operator)
+            .await
+            .map_err(|error| anyhow::anyhow!("mount query: {error:?}"))?
+            .is_none()
+    );
+    let names: Vec<RepositoryName> = account
+        .query()
+        .select(Query::<RepositoryName> {
+            this: Term::from(subject.this()),
+            name: Term::var("name"),
+        })
+        .perform(&operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("repository-name query: {error:?}"))?;
+    assert_eq!(names.len(), 1);
+    assert_eq!(names[0].name.0, "unrelated");
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let site = TonkSite::init_at_with(
@@ -47,6 +131,7 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
     )
     .await?;
     configure_upstream(&site, "http://127.0.0.1:9/ucan/").await?;
+    record_account_relationship(&fixture, &site, true).await?;
     let canonical = site.root.canonicalize()?;
     let mut registry = fixture.store.load()?;
     for name in ["zeta", "alpha"] {
@@ -190,6 +275,7 @@ async fn pull_requires_a_directory_row_and_returns_an_adopted_site() -> Result<(
     let adopted = TonkSite::init_at_with(&adopted_root, fixture.config.clone()).await?;
     let adopted_subject = adopted.repository.did();
     configure_upstream(&adopted, "http://127.0.0.1:9/ucan/").await?;
+    record_account_relationship(&fixture, &adopted, true).await?;
     let mut registry = fixture.store.load()?;
     registry
         .spaces
@@ -254,6 +340,7 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
         .perform(&source.operator)
         .await?;
     tonk_cli::site::record_founder_membership(&source).await?;
+    record_account_relationship(&fixture, &source, true).await?;
     tonk_cli::remote::add(
         &source,
         "origin",
@@ -363,6 +450,7 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     .await?;
     name_repository(&owned, "synced-owned").await?;
     configure_upstream(&owned, dead_remote).await?;
+    record_account_relationship(&fixture, &owned, true).await?;
     tonk_cli::space::register_existing_unbound(&fixture.store, "owned-alias", &owned.root)?;
     assert_eq!(
         account_spaces::record_site_in("owned-alias", &owned, &fixture.store).await?,
@@ -382,6 +470,7 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     )
     .await?;
     configure_upstream(&joined, dead_remote).await?;
+    record_account_relationship(&fixture, &joined, false).await?;
     tonk_cli::space::register_existing_unbound(&fixture.store, "joined-alias", &joined.root)?;
     assert_eq!(
         account_spaces::record_site_in("joined-alias", &joined, &fixture.store).await?,
@@ -407,11 +496,11 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
     configure_upstream(&local_only, dead_remote).await?;
     assert_eq!(
         account_spaces::record_site_in("local-fallback", &local_only, &fixture.store).await?,
-        RecordOutcome::Recorded
+        RecordOutcome::NotLinked
     );
 
     let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 2);
     assert_eq!(
         rows.iter()
             .find(|row| row.subject == owned.repository.did().to_string())
@@ -430,20 +519,12 @@ async fn record_lists_owned_joined_and_newly_remote_sites() -> Result<()> {
         Some("joined-alias"),
         "an unnamed repository falls back to its registry name"
     );
-    assert_eq!(
-        rows.iter()
-            .find(|row| row.subject == local_only.repository.did().to_string())
-            .unwrap()
-            .remote_name
-            .as_deref(),
-        Some("local-fallback")
-    );
     assert!(rows.iter().all(|row| row.pullable));
     Ok(())
 }
 
 #[tokio::test]
-async fn record_sweep_uses_the_first_alias_once() -> Result<()> {
+async fn record_sweep_does_not_enroll_an_unlinked_remote_space() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("sweep-aliased-site"),
@@ -463,15 +544,12 @@ async fn record_sweep_uses_the_first_alias_once() -> Result<()> {
     let warnings = account_spaces::record_registered(&fixture.profile, &fixture.store).await;
     assert!(warnings.is_empty(), "{warnings:?}");
     let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].subject, site.repository.did().to_string());
-    assert_eq!(rows[0].remote_name.as_deref(), Some("alpha"));
+    assert!(rows.is_empty());
 
     let warnings = account_spaces::record_registered(&fixture.profile, &fixture.store).await;
     assert!(warnings.is_empty(), "{warnings:?}");
     let rows = account_spaces::list(&fixture.profile, &fixture.store).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].remote_name.as_deref(), Some("alpha"));
+    assert!(rows.is_empty());
     Ok(())
 }
 

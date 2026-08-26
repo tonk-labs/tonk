@@ -29,6 +29,11 @@ async fn local_space(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
 async fn it_links_a_local_space_into_the_signed_in_account(
     env: AccessServiceAddress,
 ) -> Result<()> {
+    use dialog_credentials::Credential;
+    use dialog_query::{Output as _, Query, Term};
+    use dialog_varsig::Principal as _;
+    use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
+
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let fixture = common::AccountFixture::with_account_remote(&remote).await?;
     fixture.activate_with(&env).await?;
@@ -50,6 +55,22 @@ async fn it_links_a_local_space_into_the_signed_in_account(
     assert_eq!(entry.site, outcome.site);
     let site = TonkSite::open_with(&entry.site, config.clone()).await?;
     assert_eq!(site.repository.did().to_string(), outcome.subject);
+    assert!(
+        matches!(site.repository.credential(), Credential::Verifier(_)),
+        "completed linking removes the locally stored space signer"
+    );
+
+    let account_root: dialog_varsig::Did = account.root.parse()?;
+    let prefix = tonk_cli::site::load_account_root_prefix_for(
+        &site.profile,
+        site.operator.inner(),
+        &site.repository.did(),
+        &account_root,
+    )
+    .await?;
+    assert_eq!(prefix.proof_cids().len(), 1, "ownership is one direct hop");
+    assert_eq!(prefix.issuer(), &site.repository.did());
+    assert_eq!(prefix.audience(), &account_root);
 
     // Ownership is on the space's own content branch, keyed on the account
     // root so it converges across every device on that account.
@@ -73,6 +94,35 @@ async fn it_links_a_local_space_into_the_signed_in_account(
     assert!(row.owner_is_you);
     assert_eq!(row.role, SpaceRole::Owner);
     assert!(rendered.contains("you ("), "{rendered}");
+
+    let account_operator = fixture.operator().await?;
+    let account_branch = fixture.account_branch().await?;
+    let subject = site.repository.did();
+    let custody: Vec<CustodiedSeed> = account_branch
+        .query()
+        .select(Query::<CustodiedSeed> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            kind: Term::var("kind"),
+            recipient: Term::var("recipient"),
+            sealed: Term::var("sealed"),
+        })
+        .perform(&account_operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("read custodied seeds: {error:?}"))?;
+    assert_eq!(custody.len(), 1);
+    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+        fixture.root_prf,
+    ));
+    let sealed = tonk_identity::sealed::Sealed::decode(&custody[0].sealed.0)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let seed = secret
+        .encryption_key()
+        .open(&sealed, &subject)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
+    assert_eq!(signer.did(), subject);
 
     let listed = tonk_cli::account_spaces::list(&fixture.profile, &store).await?;
     assert!(
@@ -103,6 +153,151 @@ async fn it_reports_an_already_linked_space_without_relinking_it(
     assert!(again.already_linked);
     assert_eq!(again.subject, first.subject);
     assert_eq!(std::fs::read(store.registry_path())?, after_first);
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_upgrades_a_legacy_profile_hop_when_the_signer_is_present(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let store = fixture.store.clone();
+    let config = fixture.config.clone();
+    local_space(&store, &config, "garden").await?;
+    store.set_account(Some(signed_in(&fixture, &env)?))?;
+    let entry = store.load()?.spaces["garden"].clone();
+    let site = TonkSite::open_with(&entry.site, config.clone()).await?;
+    let account_root = fixture.link.issuer().clone();
+    let legacy = tonk_cli::site::account_root_prefix(&site, &account_root).await?;
+    assert!(
+        legacy.proof_cids().len() > 1,
+        "legacy authority uses a profile hop"
+    );
+    tonk_cli::site::record_founder_membership_for(&site, account_root.clone()).await?;
+
+    let outcome = tonk_cli::space_link::execute(&store, &config, "garden").await?;
+
+    assert!(
+        !outcome.already_linked,
+        "legacy founder state is incomplete"
+    );
+    let reopened = TonkSite::open_with(&entry.site, config).await?;
+    let direct = tonk_cli::site::load_account_root_prefix_for(
+        &reopened.profile,
+        reopened.operator.inner(),
+        &reopened.repository.did(),
+        &account_root,
+    )
+    .await?;
+    assert_eq!(direct.proof_cids().len(), 1);
+    assert!(reopened.repository.credential().signer().is_none());
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_reports_that_a_signerless_legacy_link_needs_its_origin_device(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    let store = fixture.store.clone();
+    let config = fixture.config.clone();
+    local_space(&store, &config, "garden").await?;
+    store.set_account(Some(signed_in(&fixture, &env)?))?;
+    let entry = store.load()?.spaces["garden"].clone();
+    let site = TonkSite::open_with(&entry.site, config.clone()).await?;
+    let account_root = fixture.link.issuer().clone();
+    let legacy = tonk_cli::site::account_root_prefix(&site, &account_root).await?;
+    assert!(
+        legacy.proof_cids().len() > 1,
+        "legacy authority uses a profile hop"
+    );
+    tonk_cli::site::record_founder_membership_for(&site, account_root).await?;
+    tonk_cli::site::demote_repository_signer(&site).await?;
+
+    let error = tonk_cli::space_link::execute(&store, &config, "garden")
+        .await
+        .expect_err("a verifier-only legacy link cannot mint direct authority");
+    assert!(
+        error.to_string().contains("device that still holds it"),
+        "{error:#}"
+    );
+    assert!(
+        TonkSite::open_with(&entry.site, config)
+            .await?
+            .repository
+            .credential()
+            .signer()
+            .is_none()
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_retries_from_saved_cutover_artifacts_after_signer_demotion(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let store = fixture.store.clone();
+    let config = fixture.config.clone();
+    local_space(&store, &config, "garden").await?;
+    store.set_account(Some(signed_in(&fixture, &env)?))?;
+    let entry = store.load()?.spaces["garden"].clone();
+    let site = TonkSite::open_with(&entry.site, config.clone()).await?;
+    let account_root = fixture.link.issuer().clone();
+
+    let (cutover, direct) = tonk_cli::site::prepare_link_cutover(&site, &account_root).await?;
+    assert!(!cutover.revocation_published);
+    assert_eq!(direct.proof_cids().len(), 1);
+    assert!(
+        tonk_cli::account_spaces::list(&fixture.profile, &store)
+            .await?
+            .iter()
+            .all(|row| row.subject != site.repository.did().to_string()),
+        "saved security artifacts alone must not publish discovery"
+    );
+    let account_operator = fixture.operator().await?;
+    let account_branch = fixture.account_branch().await?;
+    let recipient =
+        tonk_cli::custody::account_recipient(&account_branch, &account_root, &account_operator)
+            .await?
+            .expect("fixture account publishes an encryption recipient");
+    let seed = tonk_cli::custody::site_seed(&site)
+        .await?
+        .expect("the pre-demotion signer exports its seed");
+    tonk_cli::custody::custody_space_seed(
+        &account_branch,
+        &site.repository.did(),
+        &recipient,
+        &seed,
+        &account_operator,
+    )
+    .await?;
+    account_branch.push().perform(&account_operator).await?;
+    tonk_cli::site::demote_repository_signer(&site).await?;
+
+    site.branch()
+        .await?
+        .handle()
+        .transaction()
+        .commit()
+        .perform(&site.operator)
+        .await?;
+    let linked = tonk_cli::space_link::execute(&store, &config, "garden").await?;
+    assert!(!linked.already_linked);
+    assert_eq!(linked.subject, site.repository.did().to_string());
+    assert!(
+        TonkSite::open_with(&entry.site, config)
+            .await?
+            .repository
+            .credential()
+            .signer()
+            .is_none()
+    );
     Ok(())
 }
 

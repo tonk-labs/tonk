@@ -62,6 +62,9 @@ pub enum RecordOutcome {
     /// The site has no `main` upstream yet — a local-only space is
     /// deliberately not listed as mountable anywhere else.
     NoUpstream,
+    /// The active account has no provable owner/member relationship to this
+    /// space, so ordinary remote use does not enroll it.
+    NotLinked,
     /// The directory already holds exactly this configuration.
     Unchanged,
     /// The directory was updated (and the change pushed best-effort).
@@ -513,6 +516,35 @@ async fn record_site_for_profile(
     let name = repository_name(site)
         .await
         .unwrap_or_else(|| registry_name.to_string());
+
+    let Some(connection) = crate::account::optional_connection_in(account_profile, store).await?
+    else {
+        return Ok(RecordOutcome::NoAccount);
+    };
+    let roster = crate::inventory::read_roster(site).await?;
+    let linked_role = roster
+        .row_for(connection.root_did.as_ref())
+        .and_then(|row| row.role.as_deref())
+        .is_some_and(|role| {
+            matches!(
+                role,
+                tonk_schema::MemberRole::FOUNDER
+                    | tonk_schema::MemberRole::ADMIN
+                    | tonk_schema::MemberRole::MEMBER
+            )
+        });
+    if !linked_role
+        || crate::site::load_account_root_prefix_for(
+            &site.profile,
+            site.operator.local(),
+            &subject,
+            &connection.root_did,
+        )
+        .await
+        .is_err()
+    {
+        return Ok(RecordOutcome::NotLinked);
+    }
 
     let operator =
         crate::account_state::credential_operator_for_store(account_profile, store).await?;

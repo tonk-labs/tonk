@@ -22,7 +22,7 @@ async fn it_claims_to_the_profile_without_a_linked_account() -> Result<()> {
     let mut claimer_config = common::isolated_config(&claimer_parent)?;
     // Match production's account precondition while keeping every file in
     // the fixture. Claiming is not an account-owned creation operation.
-    claimer_config.require_account = true;
+    claimer_config.authorize_remote_with_account = true;
 
     // SAFETY: this integration-test binary contains exactly one test, so no
     // other thread can observe the process-wide store override.

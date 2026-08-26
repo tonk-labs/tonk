@@ -40,58 +40,6 @@ impl Default for AccountSessionState {
     }
 }
 
-/// Provider sign-in phase visible without opening a Dialog profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LocalPhase {
-    /// No canonical session state exists or it is inactive.
-    SignedOut,
-    /// A browser handoff is durable but not active yet.
-    Pending,
-    /// One provider attachment is active.
-    Active,
-}
-
-/// Inspect a profile store without creating locks, directories, or profiles.
-pub fn inspect_local(store: &SpaceStore) -> Result<LocalPhase> {
-    let account = store.account_dir();
-    let entries = match std::fs::read_dir(&account) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(LocalPhase::SignedOut);
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("failed to inspect account state at {}", account.display())
-            });
-        }
-    };
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with(STATE_FILE_PREFIX) || !name.ends_with(".json") {
-            continue;
-        }
-        let bytes = std::fs::read(entry.path())?;
-        let state: AccountSessionState =
-            serde_json::from_slice(&bytes).context("stored account-session state is malformed")?;
-        if state.version != VERSION {
-            anyhow::bail!(
-                "unsupported account-session state version {}",
-                state.version
-            );
-        }
-        return Ok(if state.active.is_some() {
-            LocalPhase::Active
-        } else if state.pending_login.is_some() {
-            LocalPhase::Pending
-        } else {
-            LocalPhase::SignedOut
-        });
-    }
-    Ok(LocalPhase::SignedOut)
-}
-
 /// Durable browser handoff phase.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,7 +132,7 @@ pub fn exclusive_transition_guard(store: &SpaceStore) -> Result<AccountSessionWr
     })
 }
 
-fn state_path(profile: &Profile, store: &SpaceStore) -> Result<PathBuf> {
+pub(crate) fn state_path(profile: &Profile, store: &SpaceStore) -> Result<PathBuf> {
     let profile_key = blake3::hash(profile.did().as_ref().as_bytes()).to_hex();
     Ok(store
         .account_dir()
@@ -357,6 +305,16 @@ pub async fn load_guarded(
     load_raw(profile, operator, &guard.store)
         .await?
         .context("account-session state has not been initialized")
+}
+
+/// Read canonical state under a shared lock without requiring that the
+/// exact-profile sidecar has already been initialized.
+pub(crate) async fn load_optional_guarded(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    guard: &AccountSessionReadGuard,
+) -> Result<Option<AccountSessionState>> {
+    load_raw(profile, operator, &guard.store).await
 }
 
 /// Read the sole active attachment under an existing shared guard.

@@ -12,7 +12,7 @@ use tonk_cli::site::{SiteConfig, TonkSite};
 /// that tests without an account can still run.
 fn account_config(fixture: &common::AccountFixture) -> SiteConfig {
     SiteConfig {
-        require_account: true,
+        authorize_remote_with_account: true,
         ..fixture.config.clone()
     }
 }
@@ -36,8 +36,10 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     // The access service serves nothing for an account that has not
     // confirmed its email.
     fixture.activate_with(&env).await?;
-    let site = TonkSite::init_at_with(
+    let (_, legacy_prefix) = fixture.space_chain(76).await?;
+    let site = tonk_cli::site::mount_delegated_at(
         &fixture.tmp.path().join("upgraded"),
+        legacy_prefix,
         account_config(&fixture),
     )
     .await?;
@@ -71,14 +73,14 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     Ok(())
 }
 
-/// Creating a space retains its authority into the account space.
+/// Retaining an explicit grant writes it into the account space exactly once.
 ///
 /// The retain itself is `tonk_account::delegations`, shared with the worker so
 /// the two adapters cannot drift into retaining different things. This pins
 /// the CLI's half of that wiring; `it_recovers_space_access_on_a_second_device`
 /// proves the retained facts actually travel.
 #[dialog_common::test]
-async fn it_retains_a_created_space_into_the_account_space(
+async fn it_retains_an_explicit_grant_into_the_account_space(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
@@ -300,7 +302,7 @@ async fn it_syncs_a_claimed_space_after_linking_an_account(
     let claimer_config = common::isolated_config(&claimer_parent)?;
     let joined_root = claimer_parent.join("claimed-before-link");
     let mut production_config = claimer_config.clone();
-    production_config.require_account = true;
+    production_config.authorize_remote_with_account = true;
     let claimed =
         tonk_cli::invite::claim(&joined_root, &invitation.url, production_config.clone()).await?;
 
@@ -360,8 +362,8 @@ async fn it_syncs_a_claimed_space_after_linking_an_account(
 /// Discovering a space through the account: the flow that makes linking
 /// worth anything.
 ///
-/// One device creates a space and delegates it to the account, retained in
-/// the account repository. A SECOND profile — which never created that space
+/// One device creates a space and explicitly delegates it to the account,
+/// retained in the account repository. A SECOND profile — which never created that space
 /// and holds no authority over it — links to the same account, pulls, and can
 /// then reach it. That is the whole promise of the account being the durable
 /// home of delegations, and unlike the tests above it isolates the received
@@ -378,7 +380,8 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     let owner_operator = owner.pre_account_site.operator.inner();
     let account_root = owner.link.issuer().clone();
 
-    // The owner creates a space and puts its authority in the account.
+    // The owner creates a space, then explicitly puts direct authority in the
+    // account. Creation by itself is deliberately account-independent.
     let site = TonkSite::init_at_with(
         &owner.tmp.path().join("shared-space"),
         account_config(&owner),
@@ -386,20 +389,14 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     .await?;
     configure_upstream(&site, &env.access_service_url).await?;
     let subject = site.repository.did();
-    let prefix = tonk_cli::site::account_root_prefix_for(
-        &owner.profile,
-        owner_operator,
-        &subject,
-        &account_root,
-    )
-    .await?;
+    let prefix = tonk_cli::site::mint_direct_account_prefix_for(&site, &account_root).await?;
     let account = tonk_cli::account_state::open_account_branch(&owner.profile, owner_operator)
         .await?
         .expect("the owner's account is hydrated");
     assert!(
-        !tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
+        tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
             .await?,
-        "creation already retained the space authority into the account"
+        "the explicit direct grant must be new to the account"
     );
     account.push().perform(owner_operator).await?;
 
@@ -557,7 +554,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
 /// the account.
 ///
 /// This is the design end to end — `space -> account -> profile`. Device one
-/// retains its space authority into the account and pushes. Device two is a
+/// explicitly retains its space authority into the account and pushes. Device two is a
 /// genuinely separate install (its own profile directory and storage) that
 /// derives the SAME account root, which is the property a shared passkey
 /// gives it. It adopts the account as its access-branch upstream, pulls, and
@@ -585,14 +582,12 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     let account = tonk_cli::account_state::open_account_branch(&first.profile, operator)
         .await?
         .expect("device one has a hydrated account");
-    // The space -> account-root prefix: the authority device two needs and
-    // cannot mint for itself. `tonk space create` retains exactly this.
-    let chain =
-        tonk_cli::site::account_root_prefix_for(&first.profile, operator, &subject, &account_root)
-            .await?;
+    // The direct space -> account-root prefix is the authority device two
+    // needs and cannot mint for itself. Explicit link retains exactly this.
+    let chain = tonk_cli::site::mint_direct_account_prefix_for(&site, &account_root).await?;
     assert!(
-        !tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
-        "creation already retained device one's space authority into the account"
+        tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
+        "the explicit direct grant must be new to the account"
     );
     account.push().perform(operator).await?;
 
@@ -740,12 +735,73 @@ async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
     Ok(())
 }
 
-/// An account-backed create seals the space's seed to the account's
-/// published encryption key and records it on the account branch — the
-/// copy any of the account's devices recovers the space from after a
-/// ceremony opens it.
+/// Account state is consulted only once a repository crosses a network fork:
+/// the same direct account chain reaches the service while active and is
+/// refused locally, with the login remedy, after logout.
 #[dialog_common::test]
-async fn it_custodies_the_created_space_seed() -> Result<()> {
+async fn remote_push_requires_the_exact_active_account(env: AccessServiceAddress) -> Result<()> {
+    use dialog_ucan::UcanDelegation;
+    use tonk_schema::prelude::DidExt as _;
+
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let path = fixture.pre_account_site.root.clone();
+    let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
+    let account_root = fixture.link.issuer().clone();
+    let prefix = tonk_cli::site::mint_direct_account_prefix_for(&site, &account_root).await?;
+    site.profile
+        .access()
+        .save(UcanDelegation(prefix))
+        .perform(site.operator.inner())
+        .await?;
+    configure_upstream(&site, &env.access_service_url).await?;
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tonk_cli::sync::push(&site),
+    )
+    .await
+    .context("active matching account push timed out")?
+    .context("an active matching account reaches the access service")?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tonk_cli::account::logout_in(&fixture.profile, &fixture.store),
+    )
+    .await
+    .context("account logout timed out")??;
+    site.branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(tonk_schema::RepositoryName {
+            this: site.repository.did().this(),
+            name: tonk_schema::domain::repo::Name("after-logout".to_string()),
+        })
+        .commit()
+        .perform(&site.operator)
+        .await
+        .context("local commits remain available after logout")?;
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tonk_cli::sync::push(&site),
+    )
+    .await
+    .context("signed-out push timed out")?
+    .expect_err("a signed-out remote fork must be refused");
+    assert!(
+        error.to_string().contains("tonk account login"),
+        "{error:#}"
+    );
+    Ok(())
+}
+
+/// Even with an active account, creation is local and does not enroll the
+/// space into account custody.
+#[dialog_common::test]
+async fn account_backed_creation_does_not_custody_the_space_seed() -> Result<()> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
 
@@ -780,37 +836,14 @@ async fn it_custodies_the_created_space_seed() -> Result<()> {
         .try_vec()
         .await
         .map_err(|error| anyhow::anyhow!("read custodied seeds: {error:?}"))?;
-    assert_eq!(rows.len(), 1, "the created space's seed is custodied");
-    assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
-
-    // The account secret opens the row and derives the space itself.
-    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-        fixture.root_prf,
-    ));
-    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let seed = secret
-        .encryption_key()
-        .open(&sealed, &subject)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
-    use dialog_varsig::Principal as _;
-    assert_eq!(
-        signer.did(),
-        subject,
-        "the custodied seed derives the space"
-    );
+    assert!(rows.is_empty(), "creation must not custody a space seed");
     Ok(())
 }
 
-/// A space created before the account existed moves under the account's
-/// custody at sign-in: authority reaches the root and the seed is
-/// sealed to the account's key. Hosting does not move — that stays
-/// `tonk space link`'s boundary.
+/// A local space present at sign-in remains outside account custody.
 #[dialog_common::test]
-async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
+async fn sign_in_does_not_move_local_space_custody() -> Result<()> {
     use dialog_query::{Output as _, Query, Term};
-    use tonk_cli::custody::{Accreditation, accredit_local_spaces};
     use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
 
     let fixture = common::AccountFixture::new().await?;
@@ -820,18 +853,10 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
         .store
         .set_account(Some(tonk_cli::space::AccountRecord::new(root_did_string)))?;
     let mut local_config = fixture.config.clone();
-    local_config.require_account = false;
+    local_config.authorize_remote_with_account = false;
     let created =
         tonk_cli::space::create(&fixture.store, "premade", None, None, local_config).await?;
     let subject: dialog_varsig::Did = created.did.parse()?;
-
-    let outcomes = accredit_local_spaces(&fixture.store, &fixture.config).await?;
-    assert!(
-        outcomes
-            .iter()
-            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Moved)),
-        "sign-in moves the local space's custody: {outcomes:?}"
-    );
 
     let account_operator =
         tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
@@ -856,32 +881,6 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
         .try_vec()
         .await
         .map_err(|error| anyhow::anyhow!("read custodied seeds: {error:?}"))?;
-    assert_eq!(rows.len(), 1, "the moved space's seed is custodied");
-
-    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-        fixture.root_prf,
-    ));
-    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let seed = secret
-        .encryption_key()
-        .open(&sealed, &subject)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
-    use dialog_varsig::Principal as _;
-    assert_eq!(
-        signer.did(),
-        subject,
-        "the custodied seed derives the space"
-    );
-
-    // Running again converges: nothing is moved twice.
-    let again = accredit_local_spaces(&fixture.store, &fixture.config).await?;
-    assert!(
-        again
-            .iter()
-            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Already)),
-        "a second sign-in finds custody already moved: {again:?}"
-    );
+    assert!(rows.is_empty(), "sign-in must not custody a local space");
     Ok(())
 }
