@@ -286,6 +286,11 @@ pub async fn delete(
         super::customer::clear_customer(&current_state).await?;
     }
     let _ = super::account::unlink(State(state.clone())).await?;
+    // Permanent deletion retires this account's profile rather than
+    // rebinding its retained joined spaces and delegations to another root.
+    // Unlike ordinary sign-out, finish on a fresh profile so the released
+    // email can immediately create a genuinely new account.
+    let _ = super::profiles::add(State(state.clone())).await?;
 
     Ok(Json(AccountDeletionResult {
         deleted_spaces: request.spaces.len(),
