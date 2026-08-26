@@ -19,6 +19,8 @@ use web_sys::{
 type EventClosure = Closure<dyn FnMut(Event)>;
 type KeyClosure = Closure<dyn FnMut(KeyboardEvent)>;
 
+const ADD_ACCOUNT_PATH: &str = "/account?add=1";
+
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
         element.set_text_content(Some(value));
@@ -179,7 +181,11 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
         .find(|profile| profile.active || profile.profile_name == response.active);
     if let Some(active) = active {
         if let Ok(Some(label)) = this.query_selector("[data-account-label]") {
-            label.set_text_content(Some(profile_label(active)));
+            label.set_text_content(Some(if active.provider.is_some() {
+                profile_label(active)
+            } else {
+                "log in"
+            }));
         }
         let _ = this.set_attribute("data-active-profile", &active.profile_name);
         let _ = this.set_attribute(
@@ -339,12 +345,8 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
-                add_profile(
-                    host.clone(),
-                    action_pending.clone(),
-                    generation.clone(),
-                    generation.get(),
-                );
+                close_menu(&host, false);
+                tonk_host::navigate_to(ADD_ACCOUNT_PATH);
                 return;
             }
             if let Some(navigation) = target
@@ -646,26 +648,6 @@ fn activate_profile(
         match result {
             Ok(_) => tonk_host::reload_page(),
             Err(message) => show_error(&this, "[data-account-error]", &message),
-        }
-    });
-}
-
-fn add_profile(this: HtmlElement, pending: Rc<Cell<bool>>, generation: Rc<Cell<u64>>, token: u64) {
-    if pending.replace(true) {
-        return;
-    }
-    set_action_pending(&this, true);
-    set_hidden(&this, "[data-account-error]", true);
-    spawn_local(async move {
-        let result = tonk_host::post_json("/api/profiles/add", "{}").await;
-        if !current(&generation, token) {
-            return;
-        }
-        pending.set(false);
-        set_action_pending(&this, false);
-        match result {
-            Ok(_) => tonk_host::navigate_to("/account"),
-            Err(error) => show_error(&this, "[data-account-error]", &error.message),
         }
     });
 }
@@ -1468,7 +1450,16 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        assert!(account.text_content().unwrap().contains("Local workspace"));
+        assert_eq!(
+            account
+                .query_selector("[data-account-label]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("log in"),
+            "an unattached first-run profile must not present its storage name as an account"
+        );
         account.click();
         let menu: HtmlElement = host
             .query_selector("[data-account-menu]")

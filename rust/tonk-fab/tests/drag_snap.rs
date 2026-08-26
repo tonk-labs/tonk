@@ -179,7 +179,7 @@ async fn a_touch_tap_expands_but_a_nine_pixel_drag_preserves_the_collapsed_atom(
         .query_selector(".w")
         .expect("wrapper selector")
         .expect("wrapper");
-    assert!(wrapper.class_list().contains("compact-collapsed"));
+    assert!(wrapper.class_list().contains("collapsed"));
 
     let rect = circle.get_bounding_client_rect();
     let x = rect.left() + rect.width() / 2.0;
@@ -190,7 +190,7 @@ async fn a_touch_tap_expands_but_a_nine_pixel_drag_preserves_the_collapsed_atom(
     win.dispatch_event(&pointer_event_with_type("pointerup", x, y, 0, "touch"))
         .expect("tap up");
     circle.click();
-    assert!(!wrapper.class_list().contains("compact-collapsed"));
+    assert!(!wrapper.class_list().contains("collapsed"));
 
     collapse();
     yield_for(220).await;
@@ -226,7 +226,7 @@ async fn a_touch_tap_expands_but_a_nine_pixel_drag_preserves_the_collapsed_atom(
     .expect("drag up");
     circle.click();
 
-    assert!(wrapper.class_list().contains("compact-collapsed"));
+    assert!(wrapper.class_list().contains("collapsed"));
     assert_eq!(*snaps.borrow(), 1);
     assert!(!fab.has_attribute("collapsed"));
 

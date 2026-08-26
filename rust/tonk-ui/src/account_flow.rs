@@ -1494,8 +1494,12 @@ mod tests {
         };
         assert!(space_keys(successful_body("list first account's spaces", &listed)).contains(&key));
         let profiles = get_json(&driver, "/api/profiles").await?;
-        let (first_profile, first_label) =
-            active_profile_and_label(successful_body("list profiles", &profiles))?;
+        let profiles_before_add = successful_body("list profiles", &profiles);
+        let profile_count_before_add = profiles_before_add["profiles"]
+            .as_array()
+            .context("profile roster is not an array")?
+            .len();
+        let (first_profile, first_label) = active_profile_and_label(profiles_before_add)?;
 
         // The real Hub frame renders the first account's space.
         driver.goto(env.tonk_web.as_str()).await?;
@@ -1503,8 +1507,8 @@ mod tests {
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;
 
-        // Add account: a fresh profile lands on the normal Choice flow,
-        // where the second sign-up runs unchanged.
+        // Add account first opens a reversible Choice flow. It must not
+        // rotate or grow the profile roster until a ceremony is submitted.
         driver.goto(env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         element(&driver, "#account-add-profile")
@@ -1512,7 +1516,36 @@ mod tests {
             .click()
             .await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
-        sign_up(&driver, &env, "second@example.com").await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let before_submit = successful_body("list profiles before add submit", &profiles);
+        assert_eq!(
+            before_submit["profiles"]
+                .as_array()
+                .context("profile roster is not an array")?
+                .len(),
+            profile_count_before_add,
+            "opening Add account must not persist a profile"
+        );
+        assert_eq!(
+            active_profile_and_label(before_submit)?.0,
+            first_profile,
+            "opening Add account must not switch profiles"
+        );
+
+        element(&driver, "#account-choose-create")
+            .await?
+            .click()
+            .await?;
+        element(&driver, "#account-email")
+            .await?
+            .send_keys("second@example.com")
+            .await?;
+        element(&driver, "#account-create-submit")
+            .await?
+            .click()
+            .await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        activate(&driver, &env, "second@example.com").await?;
 
         // The second account sees none of the first account's spaces.
         let listed = get_json(&driver, "/api/profile").await?;

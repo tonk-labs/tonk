@@ -853,6 +853,46 @@ fn query_value(name: &str) -> Option<String> {
     })
 }
 
+fn adding_account() -> bool {
+    query_value("add").as_deref() == Some("1")
+}
+
+/// Rotate only once the user submits Create or Log in.
+///
+/// Merely opening the add-account choice is reversible navigation. Rotating
+/// there persisted an empty profile even when the user immediately went
+/// back. Once the ceremony is actually requested it still needs a fresh
+/// profile first, because the resulting grant is addressed to that profile's
+/// DID.
+async fn prepare_added_profile() -> Result<(), String> {
+    if !adding_account() {
+        return Ok(());
+    }
+    crate::api::add_account_profile()
+        .await
+        .map_err(|error| error.to_string())?;
+    consume_add_account_request();
+    Ok(())
+}
+
+/// Remove only the add marker after rotation, retaining a safe return path.
+/// A failed or cancelled ceremony can then be retried without rotating again.
+fn consume_add_account_request() {
+    let Some(window) = window() else { return };
+    let Ok(pathname) = window.location().pathname() else {
+        return;
+    };
+    let path = query_value("next").map_or(pathname.clone(), |next| {
+        format!(
+            "{pathname}?next={}",
+            url::form_urlencoded::byte_serialize(next.as_bytes()).collect::<String>()
+        )
+    });
+    let _ = window
+        .history()
+        .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
+}
+
 fn revoke_target_from_url() -> Option<String> {
     query_value("revoke")
 }
@@ -921,7 +961,14 @@ enum Landing {
     Choice { revoke_hint: bool },
 }
 
-fn landing(account_state: Option<AccountStateStatus>, revoke_target: bool) -> Landing {
+fn landing(
+    account_state: Option<AccountStateStatus>,
+    revoke_target: bool,
+    adding_account: bool,
+) -> Landing {
+    if adding_account {
+        return Landing::Choice { revoke_hint: false };
+    }
     match (account_state, revoke_target) {
         (Some(_), true) => Landing::Devices,
         (Some(_), false) => Landing::Success,
@@ -1002,7 +1049,11 @@ fn load_status(host: HtmlElement) {
                     AccountStatus::Registered { account_state, .. } => Some(account_state),
                     AccountStatus::RootMissing { .. } | AccountStatus::Unregistered { .. } => None,
                 };
-                match landing(account_state, revoke_target_from_url().is_some()) {
+                match landing(
+                    account_state,
+                    revoke_target_from_url().is_some(),
+                    adding_account(),
+                ) {
                     Landing::Devices => load_devices(host),
                     Landing::Success => {
                         settle_on_load(&host);
@@ -1459,6 +1510,7 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
+                prepare_added_profile().await?;
                 // One ceremony: the secret is generated, sealed under
                 // the new passkey's KEK, published as the custody cell,
                 // and the creation request signed. No key material is
@@ -1637,6 +1689,7 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
+                prepare_added_profile().await?;
                 let device_did = crate::api::identify()
                     .await
                     .map_err(|error| error.to_string())?
@@ -2006,22 +2059,11 @@ fn bind(host: &HtmlElement) {
         });
     });
 
-    // "Add account" (dashboard) and "Use a different account" (Choice)
-    // are the same move: rotate onto a fresh profile and land on the
-    // normal sign-in flow there, leaving this profile intact.
+    // Opening Add account is reversible navigation. The final Create or Log
+    // in submit prepares the fresh profile immediately before its ceremony.
     for selector in ["#account-add-profile", "#account-use-different-account"] {
-        on_click(host, selector, |host| {
-            clear_error(&host);
-            set_busy(&host, true, "Preparing another sign-in…");
-            spawn_local(async move {
-                match crate::api::add_account_profile().await {
-                    Ok(_) => reload_into_switched_profile(&host),
-                    Err(error) => {
-                        set_busy(&host, false, "");
-                        show_error(&host, error.to_string());
-                    }
-                }
-            });
+        on_click(host, selector, |_| {
+            tonk_host::navigate_to("/account?add=1");
         });
     }
 
@@ -2876,14 +2918,31 @@ mod tests {
     #[dialog_common::test]
     fn it_routes_a_revoke_deep_link_to_the_device_list() {
         assert_eq!(
-            landing(Some(AccountStateStatus::Unconfigured), true),
+            landing(Some(AccountStateStatus::Unconfigured), true, false),
             Landing::Devices
         );
         assert_eq!(
-            landing(Some(AccountStateStatus::Ready), false),
+            landing(Some(AccountStateStatus::Ready), false, false),
             Landing::Success
         );
-        assert_eq!(landing(None, true), Landing::Choice { revoke_hint: true });
-        assert_eq!(landing(None, false), Landing::Choice { revoke_hint: false });
+        assert_eq!(
+            landing(None, true, false),
+            Landing::Choice { revoke_hint: true }
+        );
+        assert_eq!(
+            landing(None, false, false),
+            Landing::Choice { revoke_hint: false }
+        );
+    }
+
+    /// Opening Add account is only a choice screen. It must not reuse the
+    /// active account's dashboard, and reaching this screen must not itself
+    /// rotate the worker onto a new profile.
+    #[dialog_common::test]
+    fn it_offers_account_choices_before_preparing_an_added_profile() {
+        assert_eq!(
+            landing(Some(AccountStateStatus::Ready), false, true),
+            Landing::Choice { revoke_hint: false }
+        );
     }
 }

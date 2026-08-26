@@ -23,7 +23,7 @@
 //!   rather than hosting a foreign element inside a cell.
 //! - `state` — `synced` | `offline` | `paused`, likewise written by the
 //!   headless sync subscriber.
-//! - `alert` — changes to review. Compact-collapsed the disc blinks; expanded the
+//! - `alert` — changes to review. Collapsed the disc blinks; expanded the
 //!   alerted rung washes. Never a colour (law 5).
 //! - `up` `flip` `responsive` `static`.
 //!
@@ -105,7 +105,7 @@ pub(crate) struct BarState {
     pub open_panel: Option<OpenPanel>,
     pub layout: Option<BarLayout>,
     pub usable_width_px: f64,
-    pub compact_collapsed: bool,
+    pub collapsed: bool,
     /// The most recent rename. Deliberately NOT cleared when the edit
     /// settles: the commit runs from inside this `Edit`'s own blur listener,
     /// and dropping it there would free the closure currently executing.
@@ -503,7 +503,7 @@ fn close_internal(this: &HtmlElement, state: &Shared, restore_focus: bool) {
         && let Some(opener) = opener
         && let Some(button) = query(this, opener.selector())
         && !button.has_attribute("hidden")
-        && !state.borrow().compact_collapsed
+        && !state.borrow().collapsed
     {
         let _ = button.unchecked_ref::<HtmlElement>().focus();
     }
@@ -741,7 +741,7 @@ pub(crate) fn update(this: &HtmlElement) {
             .map(|status| status.trim_start_matches("sync:").to_string())
             .unwrap_or_else(|| state.clone());
         let collapsed =
-            wrapper(this).is_some_and(|wrapper| wrapper.class_list().contains("compact-collapsed"));
+            wrapper(this).is_some_and(|wrapper| wrapper.class_list().contains("collapsed"));
         let label = if collapsed {
             format!("expand FABB · sync: {reported} · drag to move")
         } else {
@@ -809,17 +809,14 @@ pub(crate) fn apply_responsive(this: &HtmlElement, usable_width_px: f64, state: 
         let mut current = state.borrow_mut();
         current.layout = Some(layout);
         current.usable_width_px = usable_width_px.max(0.0);
-        if !layout.compact {
-            current.compact_collapsed = false;
-        }
     }
 
     let Some(wrapper) = wrapper(this) else { return };
     let classes = wrapper.class_list();
     let _ = classes.toggle_with_force("compact", layout.compact);
     let _ = classes.toggle_with_force("hide-share", !layout.show_share);
-    let collapsed = state.borrow().compact_collapsed && layout.compact;
-    let _ = classes.toggle_with_force("compact-collapsed", collapsed);
+    let collapsed = state.borrow().collapsed;
+    let _ = classes.toggle_with_force("collapsed", collapsed);
     let _ = wrapper
         .unchecked_ref::<HtmlElement>()
         .style()
@@ -870,15 +867,12 @@ fn set_element_visible(element: &Element, visible: bool, collapsed: bool) {
     }
 }
 
-pub(crate) fn collapse_compact(this: &HtmlElement, state: &Shared) {
-    if !state.borrow().layout.is_some_and(|layout| layout.compact) {
-        return;
-    }
+pub(crate) fn collapse(this: &HtmlElement, state: &Shared) {
     commit_edit(this, state);
     close_internal(this, state, false);
-    state.borrow_mut().compact_collapsed = true;
+    state.borrow_mut().collapsed = true;
     if let Some(wrapper) = wrapper(this) {
-        let _ = wrapper.class_list().add_1("compact-collapsed");
+        let _ = wrapper.class_list().add_1("collapsed");
     }
     if let Some(run) = query(this, ".run") {
         let _ = run.set_attribute("aria-hidden", "true");
@@ -899,13 +893,13 @@ pub(crate) fn collapse_compact(this: &HtmlElement, state: &Shared) {
     update(this);
 }
 
-pub(crate) fn expand_compact(this: &HtmlElement, state: &Shared) {
-    if !state.borrow().compact_collapsed {
+pub(crate) fn expand(this: &HtmlElement, state: &Shared) {
+    if !state.borrow().collapsed {
         return;
     }
-    state.borrow_mut().compact_collapsed = false;
+    state.borrow_mut().collapsed = false;
     if let Some(wrapper) = wrapper(this) {
-        let _ = wrapper.class_list().remove_1("compact-collapsed");
+        let _ = wrapper.class_list().remove_1("collapsed");
     }
     if let Some(run) = query(this, ".run") {
         let _ = run.remove_attribute("aria-hidden");

@@ -182,7 +182,7 @@ async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
     assert!(
         shadow_element(&fab, ".w")
             .class_list()
-            .contains("compact-collapsed")
+            .contains("collapsed")
     );
     assert!(overflow.has_attribute("hidden"));
 
@@ -238,6 +238,27 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
         .expect("full disc label");
     assert!(!full_label.contains("expand"));
     assert!(!full_label.contains("collapse"));
+
+    shadow_element(&fab, ".fab")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    assert!(
+        shadow_element(&fab, ".w")
+            .class_list()
+            .contains("collapsed"),
+        "the sync disc must collapse the FABB in a full-width space too"
+    );
+    wait_for_width(&shadow_element(&fab, ".bar"), 36.0).await;
+    shadow_element(&fab, ".fab")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    assert!(
+        !shadow_element(&fab, ".w")
+            .class_list()
+            .contains("collapsed")
+    );
+    wait_for_width(&shadow_element(&fab, ".bar"), 414.0).await;
+
     shadow_element(&fab, "[data-cell=toggle]")
         .unchecked_into::<HtmlElement>()
         .click();
@@ -353,7 +374,7 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
         .unchecked_into::<HtmlElement>()
         .click();
     let wrapper = shadow_element(&fab, ".w");
-    assert!(wrapper.class_list().contains("compact-collapsed"));
+    assert!(wrapper.class_list().contains("collapsed"));
     assert_eq!(
         shadow_element(&fab, ".fab")
             .get_attribute("aria-label")
@@ -372,7 +393,7 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
         .unchecked_into::<HtmlElement>()
         .click();
     yield_for(220).await;
-    assert!(!wrapper.class_list().contains("compact-collapsed"));
+    assert!(!wrapper.class_list().contains("collapsed"));
     assert!(!visible(&shadow_element(&fab, "[data-cell=share]")));
 
     shadow_element(&fab, ".fab")
@@ -380,20 +401,20 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
         .click();
     set_parent_width(&parent, &fab, 500, false, true).await;
     assert!(!wrapper.class_list().contains("compact"));
-    assert!(!wrapper.class_list().contains("compact-collapsed"));
+    assert!(wrapper.class_list().contains("collapsed"));
     set_parent_width(&parent, &fab, 375, true, false).await;
     assert!(wrapper.class_list().contains("compact"));
-    assert!(!wrapper.class_list().contains("compact-collapsed"));
+    assert!(wrapper.class_list().contains("collapsed"));
 
     shadow_element(&fab, ".fab")
         .unchecked_into::<HtmlElement>()
         .click();
     assert!(!fab.has_attribute("collapsed"));
-    assert!(wrapper.class_list().contains("compact-collapsed"));
+    assert!(!wrapper.class_list().contains("collapsed"));
     shadow_element(&fab, ".fab")
         .unchecked_into::<HtmlElement>()
         .click();
-    assert!(!wrapper.class_list().contains("compact-collapsed"));
+    assert!(wrapper.class_list().contains("collapsed"));
 
     let mw = shadow_element(&fab, ".mw");
     assert_eq!(computed(&mw, "transition-property"), "opacity");

@@ -999,6 +999,21 @@ async fn run_invite(
             TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
         })?;
 
+    if super::account::provider(&tonk).await.is_none() {
+        log!("Invite for repo '{}' refused: account required", repo_name);
+        drop(tonk);
+        publish_share_blocked(
+            env.state(),
+            repo_name,
+            subject_entity,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED,
+            "Create an account or log in before sharing this space.",
+            time,
+        )
+        .await;
+        return Ok(());
+    }
+
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
     // remote lands its recipient in a spot that can never fill, so there is
     // nothing worth generating key material for. Refusing here also means a
@@ -6030,6 +6045,32 @@ mod tests {
         assert!(
             invitations.is_empty(),
             "a refused mint records no invitation"
+        );
+    }
+
+    /// The command path is what the FABB drives. It must answer a raced or
+    /// stale share click with an account refusal and mint no authority.
+    #[dialog_common::test]
+    async fn it_refuses_to_mint_without_an_attached_account() {
+        let (app, state, key) = fresh_repo_signed_out("test-account-required-mint").await;
+        let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
+
+        run_invite_with_time(&state, &key, 4321.0).await;
+
+        let blocked = share_blocked_rows(&state, &key).await;
+        assert_eq!(blocked.len(), 1, "one refusal recorded");
+        assert_eq!(
+            blocked[0].0,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
+        );
+        assert_eq!(
+            blocked[0].1,
+            "Create an account or log in before sharing this space."
+        );
+        assert_eq!(blocked[0].2, 4321.0, "echoes the command's timestamp");
+        assert!(
+            content_invitations(&state, &key).await.is_empty(),
+            "an unattached profile records no invitation"
         );
     }
 

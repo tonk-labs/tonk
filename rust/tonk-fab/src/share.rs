@@ -148,7 +148,7 @@ impl PendingClipboard {
 /// A refusal delivered on the blocked subscription.
 #[derive(Debug, Clone, PartialEq)]
 struct Blocked {
-    /// `not-synced` | `unshareable-remote` | `attach-failed`.
+    /// `account-required` | `not-synced` | `unshareable-remote` | `attach-failed`.
     code: String,
     /// The sentence to show.
     detail: String,

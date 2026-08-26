@@ -788,8 +788,9 @@ pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkU
     }
 }
 
-/// Rotate onto a fresh profile — the landing pad the normal sign-in
-/// ceremony then runs on. The caller reloads the page afterwards.
+/// Rotate onto a fresh profile — the landing pad the account ceremony then
+/// runs on. Call this only when Create or Log in is actually submitted;
+/// opening the account choice must remain reversible navigation.
 pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()

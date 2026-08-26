@@ -29,9 +29,9 @@
 //! responsive run-width changes still grow leftward. The nearest corner remains the
 //! persisted fallback seat used on a subsequent page load.
 //!
-//! A press that never travels is a click: in compact layout it toggles the
-//! action run, closing any open stack before collapse; alt/option keeps the
-//! existing sync-pause shortcut.
+//! A press that never travels is a click: it toggles the action run, closing
+//! any open stack before collapse; alt/option keeps the existing sync-pause
+//! shortcut.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -77,8 +77,8 @@ const EDGE_ANCHOR_DELAY_MS: i32 = 440;
 /// controls that act on the absent replica must not be offered.
 const UNKNOWN_SPACE_ATTR: &str = "data-unknown-space";
 
-/// Marks the bar while share has nothing local to act on.
-const SHARE_UNAVAILABLE_ATTR: &str = "data-share-unavailable";
+/// Marks a local profile that has not created or logged into an account yet.
+const ACCOUNT_REQUIRED_ATTR: &str = "data-account-required";
 
 /// Where the bar sits until it is dragged: bottom-right, under the thumb on
 /// a phone and out of the way of page content on a desktop. A persisted dock
@@ -127,6 +127,9 @@ impl CustomElement for TonkFab {
     fn connected_callback(&mut self, this: &HtmlElement) {
         float(this);
         ensure_stacks_stylesheet();
+        // Safe before the asynchronous account answer: never flash a live
+        // copy action on a profile that may not have an account.
+        apply_account_ready(this, false);
 
         let mut listeners = bar::build(this, &self.state);
         listeners.extend(attach_drag(this, &self.state));
@@ -145,6 +148,7 @@ impl CustomElement for TonkFab {
         mount_refusal_dialogs();
         restore_position(this);
         self.listeners.borrow_mut().extend(attach_presence(this));
+        self.listeners.borrow_mut().extend(attach_account(this));
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -516,21 +520,10 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             }
             if mouse.alt_key() {
                 dispatch_pause(&host);
+            } else if shared.borrow().collapsed {
+                bar::expand(&host, &shared);
             } else {
-                let (compact, collapsed) = {
-                    let current = shared.borrow();
-                    (
-                        current.layout.is_some_and(|layout| layout.compact),
-                        current.compact_collapsed,
-                    )
-                };
-                if compact {
-                    if collapsed {
-                        bar::expand_compact(&host, &shared);
-                    } else {
-                        bar::collapse_compact(&host, &shared);
-                    }
-                }
+                bar::collapse(&host, &shared);
             }
         }));
     }
@@ -577,6 +570,19 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
         if row.has_attribute("data-mi-new") {
             bar::close(&host, &shared);
             create_space();
+            return;
+        }
+        if row.has_attribute("data-share-account") {
+            bar::close(&host, &shared);
+            if let Some(space) = host
+                .get_attribute("space")
+                .filter(|space| !space.is_empty())
+            {
+                let next = format!("/space/{space}");
+                navigate(&format!("/account?next={}", urlencoding::encode(&next)));
+            } else {
+                navigate("/account");
+            }
             return;
         }
         if let (Some(member), Some(space)) = (
@@ -1152,13 +1158,79 @@ fn read_dock_from_rows(rows: &JsValue) -> Option<Dock> {
 /// Mark the space present and clear any earlier absence stamps.
 fn apply_present(this: &HtmlElement) {
     let _ = this.remove_attribute(UNKNOWN_SPACE_ATTR);
-    let _ = this.remove_attribute(SHARE_UNAVAILABLE_ATTR);
 }
 
 /// Mark a space that this device does not hold.
 fn apply_unknown_space(this: &HtmlElement) {
     let _ = this.set_attribute(UNKNOWN_SPACE_ATTR, "");
-    let _ = this.set_attribute(SHARE_UNAVAILABLE_ATTR, "");
+}
+
+/// Swap the share menu between its safe account handoff and copy action.
+fn apply_account_ready(this: &HtmlElement, ready: bool) {
+    if ready {
+        let _ = this.remove_attribute(ACCOUNT_REQUIRED_ATTR);
+    } else {
+        let _ = this.set_attribute(ACCOUNT_REQUIRED_ATTR, "");
+    }
+    if let Ok(Some(account)) = this.query_selector("[data-share-account]") {
+        if ready {
+            let _ = account.set_attribute("hidden", "");
+        } else {
+            let _ = account.remove_attribute("hidden");
+        }
+    }
+    if let Ok(Some(copy)) = this.query_selector("[data-share-link]") {
+        if ready {
+            let _ = copy.remove_attribute("hidden");
+        } else {
+            let _ = copy.set_attribute("hidden", "");
+        }
+    }
+}
+
+/// Ask whether the active profile is attached to an account.
+async fn check_account(this: HtmlElement) {
+    let Some(win) = window() else { return };
+    let Ok(value) = JsFuture::from(win.fetch_with_str("/api/account")).await else {
+        return;
+    };
+    let Ok(response) = value.dyn_into::<Response>() else {
+        return;
+    };
+    if !response.ok() {
+        return;
+    }
+    let Ok(json) = response.json() else { return };
+    let Ok(value) = JsFuture::from(json).await else {
+        return;
+    };
+    let registered = Reflect::get(&value, &"status".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .as_deref()
+        == Some("registered");
+    apply_account_ready(&this, registered);
+}
+
+/// Probe on connect and again when this tab returns from account management.
+fn attach_account(this: &HtmlElement) -> Vec<Bound> {
+    spawn_local(check_account(this.clone()));
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return Vec::new();
+    };
+    let host = this.clone();
+    vec![crate::shadow::bind(
+        document.unchecked_ref(),
+        "visibilitychange",
+        move |_| {
+            let hidden = window()
+                .and_then(|window| window.document())
+                .is_some_and(|document| document.visibility_state() == VisibilityState::Hidden);
+            if !hidden && host.is_connected() {
+                spawn_local(check_account(host.clone()));
+            }
+        },
+    )]
 }
 
 /// Return this bar's repository endpoint once its space binding is resolved.

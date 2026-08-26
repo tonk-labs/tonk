@@ -55,7 +55,7 @@ pub const BAR_CSS: &str = r#"
 .space .n{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   /* descender room inside the clip; the negative margin holds the seat */
   padding-bottom:4px; margin-bottom:-4px; }
-/* the alert law: blinking, never a colour. compact-collapsed → the disc blinks;
+/* the alert law: blinking, never a colour. collapsed → the disc blinks;
    expanded → the alerted rung washes. pointing at it calms it. */
 :host([alert]) .disc.st{ animation:fabb-blink var(--_blink) var(--_ease) infinite; }
 :host([alert]) .share{ animation:fabb-wash var(--_blink) var(--_ease) infinite; }
@@ -70,7 +70,7 @@ pub const BAR_CSS: &str = r#"
 /* A missing replica leaves the space cell available as the way out, but
    removes the share control because there is nothing local to share. */
 :host([data-unknown-space]) .share{ display:none; }
-.w.compact-collapsed .run{ max-width:0; opacity:0; visibility:hidden;
+.w.collapsed .run{ max-width:0; opacity:0; visibility:hidden;
   pointer-events:none; transition-delay:0s,0s,200ms; }
 /* stacks */
 .mw{ position:absolute; top:calc(100% + 7px); display:block; z-index:5;
@@ -149,7 +149,8 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
 <tonk-share headless space="{space}"></tonk-share>
 <tonk-menu id="fabb-share-menu" slot="menu" data-for="share" hidden>
   <tonk-mi chrome data-mi-back hidden>back<span class="g">&#9666;</span></tonk-mi>
-  <tonk-mi chrome data-share-link>
+  <tonk-mi chrome data-share-account>log in to share<span class="g">&#8598;</span></tonk-mi>
+  <tonk-mi chrome data-share-link hidden>
     <span class="say say--idle">copy link</span>
     <span class="say say--copying">copying&hellip;</span>
     <span class="say say--copied">copied</span>
@@ -445,6 +446,17 @@ mod tests {
         }
         // And before the element has stamped anything at all.
         assert!(STACKS_CSS.contains(r#"[data-share-link]:not([data-share-state]) .say--idle"#));
+    }
+
+    #[test]
+    fn it_defaults_to_login_instead_of_copy_for_an_unattached_profile() {
+        let html = stacks_html("did:key:z6Mk");
+        assert!(html.contains("data-share-account>log in to share"));
+        assert!(html.contains("data-share-link hidden"));
+        assert!(
+            html.find("data-share-account").unwrap() < html.find("data-share-link").unwrap(),
+            "the safe account action is authored before the gated copy action"
+        );
     }
 
     #[test]
