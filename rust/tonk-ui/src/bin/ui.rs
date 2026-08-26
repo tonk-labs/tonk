@@ -4,6 +4,18 @@
 //! It is compiled to Wasm by Trunk as configured in [`index.html`](../../../index.html)
 //! (see the `data-bin="ui"` link tag).
 
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn canonical_account_url(path: &str, search: &str) -> Option<String> {
+    if path == "/settings" || path.starts_with("/settings/") {
+        return Some(format!("{path}{search}"));
+    }
+    if path == "/account" {
+        return Some(format!("/settings{search}"));
+    }
+    path.strip_prefix("/account/")
+        .map(|suffix| format!("/settings/{suffix}{search}"))
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::prelude::*;
 
@@ -79,11 +91,24 @@ fn mount_root() {
 /// Render or update the correct top-document root for the current path.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn render_root(shell: &web_sys::Element) {
-    let path = web_sys::window()
-        .and_then(|w| w.location().pathname().ok())
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let path = window
+        .location()
+        .pathname()
+        .ok()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_owned());
-    let account_route = path == "/account" || path.starts_with("/account/");
+    let search = window.location().search().unwrap_or_default();
+    let canonical_account = canonical_account_url(&path, &search);
+    if path == "/account" || path.starts_with("/account/") {
+        if let Some(canonical) = canonical_account {
+            let _ = window.location().replace(&canonical);
+        }
+        return;
+    }
+    let account_route = canonical_account.is_some();
     let activate_route = path == "/activate" || path.starts_with("/activate/");
     let current = shell.first_element_child();
 
@@ -168,3 +193,29 @@ fn inject_hot_swap() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_account_url;
+
+    #[test]
+    fn it_canonicalizes_settings_routes_without_losing_query_parameters() {
+        assert_eq!(
+            canonical_account_url("/settings", "?next=%2Fspace%2Fone"),
+            Some("/settings?next=%2Fspace%2Fone".into())
+        );
+        assert_eq!(
+            canonical_account_url("/settings/link", "?callback=http%3A%2F%2Flocalhost"),
+            Some("/settings/link?callback=http%3A%2F%2Flocalhost".into())
+        );
+        assert_eq!(
+            canonical_account_url("/account", "?revoke=did%3Akey%3Aone"),
+            Some("/settings?revoke=did%3Akey%3Aone".into())
+        );
+        assert_eq!(
+            canonical_account_url("/account/link", "?audience=did%3Akey%3Acli"),
+            Some("/settings/link?audience=did%3Akey%3Acli".into())
+        );
+        assert_eq!(canonical_account_url("/space/one", ""), None);
+    }
+}

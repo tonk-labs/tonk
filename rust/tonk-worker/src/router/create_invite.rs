@@ -120,6 +120,12 @@ pub async fn create_invite(
 
     let tonk = state.read().await;
 
+    if super::account::provider(&tonk).await.is_none() {
+        return Err(TonkWorkerError::Forbidden(
+            "create an account or log in before sharing".into(),
+        ));
+    }
+
     let repository = tonk
         .profile
         .repository(&repo_name)
@@ -839,6 +845,42 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// The HTTP route is a second boundary behind the FABB account check: a
+    /// stale client must not be able to mint from an unattached profile.
+    #[dialog_common::test]
+    async fn it_rejects_a_mint_without_an_account() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-http-account-required").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+        {
+            let tonk = state.read().await;
+            crate::router::account::detach_test_account(&tonk)
+                .await
+                .expect("the test account detaches");
+        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/repository/{key}/invite"))
+                    .extension(
+                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(
+            content_invitations(&state, &key).await.is_empty(),
+            "a provider-free profile records no invitation"
+        );
     }
 
     #[dialog_common::test]

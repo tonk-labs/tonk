@@ -14,9 +14,9 @@
 //! row) — see [`crate::logic::member_roster_query_body`]. No concept is
 //! named, so nothing seeded on the space's branch is consulted.
 //!
-//! Renders one `<span class="fab__menu-item fab__menu-item--member">{name}
-//! </span>` per member — the markup the deleted `fab-roster` view used to
-//! supply.
+//! Renders one sibling `<tonk-mi>` row per member. Members whose role can
+//! manage the roster get a `make admin` action on non-admin rows; everyone
+//! else sees the roster as muted metadata.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,11 +26,12 @@ use js_sys::{Function, Object, Reflect};
 use tonk_common::log;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{Element, HtmlElement, window};
+use web_sys::{HtmlElement, window};
 
 use crate::logic::{
     member_roster_query_body, role_manages_members, self_did_from_conclusions, self_did_query_body,
 };
+use crate::stack_rows;
 use crate::subscribing;
 
 const SUB_TAG: &str = "ui-member-roster";
@@ -42,9 +43,8 @@ pub struct UiMemberRosterElement {
     /// delta can upsert/retract individual rows rather than needing a full
     /// snapshot every time. Order is insertion order.
     members: Rc<RefCell<Vec<Member>>>,
-    /// The signed-in member's own profile DID, resolved once from the
-    /// profile branch. Which roster row is "me" decides whether the
-    /// management controls render at all.
+    /// The signed-in member's profile DID. Their roster role decides whether
+    /// promotion actions are offered.
     viewer: Rc<RefCell<Option<String>>>,
 }
 
@@ -96,8 +96,7 @@ impl CustomElement for UiMemberRosterElement {
     }
 }
 
-/// One roster row: the membership entity, the name shown, the DID the
-/// membership is keyed on, and the role stamped on it.
+/// One roster row and the role-bearing membership it represents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Member {
     this: String,
@@ -107,7 +106,7 @@ struct Member {
 }
 
 /// This element's [`subscribing::Subscribing`] behaviour: the directory-mode
-/// roster query, and rendering delivered frames as member spans.
+/// roster query, and rendering delivered frames as member rows.
 struct MemberRosterBehaviour {
     members: Rc<RefCell<Vec<Member>>>,
     viewer: Rc<RefCell<Option<String>>>,
@@ -130,7 +129,7 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
                 members.push(row);
             }
         }
-        render_spans(host, &members, self.viewer.borrow().as_deref());
+        render_rows(host, &members, self.viewer.borrow().as_deref());
     }
 
     fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
@@ -158,7 +157,7 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
             }
         }
 
-        render_spans(host, &members, self.viewer.borrow().as_deref());
+        render_rows(host, &members, self.viewer.borrow().as_deref());
     }
 
     fn tag(&self) -> &'static str {
@@ -166,10 +165,8 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
     }
 }
 
-/// Read `(row.this, row.fields.name)` off a raw subscription row. `None` for
-/// a missing/empty row, a missing entity id, or a missing/non-string name —
-/// mirroring the query's requirement that all three fields (and so the row's
-/// `this`) are present for a row to appear at all.
+/// Read a member off a raw subscription row. `None` for a missing/empty row,
+/// a missing entity id, or any missing required string field.
 fn read_row(row: &JsValue) -> Option<Member> {
     if row.is_undefined() || row.is_null() {
         return None;
@@ -177,7 +174,7 @@ fn read_row(row: &JsValue) -> Option<Member> {
     let this_id = Reflect::get(row, &"this".into()).ok()?.as_string()?;
     let fields = Reflect::get(row, &"fields".into()).ok()?;
     let field = |name: &str| {
-        Reflect::get(&fields, &name.into())
+        Reflect::get(&fields, &JsValue::from_str(name))
             .ok()
             .and_then(|value| value.as_string())
     };
@@ -185,52 +182,49 @@ fn read_row(row: &JsValue) -> Option<Member> {
         this: this_id,
         name: field("name")?,
         did: field("member")?,
-        role: field("role").unwrap_or_default(),
+        role: field("role")?,
     })
 }
 
-/// Rebuild the host's children as one member span per row, in `members`'
-/// order — the markup the deleted `fab-roster` view used to supply. When
-/// the viewer's own row is the founder or an admin, every member who is
-/// not already one gets a "Make admin" button; the worker refuses the
-/// rest, but there is no point offering what it will refuse.
-fn render_spans(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
-    while let Some(child) = host.first_child() {
-        let _ = host.remove_child(&child);
-    }
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
+/// Rebuild the roster as one row per member, in `members`' order.
+///
+/// Rows are SIBLINGS in the share stack, not children of this element — see
+/// [`crate::stack_rows`] for why. Rows are muted metadata unless the viewer's
+/// role permits promoting that member.
+fn render_rows(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
+    stack_rows::clear_rows(host, SUB_TAG);
     let space = host.get_attribute("space").unwrap_or_default();
-    let manages = viewer
-        .and_then(|viewer| members.iter().find(|member| member.did == viewer))
-        .is_some_and(|me| role_manages_members(&me.role));
+    let viewer_manages = viewer
+        .and_then(|did| members.iter().find(|member| member.did == did))
+        .is_some_and(|member| role_manages_members(&member.role));
+
     for member in members {
-        let Ok(span) = document.create_element("span") else {
+        let Some(row) = stack_rows::new_row(SUB_TAG) else {
             continue;
         };
-        let _ = span.set_attribute("class", "fab__menu-item fab__menu-item--member");
-        let _ = span.set_attribute("data-role", &member.role);
-        span.set_text_content(Some(&member.name));
-        if manages && !space.is_empty() && !role_manages_members(&member.role) {
-            if let Ok(button) = document.create_element("button") {
-                let _ = button.set_attribute("type", "button");
-                let _ = button.set_attribute("class", "fab__member-promote");
-                let _ =
-                    button.set_attribute("aria-label", &format!("Make {} an admin", member.name));
-                button.set_text_content(Some("Make admin"));
-                install_promote(&button, space.clone(), member.did.clone());
-                let _ = span.append_child(&button);
+        // A member's name is a user word — no `chrome`, no lowercasing.
+        row.set_text_content(Some(&member.name));
+        let _ = row.set_attribute("data-role", &member.role);
+
+        if viewer_manages && !space.is_empty() && !role_manages_members(&member.role) {
+            let _ = row.set_attribute("data-member-promote", &member.did);
+            let _ = row.set_attribute("data-promote-space", &space);
+            if let Some(document) = window().and_then(|window| window.document())
+                && let Ok(action) = document.create_element("span")
+            {
+                action.set_class_name("sub");
+                action.set_text_content(Some("make admin"));
+                let _ = row.append_child(&action);
             }
+        } else {
+            let _ = row.set_attribute("muted", "");
         }
-        let _ = host.append_child(&span);
+        stack_rows::insert_row(host, &row);
     }
 }
 
-/// Resolve the viewer's own profile DID with a one-shot, routeless
-/// `window.tonk.query` (the FAB mounts on the profile branch), then
-/// re-render so the management controls appear once "me" is known. A
-/// failed or empty answer leaves the roster read-only.
+/// Resolve the signed-in profile DID once, then repaint any roster rows that
+/// arrived while the profile query was in flight.
 fn resolve_viewer(
     host: &HtmlElement,
     members: Rc<RefCell<Vec<Member>>>,
@@ -239,114 +233,52 @@ fn resolve_viewer(
     let Some(win) = window() else { return };
     let Some(tonk) = Reflect::get(&win, &"tonk".into())
         .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
+        .and_then(|value| value.dyn_into::<Object>().ok())
     else {
         return;
     };
     let Some(query) = Reflect::get(&tonk, &"query".into())
         .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
+        .and_then(|value| value.dyn_into::<Function>().ok())
     else {
         return;
     };
     let Ok(body) = js_sys::JSON::parse(&self_did_query_body()) else {
         return;
     };
-    let Some(promise) = query
-        .call1(&tonk, &body)
-        .ok()
-        .and_then(|v| v.dyn_into::<js_sys::Promise>().ok())
-    else {
+    let Ok(result) = query.call1(&tonk, &body) else {
         return;
     };
+    let Ok(promise) = result.dyn_into::<js_sys::Promise>() else {
+        return;
+    };
+
     let host = host.clone();
     spawn_local(async move {
         let rows = match JsFuture::from(promise).await {
             Ok(rows) => rows,
             Err(error) => {
-                log!("{SUB_TAG}: the profile query failed: {error:?}");
+                log!("ui-member-roster profile query failed: {error:?}");
                 return;
             }
         };
-        let json = js_sys::JSON::stringify(&rows)
+        let Some(json) = js_sys::JSON::stringify(&rows)
             .ok()
-            .and_then(|s| s.as_string())
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-        let Some(did) = json.as_ref().and_then(self_did_from_conclusions) else {
+            .and_then(|json| json.as_string())
+        else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return;
+        };
+        let Some(did) = self_did_from_conclusions(&value) else {
             return;
         };
         *viewer.borrow_mut() = Some(did);
         if host.is_connected() {
-            render_spans(&host, &members.borrow(), viewer.borrow().as_deref());
+            render_rows(&host, &members.borrow(), viewer.borrow().as_deref());
         }
     });
-}
-
-/// Wire a "Make admin" button: on click, ask the outer page to delegate
-/// `/` on the space to the member's account (the passkey ceremony runs
-/// there, inside this click's activation), then dispatch `member/promote`
-/// carrying the hop it minted. Errors are logged; the roster shows the
-/// outcome when the role row arrives through the subscription.
-fn install_promote(button: &Element, space: String, member: String) {
-    let on_click = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
-        let space = space.clone();
-        let member = member.clone();
-        spawn_local(async move {
-            match delegate(&space, "/", &member).await {
-                Ok(chain) => transact(&crate::logic::promote_claim_json(&space, &member, &chain)),
-                Err(error) => log!("member/promote: the page did not delegate: {error:?}"),
-            }
-        });
-    });
-    let _ = button.add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref());
-    on_click.forget();
-}
-
-/// `window.tonk.delegate({subject, command, audience})`: the outer page
-/// mints `root -> audience` under the passkey and answers with the base58
-/// chain.
-async fn delegate(subject: &str, command: &str, audience: &str) -> Result<String, JsValue> {
-    let win = window().ok_or_else(|| JsValue::from_str("no window"))?;
-    let tonk = Reflect::get(&win, &"tonk".into())?
-        .dyn_into::<Object>()
-        .map_err(|_| JsValue::from_str("no window.tonk"))?;
-    let delegate = Reflect::get(&tonk, &"delegate".into())?
-        .dyn_into::<Function>()
-        .map_err(|_| JsValue::from_str("window.tonk.delegate is missing"))?;
-    let request = Object::new();
-    Reflect::set(&request, &"subject".into(), &JsValue::from_str(subject))?;
-    Reflect::set(&request, &"command".into(), &JsValue::from_str(command))?;
-    Reflect::set(&request, &"audience".into(), &JsValue::from_str(audience))?;
-    let promise: js_sys::Promise = delegate.call1(&tonk, &request)?.dyn_into()?;
-    let answer = JsFuture::from(promise).await?;
-    answer
-        .as_string()
-        .ok_or_else(|| JsValue::from_str("the page answered without a chain"))
-}
-
-/// Dispatch a `TransactRequest` JSON body via `window.tonk.transact(...)`,
-/// routeless, so it lands on the FAB portal's own context where the
-/// command lives.
-fn transact(claim: &serde_json::Value) {
-    let Ok(json) = serde_json::to_string(claim) else {
-        return;
-    };
-    let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    else {
-        return;
-    };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    else {
-        return;
-    };
-    if let Ok(request) = js_sys::JSON::parse(&json) {
-        let _ = transact.call1(&tonk, &request);
-    }
 }
 
 /// Register `<ui-member-roster>`. Idempotent.

@@ -30,6 +30,8 @@
 // the wasm-side host. The event-name constants are likewise pure
 // data.
 pub mod error;
+/// Light/dark across the whole frame tree.
+pub mod theme;
 // Target-independent — the `branch@repo` / `allow` grammar for the
 // routing attributes. Pure data + parsing, natively testable.
 pub mod location;
@@ -72,11 +74,13 @@ mod host;
 #[cfg(target_arch = "wasm32")]
 mod http;
 #[cfg(target_arch = "wasm32")]
+pub use http::{get_json, post_json};
+#[cfg(target_arch = "wasm32")]
 mod navigate;
 #[cfg(target_arch = "wasm32")]
 mod page_effect;
 #[cfg(target_arch = "wasm32")]
-pub use navigate::{navigate_to, request_registration};
+pub use navigate::{navigate_to, reload_page, request_registration};
 #[cfg(target_arch = "wasm32")]
 mod open;
 #[cfg(target_arch = "wasm32")]

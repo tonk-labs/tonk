@@ -148,7 +148,7 @@ impl PendingClipboard {
 /// A refusal delivered on the blocked subscription.
 #[derive(Debug, Clone, PartialEq)]
 struct Blocked {
-    /// `not-synced` | `unshareable-remote` | `attach-failed`.
+    /// `account-required` | `not-synced` | `unshareable-remote` | `attach-failed`.
     code: String,
     /// The sentence to show.
     detail: String,
@@ -172,18 +172,24 @@ const BLOCKED_NOT_SYNCED: &str = tonk_worker_api::share::BLOCKED_NOT_SYNCED;
 /// The account enrolled but never confirmed the emailed link.
 const BLOCKED_NEEDS_ACTIVATION: &str = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION;
 
-/// Heading and confirm label for a refusal with no repair.
-const TERMINAL_LABEL: &str = "Can't share this spot";
-
-const DIALOG_ID: &str = "fab-enable-sync";
+const DIALOG_ID: &str = "fabb-connect-cluster";
 const DIALOG_CONFIRM: &str = "[data-enable-sync-confirm]";
 const DIALOG_DETAIL: &str = "[data-enable-sync-detail]";
 const DIALOG_ACTION: &str = "[data-enable-sync-action]";
+const DIALOG_STATEMENT: &str = "[data-enable-sync-statement]";
+const DIALOG_REMOTE: &str = "[data-enable-sync-remote]";
+
 /// Marks the dialog as answering a refusal whose repair is registration
 /// rather than an attach, so the confirm handler navigates instead of
 /// dispatching enable-sync.
 const DIALOG_OUTCOME: &str = "data-repair-register";
-const TERMINAL_CONFIRM: &str = "Copy link";
+
+/// Heading and confirm label for a refusal with no repair. The button stays
+/// visible but disabled, so it needs wording that doesn't promise an action —
+/// "Turn on sync & copy link" greyed out reads as a broken control rather than
+/// an answer.
+const TERMINAL_LABEL: &str = "this space cannot be shared";
+const TERMINAL_CONFIRM: &str = "copy link";
 
 /// What confirming the prompt is offering to do, for one refusal class.
 ///
@@ -225,9 +231,9 @@ impl Repair {
     fn for_code(code: &str) -> Option<Self> {
         match code {
             BLOCKED_NOT_SYNCED => Some(Self {
-                label: "Turn on sync?",
-                action: "Turn on sync so the people you share with can open it.",
-                confirm: "Turn on sync & copy link",
+                label: "connect this space",
+                action: "Connect it so the people you share with can open it.",
+                confirm: "connect",
                 outcome: RepairOutcome::EnableSync,
             }),
             // `needs-account` offers no repair here on purpose. Whether
@@ -236,9 +242,9 @@ impl Repair {
             // itself — so a prompt here would be a second, competing
             // path to the same dialog.
             BLOCKED_NEEDS_ACTIVATION => Some(Self {
-                label: "Confirm your email to share",
+                label: "confirm your email to share",
                 action: "We sent you a link. Confirm your address, then share again.",
-                confirm: "Open account settings",
+                confirm: "open account settings",
                 outcome: RepairOutcome::Register,
             }),
             _ => None,
@@ -665,27 +671,83 @@ impl TonkShare {
                 );
                 return;
             }
+            let wants_share = enable_sync_dialog().is_some_and(|dialog| {
+                dialog.get_attribute("data-share").as_deref() == Some("true")
+            });
+
+            let time = js_sys::Date::now();
+            state.borrow_mut().pending_time = Some(time);
+            if wants_share {
+                let stale = current_link.borrow().clone();
+                if let Err(e) = open_clipboard_write(Rc::clone(&state), stale) {
+                    warn(&format!("share: clipboard unavailable: {e:?}"));
+                }
+                set_state(&host, ShareState::Copying);
+                arm_timeout(&host, &state);
+            }
+            if let Some(narrator) = enable_sync_dialog()
+                .and_then(|dialog| dialog.query_selector(DIALOG_DETAIL).ok().flatten())
+            {
+                narrator.set_text_content(Some("connecting…"));
+            }
+            let _ = confirm.set_attribute("disabled", "");
             // No remote: the worker resolves where this account syncs.
             // Deriving it here meant asking a sealed guest for its own
             // origin — `about:srcdoc`, so `location.origin` is the
             // opaque `"null"` until the portal bridge injects the real
             // one — and a share before that arrived returned silently.
-            let time = js_sys::Date::now();
-            state.borrow_mut().pending_time = Some(time);
-            let stale = current_link.borrow().clone();
-            if let Err(e) = open_clipboard_write(Rc::clone(&state), stale) {
-                warn(&format!("share: clipboard unavailable: {e:?}"));
-            }
-            set_state(&host, ShareState::Copying);
-            arm_timeout(&host, &state);
-            close_enable_sync_dialog();
-            dispatch_enable_sync(&space, "", time);
+            dispatch_enable_sync(&space, "", wants_share, time);
         });
         let target: &web_sys::EventTarget = document.unchecked_ref();
         let _ =
             target.add_event_listener_with_callback("click", on_confirm.as_ref().unchecked_ref());
         self.document_listeners
             .push(("click".to_owned(), on_confirm));
+
+        let host = this.clone();
+        let on_bail = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+            else {
+                return;
+            };
+            if target.id() != DIALOG_ID {
+                return;
+            }
+            close_enable_sync_dialog();
+            if read_state(&host) == ShareState::Blocked {
+                set_state(&host, ShareState::Idle);
+            }
+        });
+        let target: &web_sys::EventTarget = document.unchecked_ref();
+        let _ =
+            target.add_event_listener_with_callback("fabb-bail", on_bail.as_ref().unchecked_ref());
+        self.document_listeners
+            .push(("fabb-bail".to_owned(), on_bail));
+
+        let on_commit = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(field) = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+            else {
+                return;
+            };
+            if !field.matches(DIALOG_REMOTE).unwrap_or(false) {
+                return;
+            }
+            let Some(confirm) = enable_sync_dialog()
+                .and_then(|dialog| dialog.query_selector(DIALOG_CONFIRM).ok().flatten())
+            else {
+                return;
+            };
+            confirm.unchecked_ref::<HtmlElement>().click();
+        });
+        let target: &web_sys::EventTarget = document.unchecked_ref();
+        let _ = target
+            .add_event_listener_with_callback("fabb-commit", on_commit.as_ref().unchecked_ref());
+        self.document_listeners
+            .push(("fabb-commit".to_owned(), on_commit));
     }
 }
 
@@ -701,8 +763,8 @@ fn dispatch_invite(space: &str, time: f64) {
 /// Dispatch the `tonk:enable-sync` claim, asking the worker to attach `remote`
 /// to this spot and — because `share` is set — mint the invite the refused
 /// click was after, as soon as the attach lands.
-fn dispatch_enable_sync(space: &str, remote: &str, time: f64) {
-    dispatch_claim(&enable_sync_claim_json(space, remote, true, time));
+fn dispatch_enable_sync(space: &str, remote: &str, share: bool, time: f64) {
+    dispatch_claim(&enable_sync_claim_json(space, remote, share, time));
 }
 
 /// Hand a claim to `window.tonk.transact`. A no-op wherever the bridge is not
@@ -1002,6 +1064,10 @@ fn abandon(state: &Rc<RefCell<ShareStateCell>>, reason: &str) {
 /// signature exists to make hard — a repairable refusal must also restore
 /// what a terminal one disabled.
 fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
+    open_enable_sync_ceremony(detail, repair, true);
+}
+
+fn open_enable_sync_ceremony(detail: &str, repair: Option<Repair>, wants_share: bool) {
     let Some(dialog) = enable_sync_dialog() else {
         return;
     };
@@ -1020,7 +1086,11 @@ fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
     if let Ok(Some(slot)) = dialog.query_selector(DIALOG_ACTION) {
         slot.set_text_content(Some(action));
     }
+    if let Ok(Some(slot)) = dialog.query_selector(DIALOG_STATEMENT) {
+        slot.set_text_content(Some(label));
+    }
     let _ = dialog.set_attribute("label", label);
+    let _ = dialog.set_attribute("data-share", if wants_share { "true" } else { "false" });
     // Stamp what confirming does, so the confirm handler branches on the
     // refusal it is answering rather than assuming enable-sync.
     match repair.as_ref().map(|repair| repair.outcome) {
@@ -1044,14 +1114,36 @@ fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
             let _ = confirm.set_attribute("disabled", "");
         }
     }
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::TRUE);
+    let _ = dialog.remove_attribute("hidden");
+    if let Some(banner) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(crate::bar::CONNECT_BANNER_ID))
+    {
+        let _ = banner.set_attribute("hidden", "");
+    }
+}
+
+/// Open the same editable connect ceremony from the local-only condition
+/// banner. Unlike the share refusal, this attaches without minting a link.
+pub(crate) fn open_enable_sync_from_banner() {
+    open_enable_sync_ceremony(
+        "This space only exists on this device.",
+        Repair::for_code(BLOCKED_NOT_SYNCED),
+        false,
+    );
 }
 
 fn close_enable_sync_dialog() {
     let Some(dialog) = enable_sync_dialog() else {
         return;
     };
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::FALSE);
+    let _ = dialog.set_attribute("hidden", "");
+    if let Some(banner) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(crate::bar::CONNECT_BANNER_ID))
+    {
+        let _ = banner.remove_attribute("hidden");
+    }
 }
 
 fn enable_sync_dialog() -> Option<Element> {
@@ -1095,6 +1187,16 @@ fn read_link_field(row: &JsValue) -> Option<String> {
 /// stylesheet owns the appearance.
 fn set_state(host: &HtmlElement, state: ShareState) {
     let _ = host.set_attribute("data-share-state", state.as_str());
+    // The row the user actually sees is a sibling in the bar's share stack —
+    // this element is headless there. Stamp the state onto it too so the row
+    // can answer in place ("copy link" → "copying…" → "copied"), which is the
+    // same word-answers grammar the Hub's rows use. Absent (a fixture, or the
+    // element used standalone) this simply finds nothing.
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten()
+        && let Ok(Some(row)) = bar.query_selector("[data-share-link]")
+    {
+        let _ = row.set_attribute("data-share-state", state.as_str());
+    }
 }
 
 fn read_state(host: &HtmlElement) -> ShareState {
@@ -1274,6 +1376,7 @@ mod tests {
     /// The action line is not returned: only the tests about per-refusal
     /// wording read it, and they do so through [`action_text`].
     fn dialog_stub() -> (Element, Element, Element) {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let dialog = document.create_element("div").expect("create dialog");
         dialog.set_id(DIALOG_ID);
@@ -1298,6 +1401,15 @@ mod tests {
             .append_child(&dialog)
             .expect("attach dialog");
         (dialog, detail, confirm)
+    }
+
+    /// Refusal dialogs use a fixed document id in production. Keep test
+    /// fixtures unique too so one test cannot update a stale duplicate.
+    fn remove_refusal_dialog() {
+        let document = window().expect("window").document().expect("document");
+        if let Some(dialog) = document.get_element_by_id(DIALOG_ID) {
+            dialog.remove();
+        }
     }
 
     /// The prompt's action line — what confirming is being offered as.
@@ -1506,17 +1618,21 @@ mod tests {
     /// the authored ones, not a fixture's idea of them. Returns the mounted
     /// host, which the caller removes.
     fn mounted_bar() -> HtmlElement {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let host: HtmlElement = document
             .create_element("tonk-fab")
             .expect("create host")
             .unchecked_into();
-        host.set_inner_html(&crate::markup::fab_html("did:key:zShareFixture"));
+        let _ = host.set_attribute("space", "did:key:zShareFixture");
         document
             .body()
             .expect("body")
             .append_child(&host)
             .expect("mount");
+        // The refusal prompts are mounted on <body> by the bar, not authored
+        // inside it — see `element::mount_refusal_dialogs`.
+        crate::element::mount_refusal_dialogs();
         host
     }
 
@@ -1543,6 +1659,7 @@ mod tests {
         let hidden = confirm.has_attribute("hidden");
         let disabled = confirm.has_attribute("disabled");
         bar.remove();
+        remove_refusal_dialog();
 
         assert!(!hidden, "the confirm stays on screen");
         assert!(disabled, "and inert");
@@ -2097,15 +2214,18 @@ mod tests {
         let document = window().expect("window").document().expect("document");
         let host = fresh_host();
         host.set_attribute("space", "did:key:z6Mk").expect("space");
-        let button = document.create_element("button").expect("create button");
-        button
-            .set_attribute("data-enable-sync-confirm", "")
-            .expect("mark button");
-        document
-            .body()
-            .expect("body")
-            .append_child(&button)
-            .expect("attach button");
+        let (dialog, _detail, button) = dialog_stub();
+        dialog
+            .set_attribute("data-share", "true")
+            .expect("share ceremony");
+        let remote = document.create_element("tonk-field").expect("remote field");
+        remote
+            .set_attribute("data-enable-sync-remote", "")
+            .expect("mark remote");
+        remote
+            .set_attribute("value", "https://example.test/ucan/")
+            .expect("remote value");
+        dialog.append_child(&remote).expect("attach remote");
 
         let mut element = TonkShare::default();
         let state = Rc::clone(&element.state);
@@ -2135,7 +2255,7 @@ mod tests {
             state.borrow().pending_time.is_none(),
             "a click after disconnect must reach nothing",
         );
-        button.remove();
+        dialog.remove();
     }
 
     #[wasm_bindgen_test]
