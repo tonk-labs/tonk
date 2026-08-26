@@ -28,7 +28,7 @@ mod http;
 /// Accreditation: rotate the onboarding account's custody to the passkey
 /// account, then retire it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod accreditation;
+pub(crate) mod accreditation;
 pub(crate) mod adopt;
 
 mod join;
