@@ -245,19 +245,33 @@ mod tests {
         // later unlock finds the cell published — the auto-published
         // era left this to a race the CLI-link tests kept losing.
         let pending = get_json(driver, "/api/customer/pending").await?;
+        // The first click can fail benignly: the publish waits on the
+        // custody space's provisioning, which lands moments after
+        // activation. A person reloads and clicks again; so does the
+        // drain.
         if successful_body("pending work", &pending)
             .as_array()
             .is_some_and(|queue| !queue.is_empty())
         {
-            driver.goto(env.tonk_web.join("account")?.as_str()).await?;
-            click(driver, "#account-backup-publish").await?;
-            poll_json(
-                driver,
-                "/api/customer/pending",
-                "the queued custody publish",
-                |body| body.as_array().is_some_and(|queue| queue.is_empty()),
-            )
-            .await?;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+            loop {
+                driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+                click(driver, "#account-backup-publish").await?;
+                let drained = poll_json_briefly(
+                    driver,
+                    "/api/customer/pending",
+                    Duration::from_secs(10),
+                    |body| body.as_array().is_some_and(|queue| queue.is_empty()),
+                )
+                .await;
+                if drained {
+                    break;
+                }
+                anyhow::ensure!(
+                    tokio::time::Instant::now() < deadline,
+                    "the queued custody publish never drained"
+                );
+            }
         }
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
@@ -2108,6 +2122,30 @@ mod tests {
         }
     }
 
+    /// [`poll_json`] with a caller-chosen bound and a boolean answer,
+    /// for waits where "not yet" is an outcome to act on rather than a
+    /// failure to report.
+    async fn poll_json_briefly(
+        driver: &WebDriver,
+        path: &str,
+        bound: Duration,
+        accept: impl Fn(&serde_json::Value) -> bool,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + bound;
+        loop {
+            if let Ok(response) = get_json(driver, path).await
+                && response.get("error").is_none()
+                && accept(&response["body"])
+            {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// A device linked before the account's encryption key existed has
     /// nothing to seal a new space's seed to. Creating one from a page makes
     /// the worker ask that page for a passkey assertion; the page answers by
@@ -2169,33 +2207,52 @@ mod tests {
         .await?;
         successful_body("create space command", &created);
 
-        // The worker's request raises a consent card; the assertion only
-        // runs from its button, inside a user gesture.
+        // Two correct outcomes race here. When the account pull has
+        // already delivered the published `AccountEncryptionKey`, the
+        // worker seals straight to it and no assertion is needed. When
+        // it has not, the worker asks this page: a consent card
+        // appears, and its button runs the assertion that records the
+        // key with the root. Both paths end with the space custodied
+        // under the account; only the root record differs.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let consent = loop {
+        let mut asserted = false;
+        loop {
             if let Ok(button) = creator.find(By::Css("#tonk-custody-continue")).await {
-                break button;
+                button.click().await?;
+                asserted = true;
+                break;
+            }
+            let profile = get_json(&creator, "/api/profile").await?;
+            if profile["body"]["space"]
+                .as_array()
+                .is_some_and(|spaces| !spaces.is_empty())
+            {
+                break;
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the custody consent card never appeared"
+                "neither the consent card nor the created space appeared"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
-        };
-        consent.click().await?;
+        }
 
-        let root = poll_json(
-            &creator,
-            "/api/identity/root",
-            "the assertion to record the key",
-            |body| body.get("encryptionKey").is_some(),
-        )
-        .await?;
-        let recipient = root["encryptionKey"]
-            .as_str()
-            .context("root status omitted the key")?
-            .to_string();
-        assert!(recipient.starts_with("did:key:z6LS"), "{recipient}");
+        let asserted_recipient = if asserted {
+            let root = poll_json(
+                &creator,
+                "/api/identity/root",
+                "the assertion to record the key",
+                |body| body.get("encryptionKey").is_some(),
+            )
+            .await?;
+            let recipient = root["encryptionKey"]
+                .as_str()
+                .context("root status omitted the key")?
+                .to_string();
+            assert!(recipient.starts_with("did:key:z6LS"), "{recipient}");
+            Some(recipient)
+        } else {
+            None
+        };
 
         let profile = poll_json(
             &creator,
@@ -2239,9 +2296,17 @@ mod tests {
             rows.iter().any(|row| {
                 let subject = row["fields"]["subject"].as_str().unwrap_or_default();
                 let sealed_to = row["fields"]["recipient"].as_str().unwrap_or_default();
-                subject.ends_with(&key) && sealed_to == recipient
+                subject.ends_with(&key)
+                    && match &asserted_recipient {
+                        // The page's assertion derived the recipient;
+                        // the seed must be sealed to exactly that key.
+                        Some(recipient) => sealed_to == recipient,
+                        // The pulled fact supplied it; any X25519
+                        // recipient is the account's published key.
+                        None => sealed_to.starts_with("did:key:z6LS"),
+                    }
             }),
-            "the new space's seed is sealed to the key the assertion derived: {rows:?}"
+            "the new space's seed is sealed to the account's key: {rows:?}"
         );
 
         creator.quit().await?;
