@@ -766,10 +766,10 @@ mod tests {
         successful_body("dispatch space/create", &dispatched);
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
+        let key = loop {
             let now = space_keys(driver).await?;
             if let Some(key) = now.iter().find(|key| !before.contains(key)) {
-                return Ok(key.clone());
+                break key.clone();
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(anyhow!(
@@ -777,7 +777,33 @@ mod tests {
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+
+        // The handler navigates the client and attaches the remote
+        // AFTER, so the navigation does not wait on the network. The
+        // space appearing is therefore not the attach having landed —
+        // and a caller that asked for a remote is about to sync through
+        // it. Wait for it here so every caller does not have to.
+        //
+        // The endpoint this replaced attached synchronously before
+        // answering, which is why no caller needed this before.
+        if remote.is_some() {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let info = get_json(driver, &format!("/api/repository/{key}")).await?;
+                if info["body"]["remote"]["origin"].is_object() {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(anyhow!(
+                        "the requested remote never attached to '{key}': {}",
+                        info["body"]["remote"]
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         }
+        Ok(key)
     }
 
     /// Every space key this profile lists.
@@ -1019,17 +1045,24 @@ mod tests {
         // provider, this space would come up local-only.
         let key = create_space(&driver, "Made After Activation", None, "blank").await?;
 
-        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
-        let info = successful_body("read the space configuration", &info);
-        // Report what the worker actually knows, so a failure here says
-        // whether the provider fact was recorded or merely unread.
-        let customer = get_json(&driver, "/api/customer").await?;
-        assert!(
-            info["remote"]["origin"].is_object(),
-            "an activated account's space must wire the origin remote, got {}; \
-             customer state was {customer}",
-            info["remote"],
-        );
+        // The handler creates the space, navigates the client, and
+        // attaches the remote AFTER — deliberately, so the navigation
+        // does not wait on the network. The space existing is therefore
+        // not the attach having landed, so poll rather than read once.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let info = loop {
+            let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read the space configuration", &info).clone();
+            if info["remote"]["origin"].is_object() {
+                break info;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "an activated account's space must wire the origin remote, got {}",
+                info["remote"],
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
         let upstream = &info["branch"]["main"]["upstream"];
         assert_eq!(
             upstream["remote"].as_str(),
@@ -1060,12 +1093,23 @@ mod tests {
 
         let key = create_space(&driver, "Opted In", None, "blank").await?;
 
+        // Creating a space navigates into it — the handler posts a
+        // navigate effect to the originating client — so come back to
+        // the account page before reading the panel. The endpoint this
+        // replaced returned a key and navigated nothing.
+        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+
         // Confirm the email, so a provider exists to attach to.
         activate(&driver, &env, email).await?;
         wait_for_text(&driver, "#account-registration-value", "Active").await?;
 
         // Still local: activation does not retroactively sync spaces
         // created before it. The user opts in per space.
+        //
+        // Let the handler's post-navigation attach step run first, so
+        // "no remote" means it declined rather than that we looked
+        // before it could.
+        tokio::time::sleep(Duration::from_secs(3)).await;
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
         let info = successful_body("read the space configuration", &info);
         assert!(
