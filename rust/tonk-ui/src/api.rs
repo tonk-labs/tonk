@@ -602,26 +602,63 @@ pub async fn save_root(
 /// sending the activation link to `email`, or to the account's recorded
 /// address when none is given. Idempotent: re-enrolling while registered
 /// resends the link, and an already-active customer answers as active.
-pub async fn enroll_customer(
-    email: Option<&str>,
-    deposits: &[String],
-) -> Result<serde_json::Value, TonkUiError> {
+///
+/// A command, not a request, so it answers nothing. What enrollment
+/// produces is the `AccountCustomer` fact, which the registration row
+/// subscribes to; a caller that wants to know how it went watches that
+/// rather than this call's return. `Ok` here means the transient was
+/// committed and the handler will run, not that the service replied.
+///
+/// Dispatched as a `tonk-claim` on the document, which is where
+/// `tonk_host::install` puts its listener. The account page deliberately
+/// has no `window.tonk` — the top page must not look like a portal guest
+/// — so the FAB's `window.tonk.transact` path is unavailable here.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result<(), TonkUiError> {
+    use wasm_bindgen::JsValue;
+
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/customer/enroll", origin()))
-        .json(&serde_json::json!({ "email": email, "deposits": deposits }))
-        .send()
+    let consumer = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+        .ok_or_else(|| TonkUiError::ApiError("no document to dispatch from".to_string()))?;
+    let request = js_sys::JSON::parse(&enroll_claim(email, deposits).to_string())
+        .map_err(|error| TonkUiError::ApiError(format!("enroll claim did not parse: {error:?}")))?;
+    tonk_host::consumer::claim(&consumer, &request)
         .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/customer/enroll returned {status}: {text}"
-        )))
-    }
+        .map(|_: JsValue| ())
+        .map_err(|error| TonkUiError::ApiError(format!("enrollment was not dispatched: {error:?}")))
+}
+
+/// The `TransactRequest` body for the `tonk:enroll` command.
+///
+/// Both fields are always present because a concept resolves only when
+/// every one of them is, so "unset" is the empty string: no address means
+/// the account's recorded one, and no deposits mean the worker mints a
+/// device-chained set. The deposits join with commas rather than riding
+/// as a list, because a command's fields are scalars.
+fn enroll_claim(email: Option<&str>, deposits: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Register this account as a customer of the access service.",
+                        "with": {
+                            "email": { "the": "xyz.tonk.enroll/email", "cardinality": "one", "as": "Text" },
+                            "deposits": { "the": "xyz.tonk.enroll/deposits", "cardinality": "one", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "email": email.unwrap_or_default(),
+                    "deposits": deposits.join(",")
+                }
+            }
+        }]
+    })
 }
 
 /// The account's customer registration state: the access service's live
@@ -1106,6 +1143,57 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
+        );
+    }
+}
+
+#[cfg(test)]
+mod enrollment_claim {
+    use super::enroll_claim;
+
+    /// Both fields ride even when unset, because a concept resolves
+    /// only when every field is present: a claim that omitted `email`
+    /// would never decode, and the command would silently not run.
+    #[dialog_common::test]
+    fn it_sends_both_fields_even_when_neither_was_given() {
+        let claim = enroll_claim(None, &[]);
+        let parameters = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(parameters["email"], "");
+        assert_eq!(parameters["deposits"], "");
+    }
+
+    /// Empty means "the account's recorded address", which is what the
+    /// login and resend paths want, so it must be distinguishable from
+    /// an address that was given.
+    #[dialog_common::test]
+    fn it_carries_an_address_when_one_was_given() {
+        let claim = enroll_claim(Some("a@example.com"), &[]);
+        assert_eq!(
+            claim["claims"][0]["application"]["parameters"]["email"],
+            "a@example.com"
+        );
+    }
+
+    /// Deposits join with commas because a command's fields are
+    /// scalars, and the worker splits them back apart.
+    #[dialog_common::test]
+    fn it_joins_ceremony_deposits_into_one_field() {
+        let claim = enroll_claim(None, &["ab".to_string(), "cd".to_string()]);
+        assert_eq!(
+            claim["claims"][0]["application"]["parameters"]["deposits"],
+            "ab,cd"
+        );
+    }
+
+    /// The command is transient: it exists to trigger a handler and is
+    /// swept at the commit, never persisted.
+    #[dialog_common::test]
+    fn it_asserts_a_transient() {
+        let claim = enroll_claim(None, &[]);
+        assert_eq!(claim["claims"][0]["op"], "assert");
+        assert_eq!(
+            claim["claims"][0]["application"]["predicate"]["kind"],
+            "transient"
         );
     }
 }

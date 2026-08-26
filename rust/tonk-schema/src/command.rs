@@ -390,6 +390,34 @@ impl Command for PromoteMember {
     type Output = ();
 }
 
+/// Register this profile's account as a customer of the access service.
+///
+/// A command rather than a request: the outcome is the `AccountCustomer`
+/// fact, which every device on the account reads and every tab showing
+/// registration state already subscribes to. A caller that used to await
+/// a receipt watches that fact instead, which is also what lets a
+/// confirmation performed elsewhere reach a waiting screen.
+///
+/// Idempotent by the service's own rule: enrolling an account that is
+/// still awaiting activation resends its link, and one already active is
+/// answered as active rather than refused.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EnrollCustomer {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The address to enroll. Empty means the account's recorded one,
+    /// which is what the login and resend paths want.
+    pub email: crate::domain::command::enroll::Email,
+    /// Comma-separated hex deposits from a passkey ceremony. Empty means
+    /// the worker mints a device-chained set instead.
+    pub deposits: crate::domain::command::enroll::Deposits,
+}
+
+impl Command for EnrollCustomer {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Remove a member from the space this command fires in.
 ///
 /// Asserted transiently by the roster row's expel form; the worker's

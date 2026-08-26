@@ -42,20 +42,6 @@ pub struct CustomerRecord {
     pub enrolled_at: u64,
 }
 
-/// `POST /api/customer/enroll` request body.
-#[derive(Debug, Deserialize)]
-pub struct EnrollRequest {
-    /// Address the activation link is sent to. Absent on the login path,
-    /// where the account's recorded email is used instead.
-    pub email: Option<String>,
-    /// Hex-encoded account-signed deposits the passkey ceremony minted.
-    /// Preferred over the device-issued fallback: an account-signed
-    /// deposit survives revocation of the device that carried it. Empty
-    /// when enrollment runs without a fresh ceremony (a resend).
-    #[serde(default)]
-    pub deposits: Vec<String>,
-}
-
 /// The answer to a customer state read: the service's view when it has
 /// one, and the locally recorded enrollment either way.
 #[derive(Debug, Serialize)]
@@ -71,22 +57,35 @@ pub struct CustomerState {
 /// POST `/api/customer/enroll` → enroll this profile's account as a
 /// customer of the same-origin access service. Idempotent: re-enrolling
 /// while registered resends the activation email.
-#[wasm_compat]
-pub async fn enroll(
-    State(state): State<AppState>,
-    Extension(origin): Extension<RequestOrigin>,
-    Json(request): Json<EnrollRequest>,
-) -> Result<Json<Receipt>, TonkWorkerError> {
-    let state = state.read().await;
-    let link = super::account::account_link(&state).await.ok_or_else(|| {
+/// Enroll this profile's account as a customer, and record the answer.
+///
+/// The work behind both the `tonk:enroll` command and the route that
+/// predates it. Takes plain values rather than extractors so a command
+/// handler, which has no request to pull them from, can call it.
+///
+/// `email` absent means the account's own recorded address, which is
+/// what the login and resend paths want. Empty `deposits` means no
+/// ceremony is at hand, so the service is offered a device-issued set
+/// chained through the `root -> device` grant instead.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) async fn enroll_customer(
+    state: &crate::worker::TonkState,
+    origin: &url::Url,
+    email: Option<String>,
+    deposits: &[String],
+) -> Result<Receipt, TonkWorkerError> {
+    let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
     let root_did = link.issuer().clone();
-    let email = match request.email {
+    let email = match email {
         Some(email) => email,
         // The login path names no address: the account's recorded email
         // is authoritative there.
-        None => super::account_devices::account_summary(&state)
+        None => super::account_devices::account_summary(state)
             .await?
             .email
             .ok_or_else(|| {
@@ -102,12 +101,11 @@ pub async fn enroll(
     // account-signed set a ceremony minted is preferred; without one, a
     // device-issued set chained through the `root → device` grant is the
     // fallback the service walks back to the customer.
-    let body = if request.deposits.is_empty() {
-        let service_did = service_did(origin.url()).await?;
+    let body = if deposits.is_empty() {
+        let service_did = service_did(origin).await?;
         build_enroll_invocation(device, &link, &service_did, &email).await
     } else {
-        let deposits = request
-            .deposits
+        let deposits = deposits
             .iter()
             .map(hex::decode)
             .collect::<Result<Vec<_>, _>>()
@@ -120,7 +118,7 @@ pub async fn enroll(
         TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
     })?;
 
-    let endpoint = ucan_endpoint(origin.url())?;
+    let endpoint = ucan_endpoint(origin)?;
     let receipt = match post_cbor(&endpoint, &body).await {
         Ok(response) => serde_json::from_slice::<Receipt>(&response.body).map_err(|error| {
             TonkWorkerError::Internal(format!(
@@ -143,7 +141,7 @@ pub async fn enroll(
     };
 
     save_customer(
-        &state,
+        state,
         &CustomerRecord {
             customer: receipt.customer.to_string(),
             email: email.clone(),
@@ -162,11 +160,100 @@ pub async fn enroll(
     // An older service that answers no remote leaves whatever was
     // recorded before in place.
     if let Err(error) =
-        record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref()).await
+        record_customer_status(state, receipt.status, &email, receipt.provider.as_deref()).await
     {
         log!("account customer status not recorded: {error}");
     }
-    Ok(Json(receipt))
+    Ok(receipt)
+}
+
+/// Runs the `tonk:enroll` command.
+///
+/// The outcome is the `AccountCustomer` fact the core already writes, so
+/// there is nothing to answer: a caller that used to await the receipt
+/// subscribes to that fact instead, and sees the same state arrive on
+/// every other tab and device at the same time.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct EnrollCustomerHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl EnrollCustomerHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::EnrollCustomer::trigger_attributes(),
+        }
+    }
+}
+
+/// The address and deposits a `tonk:enroll` transient carries.
+///
+/// Both fields are optional in meaning though present on the wire: a
+/// command's fields are scalars and a concept resolves only when every
+/// one is there, so "unset" is the empty string. Empty email means the
+/// account's recorded address; empty deposits mean no ceremony is at
+/// hand.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn decode_enrollment(facts: &crate::reactor::EntityFacts) -> Option<(Option<String>, Vec<String>)> {
+    use crate::reactor::Decode as _;
+    let command = facts
+        .first()
+        .map(|artifact| artifact.of.clone())
+        .and_then(|entity| tonk_schema::command::EnrollCustomer::decode(entity, facts))?;
+    let email = (!command.email.0.trim().is_empty()).then(|| command.email.0.trim().to_owned());
+    let deposits = command
+        .deposits
+        .0
+        .split(',')
+        .map(str::trim)
+        .filter(|deposit| !deposit.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Some((email, deposits))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustomerHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        decode_enrollment(facts).is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        let decoded = decode_enrollment(facts);
+        let env = env.clone();
+        Box::pin(async move {
+            let Some((email, deposits)) = decoded else {
+                log!("tonk:enroll: unparseable command; skipping");
+                return;
+            };
+            let tonk = env.state().read().await;
+            // The access service is same-origin: it serves this page, so
+            // the deployment enrollment registers with is the one the
+            // user is actually on. A command has no request to read that
+            // from, so it comes from the worker's own scope.
+            let origin = match service_origin() {
+                Ok(origin) => origin,
+                Err(error) => {
+                    log!("tonk:enroll: {error}");
+                    return;
+                }
+            };
+            match enroll_customer(&tonk, &origin, email, &deposits).await {
+                Ok(receipt) => log!("tonk:enroll: {} is {:?}", receipt.customer, receipt.status),
+                Err(error) => log!("tonk:enroll failed: {error}"),
+            }
+        })
+    }
 }
 
 /// POST `/api/customer/activated` → record the receipt the activation
