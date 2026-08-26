@@ -1,12 +1,3 @@
-/* Reserve the scrollbar gutter while the settings page is up: a notice
-   revealing itself (or a tab switch) can tip the page past the viewport
-   height, and in browsers with classic scrollbars that reflows the whole
-   centered column sideways mid-read. Reserving the gutter keeps the
-   layout still either way; overlay-scrollbar browsers are unaffected. */
-html:has(:is(tonk-account, tonk-activate)) {
-    scrollbar-gutter: stable;
-}
-
 :is(tonk-account, tonk-activate) {
     --page: #ececec;
     --ink: #131313;

@@ -423,16 +423,54 @@ mod tests {
             );
         }
 
-        let display_name = element(&driver, "#account-display-name").await?;
-        let select_all = if cfg!(target_os = "macos") {
-            Key::Meta + "a"
-        } else {
-            Key::Control + "a"
+        let select_all = || {
+            if cfg!(target_os = "macos") {
+                Key::Meta + "a"
+            } else {
+                Key::Control + "a"
+            }
         };
-        display_name.send_keys(select_all).await?;
-        display_name.send_keys("Settings Name").await?;
-        display_name.send_keys(Key::Enter).await?;
-        wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
+        // The name write lands in the account state, whose first sync
+        // races this test right after activation — until the pull lands
+        // the worker refuses it as account_state_unavailable, and the
+        // input springs back to its previous value. Each retry is the
+        // same user gesture; the deadline is on the outcome.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let display_name = element(&driver, "#account-display-name").await?;
+            // A save in flight disables the input, and typing into a
+            // disabled input errors — that too reads as "not yet".
+            let typed = async {
+                display_name.send_keys(select_all()).await?;
+                display_name.send_keys("Settings Name").await?;
+                display_name.send_keys(Key::Enter).await?;
+                Ok::<(), thirtyfour::error::WebDriverError>(())
+            }
+            .await;
+            if typed.is_err() {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let settled = tokio::time::Instant::now() + Duration::from_secs(5);
+            let saved = loop {
+                if let Ok(found) = driver.find(By::Css("#account-display-name")).await
+                    && found.prop("value").await?.as_deref() == Some("Settings Name")
+                    && found.attr("aria-busy").await?.is_none()
+                {
+                    break true;
+                }
+                if tokio::time::Instant::now() >= settled {
+                    break false;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            };
+            if saved {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the display name never saved; the account state likely never hydrated"
+            );
+        }
         let settings = driver.current_url().await?;
         driver.goto(settings.as_str()).await?;
         wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
@@ -547,6 +585,13 @@ mod tests {
                         const error = document.querySelector('#account-error');
                         error.hidden = false;
                         const errorRight = Math.round(error.getBoundingClientRect().right);
+                        // Read the body's edge in the SAME layout state:
+                        // revealing the notice can grow the page past the
+                        // viewport, and a classic scrollbar appearing then
+                        // shifts the centered column half a gutter — a
+                        // comparison across that boundary measures the
+                        // scrollbar, not the alignment.
+                        const errorBodyRight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().right);
                         error.hidden = true;
                         const logo = document.querySelector('.account__logo').getBoundingClientRect();
                         return {
@@ -555,7 +600,7 @@ mod tests {
                           body: Math.round(body.width),
                           accountHeight,
                           devicesHeight,
-                          bodyRight: Math.round(body.right),
+                          bodyRight: errorBodyRight,
                           errorRight,
                           logoVisible: logo.width > 0 && logo.height > 0
                         };"#,
