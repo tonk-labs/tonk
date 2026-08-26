@@ -224,19 +224,80 @@ fn claim(description: &str, email: &str) -> serde_json::Value {
     })
 }
 
-/// Start the ceremony for the typed address.
+/// Start the ceremony for the typed address, then finish the share it
+/// interrupted.
 fn submit() {
     let Some(email) = address().filter(|email| is_plausible(email)) else {
         set_status("Enter the address you want to use.");
         return;
     };
+    let resume = pending_share();
     set_status("Waiting for your passkey…");
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(error) = crate::api::transact_profile(register_claim(&email)).await {
             tonk_common::log!("register: could not start registration: {error}");
             set_status("Registration could not start. Try again.");
+            return;
         }
+        let Some(space) = resume else {
+            // Nothing to go back to: the dialog was raised on its own.
+            set_status("Check your email to finish setting up your account.");
+            return;
+        };
+        // The spot could not be shared because there was no account.
+        // There is one now, so ask for the invite the interrupted click
+        // wanted. The link arrives as a fact — the same
+        // `xyz.tonk.credential/link` row the bar reads — so this only
+        // has to ask.
+        set_status("Setting up sharing…");
+        let claim = enable_sync_claim(&space, js_sys::Date::now());
+        if let Err(error) = crate::api::transact_profile(claim).await {
+            tonk_common::log!("register: could not resume the share: {error}");
+            set_status("Your account is ready. Share the spot again to get a link.");
+            return;
+        }
+        set_status("Your account is ready. The share link is on its way.");
     });
+}
+
+/// The `tonk:enable-sync` claim that finishes an interrupted share:
+/// attach where the account syncs, and mint.
+///
+/// No remote is named. The worker resolves it from the account's own
+/// recorded provider, which is the point of registering at all.
+///
+/// `time` is passed in rather than read here so the shape stays pure
+/// and testable off-browser; the caller supplies the click's moment,
+/// which is what makes each dispatch a distinct transient.
+pub(crate) fn enable_sync_claim(space: &str, time: f64) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Attach a sync remote to a spot, and share it.",
+                        "with": {
+                            "time": { "the": "dom.event/time-stamp", "as": "Float" },
+                            "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
+                            "share": { "the": "xyz.tonk.enable-sync/share", "as": "Entity" },
+                            "marker": {
+                                "the": "dom.event.current-target.dataset/enable-sync",
+                                "as": "Entity"
+                            }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "space": space,
+                    "share": "tonk:share",
+                    "marker": "tonk:enable-sync"
+                }
+            }
+        }]
+    })
 }
 
 /// What is typed in the address field.
@@ -262,16 +323,67 @@ fn set_status(text: &str) {
     }
 }
 
-/// Re-word the dialog for the refusal that raised it.
+/// What the guest asked for: why it could not share, and what it was
+/// trying to share.
+#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Request {
+    /// The refusal class that raised the dialog.
+    #[serde(default)]
+    pub reason: String,
+    /// The spot the interrupted click was sharing, so it can be
+    /// finished once an account exists.
+    #[serde(default)]
+    pub space: String,
+}
+
+/// Parse the payload a guest forwards, tolerating a bare reason string
+/// from an older guest.
+pub fn parse_request(payload: &str) -> Request {
+    serde_json::from_str(payload).unwrap_or_else(|_| Request {
+        reason: payload.to_owned(),
+        space: String::new(),
+    })
+}
+
+/// Remember what to share once registration finishes.
+fn remember_space(space: &str) {
+    if space.is_empty() {
+        return;
+    }
+    if let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+    {
+        let _ = host.set_attribute(PENDING_SHARE, space);
+    }
+}
+
+/// The spot a finished registration should go on to share.
+pub(crate) fn pending_share() -> Option<String> {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.get_attribute(PENDING_SHARE))
+        .filter(|space| !space.is_empty())
+}
+
+/// Where the interrupted share's target is parked while the ceremony
+/// runs.
+const PENDING_SHARE: &str = "data-pending-share";
+
+/// Re-word the dialog for the refusal that raised it, and remember what
+/// the interrupted click was trying to share.
 ///
 /// `needs-activation` is not a signup: the account exists and the link
 /// is unopened, so the dialog says so instead of offering to create a
 /// second one.
-pub fn describe(reason: &str) {
+pub fn describe(payload: &str) {
+    let request = parse_request(payload);
+    remember_space(&request.space);
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
-    if reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
+    if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
     }
     if let Some(lede) = document.query_selector(LEDE).ok().flatten() {
@@ -319,6 +431,44 @@ mod tests {
         assert!(!is_plausible("@example.com"), "no local part");
         assert!(!is_plausible("jsmith@.com"), "domain starts with a dot");
         assert!(!is_plausible("jsmith@example."), "domain ends with a dot");
+    }
+
+    /// The guest's ask carries why it could not share and what it was
+    /// sharing, so the dialog can word the prompt and then finish the
+    /// click that raised it.
+    #[dialog_common::test]
+    fn it_reads_the_reason_and_the_interrupted_share() {
+        let request = parse_request(r#"{"reason":"needs-account","space":"did:key:z6Mk"}"#);
+        assert_eq!(request.reason, "needs-account");
+        assert_eq!(request.space, "did:key:z6Mk");
+    }
+
+    /// A payload that is not the structured shape is taken as a bare
+    /// reason: an older guest still gets its prompt worded, it just has
+    /// no share to resume.
+    #[dialog_common::test]
+    fn it_falls_back_to_a_bare_reason() {
+        let request = parse_request("needs-activation");
+        assert_eq!(request.reason, "needs-activation");
+        assert!(request.space.is_empty(), "nothing to resume");
+    }
+
+    /// The resume claim asks for the attach AND the mint, and names no
+    /// remote: the worker resolves that from the account that was just
+    /// created, which is why registering was worth doing.
+    #[dialog_common::test]
+    fn it_resumes_the_share_by_asking_for_attach_and_mint() {
+        let claim = enable_sync_claim("did:key:z6Mk", 1234.0).to_string();
+        assert!(claim.contains("xyz.tonk.enable-sync/space"));
+        assert!(claim.contains("did:key:z6Mk"));
+        assert!(
+            claim.contains("xyz.tonk.enable-sync/share"),
+            "the mint is what produces the link the click wanted",
+        );
+        assert!(
+            !claim.contains("enable-sync/remote"),
+            "naming a remote here would re-derive what the account records",
+        );
     }
 
     /// Both claims name the read-path the commands decode, and differ

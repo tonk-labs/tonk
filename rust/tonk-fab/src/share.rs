@@ -618,15 +618,28 @@ impl TonkShare {
             let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) else {
                 return;
             };
-            // Registration does not happen here. The bar is a sealed
-            // guest with no ceremony of its own, so confirming hands off
-            // to `/account` and the user shares again once they have an
-            // account. Abandon the copy first: nothing is going to
-            // settle a clipboard write across a navigation.
-            if enable_sync_dialog().is_some_and(|dialog| dialog.has_attribute(DIALOG_OUTCOME)) {
+            // Registration runs in the TOP page, the only document with
+            // both a `window` and the user gesture WebAuthn wants. This
+            // frame has neither the ceremony nor the account UI, so it
+            // asks through the portal bridge and the dialog opens over
+            // the spot rather than navigating away from it.
+            //
+            // The space rides along so the dialog can finish what this
+            // click started: once an account exists, the share it
+            // interrupted mints and hands over the link.
+            //
+            // The clipboard write is abandoned rather than held. A
+            // ceremony consumes transient activation, so a write
+            // attempted after it costs a second permission prompt; the
+            // link gets a copy button instead.
+            if let Some(reason) =
+                enable_sync_dialog().and_then(|dialog| dialog.get_attribute(DIALOG_OUTCOME))
+            {
                 fail_copy(&host, &state, "");
                 close_enable_sync_dialog();
-                tonk_host::navigate_to("/account");
+                tonk_host::request_registration(
+                    &serde_json::json!({ "reason": reason, "space": space }).to_string(),
+                );
                 return;
             }
             // No remote: the worker resolves where this account syncs.
