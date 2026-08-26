@@ -1642,6 +1642,37 @@ mod invite_link {
 /// attributes depends on nothing seeded and works on spots that predate this
 /// feature. `this` binds to the spot's subject DID, the entity the worker
 /// keys the refusal by.
+/// The share control's single subscription: where this space's invite
+/// has got to.
+///
+/// One row, replacing the pair of queries the control used to run (one
+/// for the link, one for the refusal). `status` is what the control
+/// reads; `url` is present only once granted, so it is `maybe:` and a
+/// request in flight still resolves.
+///
+/// See `plan/share-intent.md`.
+pub fn invite_state_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("invite_state_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": {
+            "with": { "status": {
+                "the": "xyz.tonk.invite/status", "as": "Entity", "cardinality": "one"
+            } },
+            "maybe": { "url": {
+                "the": "xyz.tonk.invite/url", "as": "Text", "cardinality": "one"
+            } }
+        },
+        "terms": {
+            "this": subject,
+            "status": { "?": { "name": "status" } },
+            "url": { "?": { "name": "url" } }
+        }
+    })
+    .to_string())
+}
+
 pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
     if subject.is_empty() {
         return Err("share_blocked_query_body: empty subject".into());
@@ -1719,6 +1750,38 @@ mod enable_sync_claim {
             app["predicate"]["concept"]["with"].get("share").is_none(),
             "an omitted parameter must not be declared, or the assert is incomplete"
         );
+    }
+}
+
+#[cfg(test)]
+mod invite_state_query {
+    use super::*;
+
+    #[test]
+    fn it_reads_the_status_and_an_optional_url() {
+        let body = invite_state_query_body("did:key:z6Mk").expect("query body builds");
+        // Raw attribute URIs, not a concept name: nothing seeded is
+        // needed, so an old core.yaml cannot break the read.
+        assert!(body.contains("xyz.tonk.invite/status"));
+        assert!(body.contains("xyz.tonk.invite/url"));
+        assert!(body.contains("did:key:z6Mk"));
+        // `url` must be optional or a request in flight — which has a
+        // status and no url yet — would never resolve, and the control
+        // would sit on `share` through the whole mint.
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            parsed["predicate"]["maybe"]["url"].is_object(),
+            "url belongs in `maybe`, got {body}",
+        );
+        assert!(
+            parsed["predicate"]["with"]["status"].is_object(),
+            "status is required, got {body}",
+        );
+    }
+
+    #[test]
+    fn it_refuses_an_empty_subject() {
+        assert!(invite_state_query_body("").is_err());
     }
 }
 

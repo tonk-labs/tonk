@@ -1094,10 +1094,19 @@ async fn run_invite(
         .branch(CONTENT_BRANCH)
         .overlay()
         .assert(Credential {
-            this: subject_entity,
+            this: subject_entity.clone(),
             seed: Seed(seed),
-            link: Link(link),
+            link: Link(link.clone()),
         })
+        // The same answer in the shape the share control subscribes to:
+        // one row per space whose `status` says where the invite has got
+        // to, carrying the url once there is one. `Credential` keeps the
+        // seed beside it for readers that need both; this is what a view
+        // renders. See `plan/share-intent.md`.
+        .assert(tonk_schema::command::InviteState::granted(
+            subject_entity,
+            link,
+        ))
         .write()
         .perform(&tonk.operator)
         .await
@@ -1167,6 +1176,23 @@ async fn run_invite(
 /// what lets the control tell this refusal from a replay of an older one, which
 /// is why the fact never needs retracting.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// The `invite:*` status a refusal code becomes.
+///
+/// Only reasons nothing can repair are terminal. `not-synced` and
+/// `needs-account` are answered by attaching a remote or making an
+/// account, so the request stays open rather than reporting a failure
+/// the user is in the middle of fixing.
+fn invite_status_for(code: &str) -> &'static str {
+    use tonk_schema::command::InviteState;
+    use tonk_worker_api::share;
+    match code {
+        share::BLOCKED_SUSPENDED => InviteState::SUSPENDED,
+        share::BLOCKED_UNSHAREABLE_REMOTE => InviteState::UNSHAREABLE,
+        // Repairable, or an attach that can be retried.
+        _ => InviteState::REQUESTED,
+    }
+}
+
 async fn publish_share_blocked(
     state: &AppState,
     repo_name: &str,
@@ -1185,11 +1211,20 @@ async fn publish_share_blocked(
         .branch(CONTENT_BRANCH)
         .overlay()
         .assert(ShareBlocked {
-            this: subject,
+            this: subject.clone(),
             blocked: share::Blocked(code.to_owned()),
             detail: share::Detail(detail.to_owned()),
             time: share::Time(time),
         })
+        // The same refusal in the shape the share control subscribes to.
+        // Only a terminal reason becomes a terminal status: a refusal
+        // the user can repair (no account yet, no remote yet) leaves the
+        // request open, because the click has not finished failing — it
+        // is waiting on something. See `plan/share-intent.md`.
+        .assert(tonk_schema::command::InviteState::denied(
+            subject,
+            invite_status_for(code),
+        ))
         .write()
         .perform(&tonk.operator)
         .await

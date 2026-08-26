@@ -972,6 +972,44 @@ pub mod credential {
 ///
 /// Overlay-only, so it is session-scoped and never replicated: a refusal is
 /// this device's answer to this click, not a property of the space.
+/// Attributes on the per-space invite state the share control renders.
+///
+/// One row per space, replaced as the state moves. Overlay-only: the
+/// url carries a secret seed in its fragment, and the row is a
+/// per-session view of an in-flight request rather than a durable
+/// record. The durable record of a *minted* invite is
+/// [`crate::Invitation`], keyed on the delegation CID — a different
+/// thing that happens to share the noun.
+pub mod invite {
+    use super::Attribute;
+    use dialog_artifacts::Entity;
+
+    /// Where this space's invite has got to.
+    ///
+    /// An entity, not a string: a string is a poor discriminator, and
+    /// this follows [`crate::domain::replica::Status`]
+    /// (`tonk:blank` / `tonk:initialized`). One of
+    /// `invite:requested`, `invite:granted`, `invite:suspended`,
+    /// `invite:unshareable`.
+    ///
+    /// A denial IS a status — there is no separate reason field. Two
+    /// fields would encode one fact and make illegal states
+    /// representable (granted-with-a-reason, denied-without-one).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invite")]
+    #[cardinality(one)]
+    pub struct Status(pub Entity);
+
+    /// The finished invite URL, present only once granted.
+    ///
+    /// Optional, so one row covers every state without a sentinel: a
+    /// request in flight simply has no url yet.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invite")]
+    #[cardinality(one)]
+    pub struct Url(pub String);
+}
+
 pub mod share {
     use super::Attribute;
 

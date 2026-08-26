@@ -447,6 +447,81 @@ pub struct Credential {
     pub link: crate::domain::credential::Link,
 }
 
+/// Where a space's invite has got to — the single row the share control
+/// renders, keyed by the space's **subject** DID.
+///
+/// Three nouns are close here and must stay distinct:
+/// [`Invite`] is the COMMAND (the intent to share), [`crate::Invitation`]
+/// is the durable record of a MINTED invite (keyed on the delegation
+/// CID, used for revocation), and this is the per-space STATE the
+/// control renders.
+///
+/// The share control subscribes to this and nothing else. It reads
+/// `status`: `granted` copies the `url`, `requested` keeps waiting, and
+/// **anything else** shows failed. That default is what lets a new
+/// terminal status ship without touching the control, and it is why the
+/// control never enumerates the terminal set.
+///
+/// Overlay-only. The url carries the membership seed in its fragment, so
+/// it must not reach storage, and the row is a per-session view of an
+/// in-flight request rather than a durable record. The durable record of
+/// a minted invite is [`crate::Invitation`], keyed on the delegation CID.
+///
+/// `url` is optional, so one row covers every state with no sentinel
+/// value: a request in flight simply has no url yet.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InviteState {
+    /// The space's subject DID.
+    pub this: Entity,
+    /// One of the `invite:*` markers; see [`InviteState::REQUESTED`].
+    pub status: crate::domain::invite::Status,
+    /// The finished invite URL, once there is one.
+    pub url: Option<crate::domain::invite::Url>,
+}
+
+impl InviteState {
+    /// Asked for, and in progress. The control keeps waiting.
+    pub const REQUESTED: &str = "invite:requested";
+    /// Minted; `url` is present.
+    pub const GRANTED: &str = "invite:granted";
+    /// The account's service was withdrawn. Terminal.
+    pub const SUSPENDED: &str = "invite:suspended";
+    /// The upstream is not a UCAN endpoint, so no invite URL can
+    /// express it. Terminal.
+    pub const UNSHAREABLE: &str = "invite:unshareable";
+
+    /// A request in flight, with no url yet.
+    pub fn requested(space: Entity) -> Self {
+        Self::marker(space, Self::REQUESTED)
+    }
+
+    /// A granted invite carrying its url.
+    pub fn granted(space: Entity, url: String) -> Self {
+        Self {
+            this: space,
+            status: crate::domain::invite::Status(
+                Self::GRANTED.parse().expect("invite:granted parses"),
+            ),
+            url: Some(crate::domain::invite::Url(url)),
+        }
+    }
+
+    /// A terminal state naming why no invite is possible.
+    pub fn denied(space: Entity, status: &str) -> Self {
+        Self::marker(space, status)
+    }
+
+    fn marker(space: Entity, status: &str) -> Self {
+        Self {
+            this: space,
+            status: crate::domain::invite::Status(
+                status.parse().expect("an invite:* marker parses"),
+            ),
+            url: None,
+        }
+    }
+}
+
 /// The overlay-only fact a refused `tonk:invite` asserts: why the mint did
 /// not happen, keyed by the space's **subject** DID (`this`) — the same
 /// entity [`Credential`] is keyed by, so one subject carries both the
