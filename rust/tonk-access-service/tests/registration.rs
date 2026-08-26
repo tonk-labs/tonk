@@ -971,7 +971,13 @@ async fn it_publishes_and_resolves_the_custody_cell(
     // Seal the secret and publish the cell: permit, then presigned PUT.
     let secret = AccountSecret::generate()?;
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
-    let publish = custody::build_publish_invocation(custody_key.clone(), &sealed, None).await?;
+    let publish = custody::build_publish_invocation(
+        custody_key.clone(),
+        &sealed,
+        None,
+        dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+    )
+    .await?;
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
