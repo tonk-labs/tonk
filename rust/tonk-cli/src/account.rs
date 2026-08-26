@@ -14,10 +14,10 @@ use url::Url;
 /// Production account API used unless explicitly overridden.
 pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
 /// Production account page, where the revoke ceremony runs.
-pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/account";
+pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/settings";
 /// Production link ceremony page: it reads `?audience=` and `?callback=`
 /// and posts the grant back to the waiting CLI.
-pub const DEFAULT_LINK_PAGE: &str = "https://tonk.network/account/link";
+pub const DEFAULT_LINK_PAGE: &str = "https://tonk.network/settings/link";
 
 /// Open the browser's passkey-protected, review-first account deletion flow.
 pub async fn open_deletion(
@@ -1349,7 +1349,7 @@ mod tests {
         );
         assert_eq!(
             url,
-            "https://tonk.network/account/link\
+            "https://tonk.network/settings/link\
              ?audience=did%3Akey%3AzProfile\
              &callback=http%3A%2F%2F127.0.0.1%3A54321\
              &name=Kitchen%20laptop"

@@ -1401,7 +1401,7 @@ pub(crate) async fn rename_display_name(
     }
 
     if super::account::provider(tonk).await.is_some() {
-        if configured_descriptor(tonk).await.is_none() {
+        if ensure_account_state(tonk).await != AccountStateStatus::Ready {
             return Err(account_state_unavailable());
         }
         let response = adopt_account_display_name(tonk, name).await?;
@@ -2064,16 +2064,11 @@ mod tests {
     async fn it_mounts_hydrates_and_keeps_readiness_offline() {
         let (state, service, descriptor, _root, _remote) = ready_account_state(None).await;
 
-        let before = crate::router::profile_name::resolve_display_name(&state).await;
-        assert!(matches!(
-            rename_display_name(&state, "must-not-fallback").await,
-            Err(TonkWorkerError::AccountStateUnavailable(_))
-        ));
-        assert_eq!(
-            crate::router::profile_name::resolve_display_name(&state).await,
-            before,
-            "an unhydrated linked rename must not change the local cache"
-        );
+        let renamed = rename_display_name(&state, "linked-name")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(renamed.name, "linked-name");
 
         assert_eq!(
             ensure_account_state(&state).await,
@@ -2088,15 +2083,8 @@ mod tests {
         );
 
         let initialized = initialize_display_name(&state).await.unwrap();
-        assert_eq!(initialized.name, before);
-        let renamed = rename_display_name(&state, "linked-name")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(renamed.name, "linked-name");
-        let initialized_again = initialize_display_name(&state).await.unwrap();
         assert_eq!(
-            initialized_again.name, "linked-name",
+            initialized.name, "linked-name",
             "initialization must not overwrite an existing account fact"
         );
         let account = state

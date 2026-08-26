@@ -48,6 +48,9 @@ const UNTITLED: &str = "Untitled";
 
 const SUB_TAG: &str = "ui-space-name";
 
+/// The class on a `readonly` chip's plain text node.
+const READONLY_CLASS: &str = "ui-space-name__text";
+
 /// The editable child's `change`-commit listener closure.
 type ChangeClosure = Closure<dyn FnMut(Event)>;
 
@@ -91,9 +94,27 @@ impl subscribing::Subscribing for SpaceNameBehaviour {
 impl CustomElement for UiSpaceNameElement {
     fn inject_children(&mut self, this: &HtmlElement) {
         *self.current_name.borrow_mut() = UNTITLED.to_owned();
+        // Headless: the bar renders the name in its own space cell and
+        // renames it with its own block cursor, so this element owns no DOM
+        // at all — it is a subscription with an attribute for an output.
+        if this.has_attribute("headless") {
+            return;
+        }
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
         };
+        // `readonly`: a name being SHOWN, not offered for editing — a
+        // switcher row naming some other space. It gets a plain span, so
+        // nothing about it invites a rename that row could not perform
+        // anyway (the claim is addressed to the space you are in).
+        if this.has_attribute("readonly") {
+            if let Ok(text) = document.create_element("span") {
+                let _ = text.set_attribute("class", READONLY_CLASS);
+                text.set_text_content(Some(UNTITLED));
+                let _ = this.append_child(&text);
+            }
+            return;
+        }
         let Ok(editable) = document.create_element("tonk-editable") else {
             return;
         };
@@ -154,6 +175,28 @@ impl UiSpaceNameElement {
             return;
         }
 
+        // Headless: the rename arrives as the bar's own `fabb-rename`, fired
+        // when its block cursor commits. Listened for on the BAR, not here —
+        // this element has no DOM of its own to hear it on.
+        if this.has_attribute("readonly") {
+            // Nothing to commit — no listener, no claim.
+        } else if this.has_attribute("headless") {
+            if self.change.borrow().is_none()
+                && let Some(bar) = bar_host(this)
+            {
+                let current_name = self.current_name.clone();
+                let host = this.clone();
+                let bar_target = bar.clone();
+                let on_rename: ChangeClosure = Closure::wrap(Box::new(move |event: Event| {
+                    handle_bar_rename(&event, &bar_target, &current_name, &host);
+                }));
+                let _ = bar.add_event_listener_with_callback(
+                    "fabb-rename",
+                    on_rename.as_ref().unchecked_ref(),
+                );
+                *self.change.borrow_mut() = Some(on_rename);
+            }
+        } else
         // Attach the commit listener to the `<tonk-editable>` child. There is
         // no `tonk-display` event delegation here (this markup is Rust-owned,
         // not a resolved template), so the `change` binding is wired directly.
@@ -226,6 +269,24 @@ fn read_name_field(row: &JsValue) -> Option<String> {
 /// `textContent` directly.
 fn paint(host: &HtmlElement, name: &str, current_name: &Rc<RefCell<String>>) {
     *current_name.borrow_mut() = name.to_owned();
+    if host.has_attribute("headless") {
+        // The bar is the renderer: it skips its own repaint while a rename is
+        // in progress, so a frame landing mid-edit cannot clobber the typing.
+        if let Some(bar) = bar_host(host) {
+            let _ = bar.set_attribute("label", name);
+        }
+        return;
+    }
+    if host.has_attribute("readonly") {
+        if let Some(text) = host
+            .query_selector(&format!(".{READONLY_CLASS}"))
+            .ok()
+            .flatten()
+        {
+            text.set_text_content(Some(name));
+        }
+        return;
+    }
     let Some(editable) = host.query_selector("tonk-editable").ok().flatten() else {
         return;
     };
@@ -261,6 +322,46 @@ fn handle_commit(
         .unwrap_or_default();
     let previous = current_name.borrow().clone();
     editable.set_text_content(Some(&previous));
+
+    if typed.is_empty() || typed == previous {
+        return;
+    }
+    let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) else {
+        return;
+    };
+    dispatch_rename(&space, &typed);
+}
+
+/// The bar this subscriber feeds — its own host element.
+fn bar_host(this: &HtmlElement) -> Option<HtmlElement> {
+    this.closest("tonk-fab")
+        .ok()
+        .flatten()
+        .and_then(|el| el.dyn_into::<HtmlElement>().ok())
+}
+
+/// Handle a rename committed by the bar's block cursor.
+///
+/// Same contract as [`handle_commit`], which is the point: the chip and the
+/// bar must not disagree about what a rename means. The name reverts to the
+/// last one the subscription actually delivered BEFORE the claim dispatches,
+/// so a rename that fails leaves the honest prior name on screen rather than
+/// a phantom success; a rename that commits is superseded by the next live
+/// frame.
+fn handle_bar_rename(
+    event: &Event,
+    bar: &Element,
+    current_name: &Rc<RefCell<String>>,
+    host: &HtmlElement,
+) {
+    let typed = event
+        .dyn_ref::<web_sys::CustomEvent>()
+        .map(|e| e.detail())
+        .and_then(|detail| Reflect::get(&detail, &"value".into()).ok())
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    let previous = current_name.borrow().clone();
+    let _ = bar.set_attribute("label", &previous);
 
     if typed.is_empty() || typed == previous {
         return;

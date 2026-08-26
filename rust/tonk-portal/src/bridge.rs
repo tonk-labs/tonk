@@ -18,6 +18,7 @@
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
 //!   navigate(href)    -> void,
+//!   reload()           -> void,
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
 //!   ready: Promise<void>,
@@ -252,6 +253,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // performs the real navigation. Fire-and-forget (no response).
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
+    },
+    // Reload the HOST page after a whole-profile state swap. Unlike navigate,
+    // this is meaningful when the route itself has not changed: every portal
+    // and subscription owned by the previous profile must be rebuilt.
+    reload:function(){
+      ready.then(function(){port.postMessage({v:1,type:"reload"});});
     },
     // Retitle the HOST page's tab: the opaque guest can't touch
     // parent.document.title. `<tonk-title>` posts its text here and the
@@ -514,6 +521,22 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
   // POST anywhere — the event is observable, the navigation is not. Runs on
   // every submit regardless of whether the form has an app handler.
   document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
+
+  // A light/dark change made in some ancestor frame, relayed down. The
+  // theme is a whole-app property, but each guest is its own document with
+  // its own root element, so the only way a toggle reaches nested content is
+  // to walk the frame tree. Each guest applies it and passes it on, so one
+  // message reaches every depth.
+  window.addEventListener("message", function(e){
+    var d=e.data; if(!d||d.__tonkRuntime!=="mode") return;
+    var isDark=d.mode==="dark";
+    var cls=document.documentElement.classList;
+    cls.toggle("wa-dark",isDark); cls.toggle("wa-light",!isDark);
+    var frames=document.querySelectorAll("iframe");
+    for(var i=0;i<frames.length;i++){
+      try{ frames[i].contentWindow.postMessage({__tonkRuntime:"mode",mode:d.mode},"*"); }catch(_){}
+    }
+  });
 
   window.addEventListener("message", async function(e){
     var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
@@ -1553,6 +1576,7 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&state, &data),
+            "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),

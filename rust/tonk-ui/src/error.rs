@@ -7,10 +7,9 @@ pub enum TonkUiError {
     #[error("Error from local API: {0}")]
     ApiError(String),
 
-    /// A curated, already-caller-facing message from the account
-    /// service. Shown verbatim: the service writes these for display, and
-    /// the account service is remote, so the `ApiError` wrapping would
-    /// both mislabel it and bury the sentence someone needs to read.
+    /// A curated, already-caller-facing message from an account flow.
+    /// Shown verbatim because `ApiError` wrapping would bury the sentence
+    /// someone needs to read beneath transport details.
     #[error("{0}")]
     Account(String),
 

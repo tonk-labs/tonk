@@ -28,7 +28,7 @@ revoked, wrong-recipient, and unavailable joins leave no visible replica.
 
 ## Account route
 
-`/account` is mounted directly in the top document rather than inside a sealed
+`/settings` is mounted directly in the top document rather than inside a sealed
 `<tonk-site>` guest. WebAuthn must run on the `tonk.network` RP-ID origin, so
 `<tonk-account>` owns account creation and passkey self-link there. It reads the
 local profile DID from `/api/identify`, sends root-signed ceremony bytes to the
