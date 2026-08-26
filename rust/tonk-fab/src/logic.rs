@@ -357,6 +357,38 @@ pub fn dock_claim_json(dock: Dock) -> Value {
     })
 }
 
+/// Build a `TransactRequest` JSON body for the `member/promote` command.
+///
+/// Asserted once the page has minted the admin hop under the passkey:
+/// `member` is the DID the membership is keyed on, `space` the space, and
+/// `chain` the base58 hop `promoter-account -> member`. Routeless like
+/// `pause_claim_json`: the worker reads `space` off the command.
+pub fn promote_claim_json(space: &str, member: &str, chain: &str) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Promote a member of a space to admin.",
+                        "with": {
+                            "member": { "the": "xyz.tonk.promote/member", "cardinality": "one", "as": "Entity" },
+                            "space": { "the": "xyz.tonk.promote/space", "cardinality": "one", "as": "Entity" },
+                            "chain": { "the": "xyz.tonk.promote/chain", "cardinality": "one", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "member": member,
+                    "space": space,
+                    "chain": chain
+                }
+            }
+        }]
+    })
+}
+
 /// Build a `TransactRequest` JSON body for the `tonk:pause-sync` command.
 ///
 /// A transient command asserting the target `space` (the DID to pause) with a
@@ -1074,6 +1106,96 @@ pub fn member_roster_query_body() -> String {
         }
     })
     .to_string()
+}
+
+/// The one-shot query body for the signed-in member's own profile DID.
+///
+/// Reads the PROFILE branch's replica records by raw attribute: every
+/// replica there carries `xyz.tonk.replica/profile`, the profile that owns
+/// it, so any row answers. Directory mode (`this` unbound). Routeless from
+/// the FAB, whose host mounts `with="main@profile:tonk"`.
+pub fn self_did_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "profile": { "the": "xyz.tonk.replica/profile", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this":    { "?": { "name": "this" } },
+            "profile": { "?": { "name": "profile" } }
+        }
+    })
+    .to_string()
+}
+
+/// The profile DID from a `Conclusion[]` answer to [`self_did_query_body`]:
+/// the first row's `profile` field. `None` for an empty answer.
+pub fn self_did_from_conclusions(rows: &Value) -> Option<String> {
+    rows.as_array()?.iter().find_map(|row| {
+        row.get("fields")
+            .and_then(|fields| fields.get("profile"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+}
+
+/// Whether a member holding `role` runs the space: founders and admins
+/// may promote (and expel) other members; the worker refuses everyone
+/// else, so the roster offers those controls only to them.
+pub fn role_manages_members(role: &str) -> bool {
+    role == "tonk:founder" || role == "tonk:admin"
+}
+
+#[cfg(test)]
+mod self_did {
+    use super::*;
+
+    #[test]
+    fn it_queries_the_replica_profile_by_raw_attribute() {
+        let body = self_did_query_body();
+        assert!(body.contains("xyz.tonk.replica/profile"));
+        assert!(body.contains("\"this\":{\"?\""));
+        assert!(!body.contains("tonk:profile"));
+    }
+
+    #[test]
+    fn it_reads_the_profile_off_the_first_row() {
+        let rows = json!([
+            { "this": "r1", "fields": { "profile": "did:key:zMe" } },
+            { "this": "r2", "fields": { "profile": "did:key:zMe" } }
+        ]);
+        assert_eq!(
+            self_did_from_conclusions(&rows).as_deref(),
+            Some("did:key:zMe")
+        );
+        assert_eq!(self_did_from_conclusions(&json!([])), None);
+    }
+
+    #[test]
+    fn it_lets_founders_and_admins_manage_members() {
+        assert!(role_manages_members("tonk:founder"));
+        assert!(role_manages_members("tonk:admin"));
+        assert!(!role_manages_members("tonk:member"));
+        assert!(!role_manages_members(""));
+    }
+}
+
+#[cfg(test)]
+mod promote {
+    use super::*;
+
+    #[test]
+    fn it_names_the_space_member_and_chain_on_the_promote_command() {
+        let body = promote_claim_json("did:key:zSpace", "did:key:zMember", "3vQB7B6MrGQZaxCu");
+        let claim = &body["claims"][0];
+        assert_eq!(claim["op"], "assert");
+        assert_eq!(claim["application"]["predicate"]["kind"], "transient");
+        let parameters = &claim["application"]["parameters"];
+        assert_eq!(parameters["space"], "did:key:zSpace");
+        assert_eq!(parameters["member"], "did:key:zMember");
+        assert_eq!(parameters["chain"], "3vQB7B6MrGQZaxCu");
+        let with = &claim["application"]["predicate"]["concept"]["with"];
+        assert_eq!(with["chain"]["the"], "xyz.tonk.promote/chain");
+    }
 }
 
 #[cfg(test)]

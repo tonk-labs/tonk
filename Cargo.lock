@@ -5149,8 +5149,13 @@ dependencies = [
 name = "tonk-portal"
 version = "0.6.8"
 dependencies = [
+ "anyhow",
+ "bs58",
  "custom-elements",
  "dialog-common",
+ "dialog-credentials",
+ "dialog-ucan-core",
+ "dialog-varsig",
  "indexmap",
  "ipld-core",
  "js-sys",
@@ -5160,6 +5165,7 @@ dependencies = [
  "tonk-common",
  "tonk-display",
  "tonk-host",
+ "tonk-identity",
  "tonk-worker-api",
  "wasm-bindgen",
  "wasm-bindgen-futures",

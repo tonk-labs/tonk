@@ -17,10 +17,8 @@
 //! authority question is answered by what the chain covers, not by the
 //! role fact. See `plan/space-admins.md`.
 
-use dialog_capability::Subject;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::RepositoryExt as _;
-use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use ipld_core::cid::Cid;
@@ -198,18 +196,21 @@ pub(crate) async fn expel_member(
     Ok(receipt)
 }
 
-/// Promote `member` of the space at `repo` to admin.
+/// Admit `member` of the space at `repo` as admin, with the hop the page
+/// minted under the passkey.
 ///
-/// Mints a `/` chain from this profile's authority for the space down to
-/// the member's account, exactly as a scoped invite is minted but without
-/// the attenuation, retains it in the space db beside the invites, and
-/// stamps the role. The member's devices find the chain where every
-/// other member proof is found; nothing is sent to them. Returns the CID
-/// of the chain's leaf: the hop a demotion revokes.
-pub(crate) async fn promote_member(
+/// The promoter's own `/` chain for the space (an admin chain retained in
+/// the space db, or the creation prefix for a founder) ends at their
+/// account; `hop` must be that account's delegation of `/` on the space to
+/// the member, and nothing else: issued by the account, to the member, over
+/// this space, unattenuated. The composed chain is retained beside the
+/// invites, where the member's devices prove from, and the role is
+/// stamped. Returns the CID of the hop: what a demotion revokes.
+pub(crate) async fn admit_member(
     tonk: &TonkState,
     repo: &str,
     member: &Did,
+    hop: DelegationChain,
 ) -> Result<Cid, TonkWorkerError> {
     let session = tonk
         .reactor
@@ -243,17 +244,40 @@ pub(crate) async fn promote_member(
         Some(_) => {}
     }
 
-    let delegation: UcanDelegation = tonk
-        .profile
-        .access()
-        .claim(Subject::from(subject.clone()))
-        .delegate(member.clone())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Forbidden(format!("cannot mint an admin chain: {error}"))
-        })?;
-    let chain = delegation.into_chain();
+    let authority =
+        super::revoke_invite::account_authority(tonk, session.handle(), &subject).await?;
+    let hops: Vec<_> = hop.proofs().collect();
+    let [delegation] = hops.as_slice() else {
+        return Err(TonkWorkerError::Forbidden(
+            "the page must answer with exactly one hop".to_string(),
+        ));
+    };
+    if delegation.issuer() != authority.audience() {
+        return Err(TonkWorkerError::Forbidden(format!(
+            "the hop is issued by {}, not by this profile's account {}",
+            delegation.issuer(),
+            authority.audience()
+        )));
+    }
+    if delegation.audience() != member {
+        return Err(TonkWorkerError::Forbidden(format!(
+            "the hop admits {}, not {member}",
+            delegation.audience()
+        )));
+    }
+    if !delegation.subject().allows(&subject) {
+        return Err(TonkWorkerError::Forbidden(
+            "the hop is over another subject than this space".to_string(),
+        ));
+    }
+    if !delegation.command().segments().is_empty() {
+        return Err(TonkWorkerError::Forbidden(
+            "an admin holds the whole space; the hop is attenuated".to_string(),
+        ));
+    }
+    let chain = authority.push((*delegation).clone()).map_err(|error| {
+        TonkWorkerError::Forbidden(format!("the hop does not chain onto the account: {error}"))
+    })?;
     let target = leaf_cid(&chain)?;
     super::create_invite::retain_invite_authority(tonk, repo, &chain).await?;
 
@@ -284,8 +308,8 @@ where
         .and_then(|command| member(&command).parse::<Did>().ok())
 }
 
-/// Runs `member/promote`: the roster row's promote form on the space the
-/// command fires in.
+/// Runs `member/promote`: dispatched by the FAB's roster with the hop the
+/// page minted, naming its space.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct PromoteMemberHandler {
     attributes: Vec<String>,
@@ -302,16 +326,28 @@ impl PromoteMemberHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn decode_promotion(facts: &crate::reactor::EntityFacts) -> Option<(String, Did, DelegationChain)> {
+    use crate::reactor::Decode as _;
+    use tonk_schema::prelude::DidExt as _;
+    let command = facts
+        .first()
+        .map(|artifact| artifact.of.clone())
+        .and_then(|entity| tonk_schema::command::PromoteMember::decode(entity, facts))?;
+    let space: Did = command.space.0.to_string().parse().ok()?;
+    let member: Did = command.member.0.to_string().parse().ok()?;
+    let bytes = bs58::decode(&command.chain.0).into_vec().ok()?;
+    let hop = DelegationChain::try_from(bytes.as_slice()).ok()?;
+    Some((space.repo_key().to_owned(), member, hop))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PromoteMemberHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        member_of::<tonk_schema::command::PromoteMember>(facts, |command| {
-            command.member.0.to_string()
-        })
-        .is_some()
+        decode_promotion(facts).is_some()
     }
 
     fn run(
@@ -319,18 +355,15 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PromoteMember
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        let member = member_of::<tonk_schema::command::PromoteMember>(facts, |command| {
-            command.member.0.to_string()
-        });
+        let decoded = decode_promotion(facts);
         let env = env.clone();
         Box::pin(async move {
-            let Some(member) = member else {
-                log!("member/promote: no/unparseable member, skipping");
+            let Some((repo, member, hop)) = decoded else {
+                log!("member/promote: no/unparseable member, space, or chain; skipping");
                 return;
             };
-            let repo = env.origin().repo.clone();
             let tonk = env.state().read().await;
-            match promote_member(&tonk, &repo, &member).await {
+            match admit_member(&tonk, &repo, &member, hop).await {
                 Ok(target) => log!("member/promote: {member} is an admin of {repo} ({target})"),
                 Err(error) => log!("member/promote for {member} on {repo} failed: {error}"),
             }
@@ -526,33 +559,63 @@ mod tests {
         );
     }
 
-    /// Promotion stamps the role and leaves a `/` chain to the member's
-    /// account in the space db, where any member can prove it.
+    /// The hop the page mints under the passkey: this profile's account root
+    /// delegating `/` on the space to the member.
+    async fn root_hop(
+        state: &crate::router::AppState,
+        subject: &Did,
+        member: &Did,
+        issuer: Option<Ed25519Signer>,
+    ) -> DelegationChain {
+        use dialog_ucan_core::DelegationBuilder;
+        let issuer = match issuer {
+            Some(issuer) => issuer,
+            None => {
+                let seed = crate::router::tests::test_root_seed(&state.read().await.profile_name);
+                Ed25519Signer::import(&seed).await.unwrap()
+            }
+        };
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(issuer))
+            .audience(member)
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        DelegationChain::new(delegation)
+    }
+
+    async fn seed_member(state: &crate::router::AppState, key: &str, member: &Did, subject: &Did) {
+        let tonk = state.read().await;
+        let membership = Membership::new(member.clone(), subject.clone());
+        tonk.reactor
+            .repository(key)
+            .branch(CONTENT_BRANCH)
+            .transaction()
+            .assert(membership.clone())
+            .assert(MemberRole::member(membership.this().clone()))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+    }
+
+    /// Admitting stamps the role and leaves a `/` chain to the member's
+    /// account in the space db, where any member can prove it, with no
+    /// device key in it.
     #[dialog_common::test]
-    async fn it_promotes_a_member_with_a_full_chain_retained_in_the_space() {
+    async fn it_admits_a_member_with_a_root_signed_chain_retained_in_the_space() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let key = put_repo(&app, "members-promote").await;
         let (branch, subject) = open_content(&state, &key).await;
         let member = Ed25519Signer::generate().await.unwrap().did();
-        // Seed the roster as a claim would.
-        {
-            let tonk = state.read().await;
-            let membership = Membership::new(member.clone(), subject.clone());
-            tonk.reactor
-                .repository(&key)
-                .branch(CONTENT_BRANCH)
-                .transaction()
-                .assert(membership.clone())
-                .assert(MemberRole::member(membership.this().clone()))
-                .commit()
-                .perform(&tonk.operator)
-                .await
-                .unwrap();
-        }
+        seed_member(&state, &key, &member, &subject).await;
+        let hop = root_hop(&state, &subject, &member, None).await;
 
         let target = {
             let tonk = state.read().await;
-            promote_member(&tonk, &key, &member).await.unwrap()
+            admit_member(&tonk, &key, &member, hop).await.unwrap()
         };
 
         let roles = content_member_roles(&state, &key).await;
@@ -567,6 +630,7 @@ mod tests {
         );
 
         let tonk = state.read().await;
+        let device = tonk.profile.did();
         let full = Scope {
             subject: UcanSubject::Specific(subject.clone()),
             command: Command::parse("/").unwrap(),
@@ -583,6 +647,52 @@ mod tests {
             target,
             "the returned target is the chain's leaf"
         );
+        assert!(
+            proof
+                .proofs
+                .iter()
+                .all(|certificate| certificate.0.issuer() != &device),
+            "no device key issues a hop of the admin chain"
+        );
+    }
+
+    /// A hop signed by anything but this profile's account is refused,
+    /// whatever it says.
+    #[dialog_common::test]
+    async fn it_refuses_a_hop_the_account_did_not_sign() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "members-forged").await;
+        let (_, subject) = open_content(&state, &key).await;
+        let member = Ed25519Signer::generate().await.unwrap().did();
+        seed_member(&state, &key, &member, &subject).await;
+        let forger = Ed25519Signer::generate().await.unwrap();
+        let hop = root_hop(&state, &subject, &member, Some(forger)).await;
+
+        let tonk = state.read().await;
+        let error = admit_member(&tonk, &key, &member, hop).await.unwrap_err();
+        assert!(
+            matches!(error, TonkWorkerError::Forbidden(_)),
+            "got {error:?}"
+        );
+    }
+
+    /// A hop the account signed for someone else does not admit this member.
+    #[dialog_common::test]
+    async fn it_refuses_a_hop_to_another_audience() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "members-audience").await;
+        let (_, subject) = open_content(&state, &key).await;
+        let member = Ed25519Signer::generate().await.unwrap().did();
+        let other = Ed25519Signer::generate().await.unwrap().did();
+        seed_member(&state, &key, &member, &subject).await;
+        let hop = root_hop(&state, &subject, &other, None).await;
+
+        let tonk = state.read().await;
+        let error = admit_member(&tonk, &key, &member, hop).await.unwrap_err();
+        assert!(
+            matches!(error, TonkWorkerError::Forbidden(_)),
+            "got {error:?}"
+        );
     }
 
     /// A stranger cannot be promoted: promotion describes a member.
@@ -591,8 +701,10 @@ mod tests {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let key = put_repo(&app, "members-stranger").await;
         let stranger = Ed25519Signer::generate().await.unwrap().did();
+        let (_, subject) = open_content(&state, &key).await;
+        let hop = root_hop(&state, &subject, &stranger, None).await;
         let tonk = state.read().await;
-        let error = promote_member(&tonk, &key, &stranger).await.unwrap_err();
+        let error = admit_member(&tonk, &key, &stranger, hop).await.unwrap_err();
         assert!(
             matches!(error, TonkWorkerError::NotFound(_)),
             "got {error:?}"

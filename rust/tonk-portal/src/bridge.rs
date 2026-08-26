@@ -241,6 +241,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // {document, transact}; the parent relays it to the installed host's
     // consumer path, which performs the typed evaluate and returns its parsed result.
     evaluate:function(detail){return call("evaluate",{document:(detail&&detail.document)||"",transact:!(detail&&detail.transact===false)});},
+    // Ask the HOST page to delegate: the account root lives behind the
+    // passkey, and WebAuthn exists only on the top-level window, inside a
+    // user gesture. A guest click posts {subject, command, audience} here;
+    // the parent runs the ceremony and answers with the minted hop (base58
+    // of the serialized chain), or rejects with the reason.
+    delegate:function(request){return call("delegate",request||{});},
     // Navigate the HOST page: the opaque guest can't touch parent.location
     // and has no router, so a link click posts its href here and the parent
     // performs the real navigation. Fire-and-forget (no response).
@@ -304,6 +310,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve(env.result); return;
       }
+      case "delegate-result": {
+        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
+        h.resolve(env.delegation); return;
+      }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         // Rebuild a real Response from the status/headers the host captured
@@ -360,7 +370,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         h.resolve(rebuilt);
         return;
       }
-      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": {
+      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": case "delegate-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.reject(new Error(env.error)); return;
       }
@@ -1546,6 +1556,7 @@ fn make_dispatcher(
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
+            "delegate" => handle_delegate(&port, &data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -1860,6 +1871,77 @@ fn title_text(data: &JsValue) -> Option<String> {
 /// and no `allow-top-navigation`, so it cannot open anything itself; it posts
 /// the raw href and `tonk_host::open_external` — running on the page, which is
 /// the only place that can both resolve and open it — decides what happens.
+/// Mint a delegation under the passkey on the guest's behalf.
+///
+/// The guest asks `{ subject, command, audience }`; the account root that
+/// signs it lives behind the passkey, which exists only on this top-level
+/// window and only inside a user gesture. The guest's click propagates its
+/// activation to this frame, so the ceremony runs here immediately and the
+/// prompt is the user's own gesture. The hop minted is `root -> audience`
+/// over `subject` at `command`; the guest carries it to the worker, which
+/// checks it against what it composes it with. Answered with
+/// `delegate-result` carrying the base58 chain, or `delegate-error`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn handle_delegate(port: &MessagePort, data: &JsValue) {
+    let Some(id) = get_str(data, "id") else {
+        return;
+    };
+    let request = (
+        get_str(data, "subject").unwrap_or_default(),
+        get_str(data, "command").unwrap_or_default(),
+        get_str(data, "audience").unwrap_or_default(),
+    );
+    let port = port.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        match mint_delegation(&request.0, &request.1, &request.2).await {
+            Ok(encoded) => post_result(
+                &port,
+                "delegate-result",
+                &id,
+                "delegation",
+                &JsValue::from_str(&encoded),
+            ),
+            Err(error) => post_error(&port, "delegate-error", &id, &format!("{error:#}")),
+        }
+    });
+}
+
+/// Run the passkey ceremony and mint `root -> audience` over `subject` at
+/// `command`, returning the serialized chain as base58.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn mint_delegation(subject: &str, command: &str, audience: &str) -> anyhow::Result<String> {
+    use dialog_ucan_core::command::Command;
+    use dialog_ucan_core::subject::Subject as UcanSubject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::Did;
+
+    let subject: Did = subject
+        .parse()
+        .map_err(|error| anyhow::anyhow!("the subject is not a DID: {error:?}"))?;
+    let audience: Did = audience
+        .parse()
+        .map_err(|error| anyhow::anyhow!("the audience is not a DID: {error:?}"))?;
+    let command = Command::parse(command)
+        .map_err(|error| anyhow::anyhow!("the command does not parse: {error}"))?;
+    // The custody endpoint the page's other ceremonies use: the account
+    // service is served under `/ucan/` on the page's own origin.
+    let origin = web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .ok_or_else(|| anyhow::anyhow!("window origin is unavailable"))?;
+    let endpoint = format!("{}/ucan/", origin.trim_end_matches('/'));
+    let root = tonk_identity::ceremony::unlock_root(&endpoint).await?;
+    let delegation = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(root))
+        .audience(&audience)
+        .subject(UcanSubject::Specific(subject))
+        .command(command.segments().clone())
+        .try_build()
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to mint the delegation: {error}"))?;
+    let bytes = DelegationChain::new(delegation).to_bytes()?;
+    Ok(bs58::encode(bytes).into_string())
+}
+
 fn handle_open(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
     let Some(href) = open_href(data) else {
         return;
