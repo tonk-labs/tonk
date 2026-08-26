@@ -13,13 +13,13 @@ use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
-    Account, BUMP_ATTEMPTS, CodeRow, DELETE_ACCOUNT, DELETE_ACCOUNT_DEVICES, DELETE_CODE,
+    Account, DELETE_ACCOUNT, DELETE_ACCOUNT_DEVICES,
     DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
     INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_DEVICE_FOR_NEW_ACCOUNT, NewAccount,
     NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID,
-    SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT,
+    SELECT_ATTACHMENT, SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT,
     SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
-    UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    UPDATE_DEVICE_REVOKE_BY_CID,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -41,28 +41,6 @@ fn map_err(err: worker::Error) -> StoreError {
         StoreError::Conflict(message)
     } else {
         StoreError::Internal(message)
-    }
-}
-
-/// A pending code row as deserialized straight off a D1 query.
-#[derive(Deserialize)]
-struct CodeRowD1 {
-    email: String,
-    code_hash: String,
-    created_at: f64,
-    expires_at: f64,
-    attempts: f64,
-}
-
-impl From<CodeRowD1> for CodeRow {
-    fn from(row: CodeRowD1) -> Self {
-        CodeRow {
-            email: row.email,
-            code_hash: row.code_hash,
-            created_at: row.created_at as u64,
-            expires_at: row.expires_at as u64,
-            attempts: row.attempts as u32,
-        }
     }
 }
 
@@ -133,56 +111,6 @@ struct DescriptorRowD1 {
 }
 
 impl Store for D1Store {
-    async fn code(&self, email: &str) -> Result<Option<CodeRow>, StoreError> {
-        let row: Option<CodeRowD1> = self
-            .0
-            .prepare(SELECT_CODE)
-            .bind(&[JsValue::from(email)])
-            .map_err(map_err)?
-            .first(None)
-            .await
-            .map_err(map_err)?;
-        Ok(row.map(CodeRow::from))
-    }
-
-    async fn put_code(&self, row: &CodeRow) -> Result<(), StoreError> {
-        self.0
-            .prepare(UPSERT_CODE)
-            .bind(&[
-                JsValue::from(row.email.as_str()),
-                JsValue::from(row.code_hash.as_str()),
-                JsValue::from_f64(row.created_at as f64),
-                JsValue::from_f64(row.expires_at as f64),
-            ])
-            .map_err(map_err)?
-            .run()
-            .await
-            .map_err(map_err)?;
-        Ok(())
-    }
-
-    async fn bump_attempts(&self, email: &str) -> Result<(), StoreError> {
-        self.0
-            .prepare(BUMP_ATTEMPTS)
-            .bind(&[JsValue::from(email)])
-            .map_err(map_err)?
-            .run()
-            .await
-            .map_err(map_err)?;
-        Ok(())
-    }
-
-    async fn delete_code(&self, email: &str) -> Result<(), StoreError> {
-        self.0
-            .prepare(DELETE_CODE)
-            .bind(&[JsValue::from(email)])
-            .map_err(map_err)?
-            .run()
-            .await
-            .map_err(map_err)?;
-        Ok(())
-    }
-
     async fn create_account(
         &self,
         email: &str,
@@ -252,14 +180,9 @@ impl Store for D1Store {
                 JsValue::from_f64(account.created_at as f64),
             ])
             .map_err(map_err)?;
-        let consume_code = self
-            .0
-            .prepare(DELETE_CODE)
-            .bind(&[JsValue::from(account.email)])
-            .map_err(map_err)?;
         let results = self
             .0
-            .batch(vec![insert_account, insert_device, consume_code])
+            .batch(vec![insert_account, insert_device])
             .await
             .map_err(map_err)?;
         results
@@ -300,11 +223,6 @@ impl Store for D1Store {
             .prepare(DELETE_ACCOUNT_DEVICES)
             .bind(std::slice::from_ref(&id))
             .map_err(map_err)?;
-        let code = self
-            .0
-            .prepare(DELETE_CODE)
-            .bind(&[JsValue::from(email)])
-            .map_err(map_err)?;
         let account = self
             .0
             .prepare(DELETE_ACCOUNT)
@@ -312,7 +230,7 @@ impl Store for D1Store {
             .map_err(map_err)?;
         let results = self
             .0
-            .batch(vec![devices, code, account])
+            .batch(vec![devices, account])
             .await
             .map_err(map_err)?;
         Ok(results
