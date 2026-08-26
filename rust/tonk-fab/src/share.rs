@@ -148,7 +148,7 @@ impl PendingClipboard {
 /// A refusal delivered on the blocked subscription.
 #[derive(Debug, Clone, PartialEq)]
 struct Blocked {
-    /// `not-synced` | `unshareable-remote` | `attach-failed`.
+    /// `account-required` | `not-synced` | `unshareable-remote` | `attach-failed`.
     code: String,
     /// The sentence to show.
     detail: String,
@@ -1002,6 +1002,16 @@ fn read_link_field(row: &JsValue) -> Option<String> {
 /// stylesheet owns the appearance.
 fn set_state(host: &HtmlElement, state: ShareState) {
     let _ = host.set_attribute("data-share-state", state.as_str());
+    // The row the user actually sees is a sibling in the bar's share stack —
+    // this element is headless there. Stamp the state onto it too so the row
+    // can answer in place ("copy link" → "copying…" → "copied"), which is the
+    // same word-answers grammar the Hub's rows use. Absent (a fixture, or the
+    // element used standalone) this simply finds nothing.
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten()
+        && let Ok(Some(row)) = bar.query_selector("[data-share-link]")
+    {
+        let _ = row.set_attribute("data-share-state", state.as_str());
+    }
 }
 
 fn read_state(host: &HtmlElement) -> ShareState {
@@ -1156,6 +1166,7 @@ mod tests {
     /// The action line is not returned: only the tests about per-refusal
     /// wording read it, and they do so through [`action_text`].
     fn dialog_stub() -> (Element, Element, Element) {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let dialog = document.create_element("div").expect("create dialog");
         dialog.set_id(DIALOG_ID);
@@ -1180,6 +1191,15 @@ mod tests {
             .append_child(&dialog)
             .expect("attach dialog");
         (dialog, detail, confirm)
+    }
+
+    /// Refusal dialogs use a fixed document id in production. Keep test
+    /// fixtures unique too so one test cannot update a stale duplicate.
+    fn remove_refusal_dialog() {
+        let document = window().expect("window").document().expect("document");
+        if let Some(dialog) = document.get_element_by_id(DIALOG_ID) {
+            dialog.remove();
+        }
     }
 
     /// The prompt's action line — what confirming is being offered as.
@@ -1388,17 +1408,21 @@ mod tests {
     /// the authored ones, not a fixture's idea of them. Returns the mounted
     /// host, which the caller removes.
     fn mounted_bar() -> HtmlElement {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let host: HtmlElement = document
             .create_element("tonk-fab")
             .expect("create host")
             .unchecked_into();
-        host.set_inner_html(&crate::markup::fab_html("did:key:zShareFixture"));
+        let _ = host.set_attribute("space", "did:key:zShareFixture");
         document
             .body()
             .expect("body")
             .append_child(&host)
             .expect("mount");
+        // The refusal prompts are mounted on <body> by the bar, not authored
+        // inside it — see `element::mount_refusal_dialogs`.
+        crate::element::mount_refusal_dialogs();
         host
     }
 
@@ -1425,6 +1449,7 @@ mod tests {
         let hidden = confirm.has_attribute("hidden");
         let disabled = confirm.has_attribute("disabled");
         bar.remove();
+        remove_refusal_dialog();
 
         assert!(!hidden, "the confirm stays on screen");
         assert!(disabled, "and inert");

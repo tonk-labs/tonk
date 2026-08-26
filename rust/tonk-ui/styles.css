@@ -6,16 +6,17 @@
    `[hidden] { display: none }` whatever its specificity or layer, so the
    attribute silently stops working on a bare button wherever that sheet
    loads. A sealed `<tonk-portal>` guest concatenates it ahead of this file
-   (`tonk-portal`'s `build_inject_payload`), which is where it bit: the FAB's
-   guest-only "join space" action rendered on every space, owners included, and
-   the hide-again after a successful join was equally inert.
+   (`tonk-portal`'s `build_inject_payload`), which is where it first bit: a
+   `hidden` bare button rendered anyway, and hiding it again was equally
+   inert.
 
-   `!important` rather than a bare `display: none`. Unlayered declarations do
-   outrank layered ones, so this would already beat `@layer wa-native` — but
-   `fab.css` is appended to `<head>` after this sheet and styles `.fab__join`
-   with an unlayered `display` of the same 0-1-0 specificity, which wins the
-   tie on order. Anything that wants to show a `hidden` element has to drop
-   the attribute, which is what the attribute is for. */
+   `!important` rather than a bare `display: none`. Unlayered declarations
+   already outrank layered ones, so this beats `@layer wa-native` on its own;
+   the `!important` additionally survives any unlayered author rule of the
+   same 0-1-0 specificity that happens to load after this sheet, which is a
+   tie decided by order and so by build configuration. Anything that wants to
+   show a `hidden` element has to drop the attribute, which is what the
+   attribute is for. */
 [hidden] { display: none !important; }
 
 /* Web Awesome FOUC cloak. The WA loader registers each `<wa-*>`

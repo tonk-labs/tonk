@@ -9,9 +9,35 @@
 pub mod logic;
 pub mod markup;
 pub mod retry;
+pub mod skin;
+
+/// `<tonk-button>` — a block button.
+#[cfg(target_arch = "wasm32")]
+mod button;
+
+/// The bar — responsive cells, overflow stacks and the mode action.
+#[cfg(target_arch = "wasm32")]
+mod bar;
+
+/// `<tonk-dialog>` — a modal cluster of blocks.
+#[cfg(target_arch = "wasm32")]
+mod dialog;
 
 #[cfg(target_arch = "wasm32")]
 mod element;
+
+/// `<tonk-menu>` — a stack of blocks.
+#[cfg(target_arch = "wasm32")]
+mod menu;
+
+/// `<tonk-mi>` — one block in a stack.
+#[cfg(target_arch = "wasm32")]
+mod mi;
+
+/// Shared scaffolding for the FABB component family — shadow attach, mode
+/// plumbing, the event emitter, and the block-cursor editable.
+#[cfg(target_arch = "wasm32")]
+mod shadow;
 
 #[cfg(target_arch = "wasm32")]
 mod member_roster;
@@ -28,6 +54,10 @@ mod space_name;
 #[cfg(target_arch = "wasm32")]
 mod space_switcher;
 
+/// Rendering subscription results as rows of a stack.
+#[cfg(target_arch = "wasm32")]
+mod stack_rows;
+
 #[cfg(target_arch = "wasm32")]
 mod subscribing;
 
@@ -35,6 +65,10 @@ mod subscribing;
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
     element::register();
+    menu::register();
+    mi::register();
+    dialog::register();
+    button::register();
     share::register();
     space_name::register();
     profile_name::register();

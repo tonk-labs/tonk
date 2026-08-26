@@ -59,11 +59,11 @@ use web_sys::window;
 ///
 /// VIOLATE THAT AND EVERY PAGE EFFECT DIES AT ONCE, SILENTLY. Adding the
 /// element runtime to `wrap_html_body`, or `bridge.js` to a runtime guest,
-/// makes `forward` find a `tonk` with no `navigate`/`setTitle`/`open`: it
+/// makes `forward` find a `tonk` with no `navigate`/`reload`/`setTitle`/`open`: it
 /// takes the guest branch, drops the effect, and returns `true`. Installing a
 /// `window.tonk` of either kind on the TOP page does the same there. That is
-/// the assumption to check first if navigation, titles, and link opening all
-/// stop working together.
+/// the assumption to check first if navigation, reloads, titles, and link
+/// opening all stop working together.
 pub(crate) fn forward(method: &str, arg: &str) -> bool {
     let Some(win) = window() else {
         return false;

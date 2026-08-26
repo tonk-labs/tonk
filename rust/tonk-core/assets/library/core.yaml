@@ -1365,9 +1365,9 @@ concept!: &space
 
 # The space's default content: the blank canvas. The space route mounts
 # `<tonk-display entity={replica} model=tonk/space>`; this alias resolves
-# `tonk/space` to `tonk:blank`. Seeding `sheets.yaml` re-asserts this
-# alias to `tonk:binder` (name! is cardinality-one), so a sheets repo
-# renders the binder instead.
+# `tonk/space` to `tonk:blank`. `name!` is cardinality-one, so anything
+# authored into a space later can re-point the alias at its own root
+# model and take over the space home.
 name!:
   this: id:tonk/space
   entity: tonk:blank
@@ -1559,8 +1559,7 @@ concept!: &workspace/shell
       as: text
 
 # The shell mounts the space's content via the `tonk/space` alias on the active
-# replica. The alias resolves to `tonk:blank` by default (lean repo, no
-# template); seeding `sheets.yaml` overrides it to `tonk:binder`. The
+# replica, which resolves to `tonk:blank` until something re-points it. The
 # `.display-view-slot` wrapper is the bare-route fill-height layout.
 #
 # The content display is scoped with `with="{branch}@{repo}"`, exactly as
