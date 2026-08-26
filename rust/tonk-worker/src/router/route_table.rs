@@ -31,7 +31,6 @@ const ROUTES: &[&str] = &[
     "/api/customer/activated",
     "/api/customer/enroll",
     "/api/customer/pending",
-    "/api/customer/pending/custody",
     "/api/identify",
     "/api/identity/root",
     "/api/inspect/repository/{repo}/archive/index/{hash}",

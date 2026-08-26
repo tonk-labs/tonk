@@ -34,13 +34,13 @@ pub enum PendingWork {
     },
     /// Publish a sealed account secret into a custody space's cell.
     ///
-    /// Only the sealed bytes are queued, never a signed invocation: the
-    /// custody key is PRF-derived inside a passkey assertion and never
-    /// stored, and an invocation signed during the ceremony carries a
-    /// five-minute expiration that cannot outlive a wait for an email
-    /// click. Replaying therefore needs a fresh assertion, which only a
-    /// page can raise — so this entry drains from the account panel
-    /// rather than from the worker's own status probe.
+    /// The ceremony that sealed the envelope also pre-signed the
+    /// publish invocation — the one moment the PRF-derived custody key
+    /// is in hand — with a bounded long expiration, so the worker can
+    /// drain this with no page, no assertion, and no button the moment
+    /// activation and provisioning land. The signature covers exactly
+    /// this cell and this content's checksum: least authority, held as
+    /// queued work.
     ///
     /// The envelope is already sealed under the passkey's KEK when it
     /// arrives here, so what waits is ciphertext rather than key
@@ -53,6 +53,12 @@ pub enum PendingWork {
         custody: String,
         /// Hex-encoded sealed envelope, the content to publish.
         sealed_hex: String,
+        /// Hex-encoded pre-signed `/memory/publish` invocation. An
+        /// entry from before invocations were queued decodes with an
+        /// empty string and is void: dropped with a log rather than
+        /// blocking the queue forever.
+        #[serde(default)]
+        invocation_hex: String,
     },
 }
 
@@ -123,6 +129,7 @@ mod tests {
         queue.push(PendingWork::PublishCustody {
             custody: "did:key:zCustody".to_string(),
             sealed_hex: "bb".to_string(),
+            invocation_hex: "c0de".to_string(),
         });
         queue.push(provision("did:key:zCustody"));
 
@@ -159,6 +166,7 @@ mod tests {
         queue.push(PendingWork::PublishCustody {
             custody: "did:key:zCustody".to_string(),
             sealed_hex: "bb".to_string(),
+            invocation_hex: "c0de".to_string(),
         });
 
         let bytes = serde_json::to_vec(&queue).expect("queue serializes");

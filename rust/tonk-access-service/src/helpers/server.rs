@@ -656,6 +656,20 @@ async fn handle_request(
     // Authorize the UCAN container using UcanAuthorizer
     let authorizer = authorizer.read().await;
     let outcome = authorizer.authorize(&body_bytes).await;
+    // Test visibility: one line per permit request, so a CI job log
+    // shows whether a publish or resolve ever arrived and how it fared
+    // — the service worker's own console never reaches those logs.
+    {
+        let command = dialog_ucan_core::InvocationChain::try_from(body_bytes.as_ref())
+            .map(|chain| chain.command().0.join("/"))
+            .unwrap_or_else(|_| "?".into());
+        let subject =
+            crate::provisioning::container_subject(&body_bytes).unwrap_or_else(|| "?".into());
+        println!(
+            "ACCESS_UCAN command=/{command} subject={subject} authorized={}",
+            outcome.is_ok()
+        );
+    }
     if outcome.is_ok()
         && let Some(subject) = crate::deletion::subject(&body_bytes)
     {
@@ -694,6 +708,7 @@ async fn handle_request(
             {
                 Ok(Ok(())) => {}
                 Ok(Err(reason)) => {
+                    println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
                     return Ok(cors_response(authorize_error_response(
                         StatusCode::FORBIDDEN,
                         &reason,

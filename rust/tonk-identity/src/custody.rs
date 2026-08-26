@@ -36,6 +36,7 @@ async fn build_self_invocation(
     custody: Ed25519Signer,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
+    expiration: Timestamp,
 ) -> Result<Vec<u8>> {
     let did = custody.did();
     let invocation = InvocationBuilder::new()
@@ -45,7 +46,7 @@ async fn build_self_invocation(
         .command(command)
         .arguments(arguments)
         .proofs(vec![])
-        .expiration(Timestamp::five_minutes_from_now())
+        .expiration(expiration)
         .try_build()
         .await
         .context("failed to sign the custody invocation")?;
@@ -53,6 +54,11 @@ async fn build_self_invocation(
         .to_bytes()
         .context("failed to serialize the custody invocation")
 }
+
+/// How long a deferred publish invocation stays redeemable: the
+/// ceremony pre-signs it, and it waits for an email activation that can
+/// take days. Bounded so a leaked queue entry is not authority forever.
+pub const DEFERRED_PUBLISH_TTL_SECONDS: u64 = 60 * 60 * 24 * 30;
 
 fn cell_arguments() -> BTreeMap<String, Promised> {
     BTreeMap::from([
@@ -78,6 +84,7 @@ pub async fn build_publish_invocation(
     custody: Ed25519Signer,
     content: &[u8],
     when: Option<&[u8]>,
+    expiration: Timestamp,
 ) -> Result<Vec<u8>> {
     let mut arguments = cell_arguments();
     arguments.insert(
@@ -91,8 +98,25 @@ pub async fn build_publish_invocation(
         custody,
         vec!["memory".to_string(), "publish".to_string()],
         arguments,
+        expiration,
     )
     .await
+}
+
+/// Pre-sign the first-write publish for `content`, redeemable for
+/// [`DEFERRED_PUBLISH_TTL_SECONDS`]: what a creation ceremony queues so
+/// the worker can publish the custody cell once activation lands,
+/// with no further passkey assertion. Least authority: the signature
+/// covers exactly this cell and this content's checksum.
+pub async fn build_deferred_publish_invocation(
+    custody: Ed25519Signer,
+    content: &[u8],
+) -> Result<Vec<u8>> {
+    use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
+    let expiration =
+        Timestamp::new(SystemTime::now() + Duration::from_secs(DEFERRED_PUBLISH_TTL_SECONDS))
+            .context("the deferred publish expiration is out of range")?;
+    build_publish_invocation(custody, content, None, expiration).await
 }
 
 /// Build a `/memory/resolve` container for the wrapped-secret cell.
@@ -101,6 +125,7 @@ pub async fn build_resolve_invocation(custody: Ed25519Signer) -> Result<Vec<u8>>
         custody,
         vec!["memory".to_string(), "resolve".to_string()],
         cell_arguments(),
+        Timestamp::five_minutes_from_now(),
     )
     .await
 }
@@ -147,8 +172,19 @@ mod web {
     }
 
     async fn fetch_bytes(request: Request) -> Result<(u16, Vec<u8>)> {
-        let window = web_sys::window().context("no window: custody ceremonies are page-only")?;
-        let response: Response = JsFuture::from(window.fetch_with_request(&request))
+        // `fetch` off the global, so the same exchange runs from a page
+        // (ceremonies) and from the service worker (the queued-publish
+        // drain after activation).
+        let fetch = js_sys::Reflect::get(&js_sys::global(), &"fetch".into())
+            .map_err(|e| web_error("no fetch in this scope", e))?
+            .dyn_into::<js_sys::Function>()
+            .map_err(|_| anyhow!("fetch is not callable in this scope"))?;
+        let promise: js_sys::Promise = fetch
+            .call1(&js_sys::global(), &request)
+            .map_err(|e| web_error("the custody request failed to start", e))?
+            .dyn_into()
+            .map_err(|_| anyhow!("fetch did not answer a promise"))?;
+        let response: Response = JsFuture::from(promise)
             .await
             .map_err(|e| web_error("the custody request failed", e))?
             .dyn_into()
@@ -208,8 +244,22 @@ mod web {
         endpoint: &str,
         when: Option<&[u8]>,
     ) -> Result<()> {
-        let container = super::build_publish_invocation(custody, sealed, when).await?;
-        let permit = redeem(endpoint, container).await?;
+        let container = super::build_publish_invocation(
+            custody,
+            sealed,
+            when,
+            dialog_ucan_core::time::timestamp::Timestamp::five_minutes_from_now(),
+        )
+        .await?;
+        submit_publish(&container, sealed, endpoint).await
+    }
+
+    /// Publish `sealed` with an already-signed invocation: redeem the
+    /// permit and execute the presigned PUT. No signer involved — this
+    /// is what drains a ceremony's pre-signed publish after activation,
+    /// from the worker, with no page and no assertion.
+    pub async fn submit_publish(invocation: &[u8], sealed: &[u8], endpoint: &str) -> Result<()> {
+        let permit = redeem(endpoint, invocation.to_vec()).await?;
         let (status, body) = execute(permit, Some(sealed)).await?;
         if !(200..300).contains(&status) {
             let detail = String::from_utf8_lossy(&body);
@@ -236,7 +286,7 @@ mod web {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use web::{publish_secret, resolve_secret};
+pub use web::{publish_secret, resolve_secret, submit_publish};
 
 #[cfg(test)]
 mod tests {
@@ -258,9 +308,10 @@ mod tests {
     async fn it_builds_a_self_issued_publish_the_service_verifies() {
         let custody = custody().await;
         let did = custody.did();
-        let bytes = build_publish_invocation(custody, b"sealed", None)
-            .await
-            .unwrap();
+        let bytes =
+            build_publish_invocation(custody, b"sealed", None, Timestamp::five_minutes_from_now())
+                .await
+                .unwrap();
 
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
@@ -297,9 +348,14 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_builds_a_versioned_overwrite() {
-        let bytes = build_publish_invocation(custody().await, b"resealed", Some(b"etag-1"))
-            .await
-            .unwrap();
+        let bytes = build_publish_invocation(
+            custody().await,
+            b"resealed",
+            Some(b"etag-1"),
+            Timestamp::five_minutes_from_now(),
+        )
+        .await
+        .unwrap();
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         assert_eq!(
             chain.invocation.arguments().get("when"),

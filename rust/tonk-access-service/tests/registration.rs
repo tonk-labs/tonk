@@ -971,7 +971,122 @@ async fn it_publishes_and_resolves_the_custody_cell(
     // Seal the secret and publish the cell: permit, then presigned PUT.
     let secret = AccountSecret::generate()?;
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
-    let publish = custody::build_publish_invocation(custody_key.clone(), &sealed, None).await?;
+    let publish = custody::build_publish_invocation(
+        custody_key.clone(),
+        &sealed,
+        None,
+        dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(publish)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "publish permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let stored = permit.upload(sealed.clone()).await?;
+    assert!(
+        stored.status().is_success(),
+        "storage PUT failed: {}",
+        stored.status(),
+    );
+
+    // A fresh device resolves with nothing but the custody key.
+    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "resolve permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let fetched = permit.send().await?;
+    assert!(
+        fetched.status().is_success(),
+        "storage GET failed: {}",
+        fetched.status(),
+    );
+    let bytes = fetched.bytes().await?.to_vec();
+    assert_eq!(bytes, sealed, "the resolved cell is the sealed envelope");
+
+    // The envelope opens back to the same account.
+    let opened = custody_kek(&[22u8; 32]).open(&Envelope::decode(&bytes)?)?;
+    assert_eq!(
+        opened.signing_seed().as_ref(),
+        secret.signing_seed().as_ref(),
+        "the unwrapped secret derives the same account",
+    );
+    Ok(())
+}
+
+/// The deferred variant of the custody publish: the invocation is
+/// pre-signed with the month-long expiration a queued-at-creation
+/// publish carries, and must still redeem — the service bounds
+/// registration ceremonies, not the memory permit an owner signs for
+/// its own cell.
+#[dialog_common::test]
+async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> anyhow::Result<()> {
+    use dialog_remote_s3::Permit;
+    use tonk_identity::envelope::{
+        AccountSecret, Envelope, KekMethod, custody_kek, custody_signer,
+    };
+    use tonk_identity::{custody, delegation};
+
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+
+    // The account enrolls as a customer.
+    let account = Ed25519Signer::generate().await?;
+    let container = enroll_container(&account, &service_did, "custody@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "enrollment refused");
+
+    // Confirming the email is what unlocks everything below: an
+    // unactivated customer provisions nothing and is served nothing.
+    activate_over_http(&client, &base).await?;
+
+    // The entry function's two outputs; a PRF would produce these
+    // inside one assertion, at the two custody salts.
+    let custody_key = custody_signer(&[21u8; 32]).await?;
+    let kek = custody_kek(&[22u8; 32]);
+
+    // The account provisions the custody DID, depositing the consent
+    // the custody key minted — the ordinary provisioning contract.
+    let device = Ed25519Signer::generate().await?;
+    let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
+    let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
+    let add = tonk_identity::request::build_provider_add_invocation(
+        device,
+        &link,
+        &custody_key.did(),
+        &consent,
+        Some("custody"),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "provisioning refused");
+
+    // Seal the secret and publish the cell: permit, then presigned PUT.
+    let secret = AccountSecret::generate()?;
+    let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
+    // The ceremony's pre-signed shape: bounded to a month, redeemed
+    // long after signing — what the worker drains once activation lands.
+    let publish = custody::build_deferred_publish_invocation(custody_key.clone(), &sealed).await?;
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
