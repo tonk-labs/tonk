@@ -429,7 +429,10 @@ Two constraints shape it:
 
 - **Viewing the past needs query-at-a-revision** — the same missing API.
   Until then the slider can show revision *metadata* (who, when, depth,
-  ancestry) but not the *state* at each point.
+  ancestry) but not the *state* at each point. Once it lands, scrubbing
+  is just re-pinning each cell's subscription to a different revision:
+  the same subscribe call, a different bound, and the pinned ones
+  simply never fire again.
 - **Resuming from a scrubbed point cannot rewind.** Forward-only reset
   means "go back and continue" forks a new branch from that revision.
   Design it as *view the past, branch from it*, never *rewind to it*.
@@ -446,6 +449,45 @@ What exists, and what does not, as of dialog `tonk-2026-08-25b`:
 | Mint a revision without advancing the branch | **Not on `Transaction::commit`**, but `Pull::prepare` does it, and `join.rs` demonstrates staged-then-install |
 | Create a branch | **Implicitly** (`repo.branch(name).open()`). No HTTP route; the worker hardcodes `"main"` |
 | Merge branch → branch | **`target.pull().from(&source)`.** Nothing named `merge`; HTTP exposes upstream-targeted `/sync/*` only |
+
+### Pinned subscriptions are the degenerate case, not a second path
+
+A subscription to a fixed revision is legal and trivially correct: it
+emits its one result and never fires again. That collapses "pinned" and
+"live" into a single call — a cell subscribes either way, and pinning
+is just a bound that never moves. Cells need no mode flag, and the SSE
+frame shape is unchanged.
+
+The existing machinery already contains this case. `Subscription`
+carries `revision: Option<Revision>` — the revision its retained
+results were evaluated at — and `poll` opens with:
+
+```rust
+let current = self.branch.revision();
+...
+if self.initialized && epoch == self.overlay_epoch {
+    if current == self.revision {
+        return Ok(None);
+    }
+```
+
+A pinned subscription takes that short-circuit on every poll: no diff,
+no re-evaluation, no emission. The doc's own framing (*"no root change
+→ nothing to do"*) is exactly the pinned case.
+
+Two details the implementation has to get right:
+
+- **`current` comes from `self.branch.revision()`** — the live head. So
+  pinning is not merely "don't advance the pin": the *read* must resolve
+  against the pinned revision too, which is the same snapshot-select
+  the follow-up below needs. The comparison alone is not enough.
+- **The overlay epoch is a second, off-tree trigger.** A session
+  overlay change routes straight to re-evaluation, bypassing the tree
+  gate. A pinned subscription should ignore the epoch as well, or it
+  will re-emit when a transient is asserted.
+
+So a pinned subscription is one flag plus the snapshot read — not a
+parallel code path.
 
 ### The follow-up: query a snapshot
 
