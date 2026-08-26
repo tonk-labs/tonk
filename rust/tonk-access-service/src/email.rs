@@ -7,6 +7,25 @@
 
 use async_trait::async_trait;
 
+/// The stored spelling of an email address.
+///
+/// The address is a lookup key -- `did:web:{host}:customer:{domain}:{local}`
+/// resolves one to a customer -- so the form written at enrollment has to
+/// be the one a caller can reconstruct from the address they hold. Every
+/// write and every lookup passes through here, so the two cannot drift.
+///
+/// This is the form the account service already stores (see its
+/// `core::accounts` and `core::deletion`), so both databases agree on
+/// what one address looks like.
+///
+/// Case folding is ASCII-only and the local part is folded along with
+/// the domain. RFC 5321 makes the local part case-sensitive, but no mail
+/// provider in practice treats it that way, and folding it is what makes
+/// an address one key rather than several.
+pub fn normalize_email(address: &str) -> String {
+    address.trim().to_lowercase()
+}
+
 /// Errors surfaced by an [`EmailSender`] implementation.
 #[derive(Debug)]
 pub enum EmailError {

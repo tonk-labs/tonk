@@ -38,7 +38,7 @@ use tonk_account::customer::{
     Receipt, RegistrationError, deposit_scopes,
 };
 
-use crate::email::EmailSender;
+use crate::email::{EmailSender, normalize_email};
 use crate::store::{SIGNUP_PLAN, Store, StoreError};
 use dialog_ucan_core::revocation::RevocationChecker;
 use dialog_ucan_core::{Environment, VerificationContext};
@@ -211,7 +211,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
     ) -> Result<Receipt, RegistrationError> {
         let customer = capability.subject().clone();
         let effect = capability.into_effect();
-        let address = effect.email.trim().to_string();
+        let address = normalize_email(&effect.email);
         if !address.contains('@') || address.len() > 254 {
             return Err(RegistrationError::Invalid {
                 message: "email must be a plausible address".to_string(),
