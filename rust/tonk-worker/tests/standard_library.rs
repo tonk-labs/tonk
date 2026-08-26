@@ -245,12 +245,11 @@ fn it_builds_one_centered_hub_launcher_with_an_attached_settings_view() {
             "the proportional desktop Hub cell `{selector}` must contain `{width}`",
         );
     }
-    for rejected in ["class=\"shead"] {
-        assert!(
-            !PROFILE_LIBRARY.contains(rejected),
-            "the centered Hub launcher must reject `{rejected}`",
-        );
-    }
+    let rejected = "class=\"shead";
+    assert!(
+        !PROFILE_LIBRARY.contains(rejected),
+        "the centered Hub launcher must reject `{rejected}`",
+    );
     for rejected in ["class=\"sempty", "no spaces yet"] {
         assert!(
             !PROFILE_LIBRARY.contains(rejected),
