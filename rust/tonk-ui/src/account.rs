@@ -199,23 +199,22 @@ fn show_success(host: &HtmlElement) {
 /// deployment without registration should not decorate the panel with
 /// its absence.
 /// Publish every custody cell queued while the account was waiting on
-/// email confirmation.
+/// email confirmation. Returns the first failure, leaving the failed
+/// entry (and everything after it) queued.
 ///
-/// Each publish needs a fresh passkey assertion, which is a user
-/// prompt, so this runs only when there is something queued — an
-/// activated account with nothing waiting must never see a passkey
-/// dialog it did not ask for. Failures stay queued for the next load.
-async fn publish_queued_custody() {
-    let queue = match crate::api::pending_work().await {
-        Ok(queue) => queue,
-        Err(error) => {
-            web_sys::console::warn_1(&format!("pending work unreadable: {error}").into());
-            return;
-        }
-    };
-    let endpoint = match proposed_remote() {
-        Ok(endpoint) => endpoint,
-        Err(error) => return web_sys::console::warn_1(&format!("no remote: {error}").into()),
+/// Each publish is a passkey assertion, pinned to the root record's
+/// credential so a browser holding several passkeys for this origin
+/// cannot assert one that derives a different custody space. Only ever
+/// called from the backup button's click: the assertion needs the user
+/// gesture, and a prompt nobody asked for reads as phishing.
+async fn publish_queued_custody() -> Result<(), String> {
+    let queue = crate::api::pending_work()
+        .await
+        .map_err(|error| format!("pending work unreadable: {error}"))?;
+    let endpoint = proposed_remote()?;
+    let credential_id = match crate::api::root_status().await {
+        Ok(tonk_worker_api::RootStatus::Ready { credential_id, .. }) => Some(credential_id),
+        _ => None,
     };
     for work in queue.entries() {
         let tonk_account::pending::PendingWork::PublishCustody {
@@ -225,30 +224,97 @@ async fn publish_queued_custody() {
         else {
             continue;
         };
-        match crate::identity_bridge::publish_queued_custody(
+        crate::identity_bridge::publish_queued_custody(
             crate::identity_bridge::PublishQueuedCustodyInput {
                 custody_did: custody.clone(),
                 sealed_hex: sealed_hex.clone(),
                 endpoint: endpoint.clone(),
+                credential_id: credential_id.clone(),
             },
         )
         .await
-        {
-            Ok(()) => {
-                if let Err(error) = crate::api::complete_custody_publish(custody).await {
+        // Stop at the first failure: a later entry must not overtake
+        // one that is still waiting on provisioning.
+        .map_err(|error| error.to_string())?;
+        if let Err(error) = crate::api::complete_custody_publish(custody).await {
+            web_sys::console::warn_1(
+                &format!("custody published but still queued: {error}").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether any custody publish is waiting on this device.
+async fn has_queued_custody() -> bool {
+    crate::api::pending_work().await.is_ok_and(|queue| {
+        queue.entries().iter().any(|work| {
+            matches!(
+                work,
+                tonk_account::pending::PendingWork::PublishCustody { .. }
+            )
+        })
+    })
+}
+
+/// Offer the queued custody publish instead of springing an assertion:
+/// activation unblocked it, but only a click can supply the gesture and
+/// the context. The notice says what is waiting; the button runs it and
+/// then says what happened.
+async fn offer_queued_custody(host: &HtmlElement) {
+    if !has_queued_custody().await {
+        return;
+    }
+    set_text(
+        host,
+        "#account-backup-notice",
+        "Your account's backup record is ready to publish. It takes one passkey confirmation.",
+    );
+    let _ = show(host, "#account-backup-notice");
+    let _ = show(host, "#account-backup-publish");
+    on_click(host, "#account-backup-publish", |host| {
+        set_text(&host, "#account-backup-notice", "Waiting for your passkey…");
+        let _ = hide(&host, "#account-backup-publish");
+        spawn_local(async move {
+            match publish_queued_custody().await {
+                Ok(()) => {
+                    set_text(
+                        &host,
+                        "#account-backup-notice",
+                        "Backup published. Your account can now be recovered with this passkey.",
+                    );
+                }
+                Err(error) => {
                     web_sys::console::warn_1(
-                        &format!("custody published but still queued: {error}").into(),
+                        &format!("custody publish still pending: {error}").into(),
+                    );
+                    set_text(
+                        &host,
+                        "#account-backup-notice",
+                        "The backup could not be published. Reload this page to try again.",
                     );
                 }
             }
-            Err(error) => {
-                web_sys::console::warn_1(&format!("custody publish still pending: {error}").into());
-                // Stop at the first failure: a later entry must not
-                // overtake one that is still waiting on provisioning.
-                break;
-            }
-        }
-    }
+        });
+    });
+}
+
+/// Unhide the element `selector` names.
+fn show(host: &HtmlElement, selector: &str) -> Option<()> {
+    host.query_selector(selector)
+        .ok()
+        .flatten()?
+        .remove_attribute("hidden")
+        .ok()
+}
+
+/// Hide the element `selector` names.
+fn hide(host: &HtmlElement, selector: &str) -> Option<()> {
+    host.query_selector(selector)
+        .ok()
+        .flatten()?
+        .set_attribute("hidden", "")
+        .ok()
 }
 
 fn load_activation_notice(host: HtmlElement) {
@@ -306,9 +372,9 @@ fn load_activation_notice(host: HtmlElement) {
         // Activation is what unblocks the queued custody publish, and
         // only a page can sign it — the custody key lives inside a
         // passkey assertion. This notice is the one place that both
-        // learns about activation and can raise one.
+        // learns about activation and can offer it.
         if state["status"].as_str() == Some("Active") {
-            publish_queued_custody().await;
+            offer_queued_custody(&host).await;
         }
         if state["status"].as_str() != Some("Registered") {
             if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {

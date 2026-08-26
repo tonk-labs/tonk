@@ -260,32 +260,52 @@ async fn enroll_custody_passkey(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
-/// `publishQueuedCustody({ custodyDid, sealedHex, endpoint })` → `{}`.
-/// Publishes a custody cell that could not be written when its
-/// ceremony ran, using a fresh assertion of the same passkey.
+/// `publishQueuedCustody({ custodyDid, sealedHex, endpoint, credentialId? })`
+/// → `{}`. Publishes a custody cell that could not be written when its
+/// ceremony ran, using a fresh assertion of the same passkey —
+/// pinned to `credentialId` (hex) when the caller recorded one, so a
+/// browser holding several passkeys cannot assert the wrong one.
 async fn publish_queued_custody(input: JsValue) -> Result<JsValue, JsValue> {
     let custody_did = string_property(&input, "custodyDid")?;
     let sealed_hex = string_property(&input, "sealedHex")?;
     let endpoint = string_property(&input, "endpoint")?;
+    let credential_id = credential_id_property(&input)?;
     let sealed = hex::decode(&sealed_hex)
         .map_err(|error| JsValue::from_str(&format!("sealedHex is not hex: {error}")))?;
-    crate::ceremony::publish_queued_custody(&custody_did, &sealed, &endpoint)
-        .await
-        .map_err(js_error)?;
+    crate::ceremony::publish_queued_custody(
+        &custody_did,
+        &sealed,
+        &endpoint,
+        credential_id.as_deref(),
+    )
+    .await
+    .map_err(js_error)?;
     Ok(Object::new().into())
 }
 
-/// `publishEncryptionKey({ endpoint })` → `{ encryptionKey }`: one
-/// assertion, the account's X25519 recipient. The page saves it with the
-/// root so the worker can set up custody for what it creates.
+/// `publishEncryptionKey({ endpoint, credentialId? })` → `{ encryptionKey }`:
+/// one assertion — pinned to `credentialId` (hex) when the root record
+/// carries one — and the account's X25519 recipient. The page saves it
+/// with the root so the worker can set up custody for what it creates.
 async fn publish_encryption_key(input: JsValue) -> Result<JsValue, JsValue> {
     let endpoint = string_property(&input, "endpoint")?;
-    let key = crate::ceremony::publish_encryption_key(&endpoint)
+    let credential_id = credential_id_property(&input)?;
+    let key = crate::ceremony::publish_encryption_key(&endpoint, credential_id.as_deref())
         .await
         .map_err(js_error)?;
     let result = Object::new();
     Reflect::set(&result, &"encryptionKey".into(), &key.into())?;
     Ok(result.into())
+}
+
+/// The optional `credentialId` property, hex-decoded.
+fn credential_id_property(input: &JsValue) -> Result<Option<Vec<u8>>, JsValue> {
+    optional_string_property(input, "credentialId")
+        .map(|hex| {
+            hex::decode(&hex)
+                .map_err(|error| JsValue::from_str(&format!("credentialId is not hex: {error}")))
+        })
+        .transpose()
 }
 
 /// `unlockWithPasskey({ deviceDid, deviceName, endpoint, serviceDid? })`

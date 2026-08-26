@@ -243,15 +243,32 @@ pub async fn verify_custody_passkey(credential_id: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Evaluate both custody salts via a discoverable-credential assertion.
-/// One biometric prompt; must be called during a user gesture.
-pub async fn evaluate_custody_passkey() -> Result<CustodyCredential> {
+/// Evaluate both custody salts via an assertion. One biometric prompt;
+/// must be called during a user gesture.
+///
+/// Pass the stored credential id whenever the caller knows which passkey
+/// owns the custody being opened: `allowCredentials` then pins the
+/// assertion to it, so a browser holding several passkeys for this RP
+/// cannot offer one that derives a different custody space. Discoverable
+/// (`None`) is only for flows where choosing the passkey IS choosing the
+/// account — login, and a creation chase where the id isn't recorded yet.
+pub async fn evaluate_custody_passkey(credential_id: Option<&[u8]>) -> Result<CustodyCredential> {
     let mut challenge = rand::random::<[u8; 32]>();
     let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
     options.set_user_verification(UserVerificationRequirement::Required);
     options.set_extensions(&custody_extensions());
     if let Some(id) = current_rp_id() {
         options.set_rp_id(id);
+    }
+    if let Some(credential_id) = credential_id {
+        let mut credential_id = credential_id.to_vec();
+        let descriptor = PublicKeyCredentialDescriptor::new_with_u8_slice(
+            &mut credential_id,
+            PublicKeyCredentialType::PublicKey,
+        );
+        let allowed = js_sys::Array::new();
+        allowed.push(&descriptor);
+        options.set_allow_credentials(&allowed);
     }
     let request = CredentialRequestOptions::new();
     request.set_public_key(&options);

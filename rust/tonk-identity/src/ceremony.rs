@@ -257,14 +257,14 @@ pub async fn create_custody_account(
     let account_did = root.did().to_string();
 
     let created = crate::passkey::create_custody_passkey(Some(&email), &account_did).await?;
-    let credential_id = hex::encode(created.id);
+    let credential_id = hex::encode(&created.id);
     let passkey = created_on.map(|created_on| PasskeyCreationMetadata {
         created_at: (js_sys::Date::now() / 1000.0) as u64,
         created_on: created_on.to_string(),
     });
     let evaluation = match created.evaluation {
         Some(evaluation) => evaluation,
-        None => crate::passkey::evaluate_custody_passkey()
+        None => crate::passkey::evaluate_custody_passkey(Some(&created.id))
             .await?
             .evaluation
             .context("the authenticator returned no PRF outputs")?,
@@ -319,10 +319,13 @@ pub async fn create_custody_account(
 /// derives its keys inside a fresh user-verified assertion, and no key
 /// material is ever stored.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn assert_unlock(endpoint: &str) -> Result<(crate::envelope::AccountSecret, String)> {
+async fn assert_unlock(
+    endpoint: &str,
+    credential_id: Option<&[u8]>,
+) -> Result<(crate::envelope::AccountSecret, String)> {
     use crate::envelope::{Envelope, custody_kek, custody_signer};
 
-    let evaluated = crate::passkey::evaluate_custody_passkey().await?;
+    let evaluated = crate::passkey::evaluate_custody_passkey(credential_id).await?;
     let credential_id = hex::encode(evaluated.id);
     let evaluation = evaluated
         .evaluation
@@ -344,7 +347,7 @@ async fn assert_unlock(endpoint: &str) -> Result<(crate::envelope::AccountSecret
 /// root-signed operations: CLI approval, link completion, revocation.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn unlock_root(endpoint: &str) -> Result<Ed25519Signer> {
-    let (secret, _) = assert_unlock(endpoint).await?;
+    let (secret, _) = assert_unlock(endpoint, None).await?;
     secret.signer().await
 }
 
@@ -352,8 +355,11 @@ pub async fn unlock_root(endpoint: &str) -> Result<Ed25519Signer> {
 /// for a device whose root record predates the key: the worker asks the
 /// page for this when it needs custody set up and nothing recorded it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn publish_encryption_key(endpoint: &str) -> Result<String> {
-    let (secret, _) = assert_unlock(endpoint).await?;
+pub async fn publish_encryption_key(
+    endpoint: &str,
+    credential_id: Option<&[u8]>,
+) -> Result<String> {
+    let (secret, _) = assert_unlock(endpoint, credential_id).await?;
     Ok(secret.encryption_key().recipient().did().to_string())
 }
 
@@ -391,17 +397,17 @@ pub async fn enroll_custody(
     // Unlock through an existing passkey: one assertion recovers the
     // secret, and the new credential seals that same secret. Nothing is
     // read from, or written to, any local store.
-    let (secret, _) = assert_unlock(endpoint).await?;
+    let (secret, _) = assert_unlock(endpoint, None).await?;
     let root = secret.signer().await?;
     if root.did().to_string() != account_did {
         anyhow::bail!("the asserted passkey unlocks a different account");
     }
 
     let created = crate::passkey::create_custody_passkey(label, account_did).await?;
-    let credential_id = hex::encode(created.id);
+    let credential_id = hex::encode(&created.id);
     let evaluation = match created.evaluation {
         Some(evaluation) => evaluation,
-        None => crate::passkey::evaluate_custody_passkey()
+        None => crate::passkey::evaluate_custody_passkey(Some(&created.id))
             .await?
             .evaluation
             .context("the authenticator returned no PRF outputs")?,
@@ -472,10 +478,11 @@ pub async fn publish_queued_custody(
     custody_did: &str,
     sealed: &[u8],
     endpoint: &str,
+    credential_id: Option<&[u8]>,
 ) -> Result<()> {
     use crate::envelope::{custody_kek, custody_signer};
 
-    let evaluated = crate::passkey::evaluate_custody_passkey().await?;
+    let evaluated = crate::passkey::evaluate_custody_passkey(credential_id).await?;
     let evaluation = evaluated
         .evaluation
         .context("the authenticator returned no PRF outputs")?;
@@ -529,7 +536,7 @@ pub async fn unlock_account(
     endpoint: &str,
     service: Option<&dialog_varsig::Did>,
 ) -> Result<CustodyUnlock> {
-    let (secret, credential_id) = assert_unlock(endpoint).await?;
+    let (secret, credential_id) = assert_unlock(endpoint, None).await?;
     let root = secret.signer().await?;
     let encryption_key = secret.encryption_key().recipient().did().to_string();
     let deposits_hex = match service {

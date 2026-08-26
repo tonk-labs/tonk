@@ -219,6 +219,9 @@ pub(crate) struct PublishQueuedCustodyInput {
     pub sealed_hex: String,
     /// The access service's `/ucan/` endpoint.
     pub endpoint: String,
+    /// Hex credential id to pin the assertion to, from the root record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
 }
 
 pub(crate) async fn publish_queued_custody(
@@ -241,6 +244,9 @@ pub(crate) async fn unlock_with_passkey(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublishEncryptionKeyInput {
     pub endpoint: String,
+    /// Hex credential id to pin the assertion to, from the root record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
 }
 
 /// The account's X25519 recipient, derived through one assertion.
