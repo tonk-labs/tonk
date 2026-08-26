@@ -1,0 +1,199 @@
+# Browser routing and runtime
+
+## Summary
+
+The browser shell boots the host/service-worker environment and mounts exactly
+one top-level surface based on the URL. `/settings*` mounts account settings,
+legacy `/account*` redirects there, `/activate*` mounts the emailed customer
+activation page, and every other route mounts `<tonk-site>`, whose profile route
+table brings up Hub, space chrome, and sealed guest content.
+
+This boundary is small but load-bearing. A route can render correctly in a
+headless renderer while still failing to become the browser home. Account and
+activation routes bypass sealed guests, while local content must remain
+reachable in provider-free and offline states.
+
+## The simple case
+
+The browser loads a deployed Tonk page. Runtime configuration and the host IO
+surface become ready, custom elements register, and the top document inspects
+the path.
+
+At `/settings`, it mounts `<tonk-account>`, which resolves the current browser
+profile and account lifecycle. At `/activate?ucan=...`, it mounts
+`<tonk-activate>` without requiring a logged-in profile. At `/`, a space route,
+or another content path, it mounts one `<tonk-site>` and the current profile's
+route table selects Hub or content.
+
+Navigation and reload reproduce the same canonical route. A service-worker
+update cannot strand the user between old HTML and new Wasm/assets; an offline
+return either uses a coherent cached build or shows a recoverable boot error.
+
+## The interaction, event by event
+
+```mermaid
+stateDiagram-v2
+    [*] --> loading
+    loading --> configured : deployment and host ready
+    loading --> failed : config, worker, or asset failure
+    configured --> redirecting : legacy /account route
+    configured --> settings : /settings route
+    configured --> activation : /activate route
+    configured --> site : every other route
+    redirecting --> settings : canonical URL loaded
+    settings --> settled : account mode visible
+    activation --> settled : valid confirmation or link error visible
+    site --> settled : Hub/content/error visible
+    failed --> loading : retry or coherent reload
+```
+
+### Resolve
+
+The shell reads pathname and query. `/account` becomes `/settings` and
+`/account/SUFFIX` becomes `/settings/SUFFIX`; the original query is retained.
+`/settings` and its descendants mount only `<tonk-account>`. `/activate` and its
+descendants mount only `<tonk-activate>`. All other paths mount only
+`<tonk-site>`.
+
+Account routes interpret `add`, `revoke`, `delete-space`, `next`, `link`,
+`audience`, `callback`, and `name` as described in the account documents. The
+activation route reads one base64url `ucan`. Content routes are interpreted by
+the profile's route table inside `tonk-site`, not by a second top-document
+framework.
+
+### Exit early
+
+A legacy route redirects before mounting an account element at the old URL.
+Missing callback parameters and missing/damaged activation invocation show
+their own error surfaces without attempting authority or network work.
+
+Unknown content routes must settle into a visible not-found/default experience,
+not leave the boot shell indefinitely. A missing account provider is not a
+reason to block all local content; provider-free profiles can use Hub/local
+spaces.
+
+### Cross a boundary
+
+The runtime boundary is crossed when the service worker/host is ready enough
+for same-origin API calls and a top-level custom element is mounted. Account
+and activation mutations cross their own boundaries later.
+
+For content, `<tonk-site>` crosses into a sealed guest for the resolved route.
+The host IO surface and route table must agree on current profile/space. A
+service-worker update or hot swap crosses an asset-version boundary and must
+not mix incompatible shell, Wasm, and guest bundles.
+
+### Remain in flight
+
+Boot progress, configuration fetch, service-worker control, Wasm/custom-element
+registration, profile readiness, and guest load can complete at different
+times. The page needs one visible progress/error owner and a bounded recovery
+path. Console errors alone are insufficient.
+
+Navigation during boot must resolve the final URL without mounting multiple
+top-level elements or leaking document listeners. Back/forward and history
+replacement for canonical account routes must preserve safe query intent.
+
+Account/profile switching can reload the page. When it does, the new profile's
+route state must win; stale asynchronous work from the previous element must
+not render into the new profile.
+
+### Settle
+
+Settle means exactly one correct top-level surface is visible and interactive,
+busy state has ended or has a bounded ongoing meaning, and reload produces the
+same route/state. The browser console and network log should have no uncaught
+error for the verified path.
+
+Settings settles in a named account mode. Activation settles in confirmation,
+done, or a specific link/service error. Content settles in Hub, a configured
+space home, an explicit route, or a visible route/authority error.
+
+## Modifiers
+
+| Modifier | Set at the start | Changed while in flight |
+| --- | --- | --- |
+| Surface and input | Browser pointer/keyboard/touch drives routes and elements; direct URL and history navigation must agree. | Navigation re-resolves the final URL; stale element tasks cannot commit UI into the new route. |
+| Local account state | Root missing/provider-free/registered chooses account mode and content authority without globally blocking local use. | Profile/account switch must reload or atomically replace all profile-scoped state. |
+| Customer state | Active enables service; Registered/Suspended/CX changes banners/remote work, not local shell availability. | Status refresh updates service actions without remounting unrelated content. |
+| Space relationship | Blank/configured local home, owned/joined/revoked space, and missing route produce distinct content outcomes. | Route target identity stays fixed or navigation explicitly changes it. |
+| Connectivity and actor | First load/return/offline/stale cache and concurrent service-worker update shape boot. | Reconnect/update uses one coherent build and refreshes authority safely. |
+| Output mode | Visual layout, accessibility tree, console, network, and URL are observable outputs. | Viewport/input changes reflow the current surface; they do not change account/space identity. |
+
+## Cancel and interrupt
+
+| Event | Before crossing a boundary | After crossing a boundary |
+| --- | --- | --- |
+| Explicit abort: Cancel, Back, declined confirmation, or Ctrl-C. | Back/history returns to the previous coherent route; form Cancel follows feature rules. | Cancel affects only the active feature. It cannot unmount or corrupt the shell/service worker. |
+| Competing user action: navigate, switch profile or space, or run another command. | Final navigation target wins before mount. | Disconnect old element/listeners, cancel or ignore stale work, and mount exactly one new surface. |
+| Alternate completion: callback, blur/Enter submit, or another actor completes the target. | Route-specific completion is accepted only by its mounted feature. | History/result updates do not create a duplicate top-level element or repeat mutation on reload. |
+| Service failure: offline, timeout, non-2xx, malformed response, expired session, or passkey rejection. | Boot/config failure shows a bounded retry; local cached content remains available when coherent. | Feature error remains visible and recoverable; the shell does not collapse into an empty page. |
+| Surface termination: reload, tab close, browser crash, terminal close, SIGTERM, or process crash. | No feature mutation before its own boundary. | Reload reconstructs from durable state and current URL; service-worker version remains coherent. |
+| Concurrent target change: another tab/process/device edits, deletes, revokes, suspends, or replaces the target. | Resolve current profile/account/space facts before action. | Refresh or show stale/revoked/deleted state; do not keep interactive authority from the old target. |
+| Input or context change: autofill, authenticator change, TTY-to-pipe, stdin close, directory or environment change. | Browser viewport/input/autofill affects presentation and validation only. | Responsive layout and focus remain usable; identity/route does not change implicitly. |
+| Local durability failure: state locked, read-only, full, missing, malformed, or partly written. | Show a profile/storage-specific recovery instead of indefinite boot. | Preserve remote/local result truth and avoid caching a partially upgraded build or profile state. |
+
+## Interactions with other systems
+
+**Identity and account authority.** Top-level routing does not itself authorize.
+Mounted account/content elements revalidate profile and authority. Activation is
+link-authorized and intentionally profile-independent.
+
+**Local durability.** Profile selection, root/provider state, route/home facts,
+and service-worker caches survive reload independently. Recovery must say which
+store is damaged.
+
+**Remote service and sync.** Same-origin worker APIs back settings/content;
+deployment origins and service DIDs must match the built environment. Offline
+local content and provider-dependent actions diverge intentionally.
+
+**Concurrency and multi-device.** Other tabs share browser storage/service
+worker but may have stale DOM. Profile switch, revoke, delete, and SW update
+need cross-tab refresh/invalidation tests.
+
+**Output, errors, and recovery.** Visible page state, URL, accessibility tree,
+console, and network form one result. A render-only or source-only assertion
+does not prove the route is interactive.
+
+**Accessibility, TTY, and machine output.** Skip links/focus, landmarks,
+announced progress/errors, keyboard navigation, touch targets, zoom, and compact
+viewport are required. Account confirmations own focus only while open.
+
+**Privacy and telemetry.** Query parameters may contain DIDs, callback URLs,
+activation UCANs, and delete/revoke targets. Analytics must redact them and
+avoid recording credential/passkey inputs.
+
+## Edge cases
+
+- `/account` and nested legacy routes with query and hash; back/forward after
+  canonicalization.
+- `/settings/link` without one of audience/callback/name, or with duplicated and
+  malformed encoded values.
+- `next` is absolute/external, host-relative, encoded twice, or missing.
+- Activation query is missing, empty, padded, invalid base64url, expired,
+  already used, or returns non-JSON error.
+- Service worker is installed but does not yet control the first page.
+- New service worker activates while old Wasm or guest assets are loading.
+- Offline first visit versus offline returning visit with a coherent cache.
+- Deployment config names the wrong account/access origin or service DID.
+- Custom element connects twice or disconnects while an async task is pending.
+- Profile switch reloads from an account confirmation or space route.
+- Blank home after installing a view versus explicit home selection.
+- Revoked/deleted space route while a retained local replica exists.
+- Compact 390 px viewport, zoom, reduced motion, keyboard only, and screen
+  reader during busy/error transitions.
+
+## Open questions and verification
+
+- There is no focused activation-page test; add component and real-browser
+  coverage before treating `/activate` as stable.
+- Verify every top-document route family in real Chrome, including back/forward
+  and exactly one mounted element.
+- Define the visible boot error/retry contract for stale service-worker assets
+  and deployment misconfiguration.
+- Verify actual interactive home routing after CLI `view add --home` and `space
+  home`; headless `tonk render` is not sufficient.
+- Run signed-out/provider-free, customer suspended, service offline, revoked,
+  and deleted states through the real Hub/content shell.
+
+Source audit pinned to Tonk commit `a3f8670b1`.
