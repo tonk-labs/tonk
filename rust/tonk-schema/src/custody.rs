@@ -5,7 +5,7 @@ use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
 
-use crate::domain::custody::{Kind, Recipient, Sealed, Subject};
+use crate::domain::custody::{Account, Cell, Kind, Recipient, Sealed, Subject};
 use crate::prelude::*;
 
 /// A seed sealed to one recipient for one subject, in the account space.
@@ -218,5 +218,35 @@ mod tests {
             .await?;
         assert_eq!(for_space_a.len(), 2, "one row per recipient");
         Ok(())
+    }
+}
+
+/// A passkey's custody cell, recorded in the account space beside the
+/// vault copy.
+///
+/// The cell is the account secret sealed under one passkey's KEK
+/// (`tonk_identity::envelope::Envelope`) — ciphertext only a fresh
+/// assertion of that passkey can open. The vault copy bootstraps a
+/// brand-new browser, which has no profile branch yet; this row rides
+/// the account's own sync, so every device already holding the profile
+/// carries the recovery envelope too.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CustodyCell {
+    /// The custody space's DID — the passkey-derived principal.
+    pub this: Entity,
+    /// The account this cell recovers.
+    pub account: Account,
+    /// The sealed envelope bytes.
+    pub cell: Cell,
+}
+
+impl CustodyCell {
+    /// Record `cell` as `custody`'s envelope for `account`.
+    pub fn new(custody: Did, account: Did, cell: Vec<u8>) -> Self {
+        Self {
+            this: custody.this(),
+            account: Account(account.this()),
+            cell: Cell(cell),
+        }
     }
 }

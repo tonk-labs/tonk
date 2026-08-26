@@ -198,57 +198,46 @@ fn show_success(host: &HtmlElement) {
 /// every other answer: an active customer needs no notice, and a
 /// deployment without registration should not decorate the panel with
 /// its absence.
-/// Publish every custody cell queued while the account was waiting on
-/// email confirmation.
-///
-/// Each publish needs a fresh passkey assertion, which is a user
-/// prompt, so this runs only when there is something queued — an
-/// activated account with nothing waiting must never see a passkey
-/// dialog it did not ask for. Failures stay queued for the next load.
-async fn publish_queued_custody() {
-    let queue = match crate::api::pending_work().await {
-        Ok(queue) => queue,
-        Err(error) => {
-            web_sys::console::warn_1(&format!("pending work unreadable: {error}").into());
-            return;
-        }
-    };
-    let endpoint = match proposed_remote() {
-        Ok(endpoint) => endpoint,
-        Err(error) => return web_sys::console::warn_1(&format!("no remote: {error}").into()),
-    };
-    for work in queue.entries() {
-        let tonk_account::pending::PendingWork::PublishCustody {
-            custody,
-            sealed_hex,
-        } = work
-        else {
-            continue;
-        };
-        match crate::identity_bridge::publish_queued_custody(
-            crate::identity_bridge::PublishQueuedCustodyInput {
-                custody_did: custody.clone(),
-                sealed_hex: sealed_hex.clone(),
-                endpoint: endpoint.clone(),
-            },
-        )
-        .await
-        {
-            Ok(()) => {
-                if let Err(error) = crate::api::complete_custody_publish(custody).await {
-                    web_sys::console::warn_1(
-                        &format!("custody published but still queued: {error}").into(),
-                    );
-                }
-            }
-            Err(error) => {
-                web_sys::console::warn_1(&format!("custody publish still pending: {error}").into());
-                // Stop at the first failure: a later entry must not
-                // overtake one that is still waiting on provisioning.
-                break;
-            }
-        }
+/// Say when the account's backup is still on its way. The ceremony
+/// pre-signed the publish, the worker drains it on activation, and no
+/// interaction is needed — this only keeps the wait legible.
+async fn note_pending_backup(host: &HtmlElement) {
+    let waiting = crate::api::pending_work().await.is_ok_and(|queue| {
+        queue.entries().iter().any(|work| {
+            matches!(
+                work,
+                tonk_account::pending::PendingWork::PublishCustody { .. }
+            )
+        })
+    });
+    if !waiting {
+        let _ = hide(host, "#account-backup-notice");
+        return;
     }
+    set_text(
+        host,
+        "#account-backup-notice",
+        "Finishing your account's backup…",
+    );
+    let _ = show(host, "#account-backup-notice");
+}
+
+/// Unhide the element `selector` names.
+fn show(host: &HtmlElement, selector: &str) -> Option<()> {
+    host.query_selector(selector)
+        .ok()
+        .flatten()?
+        .remove_attribute("hidden")
+        .ok()
+}
+
+/// Hide the element `selector` names.
+fn hide(host: &HtmlElement, selector: &str) -> Option<()> {
+    host.query_selector(selector)
+        .ok()
+        .flatten()?
+        .set_attribute("hidden", "")
+        .ok()
 }
 
 fn load_activation_notice(host: HtmlElement) {
@@ -294,46 +283,70 @@ fn load_activation_notice(host: HtmlElement) {
                 }
             }
         }
-        // The facts row always answers; the banner below only nags while
-        // an activation is actually pending.
-        let label = match state["status"].as_str() {
-            Some("Active") => "Active",
-            Some("Registered") => "Waiting for email confirmation",
-            Some("Suspended") => "Suspended",
-            _ => "Not registered",
-        };
-        set_text(&host, "#account-registration-value", label);
-        // Activation is what unblocks the queued custody publish, and
-        // only a page can sign it — the custody key lives inside a
-        // passkey assertion. This notice is the one place that both
-        // learns about activation and can raise one.
-        if state["status"].as_str() == Some("Active") {
-            publish_queued_custody().await;
-        }
-        if state["status"].as_str() != Some("Registered") {
-            if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
-                let _ = resend.set_attribute("hidden", "");
+        // Render whatever the state says now, and while an activation is
+        // pending keep asking: the link is opened in another tab (or on
+        // the phone the email is on), and a dashboard that only learns
+        // about it on a manual reload looks stuck at "pending" long
+        // after the account is live.
+        loop {
+            render_registration(&host, &state).await;
+            if state["status"].as_str() != Some("Registered") {
+                return;
             }
-            return;
-        }
-        let Ok(Some(notice)) = host.query_selector("#account-activation-notice") else {
-            return;
-        };
-        let message = match state["email"].as_str() {
-            Some(email) => {
-                format!("Sync activation pending: open the link we emailed to {email}.")
+            wait_for(5_000).await;
+            if let Ok(fresh) = crate::api::customer_state().await {
+                state = fresh;
             }
-            None => "Sync activation pending: open the link in your activation email.".to_string(),
-        };
-        notice.set_text_content(Some(&message));
-        let _ = notice.remove_attribute("hidden");
-        // The way out of a stuck Registered: enrollment is idempotent
-        // while Registered and resends the link, which is also the
-        // recovery for one that expired.
-        if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
-            let _ = resend.remove_attribute("hidden");
         }
     });
+}
+
+/// Render the registration facts row, the activation banner, and the
+/// resend button from one customer state, so the pending → active flip
+/// also clears what pending showed.
+async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
+    // The facts row always answers; the banner below only nags while
+    // an activation is actually pending.
+    let label = match state["status"].as_str() {
+        Some("Active") => "Active",
+        Some("Registered") => "Waiting for email confirmation",
+        Some("Suspended") => "Suspended",
+        _ => "Not registered",
+    };
+    set_text(host, "#account-registration-value", label);
+    // The worker drains the queued backup itself once activation
+    // lands — the ceremony pre-signed the publish. Nothing to raise;
+    // just say so while it is still on its way.
+    if state["status"].as_str() == Some("Active") {
+        note_pending_backup(host).await;
+    }
+    if state["status"].as_str() != Some("Registered") {
+        let _ = hide(host, "#account-activation-notice");
+        let _ = hide(host, "#account-resend-activation");
+        return;
+    }
+    let message = match state["email"].as_str() {
+        Some(email) => {
+            format!("Sync activation pending: open the link we emailed to {email}.")
+        }
+        None => "Sync activation pending: open the link in your activation email.".to_string(),
+    };
+    set_text(host, "#account-activation-notice", &message);
+    let _ = show(host, "#account-activation-notice");
+    // The way out of a stuck Registered: enrollment is idempotent
+    // while Registered and resends the link, which is also the
+    // recovery for one that expired.
+    let _ = show(host, "#account-resend-activation");
+}
+
+/// Resolve after `ms` milliseconds.
+async fn wait_for(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(win) = window() {
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 fn set_text(host: &HtmlElement, selector: &str, value: &str) {
@@ -1329,13 +1342,25 @@ async fn complete_remote(
         return Ok(());
     }
     settle(host);
-    if initialize_name && is_unhydrated(&status) {
+    // An unhydrated account right after signup is the expected state
+    // while the email activation is pending — the access service
+    // refuses the pull until then, the activation banner already says
+    // so, and the background sweep hydrates once it lands. The alert is
+    // for the unexpected case: activation is not what's in the way.
+    if initialize_name && is_unhydrated(&status) && !activation_pending().await {
         show_error(
             host,
             "Your account was created, but its initial name could not be synchronized. Reload /account to retry account hydration.",
         );
     }
     Ok(())
+}
+
+/// Whether the customer is registered but not yet email-activated.
+async fn activation_pending() -> bool {
+    crate::api::customer_state()
+        .await
+        .is_ok_and(|state| state["status"].as_str() == Some("Registered"))
 }
 
 fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) + 'static) {
@@ -1482,9 +1507,12 @@ fn bind(host: &HtmlElement) {
                         &format!("custody provisioning deferred: {error}").into(),
                     );
                 }
-                if let Some(sealed_hex) = &created.sealed_hex
-                    && let Err(error) =
-                        crate::api::queue_custody_publish(&created.custody_did, sealed_hex).await
+                if let Err(error) = crate::api::queue_custody_publish(
+                    &created.custody_did,
+                    &created.sealed_hex,
+                    &created.publish_invocation_hex,
+                )
+                .await
                 {
                     // The sealed secret is only in this page's memory
                     // until it is recorded, so failing to queue it is
@@ -1561,12 +1589,16 @@ fn bind(host: &HtmlElement) {
                         &format!("custody provisioning deferred: {error}").into(),
                     );
                 }
-                // The ceremony hands back sealed bytes when its publish
-                // was refused. Retry now that provisioning has run, and
-                // queue what still will not land.
-                if let Some(sealed_hex) = &enrolled.sealed_hex
-                    && let Err(error) =
-                        crate::api::queue_custody_publish(&enrolled.custody_did, sealed_hex).await
+                // The cell is recorded on profile main either way; the
+                // pre-signed invocation rides along when the ceremony's
+                // own publish was refused, and the worker drains it once
+                // the provisioning deposit lands.
+                if let Err(error) = crate::api::queue_custody_publish(
+                    &enrolled.custody_did,
+                    &enrolled.sealed_hex,
+                    enrolled.publish_invocation_hex.as_deref().unwrap_or(""),
+                )
+                .await
                 {
                     return Err(format!(
                         "could not record the sealed account secret: {error}"
@@ -1612,9 +1644,10 @@ fn bind(host: &HtmlElement) {
                 // One assertion derives the custody keypair, one
                 // presigned GET fetches the sealed envelope, and the
                 // unwrapped secret self-issues this device's delegation.
-                // Unlocking reads the custody cell, which stays queued
-                // while the customer is unactivated.
-                publish_queued_custody().await;
+                // A cell still queued from before activation is the
+                // worker's to drain — it holds the ceremony's
+                // pre-signed publish and runs it on boot and on
+                // activation.
                 let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
                     device_did,
                     device_name,
@@ -1669,12 +1702,6 @@ fn bind(host: &HtmlElement) {
                                 })?;
                         }
                     }
-                    // Unlocking the account reads the custody cell, which
-                    // stays queued while the customer is unactivated. A
-                    // browser that activated without returning to the
-                    // dashboard still has it waiting, so drain before
-                    // asking the ceremony to resolve it.
-                    publish_queued_custody().await;
                     set_busy(&host, true, "Waiting for your passkey…");
                     // The descriptor must name the same sync remote signup
                     // established — the page's own `/ucan/` endpoint — or the
