@@ -1828,6 +1828,11 @@ impl TonkServiceWorker {
                 // already have — the grandfathering path.
                 crate::router::profiles::upsert_active_entry(&tonk, None).await;
                 crate::router::account_state::ensure_account_state(&tonk).await;
+                // Custody left under the onboarding account is picked
+                // back up here: the link-time rotation is best-effort,
+                // and a failure there (an unhydrated account, a closed
+                // page) must not strand seeds until the next link.
+                crate::router::accreditation::rotate_from_onboarding(&tonk).await;
                 // Overlay locality stamps for the Hub's hollow-spot
                 // styling — device-local, re-stamped every boot.
                 crate::router::adopt::stamp_local_spaces(&tonk).await;

@@ -46,13 +46,21 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     };
     let old_key = secret.encryption_key();
     let old_recipient = old_key.recipient().did();
+    // The published fact is the account's word; the root record is the
+    // ceremony's. Either names the same recipient, and the record is
+    // available even while the account repository is still unhydrated
+    // (a pending email activation blocks the sweep that publishes the
+    // fact), so rotation must not wait on the publish.
     let new_recipient =
         match super::account_state::published_encryption_key(tonk, &root.root_did).await {
             Ok(Some(recipient)) => recipient,
-            Ok(None) => {
-                log!("accreditation deferred: the account has not published its encryption key");
-                return;
-            }
+            Ok(None) => match root.encryption_key.clone() {
+                Some(recipient) => recipient,
+                None => {
+                    log!("accreditation deferred: the account has no encryption key");
+                    return;
+                }
+            },
             Err(error) => {
                 log!("accreditation deferred: {error}");
                 return;
@@ -399,5 +407,67 @@ mod tests {
             crate::onboarding::account(&tonk).await.is_err(),
             "the onboarding account can no longer be opened",
         );
+    }
+
+    /// A link whose account sweep failed (a pending email activation
+    /// blocks hydration) has the recipient only in the root record, not
+    /// as a published fact. Rotation still runs from the record instead
+    /// of deferring until a publish that nothing retries.
+    #[dialog_common::test]
+    async fn it_rotates_from_the_root_record_before_the_key_is_published() {
+        use crate::router::tests::test_root_seed;
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let created_key = put_repo(&app, "unpublished-key-space").await;
+        let created: Did = created_key.parse().unwrap();
+
+        let tonk = state.read().await;
+        let old_recipient = crate::onboarding::account(&tonk)
+            .await
+            .unwrap()
+            .encryption_key()
+            .recipient()
+            .did();
+
+        // Save the root record with its recipient, without asserting the
+        // `AccountEncryptionKey` fact `persist_test_root` would publish.
+        let root = Ed25519Signer::import(&test_root_seed(&tonk.profile_name))
+            .await
+            .unwrap();
+        let root_did = root.did();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+            .await
+            .unwrap();
+        let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
+            zeroize::Zeroizing::new(test_root_seed(&tonk.profile_name)),
+        )
+        .encryption_key()
+        .recipient()
+        .did();
+        super::super::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "test-credential".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
+                encryption_key: Some(recipient.to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        rotate_from_onboarding(&tonk).await;
+
+        let prefix = super::super::repository::space_root_prefix(&tonk, &created)
+            .await
+            .unwrap();
+        assert_eq!(prefix.audience(), &root_did, "the space is re-rooted");
+        assert!(
+            sealed_to(&tonk, &old_recipient).await.unwrap().is_empty(),
+            "nothing stays sealed to the onboarding account",
+        );
+        assert_eq!(sealed_to(&tonk, &recipient).await.unwrap().len(), 1);
     }
 }
