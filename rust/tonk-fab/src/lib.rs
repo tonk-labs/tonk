@@ -11,6 +11,13 @@ pub mod markup;
 pub mod retry;
 pub mod skin;
 
+mod banner;
+mod cluster;
+mod field;
+
+#[cfg(target_arch = "wasm32")]
+mod activation;
+
 /// `<tonk-button>` — a block button.
 #[cfg(target_arch = "wasm32")]
 mod button;
@@ -69,6 +76,9 @@ pub fn register() {
     mi::register();
     dialog::register();
     button::register();
+    field::register();
+    cluster::register();
+    banner::register();
     share::register();
     space_name::register();
     profile_name::register();

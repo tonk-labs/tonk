@@ -96,11 +96,7 @@ mod logic {
     /// Label, modifier class, and accessible explanation for a failure pill.
     pub(crate) fn failure_chip(failure: SyncFailure) -> (&'static str, &'static str, &'static str) {
         match failure {
-            SyncFailure::Revoked => (
-                "revoked",
-                "is-revoked",
-                "Sync revoked — reconnect with valid authority",
-            ),
+            SyncFailure::Revoked => ("closed", "is-revoked", "This space is no longer available"),
             SyncFailure::Conflict => (
                 "conflict",
                 "is-conflict",
@@ -1133,6 +1129,14 @@ mod tests {
             let (label, class, _) = failure_chip(failure);
             assert_ne!((label, class), OFFLINE_CHIP);
         }
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_reveal_whether_closed_authority_was_revoked_or_deleted() {
+        let (label, _class, title) = failure_chip(SyncFailure::Revoked);
+        assert_eq!(label, "closed");
+        assert!(!title.to_lowercase().contains("revok"));
+        assert!(!title.to_lowercase().contains("delet"));
     }
 
     #[dialog_common::test]
