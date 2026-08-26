@@ -13,23 +13,43 @@
 //! switch for turning billing enforcement off in production. Clients
 //! hold work that lands before activation as a pending queue and replay
 //! it once the email is confirmed, rather than relying on a ramp.
+//!
+//! The refusal carries which registration state said no, so a client
+//! waiting on an email confirmation can tell that from a suspension
+//! without reading prose. That also makes this gate the activation
+//! signal: a client whose account space is refused with
+//! `AwaitingActivation` learns it is confirmed when the same sync
+//! succeeds, with no separate probe.
 
-use dialog_capability::access::AuthorizeError;
+use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_ucan_core::{Container, Invocation};
 use dialog_varsig::AnySignature;
 use tonk_account::customer::CustomerStatus;
 
 use crate::store::{Store, StoreError};
 
-/// The predicate reported when the gate refuses. One string on the
-/// wire, deliberately: the client-facing vocabulary is dialog's
-/// [`AuthorizeError`], and the service's serving policy failing is a
-/// policy violation; the detail distinguishes the causes for logs and
-/// metering without teaching clients a new code table. A first-class
-/// upstream variant is the upgrade path.
-fn denial(cause: &str) -> AuthorizeError {
-    AuthorizeError::PolicyViolation {
-        predicate: format!("subject is provisioned by an active customer ({cause})"),
+/// The refusal reported when the gate says no.
+///
+/// [`AuthorizeError::Declined`] rather than a policy violation: the
+/// chain authorized the request, and what refused is this service's own
+/// policy about whose subjects it carries. Dialog does not model that
+/// policy and should not, so the cause travels as our sentence and the
+/// only structured part is whether waiting resolves it.
+///
+/// That one bit is what a client needs. An account awaiting its
+/// activation email is [`Recourse::Retry`]: the same request succeeds
+/// once someone opens the link, so a client showing "check your email"
+/// keeps its work in hand and learns it was confirmed when the retry
+/// goes through. Everything else is [`Recourse::None`] -- a suspension
+/// and an unprovisioned subject change only when someone acts, and a
+/// client that kept retrying would be waiting on nothing.
+///
+/// This is the first-class upstream variant the predicate-formatting
+/// version named as its upgrade path (dialog-db#470).
+fn denial(recourse: Recourse, cause: &str) -> AuthorizeError {
+    AuthorizeError::Declined {
+        recourse,
+        reason: cause.to_string(),
     }
 }
 
@@ -56,22 +76,37 @@ pub async fn screen<S: Store>(
         return Ok(servable(customer.status, "the subject's own registration"));
     }
     let Some(consumer) = store.consumer(subject).await? else {
-        return Ok(Err(denial("the subject is not provisioned")));
+        return Ok(Err(denial(
+            Recourse::None,
+            "the subject is not provisioned",
+        )));
     };
     let Some(provider) = consumer.provider else {
-        return Ok(Err(denial("the subject has no provider")));
+        return Ok(Err(denial(Recourse::None, "the subject has no provider")));
     };
     match store.customer(&provider).await? {
         Some(customer) => Ok(servable(customer.status, "the provider's registration")),
-        None => Ok(Err(denial("the provider is not a customer"))),
+        None => Ok(Err(denial(
+            Recourse::None,
+            "the provider is not a customer",
+        ))),
     }
 }
 
+/// Map a customer's registration to whether its subjects are served.
+///
+/// The recourse is about *this* subject, not about who holds the
+/// registration: a consumer whose provider awaits activation is itself
+/// worth retrying, because confirming that email is what serves it.
+/// `who` names which registration refused, for the reader.
 fn servable(status: CustomerStatus, who: &str) -> Result<(), AuthorizeError> {
     match status {
         CustomerStatus::Active => Ok(()),
-        CustomerStatus::Registered => Err(denial(&format!("{who} awaits email activation"))),
-        CustomerStatus::Suspended => Err(denial(&format!("{who} is suspended"))),
+        CustomerStatus::Registered => Err(denial(
+            Recourse::Retry,
+            &format!("{who} awaits email activation"),
+        )),
+        CustomerStatus::Suspended => Err(denial(Recourse::None, &format!("{who} is suspended"))),
     }
 }
 
@@ -90,11 +125,18 @@ mod tests {
                 .enroll_customer(did, &format!("{did}@example.com"), b"", "trial@2026-08", 0)
                 .await
                 .expect("customer");
-            if *status == CustomerStatus::Active {
-                store
-                    .activate_customer(did, "v1", 1)
-                    .await
-                    .expect("activate");
+            match status {
+                CustomerStatus::Registered => {}
+                CustomerStatus::Active => {
+                    store
+                        .activate_customer(did, "v1", 1)
+                        .await
+                        .expect("activate");
+                }
+                // Nothing writes `Suspended` yet: there is no admin path
+                // that suspends a customer, so the fixture sets the
+                // column the way one eventually will.
+                CustomerStatus::Suspended => store.suspend_for_test(did).await,
             }
         }
         for (consumer, provider) in consumers {
@@ -127,5 +169,106 @@ mod tests {
         assert!(screen(&store, "did:key:zNobody").await.unwrap().is_err());
         assert!(screen(&store, "did:key:zPending").await.unwrap().is_err());
         assert!(screen(&store, "did:key:zSpace").await.unwrap().is_err());
+    }
+
+    /// The recourse a refusal carries, or `None` when it served.
+    async fn recourse_of(store: &SqliteStore, subject: &str) -> Option<Recourse> {
+        match screen(store, subject).await.unwrap() {
+            Ok(()) => None,
+            Err(AuthorizeError::Declined { recourse, .. }) => Some(recourse),
+            Err(other) => panic!("the gate refused with {other:?}, not a declined request"),
+        }
+    }
+
+    /// The distinction the typed recourse exists for: a client waiting
+    /// on an email confirmation keeps retrying, and one told the account
+    /// is suspended must stop. Everything finer than that stays in the
+    /// sentence, which is deliberately not something a client parses.
+    #[dialog_common::test]
+    async fn it_says_whether_the_refusal_is_worth_retrying() {
+        let store = store_with(
+            &[
+                ("did:key:zPending", CustomerStatus::Registered),
+                ("did:key:zStopped", CustomerStatus::Suspended),
+            ],
+            &[],
+        )
+        .await;
+        assert_eq!(
+            recourse_of(&store, "did:key:zPending").await,
+            Some(Recourse::Retry),
+            "an unconfirmed email resolves when someone opens the link"
+        );
+        assert_eq!(
+            recourse_of(&store, "did:key:zStopped").await,
+            Some(Recourse::None),
+            "a suspension does not clear by asking again"
+        );
+        assert_eq!(
+            recourse_of(&store, "did:key:zNobody").await,
+            Some(Recourse::None),
+            "nor does a subject nobody provisioned"
+        );
+    }
+
+    /// A consumer reports what would serve IT, not a description of who
+    /// holds the registration. A space whose provider awaits activation
+    /// is worth retrying, because confirming that email serves the space.
+    #[dialog_common::test]
+    async fn it_reports_a_consumer_by_what_would_serve_it() {
+        let store = store_with(
+            &[
+                ("did:key:zPending", CustomerStatus::Registered),
+                ("did:key:zStopped", CustomerStatus::Suspended),
+            ],
+            &[
+                ("did:key:zWaiting", "did:key:zPending"),
+                ("did:key:zHalted", "did:key:zStopped"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            recourse_of(&store, "did:key:zWaiting").await,
+            Some(Recourse::Retry)
+        );
+        assert_eq!(
+            recourse_of(&store, "did:key:zHalted").await,
+            Some(Recourse::None)
+        );
+    }
+
+    /// Activation is the refusal clearing. This is the transition a
+    /// waiting client watches for, so it is worth pinning that the same
+    /// subject answers differently either side of it.
+    #[dialog_common::test]
+    async fn it_serves_the_subject_once_activation_lands() {
+        let store = store_with(&[("did:key:zCustomer", CustomerStatus::Registered)], &[]).await;
+        assert_eq!(
+            recourse_of(&store, "did:key:zCustomer").await,
+            Some(Recourse::Retry)
+        );
+
+        store
+            .activate_customer("did:key:zCustomer", "2026-08", 1)
+            .await
+            .expect("activation records");
+        assert_eq!(recourse_of(&store, "did:key:zCustomer").await, None);
+    }
+
+    /// The sentence is for a person, not a client. It is asserted here
+    /// only so a refusal that says nothing useful fails loudly; nothing
+    /// in the system matches on it.
+    #[dialog_common::test]
+    async fn it_explains_itself_in_words_too() {
+        let store = store_with(&[("did:key:zPending", CustomerStatus::Registered)], &[]).await;
+        let Err(AuthorizeError::Declined { reason, .. }) =
+            screen(&store, "did:key:zPending").await.unwrap()
+        else {
+            panic!("an unconfirmed customer is declined");
+        };
+        assert!(
+            reason.contains("awaits email activation"),
+            "the refusal must say why: {reason}"
+        );
     }
 }
