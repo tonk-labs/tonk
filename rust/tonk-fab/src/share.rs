@@ -92,8 +92,8 @@ use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement, window};
 
 use crate::logic::{
-    COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, default_remote_url, enable_sync_claim_json,
-    invite_claim_json, invite_link_query_body, share_blocked_query_body,
+    COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, enable_sync_claim_json, invite_claim_json,
+    invite_link_query_body, share_blocked_query_body,
 };
 use crate::subscribing;
 
@@ -577,16 +577,11 @@ impl TonkShare {
             let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) else {
                 return;
             };
-            // Inside a sealed guest the document is `about:srcdoc`, so
-            // `location.origin` is the opaque `"null"` and the remote URL
-            // built from it would be unusable. `context_origin` prefers the
-            // true origin the portal bridge injects.
-            let Some(origin) = tonk_host::bridge::context_origin() else {
-                warn("share: cannot resolve this page's origin");
-                return;
-            };
-            let remote = default_remote_url(&origin);
-
+            // No remote: the worker resolves where this account syncs.
+            // Deriving it here meant asking a sealed guest for its own
+            // origin — `about:srcdoc`, so `location.origin` is the
+            // opaque `"null"` until the portal bridge injects the real
+            // one — and a share before that arrived returned silently.
             let time = js_sys::Date::now();
             state.borrow_mut().pending_time = Some(time);
             let stale = current_link.borrow().clone();
@@ -596,7 +591,7 @@ impl TonkShare {
             set_state(&host, ShareState::Copying);
             arm_timeout(&host, &state);
             close_enable_sync_dialog();
-            dispatch_enable_sync(&space, &remote, time);
+            dispatch_enable_sync(&space, "", time);
         });
         let target: &web_sys::EventTarget = document.unchecked_ref();
         let _ =

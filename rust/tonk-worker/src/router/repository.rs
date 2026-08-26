@@ -872,9 +872,28 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
         Box::pin(async move {
             use dialog_artifacts::Entity;
 
-            let (Some(space), Some(remote)) = (space, remote) else {
-                log!("EnableSync: missing space or remote, skipping");
+            let Some(space) = space else {
+                log!("EnableSync: missing space, skipping");
                 return;
+            };
+            // An absent remote means "wherever this account syncs" — the
+            // page no longer derives an endpoint from its own origin,
+            // which it could not even do reliably: a sealed guest's
+            // document is `about:srcdoc`, so it had to be told its own
+            // origin by the portal bridge first, and a share before that
+            // arrived did nothing at all.
+            let remote = match remote {
+                Some(remote) => remote,
+                None => {
+                    let tonk = env.state().read().await;
+                    match account_sync_remote(&tonk).await {
+                        Some(remote) => remote,
+                        None => {
+                            log!("EnableSync: no remote given and the account names no provider");
+                            return;
+                        }
+                    }
+                }
             };
             let Ok(did) = space.parse::<dialog_varsig::Did>() else {
                 log!("EnableSync: '{}' is not a DID", space);

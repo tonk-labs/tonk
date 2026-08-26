@@ -16,8 +16,8 @@ helpers = [
     "dep:tonk-access-service",
     "dep:tonk-account-service",
 ]
-integration-tests = ["helpers", "dialog-common/integration-tests"]
-web-integration-tests = ["helpers", "dialog-common/integration-tests"]
+integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
+web-integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
 
 [dependencies]
 async-trait = { workspace = true }

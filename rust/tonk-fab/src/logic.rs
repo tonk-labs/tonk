@@ -1539,15 +1539,22 @@ pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64)
     let mut with = json!({
         "time":   { "the": "dom.event/time-stamp", "as": "Float" },
         "space":  { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
-        "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
         "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" }
     });
     let mut parameters = json!({
         "time": time,
         "space": space,
-        "remote": remote,
         "marker": "tonk:enable-sync"
     });
+    // An empty remote is omitted rather than sent as `""`: the handler
+    // then resolves where this account syncs from its own recorded
+    // provider. The page used to derive `origin + /ucan/` for itself,
+    // which a sealed guest cannot do until the portal bridge has told it
+    // its own origin — a share before that arrived silently did nothing.
+    if !remote.is_empty() {
+        with["remote"] = json!({ "the": "xyz.tonk.enable-sync/remote", "as": "Text" });
+        parameters["remote"] = json!(remote);
+    }
     if share {
         with["share"] = json!({ "the": "xyz.tonk.enable-sync/share", "as": "Entity" });
         parameters["share"] = json!("tonk:share");
@@ -1664,11 +1671,6 @@ pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
 /// supplies one, and is the next derivation to remove.
 ///
 /// Kept pure (origin in, URL out) so it is testable off-browser; the
-/// caller supplies the origin.
-pub fn default_remote_url(origin: &str) -> String {
-    format!("{}{}", origin.trim_end_matches('/'), "/ucan/")
-}
-
 /// How long a share click waits for a result before giving up.
 ///
 /// Without this the control has no failure path at all for anything other
@@ -1736,27 +1738,6 @@ mod share_blocked_query {
     #[test]
     fn it_rejects_an_empty_subject() {
         assert!(share_blocked_query_body("").is_err());
-    }
-}
-
-#[cfg(test)]
-mod default_remote {
-    use super::*;
-
-    #[test]
-    fn it_appends_the_access_service_path() {
-        assert_eq!(
-            default_remote_url("https://tonk.network"),
-            "https://tonk.network/ucan/"
-        );
-    }
-
-    #[test]
-    fn it_does_not_double_slash_an_origin_that_already_has_one() {
-        assert_eq!(
-            default_remote_url("https://tonk.network/"),
-            "https://tonk.network/ucan/"
-        );
     }
 }
 

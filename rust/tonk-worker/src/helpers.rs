@@ -5,6 +5,7 @@
 //! `helpers` cargo feature.
 
 use dialog_query::{ConceptQuery, Query as ConceptPattern};
+use tonk_schema::Remote;
 use tonk_schema::meta::Name;
 use tonk_schema::query::Query as WireQuery;
 
@@ -23,4 +24,19 @@ pub fn named_concept_wire_query() -> serde_json::Value {
     let query = ConceptQuery::from(pattern);
     let wire = WireQuery::from(&query);
     serde_json::to_value(&wire).expect("Name query serializes")
+}
+
+/// Wire-form `/query` body selecting every [`Remote`] on a branch.
+///
+/// Derived from the concept the way [`named_concept_wire_query`] is, so
+/// a shape change reaches subscribers without editing hand-rolled JSON.
+/// Tests wait on this to learn that a remote ATTACHED — the handler
+/// wires it after navigating, so the fact arriving is the signal, and
+/// subscribing means waiting on that notification rather than asking
+/// again on a timer.
+pub fn remote_concept_wire_query() -> serde_json::Value {
+    let pattern = ConceptPattern::<Remote>::default();
+    let query = ConceptQuery::from(pattern);
+    let wire = WireQuery::from(&query);
+    serde_json::to_value(&wire).expect("Remote query serializes")
 }

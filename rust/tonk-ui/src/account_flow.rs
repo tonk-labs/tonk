@@ -746,6 +746,106 @@ mod tests {
         })
     }
 
+    /// Await a fact appearing on a branch, by SUBSCRIPTION rather than
+    /// by polling.
+    ///
+    /// `POST .../query` with `Accept: text/event-stream` opens a live
+    /// subscription: a `snapshot` frame with what already matches, then
+    /// an `update` frame for every change. The browser holds it open and
+    /// resolves as soon as a frame satisfies `predicate`, so the test
+    /// waits on the same notification the app does instead of asking
+    /// again on a timer.
+    ///
+    /// `timeout_ms` bounds the wait so a fact that never arrives fails
+    /// with a message rather than hanging the suite. That is a deadline,
+    /// not an interval: nothing re-checks on a clock.
+    async fn await_subscription(
+        driver: &WebDriver,
+        path: &str,
+        query: serde_json::Value,
+        predicate: &str,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const [path, query, predicateSource, timeoutMs, done] = [
+                    arguments[0], arguments[1], arguments[2], arguments[3],
+                    arguments[arguments.length - 1],
+                ];
+                const matches = new Function("frame", predicateSource);
+                let settled = false;
+                const settle = (value) => {
+                    if (settled) return;
+                    settled = true;
+                    try { controller.abort(); } catch (_) {}
+                    done(value);
+                };
+                const controller = new AbortController();
+                const timer = setTimeout(
+                    () => settle({ error: "timed out waiting for the subscription" }),
+                    timeoutMs,
+                );
+                fetch(path, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/json",
+                        accept: "text/event-stream",
+                    },
+                    body: JSON.stringify(query),
+                    signal: controller.signal,
+                }).then(async (response) => {
+                    if (!response.ok) {
+                        return settle({ error: "subscribe failed: " + response.status });
+                    }
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = "";
+                    for (;;) {
+                        const { value, done: finished } = await reader.read();
+                        if (finished) {
+                            return settle({ error: "the subscription ended early" });
+                        }
+                        buffer += decoder.decode(value, { stream: true });
+                        let cut;
+                        while ((cut = buffer.indexOf("\n\n")) !== -1) {
+                            const chunk = buffer.slice(0, cut);
+                            buffer = buffer.slice(cut + 2);
+                            const line = chunk
+                                .split("\n")
+                                .find((l) => l.startsWith("data:"));
+                            if (!line) continue;
+                            let frame;
+                            try {
+                                frame = JSON.parse(line.slice(5).trim());
+                            } catch (_) {
+                                continue;
+                            }
+                            if (matches(frame)) {
+                                clearTimeout(timer);
+                                return settle({ frame });
+                            }
+                        }
+                    }
+                }).catch((error) => {
+                    if (!settled) settle({ error: String(error) });
+                });
+                "#,
+                vec![
+                    serde_json::json!(path),
+                    query,
+                    serde_json::json!(predicate),
+                    serde_json::json!(timeout_ms),
+                ],
+            )
+            .await?;
+        let value = result.json().clone();
+        if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("{error} (subscribing to {path})"));
+        }
+        Ok(value["frame"].clone())
+    }
+
     /// Create a space the way the app does: dispatch the `space/create`
     /// transient and wait for the new key to appear in the profile.
     ///
@@ -788,20 +888,22 @@ mod tests {
         // The endpoint this replaced attached synchronously before
         // answering, which is why no caller needed this before.
         if remote.is_some() {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-            loop {
-                let info = get_json(driver, &format!("/api/repository/{key}")).await?;
-                if info["body"]["remote"]["origin"].is_object() {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(anyhow!(
-                        "the requested remote never attached to '{key}': {}",
-                        info["body"]["remote"]
-                    ));
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
+            // Subscribe rather than poll: the attach lands as a `Remote`
+            // fact on the profile branch, and the subscription delivers
+            // it the moment it commits.
+            await_subscription(
+                driver,
+                "/api/profile/branch/main/query",
+                tonk_worker::helpers::remote_concept_wire_query(),
+                &format!(
+                    r#"const rows = frame.conclusions || frame.asserted || [];
+                       return rows.some((row) =>
+                           JSON.stringify(row).includes({key:?}));"#
+                ),
+                30_000,
+            )
+            .await
+            .with_context(|| format!("the requested remote never attached to '{key}'"))?;
         }
         Ok(key)
     }
@@ -1106,10 +1208,11 @@ mod tests {
         // Still local: activation does not retroactively sync spaces
         // created before it. The user opts in per space.
         //
-        // Let the handler's post-navigation attach step run first, so
-        // "no remote" means it declined rather than that we looked
-        // before it could.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // No settling wait is needed to make this meaningful. The
+        // handler's attach step, had it run, would have run before
+        // `create_space` returned — and the navigation, the whole
+        // activation ceremony, and the panel wait have all happened
+        // since. An absent remote here is a decision, not a race.
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
         let info = successful_body("read the space configuration", &info);
         assert!(
