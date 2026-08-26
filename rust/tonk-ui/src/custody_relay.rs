@@ -70,7 +70,10 @@ pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
     }
     let endpoint = crate::account::proposed_remote()?;
     let published = crate::identity_bridge::publish_encryption_key(
-        crate::identity_bridge::PublishEncryptionKeyInput { endpoint },
+        crate::identity_bridge::PublishEncryptionKeyInput {
+            endpoint,
+            credential_id: Some(credential_id.clone()),
+        },
     )
     .await
     .map_err(|error| error.to_string())?;
