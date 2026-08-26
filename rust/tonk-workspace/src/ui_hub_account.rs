@@ -644,7 +644,7 @@ fn activate_profile(
         pending.set(false);
         set_action_pending(&this, false);
         match result {
-            Ok(_) => tonk_host::navigate_to("/"),
+            Ok(_) => tonk_host::reload_page(),
             Err(message) => show_error(&this, "[data-account-error]", &message),
         }
     });

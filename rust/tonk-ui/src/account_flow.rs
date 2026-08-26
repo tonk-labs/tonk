@@ -1556,11 +1556,16 @@ mod tests {
             return Err(error).context(format!("Hub account diagnostic: {diagnostic}"));
         }
         wait_for_displayed(&driver, ".snew").await?;
-        let second_stack = element(&driver, ".stack").await?.text().await?;
-        assert_eq!(
-            second_stack, "create a new space",
-            "an empty Hub roster must collapse directly to the creation action"
+        let create_action = element(&driver, ".snew").await?.text().await?;
+        assert!(
+            create_action.contains("create a new space"),
+            "an empty Hub roster must show the creation action: {create_action:?}"
         );
+        assert!(
+            driver.find_all(By::Css(".srow-wrap")).await?.is_empty(),
+            "an empty Hub roster must not render a space row"
+        );
+        let second_stack = element(&driver, ".stack").await?.text().await?;
         assert!(
             !second_stack.contains("First Garden"),
             "the second account's Hub must omit the first account's space"
@@ -1666,14 +1671,35 @@ mod tests {
         );
         click(&driver, "[data-return-spaces]").await?;
 
-        // Switch back from the Hub's account roster. The component navigates
-        // the whole top page, so restore the top context before waiting for
-        // the newly mounted Hub frame.
+        // Switch back from the Hub's account roster. The component reloads
+        // the whole top page, rebuilding subscriptions owned by the old
+        // profile before mounting the first profile's Hub.
+        driver.enter_default_frame().await?;
+        let before_reload = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
         wait_for_text_containing(&driver, "[data-account-menu]", &first_label).await?;
         let selector = format!("button[data-profile=\"{first_profile}\"]");
         click(&driver, &selector).await?;
         driver.enter_default_frame().await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await
+                .is_ok_and(|current| current.json() != &before_reload)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for the profile switch reload"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         enter_hub(&driver).await?;
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;

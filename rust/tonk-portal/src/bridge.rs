@@ -18,6 +18,7 @@
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
 //!   navigate(href)    -> void,
+//!   reload()           -> void,
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
 //!   ready: Promise<void>,
@@ -252,6 +253,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // performs the real navigation. Fire-and-forget (no response).
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
+    },
+    // Reload the HOST page after a whole-profile state swap. Unlike navigate,
+    // this is meaningful when the route itself has not changed: every portal
+    // and subscription owned by the previous profile must be rebuilt.
+    reload:function(){
+      ready.then(function(){port.postMessage({v:1,type:"reload"});});
     },
     // Retitle the HOST page's tab: the opaque guest can't touch
     // parent.document.title. `<tonk-title>` posts its text here and the
@@ -1569,6 +1576,7 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&state, &data),
+            "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
