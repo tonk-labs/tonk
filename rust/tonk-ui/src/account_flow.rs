@@ -251,6 +251,12 @@ mod tests {
                 "account creation stopped in mode {mode:?}; error={error:?}; status={working:?}"
             ));
         }
+        // The dashboard renders before enrollment finishes: enrolling is
+        // a command, so the ceremony hands it off rather than awaiting a
+        // receipt. The registration row is what says it landed, and a
+        // caller about to read the activation inbox has to wait for that
+        // rather than for the panel that no longer implies it.
+        wait_for_text_containing(driver, "#account-registration-value", "Waiting for email").await?;
         Ok(())
     }
 
