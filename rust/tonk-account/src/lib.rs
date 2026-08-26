@@ -54,7 +54,7 @@ pub const PENDING_WORK_CREDENTIAL_SITE: &str = "tonk-pending-work-v1";
 /// descriptor and has not established one yet.
 ///
 /// Shared so the service and the browser agree on it: a device that has never
-/// linked cannot be told to visit account setup by the `/account` landing logic
+/// linked cannot be told to visit account setup by the `/settings` landing logic
 /// (that path needs an existing local link), so the browser recognizes this
 /// conflict on the wire and explains the recovery instead of surfacing a raw
 /// status line.

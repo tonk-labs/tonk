@@ -1,32 +1,35 @@
 <main class="account">
-  <header class="account__masthead">
-    <a class="account__brand" href="/" aria-label="Tonk home">
-      <span class="account__wordmark">tonk</span>
-      <span class="account__badge">activate</span>
-    </a>
-  </header>
+  <div class="account__logo" role="img" aria-label="tonk"></div>
 
-  <h1>Activate your account</h1>
+  <div class="account__ceremony">
+    <section id="activate-confirm" class="account__activation-state" aria-labelledby="activate-confirm-title" hidden>
+      <div class="account__stack">
+        <h1 id="activate-confirm-title" class="account__ceremony-head">activate your account</h1>
+        <button id="activate-accept" class="account__run" type="button">accept and activate</button>
+      </div>
+      <div class="account__narrator">
+        <p>Confirm your email address to activate syncing for your Tonk account. By selecting accept and activate, you agree to the terms of service.</p>
+      </div>
+    </section>
 
-  <section id="activate-confirm" class="account__panel" hidden>
-    <p class="account__lede">Confirm your email address and accept the terms of service to activate syncing for your Tonk account.</p>
-    <!-- The terms document does not exist yet; link it here once it
-         does, and keep SIGNUP_TERMS in the access service naming the
-         version this page presents. -->
-    <p class="account__hint">By pressing Accept and activate you agree to the terms of service.</p>
-    <div class="account__actions">
-      <button id="activate-accept" class="account__button" type="button">Accept and activate</button>
-    </div>
-  </section>
+    <section id="activate-done" class="account__activation-state" aria-labelledby="activate-done-title" hidden>
+      <div class="account__stack">
+        <h1 id="activate-done-title" class="account__ceremony-head">account activated</h1>
+        <div class="account__row">
+          <span>sync activation</span><strong>complete</strong>
+        </div>
+        <a class="account__run" href="/">open Tonk</a>
+      </div>
+      <div class="account__narrator">
+        <p>Syncing is live. You can close this page or head back to Tonk.</p>
+      </div>
+    </section>
 
-  <section id="activate-done" class="account__panel" hidden>
-    <h2>Account activated</h2>
-    <p class="account__message">Syncing is live. You can close this page, or head back to Tonk.</p>
-    <div class="account__actions">
-      <a class="account__button" href="/">Open Tonk</a>
-    </div>
-  </section>
-
-  <p id="activate-working" class="account__hint" role="status" aria-live="polite"></p>
-  <p id="activate-error" class="account__error" role="alert" hidden></p>
+    <!-- The terms document does not exist yet; link it from the narrator
+         once it does, and keep SIGNUP_TERMS in the access service naming
+         the version this page presents. -->
+    <p id="activate-working" class="account__working" role="status" aria-live="polite"></p>
+    <p id="activate-error" class="account__error" role="alert" hidden></p>
+    <a class="account__ghost" href="/"><span aria-hidden="true">&#9666;</span> back to Tonk</a>
+  </div>
 </main>

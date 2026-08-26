@@ -720,13 +720,13 @@ mod tests {
     ///
     /// Judged against the missing base instead, every one of them was
     /// `Open` — relayed to `open_external`, which opens our own origin with
-    /// `window.open(_, "_blank")`. That is what put `/account` in a new tab.
+    /// `window.open(_, "_blank")`. That is what put `/settings` in a new tab.
     #[dialog_common::test]
     async fn it_navigates_a_top_level_link_in_the_profile_guest() {
         set_profile_context();
         for href in [
-            "/account",
-            "/account?next=%2Fspace%2Fabc",
+            "/settings",
+            "/settings?next=%2Fspace%2Fabc",
             "/space/abc",
             "/",
         ] {

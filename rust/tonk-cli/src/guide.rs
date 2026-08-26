@@ -14,8 +14,6 @@ pub const SYNC: &str = include_str!("guide-sync.md");
 pub const VIEWS: &str = include_str!("guide-views.md");
 /// Events, effects, and rules guide.
 pub const EVENTS: &str = include_str!("guide-events.md");
-/// Workspace authoring guide.
-pub const WORKSPACE: &str = include_str!("guide-workspace.md");
 /// `<tonk-display>` reference.
 pub const ELEMENT_TONK_DISPLAY: &str = include_str!("guide-element-tonk-display.md");
 /// `<tonk-prose>` reference.
@@ -34,7 +32,6 @@ pub const TOPICS: &[&str] = &[
     "sync",
     "views",
     "events",
-    "workspace",
     "tonk-display",
     "tonk-prose",
     "tonk-code",
@@ -51,7 +48,6 @@ pub fn description(name: &str) -> Option<&'static str> {
         "sync" => Some("Upstreams, remotes, automatic sync, invites, and joins"),
         "views" => Some("Templates, view resolution, and web components"),
         "events" => Some("Effects, rules, transient concepts, and DOM events"),
-        "workspace" => Some("Building sheets for the tonk-ui workspace shell"),
         "tonk-display" => Some("Render an entity through a view"),
         "tonk-prose" => Some("Markdown editor element"),
         "tonk-code" => Some("Code editor element"),
@@ -70,7 +66,6 @@ pub fn topic(name: &str) -> Option<&'static str> {
         "sync" => Some(SYNC),
         "views" => Some(VIEWS),
         "events" => Some(EVENTS),
-        "workspace" => Some(WORKSPACE),
         "tonk-display" => Some(ELEMENT_TONK_DISPLAY),
         "tonk-prose" => Some(ELEMENT_TONK_PROSE),
         "tonk-code" => Some(ELEMENT_TONK_CODE),
@@ -94,8 +89,6 @@ pub const GUIDE: &str = concat!(
     include_str!("guide-views.md"),
     "\n",
     include_str!("guide-events.md"),
-    "\n",
-    include_str!("guide-workspace.md"),
     "\n",
     include_str!("guide-element-tonk-display.md"),
     "\n",

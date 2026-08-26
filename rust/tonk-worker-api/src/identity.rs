@@ -94,8 +94,6 @@ pub struct CreateSpaceRequest {
     pub name: String,
     /// Optional sync remote URL.
     pub remote: Option<String>,
-    /// Optional template name.
-    pub template: Option<String>,
 }
 
 /// Created space routing key.
