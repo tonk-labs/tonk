@@ -1489,11 +1489,10 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
         return;
     };
     if status == "ok" {
-        set_text(
-            host,
-            "#account-success-message",
-            "Command-line device linked.",
-        );
+        if let Ok(Some(status)) = host.query_selector("#account-success-message") {
+            status.set_text_content(Some("Command-line device linked."));
+            let _ = status.remove_attribute("hidden");
+        }
     } else {
         let message = message
             .as_deref()
@@ -1810,7 +1809,7 @@ async fn complete_remote(
     if initialize_name && is_unhydrated(&status) && !activation_pending().await {
         show_error(
             host,
-            "Your account was created, but its initial name could not be synchronized. Reload /settings to retry account hydration.",
+            "Your account was created. Check your email and open the verification link to verify your email address, then reload /settings.",
         );
     }
     Ok(())
@@ -3058,6 +3057,23 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "settings should carry the Tonk wordmark"
+        );
+        let status = host
+            .query_selector("#account-success-message")
+            .unwrap()
+            .expect("optional settings outcome");
+        assert!(
+            status.has_attribute("hidden"),
+            "the settings page should not restate that this device is signed in"
+        );
+        assert_eq!(status.text_content().as_deref(), Some(""));
+
+        let outcome = ("ok".to_string(), None);
+        apply_link_outcome(&host, Some(&outcome));
+        assert!(!status.has_attribute("hidden"));
+        assert_eq!(
+            status.text_content().as_deref(),
+            Some("Command-line device linked.")
         );
 
         let copy = dashboard.text_content().unwrap();

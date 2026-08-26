@@ -558,6 +558,27 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_explains_email_verification_before_account_sync(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        enroll_only(&driver, &env, "verify-first@example.com").await?;
+
+        let notice = element(&driver, "#account-error").await?.text().await?;
+        assert!(
+            notice.contains("verification link"),
+            "pending setup should direct the person to the verification email: {notice:?}"
+        );
+        assert!(
+            !notice.contains("hydration") && !notice.contains("could not be synchronized"),
+            "pending setup should not expose account-state implementation terms: {notice:?}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_signs_back_into_the_same_account_after_signing_out(
         env: TestEnvironment,
     ) -> Result<()> {
