@@ -82,9 +82,50 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
 /// cannot: it has no `window`. The page answers through the ordinary API
 /// (`POST /api/identity/root`), which is what the worker then waits on.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Ask the page to link an account, on behalf of `space`.
+///
+/// Sent when a share cannot proceed because nothing is registered. The
+/// worker owns that judgement — the page is told what to do, not why —
+/// and does not wait: the registration UI may take a ceremony, an email
+/// round trip, or never finish, and a handler held open across that is
+/// held open forever. The share resumes when the account facts land.
+pub(crate) async fn request_account_link(
+    client: &crate::router::ClientId,
+    space: &str,
+) -> Result<(), crate::TonkWorkerError> {
+    use crate::TonkWorkerError;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service worker scope".to_string()))?;
+    let value = JsFuture::from(global.clients().get(&client.0))
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("clients.get failed: {error:?}")))?;
+    if value.is_undefined() || value.is_null() {
+        return Err(TonkWorkerError::Conflict(format!(
+            "the originating client {} is gone",
+            client.0
+        )));
+    }
+    let client: web_sys::Client = value
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("clients.get did not yield a Client".to_string()))?;
+    let message = tonk_worker_api::LinkAccountRequest {
+        message_type: tonk_worker_api::LINK_ACCOUNT.to_string(),
+        space: space.to_owned(),
+    };
+    let message = serde_wasm_bindgen::to_value(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
+    client
+        .post_message(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")))
+}
+
 pub(crate) async fn request_webauthn(
     client: &crate::router::ClientId,
-    request: &str,
+    request: tonk_worker_api::WebAuthnKind,
 ) -> Result<(), crate::TonkWorkerError> {
     use crate::TonkWorkerError;
     use wasm_bindgen::JsCast;
@@ -107,7 +148,7 @@ pub(crate) async fn request_webauthn(
         .map_err(|_| TonkWorkerError::Internal("clients.get did not yield a Client".to_string()))?;
     let message = tonk_worker_api::WebAuthnRequest {
         message_type: tonk_worker_api::WEBAUTHN.to_string(),
-        request: request.to_string(),
+        request,
     };
     let message = serde_wasm_bindgen::to_value(&message)
         .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;

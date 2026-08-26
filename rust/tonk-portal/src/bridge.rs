@@ -1877,11 +1877,14 @@ fn handle_register(data: &JsValue) {
     });
 }
 
+/// What a page does when a guest asks it to raise registration.
+type RegisterHandler = Box<dyn Fn(&str)>;
+
 thread_local! {
     /// What to do when a guest asks for registration. `None` until the
     /// shell installs one, which is correct for a page with no account
     /// UI: the ask is dropped rather than half-performed.
-    static REGISTER_HANDLER: std::cell::RefCell<Option<Box<dyn Fn(&str)>>> =
+    static REGISTER_HANDLER: std::cell::RefCell<Option<RegisterHandler>> =
         const { std::cell::RefCell::new(None) };
 }
 

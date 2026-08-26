@@ -87,19 +87,6 @@ fn dispatch_committed() {
     }
 }
 
-/// Navigate to `href` WITHOUT reloading: push it onto history and fire
-/// `popstate` so the top-level `<tonk-site>` re-resolves. The path change then
-/// updates the tab's site in the overlay, whose subscription re-renders the
-/// view — the route change propagates as a data change, not a page load. Falls
-/// back to a real `location.assign` only if history isn't available.
-///
-/// In a guest this forwards to the parent instead (see `page_effect`): a
-/// guest's document is `about:srcdoc` at an opaque origin, where `pushState`
-/// to a real URL throws and the `location.assign` fallback below would load
-/// the whole app INSIDE the iframe.
-///
-/// Public: the portal bridge performs a guest's relayed link click through
-/// this too, so an in-guest navigation stays a client-side route change.
 /// Ask the host page to raise its registration dialog.
 ///
 /// Sharing needs an account and only the top page can run the ceremony,
@@ -117,6 +104,19 @@ pub fn request_registration(payload: &str) {
     crate::page_effect::forward("register", payload);
 }
 
+/// Navigate to `href` WITHOUT reloading: push it onto history and fire
+/// `popstate` so the top-level `<tonk-site>` re-resolves. The path change then
+/// updates the tab's site in the overlay, whose subscription re-renders the
+/// view — the route change propagates as a data change, not a page load. Falls
+/// back to a real `location.assign` only if history isn't available.
+///
+/// In a guest this forwards to the parent instead (see `page_effect`): a
+/// guest's document is `about:srcdoc` at an opaque origin, where `pushState`
+/// to a real URL throws and the `location.assign` fallback below would load
+/// the whole app INSIDE the iframe.
+///
+/// Public: the portal bridge performs a guest's relayed link click through
+/// this too, so an in-guest navigation stays a client-side route change.
 pub fn navigate_to(href: &str) {
     use wasm_bindgen::JsValue;
     if crate::page_effect::forward("navigate", href) {

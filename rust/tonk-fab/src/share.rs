@@ -160,10 +160,6 @@ struct Blocked {
 /// shared with the worker that publishes it.
 const BLOCKED_NOT_SYNCED: &str = tonk_worker_api::share::BLOCKED_NOT_SYNCED;
 
-/// No account has registered with a provider, so there is nothing to
-/// attach this spot to. Repairable by registering.
-const BLOCKED_NEEDS_ACCOUNT: &str = tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT;
-
 /// The account enrolled but never confirmed the emailed link, so the
 /// service serves it nothing yet. Repairable in the user's inbox.
 const BLOCKED_NEEDS_ACTIVATION: &str = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION;
@@ -243,12 +239,11 @@ impl Repair {
                 confirm: "Turn on sync & copy link",
                 outcome: RepairOutcome::EnableSync,
             }),
-            BLOCKED_NEEDS_ACCOUNT => Some(Self {
-                label: "Create an account to share?",
-                action: "Sharing needs an account, so the people you share with have somewhere to sync from.",
-                confirm: "Create an account",
-                outcome: RepairOutcome::Register,
-            }),
+            // `needs-account` offers no repair here on purpose. Whether
+            // a share issues a link or gets an account first is the
+            // worker's decision, and it asks the page for registration
+            // itself — so a prompt here would be a second, competing
+            // path to the same dialog.
             BLOCKED_NEEDS_ACTIVATION => Some(Self {
                 label: "Confirm your email to share",
                 action: "We sent you a link. Confirm your address, then share again.",

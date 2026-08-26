@@ -984,27 +984,47 @@ async fn run_invite(
     // remote lands its recipient in a spot that can never fill, so there is
     // nothing worth generating key material for. Refusing here also means a
     // refusal costs no delegation and rotates no credential.
-    let remote_execution =
-        match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
-            super::create_invite::RemoteRequirement::Ready(execution) => execution,
-            super::create_invite::RemoteRequirement::Refused(reason) => {
-                // Say WHY there is no remote. "Attach one" is the right
-                // offer only when a provider exists to attach to.
-                let reason = super::create_invite::explain_refusal(&tonk, reason).await;
-                log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
-                drop(tonk);
-                publish_share_blocked(
-                    env.state(),
-                    repo_name,
-                    subject_entity,
-                    reason.code(),
-                    reason.detail(),
-                    time,
-                )
-                .await;
-                return Ok(());
+    let remote_execution = match super::create_invite::resolve_remote_url(&tonk, &repository)
+        .await?
+    {
+        super::create_invite::RemoteRequirement::Ready(execution) => execution,
+        super::create_invite::RemoteRequirement::Refused(reason) => {
+            // Say WHY there is no remote. "Attach one" is the right
+            // offer only when a provider exists to attach to.
+            let reason = super::create_invite::explain_refusal(&tonk, reason).await;
+            log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
+            let subject = repository.did().to_string();
+            drop(tonk);
+
+            // Whether to issue a link or get an account first is the
+            // worker's call, not the caller's. A share that needs an
+            // account is not a failure the control should interpret
+            // and repair — it is this handler's next step, so it
+            // asks for the account itself and the share resumes when
+            // the account facts land.
+            //
+            // Not awaited: registration may take a ceremony, an
+            // email round trip, or never finish, and a handler held
+            // open across that is held open forever.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                && let Some(client) = env.client()
+                && let Err(error) = super::navigate::request_account_link(client, &subject).await
+            {
+                log!("Invite: could not ask the page to link an account: {error}");
             }
-        };
+
+            publish_share_blocked(
+                env.state(),
+                repo_name,
+                subject_entity,
+                reason.code(),
+                reason.detail(),
+                time,
+            )
+            .await;
+            return Ok(());
+        }
+    };
 
     // A share is a promise the recipient can actually pull, and an
     // upstream can outlive its provisioning (a space created before the
