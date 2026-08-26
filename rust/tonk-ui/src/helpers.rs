@@ -138,17 +138,24 @@ mod native {
             .as_str()
             .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator id"))?
             .to_string();
-        driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                const wait = () =>
-                    window.tonkIdentity ? done(true) : setTimeout(wait, 50);
-                wait();
-                "#,
-                vec![],
-            )
-            .await?;
+        // Polled from the test side: a single waiting script is bounded
+        // by chromedriver's script timeout, which a cold machine still
+        // compiling the app's wasm can outlast.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let ready = driver
+                .execute("return !!window.tonkIdentity;", vec![])
+                .await
+                .ok()
+                .and_then(|ret| ret.json().as_bool());
+            if ready == Some(true) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the page never exposed tonkIdentity"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         Ok((driver, authenticator_id))
     }
 
