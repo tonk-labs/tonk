@@ -72,7 +72,6 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/invites/{target_cid}/revoke",
     "/api/repository/{repo}/remote",
     "/api/site",
-    "/api/spaces",
     "/api/sync",
 ];
 

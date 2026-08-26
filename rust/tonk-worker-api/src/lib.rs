@@ -40,8 +40,7 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    CreateSpaceRequest, CreateSpaceResponse, ENCRYPTION_KEY_REQUEST, PasskeyMetadata, RootStatus,
-    SaveRootRequest, WEBAUTHN, WebAuthnRequest,
+    ENCRYPTION_KEY_REQUEST, PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
@@ -55,6 +54,37 @@ pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration,
 };
+use serde_json::{Value, json};
 pub use sync::{
     Comparison, SyncDisposition, SyncResponse, SyncState, SyncStatusResponse, classify,
 };
+
+/// keeps this consistent with [`rename_repo_claim_json`].
+pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
+    let mut parameters = json!({ "name": name });
+    if !remote.is_empty() {
+        parameters["remote"] = json!(remote);
+    }
+    if !template.is_empty() {
+        parameters["template"] = json!(template);
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "A request to create a new space from the wizard form.",
+                        "with": {
+                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
+                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
+                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}

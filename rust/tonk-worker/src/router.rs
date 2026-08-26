@@ -250,7 +250,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(migration::repo_vs_profile),
         )
         // Repository lifecycle
-        .route("/api/spaces", post(repository::post_space))
         .route(
             "/api/repository/{repo}",
             put(repository::put_repository).get(repository::get_repository),

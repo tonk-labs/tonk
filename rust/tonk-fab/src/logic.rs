@@ -1363,51 +1363,11 @@ mod rename_repo {
     }
 }
 
-/// Build a `TransactRequest` JSON body for the `space/create` command.
-///
-/// Inlines the descriptor `profile.yaml` declares for `command!: &space/create`
-/// — the same shape, verbatim attribute URIs (`dom.event.current-target.
-/// elements.<field>/value`, matching what a real form submit's read-path would
-/// have produced) — so nothing seeded on the profile branch is consulted.
-/// `this` is omitted so the worker mints it from `(descriptor, parameters)`.
-///
-/// `name` is always sent (the wizard's hidden input always carries the
-/// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
-/// alone — an absent `name` fact means the command never fires at all).
-/// `remote` and `template` are read directly off the transient's facts by
-/// the handler (not decoded as typed `CreateSpace` fields), so an empty
-/// value is omitted rather than sent as `""` — an omitted fact and a
-/// filtered-empty fact land the same way handler-side, but omitting
-/// mirrors what the browser's own event extractor would have done, and
-/// keeps this consistent with [`rename_repo_claim_json`].
-pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
-    let mut parameters = json!({ "name": name });
-    if !remote.is_empty() {
-        parameters["remote"] = json!(remote);
-    }
-    if !template.is_empty() {
-        parameters["template"] = json!(template);
-    }
-    json!({
-        "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "A request to create a new space from the wizard form.",
-                        "with": {
-                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
-                        }
-                    }
-                },
-                "parameters": parameters
-            }
-        }]
-    })
-}
+/// The `space/create` claim shape, defined in `tonk-worker-api` so every
+/// dispatcher builds the same transient — the FAB's wizard and the
+/// browser tests that drive creation the way the app does. Re-exported
+/// here because this module is where the FAB's other claim builders live.
+pub use tonk_worker_api::create_space_claim_json;
 
 #[cfg(test)]
 mod create_space {

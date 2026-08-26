@@ -746,6 +746,54 @@ mod tests {
         })
     }
 
+    /// Create a space the way the app does: dispatch the `space/create`
+    /// transient and wait for the new key to appear in the profile.
+    ///
+    /// There is no creation endpoint to read a key from — a command's
+    /// outcome lands as facts the page subscribes to, and the worker
+    /// navigates the originating client itself — so a test discovers the
+    /// key the way the Hub does, by watching the profile's space list.
+    async fn create_space(
+        driver: &WebDriver,
+        name: &str,
+        remote: Option<&str>,
+        template: &str,
+    ) -> Result<String> {
+        let before = space_keys(driver).await?;
+        let claim =
+            tonk_worker_api::create_space_claim_json(name, remote.unwrap_or_default(), template);
+        let dispatched = post_json(driver, "/api/profile/branch/main/transact", claim).await?;
+        successful_body("dispatch space/create", &dispatched);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let now = space_keys(driver).await?;
+            if let Some(key) = now.iter().find(|key| !before.contains(key)) {
+                return Ok(key.clone());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the created space never appeared; before={before:?} now={now:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Every space key this profile lists.
+    async fn space_keys(driver: &WebDriver) -> Result<Vec<String>> {
+        let listed = get_json(driver, "/api/profile").await?;
+        Ok(listed["body"]["space"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry["key"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn post_json(
         driver: &WebDriver,
         path: &str,
@@ -927,19 +975,7 @@ mod tests {
 
         // No remote in the request: the worker decides, the way the
         // create wizard now leaves it to.
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Made While Waiting",
-                "template": "blank",
-            }),
-        )
-        .await?;
-        let key = successful_body("create space before activation", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space(&driver, "Made While Waiting", None, "blank").await?;
 
         // The space exists and is remote-less: nothing was wired, so
         // nothing can fail against the service.
@@ -981,19 +1017,7 @@ mod tests {
 
         // Again no remote: if the worker did not read the recorded
         // provider, this space would come up local-only.
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Made After Activation",
-                "template": "blank",
-            }),
-        )
-        .await?;
-        let key = successful_body("create space after activation", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space(&driver, "Made After Activation", None, "blank").await?;
 
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
         let info = successful_body("read the space configuration", &info);
@@ -1034,16 +1058,7 @@ mod tests {
         wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
             .await?;
 
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({ "name": "Opted In", "template": "blank" }),
-        )
-        .await?;
-        let key = successful_body("create space before activation", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space(&driver, "Opted In", None, "blank").await?;
 
         // Confirm the email, so a provider exists to attach to.
         activate(&driver, &env, email).await?;
@@ -1105,21 +1120,13 @@ mod tests {
         let creator = driver_with_prf(&env).await?;
         sign_up(&creator, &env, "creator@example.com").await?;
 
-        let created = post_json(
+        let key = create_space(
             &creator,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Shared Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-                "revocation_url": env.account_service.join("revocations")?,
-                "template": "blank",
-            }),
+            "Shared Garden",
+            Some(env.tonk_web.join("ucan/")?.as_str()),
+            "blank",
         )
         .await?;
-        let key = successful_body("create synced space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
         let pushed = post_json(
             &creator,
             &format!("/api/repository/{key}/branch/main/sync/push"),
@@ -1312,21 +1319,13 @@ mod tests {
         let email = "goner@example.com";
         sign_up(&driver, &env, email).await?;
 
-        let created = post_json(
+        let key = create_space(
             &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Doomed Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-                "revocation_url": env.account_service.join("revocations")?,
-                "template": "blank",
-            }),
+            "Doomed Garden",
+            Some(env.tonk_web.join("ucan/")?.as_str()),
+            "blank",
         )
         .await?;
-        let key = successful_body("create synced space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
         let pushed = post_json(
             &driver,
             &format!("/api/repository/{key}/branch/main/sync/push"),
@@ -1395,21 +1394,13 @@ mod tests {
         sign_up(&driver, &env, "first@example.com").await?;
 
         // First account creates a space; its Hub lists it.
-        let created = post_json(
+        let key = create_space(
             &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "First Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-                "revocation_url": env.account_service.join("revocations")?,
-                "template": "blank",
-            }),
+            "First Garden",
+            Some(env.tonk_web.join("ucan/")?.as_str()),
+            "blank",
         )
         .await?;
-        let key = successful_body("create first account's space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
         let listed = get_json(&driver, "/api/profile").await?;
         let space_keys = |body: &serde_json::Value| -> Vec<String> {
             body["space"]
@@ -1745,20 +1736,13 @@ mod tests {
         let owner = driver_with_prf(&env).await?;
         sign_up(&owner, &env, "owner@example.com").await?;
 
-        let created = post_json(
+        let key = create_space(
             &owner,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Revocable Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-                "template": "blank",
-            }),
+            "Revocable Garden",
+            Some(env.tonk_web.join("ucan/")?.as_str()),
+            "blank",
         )
         .await?;
-        let key = successful_body("create space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
         successful_body(
             "push space",
             &post_json(

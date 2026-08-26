@@ -86,21 +86,3 @@ pub const WEBAUTHN: &str = "webauthn";
 /// save it with the root (`POST /api/identity/root` with `encryptionKey`).
 /// The worker waits for that save before continuing.
 pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
-
-/// Request to create a durable space through the local root.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSpaceRequest {
-    /// Space display name.
-    pub name: String,
-    /// Optional sync remote URL.
-    pub remote: Option<String>,
-    /// Optional template name.
-    pub template: Option<String>,
-}
-
-/// Created space routing key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSpaceResponse {
-    /// DID-derived repository routing key.
-    pub key: String,
-}
