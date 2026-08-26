@@ -176,48 +176,38 @@ mod tests {
         }
     }
 
-    /// Wait until the worker's deferred-work queue is empty.
+    /// Wait until the dashboard reports the deferred account work done:
+    /// the custody cell published and nothing left in the queue.
     ///
-    /// Activation unblocks the queued account work: the worker replays
-    /// the custody provisioning, and the dashboard — the one place that
-    /// can raise a passkey assertion — publishes the queued custody
-    /// cell. The dashboard retries a failed publish only on load, so
-    /// when the queue sits non-empty (the publish lost a race with the
-    /// provisioning replay, or a navigation killed it mid-flight)
-    /// reload the page to trigger another attempt.
+    /// The signal is DOM state the page itself settles —
+    /// `tonk-account[data-backup]` — not a REST probe re-deriving it:
+    /// the dashboard is the one place that can run the queued publish
+    /// (it takes a passkey assertion), so it is also the authority on
+    /// whether the publish happened. "done" is the settled state.
+    /// "stuck" means this load's attempt left the queue non-empty and
+    /// the next load retries, so that is the one case worth a reload.
     ///
     /// Call with the dashboard as the current page.
-    async fn wait_for_pending_drain(driver: &WebDriver) -> Result<()> {
+    async fn wait_for_backup_done(driver: &WebDriver) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-        let mut last_reload = tokio::time::Instant::now();
-        let mut last_seen = serde_json::Value::Null;
         loop {
-            // A failed read is "not yet": mid-reload the page cannot run
-            // the probe, and the wait exists to absorb exactly that.
-            if let Ok(pending) = get_json(driver, "/api/customer/pending").await {
-                if pending.get("error").is_none()
-                    && pending["status"]
-                        .as_u64()
-                        .is_some_and(|status| (200..300).contains(&status))
-                    && pending["body"].as_array().is_some_and(Vec::is_empty)
-                {
-                    return Ok(());
-                }
-                last_seen = pending;
+            // An absent panel or attribute is "not yet": the load that
+            // settles it may still be running.
+            let backup = match driver.find(By::Css("tonk-account")).await {
+                Ok(host) => host.attr("data-backup").await.ok().flatten(),
+                Err(_) => None,
+            };
+            match backup.as_deref() {
+                Some("done") => return Ok(()),
+                Some("stuck") => driver.refresh().await?,
+                _ => {}
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "the queued account work never drained after activation; \
-                     last state: {last_seen}"
-                ));
-            }
-            // Long enough that a reload only ever interrupts a publish
-            // that has already failed, never one still in flight.
-            if last_reload.elapsed() >= Duration::from_secs(10) {
-                driver.refresh().await?;
-                last_reload = tokio::time::Instant::now();
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the dashboard never reported the account backup done \
+                 (last state: {backup:?})"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -305,9 +295,9 @@ mod tests {
         // does next: navigating away kills the in-flight publish, and a
         // profile rotation orphans it — both of which surfaced in CI as
         // "no account custody is published for this passkey". Stay on
-        // the dashboard until the queue is actually empty.
+        // the dashboard until it says the backup settled.
         driver.goto(env.tonk_web.join("account")?.as_str()).await?;
-        wait_for_pending_drain(driver).await?;
+        wait_for_backup_done(driver).await?;
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
         driver.goto(account.as_str()).await?;

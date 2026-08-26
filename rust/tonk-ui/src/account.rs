@@ -255,6 +255,9 @@ fn load_activation_notice(host: HtmlElement) {
     spawn_local(async move {
         if !wants_enrollment().await {
             set_text(&host, "#account-registration-value", "Not used here");
+            // Nothing is ever queued without registration; settle the
+            // backup state so a waiter has an answer here too.
+            let _ = host.set_attribute("data-backup", "done");
             return;
         }
         let mut state = match crate::api::customer_state().await {
@@ -309,6 +312,17 @@ fn load_activation_notice(host: HtmlElement) {
         // learns about activation and can raise one.
         if state["status"].as_str() == Some("Active") {
             publish_queued_custody().await;
+            // This dashboard is the only place that can run the queued
+            // publish, so it is also the authority on whether it
+            // happened — say so in the DOM. Every later ceremony
+            // (unlock, CLI approval, legacy link) resolves the
+            // published cell, and the e2e suite waits on this attribute
+            // before running one. "stuck" means this load's attempt
+            // left the queue non-empty; the next load retries.
+            let drained = crate::api::pending_work()
+                .await
+                .is_ok_and(|queue| queue.is_empty());
+            let _ = host.set_attribute("data-backup", if drained { "done" } else { "stuck" });
         }
         if state["status"].as_str() != Some("Registered") {
             if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
