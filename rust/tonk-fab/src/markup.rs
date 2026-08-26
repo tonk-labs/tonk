@@ -517,9 +517,7 @@ mod tests {
     fn it_keeps_prompt_chrome_lowercase() {
         // Law 4. The prompt BODIES carry sentences and stay as written; the
         // headings and the action labels are chrome.
-        for label in ["connect"] {
-            assert!(REFUSAL_DIALOGS_HTML.contains(&format!(">{label}</tonk-button>")));
-        }
+        assert!(REFUSAL_DIALOGS_HTML.contains(">connect</tonk-button>"));
     }
 
     #[test]
