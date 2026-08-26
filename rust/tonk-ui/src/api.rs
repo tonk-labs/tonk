@@ -613,9 +613,19 @@ pub async fn set_account_display_name(name: &str) -> Result<String, TonkUiError>
     } else {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
+        Err(display_name_error(status, &text))
+    }
+}
+
+fn display_name_error(status: reqwest::StatusCode, text: &str) -> TonkUiError {
+    match serde_json::from_str::<ErrorBody>(text) {
+        Ok(body) if body.error.kind == "account_state_unavailable" => TonkUiError::Account(
+            "Please verify your email using the verification link we sent before changing your display name."
+                .to_owned(),
+        ),
+        _ => TonkUiError::ApiError(format!(
             "POST /api/account/display-name returned {status}: {text}"
-        )))
+        )),
     }
 }
 
@@ -1043,5 +1053,19 @@ mod tests {
             error.to_string(),
             "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
         );
+    }
+
+    #[test]
+    fn it_explains_email_verification_for_an_unavailable_account_name() {
+        let error = display_name_error(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"kind":"account_state_unavailable","message":"Finish or retry account setup at /account before changing the linked account name"}}"#,
+        );
+        let message = error.to_string();
+
+        assert!(message.contains("verification link"));
+        assert!(message.contains("verify your email"));
+        assert!(!message.contains("503 Service Unavailable"));
+        assert!(!message.contains("account_state_unavailable"));
     }
 }

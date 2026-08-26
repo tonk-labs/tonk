@@ -1809,7 +1809,7 @@ async fn complete_remote(
     if initialize_name && is_unhydrated(&status) && !activation_pending().await {
         show_error(
             host,
-            "Your account was created. Check your email and open the verification link to verify your email address, then reload /settings.",
+            "Your account was created. Check your email and open the verification link to verify your email address.",
         );
     }
     Ok(())

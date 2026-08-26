@@ -573,6 +573,41 @@ mod tests {
             !notice.contains("hydration") && !notice.contains("could not be synchronized"),
             "pending setup should not expose account-state implementation terms: {notice:?}"
         );
+        assert!(
+            !notice.contains("reload /settings"),
+            "email verification should be the only requested next step: {notice:?}"
+        );
+
+        let display_name = element(&driver, "#account-display-name").await?;
+        let select_all = if cfg!(target_os = "macos") {
+            Key::Meta + "a"
+        } else {
+            Key::Control + "a"
+        };
+        display_name.send_keys(select_all).await?;
+        display_name.send_keys("Pending Name").await?;
+        display_name.send_keys(Key::Enter).await?;
+
+        wait_for_text_containing(&driver, "#account-display-name-error", "verification link")
+            .await?;
+        let error = element(&driver, "#account-display-name-error")
+            .await?
+            .text()
+            .await?;
+        assert!(
+            error.contains("verify your email"),
+            "display-name failure should explain the required account step: {error:?}"
+        );
+        for technical in [
+            "Error from local API",
+            "503 Service Unavailable",
+            "account_state_unavailable",
+        ] {
+            assert!(
+                !error.contains(technical),
+                "display-name failure should not expose {technical:?}: {error:?}"
+            );
+        }
 
         driver.quit().await?;
         Ok(())
