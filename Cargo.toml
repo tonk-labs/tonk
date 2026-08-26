@@ -193,22 +193,22 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-25b" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-26" }
 
 [profile.dev]
 opt-level = 1
@@ -227,26 +227,3 @@ inherits = "release"
 opt-level = "s"
 debug = 0
 strip = "debuginfo"
-
-# TEMPORARY: builds against the local dialog worktree so this branch can
-# compile against dialog-db#470 (`AuthorizeError::NotServable`) before it
-# is tagged. Replace with a tag bump on the dependency lines above and
-# DELETE this section before merging -- a patch pointing at a path only
-# this machine has makes the branch unbuildable for everyone else.
-[patch."https://github.com/dialog-db/dialog-db.git"]
-dialog-artifacts = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-artifacts" }
-dialog-capability = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-capability" }
-dialog-common = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-common" }
-dialog-credentials = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-credentials" }
-dialog-csv = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-csv" }
-dialog-effects = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-effects" }
-dialog-operator = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-operator" }
-dialog-query = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-query" }
-dialog-remote-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-remote-s3" }
-dialog-remote-ucan-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-remote-ucan-s3" }
-dialog-repository = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-repository" }
-dialog-search-tree = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-search-tree" }
-dialog-storage = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-storage" }
-dialog-ucan = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-ucan" }
-dialog-ucan-core = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-ucan-core" }
-dialog-varsig = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-varsig" }

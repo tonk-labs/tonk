@@ -632,11 +632,17 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
 
 /// The `TransactRequest` body for the `tonk:enroll` command.
 ///
+/// Natively only its tests reach it; the dispatcher above is wasm-only.
+///
 /// Both fields are always present because a concept resolves only when
 /// every one of them is, so "unset" is the empty string: no address means
 /// the account's recorded one, and no deposits mean the worker mints a
 /// device-chained set. The deposits join with commas rather than riding
 /// as a list, because a command's fields are scalars.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 fn enroll_claim(email: Option<&str>, deposits: &[String]) -> serde_json::Value {
     serde_json::json!({
         "claims": [{

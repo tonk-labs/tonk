@@ -63,6 +63,10 @@ impl Registration {
     /// `AwaitingActivation`: the status write can land before the one
     /// carrying the provider, and reading that as unconfirmed would tell
     /// a user to go open an email they already opened.
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", target_os = "unknown")),
+        allow(dead_code)
+    )]
     fn read(status: &str, email: &str, provider: &str) -> Self {
         if status == "Suspended" {
             return Self::Suspended;
