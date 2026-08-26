@@ -283,45 +283,70 @@ fn load_activation_notice(host: HtmlElement) {
                 }
             }
         }
-        // The facts row always answers; the banner below only nags while
-        // an activation is actually pending.
-        let label = match state["status"].as_str() {
-            Some("Active") => "Active",
-            Some("Registered") => "Waiting for email confirmation",
-            Some("Suspended") => "Suspended",
-            _ => "Not registered",
-        };
-        set_text(&host, "#account-registration-value", label);
-        // The worker drains the queued backup itself once activation
-        // lands — the ceremony pre-signed the publish. Nothing to
-        // raise; just say so while it is still on its way.
-        if state["status"].as_str() == Some("Active") {
-            note_pending_backup(&host).await;
-        }
-        if state["status"].as_str() != Some("Registered") {
-            if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
-                let _ = resend.set_attribute("hidden", "");
+        // Render whatever the state says now, and while an activation is
+        // pending keep asking: the link is opened in another tab (or on
+        // the phone the email is on), and a dashboard that only learns
+        // about it on a manual reload looks stuck at "pending" long
+        // after the account is live.
+        loop {
+            render_registration(&host, &state).await;
+            if state["status"].as_str() != Some("Registered") {
+                return;
             }
-            return;
-        }
-        let Ok(Some(notice)) = host.query_selector("#account-activation-notice") else {
-            return;
-        };
-        let message = match state["email"].as_str() {
-            Some(email) => {
-                format!("Sync activation pending: open the link we emailed to {email}.")
+            wait_for(5_000).await;
+            if let Ok(fresh) = crate::api::customer_state().await {
+                state = fresh;
             }
-            None => "Sync activation pending: open the link in your activation email.".to_string(),
-        };
-        notice.set_text_content(Some(&message));
-        let _ = notice.remove_attribute("hidden");
-        // The way out of a stuck Registered: enrollment is idempotent
-        // while Registered and resends the link, which is also the
-        // recovery for one that expired.
-        if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
-            let _ = resend.remove_attribute("hidden");
         }
     });
+}
+
+/// Render the registration facts row, the activation banner, and the
+/// resend button from one customer state, so the pending → active flip
+/// also clears what pending showed.
+async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
+    // The facts row always answers; the banner below only nags while
+    // an activation is actually pending.
+    let label = match state["status"].as_str() {
+        Some("Active") => "Active",
+        Some("Registered") => "Waiting for email confirmation",
+        Some("Suspended") => "Suspended",
+        _ => "Not registered",
+    };
+    set_text(host, "#account-registration-value", label);
+    // The worker drains the queued backup itself once activation
+    // lands — the ceremony pre-signed the publish. Nothing to raise;
+    // just say so while it is still on its way.
+    if state["status"].as_str() == Some("Active") {
+        note_pending_backup(host).await;
+    }
+    if state["status"].as_str() != Some("Registered") {
+        let _ = hide(host, "#account-activation-notice");
+        let _ = hide(host, "#account-resend-activation");
+        return;
+    }
+    let message = match state["email"].as_str() {
+        Some(email) => {
+            format!("Sync activation pending: open the link we emailed to {email}.")
+        }
+        None => "Sync activation pending: open the link in your activation email.".to_string(),
+    };
+    set_text(host, "#account-activation-notice", &message);
+    let _ = show(host, "#account-activation-notice");
+    // The way out of a stuck Registered: enrollment is idempotent
+    // while Registered and resends the link, which is also the
+    // recovery for one that expired.
+    let _ = show(host, "#account-resend-activation");
+}
+
+/// Resolve after `ms` milliseconds.
+async fn wait_for(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(win) = window() {
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 fn set_text(host: &HtmlElement, selector: &str, value: &str) {
@@ -1317,13 +1342,25 @@ async fn complete_remote(
         return Ok(());
     }
     settle(host);
-    if initialize_name && is_unhydrated(&status) {
+    // An unhydrated account right after signup is the expected state
+    // while the email activation is pending — the access service
+    // refuses the pull until then, the activation banner already says
+    // so, and the background sweep hydrates once it lands. The alert is
+    // for the unexpected case: activation is not what's in the way.
+    if initialize_name && is_unhydrated(&status) && !activation_pending().await {
         show_error(
             host,
             "Your account was created, but its initial name could not be synchronized. Reload /account to retry account hydration.",
         );
     }
     Ok(())
+}
+
+/// Whether the customer is registered but not yet email-activated.
+async fn activation_pending() -> bool {
+    crate::api::customer_state()
+        .await
+        .is_ok_and(|state| state["status"].as_str() == Some("Registered"))
 }
 
 fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) + 'static) {
