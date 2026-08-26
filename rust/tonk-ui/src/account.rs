@@ -435,7 +435,7 @@ fn load_activation_notice(host: HtmlElement) {
             let _ = host.set_attribute("data-backup", "done");
             return;
         }
-        let mut state = match crate::api::customer_state().await {
+        let state = match crate::api::customer_state().await {
             Ok(state) => state,
             Err(_) => {
                 set_text(&host, "#account-registration-value", "Unreachable");
@@ -454,11 +454,12 @@ fn load_activation_notice(host: HtmlElement) {
                 .is_ok_and(|config| config.service_did.is_some())
         {
             match crate::api::enroll_customer(None, &[]).await {
-                // The receipt names no email; the recorded enrollment does.
-                Ok(_) => match crate::api::customer_state().await {
-                    Ok(fresh) => state = fresh,
-                    Err(_) => return,
-                },
+                // Enrollment is a command, so this returns once the
+                // transient is committed, not once the service answers.
+                // Re-reading here would race the handler and paint a
+                // state already superseded; the row's subscription is
+                // what shows the outcome, whenever it lands.
+                Ok(()) => {}
                 Err(error) => {
                     web_sys::console::error_1(
                         &format!("customer re-enrollment failed: {error}").into(),
@@ -2005,18 +2006,23 @@ async fn complete_remote(
         }
     };
     // Registration with the access service, on signup and login alike:
-    // the account exists either way, so a refused enrollment is surfaced
-    // but does not undo the attach. The login path names no email; the
+    // the account exists either way, so a failed enrollment does not
+    // undo the attach. The login path names no email; the
     // worker resolves the account's recorded address. Deployments that
     // publish no service identity have no registration to perform.
     if wants_enrollment().await {
         set_busy(host, true, "Registering with the sync service…");
+        // Enrollment is a command now, so this catches a dispatch that
+        // never reached the worker, not a service that refused. A
+        // refusal shows up where it belongs: the registration row
+        // follows the fact, so it says what actually happened and keeps
+        // saying it, instead of a one-shot verdict from this moment.
         if let Err(error) = crate::api::enroll_customer(enroll_email, &ceremony.deposits_hex).await
         {
             web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
             show_error(
                 host,
-                "Your account is ready, but registering it with the sync service failed. Reload /settings to retry.",
+                "Your account is ready, but registering it with the sync service could not be started. Reload /settings to retry.",
             );
         }
     }
