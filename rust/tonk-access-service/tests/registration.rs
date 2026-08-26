@@ -255,6 +255,47 @@ async fn it_enrolls_a_customer_and_emails_an_activation_link() -> anyhow::Result
     Ok(())
 }
 
+/// Activation names the provider; enrollment does not.
+///
+/// The service decides which provider serves its customers and says so
+/// in the receipt, so a client records one authoritative address instead
+/// of deriving `https://{origin}/ucan/` from whichever origin its
+/// request happened to reach.
+///
+/// Only at activation, though. The address is what says "this service
+/// serves you", and for an unactivated customer it does not — it gets
+/// neither service nor provisioning. Withholding it until activation is
+/// what lets a client tell "enrolled, awaiting the email" from "ready to
+/// sync" by looking at the recorded address alone.
+#[dialog_common::test]
+async fn it_answers_the_provider_only_once_the_customer_activates() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+
+    let enrolled = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(
+        enrolled.provider, None,
+        "enrollment must name no provider: this customer is not served yet",
+    );
+    // Absent from the wire, not present-and-null: a client reading the
+    // JSON must see no key at all rather than an explicit empty value.
+    let wire = serde_json::to_value(&enrolled)?;
+    assert!(
+        wire.get("provider").is_none(),
+        "an unserved receipt must omit the provider key entirely, got {wire}",
+    );
+
+    let container = link_container(&fixture.last_email().1);
+    let activated = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(
+        activated.provider.as_deref(),
+        Some("https://hub.test/ucan/"),
+        "activation names the provider this customer's spaces attach to",
+    );
+    Ok(())
+}
+
 #[dialog_common::test]
 async fn it_activates_by_presenting_the_emailed_invocation_from_any_device() -> anyhow::Result<()> {
     let fixture = Fixture::new().await;

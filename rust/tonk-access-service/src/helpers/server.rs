@@ -443,7 +443,7 @@ async fn handle_request(
         && let Some(did) = req.uri().path().strip_prefix("/customer/")
     {
         use crate::store::Store;
-        use tonk_account::customer::{Receipt, RegistrationError};
+        use tonk_account::customer::{CustomerStatus, Receipt, RegistrationError};
 
         let response = match registration.store.customer(did).await {
             Ok(Some(customer)) => match customer.did.parse() {
@@ -451,6 +451,10 @@ async fn handle_request(
                     let receipt = Receipt {
                         customer: parsed,
                         status: customer.status,
+                        // Only for a served customer; see the worker twin.
+                        provider: (customer.status == CustomerStatus::Active).then(|| {
+                            format!("{}/ucan/", registration.origin.trim_end_matches('/'))
+                        }),
                     };
                     Response::builder()
                         .status(StatusCode::OK)

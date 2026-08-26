@@ -674,9 +674,13 @@ fn attach_create_space_form(element: &HtmlElement) {
             return;
         };
         let name = form_field(&target, "name");
-        let remote = form_field(&target, "remote");
         let template = form_field(&target, "template");
-        transact(&create_space_claim_json(&name, &remote, &template));
+        // No remote: the worker resolves where a space syncs from the
+        // account's own registration, so the page does not derive an
+        // endpoint from its origin and pass one down. `form_field`
+        // answers "" for the absent control and the claim omits it,
+        // which is what makes the worker fall through to that lookup.
+        transact(&create_space_claim_json(&name, "", &template));
         dismiss_overlay(&target);
     });
     let target: &web_sys::EventTarget = form.unchecked_ref();

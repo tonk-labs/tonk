@@ -138,9 +138,6 @@ pub fn fab_html(space_did: &str) -> String {
     <input class="wizard__template" type="radio" name="template" value="wiki" id="tpl-wiki">
     <input class="wizard__template" type="radio" name="template" value="board" id="tpl-board">
     <input type="hidden" name="name" value="Untitled">
-    <input type="hidden" name="remote" value="">
-    <input type="hidden" name="revocation" value="">
-    <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
     <div class="wizard__screen wizard__screen--start">
       <div class="wizard__cards">
         <label class="wizard__card" for="wiz-template">

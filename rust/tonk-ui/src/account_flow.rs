@@ -881,19 +881,24 @@ mod tests {
             .map(|row| row.did.as_str())
     }
 
-    /// The pending-work queue, end to end: a space created before the
-    /// activation email is opened cannot be hosted, and becomes hosted
-    /// once it is — with no second attempt from the user.
+    /// A space created before activation stays LOCAL: no remote, no
+    /// provisioning, and therefore no refused presign.
     ///
-    /// This is the whole point of the queue. The service refuses both
-    /// provisioning and presign for a `Registered` customer, so a space
-    /// created in that window works locally and syncs nothing; the
-    /// client records the provisioning and replays it when the customer
-    /// activates.
+    /// A device has an account from first boot, so "an account exists"
+    /// says nothing about whether the access service will serve a
+    /// space. Until the emailed link is confirmed the service refuses
+    /// both provisioning and presign, so wiring an upstream would
+    /// produce a space that syncs to `subject is provisioned by an
+    /// active customer (the subject is not provisioned)` on every
+    /// attempt. The space works locally and the share button attaches
+    /// sync later, once there is a provider to attach to.
+    ///
+    /// This replaces an earlier contract where the create queued its
+    /// provisioning and replayed it at activation. That left the space
+    /// wired to a remote it could not use for the whole waiting period,
+    /// which is the 403 this gate exists to prevent.
     #[dialog_common::test]
-    async fn it_hosts_a_space_created_before_activation_once_the_email_is_confirmed(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    async fn it_creates_a_space_local_only_before_activation(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         let email = "queued@example.com";
         // Stop at Registered: the activation email is sent but unopened.
@@ -901,15 +906,13 @@ mod tests {
         wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
             .await?;
 
-        // The space is created locally and works; only its hosting is
-        // withheld. Creation must not fail on the refused provisioning.
+        // No remote in the request: the worker decides, the way the
+        // create wizard now leaves it to.
         let created = post_json(
             &driver,
             "/api/spaces",
             serde_json::json!({
                 "name": "Made While Waiting",
-                "remote": env.tonk_web.join("ucan/")?,
-                "revocation_url": env.account_service.join("revocations")?,
                 "template": "blank",
             }),
         )
@@ -919,31 +922,138 @@ mod tests {
             .context("create response omitted the space key")?
             .to_string();
 
-        // Pushing it now must fail: nobody is paying for this subject.
-        let refused = post_json(
-            &driver,
-            &format!("/api/repository/{key}/branch/main/sync/push"),
-            serde_json::json!({}),
-        )
-        .await?;
+        // The space exists and is remote-less: nothing was wired, so
+        // nothing can fail against the service.
+        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let info = successful_body("read the space configuration", &info);
+        // `RepositoryInfo::remote` skips serializing an empty map, so
+        // "no remotes" is an ABSENT key rather than an empty object.
         assert!(
-            refused.get("error").is_none(),
-            "the push request itself must reach the worker: {refused}"
+            info["remote"]
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty),
+            "a space created before activation must wire no remote, got {}",
+            info["remote"],
         );
+        let upstream = &info["branch"]["main"]["upstream"];
         assert!(
-            !refused["status"]
-                .as_u64()
-                .is_some_and(|status| (200..300).contains(&status)),
-            "an unactivated account must not be able to host a space: {refused}"
+            upstream.is_null(),
+            "main must track nothing before activation, got {upstream}",
         );
 
-        // Confirm the email. Nothing else is asked of the user: the
-        // queued provisioning replays off the status probe.
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Activation records the provider, and a space created after it
+    /// attaches to that provider without the page naming one.
+    ///
+    /// The service decides which provider serves its customers and says
+    /// so in the activation receipt; the client records it as a fact on
+    /// profile main. Every attach path reads that one answer, so the
+    /// page no longer derives `https://{origin}/ucan/` for itself.
+    #[dialog_common::test]
+    async fn it_attaches_the_recorded_provider_after_activation(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "provided@example.com").await?;
+        wait_for_text(&driver, "#account-registration-value", "Active").await?;
+
+        // Again no remote: if the worker did not read the recorded
+        // provider, this space would come up local-only.
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Made After Activation",
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create space after activation", &created)["key"]
+            .as_str()
+            .context("create response omitted the space key")?
+            .to_string();
+
+        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let info = successful_body("read the space configuration", &info);
+        // Report what the worker actually knows, so a failure here says
+        // whether the provider fact was recorded or merely unread.
+        let customer = get_json(&driver, "/api/customer").await?;
+        assert!(
+            info["remote"]["origin"].is_object(),
+            "an activated account's space must wire the origin remote, got {}; \
+             customer state was {customer}",
+            info["remote"],
+        );
+        let upstream = &info["branch"]["main"]["upstream"];
+        assert_eq!(
+            upstream["remote"].as_str(),
+            Some("origin"),
+            "main must track the attached remote, got {upstream}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A space created before activation becomes syncable once the user
+    /// asks for it, and not before.
+    ///
+    /// The opt-in half of the local-only gate: creation withholds the
+    /// remote, and an explicit enable-sync is what provisions the space
+    /// and attaches one. Provisioning at attach time is what makes this
+    /// work — before, `enable_sync` attached without ever calling
+    /// `/provider/add`, so the upstream pointed at a subject the service
+    /// refused.
+    #[dialog_common::test]
+    async fn it_syncs_a_local_only_space_once_sync_is_enabled(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "optin@example.com";
+        enroll_only(&driver, &env, email).await?;
+        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
+            .await?;
+
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({ "name": "Opted In", "template": "blank" }),
+        )
+        .await?;
+        let key = successful_body("create space before activation", &created)["key"]
+            .as_str()
+            .context("create response omitted the space key")?
+            .to_string();
+
+        // Confirm the email, so a provider exists to attach to.
         activate(&driver, &env, email).await?;
         wait_for_text(&driver, "#account-registration-value", "Active").await?;
 
-        // The same push now succeeds, with no further provisioning call
-        // from the test — the queue did it.
+        // Still local: activation does not retroactively sync spaces
+        // created before it. The user opts in per space.
+        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let info = successful_body("read the space configuration", &info);
+        assert!(
+            info["remote"]
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty),
+            "activation must not retroactively attach a remote, got {}",
+            info["remote"],
+        );
+
+        // Opting in attaches and provisions, so the space can now push.
+        let attached = post_json(
+            &driver,
+            &format!("/api/repository/{key}/remote"),
+            serde_json::json!({
+                "remote": { "origin": { "address": { "Ucan": { "endpoint": env.tonk_web.join("ucan/")? } } } },
+                "branch": { "main": { "upstream": { "remote": "origin", "branch": "main" } } },
+            }),
+        )
+        .await?;
+        successful_body("attach the remote", &attached);
+
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let pushed = post_json(
@@ -952,15 +1062,15 @@ mod tests {
                 serde_json::json!({}),
             )
             .await?;
-            let ok = pushed["status"]
+            if pushed["status"]
                 .as_u64()
-                .is_some_and(|status| (200..300).contains(&status));
-            if ok {
+                .is_some_and(|status| (200..300).contains(&status))
+            {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "the queued provisioning never replayed after activation: {pushed}"
+                "an opted-in space must be provisioned and pushable: {pushed}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }

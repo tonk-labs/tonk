@@ -157,6 +157,18 @@ fn bind(host: &HtmlElement) {
             let status = response.status();
             let body: serde_json::Value = response.json().await.unwrap_or_default();
             if status.is_success() {
+                // Hand the receipt to the worker before declaring
+                // success. The service names the provider serving this
+                // account here, and this page is the only place that
+                // answer arrives — post it to `/api/customer/activated`
+                // so it is recorded as a fact rather than discarded.
+                // Best effort: activation itself succeeded, and the
+                // status probe records the same thing on the next read.
+                if let Err(error) = crate::api::report_activation(&body).await {
+                    web_sys::console::warn_1(
+                        &format!("activation receipt not recorded: {error}").into(),
+                    );
+                }
                 set_status(&host, "");
                 show_panel(&host, "#activate-done");
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {
