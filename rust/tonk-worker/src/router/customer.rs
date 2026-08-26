@@ -724,7 +724,7 @@ pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registrati
 }
 
 /// This account's registration fact, absent when nothing recorded one.
-async fn account_customer(
+pub(crate) async fn account_customer(
     state: &crate::worker::TonkState,
 ) -> Option<tonk_schema::AccountCustomer> {
     use dialog_query::{Output as _, Query, Term};
