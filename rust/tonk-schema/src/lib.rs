@@ -64,7 +64,9 @@ pub mod sync;
 pub use sync::*;
 
 pub mod account;
-pub use account::{AccountCustomer, AccountDisplayName, AccountEncryptionKey, AccountPasskeyCreated};
+pub use account::{
+    AccountCustomer, AccountDisplayName, AccountEncryptionKey, AccountPasskeyCreated,
+};
 
 pub mod custody;
 pub use custody::{CustodiedSeed, SeedKind};
