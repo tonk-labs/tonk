@@ -320,21 +320,149 @@ Commands and rules mirror `prose/edit`: a command reads the new source
 off the editor's `change` event plus the cell's identity from
 `data-subject`, and a rule writes it back onto the cell.
 
-## Output
+## Execution model — cells as checkpoints
 
-**Derived, not stored** — and replicator agrees: its cell is
-`{id, input, output}`, but only `input` is serialized. Output is
-recomputed on load.
+**A cell is a transaction. Evaluating it produces a checkpoint. Reload
+queries that checkpoint rather than re-evaluating.**
 
-A code cell auto-evaluates on a clean diagnostics frame (the inspector
-already does exactly this) and renders through the existing
-`render_result`. Nothing about the result is persisted.
+This is the core of the design and it replaces the earlier
+"derived, recomputed on load" sketch (which followed replicator, where
+cells were JS with no transaction boundary).
 
-Storing outputs would make a notebook readable without running it, and
-shareable as a finished document. The cost is results that silently go
-stale against a branch that has moved, plus a second write path per
-cell. If notebooks later need to read as published documents, that is a
-good reason to revisit — as an explicit "snapshot", not a default.
+### Classification: query vs mutation
+
+Already solved. `has_mutation` (`tonk-inspector/src/element.rs:394`)
+parses the cell and checks for a `Claim` expression.
+
+- **Query cells** have no effect, so they re-run freely — exactly what
+  the inspector does today. Optionally upgraded to a **subscription**
+  (a per-cell toggle) so results track the branch as facts change.
+- **Mutation cells** never run automatically. They run on explicit
+  request, and what they produce is a checkpoint, not a branch
+  advance. Nothing is persisted to the notebook's source branch
+  without a deliberate act.
+
+### What a checkpoint is
+
+Dialog's commit path is already four phases
+(`dialog-repository/src/repository/branch/commit.rs`):
+
+1. Build the tree from the change batch
+2. **Mint** the revision — signed record, parent edges, skip table
+3. **Persist** the blocks (*"a revision must only point at durable
+   blocks"*)
+4. **`head.publish(revision)`** — the CAS that advances the branch
+
+A checkpoint is 1–3 without 4: a complete, durable, content-addressed
+revision that no branch points at. The seam exists; it just isn't
+exposed on `Transaction::commit`.
+
+Two existing precedents do exactly this:
+
+- **`Pull::prepare` → `PreparedPull::revision()`** — *"persist the
+  merged tree's blocks without writing any branch cell"*, returning a
+  `Revision` the caller may decline to `.commit()`.
+- **`join.rs`** — stages a throwaway branch, commits roster facts onto
+  it, then installs that exact revision. A working staged-then-install
+  precedent in the worker.
+
+Note what a checkpoint is *not*: `/evaluate?transact=false` **drops**
+the transaction and mints nothing (`evaluate.rs:308`). It computes
+against the overlay and throws it away. Useful as a preview, useless as
+a checkpoint.
+
+### Why this resolves the interactivity problem
+
+An earlier worry: if a mutation never lands anywhere, an increment
+button asserts into the void and nothing reacts.
+
+It doesn't, because the dry-run overlay is richer than expected.
+`/evaluate?transact=false` returns `matches_after`, which the code
+documents as *"the same answer a post-commit branch query would give"*
+— the overlay reflects "every mutation and induce-pass derivation"
+(`evaluate.rs:291`). Rules fire; derived facts appear.
+
+So the missing piece was never visibility, only **retention**. A
+checkpoint retains what the dry run already computes.
+
+## Staging: the branch question
+
+Query-at-a-revision does not exist (see Constraints), so checkpoints
+cannot be queried directly yet. The shipping design works around this:
+
+**Each notebook gets its own branch.** Cells checkpoint onto it;
+reload fast-forwards that branch to the last checkpoint and queries it
+as an ordinary head query. No new primitive.
+
+- Reload is a query, not a re-execution — the stated goal.
+- Reproducible: the same revision yields the same output.
+- The notebook's own branch is a scratch space. Merging into `main` is
+  a deliberate act (`Branch::reset`, or `target.pull().from(&source)`).
+
+What it costs, relative to querying checkpoints directly: only the
+*latest* state is queryable, so per-cell time travel is out until the
+dialog API lands. Cell N's output cannot be re-read at cell N's
+revision while the branch sits at cell N+3.
+
+### Adopting into main
+
+`Branch::reset(revision)` is an unconditional pointer move — the merge
+button. **Forward-only**: its doc is explicit that rewinding and then
+committing re-mints an already-used `(origin, edition)`, which peers
+silently drop and replicas resolve by content-hash tie-break. Protocol
+corruption, not just bad UX.
+
+For branch-into-branch merge, `target.pull().from(&source)` accepts a
+local branch as the source. Nothing is named `merge`, and no HTTP route
+takes a source-branch parameter — the worker's `/sync/*` routes are
+upstream-targeted only.
+
+## Time slider (later)
+
+With `edition` (causal depth), `RevisionParent` edges, and
+`RevisionAncestor` (the transitive closure, derived by a built-in
+recursive rule — `dialog-repository/src/schema.rs:462-500`), notebook
+history is already queryable as facts. Scrubbing is a query, not a
+data structure to maintain.
+
+Two constraints shape it:
+
+- **Viewing the past needs query-at-a-revision** — the same missing API.
+  Until then the slider can show revision *metadata* (who, when, depth,
+  ancestry) but not the *state* at each point.
+- **Resuming from a scrubbed point cannot rewind.** Forward-only reset
+  means "go back and continue" forks a new branch from that revision.
+  Design it as *view the past, branch from it*, never *rewind to it*.
+
+## Constraints (verified)
+
+What exists, and what does not, as of dialog `tonk-2026-08-25b`:
+
+| Capability | Status |
+|---|---|
+| Subscribe to a query | **Exists.** SSE via `Accept: text/event-stream` on `/query`; `reset` + `update` frames; auto-reconnect; three live element examples |
+| Subscribe to a *formula* query (`tree/*`) | **No** — explicitly rejected (`query.rs:130`) |
+| Query as of a revision | **No.** Wire `Query` is `{terms, predicate}`; `Source` splits branch-vs-transaction; `select.rs:32` always reads `branch.revision()` |
+| Mint a revision without advancing the branch | **Not on `Transaction::commit`**, but `Pull::prepare` does it, and `join.rs` demonstrates staged-then-install |
+| Create a branch | **Implicitly** (`repo.branch(name).open()`). No HTTP route; the worker hardcodes `"main"` |
+| Merge branch → branch | **`target.pull().from(&source)`.** Nothing named `merge`; HTTP exposes upstream-targeted `/sync/*` only |
+
+### The follow-up: query a snapshot
+
+Query-at-a-revision is the one missing primitive, and it is a modest
+dialog change rather than new machinery. `Repository::snapshot(revision)`
+already returns a `Snapshot { subject, revision }` documented as *"an
+immutable view at `revision`"* — it simply never grew a query API
+(today: `export` / `import` / `download`, content movement only).
+
+What a select needs is narrow: `Select` reads exactly two things — a
+**tree hash** (`select.rs:32`, from `branch.revision()`) and a
+**catalog** scoped to the subject (`:41`). `Snapshot` has both. The
+branch is incidental to reading.
+
+When that lands, the per-notebook branch becomes optional: cells query
+their own checkpoints directly, per-cell time travel works, and the
+time slider can show state rather than only metadata.
 
 ## Open questions
 
@@ -344,25 +472,29 @@ than the author editing the document needs to query, link to, or
 reorder an individual cell, cells must be entities (A). If not, B is
 much less machinery. Replicator never needed it.
 
-**2. Does a code cell commit, or dry-run?** The inspector separates
-auto-evaluate (dry run) from explicit submit (`transact: true`). A cell
-that re-runs on load must not re-commit mutations on every load.
-Suggest: dry-run on load and on edit, commit only on explicit run. This
-decides whether a notebook is a *document* or a *script*, and it is
-sharper here than in replicator, whose JS cells had no transaction
-boundary to worry about.
+**2. ~~Does a code cell commit, or dry-run?~~ Settled.** Neither, as
+posed. Query cells re-run freely (or subscribe); mutation cells run
+only on request and produce a checkpoint. See Execution model.
 
 **3. Re-run cascade: is document order enough?** Replicator's answer is
 yes — execute the first cell on load, and each cell's completion
 triggers the next. That works because JS cells share state through
 `window` bindings, so document order *is* dependency order.
 
-Dialog cells have no equivalent shared binding: each `/evaluate` is
-independent, against the branch. So the cascade buys less. Two live
-options: re-run everything below an edited cell (cheap, predictable,
-possibly wasteful), or re-run only the edited cell (cheapest, but a
-mutation in cell 3 leaves cell 5's stale result on screen). Worth
-deciding once the commit question above is settled — they interact.
+Under the checkpoint model this mostly dissolves: reload queries the
+last checkpoint rather than re-running anything, so there is no load
+cascade at all. It returns only for *editing* — when a mutation cell is
+re-run, every checkpoint below it is derived from a superseded
+revision. Options: invalidate them visually (cheap, honest), or re-run
+them in order (expensive, and each re-run mints another checkpoint).
+Suggest invalidate-and-mark first; the notebook says "stale below
+here" rather than silently showing wrong results.
+
+**3b. Checkpoint accumulation.** Every mutation run mints a durable
+revision whose blocks persist. A notebook re-run many times leaves many
+revisions. Not fatal, and the per-notebook branch bounds the blast
+radius, but garbage collection is unaddressed — worth knowing before
+this meets a long-lived notebook.
 
 **4. Per-cell LSP `source` URIs.** The inspector uses
 `tonk-buffer:///{repo}/{branch}/scratch-{n}` with a session counter.
@@ -379,3 +511,33 @@ arrive through prose's debounced `change`, which is probably what we
 want for persistence — but auto-evaluate is currently driven by the
 code editor's own `diagnostics` event. Worth confirming those two
 paths don't fight.
+
+**6. Where does a notebook's branch live, and who names it?** The
+worker hardcodes `"main"` at every call site and exposes no
+create-branch route. A per-notebook branch needs a naming scheme
+(`notebook/{entity}`?) and a worker surface to open it. `join.rs`
+already drives a non-`main` branch, so the pattern exists — it just
+isn't general.
+
+**7. Does the checkpoint seam need a new `/evaluate` mode?** Today
+`transact=true` commits and advances; `transact=false` drops. The
+checkpoint is a third mode: mint + persist, do not publish. Whether
+that is a new query parameter, a new route, or a staged-branch
+composition in the worker (the `join.rs` shape) is an implementation
+choice worth making deliberately.
+
+## Build order
+
+1. **Shape B notebook, query cells only.** One concept, the
+   `<tonk-notebook>` element, fences mounting the inspector's evaluate
+   + `render_result`. Mutation cells parse and preview (dry run) but
+   do not checkpoint. This is shippable on existing primitives and
+   proves the editor pairing.
+2. **Subscription toggle** on query cells — a flag on the existing SSE
+   path.
+3. **Per-notebook branch + checkpoints.** The staging work: a branch
+   per notebook, the checkpoint seam, reload as fast-forward, and an
+   explicit adopt-into-main.
+4. **Query-a-snapshot (dialog).** Tracked separately. When it lands,
+   the per-notebook branch becomes optional and per-cell time travel
+   plus a stateful time slider follow.
