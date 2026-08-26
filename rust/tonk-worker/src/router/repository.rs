@@ -1006,6 +1006,29 @@ async fn run_invite(
             }
         };
 
+    // A share is a promise the recipient can actually pull, and an
+    // upstream can outlive its provisioning (a space created before the
+    // account had an active customer keeps its remote while the service
+    // refuses every presign). Ensure the consumer row exists before any
+    // key material is minted: `/provider/add` is idempotent — an already
+    // provided consumer answers `ConsumerProvided`, treated as success —
+    // so every share self-heals that half-state. Best effort like the
+    // enable-sync attach: a foreign remote (self-hosted, a test server)
+    // is not our access service, and refusing the mint over it would
+    // make those unshareable.
+    match space_root_prefix(&tonk, &repository.did()).await {
+        Ok(prefix) => {
+            if let Err(error) =
+                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
+            {
+                log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
+            }
+        }
+        Err(error) => {
+            log!("Invite for repo '{repo_name}': no prefix to provision with: {error}");
+        }
+    }
+
     // A ready-to-append URL query suffix (`&remote=<percent-encoded-url>`).
     // The share view appends it verbatim between `?access=…` and the `#seed`.
     let encoded_access: String =

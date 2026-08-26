@@ -739,3 +739,149 @@ async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
     );
     Ok(())
 }
+
+/// An account-backed create seals the space's seed to the account's
+/// published encryption key and records it on the account branch — the
+/// copy any of the account's devices recovers the space from after a
+/// ceremony opens it.
+#[dialog_common::test]
+async fn it_custodies_the_created_space_seed() -> Result<()> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
+
+    let fixture = common::AccountFixture::new().await?;
+    let site = TonkSite::init_at_with(
+        &fixture.tmp.path().join("custodied"),
+        account_config(&fixture),
+    )
+    .await?;
+    let subject = site.repository.did();
+
+    let account_operator =
+        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
+            .await?;
+    let account = tonk_cli::account_state::open_account_branch_in(
+        &fixture.profile,
+        &account_operator,
+        &fixture.store,
+    )
+    .await?
+    .context("the fixture account branch mounts")?;
+    let rows: Vec<CustodiedSeed> = account
+        .query()
+        .select(Query::<CustodiedSeed> {
+            this: Term::var("this"),
+            subject: Term::from(subject.this()),
+            kind: Term::var("kind"),
+            recipient: Term::var("recipient"),
+            sealed: Term::var("sealed"),
+        })
+        .perform(&account_operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("read custodied seeds: {error:?}"))?;
+    assert_eq!(rows.len(), 1, "the created space's seed is custodied");
+    assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
+
+    // The account secret opens the row and derives the space itself.
+    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+        fixture.root_prf,
+    ));
+    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let seed = secret
+        .encryption_key()
+        .open(&sealed, &subject)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
+    use dialog_varsig::Principal as _;
+    assert_eq!(
+        signer.did(),
+        subject,
+        "the custodied seed derives the space"
+    );
+    Ok(())
+}
+
+/// A space created before the account existed moves under the account's
+/// custody at sign-in: authority reaches the root and the seed is
+/// sealed to the account's key. Hosting does not move — that stays
+/// `tonk space link`'s boundary.
+#[dialog_common::test]
+async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_cli::custody::{Accreditation, accredit_local_spaces};
+    use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
+
+    let fixture = common::AccountFixture::new().await?;
+    // What `tonk account login` records once the ceremony succeeds.
+    let root_did_string = fixture.link.issuer().to_string();
+    fixture
+        .store
+        .set_account(Some(tonk_cli::space::AccountRecord::new(root_did_string)))?;
+    let mut local_config = fixture.config.clone();
+    local_config.require_account = false;
+    let created =
+        tonk_cli::space::create(&fixture.store, "premade", None, None, local_config).await?;
+    let subject: dialog_varsig::Did = created.did.parse()?;
+
+    let outcomes = accredit_local_spaces(&fixture.store, &fixture.config).await?;
+    assert!(
+        outcomes
+            .iter()
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Moved)),
+        "sign-in moves the local space's custody: {outcomes:?}"
+    );
+
+    let account_operator =
+        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
+            .await?;
+    let account = tonk_cli::account_state::open_account_branch_in(
+        &fixture.profile,
+        &account_operator,
+        &fixture.store,
+    )
+    .await?
+    .context("the fixture account branch mounts")?;
+    let rows: Vec<CustodiedSeed> = account
+        .query()
+        .select(Query::<CustodiedSeed> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            kind: Term::var("kind"),
+            recipient: Term::var("recipient"),
+            sealed: Term::var("sealed"),
+        })
+        .perform(&account_operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("read custodied seeds: {error:?}"))?;
+    assert_eq!(rows.len(), 1, "the moved space's seed is custodied");
+
+    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+        fixture.root_prf,
+    ));
+    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let seed = secret
+        .encryption_key()
+        .open(&sealed, &subject)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
+    use dialog_varsig::Principal as _;
+    assert_eq!(
+        signer.did(),
+        subject,
+        "the custodied seed derives the space"
+    );
+
+    // Running again converges: nothing is moved twice.
+    let again = accredit_local_spaces(&fixture.store, &fixture.config).await?;
+    assert!(
+        again
+            .iter()
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Already)),
+        "a second sign-in finds custody already moved: {again:?}"
+    );
+    Ok(())
+}

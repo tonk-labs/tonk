@@ -95,7 +95,7 @@ pub struct AccountFixture {
     pub link: dialog_ucan_core::DelegationChain,
     pub config: SiteConfig,
     pub descriptor: Vec<u8>,
-    root_prf: [u8; 32],
+    pub root_prf: [u8; 32],
     pub tmp: TempDir,
 }
 
@@ -193,6 +193,33 @@ impl AccountFixture {
                 .save(validated.content_hash().to_vec())
                 .perform(&test.site.operator)
                 .await?;
+
+            // Real accounts publish their encryption key: the ceremony
+            // saves it with the root and the account sweep publishes the
+            // fact. The fixture publishes directly, so account-backed
+            // creates can seal their seeds into custody.
+            use tonk_schema::prelude::DidExt as _;
+            let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
+                zeroize::Zeroizing::new(root_prf),
+            )
+            .encryption_key()
+            .recipient()
+            .did();
+            let root_did: dialog_varsig::Did = ceremony.root_did.parse()?;
+            if let Some(account) =
+                tonk_cli::account_state::open_account_branch_in(&profile, &account_operator, &store)
+                    .await?
+            {
+                account
+                    .transaction()
+                    .assert(tonk_schema::AccountEncryptionKey::new(
+                        root_did.this(),
+                        recipient.this(),
+                    ))
+                    .commit()
+                    .perform(&account_operator)
+                    .await?;
+            }
         }
 
         Ok(Self {

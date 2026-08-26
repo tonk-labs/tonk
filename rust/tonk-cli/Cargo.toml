@@ -187,6 +187,7 @@ tonk-account = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-identity = { workspace = true }
+zeroize = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
