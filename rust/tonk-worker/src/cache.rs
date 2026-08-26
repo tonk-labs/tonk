@@ -124,7 +124,7 @@ async fn cache_match(cache: &Cache, request: &Request) -> Result<Option<Response
 /// non-OK and opaque responses since they round-trip oddly.
 async fn fetch_and_cache(cache: &Cache, request: &Request) -> Result<Response, JsValue> {
     let response: Response = JsFuture::from(sw_fetch(request)).await?.dyn_into()?;
-    if response.ok() && !is_opaque(&response) {
+    if response.ok() && !is_opaque(&response) && content_matches(request, &response) {
         let clone = response.clone()?;
         // Errors here are non-fatal: we still return the
         // response to the caller, the cache just stays cold for
@@ -139,10 +139,41 @@ async fn fetch_and_cache(cache: &Cache, request: &Request) -> Result<Response, J
 /// blip doesn't poison subsequent reads.
 async fn revalidate(cache: &Cache, request: &Request) -> Result<(), JsValue> {
     let response: Response = JsFuture::from(sw_fetch(request)).await?.dyn_into()?;
-    if response.ok() && !is_opaque(&response) {
+    if response.ok() && !is_opaque(&response) && content_matches(request, &response) {
         let _ = JsFuture::from(cache.put_with_request(request, &response)).await;
     }
     Ok(())
+}
+
+/// Whether `response` is plausible content for the request's path,
+/// rather than the SPA fallback wearing a 200.
+///
+/// A server asked for a hashed asset it does not hold (the window
+/// while a rebuild or deploy rewrites the dist) answers with
+/// `index.html`, status 200. Caching that under the asset URL poisons
+/// the entry: every later load serves HTML where the page expects JS
+/// or wasm, subresource integrity blocks it, and the boot shell spins
+/// until a background revalidation happens to heal the cache. An HTML
+/// answer for an asset path is a miss, not content — serve it if we
+/// must, but never remember it.
+fn content_matches(request: &Request, response: &Response) -> bool {
+    const ASSET_EXTENSIONS: [&str; 6] = [".js", ".mjs", ".wasm", ".css", ".woff2", ".map"];
+
+    let url = request.url();
+    let path = url.split(['#', '?']).next().unwrap_or(url.as_str());
+    if !ASSET_EXTENSIONS
+        .iter()
+        .any(|extension| path.ends_with(extension))
+    {
+        return true;
+    }
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    !content_type.starts_with("text/html")
 }
 
 /// `Response::type_` is exposed via web-sys as
