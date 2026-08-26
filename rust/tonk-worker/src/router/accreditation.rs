@@ -333,10 +333,129 @@ async fn retire_onboarding(tonk: &TonkState, onboarding: &Did) {
         },
         Err(error) => log!("onboarding grant unavailable: {error}"),
     }
+    if let Err(error) = retract_onboarding_facts(tonk, onboarding).await {
+        log!("onboarding facts not retracted: {error}");
+    }
     match crate::onboarding::retire(tonk).await {
         Ok(()) => log!("accreditation complete: onboarding account {onboarding} retired"),
         Err(error) => log!("onboarding account {onboarding} not retired: {error}"),
     }
+}
+
+/// Clear what the onboarding account leaves behind on profile `main`:
+/// its published encryption key — nothing is sealed to it once rotation
+/// finished, so the fact only invites sealing to an unopenable
+/// recipient — and the device-link row describing its just-revoked
+/// grant, so the devices panel stops listing a retired account.
+async fn retract_onboarding_facts(
+    tonk: &TonkState,
+    onboarding: &Did,
+) -> Result<(), TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{AccountEncryptionKey, DeviceLink};
+
+    let branch = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
+    let keys: Vec<AccountEncryptionKey> = branch
+        .handle()
+        .query()
+        .select(Query::<AccountEncryptionKey> {
+            this: Term::from(onboarding.this()),
+            key: Term::var("key"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("read the onboarding key fact: {error:?}"))
+        })?;
+    let mut links: Vec<DeviceLink> = Vec::new();
+    for entity in issued_link_entities(tonk, branch.handle(), onboarding).await? {
+        let rows: Vec<DeviceLink> = branch
+            .handle()
+            .query()
+            .select(Query::<DeviceLink> {
+                this: Term::from(entity),
+                created_at: Term::var("created_at"),
+                title: Term::var("title"),
+                reason: Term::var("reason"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("read the onboarding link row: {error:?}"))
+            })?;
+        links.extend(rows);
+    }
+    if keys.is_empty() && links.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction();
+    for row in keys {
+        transaction = transaction.retract(row);
+    }
+    for row in links {
+        transaction = transaction.retract(row);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("retract the onboarding facts: {error}"))
+        })
+}
+
+/// Entities of every retained delegation issued by `issuer` — for the
+/// onboarding account, exactly its device grant.
+async fn issued_link_entities(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    issuer: &Did,
+) -> Result<Vec<dialog_artifacts::Entity>, TonkWorkerError> {
+    use dialog_artifacts::{ArtifactSelector, Value};
+    use futures_util::StreamExt as _;
+
+    let selector = ArtifactSelector::new()
+        .the(
+            dialog_repository::DELEGATION_ISSUER
+                .parse()
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("issuer attribute: {error:?}"))
+                })?,
+        )
+        .is(Value::String(issuer.to_string()));
+    let facts = branch
+        .claims()
+        .select(selector)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("select issued grants: {error}")))?
+        .collect::<Vec<_>>()
+        .await;
+    let mut entities = Vec::new();
+    for fact in facts.into_iter().flatten() {
+        let bytes = fact.of_bytes().map_err(|error| {
+            TonkWorkerError::Internal(format!("read an issued grant's entity: {error}"))
+        })?;
+        let entity: dialog_artifacts::Entity =
+            String::from_utf8_lossy(&bytes).parse().map_err(|error| {
+                TonkWorkerError::Internal(format!("parse an issued grant's entity: {error:?}"))
+            })?;
+        entities.push(entity);
+    }
+    Ok(entities)
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -407,6 +526,49 @@ mod tests {
             crate::onboarding::account(&tonk).await.is_err(),
             "the onboarding account can no longer be opened",
         );
+
+        // Nothing on profile main keeps naming the retired account: its
+        // published key is retracted, and so is the device-link row
+        // describing its revoked grant.
+        use dialog_query::{Output as _, Query, Term};
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let keys: Vec<tonk_schema::AccountEncryptionKey> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::AccountEncryptionKey> {
+                this: Term::from(onboarding.this()),
+                key: Term::var("key"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(keys.is_empty(), "the onboarding key fact is retracted");
+        for entity in issued_link_entities(&tonk, branch.handle(), &onboarding)
+            .await
+            .unwrap()
+        {
+            let links: Vec<tonk_schema::DeviceLink> = branch
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::DeviceLink> {
+                    this: Term::from(entity),
+                    created_at: Term::var("created_at"),
+                    title: Term::var("title"),
+                    reason: Term::var("reason"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            assert!(links.is_empty(), "the onboarding link row is retracted");
+        }
     }
 
     /// A link whose account sweep failed (a pending email activation
