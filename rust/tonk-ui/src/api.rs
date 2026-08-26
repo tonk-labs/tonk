@@ -511,6 +511,13 @@ pub async fn save_root(
 /// `tonk_host::install` puts its listener. The account page deliberately
 /// has no `window.tonk` — the top page must not look like a portal guest
 /// — so the FAB's `window.tonk.transact` path is unavailable here.
+///
+/// Routed at profile main explicitly. A routeless claim resolves against
+/// the nearest `with` ancestor, and this page has none, so it would land
+/// on the bare endpoint rather than the branch the command's handler and
+/// its `AccountCustomer` outcome both live on. The FAB gets away with a
+/// routeless dispatch because a portal pins its context; nothing pins
+/// one here.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result<(), TonkUiError> {
     use wasm_bindgen::JsValue;
@@ -522,10 +529,16 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
         .ok_or_else(|| TonkUiError::ApiError("no document to dispatch from".to_string()))?;
     let request = js_sys::JSON::parse(&enroll_claim(email, deposits).to_string())
         .map_err(|error| TonkUiError::ApiError(format!("enroll claim did not parse: {error:?}")))?;
-    tonk_host::consumer::claim(&consumer, &request)
-        .await
-        .map(|_: JsValue| ())
-        .map_err(|error| TonkUiError::ApiError(format!("enrollment was not dispatched: {error:?}")))
+    tonk_host::consumer::claim_with_route(
+        &consumer,
+        &request,
+        None,
+        Some(tonk_account::MAIN_BRANCH),
+        true,
+    )
+    .await
+    .map(|_: JsValue| ())
+    .map_err(|error| TonkUiError::ApiError(format!("enrollment was not dispatched: {error:?}")))
 }
 
 /// The `TransactRequest` body for the `tonk:enroll` command.
