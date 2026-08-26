@@ -1,4 +1,4 @@
-tonk-account {
+:is(tonk-account, tonk-activate) {
     --page: #ececec;
     --ink: #131313;
     --on-ink: #fbfaef;
@@ -28,7 +28,7 @@ tonk-account {
     -moz-osx-font-smoothing: grayscale;
 }
 
-:root.wa-dark tonk-account {
+:root.wa-dark :is(tonk-account, tonk-activate) {
     --page: #161613;
     --ink: #e9e6d6;
     --on-ink: #22221c;
@@ -44,24 +44,24 @@ tonk-account {
     --dim: rgb(0 0 0 / 45%);
 }
 
-tonk-account *,
-tonk-account *::before,
-tonk-account *::after {
+:is(tonk-account, tonk-activate) *,
+:is(tonk-account, tonk-activate) *::before,
+:is(tonk-account, tonk-activate) *::after {
     box-sizing: border-box;
 }
 
-tonk-account ::selection {
+:is(tonk-account, tonk-activate) ::selection {
     background: var(--ink);
     color: var(--on-ink);
 }
 
-tonk-account :where(button, input) {
+:is(tonk-account, tonk-activate) :where(button, input) {
     margin: 0;
     border-radius: 0;
     font: inherit;
 }
 
-tonk-account :where(button) {
+:is(tonk-account, tonk-activate) :where(button) {
     min-width: 0;
     padding: 0;
     border: 0;
@@ -73,11 +73,11 @@ tonk-account :where(button) {
     cursor: pointer;
 }
 
-tonk-account :where(a) {
+:is(tonk-account, tonk-activate) :where(a) {
     color: inherit;
 }
 
-tonk-account :focus-visible {
+:is(tonk-account, tonk-activate) :focus-visible {
     outline: 0;
     box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
 }
@@ -146,6 +146,7 @@ tonk-account :focus-visible {
     line-height: 1;
     letter-spacing: 0.02em;
     text-transform: lowercase;
+    text-decoration: none;
     transition-property: scale, opacity, background-color;
     transition-duration: 150ms;
     transition-timing-function: ease-out;
@@ -753,7 +754,7 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 }
 
 @media (max-width: 463px) {
-    tonk-account {
+    :is(tonk-account, tonk-activate) {
         padding-top: max(24px, env(safe-area-inset-top));
     }
 

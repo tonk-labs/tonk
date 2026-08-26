@@ -614,6 +614,114 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_styles_account_activation_as_a_fabb_ceremony(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let mut activation = env.tonk_web.join("activate")?;
+        activation.set_query(Some("ucan=AA"));
+        driver.goto(activation.as_str()).await?;
+        element(&driver, "tonk-activate #activate-confirm").await?;
+
+        assert!(
+            driver.find(By::Css(".account__brand")).await.is_err(),
+            "activation should use the same unbadged Tonk wordmark as settings"
+        );
+        assert!(
+            driver.find(By::Css(".account__badge")).await.is_err(),
+            "activation should not retain the retired page badge"
+        );
+
+        driver.set_window_rect(0, 0, 1200, 900).await?;
+        let desktop = driver
+            .execute(
+                r#"document.documentElement.classList.remove('wa-dark');
+                    document.documentElement.classList.add('wa-light');
+                    const host = document.querySelector('tonk-activate');
+                    const main = document.querySelector('.account').getBoundingClientRect();
+                    const ceremony = document.querySelector('.account__ceremony').getBoundingClientRect();
+                    const logo = document.querySelector('.account__logo').getBoundingClientRect();
+                    const action = document.querySelector('#activate-accept').getBoundingClientRect();
+                    const styles = getComputedStyle(host);
+                    return {
+                      hostDisplay: styles.display,
+                      hostHeight: Math.round(host.getBoundingClientRect().height),
+                      viewportHeight: innerHeight,
+                      page: styles.backgroundColor,
+                      mainWidth: Math.round(main.width),
+                      mainCenter: Math.round(main.left + main.width / 2),
+                      viewportCenter: Math.round(innerWidth / 2),
+                      ceremonyWidth: Math.round(ceremony.width),
+                      logoWidth: Math.round(logo.width),
+                      actionHeight: Math.round(action.height),
+                      heading: document.querySelector('.account__ceremony-head')?.textContent.trim(),
+                      overflow: document.documentElement.scrollWidth > innerWidth
+                    };"#,
+                Vec::new(),
+            )
+            .await?;
+        let desktop = desktop.json();
+        assert_eq!(desktop["hostDisplay"], "grid");
+        assert_eq!(desktop["hostHeight"], desktop["viewportHeight"]);
+        assert_eq!(desktop["page"], "rgb(236, 236, 236)");
+        assert_eq!(desktop["mainWidth"], 576);
+        assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
+        assert_eq!(desktop["ceremonyWidth"], 432);
+        assert_eq!(desktop["logoWidth"], 132);
+        assert_eq!(desktop["actionHeight"], 44);
+        assert_eq!(desktop["heading"], "activate your account");
+        assert_eq!(desktop["overflow"], false);
+
+        let done = driver
+            .execute(
+                r#"document.querySelector('#activate-confirm').hidden = true;
+                    document.querySelector('#activate-done').hidden = false;
+                    const row = document.querySelector('#activate-done .account__row').getBoundingClientRect();
+                    const action = document.querySelector('#activate-done .account__run').getBoundingClientRect();
+                    return {
+                      heading: document.querySelector('#activate-done-title').textContent.trim(),
+                      rowWidth: Math.round(row.width),
+                      actionHeight: Math.round(action.height)
+                    };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(done.json()["heading"], "account activated");
+        assert_eq!(done.json()["rowWidth"], 432);
+        assert_eq!(done.json()["actionHeight"], 44);
+
+        driver.set_window_rect(0, 0, 390, 844).await?;
+        let compact = driver
+            .execute(
+                r#"const main = document.querySelector('.account').getBoundingClientRect();
+                    const ceremony = document.querySelector('.account__ceremony').getBoundingClientRect();
+                    const visible = [...document.querySelectorAll('button,a,input')]
+                      .filter(el => el.offsetParent !== null);
+                    return {
+                      viewport: innerWidth,
+                      mainWidth: Math.round(main.width),
+                      ceremonyWidth: Math.round(ceremony.width),
+                      logoWidth: Math.round(document.querySelector('.account__logo').getBoundingClientRect().width),
+                      overflow: document.documentElement.scrollWidth > innerWidth,
+                      undersized: visible.filter(el => {
+                        const rect = el.getBoundingClientRect();
+                        return Math.max(rect.width, rect.height) < 44;
+                      }).map(el => el.id || el.textContent.trim())
+                    };"#,
+                Vec::new(),
+            )
+            .await?;
+        let compact = compact.json();
+        let available = compact["viewport"].as_i64().unwrap_or_default() - 32;
+        assert_eq!(compact["mainWidth"], available);
+        assert_eq!(compact["ceremonyWidth"], available);
+        assert_eq!(compact["logoWidth"], 98);
+        assert_eq!(compact["overflow"], false);
+        assert_eq!(compact["undersized"], serde_json::json!([]));
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_signs_back_into_the_same_account_after_signing_out(
         env: TestEnvironment,
     ) -> Result<()> {
