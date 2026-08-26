@@ -1195,13 +1195,15 @@ async fn run_invite(
 /// on the subject, so it lingers and replays on every resubscribe; the echo is
 /// what lets the control tell this refusal from a replay of an older one, which
 /// is why the fact never needs retracting.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 /// The `invite:*` status a refusal code becomes.
+///
+/// Pinned by `it_keeps_a_repairable_refusal_open`.
 ///
 /// Only reasons nothing can repair are terminal. `not-synced` and
 /// `needs-account` are answered by attaching a remote or making an
 /// account, so the request stays open rather than reporting a failure
 /// the user is in the middle of fixing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn invite_status_for(code: &str) -> &'static str {
     use tonk_schema::command::InviteState;
     use tonk_worker_api::share;
@@ -1213,6 +1215,7 @@ fn invite_status_for(code: &str) -> &'static str {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn publish_share_blocked(
     state: &AppState,
     repo_name: &str,
@@ -4926,6 +4929,39 @@ mod rename_outcome_tests {
 mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
+
+    /// A refusal the user is in the middle of fixing keeps the request
+    /// open.
+    ///
+    /// `needs-account` and `not-synced` both end in a link once the
+    /// thing they name arrives, so reporting them as terminal would stop
+    /// the control on `failed` while the share is still going.
+    #[dialog_common::test]
+    fn it_keeps_a_repairable_refusal_open() {
+        use super::invite_status_for;
+        use tonk_schema::command::InviteState;
+        use tonk_worker_api::share;
+
+        assert_eq!(
+            invite_status_for(share::BLOCKED_NEEDS_ACCOUNT),
+            InviteState::REQUESTED,
+            "the worker is off getting an account; the share has not failed",
+        );
+        assert_eq!(
+            invite_status_for(share::BLOCKED_NOT_SYNCED),
+            InviteState::REQUESTED,
+            "attaching a remote still ends in a link",
+        );
+        // Terminal: nothing the user or the worker does next helps.
+        assert_eq!(
+            invite_status_for(share::BLOCKED_SUSPENDED),
+            InviteState::SUSPENDED,
+        );
+        assert_eq!(
+            invite_status_for(share::BLOCKED_UNSHAREABLE_REMOTE),
+            InviteState::UNSHAREABLE,
+        );
+    }
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
