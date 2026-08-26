@@ -16,8 +16,8 @@ use crate::store::{
     ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
     ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
     INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
-    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError,
-    UPDATE_REGISTERED_EMAIL, parse_status,
+    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, Store,
+    StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -104,6 +104,18 @@ impl Store for D1Store {
             .0
             .prepare(SELECT_CUSTOMER)
             .bind(&[JsValue::from(did)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        row.map(Customer::try_from).transpose()
+    }
+
+    async fn customer_by_email(&self, email: &str) -> Result<Option<Customer>, StoreError> {
+        let row: Option<CustomerRowD1> = self
+            .0
+            .prepare(SELECT_CUSTOMER_BY_EMAIL)
+            .bind(&[JsValue::from(email)])
             .map_err(map_err)?
             .first(None)
             .await

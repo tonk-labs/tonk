@@ -176,6 +176,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Customer registration with the same-origin access service.
         .route("/api/customer", get(customer::get_state))
         .route("/api/customer/enroll", post(customer::enroll))
+        .route("/api/customer/activated", post(customer::activated))
         .route("/api/customer/pending", get(customer::get_pending))
         .route(
             "/api/customer/pending/custody",

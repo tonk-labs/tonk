@@ -1576,9 +1576,14 @@ pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
 
 /// This page's default UCAN access-service endpoint: `origin + /ucan/`.
 ///
-/// The same URL `<tonk-default-remote auto>` fills the create wizard's hidden
-/// input with. Kept pure (origin in, URL out) so it is testable off-browser;
-/// the caller supplies the origin.
+/// A fallback, not the source of truth. Where a space syncs is the
+/// account's own registration, recorded by the service in its receipt
+/// and resolved worker-side; the create wizard passes no remote at all
+/// for exactly that reason. This remains for the share path, which still
+/// supplies one, and is the next derivation to remove.
+///
+/// Kept pure (origin in, URL out) so it is testable off-browser; the
+/// caller supplies the origin.
 pub fn default_remote_url(origin: &str) -> String {
     format!("{}{}", origin.trim_end_matches('/'), "/ucan/")
 }

@@ -11,8 +11,8 @@ use super::{
     ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
     ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
     INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
-    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, Store, StoreError,
-    UPDATE_REGISTERED_EMAIL, parse_status,
+    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, Store,
+    StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -67,6 +67,13 @@ impl SqliteStore {
                 .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 4)
                 .map_err(map_err)?;
+            version = 4;
+        }
+        if version < 5 {
+            conn.execute_batch(include_str!("../../migrations/0005_customer_email.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 5)
+                .map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
     }
@@ -94,6 +101,34 @@ impl Store for SqliteStore {
         let conn = self.0.lock().expect("store mutex poisoned");
         let row = conn
             .query_row(SELECT_CUSTOMER, params![did], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .optional()
+            .map_err(map_err)?;
+        row.map(|(did, email, status, plan, verified, terms_version)| {
+            Ok(Customer {
+                did,
+                email,
+                status: parse_status(&status)?,
+                plan,
+                verified: verified as u64,
+                terms_version,
+            })
+        })
+        .transpose()
+    }
+
+    async fn customer_by_email(&self, email: &str) -> Result<Option<Customer>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let row = conn
+            .query_row(SELECT_CUSTOMER_BY_EMAIL, params![email], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -274,5 +309,114 @@ impl Store for SqliteStore {
             .execute(ACTIVATE_CUSTOMER, params![did, now as i64, terms_version])
             .map_err(map_err)?;
         Ok(changed > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::SIGNUP_PLAN;
+    use tonk_account::customer::CustomerStatus;
+
+    async fn enrolled(store: &SqliteStore, did: &str, email: &str) {
+        store
+            .enroll_customer(did, email, &[], SIGNUP_PLAN, 1_700_000_000)
+            .await
+            .expect("enrollment writes a customer");
+    }
+
+    #[dialog_common::test]
+    async fn it_finds_an_enrolled_customer_by_their_address() {
+        let store = SqliteStore::in_memory().expect("store");
+        enrolled(&store, "did:key:zA", "jsmith@example.com").await;
+
+        let found = store
+            .customer_by_email("jsmith@example.com")
+            .await
+            .expect("lookup succeeds")
+            .expect("the enrolled customer is found");
+        assert_eq!(found.did, "did:key:zA");
+        assert_eq!(found.status, CustomerStatus::Registered);
+    }
+
+    #[dialog_common::test]
+    async fn it_finds_nothing_for_an_unregistered_address() {
+        let store = SqliteStore::in_memory().expect("store");
+        enrolled(&store, "did:key:zA", "jsmith@example.com").await;
+
+        assert!(
+            store
+                .customer_by_email("nobody@example.com")
+                .await
+                .expect("lookup succeeds")
+                .is_none()
+        );
+    }
+
+    /// The lookup answers with one customer because the schema permits
+    /// only one. Without the unique index this is where a second account
+    /// on an address would slip in and make the answer arbitrary.
+    #[dialog_common::test]
+    async fn it_refuses_a_second_customer_on_one_address() {
+        let store = SqliteStore::in_memory().expect("store");
+        enrolled(&store, "did:key:zA", "jsmith@example.com").await;
+
+        let conflict = store
+            .enroll_customer(
+                "did:key:zB",
+                "jsmith@example.com",
+                &[],
+                SIGNUP_PLAN,
+                1_700_000_001,
+            )
+            .await;
+        assert!(
+            matches!(conflict, Err(StoreError::Conflict(_))),
+            "a second customer on one address is a conflict, got {conflict:?}"
+        );
+    }
+
+    /// The address a lookup is keyed by is the normalized one, so a
+    /// caller holding the address finds the row whatever the enrolling
+    /// client sent. Enrollment normalizes before it reaches the store, so
+    /// this pins the store's half: what goes in is what comes back out.
+    #[dialog_common::test]
+    async fn it_keys_a_customer_by_the_address_it_was_given() {
+        let store = SqliteStore::in_memory().expect("store");
+        enrolled(&store, "did:key:zA", "jsmith@example.com").await;
+
+        assert!(
+            store
+                .customer_by_email("JSmith@Example.COM")
+                .await
+                .expect("lookup succeeds")
+                .is_none(),
+            "the store matches exactly; normalizing is the caller's job"
+        );
+    }
+
+    /// A suspended customer is still found, so the lookup can answer 410
+    /// with the key rather than pretending the address is unknown.
+    /// Nothing writes `Suspended` yet, so the status is set directly.
+    #[dialog_common::test]
+    async fn it_finds_a_suspended_customer() {
+        let store = SqliteStore::in_memory().expect("store");
+        enrolled(&store, "did:key:zA", "jsmith@example.com").await;
+        store
+            .0
+            .lock()
+            .expect("store mutex poisoned")
+            .execute(
+                "UPDATE customer SET status = 'Suspended' WHERE did = ?1",
+                params!["did:key:zA"],
+            )
+            .expect("the status is written");
+
+        let found = store
+            .customer_by_email("jsmith@example.com")
+            .await
+            .expect("lookup succeeds")
+            .expect("a suspended customer is still found");
+        assert_eq!(found.status, CustomerStatus::Suspended);
     }
 }

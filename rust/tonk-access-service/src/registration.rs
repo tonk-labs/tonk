@@ -38,7 +38,7 @@ use tonk_account::customer::{
     Receipt, RegistrationError, deposit_scopes,
 };
 
-use crate::email::EmailSender;
+use crate::email::{EmailSender, normalize_email};
 use crate::store::{SIGNUP_PLAN, Store, StoreError};
 use dialog_ucan_core::revocation::RevocationChecker;
 use dialog_ucan_core::{Environment, VerificationContext};
@@ -211,7 +211,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
     ) -> Result<Receipt, RegistrationError> {
         let customer = capability.subject().clone();
         let effect = capability.into_effect();
-        let address = effect.email.trim().to_string();
+        let address = normalize_email(&effect.email);
         if !address.contains('@') || address.len() > 254 {
             return Err(RegistrationError::Invalid {
                 message: "email must be a plausible address".to_string(),
@@ -271,6 +271,16 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         Ok(Receipt {
             customer,
             status: CustomerStatus::Registered,
+            // Enrollment names no provider. The address is what says
+            // "this service serves you", and it does not yet: an
+            // unactivated customer gets neither service nor
+            // provisioning. Naming it here would let a client record an
+            // endpoint it cannot use, and erase the difference between
+            // "enrolled, email unconfirmed" and "ready to sync" — which
+            // is exactly the distinction the share flow needs in order
+            // to say "check your email" rather than "turn on sync".
+            // Activation is where it lands.
+            provider: None,
         })
     }
 
@@ -295,6 +305,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             return Ok(Receipt {
                 customer,
                 status: CustomerStatus::Active,
+                provider: Some(self.provider_address()),
             });
         }
         match self
@@ -306,6 +317,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             Some(existing) if existing.status == CustomerStatus::Active => Ok(Receipt {
                 customer,
                 status: CustomerStatus::Active,
+                provider: Some(self.provider_address()),
             }),
             Some(_) => Err(RegistrationError::CustomerSuspended),
             None => Err(RegistrationError::UnknownCustomer),
@@ -422,6 +434,18 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("consent failed to verify: {err}"),
             })
+    }
+
+    /// This service's own address as a provider — the UCAN endpoint its
+    /// customers' spaces attach their remotes to.
+    ///
+    /// Derived from the origin the service is configured with, not from
+    /// the origin a request arrived on: the service decides which
+    /// provider serves its customers, and answers every receipt with it,
+    /// so a client records one authoritative address rather than
+    /// deriving its own.
+    fn provider_address(&self) -> String {
+        format!("{}/ucan/", self.origin.trim_end_matches('/'))
     }
 
     /// Mint the activation invocation and wrap it into a link. The

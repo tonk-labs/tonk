@@ -805,6 +805,31 @@ pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
     }
 }
 
+/// Record an activation receipt with the worker.
+///
+/// The activation page posts the emailed invocation straight to the
+/// service, so the receipt — and the provider address it names — never
+/// passes through the worker. This hands it over, so the registration
+/// fact reflects activation the moment it happens.
+pub async fn report_activation(receipt: &serde_json::Value) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/customer/activated", origin()))
+        .json(receipt)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/customer/activated returned {status}: {text}"
+        )))
+    }
+}
+
 /// Swap the worker onto another roster profile. The caller reloads the
 /// page afterwards so every surface re-renders the new profile.
 pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkUiError> {
