@@ -125,14 +125,37 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
 
     let operator =
         crate::account_state::credential_operator_for_store(&site.profile, store).await?;
-    if crate::account_state::open_account_branch_in(&site.profile, &operator, store)
-        .await?
-        .is_none()
-    {
+    let Some(account_branch) =
+        crate::account_state::open_account_branch_in(&site.profile, &operator, store).await?
+    else {
         bail!("the account repository is not ready to hold this space");
-    }
+    };
     crate::account_state::retain_space_delegation_in(&site.profile, &operator, store, &prefix)
         .await?;
+    // The seed rides the same boundary: a space the account hosts is a
+    // space the account can re-derive. Sealing needs only the published
+    // public key; an account that predates it links anyway — custody
+    // catches up at the next `tonk account login`.
+    if !crate::custody::has_custody(&account_branch, &subject, &operator).await? {
+        match crate::custody::account_recipient(&account_branch, &account_root, &operator).await? {
+            Some(recipient) => {
+                if let Some(seed) = crate::custody::site_seed(&site).await? {
+                    crate::custody::custody_space_seed(
+                        &account_branch,
+                        &subject,
+                        &recipient,
+                        &seed,
+                        &operator,
+                    )
+                    .await?;
+                }
+            }
+            None => eprintln!(
+                "warning: the account has not published its encryption key; \
+                 the space seed stays uncustodied until it does"
+            ),
+        }
+    }
     crate::account_spaces::record_site_pushed(name, &site, store).await?;
 
     if crate::inventory::role_for_site(&site).await? != SpaceRole::Owner {

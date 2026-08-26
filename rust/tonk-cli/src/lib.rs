@@ -44,6 +44,7 @@ pub mod blob;
 /// A loopback callback server for browser authorization ceremonies.
 pub mod callback;
 pub mod context;
+pub mod custody;
 pub mod customer;
 pub mod data;
 pub mod data_ops;
