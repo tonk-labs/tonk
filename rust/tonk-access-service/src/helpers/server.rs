@@ -213,6 +213,27 @@ impl AccessServer {
     }
 }
 
+/// The host this request was addressed to.
+///
+/// A client sends an origin-form request line, the path alone, and
+/// carries the host in the `Host` header, so the URI's own authority is
+/// absent for every real request. The worker reads `req.url()`, which
+/// reassembles the two; natively the header is the only source, and
+/// falling back to an empty authority would mint `did:web::...`.
+fn request_host(req: &Request<Incoming>) -> String {
+    req.uri()
+        .authority()
+        .map(ToString::to_string)
+        .or_else(|| {
+            req.headers()
+                .get(hyper::header::HOST)?
+                .to_str()
+                .ok()
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+}
+
 /// Handle an incoming UCAN access service request.
 ///
 /// This implements the same logic as the Cloudflare Worker handler:
@@ -220,6 +241,9 @@ impl AccessServer {
 /// - PUT /@ → Store a shortcut target, respond with its hash
 /// - GET /@/{hash} → Permanent relative redirect to the stored target
 /// - GET /.well-known/tonk → Deployment configuration, when configured
+/// - GET /.well-known/did.json → The service's own DID document
+/// - GET /customer/{domain}/{local}/did.json → The DID document for an
+///   email address
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
@@ -272,12 +296,7 @@ async fn handle_request(
         return Ok(cors_response(response));
     }
     if req.method() == Method::GET && req.uri().path() == "/.well-known/did.json" {
-        let host = req
-            .uri()
-            .authority()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let document = did_document(&host, &registration.service);
+        let document = did_document(&request_host(&req), &registration.service);
         return Ok(cors_response(
             Response::builder()
                 .status(StatusCode::OK)
@@ -365,13 +384,66 @@ async fn handle_request(
                 .unwrap(),
         ));
     }
+    // Lookup by email address. Mirrors the Worker handler, and is matched
+    // before the probe below: that one strips `/customer/` and treats the
+    // whole remainder as a DID, so it would otherwise swallow this path.
+    if req.method() == Method::GET
+        && let Some(rest) = req.uri().path().strip_prefix("/customer/")
+        && let Some(segments) = rest.strip_suffix("/did.json")
+        && let Some((domain, local)) = segments.split_once('/')
+        && !local.contains('/')
+    {
+        use crate::lookup::{address_from_segments, customer_did, resolve};
+
+        let host = request_host(&req);
+        let found = match address_from_segments(domain, local) {
+            Some(address) => match customer_did(&host, &address) {
+                Some(did) => resolve(&registration.store, &did, &address).await,
+                None => Ok(None),
+            },
+            None => Ok(None),
+        };
+        let response = match found {
+            // Only a settled answer is cacheable: a 202 and a 404 are
+            // both about to change, and the change is what a caller
+            // polling an address is waiting on.
+            Ok(Some(found)) => Response::builder()
+                .status(StatusCode::from_u16(found.status).expect("lookup status is valid"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(
+                    "Cache-Control",
+                    if found.status == 200 {
+                        "public, max-age=60"
+                    } else {
+                        "no-store"
+                    },
+                )
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&found.document).expect("did document serializes"),
+                )))
+                .unwrap(),
+            Ok(None) => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CONTENT_TYPE, "application/json")
+                .header("Cache-Control", "no-store")
+                .body(Full::new(Bytes::from(
+                    r#"{"error":"no customer for this address"}"#,
+                )))
+                .unwrap(),
+            Err(_) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Full::new(Bytes::from("Customer registry is unavailable")))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     // Registration state probe, polled by enrolling clients. Mirrors the
     // Worker handler.
     if req.method() == Method::GET
         && let Some(did) = req.uri().path().strip_prefix("/customer/")
     {
         use crate::store::Store;
-        use tonk_account::customer::{Receipt, RegistrationError};
+        use tonk_account::customer::{CustomerStatus, Receipt, RegistrationError};
 
         let response = match registration.store.customer(did).await {
             Ok(Some(customer)) => match customer.did.parse() {
@@ -379,6 +451,10 @@ async fn handle_request(
                     let receipt = Receipt {
                         customer: parsed,
                         status: customer.status,
+                        // Only for a served customer; see the worker twin.
+                        provider: (customer.status == CustomerStatus::Active).then(|| {
+                            format!("{}/ucan/", registration.origin.trim_end_matches('/'))
+                        }),
                     };
                     Response::builder()
                         .status(StatusCode::OK)

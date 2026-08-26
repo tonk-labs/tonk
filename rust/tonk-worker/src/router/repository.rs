@@ -323,9 +323,35 @@ pub async fn post_space(
             .to_owned()
     };
 
+    // Where the space syncs is resolved exactly as it is on the command
+    // path: an explicit remote wins, otherwise the account's own
+    // provider, and nothing at all without an active customer.
+    //
+    // Both paths resolving it the same way is the point. This endpoint
+    // is the account-gate replay, which runs immediately after the
+    // signup ceremony — a window where the customer may still be
+    // `Registered`, and attaching anything would wire an upstream the
+    // access service refuses. It used to honour only the remote its
+    // request carried, so a replay that named none produced a space the
+    // FAB path would have synced, which is the two-creation-paths-
+    // disagree bug this change exists to remove.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Some(remote) = request.remote.filter(|remote| !remote.trim().is_empty()) {
-        enable_sync_inner(&state, &key, &remote).await?;
+    {
+        let remote = match request.remote.filter(|remote| !remote.trim().is_empty()) {
+            Some(remote) => Some(remote),
+            None => {
+                let tonk = state.read().await;
+                account_sync_remote(&tonk).await
+            }
+        };
+        let active = {
+            let tonk = state.read().await;
+            super::customer::is_active(&tonk).await
+        };
+        match remote {
+            Some(remote) if active => enable_sync_inner(&state, &key, &remote).await?,
+            _ => log!("space '{key}' created local-only: no active provider to attach it to"),
+        }
     }
 
     Ok((
@@ -680,17 +706,31 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             //    (`remote_from_facts` already dropped empty/blank URLs.)
             // A blank remote used to mean local-only, which the account
             // directory now advertises account-wide as a space no other
-            // device can ever replicate. With an account attached, the
+            // device can ever replicate. With an ACTIVE account, the
             // account's own sync remote is the natural default — the
             // same access service the account DB syncs through; the
             // relay resolves from the remote's origin as usual.
+            //
+            // Without one, no default: the access service serves only an
+            // active customer's subjects, so defaulting a remote here
+            // would wire an upstream that 403s on every presign. The
+            // space stays local until the user asks to share it, which
+            // is where provisioning belongs.
+            // The endpoint comes from the account's own registration
+            // fact, not from the signed descriptor and not from the
+            // page's `https://{origin}/ucan/` guess: registration is
+            // where the account learned which access service it is a
+            // customer of, so that is the one answer every attach path
+            // reads.
             let remote = match remote {
                 Some(remote) => Some(remote),
                 None => {
                     let tonk = env.state().read().await;
-                    super::account::descriptor(&tonk)
-                        .await
-                        .map(|descriptor| descriptor.remote().to_string())
+                    if super::customer::is_active(&tonk).await {
+                        account_sync_remote(&tonk).await
+                    } else {
+                        None
+                    }
                 }
             };
             if let Some(remote) = remote
@@ -2197,6 +2237,28 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
         ))
 }
 
+/// Where a space on this account syncs, when nothing named a remote.
+///
+/// The account's recorded provider is the authority — the access service
+/// names it in the registration receipt. It is written by whatever last
+/// talked to the service, though, and a space created in the moment
+/// after activation can beat that write; the account descriptor names
+/// the same deployment and is recorded at link time, so it answers while
+/// the fact catches up rather than leaving the space local-only on a
+/// race.
+///
+/// Shared by both creation paths so they cannot disagree about where a
+/// space syncs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
+    match super::customer::provider_address(tonk).await {
+        Some(provider) => Some(provider),
+        None => super::account::descriptor(tonk)
+            .await
+            .map(|descriptor| descriptor.remote().to_string()),
+    }
+}
+
 /// Create a space local-only, split out so its `?` errors are logged
 /// once at the boundary. Mirrors [`put_repository`] minus the HTTP shell.
 /// Always creates a fresh repository with a minted identity; `name` is
@@ -2279,6 +2341,34 @@ async fn enable_sync_inner(
             return Ok(());
         }
     };
+
+    // Provision before attaching. Creation only provisions when there is
+    // an active customer to provision under, so a space created during
+    // onboarding has no consumer row — and an upstream attached without
+    // one syncs to `subject is provisioned by an active customer (the
+    // subject is not provisioned)` on every presign. This is where a
+    // local-only space earns its remote, so it is where the consumer row
+    // has to be created.
+    //
+    // Best effort, not fatal. A remote is not necessarily OUR access
+    // service — a self-hosted endpoint or a test server is attached the
+    // same way, and `/provider/add` against our own service is beside
+    // the point there. Refusing the attach on a failed provision would
+    // make those unreachable, so the attach proceeds and a space that
+    // does need provisioning surfaces it as a refused presign rather
+    // than a refused attach.
+    match space_root_prefix(&tonk, &repository.did()).await {
+        Ok(prefix) => {
+            if let Err(error) =
+                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
+            {
+                log!("enable sync '{key}': provisioning skipped: {error}");
+            }
+        }
+        Err(error) => {
+            log!("enable sync '{key}': no root delegation to consent with: {error}")
+        }
+    }
 
     let effective = ensure_remote_config(&tonk, &repository, key, &configuration).await?;
 
@@ -2728,10 +2818,25 @@ pub async fn create_repository(
     // consumer of the access service, depositing the powerline as its
     // consent. Best effort for the same reason retain is — a space is
     // usable the moment its delegations exist locally.
-    if let Err(error) =
-        super::customer::provision_or_defer(tonk, &repository.did(), &prefix, None).await
-    {
-        log!("consumer provisioning skipped: {error}");
+    //
+    // Only for an ACTIVE customer. A device has an account from first
+    // boot (the onboarding account), so "an account exists" says nothing
+    // about whether the access service will serve this subject: until
+    // the user enrols an email and confirms it, `/provider/add` refuses
+    // and the space would be left wired to a remote that answers 403 on
+    // every presign. A space created in that window is local-only by
+    // design, and the share button provisions it on demand.
+    if super::customer::is_active(tonk).await {
+        if let Err(error) =
+            super::customer::provision_or_defer(tonk, &repository.did(), &prefix, None).await
+        {
+            log!("consumer provisioning skipped: {error}");
+        }
+    } else {
+        log!(
+            "space '{}' created local-only: no active customer to provision it under",
+            repository.did()
+        );
     }
 
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
@@ -4407,6 +4512,30 @@ pub async fn attach_remote(
         .map_err(|e| {
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", name, e))
         })?;
+
+    // Provision before attaching, for the same reason
+    // [`enable_sync_inner`] does: a space created without an active
+    // customer has no consumer row, and an upstream without one syncs to
+    // a refused presign. Best effort here rather than fatal — this route
+    // is also how a space is pointed at a remote that is not the
+    // account's access service (a self-hosted endpoint, a test server),
+    // where `/provider/add` against our own service is beside the point.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if !configuration.remote.is_empty() {
+        match space_root_prefix(&tonk, &repository.did()).await {
+            Ok(prefix) => {
+                if let Err(error) =
+                    super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None)
+                        .await
+                {
+                    log!("attach remote '{name}': provisioning skipped: {error}");
+                }
+            }
+            Err(error) => {
+                log!("attach remote '{name}': no root delegation to consent with: {error}")
+            }
+        }
+    }
 
     ensure_remote_config(&tonk, &repository, &name, &configuration).await?;
 
@@ -6293,6 +6422,288 @@ mod tests {
         assert!(
             has_remote_upstream(&state, &key).await,
             "the existing spot now tracks origin/main"
+        );
+    }
+
+    /// A space created while the customer is not `Active` wires no
+    /// remote, even though an account exists.
+    ///
+    /// A device has an account from first boot (the onboarding account),
+    /// so "an account exists" says nothing about whether the access
+    /// service will serve this subject. Until the user enrols and
+    /// confirms an email, `/provider/add` refuses and a wired upstream
+    /// would answer `subject is provisioned by an active customer (the
+    /// subject is not provisioned)` on every presign. The space is
+    /// local-only by design; the share button attaches sync later.
+    #[dialog_common::test]
+    async fn it_creates_a_space_local_only_before_the_customer_is_active() {
+        let (app, state, key) = fresh_repo("test-inactive-no-remote").await;
+        {
+            let tonk = state.read().await;
+            crate::router::customer::record_test_customer(
+                &tonk,
+                tonk_account::customer::CustomerStatus::Registered,
+            )
+            .await
+            .expect("the customer record saves");
+        }
+        let _ = &app;
+
+        assert!(
+            !has_remote_upstream(&state, &key).await,
+            "a space created before activation must track no upstream",
+        );
+    }
+
+    /// The gate reads the customer's status, not merely whether an
+    /// account exists: `Registered` (enrolled, email unconfirmed) is as
+    /// unservable as no registration at all.
+    #[dialog_common::test]
+    async fn it_treats_an_enrolled_but_unconfirmed_customer_as_inactive() {
+        let (_app, state, _key) = fresh_repo("test-registered-inactive").await;
+
+        let tonk = state.read().await;
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Registered,
+        )
+        .await
+        .expect("the customer record saves");
+        assert!(
+            !crate::router::customer::is_active(&tonk).await,
+            "a Registered customer awaits email activation and is not servable",
+        );
+
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Suspended,
+        )
+        .await
+        .expect("the customer record saves");
+        assert!(
+            !crate::router::customer::is_active(&tonk).await,
+            "a Suspended customer is not servable",
+        );
+
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Active,
+        )
+        .await
+        .expect("the customer record saves");
+        assert!(
+            crate::router::customer::is_active(&tonk).await,
+            "an Active customer is the one state the service serves",
+        );
+    }
+
+    /// The account's provider is read from the registration fact, so
+    /// every device on the account attaches spaces to the same one.
+    ///
+    /// It used to be re-derived per call site — from the signed account
+    /// descriptor in the worker, and from `https://{origin}/ucan/` in the
+    /// page's hidden form field — so two paths could disagree about
+    /// where a space syncs. Recording it where registration happens is
+    /// what makes that one answer.
+    #[dialog_common::test]
+    async fn it_reads_the_provider_from_the_registration_fact() {
+        let (_app, state, _key) = fresh_repo("test-recorded-remote").await;
+
+        let tonk = state.read().await;
+        assert!(
+            crate::router::customer::provider_address(&tonk)
+                .await
+                .is_none(),
+            "an account that never registered records no provider",
+        );
+
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Active,
+        )
+        .await
+        .expect("the customer record saves");
+
+        assert_eq!(
+            crate::router::customer::provider_address(&tonk)
+                .await
+                .as_deref(),
+            Some("https://example.test/ucan/"),
+            "the provider registration recorded is what attach paths read",
+        );
+    }
+
+    /// Recording an enrollment with no provider must not make the
+    /// registration fact unreadable.
+    ///
+    /// A concept resolves only when every field is present, so writing
+    /// `provider` as an empty string risks asserting nothing for it and
+    /// dropping the whole row — which reads back as "never registered"
+    /// however many times the status is written afterwards.
+    #[dialog_common::test]
+    async fn it_reads_a_registration_recorded_without_a_provider() {
+        use crate::router::customer::{Registration, record_customer_status, registration};
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-empty-provider-row").await;
+        let tonk = state.read().await;
+
+        record_customer_status(&tonk, CustomerStatus::Registered, "who@example.test", None)
+            .await
+            .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::AwaitingActivation {
+                email: "who@example.test".to_owned(),
+            },
+            "a registration recorded before activation must still read back",
+        );
+
+        // And the later activation write must be visible through it.
+        record_customer_status(
+            &tonk,
+            CustomerStatus::Active,
+            "who@example.test",
+            Some("https://hub.test/ucan/"),
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Served {
+                provider: "https://hub.test/ucan/".to_owned(),
+            },
+            "activation must promote the row a provider-less write created",
+        );
+    }
+
+    /// An `Active` account whose provider write has not landed yet
+    /// still reads as served.
+    ///
+    /// Activation writes the status and the address, and a space created
+    /// in the moment between them must not come up local-only. Reading
+    /// this as `AwaitingActivation` would tell an activated user to go
+    /// confirm an email they already confirmed.
+    #[dialog_common::test]
+    async fn it_treats_an_active_account_without_a_recorded_provider_as_served() {
+        use crate::router::customer::{
+            Registration, is_active, record_customer_status, registration,
+        };
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-active-no-provider").await;
+        let tonk = state.read().await;
+
+        record_customer_status(&tonk, CustomerStatus::Active, "who@example.test", None)
+            .await
+            .expect("the status records");
+
+        assert!(
+            matches!(registration(&tonk).await, Registration::Served { .. }),
+            "an Active account is served whether or not its address landed yet",
+        );
+        assert!(
+            is_active(&tonk).await,
+            "the create gate must not withhold a remote from an activated account",
+        );
+    }
+
+    /// Registration reads as one of four states, and the provider
+    /// address is what separates them.
+    ///
+    /// The service names a provider only once it serves the customer, so
+    /// "has an address" IS "finished registering". That is what lets the
+    /// share flow tell "confirm your email" from "register from
+    /// scratch" without asking the service.
+    #[dialog_common::test]
+    async fn it_reads_how_far_registration_got() {
+        use crate::router::customer::{Registration, registration};
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-registration-states").await;
+        let tonk = state.read().await;
+
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Unregistered,
+            "an account that never enrolled has registered nothing",
+        );
+
+        // Enrollment records the address but no provider: the service
+        // withholds one until the emailed link is confirmed.
+        crate::router::customer::record_customer_status(
+            &tonk,
+            CustomerStatus::Registered,
+            "customer@example.test",
+            None,
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::AwaitingActivation {
+                email: "customer@example.test".to_owned(),
+            },
+            "an enrolled account with no provider is still awaiting its email",
+        );
+        assert!(
+            !crate::router::customer::is_active(&tonk).await,
+            "awaiting activation is not served, so nothing may attach a remote",
+        );
+
+        // Activation is where the provider lands.
+        crate::router::customer::record_customer_status(
+            &tonk,
+            CustomerStatus::Active,
+            "customer@example.test",
+            Some("https://hub.test/ucan/"),
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Served {
+                provider: "https://hub.test/ucan/".to_owned(),
+            },
+            "an activated account names the provider its spaces attach to",
+        );
+        assert!(crate::router::customer::is_active(&tonk).await);
+
+        // Suspension is terminal, and outranks a recorded provider: no
+        // email confirms it away.
+        crate::router::customer::record_customer_status(
+            &tonk,
+            CustomerStatus::Suspended,
+            "customer@example.test",
+            Some("https://hub.test/ucan/"),
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Suspended,
+            "a suspended account is refused regardless of its recorded provider",
+        );
+        assert!(!crate::router::customer::is_active(&tonk).await);
+    }
+
+    /// Enable-sync still attaches when provisioning cannot run.
+    ///
+    /// A remote is not necessarily our access service, and the service
+    /// may simply be unreachable. Refusing the attach on a failed
+    /// provision would make a self-hosted endpoint unattachable, so the
+    /// attach proceeds regardless — the gate is on the CREATE default,
+    /// not on an explicit request to sync.
+    #[dialog_common::test]
+    async fn it_attaches_sync_even_when_provisioning_cannot_run() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (key, subject) = put_repo_info(&app, "test-attach-without-provision").await;
+
+        dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
+
+        assert!(
+            has_remote_upstream(&state, &key).await,
+            "an explicit enable-sync attaches even with no reachable service to provision against",
         );
     }
 

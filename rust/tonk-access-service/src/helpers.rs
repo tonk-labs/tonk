@@ -69,11 +69,35 @@ impl AccessServiceAddress {
         Ok(())
     }
 
+    /// Enroll `customer` under `email`, leaving it `Registered`: the
+    /// address is claimed, and the activation email is waiting in the
+    /// test inbox. [`Self::activate_customer`] is this plus confirming
+    /// it; a test that wants a customer stopped short of confirmation
+    /// wants this one.
+    pub async fn enroll_customer(
+        &self,
+        customer: &dialog_credentials::Ed25519Signer,
+        email: &str,
+    ) -> anyhow::Result<()> {
+        self.enroll_only(customer, email).await
+    }
+
     /// Enroll `customer` and confirm its email, leaving it `Active` and
     /// providing its own account space. Returns once the service has
     /// recorded the activation, so a presign on `customer`'s subject
     /// immediately afterwards is served.
     pub async fn activate_customer(
+        &self,
+        customer: &dialog_credentials::Ed25519Signer,
+        email: &str,
+    ) -> anyhow::Result<()> {
+        self.enroll_only(customer, email).await?;
+        self.confirm_email(email).await
+    }
+
+    /// The enrollment half of the ceremony: mint a device delegation and
+    /// the service deposits, and invoke `/customer/enroll`.
+    async fn enroll_only(
         &self,
         customer: &dialog_credentials::Ed25519Signer,
         email: &str,
@@ -116,9 +140,15 @@ impl AccessServiceAddress {
             response.status(),
             response.text().await.unwrap_or_default()
         );
+        Ok(())
+    }
 
-        // The emailed link carries a complete service-signed invocation;
-        // presenting it is activating.
+    /// The confirmation half: present the invocation the activation email
+    /// carries. It is complete and service-signed, so presenting it is
+    /// activating and no key is needed here.
+    async fn confirm_email(&self, email: &str) -> anyhow::Result<()> {
+        let client = reqwest::Client::new();
+        let endpoint = self.ucan_endpoint();
         let inbox: Vec<(String, String)> = client
             .get(format!(
                 "{}/_test/emails",
@@ -128,10 +158,14 @@ impl AccessServiceAddress {
             .await?
             .json()
             .await?;
+        // Enrollment normalizes the address before storing and sending,
+        // so the inbox is keyed by the normalized form: matching the
+        // caller's spelling verbatim would miss a mixed-case address.
+        let normalized = crate::email::normalize_email(email);
         let (_, link) = inbox
             .into_iter()
             .rev()
-            .find(|(to, _)| to == email)
+            .find(|(to, _)| crate::email::normalize_email(to) == normalized)
             .ok_or_else(|| anyhow::anyhow!("no activation email was captured for {email}"))?;
         let encoded = link
             .split_once("ucan=")

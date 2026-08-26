@@ -149,6 +149,15 @@ pub trait Store {
     /// Look up a customer by DID.
     async fn customer(&self, did: &str) -> Result<Option<Customer>, StoreError>;
 
+    /// Look up the customer registered under a normalized email address.
+    /// The address must already be in
+    /// [`normalize_email`](crate::email::normalize_email) form; this does
+    /// not normalize it, because a caller that skipped normalization has
+    /// a bug the lookup should not paper over.
+    ///
+    /// At most one customer holds an address: `customer_email` is unique.
+    async fn customer_by_email(&self, email: &str) -> Result<Option<Customer>, StoreError>;
+
     /// Look up a consumer by DID.
     async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError>;
 
@@ -214,6 +223,12 @@ pub trait Store {
 pub const SELECT_CUSTOMER: &str = r#"
 SELECT did, email, status, plan, verified, terms_version
   FROM customer WHERE did = ?1
+"#;
+
+/// Lookup by address, which `customer_email` makes unique.
+pub const SELECT_CUSTOMER_BY_EMAIL: &str = r#"
+SELECT did, email, status, plan, verified, terms_version
+  FROM customer WHERE email = ?1
 "#;
 
 pub const SELECT_CONSUMER: &str = r#"

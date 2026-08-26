@@ -3,7 +3,9 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::account::{DisplayName, PasskeyCreatedAt, PasskeyCreatedOn};
+use crate::domain::account::{
+    CustomerEmail, CustomerStatus, DisplayName, PasskeyCreatedAt, PasskeyCreatedOn, ProviderAddress,
+};
 
 /// The account-wide display name, keyed by the immutable account subject.
 ///
@@ -69,6 +71,58 @@ impl AccountPasskeyCreated {
     /// Unix seconds, back in the integer form the wire DTO carries.
     pub fn seconds(&self) -> u64 {
         self.created_at.0 as u64
+    }
+}
+
+/// The account's registration with the access service, keyed by the
+/// immutable account subject.
+///
+/// This is the account's registration state as a FACT, not as a cached
+/// HTTP answer. Every device on the account reads it with an ordinary
+/// query and converges on it through sync, so a device that never ran
+/// the enrollment — and never probed the service — still knows whether
+/// the account is servable.
+///
+/// Written at two moments: when enrollment records `Registered`, and
+/// when activation is observed and promotes it to `Active`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountCustomer {
+    /// The immutable account subject, which is the customer DID.
+    pub this: Entity,
+    /// One of `Registered`, `Active`, or `Suspended`.
+    pub status: CustomerStatus,
+    /// The address enrollment named.
+    pub email: CustomerEmail,
+    /// The provider serving this account: the UCAN access-service
+    /// endpoint its spaces attach their remotes to.
+    pub provider: ProviderAddress,
+}
+
+impl AccountCustomer {
+    /// Record the account's registration state.
+    pub fn new(account: Entity, status: &str, email: String, provider: String) -> Self {
+        Self {
+            this: account,
+            status: CustomerStatus(status.to_owned()),
+            email: CustomerEmail(email),
+            provider: ProviderAddress(provider),
+        }
+    }
+
+    /// The provider serving this account, absent when registration
+    /// recorded none.
+    pub fn provider(&self) -> Option<&str> {
+        Some(self.provider.0.as_str()).filter(|address| !address.is_empty())
+    }
+
+    /// Whether the access service will serve this account's subjects.
+    ///
+    /// Only `Active` is servable: `Registered` awaits email activation
+    /// and `Suspended` was withdrawn, and the provisioning gate refuses
+    /// both. An unrecognised value — a status written by a newer build —
+    /// reads as not servable, which fails closed.
+    pub fn is_active(&self) -> bool {
+        self.status.0 == "Active"
     }
 }
 
