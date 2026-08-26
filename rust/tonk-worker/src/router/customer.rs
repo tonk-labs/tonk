@@ -769,12 +769,12 @@ pub(crate) async fn record_customer_status(
     use tonk_schema::{AccountCustomer, prelude::DidExt as _};
 
     let account = super::identity::root_did(state).await?;
-    // An absent address means "unchanged", not "no provider": a service
-    // that predates the field must not blank one a previous receipt
-    // already recorded.
+    // An absent address means "unchanged", not "no provider": a receipt
+    // that names none — every enrollment receipt does — must not blank
+    // one a later activation already recorded.
     let provider = match provider {
-        Some(provider) => provider.to_owned(),
-        None => provider_address(state).await.unwrap_or_default(),
+        Some(provider) => Some(provider.to_owned()),
+        None => provider_address(state).await,
     };
     state
         .reactor
