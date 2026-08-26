@@ -19,7 +19,7 @@ use web_sys::{
 type EventClosure = Closure<dyn FnMut(Event)>;
 type KeyClosure = Closure<dyn FnMut(KeyboardEvent)>;
 
-const ADD_ACCOUNT_PATH: &str = "/account?add=1";
+const ADD_ACCOUNT_PATH: &str = "/settings?add=1";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -75,7 +75,7 @@ fn revoke_path(device: &AccountDevice) -> String {
     let params = UrlSearchParams::new().expect("URLSearchParams is available in browsers");
     params.append("revoke", &device.did);
     format!(
-        "/account?{}",
+        "/settings?{}",
         params.to_string().as_string().unwrap_or_default()
     )
 }
@@ -363,7 +363,7 @@ impl CustomElement for UiHubAccount {
             {
                 let path = navigation
                     .get_attribute("data-navigate")
-                    .unwrap_or_else(|| "/account".into());
+                    .unwrap_or_else(|| "/settings".into());
                 tonk_host::navigate_to(&path);
             }
         }));
@@ -1352,7 +1352,7 @@ mod tests {
         let revoke = host.query_selector("[data-revoke]").unwrap().unwrap();
         assert_eq!(
             revoke.get_attribute("data-navigate").as_deref(),
-            Some("/account?revoke=did%3Akey%3Aother%2Fone")
+            Some("/settings?revoke=did%3Akey%3Aother%2Fone")
         );
         let text = host.text_content().unwrap_or_default();
         assert!(text.contains("current device"));
@@ -1478,7 +1478,7 @@ mod tests {
         assert!(menu.hidden(), "login must not open the profile roster");
         assert_eq!(
             window().unwrap().location().pathname().unwrap(),
-            "/account",
+            "/settings",
             "login must navigate directly to account setup"
         );
         window()

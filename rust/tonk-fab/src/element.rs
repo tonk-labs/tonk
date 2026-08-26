@@ -579,9 +579,9 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
                 .filter(|space| !space.is_empty())
             {
                 let next = format!("/space/{space}");
-                navigate(&format!("/account?next={}", urlencoding::encode(&next)));
+                navigate(&format!("/settings?next={}", urlencoding::encode(&next)));
             } else {
-                navigate("/account");
+                navigate("/settings");
             }
             return;
         }

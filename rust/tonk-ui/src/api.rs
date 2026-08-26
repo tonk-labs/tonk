@@ -593,6 +593,32 @@ pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
     }
 }
 
+/// Commit the authoritative display name for the active account/profile.
+pub async fn set_account_display_name(name: &str) -> Result<String, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/display-name", origin()))
+        .json(&tonk_worker_api::AccountDisplayNameRequest {
+            name: name.to_owned(),
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response
+            .json::<tonk_worker_api::AccountDisplayNameResponse>()
+            .await
+            .map(|response| response.name)
+            .map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/display-name returned {status}: {text}"
+        )))
+    }
+}
+
 /// Register a freshly authorized device in the account service's
 /// registry, through this browser's own membership. Answers the service's
 /// JSON, which carries the issued `attachmentId`.

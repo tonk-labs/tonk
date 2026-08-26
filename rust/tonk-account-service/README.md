@@ -187,13 +187,13 @@ so wrangler provisions the record and certificate itself on deploy. Creating
 the deploy.
 
 Exercise the flow against staging by creating an account on
-`https://staging.tonk.xyz/account`—the page reads the staging provider from
+`https://staging.tonk.xyz/settings`—the page reads the staging provider from
 `GET /.well-known/tonk`—then linking the CLI:
 
 ```
 tonk account login \
   --service-url https://accounts-staging.tonk.xyz \
-  --via https://staging.tonk.xyz/account/link
+  --via https://staging.tonk.xyz/settings/link
 ```
 
 ### Preview

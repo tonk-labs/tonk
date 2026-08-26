@@ -80,6 +80,23 @@ mod tests {
         }
     }
 
+    async fn wait_for_value(driver: &WebDriver, selector: &str, expected: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
+                && found.prop("value").await?.as_deref() == Some(expected)
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for `{selector}` value to equal {expected:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wait_for_text_containing(
         driver: &WebDriver,
         selector: &str,
@@ -229,7 +246,7 @@ mod tests {
                 vec![],
             )
             .await?;
-        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(driver, "#account-choose-create")
             .await?
@@ -284,6 +301,33 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_redirects_legacy_account_routes_without_losing_the_query(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let mut legacy = env.tonk_web.join("account")?;
+        legacy.set_query(Some("next=%2Fspace%2Fdid%3Akey%3AzOne&add=1"));
+        driver.goto(legacy.as_str()).await?;
+        element(&driver, "tonk-account").await?;
+        let current = driver.current_url().await?;
+        assert_eq!(current.path(), "/settings");
+        assert_eq!(current.query(), legacy.query());
+
+        let mut legacy_link = env.tonk_web.join("account/link")?;
+        legacy_link.set_query(Some(
+            "audience=did%3Akey%3AzCli&callback=http%3A%2F%2F127.0.0.1%3A9999&name=terminal",
+        ));
+        driver.goto(legacy_link.as_str()).await?;
+        element(&driver, "tonk-account").await?;
+        let current = driver.current_url().await?;
+        assert_eq!(current.path(), "/settings/link");
+        assert_eq!(current.query(), legacy_link.query());
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_signs_up_through_the_account_panels(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
@@ -322,6 +366,151 @@ mod tests {
             );
         }
 
+        let display_name = element(&driver, "#account-display-name").await?;
+        let select_all = if cfg!(target_os = "macos") {
+            Key::Meta + "a"
+        } else {
+            Key::Control + "a"
+        };
+        display_name.send_keys(select_all).await?;
+        display_name.send_keys("Settings Name").await?;
+        display_name.send_keys(Key::Enter).await?;
+        wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
+        let settings = driver.current_url().await?;
+        driver.goto(settings.as_str()).await?;
+        wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_matches_hub_tokens_and_settings_geometry(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "geometry@example.com").await?;
+
+        const TOKEN_SCRIPT: &str = r#"
+            const dark = arguments[0];
+            const root = document.documentElement;
+            root.classList.toggle('wa-dark', dark);
+            const surface = document.querySelector(arguments[1]);
+            const keys = ['--page','--ink','--on-ink','--soft','--ring','--sep',
+              '--frost-solid','--panel','--wash','--wash-2'];
+            const probe = document.createElement('span');
+            probe.style.display = 'none';
+            surface.appendChild(probe);
+            const values = Object.fromEntries(keys.map(key => {
+              probe.style.color = `var(${key})`;
+              return [key, getComputedStyle(probe).color];
+            }));
+            probe.remove();
+            return values;
+        "#;
+
+        driver.enter_default_frame().await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        let settings_light = driver
+            .execute(
+                TOKEN_SCRIPT,
+                vec![serde_json::json!(false), serde_json::json!("tonk-account")],
+            )
+            .await?
+            .json()
+            .clone();
+        let settings_dark = driver
+            .execute(
+                TOKEN_SCRIPT,
+                vec![serde_json::json!(true), serde_json::json!("tonk-account")],
+            )
+            .await?
+            .json()
+            .clone();
+
+        driver.goto(env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let hub_light = driver
+            .execute(
+                TOKEN_SCRIPT,
+                vec![serde_json::json!(false), serde_json::json!(".hub-page")],
+            )
+            .await?
+            .json()
+            .clone();
+        let hub_dark = driver
+            .execute(
+                TOKEN_SCRIPT,
+                vec![serde_json::json!(true), serde_json::json!(".hub-page")],
+            )
+            .await?
+            .json()
+            .clone();
+        assert_eq!(
+            settings_light, hub_light,
+            "light settings tokens drifted from Hub"
+        );
+        assert_eq!(
+            settings_dark, hub_dark,
+            "dark settings tokens drifted from Hub"
+        );
+
+        driver.enter_default_frame().await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        for (window_width, expected_total, expected_rail, expected_body) in
+            [(1200, 576, 144, 432), (607, 432, 108, 324)]
+        {
+            driver.set_window_rect(0, 0, window_width, 900).await?;
+            let geometry = driver
+                .execute(
+                    r#"const settings = document.querySelector('.account__settings').getBoundingClientRect();
+                        const rail = document.querySelector('.account__rail').getBoundingClientRect();
+                        const body = document.querySelector('.account__settings-body').getBoundingClientRect();
+                        return {settings: Math.round(settings.width), rail: Math.round(rail.width), body: Math.round(body.width)};"#,
+                    Vec::new(),
+                )
+                .await?;
+            assert_eq!(
+                geometry.json(),
+                &serde_json::json!({
+                    "settings": expected_total,
+                    "rail": expected_rail,
+                    "body": expected_body,
+                }),
+                "settings geometry drifted at {window_width}px"
+            );
+        }
+
+        driver.set_window_rect(0, 0, 390, 844).await?;
+        let compact = driver
+            .execute(
+                r#"const settings = document.querySelector('.account__settings');
+                    const rail = document.querySelector('.account__rail');
+                    const body = document.querySelector('.account__settings-body');
+                    const visible = [...document.querySelectorAll('button,a,input')]
+                      .filter(el => el.offsetParent !== null);
+                    return {
+                      settings: Math.round(settings.getBoundingClientRect().width),
+                      rail: Math.round(rail.getBoundingClientRect().width),
+                      body: Math.round(body.getBoundingClientRect().width),
+                      viewport: innerWidth,
+                      overflow: document.documentElement.scrollWidth > innerWidth,
+                      undersized: visible.filter(el => {
+                        const rect = el.getBoundingClientRect();
+                        return Math.max(rect.width, rect.height) < 44;
+                      }).map(el => el.id || el.textContent.trim())
+                    };"#,
+                Vec::new(),
+            )
+            .await?;
+        let compact = compact.json();
+        let available = compact["viewport"].as_i64().unwrap_or_default() - 32;
+        assert_eq!(compact["settings"], available);
+        assert_eq!(compact["rail"], available);
+        assert_eq!(compact["body"], available);
+        assert_eq!(compact["overflow"], false);
+        assert_eq!(compact["undersized"], serde_json::json!([]));
+
         driver.quit().await?;
         Ok(())
     }
@@ -333,10 +522,11 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
-        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         click(&driver, "#account-unlink").await?;
-        driver.accept_alert().await?;
+        element(&driver, "[role=alertdialog]").await?;
+        click(&driver, "#account-delete-submit").await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
 
         click(&driver, "#account-choose-link").await?;
@@ -396,7 +586,7 @@ mod tests {
                 vec![],
             )
             .await?;
-        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(&driver, "#account-choose-create")
             .await?
@@ -615,7 +805,7 @@ mod tests {
             "e2e terminal",
             "--no-open",
             "--via",
-            env.tonk_web.join("account/link")?.as_str(),
+            env.tonk_web.join("settings/link")?.as_str(),
         ]);
         if service == AccountService::Named {
             command.args(["--service-url", env.account_service.as_str()]);
@@ -639,7 +829,7 @@ mod tests {
         .context("timed out waiting for the CLI approval URL")??;
         assert_eq!(heading.trim_end(), "Open this URL to approve the device:");
         let approval_url = url::Url::parse(url_line.trim())?;
-        assert_eq!(approval_url.path(), "/account/link");
+        assert_eq!(approval_url.path(), "/settings/link");
         let query: std::collections::HashMap<String, String> =
             approval_url.query_pairs().into_owned().collect();
         let audience = query
@@ -1185,6 +1375,7 @@ mod tests {
         )
         .await?;
         successful_body("push synced space", &pushed);
+
         let invited = post_json(
             &creator,
             &format!("/api/repository/{key}/invite"),
@@ -1307,7 +1498,9 @@ mod tests {
                 vec![],
             )
             .await?;
-        claimer.goto(env.tonk_web.join("account")?.as_str()).await?;
+        claimer
+            .goto(env.tonk_web.join("settings")?.as_str())
+            .await?;
         element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
         element(&claimer, "#account-choose-link")
             .await?
@@ -1393,6 +1586,16 @@ mod tests {
         )
         .await?;
         successful_body("push synced space", &pushed);
+
+        click(&driver, "#account-delete-review").await?;
+        element(&driver, "[role=alertdialog]").await?;
+        wait_for_text(
+            &driver,
+            "#account-confirm-title",
+            "delete account permanently",
+        )
+        .await?;
+        click(&driver, "#account-confirm-cancel").await?;
 
         let plan = get_json(&driver, "/api/account/deletion/plan").await?;
         let plan = successful_body("review the deletion plan", &plan);
@@ -1509,7 +1712,7 @@ mod tests {
 
         // Add account first opens a reversible Choice flow. It must not
         // rotate or grow the profile roster until a ceremony is submitted.
-        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         element(&driver, "#account-add-profile")
             .await?
@@ -1939,7 +2142,7 @@ mod tests {
 
         let (callback, delivered) = waiting_cli().await?;
         let audience = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-        let mut url = env.tonk_web.join("account/link")?;
+        let mut url = env.tonk_web.join("settings/link")?;
         url.query_pairs_mut()
             .append_pair("audience", audience)
             .append_pair("callback", &callback);
@@ -1988,7 +2191,7 @@ mod tests {
         sign_up(&driver, &env, EMAIL).await?;
 
         let (callback, delivered) = waiting_cli().await?;
-        let mut url = env.tonk_web.join("account/link")?;
+        let mut url = env.tonk_web.join("settings/link")?;
         url.query_pairs_mut()
             .append_pair(
                 "audience",
@@ -2243,12 +2446,13 @@ mod tests {
             .context("CLI device was absent from the account device list")?
             .to_string();
 
-        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         wait_for_text_containing(&driver, "#account-device-list", "e2e terminal").await?;
         let selector = format!("#account-device-list button[data-revoke=\"{cli_did}\"]");
         click(&driver, &selector).await?;
-        driver.accept_alert().await?;
+        element(&driver, "[role=alertdialog]").await?;
+        click(&driver, "#account-delete-submit").await?;
         wait_for_text_containing(&driver, "#account-working", "Access removed").await?;
 
         // The row leaves with the authority: revoking retracted the
