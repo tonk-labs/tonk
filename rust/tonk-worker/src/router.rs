@@ -113,6 +113,8 @@ mod command;
 pub use command::{CommandEnv, CommandOrigin, command_registry, dispatch};
 
 #[cfg(test)]
+mod route_table;
+#[cfg(test)]
 mod wire_compat;
 
 /// Shared application state containing profile and operator.
