@@ -27,7 +27,7 @@ use tonk_schema::concept::{
 };
 use tonk_schema::resolution::{ConceptDefinition, ConceptReference, NamedReference};
 
-use crate::env::{EnvProvider, Opened};
+use crate::env::{EnvProvider, Opened, Repo};
 use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 
 /// Per-URI document state. Today only the latest text is
@@ -1243,21 +1243,34 @@ async fn open_for<P: EnvProvider>(uri: &Uri, env: &P) -> Option<P::Opened> {
     env.open(&repo, &branch).await
 }
 
+/// The repo-segment prefix naming the profile-as-repository,
+/// mirroring the `profile:<name>` token in the `branch@repo`
+/// location grammar the mounting element's `with` already speaks.
+const PROFILE_PREFIX: &str = "profile:";
+
 /// Pull `(repo, branch)` out of a
 /// `tonk-buffer:///<repo>/<branch>/<cell-suffix>` URI — the shape
-/// the editor's `<tonk-code source>` sets. Returns `None` for any
-/// other shape, including profile buffers (which use `<profile>`
-/// as the repo segment).
-fn parse_repo_branch(uri: &Uri) -> Option<(String, String)> {
+/// the editor's `<tonk-code source>` sets.
+///
+/// A `profile:<name>` repo segment names the profile-as-repository
+/// rather than a repository called that; anything else is a named
+/// repo. Returns `None` for any other shape.
+fn parse_repo_branch(uri: &Uri) -> Option<(Repo, String)> {
     let rest = uri.as_str().strip_prefix("tonk-buffer:///")?;
-    // First segment is repo (or `<profile>`); second is branch.
+    // First segment is the repo, second the branch.
     let mut parts = rest.splitn(3, '/');
     let repo = parts.next()?;
     let branch = parts.next()?;
-    if repo.is_empty() || branch.is_empty() || repo == "<profile>" {
+    if repo.is_empty() || branch.is_empty() {
         return None;
     }
-    Some((repo.to_owned(), branch.to_owned()))
+    let repo = match repo.strip_prefix(PROFILE_PREFIX) {
+        // `profile:` with no name is malformed, not the profile.
+        Some("") => return None,
+        Some(name) => Repo::Profile(name.to_owned()),
+        None => Repo::Named(repo.to_owned()),
+    };
+    Some((repo, branch.to_owned()))
 }
 
 /// Capabilities advertised in the `initialize` response. Kept in one
@@ -1375,6 +1388,45 @@ mod tests {
         }
     }
 
+    /// A `profile:<name>` repo segment names the profile-as-repository,
+    /// not a repository spelled that way. The profile lives in its own
+    /// namespace on the host, so flattening it to a named repo sent the
+    /// host looking for one that does not exist — it opened no branch and
+    /// completion on `/inspector` degraded to built-ins only.
+    #[dialog_common::test]
+    fn it_reads_a_profile_repo_segment_as_the_profile() {
+        let uri: Uri = "tonk-buffer:///profile:tonk/main/scratch-0"
+            .parse()
+            .expect("uri parses");
+        assert_eq!(
+            parse_repo_branch(&uri),
+            Some((Repo::Profile("tonk".to_owned()), "main".to_owned()))
+        );
+    }
+
+    /// Everything without the prefix is an ordinary named repo — the
+    /// `did:key` a space mounts with keeps its colons.
+    #[dialog_common::test]
+    fn it_reads_a_bare_repo_segment_as_a_named_repo() {
+        let uri: Uri = "tonk-buffer:///did:key:zAlice/main/scratch-0"
+            .parse()
+            .expect("uri parses");
+        assert_eq!(
+            parse_repo_branch(&uri),
+            Some((Repo::Named("did:key:zAlice".to_owned()), "main".to_owned()))
+        );
+    }
+
+    /// `profile:` with no name is malformed, not a request for the
+    /// profile — the seam carries the name, so refuse to invent one.
+    #[dialog_common::test]
+    fn it_rejects_a_profile_segment_without_a_name() {
+        let uri: Uri = "tonk-buffer:///profile:/main/scratch-0"
+            .parse()
+            .expect("uri parses");
+        assert_eq!(parse_repo_branch(&uri), None);
+    }
+
     #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl<Op> EnvProvider for TestEnv<Op>
@@ -1382,7 +1434,7 @@ mod tests {
         Op: QueryEnv,
     {
         type Opened = TestOpened<Op>;
-        async fn open(&self, _repo: &str, _branch: &str) -> Option<Self::Opened> {
+        async fn open(&self, _repo: &Repo, _branch: &str) -> Option<Self::Opened> {
             Some(TestOpened {
                 operator: self.operator.clone(),
                 branch: self.branch.clone(),
