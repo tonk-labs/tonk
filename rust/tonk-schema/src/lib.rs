@@ -66,6 +66,7 @@ pub use sync::*;
 pub mod account;
 pub use account::{
     AccountCustomer, AccountDisplayName, AccountEncryptionKey, AccountPasskeyCreated, EmailStatus,
+    email_state,
 };
 
 pub mod custody;

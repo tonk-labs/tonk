@@ -93,32 +93,6 @@ command!: &space/create
         handler.
       the: dom.event.current-target.elements.name/value
       as: text
-    remote:
-      description: >
-        Sync URL, read from the form's hidden `remote` input. The
-        worker's `CreateSpaceHandler` matches on `name` alone (so this
-        command keeps decoding against an older profile descriptor that
-        lacks this field), and reads `remote` opportunistically: the Hub
-        form defaults it to this server via `<tonk-default-remote auto>`;
-        if that URL cannot be resolved, blank still creates a local-only
-        space. A URL is attached after creation as the `origin` remote
-        with `main` tracking `origin/main`. Single
-        word `remote` (not `remote-url`) because read-path segments are
-        kebab→camel-cased.
-      the: dom.event.current-target.elements.remote/value
-      as: text
-    revocation:
-      description: >
-        Explicit immutable-artifact relay, stored beside the remote and
-        read from the form's hidden `revocation` input — which
-        `<tonk-default-remote relay-field="revocation">` fills from this
-        deployment's `/.well-known/tonk`. Optional exactly like
-        `remote`: blank attaches a remote with no relay. The leaf is
-        `value` (the input's value slot), NOT `revocation-url` — the
-        segment after the control name is a JS property, so any other
-        leaf reads `undefined` and aborts the whole command on submit.
-      the: dom.event.current-target.elements.revocation/value
-      as: text
     template:
       description: >
         Which template to seed: "wiki" for linked pages, "sheets" for
@@ -568,9 +542,11 @@ view/directory!:
                Must be non-empty or the extractor omits the field and the
                command never fires. -->
           <input type="hidden" name="name" value="Untitled">
-          <input type="hidden" name="remote" value="">
-          <input type="hidden" name="revocation" value="">
-          <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
+          <!-- No remote: the worker resolves where a spot syncs from the
+               account's own registration. Prefilling `origin + /ucan/`
+               here made every create look like a deliberate choice of
+               this server, so a spot created before anyone registered
+               was wired to a service that refuses to serve it. -->
 
           <!-- Screen 1: start chooser (navigation only, no submit) -->
           <div class="onb-screen onb-screen--start">

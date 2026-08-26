@@ -45,6 +45,7 @@ tonk-host = { workspace = true }
 tonk-account = { workspace = true }
 tonk-identity = { workspace = true }
 tonk-portal = { workspace = true }
+tonk-schema = { workspace = true }
 tonk-worker = { workspace = true }
 tonk-worker-api = { workspace = true }
 tonk-analytics = { workspace = true }

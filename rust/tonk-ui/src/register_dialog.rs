@@ -20,15 +20,32 @@
 //! and this only draws it.
 
 use std::cell::Cell;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use std::cell::RefCell;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_host::consumer::{self, Subscription};
 
 thread_local! {
     /// The dialog is a singleton: a second refusal while it is up is
     /// already answered by the registration in progress.
     static OPEN: Cell<bool> = const { Cell::new(false) };
+    /// The live subscription to the answer row, held for as long as the
+    /// dialog is up so the frames keep arriving, and dropped on close.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    static ANSWERS: RefCell<Option<Subscription>> = const { RefCell::new(None) };
+    /// The frame delegates, kept alive alongside the subscription: the
+    /// host calls them by name off the element's own properties, so
+    /// dropping them would silently stop delivery.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    static DELEGATES: RefCell<Vec<Closure<dyn FnMut(JsValue, JsValue)>>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// The dialog's host id, and the parts the handlers address.
@@ -48,24 +65,79 @@ const LEDE: &str = "#tonk-register-lede";
 /// input's autofill. `wa-input` forwards the attribute to the inner
 /// native input, which is where it has to land.
 const DIALOG_HTML: &str = r#"
-<wa-dialog id="tonk-register-dialog" label="Create an account to share" open
+<style>
+  /* Every state's copy is in the markup; the answer selects which of it
+     shows. The one write is `data-state` on the host, so what a state
+     looks like is decided here rather than by DOM writes scattered
+     through the handler.
+
+     `[data-when]` lists the states a line belongs to, matched on word
+     boundaries so `pending` does not also match `pending-ceremony`. */
+  #tonk-register [data-when] { display: none; }
+  /* Before any answer there is no `data-state`, so the neutral label
+     has to show on its own. Without this the button collapses to
+     nothing and the dialog renders with no footer at all. */
+  #tonk-register:not([data-state]) [data-when~="idle"],
+  #tonk-register[data-state=""] [data-when~="idle"],
+  #tonk-register[data-state="unregistered"] [data-when~="unregistered"],
+  #tonk-register[data-state="active"] [data-when~="active"],
+  #tonk-register[data-state="pending"] [data-when~="pending"],
+  #tonk-register[data-state="suspended"] [data-when~="suspended"],
+  #tonk-register[data-state="invalid"] [data-when~="invalid"],
+  #tonk-register[data-state="unavailable"] [data-when~="unavailable"],
+  #tonk-register[data-state="registering"] [data-when~="registering"],
+  #tonk-register[data-state="checking"] [data-when~="checking"] {
+    display: revert;
+  }
+
+  /* Nothing to submit: no answer yet, or an answer that no ceremony
+     would help with. */
+  #tonk-register:not([data-state]) #tonk-register-submit,
+  #tonk-register[data-state=""] #tonk-register-submit,
+  #tonk-register[data-state="checking"] #tonk-register-submit,
+  #tonk-register[data-state="registering"] #tonk-register-submit,
+  #tonk-register[data-state="suspended"] #tonk-register-submit,
+  #tonk-register[data-state="invalid"] #tonk-register-submit,
+  #tonk-register[data-state="unavailable"] #tonk-register-submit {
+    pointer-events: none;
+    opacity: .5;
+  }
+
+  #tonk-register-status {
+    margin: .6rem 0 0;
+    min-height: 1.2em;
+    font-size: .9em;
+    color: var(--wa-color-text-quiet, #9a9aa0);
+  }
+</style>
+<wa-dialog id="tonk-register-dialog" label="Share needs a hosted copy"
            style="--width: 26rem">
   <p id="tonk-register-lede" style="margin:0 0 1rem">
-    Sharing a spot needs an account, so the people you share with have
-    somewhere to sync from.
+    Sharing a spot means someone else can open it, so it needs a copy
+    that our service hosts. Linking it to an account is what lets us
+    host one.
   </p>
   <form id="tonk-register-form">
     <wa-input id="tonk-register-email" name="email" type="email"
               label="Email" placeholder="you@example.com"
               autocomplete="username webauthn" required
               autofocus></wa-input>
-    <p id="tonk-register-status" style="margin:.6rem 0 0;min-height:1.2em;
-       font-size:.9em;color:var(--wa-color-text-quiet,#9a9aa0)"></p>
+    <p id="tonk-register-status">
+      <span data-when="checking">Checking…</span>
+      <span data-when="active">You already have an account. Sign in to finish sharing.</span>
+      <span data-when="pending">This address is enrolled. Sign in, then confirm your email.</span>
+      <span data-when="suspended">This account is suspended, so it cannot host a copy.</span>
+      <span data-when="invalid">That does not look like an email address.</span>
+      <span data-when="unavailable">Could not reach the service. Check your connection.</span>
+      <span data-when="registering">Setting up your account…</span>
+    </p>
   </form>
   <wa-button id="tonk-register-dismiss" slot="footer" appearance="plain"
              variant="neutral">Not now</wa-button>
   <wa-button id="tonk-register-submit" slot="footer" variant="brand">
-    Create account</wa-button>
+    <span data-when="idle checking unregistered invalid unavailable registering suspended">Link to an account</span>
+    <span data-when="active pending">Sign in</span>
+  </wa-button>
 </wa-dialog>
 "#;
 
@@ -89,11 +161,64 @@ pub fn open() {
     on_click(&host, DISMISS, close);
     on_click(&host, SUBMIT, submit);
     watch_address(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    watch_answers(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    open_when_upgraded(&host);
+}
+
+/// Turn on the footer region, then open the dialog.
+///
+/// `wa-dialog` renders a footer only when its `withFooter` property is
+/// set; it does NOT infer one from slotted content. The FAB's dialogs
+/// get away without setting it because their markup is parsed as part
+/// of the document, so their children exist before the element
+/// upgrades. This dialog is built by assigning `innerHTML` to a
+/// detached div, where `wa-dialog` upgrades mid-parse with no children
+/// yet — it rendered no footer, the `slot="footer"` buttons were
+/// assigned to a slot that did not exist, and the dialog came up with
+/// no buttons at all.
+///
+/// Deferred a task so the custom element is upgraded before either
+/// property is set.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn open_when_upgraded(host: &Element) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let host = host.clone();
+    let raise = Closure::<dyn FnMut()>::new(move || {
+        let Some(dialog) = host.query_selector("#tonk-register-dialog").ok().flatten() else {
+            return;
+        };
+        let _ = js_sys::Reflect::set(
+            dialog.as_ref(),
+            &"withFooter".into(),
+            &wasm_bindgen::JsValue::TRUE,
+        );
+        let _ = js_sys::Reflect::set(
+            dialog.as_ref(),
+            &"open".into(),
+            &wasm_bindgen::JsValue::TRUE,
+        );
+    });
+    let _ = window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(raise.as_ref().unchecked_ref(), 0);
+    raise.forget();
 }
 
 /// Take the dialog down.
 pub fn close() {
     OPEN.with(|open| open.set(false));
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        ANSWERS.with(|held| {
+            if let Some(mut subscription) = held.borrow_mut().take() {
+                subscription.cancel();
+            }
+        });
+        DELEGATES.with(|held| held.borrow_mut().clear());
+    }
     if let Some(host) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
@@ -154,19 +279,194 @@ fn schedule_check() {
 /// Dispatch `account/check-email` for whatever is typed now.
 fn check_now() {
     let Some(email) = address() else {
+        clear_state();
         return;
     };
     if !is_plausible(&email) {
-        set_status("");
+        // Not worth asking about, so there is no answer to show. Drop
+        // the state rather than leaving the last address's answer up:
+        // an answer about something the user has since edited away from
+        // reads as an answer about what is typed now.
+        clear_state();
         return;
     }
-    set_status("Checking…");
+    // No "Checking…" painted here: the handler asserts `checking` for
+    // this address before it makes the lookup, and the row is what the
+    // dialog renders. Painting it here too would be a second source of
+    // truth that disagrees with the row while the lookup runs.
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(error) = crate::api::transact_profile(check_email_claim(&email)).await {
             tonk_common::log!("register: could not ask about the address: {error}");
-            set_status("");
+            clear_state();
         }
     });
+}
+
+/// Drop the rendered answer, back to the dialog's opening state.
+fn clear_state() {
+    if let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+    {
+        let _ = host.remove_attribute("data-state");
+    }
+}
+
+/// The subscription tag for the answer row.
+const ANSWER_TAG: &str = "tonk-register-answer";
+
+/// The overlay row the worker writes each answer to.
+const ANSWER_SUBJECT: &str = "state:email-status";
+
+/// The query for the answer row: the two raw attributes
+/// `account/check-email` writes, bound to the one entity it writes them
+/// to.
+///
+/// Raw attribute URIs rather than a concept name, so a profile seeded
+/// from an older `profile.yaml` cannot break the read.
+pub(crate) fn answer_query_body() -> String {
+    serde_json::json!({
+        "predicate": { "with": {
+            "address": {
+                "the": "xyz.tonk.email-status/address",
+                "as": "Text", "cardinality": "one"
+            },
+            "state": {
+                "the": "xyz.tonk.email-status/state",
+                "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": ANSWER_SUBJECT,
+            "address": { "?": { "name": "address" } },
+            "state": { "?": { "name": "state" } }
+        }
+    })
+    .to_string()
+}
+
+/// Subscribe to the answer row and render it as it arrives.
+///
+/// Without this the dialog only ever writes: `check_now` asserts the
+/// command and paints "Checking…", and nothing puts the answer back on
+/// screen, so the wait never ends. The worker's answer is a fact on the
+/// profile overlay, and this is the read half of that loop.
+///
+/// The host is installed on this page (`tonk_host::install()` in
+/// `bin/ui.rs`), so a plain `consumer::subscribe` works. The routing
+/// context is the fixed profile branch — the overlay row is written to
+/// `main@profile:tonk` — rather than anything derived from an
+/// attribute.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn watch_answers(host: &Element) {
+    let _ = host.set_attribute("with", "main@profile:tonk");
+
+    let mut delegates = Vec::new();
+    for method in ["reset", "update"] {
+        let target = host.clone();
+        let is_delta = method == "update";
+        let delegate =
+            Closure::<dyn FnMut(JsValue, JsValue)>::new(move |payload: JsValue, _opts: JsValue| {
+                let _ = &target;
+                if let Some(answer) = read_answer(&payload, is_delta) {
+                    show_answer(&answer);
+                }
+            });
+        if js_sys::Reflect::set(host.as_ref(), &method.into(), delegate.as_ref()).is_err() {
+            return;
+        }
+        delegates.push(delegate);
+    }
+    DELEGATES.with(|held| *held.borrow_mut() = delegates);
+
+    // Subscribe only once the service worker is up. `tonk-subscribe`
+    // is dispatched synchronously and the host answers it inline, so a
+    // subscribe fired during cold start fails outright ("host did not
+    // write detail.subscription") and, with nothing to retry it, the
+    // dialog would wait on frames that never come.
+    let host = host.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        tonk_host::ready::wait().await;
+        let body = answer_query_body();
+        let Ok(query) = js_sys::JSON::parse(&body) else {
+            return;
+        };
+        // The dialog may already be gone by the time the gate opens.
+        if !host.is_connected() {
+            return;
+        }
+        match consumer::subscribe(&host, &query, Some(&ANSWER_TAG.into())) {
+            Ok(subscription) => ANSWERS.with(|held| *held.borrow_mut() = Some(subscription)),
+            Err(error) => {
+                tonk_common::log!("register: could not watch for the answer: {error:?}");
+            }
+        }
+    });
+}
+
+/// An answer as the dialog reads it: which address it is about, and what
+/// the service said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Answer {
+    /// The address the answer is about.
+    pub(crate) address: String,
+    /// One of the `state::*` strings the worker writes.
+    pub(crate) state: String,
+}
+
+/// Pull the newest answer out of a frame.
+///
+/// A `reset` carries a bare array of the current rows; an `update`
+/// carries `{ asserted, retracted }`. Both attributes are
+/// cardinality-one on a single entity, so the last asserted row is the
+/// current answer, and a bare retract says nothing new.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn read_answer(payload: &JsValue, is_delta: bool) -> Option<Answer> {
+    let rows = if is_delta {
+        js_sys::Reflect::get(payload, &"asserted".into()).ok()?
+    } else {
+        payload.clone()
+    };
+    let rows = js_sys::Array::from(&rows);
+    let last = rows.get(rows.length().checked_sub(1)?);
+    if last.is_undefined() || last.is_null() {
+        return None;
+    }
+    let fields = js_sys::Reflect::get(&last, &"fields".into()).ok()?;
+    let read = |name: &str| {
+        js_sys::Reflect::get(&fields, &name.into())
+            .ok()
+            .and_then(|value| value.as_string())
+    };
+    Some(Answer {
+        address: read("address")?,
+        state: read("state")?,
+    })
+}
+
+/// Render an answer, ignoring one about an address the user has since
+/// edited away from.
+///
+/// The row carries the address for exactly this reason: answers arrive
+/// out of order behind a debounce, and a late answer about two
+/// keystrokes ago must not overwrite the current one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn show_answer(answer: &Answer) {
+    let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+    else {
+        return;
+    };
+    let typed = address().unwrap_or_default();
+    if !typed.eq_ignore_ascii_case(answer.address.trim()) {
+        return;
+    }
+    // The one write. Every visible consequence of the answer — which
+    // status line shows, what the button reads, whether it can be
+    // pressed — is a `[data-when]` rule in `DIALOG_HTML` keyed on this
+    // attribute.
+    let _ = host.set_attribute("data-state", &answer.state);
 }
 
 /// Whether an address is worth asking the service about.
@@ -231,33 +531,48 @@ fn submit() {
         set_status("Enter the address you want to use.");
         return;
     };
-    let resume = pending_share();
-    set_status("Waiting for your passkey…");
     wasm_bindgen_futures::spawn_local(async move {
+        // Dispatch and stop. A successful transact means the COMMAND was
+        // accepted, not that an account exists: the handler asks the page
+        // to run a WebAuthn ceremony and returns without awaiting it.
+        //
+        // Treating `Ok` as "registered" is what made this jump straight
+        // to "the share link is on its way" with no passkey prompt ever
+        // shown. What happens next arrives as facts — the handler
+        // publishes `registering`, and enrollment lands an
+        // `AccountCustomer` row — and the subscription renders them.
         if let Err(error) = crate::api::transact_profile(register_claim(&email)).await {
             tonk_common::log!("register: could not start registration: {error}");
-            set_status("Registration could not start. Try again.");
-            return;
+            clear_state();
         }
-        let Some(space) = resume else {
-            // Nothing to go back to: the dialog was raised on its own.
-            set_status("Check your email to finish setting up your account.");
-            return;
-        };
-        // The spot could not be shared because there was no account.
-        // There is one now, so ask for the invite the interrupted click
-        // wanted. The link arrives as a fact — the same
-        // `xyz.tonk.credential/link` row the bar reads — so this only
-        // has to ask.
-        set_status("Setting up sharing…");
-        let claim = enable_sync_claim(&space, js_sys::Date::now());
-        if let Err(error) = crate::api::transact_profile(claim).await {
-            tonk_common::log!("register: could not resume the share: {error}");
-            set_status("Your account is ready. Share the spot again to get a link.");
-            return;
-        }
-        set_status("Your account is ready. The share link is on its way.");
     });
+}
+
+/// Run the signup ceremony the worker asked for.
+///
+/// Reached from `custody_relay`'s `CreateAccount` branch: the worker
+/// cannot create an account (WebAuthn needs a `window` and a user
+/// gesture) so it asks the page, and this is the page's half.
+///
+/// **Not implemented yet.** The ceremony currently lives inline in
+/// `/account`'s create-submit handler, interleaved with that panel's
+/// `set_busy` / `show_error` / `set_mode` calls, so there is nothing to
+/// call from here. Extracting it is the `account/ceremony-complete`
+/// work in `plan/system-page-commands.md`: the page runs the ceremony
+/// and asserts a command carrying its output, and a handler applies it
+/// — which also stops the panel and this dialog from keeping two
+/// copies of the same logic.
+///
+/// Until then this says so rather than silently doing nothing. A
+/// dropped request is what made the dialog report "the share link is on
+/// its way" with no ceremony ever run.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn run_signup_ceremony() {
+    tonk_common::log!(
+        "register: the worker asked for a signup ceremony, which is not wired yet \
+         (see plan/system-page-commands.md, account/ceremony-complete)"
+    );
+    set_status("Account creation is not available here yet.");
 }
 
 /// The `tonk:enable-sync` claim that finishes an interrupted share:

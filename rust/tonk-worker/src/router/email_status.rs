@@ -26,34 +26,10 @@
 
 /// The states an answer can take, as the form reads them.
 ///
-/// The first four mirror what the access service's lookup answers
-/// (`lookup::status_of`): 404 nothing registered, 200 active, 202
-/// enrolled but unconfirmed, 410 suspended. The last two are this
-/// worker's own: an address that cannot be looked up, and a service that
-/// could not be reached.
-///
-/// `Unavailable` is deliberately not folded into `Unregistered`. A form
-/// that read "could not reach the service" as "nobody has this address"
-/// would send someone into a creation ceremony that fails at the end.
-pub(crate) mod state {
-    /// Nothing is registered under the address: offer to create.
-    pub(crate) const UNREGISTERED: &str = "unregistered";
-    /// Registered and served: offer to sign in.
-    pub(crate) const ACTIVE: &str = "active";
-    /// Enrolled, activation link unopened: sign in, then wait.
-    pub(crate) const PENDING: &str = "pending";
-    /// Service withdrawn. Neither creating nor signing in helps.
-    pub(crate) const SUSPENDED: &str = "suspended";
-    /// Not an address this can look up.
-    pub(crate) const INVALID: &str = "invalid";
-    /// The service could not be reached, so this says nothing about the
-    /// address itself.
-    pub(crate) const UNAVAILABLE: &str = "unavailable";
-    /// A ceremony was raised for this address and has not finished. The
-    /// form shows it as in-progress rather than offering to start
-    /// another one.
-    pub(crate) const PENDING_CEREMONY: &str = "registering";
-}
+/// The vocabulary itself lives with the concept in `tonk-schema`, so
+/// the worker that writes these strings and the registration form that
+/// routes on them cannot drift apart.
+pub(crate) use tonk_schema::email_state as state;
 
 /// Split an address into the `(domain, local)` pair the lookup path
 /// names, or `None` when it is not one.
@@ -81,16 +57,6 @@ pub(crate) fn split_address(email: &str) -> Option<(String, String)> {
 /// leaves this worker.
 pub(crate) fn state_for_address(email: &str) -> Option<&'static str> {
     split_address(email).is_none().then_some(state::INVALID)
-}
-
-/// Whether a state means the form should keep out of the way rather
-/// than offer an action.
-///
-/// `registering` is a ceremony already up; `unavailable` is a service
-/// that did not answer. Neither is a fact about the address, so neither
-/// should render as "create an account" or "sign in".
-pub(crate) fn is_transient(state: &str) -> bool {
-    matches!(state, state::PENDING_CEREMONY | state::UNAVAILABLE)
 }
 
 /// Map the lookup's HTTP status onto the state the form reads.
@@ -159,6 +125,12 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CheckEmailHan
             let Some(email) = email else {
                 return;
             };
+            // Say the lookup is in flight BEFORE making it. The form
+            // renders the row and nothing else, so without this the
+            // wait would have to be painted into the DOM by the form
+            // itself, leaving two sources of truth that disagree while
+            // the lookup runs.
+            publish(&env, &email, state::CHECKING).await;
             let state = lookup(&email).await;
             publish(&env, &email, state).await;
         })
@@ -289,9 +261,11 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RegisterAccou
             // nothing else, and the page reads what it needs from the
             // row it is already watching.
             publish(&env, &email, state::PENDING_CEREMONY).await;
-            if let Err(error) =
-                super::navigate::request_webauthn(client, tonk_worker_api::CREATE_ACCOUNT_REQUEST)
-                    .await
+            if let Err(error) = super::navigate::request_webauthn(
+                client,
+                tonk_worker_api::WebAuthnKind::CreateAccount,
+            )
+            .await
             {
                 log!("account/register: the page could not be asked: {error}");
                 publish(&env, &email, state::UNAVAILABLE).await;
@@ -358,18 +332,6 @@ mod tests {
             None,
             "a real address has no answer until the service gives one",
         );
-    }
-
-    /// A state the form should not turn into an offer.
-    #[dialog_common::test]
-    fn it_knows_which_states_carry_no_offer() {
-        assert!(is_transient(state::PENDING_CEREMONY), "a ceremony is up");
-        assert!(is_transient(state::UNAVAILABLE), "nobody answered");
-        // These are answers about the address, so each names an action.
-        assert!(!is_transient(state::UNREGISTERED));
-        assert!(!is_transient(state::ACTIVE));
-        assert!(!is_transient(state::PENDING));
-        assert!(!is_transient(state::SUSPENDED));
     }
 
     /// Anything else is the service failing to answer. Reading a 429 or

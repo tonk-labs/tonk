@@ -965,6 +965,497 @@ mod tests {
         }
     }
 
+    /// The Hub's own wizard creates a local-only spot before anyone
+    /// registers.
+    ///
+    /// Every other test here builds the claim in Rust, which skips the
+    /// form entirely — so a hidden input that prefills a remote is
+    /// invisible to them. This one submits the real wizard, which is how
+    /// `<tonk-default-remote auto>` went on wiring `origin + /ucan/`
+    /// onto spots created with no account: the form supplied a remote,
+    /// the worker honoured it as a deliberate choice, and the gate that
+    /// keeps a spot local never got a say. The spot then synced to a
+    /// service that refuses to serve it.
+    #[dialog_common::test]
+    async fn it_creates_a_local_only_spot_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
+        // The authenticator id comes along so the ceremony can be
+        // observed: a passkey either got minted or it did not.
+        let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        // Nothing is registered: a device has an account from first
+        // boot, but no provider serves it until someone signs up.
+        let customer = get_json(&driver, "/api/customer").await?;
+        assert!(
+            customer["body"]["provider"].as_str().is_none(),
+            "this profile must not be served yet: {customer}",
+        );
+
+        let before = space_keys(&driver).await?;
+        submit_hub_wizard(&driver).await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let key = loop {
+            let now = space_keys(&driver).await?;
+            if let Some(key) = now.iter().find(|key| !before.contains(key)) {
+                break key.clone();
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the wizard never created a spot; before={before:?} now={now:?}",
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+
+        // Give the handler's post-navigation attach step room to run, so
+        // "no remote" means it declined rather than that we looked early.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let info = successful_body("read the spot configuration", &info);
+        assert!(
+            info["remote"]
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty),
+            "a spot created before registering must wire no remote, got {}",
+            info["remote"],
+        );
+        assert!(
+            info["branch"]["main"]["upstream"].is_null(),
+            "main must track nothing, got {}",
+            info["branch"]["main"]["upstream"],
+        );
+
+        // The spot is local-only, which is what makes sharing it
+        // refuse. Walk the rest of the flow from that refusal, asserting
+        // at each step on WHAT THE USER SEES rather than on the fact
+        // behind it.
+        //
+        // That distinction is the whole point of these steps. The
+        // command is already covered by
+        // `it_answers_whether_an_address_is_registered`, which polls the
+        // worker's row directly — and therefore passes whether or not
+        // anything ever renders the answer. The dialog shipped with a
+        // write and no read, latching on "Checking…" forever, and that
+        // test stayed green throughout.
+        click_share(&driver).await?;
+        confirm_share_repair(&driver).await?;
+        await_register_dialog(&driver).await?;
+
+        // The dialog must come up USABLE. `wa-dialog` renders a footer
+        // only when told to, so the buttons were once assigned to a slot
+        // that did not exist: present in the DOM, zero-sized, invisible.
+        // An existence check passes on a 0x0 button, so this measures.
+        let footer = register_submit_box(&driver).await?;
+        assert!(
+            footer.0 > 0 && footer.1 > 0,
+            "the submit button must be rendered, got {footer:?}",
+        );
+
+        type_into_register_dialog(&driver, "nobody@example.com").await?;
+        let label = await_register_submit_label(&driver, LINK_ACCOUNT_LABEL).await?;
+        assert_eq!(
+            label, LINK_ACCOUNT_LABEL,
+            "an address nobody registered is the create branch",
+        );
+
+        // Clicking it must actually RUN a passkey ceremony. A successful
+        // transact only means the command was accepted; the worker then
+        // asks the page to run WebAuthn. When nothing on the page
+        // listened for that request the dialog still reported success,
+        // so the credential count is what tells the difference.
+        let before = credential_count(&driver, &authenticator).await?;
+        click_register_submit(&driver).await?;
+        let after = await_credential_count(&driver, &authenticator, before + 1).await?;
+        assert_eq!(
+            after,
+            before + 1,
+            "submitting must mint a passkey, not just dispatch a command",
+        );
+
+        // ...and the share it interrupted must finish, which is the
+        // feature: the spot gains the remote it refused to share
+        // without, and the invite link arrives.
+        await_share_link(&driver).await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The submit button's label for an address with no account yet.
+    const LINK_ACCOUNT_LABEL: &str = "Link to an account";
+
+    /// An address that already has an account must offer to SIGN IN.
+    ///
+    /// Sending someone with an account through a creation ceremony
+    /// leaves an orphan passkey in their authenticator and fails at the
+    /// end, so the button has to route on the answer rather than assume.
+    #[dialog_common::test]
+    async fn it_offers_sign_in_for_an_address_that_already_has_an_account(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        let taken = "taken@example.com";
+        sign_up(&driver, &env, taken).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        open_register_dialog(&driver).await?;
+        type_into_register_dialog(&driver, taken).await?;
+        let label = await_register_submit_label(&driver, "Sign in").await?;
+        assert_eq!(
+            label, "Sign in",
+            "a registered address must offer sign-in, not a second signup",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A late answer must not render as an answer about what is typed
+    /// now.
+    ///
+    /// The lookups are debounced and run concurrently, so an answer
+    /// about a half-typed address can land after a later one. The row
+    /// carries the address it is about precisely so the dialog can tell
+    /// them apart.
+    #[dialog_common::test]
+    async fn it_ignores_an_answer_about_an_address_that_was_edited_away(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        let taken = "taken@example.com";
+        sign_up(&driver, &env, taken).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        open_register_dialog(&driver).await?;
+
+        // Ask about the registered address, then immediately edit to one
+        // nobody has. The first answer ("Sign in") is in flight when the
+        // second is asked for.
+        type_into_register_dialog(&driver, taken).await?;
+        type_into_register_dialog(&driver, "someone-else-entirely@example.com").await?;
+
+        let label = await_register_submit_label(&driver, LINK_ACCOUNT_LABEL).await?;
+        assert_eq!(
+            label, LINK_ACCOUNT_LABEL,
+            "the dialog must answer about what is typed now, not what was typed before",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Measure the register dialog's submit button.
+    ///
+    /// Returns `(width, height)`. Zero means present in the DOM but not
+    /// rendered — the state the dialog shipped in when its buttons were
+    /// assigned to a footer slot `wa-dialog` had not created.
+    async fn register_submit_box(driver: &WebDriver) -> Result<(i64, i64)> {
+        let box_of = driver
+            .execute(
+                r##"const b = document.querySelector("#tonk-register-submit");
+                    if (!b) return [0, 0];
+                    const r = b.getBoundingClientRect();
+                    return [Math.round(r.width), Math.round(r.height)];"##,
+                Vec::new(),
+            )
+            .await?;
+        let value = box_of.json().clone();
+        let pair = value
+            .as_array()
+            .ok_or_else(|| anyhow!("expected a [width, height] pair, got {value}"))?;
+        Ok((
+            pair.first()
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+            pair.get(1).and_then(serde_json::Value::as_i64).unwrap_or(0),
+        ))
+    }
+
+    /// Click the register dialog's submit button.
+    async fn click_register_submit(driver: &WebDriver) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const b = document.querySelector("#tonk-register-submit");
+                if (!b) return done({ error: "no submit button" });
+                b.click();
+                done({ ok: true });
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        let value = outcome.json().clone();
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not submit the dialog: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Wait for the virtual authenticator to hold `expected` credentials.
+    async fn await_credential_count(
+        driver: &WebDriver,
+        authenticator_id: &str,
+        expected: usize,
+    ) -> Result<usize> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut last = 0;
+        loop {
+            last = credential_count(driver, authenticator_id).await?;
+            if last >= expected {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "no passkey ceremony ran: the authenticator still holds {last} \
+                     credential(s), expected {expected}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait for the interrupted share to finish and hand over a link.
+    async fn await_share_link(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let rows = post_json(
+                driver,
+                "/api/profile/branch/main/query",
+                serde_json::json!({
+                    "predicate": { "with": {
+                        "link": {
+                            "the": "xyz.tonk.credential/link",
+                            "as": "Text", "cardinality": "one"
+                        }
+                    } },
+                    "terms": { "link": { "?": { "name": "link" } } }
+                }),
+            )
+            .await?;
+            if let Some(link) = rows["body"].as_array().and_then(|rows| {
+                rows.iter().find_map(|row| {
+                    row["fields"]["link"]
+                        .as_str()
+                        .or_else(|| row["link"].as_str())
+                        .filter(|link| !link.is_empty())
+                })
+            }) {
+                return Ok(link.to_owned());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "registering never finished the share it interrupted: no invite link",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Confirm the FAB's repair prompt, which is what raises the
+    /// registration dialog.
+    ///
+    /// The share refusal opens a confirm dialog first ("this needs an
+    /// account — set one up?"); only confirming it asks the top page for
+    /// the registration dialog.
+    async fn confirm_share_repair(driver: &WebDriver) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const find = (root) => root?.querySelector("[data-enable-sync-confirm]");
+                let button = find(document);
+                if (!button) {
+                    for (const frame of document.querySelectorAll("iframe")) {
+                        try { button = find(frame.contentDocument); } catch (e) {}
+                        if (button) break;
+                    }
+                }
+                if (!button) return done({ error: "no repair confirm button" });
+                button.click();
+                done({ ok: true });
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        let value = outcome.json().clone();
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not confirm the repair: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Get to the registration dialog from a loaded page: share, confirm
+    /// the repair, wait for the dialog.
+    async fn open_register_dialog(driver: &WebDriver) -> Result<()> {
+        click_share(driver).await?;
+        confirm_share_repair(driver).await?;
+        await_register_dialog(driver).await
+    }
+
+    /// Click the FAB's share button, inside the profile frame.
+    async fn click_share(driver: &WebDriver) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const find = (root) => root?.querySelector(".fab__share-trigger");
+                let button = find(document);
+                if (!button) {
+                    for (const frame of document.querySelectorAll("iframe")) {
+                        button = find(frame.contentDocument);
+                        if (button) break;
+                    }
+                }
+                if (!button) return done({ error: "no share button" });
+                button.click();
+                done({ ok: true });
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        let value = outcome.json().clone();
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not click share: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Wait for the registration dialog to be raised in the TOP page.
+    ///
+    /// It is raised there and nowhere else: WebAuthn needs a `window`
+    /// and a user gesture, which neither the worker nor the profile
+    /// frame has.
+    async fn await_register_dialog(driver: &WebDriver) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let present = driver
+                .execute(
+                    r##"return !!document.querySelector("#tonk-register-email");"##,
+                    Vec::new(),
+                )
+                .await?;
+            if present.json().as_bool() == Some(true) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the share refusal never raised the dialog"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Type an address into the dialog's own input, the way a user does.
+    ///
+    /// An `input` event is what the dialog debounces on, so setting
+    /// `.value` alone would ask nothing. `wa-input` forwards to an inner
+    /// native input, so the value is set on whichever of the two the
+    /// element exposes.
+    async fn type_into_register_dialog(driver: &WebDriver, address: &str) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const address = arguments[0];
+                const field = document.querySelector("#tonk-register-email");
+                if (!field) return done({ error: "no address field" });
+                field.value = address;
+                const inner = field.shadowRoot?.querySelector("input");
+                if (inner) inner.value = address;
+                field.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                done({ ok: true });
+                "##,
+                vec![serde_json::json!(address)],
+            )
+            .await?;
+        let value = outcome.json().clone();
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not type the address: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Wait for the dialog's submit button to read `expected`.
+    ///
+    /// The button's label IS the routing decision the answer drives:
+    /// "Create account" for an address nobody has, "Sign in" for one
+    /// that is taken. Waiting on it therefore asserts the whole loop —
+    /// command dispatched, answer written to the overlay, subscription
+    /// delivered, dialog rendered — rather than any one leg of it.
+    async fn await_register_submit_label(driver: &WebDriver, expected: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last = String::new();
+        loop {
+            let label = driver
+                .execute(
+                    r##"const b = document.querySelector("#tonk-register-submit");
+                       return b ? (b.textContent || "").trim() : "";"##,
+                    Vec::new(),
+                )
+                .await?;
+            last = label.json().as_str().unwrap_or_default().to_owned();
+            if last == expected {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the dialog never rendered the answer: the button still reads {last:?}, \
+                     not {expected:?}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Drive the Hub's create wizard to a blank spot.
+    ///
+    /// The wizard pages with CSS-only radios (`#wiz-start` opens it,
+    /// `#wiz-agent` is the blank path), and the Hub renders inside a
+    /// sealed guest, so this reaches in through the frame rather than
+    /// clicking from the top document — which cannot see those controls.
+    async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                const frame = document.querySelector("iframe");
+                const root = frame?.contentDocument;
+                if (!root) return done({ error: "no guest frame" });
+                const check = (id) => {
+                    const radio = root.getElementById(id);
+                    if (!radio) return false;
+                    radio.checked = true;
+                    radio.dispatchEvent(new Event("change", { bubbles: true }));
+                    return true;
+                };
+                // Open the wizard, then take the blank path.
+                if (!check("wiz-start")) return done({ error: "no #wiz-start" });
+                if (!check("wiz-agent")) return done({ error: "no #wiz-agent" });
+                // Submit the form itself: `wa-button[type=submit]` is a
+                // custom element, so requestSubmit is what a click would
+                // reach anyway and does not depend on it having upgraded.
+                const form = root.querySelector("form.onb-overlay-body, form[onsubmit], form");
+                if (!form) return done({ error: "no wizard form" });
+                setTimeout(() => {
+                    form.requestSubmit
+                        ? form.requestSubmit()
+                        : form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+                    done({ ok: true });
+                }, 100);
+                "#,
+                Vec::new(),
+            )
+            .await?;
+        let value = outcome.json().clone();
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not drive the Hub wizard: {error}"));
+        }
+        Ok(())
+    }
+
     /// Create a space the way the app does: dispatch the `space/create`
     /// transient and wait for the new key to appear in the profile.
     ///
