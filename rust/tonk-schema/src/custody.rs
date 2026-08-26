@@ -250,3 +250,140 @@ impl CustodyCell {
         }
     }
 }
+
+/// The outcome of one [`rotate`] pass: what moved, and what stayed
+/// sealed to the old recipient with the reason it stayed.
+#[derive(Debug, Default)]
+pub struct Rotation {
+    /// Subjects whose seeds are now sealed to the new recipient.
+    pub rotated: Vec<Did>,
+    /// Subjects that stayed, with why. A later pass picks them up.
+    pub failures: Vec<(Did, String)>,
+}
+
+/// A [`rotate`] failure outside any one seed: the pass itself could not
+/// run.
+#[derive(Debug, thiserror::Error)]
+pub enum RotateError {
+    /// The custodied-seed rows could not be read.
+    #[error("failed to read custodied seeds: {0}")]
+    Read(String),
+}
+
+/// Rotate every custodied seed sealed to `old` onto `new`, on `branch`.
+///
+/// This is the shared rotation core: the worker runs it when a passkey
+/// account arrives on a device that onboarded locally, and the CLI runs
+/// it at `tonk account login` — one implementation, so the two adapters
+/// cannot drift. Per seed the core opens with the old key, derives and
+/// verifies the signer, seals to the new recipient, and hands the
+/// adapter both the derived signer and the exact row replacement (the
+/// old row to retract, the new row to assert). The adapter re-issues —
+/// chains, prefixes, retention, provisioning — and commits the
+/// replacement through its own branch handle, because its re-issue
+/// writes advance the branch underneath any handle the core could hold.
+///
+/// Best-effort per seed: a seed that fails to open, verify, or reissue
+/// is recorded in [`Rotation::failures`] and left sealed to the old
+/// recipient, so a later pass resumes exactly where this one stopped.
+pub async fn rotate<Env>(
+    branch: &dialog_repository::Branch,
+    old: &tonk_identity::sealed::EncryptionKey,
+    new: &tonk_identity::sealed::RecipientKey,
+    env: &Env,
+    mut reissue: impl AsyncFnMut(
+        SeedKind,
+        dialog_credentials::Ed25519Signer,
+        &CustodiedSeed,
+        CustodiedSeed,
+    ) -> Result<(), String>,
+) -> Result<Rotation, RotateError>
+where
+    Env: dialog_capability::Provider<dialog_effects::archive::Get>
+        + dialog_capability::Provider<dialog_effects::archive::Put>
+        + dialog_capability::Provider<dialog_effects::archive::Import>
+        + dialog_capability::Provider<dialog_effects::memory::Resolve>
+        + dialog_capability::Provider<dialog_effects::memory::Publish>
+        + dialog_capability::Provider<dialog_effects::authority::Identify>
+        + dialog_capability::Provider<dialog_effects::authority::Attest>
+        + dialog_capability::Provider<
+            dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::archive::Get>,
+        > + dialog_capability::Provider<
+            dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::memory::Resolve>,
+        > + dialog_common::ConditionalSync
+        + 'static,
+{
+    use dialog_query::{Output as _, Query, Term};
+
+    let old_recipient = old.recipient().did();
+    let rows: Vec<CustodiedSeed> = branch
+        .query()
+        .select(Query::<CustodiedSeed> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            kind: Term::var("kind"),
+            recipient: Term::from(Recipient(old_recipient.this())),
+            sealed: Term::var("sealed"),
+        })
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|error| RotateError::Read(format!("{error:?}")))?;
+
+    let mut rotation = Rotation::default();
+    for row in rows {
+        let subject: Did = match row.subject.0.to_string().parse() {
+            Ok(subject) => subject,
+            Err(error) => {
+                rotation.failures.push((
+                    old_recipient.clone(),
+                    format!("custodied subject is not a DID: {error}"),
+                ));
+                continue;
+            }
+        };
+        match rotate_seed(old, new, &mut reissue, &subject, &row).await {
+            Ok(()) => rotation.rotated.push(subject),
+            Err(reason) => rotation.failures.push((subject, reason)),
+        }
+    }
+    Ok(rotation)
+}
+
+async fn rotate_seed(
+    old: &tonk_identity::sealed::EncryptionKey,
+    new: &tonk_identity::sealed::RecipientKey,
+    reissue: &mut impl AsyncFnMut(
+        SeedKind,
+        dialog_credentials::Ed25519Signer,
+        &CustodiedSeed,
+        CustodiedSeed,
+    ) -> Result<(), String>,
+    subject: &Did,
+    row: &CustodiedSeed,
+) -> Result<(), String> {
+    use dialog_varsig::Principal as _;
+
+    let kind = match row.kind.0.to_string().as_str() {
+        SeedKind::SPACE => SeedKind::Space,
+        SeedKind::INVITE => SeedKind::Invite,
+        other => return Err(format!("unknown seed kind {other}")),
+    };
+    let sealed =
+        tonk_identity::sealed::Sealed::decode(&row.sealed.0).map_err(|error| error.to_string())?;
+    let seed = old
+        .open(&sealed, subject)
+        .map_err(|error| error.to_string())?;
+    let signer = dialog_credentials::Ed25519Signer::import(&*seed)
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    if signer.did() != *subject {
+        return Err(format!("the custodied seed derives {}", signer.did()));
+    }
+    let resealed = new
+        .seal(&seed, subject)
+        .map_err(|error| format!("reseal: {error}"))?
+        .encode();
+    let replacement = CustodiedSeed::new(subject.clone(), kind, new.did(), resealed);
+    reissue(kind, signer, row, replacement).await
+}
