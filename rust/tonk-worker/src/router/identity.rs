@@ -22,6 +22,8 @@ pub(crate) struct LocalRootRecord {
     delegation: Vec<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     passkey: Option<PasskeyMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encryption_key: Option<String>,
 }
 
 /// A validated local root record.
@@ -39,6 +41,10 @@ pub(crate) struct LocalRoot {
     pub bytes: Vec<u8>,
     /// Informational creation details recorded by the creating browser.
     pub passkey: Option<PasskeyMetadata>,
+    /// The account's X25519 recipient, when the ceremony that wrote this
+    /// record held the secret. Published to the account space by
+    /// `seed_encryption_key`.
+    pub encryption_key: Option<dialog_varsig::Did>,
 }
 
 pub(crate) async fn validate_grant(
@@ -115,6 +121,11 @@ pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorke
         .ok_or(TonkWorkerError::RootRequired)?;
     let device_did = state.profile.did();
     let delegation = validate_grant(record.delegation.clone(), &device_did).await?;
+    let encryption_key = record
+        .encryption_key
+        .as_deref()
+        .map(parse_encryption_key)
+        .transpose()?;
     Ok(LocalRoot {
         root_did: delegation.issuer().clone(),
         device_did,
@@ -122,6 +133,7 @@ pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorke
         delegation,
         bytes: record.delegation,
         passkey: record.passkey,
+        encryption_key,
     })
 }
 
@@ -139,6 +151,7 @@ fn status(root: LocalRoot) -> RootStatus {
         delegation_cid: root.delegation.proof_cids()[0].to_string(),
         delegation_hex: hex::encode(root.bytes),
         passkey: root.passkey,
+        encryption_key: root.encryption_key.map(|did| did.to_string()),
     }
 }
 
@@ -152,6 +165,28 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, Tonk
         })),
         Some(_) => Ok(Json(status(local_root(&state).await?))),
     }
+}
+
+/// Rewrite the local root record without its recipient: the shape of a
+/// device linked before the encryption key existed, for tests of what
+/// such a device does when it needs one.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkWorkerError> {
+    let Some(mut record) = load_record(state).await? else {
+        return Err(TonkWorkerError::RootRequired);
+    };
+    record.encryption_key = None;
+    let encoded = serde_json::to_vec(&record).map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to serialize local root: {error}"))
+    })?;
+    state
+        .profile
+        .credential()
+        .site(LOCAL_ROOT_SITE)
+        .save(encoded)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("failed to save local root: {error}")))
 }
 
 pub(crate) async fn persist_root(
@@ -183,16 +218,31 @@ pub(crate) async fn persist_root(
             Ok(metadata)
         })
         .transpose()?;
+    request
+        .encryption_key
+        .as_deref()
+        .map(parse_encryption_key)
+        .transpose()?;
     let bytes = hex::decode(&request.delegation_hex)
         .map_err(|error| TonkWorkerError::Router(format!("invalid delegation hex: {error}")))?;
     let chain = validate_grant(bytes.clone(), &state.profile.did()).await?;
-    let record = LocalRootRecord {
+    let mut record = LocalRootRecord {
         version: 1,
         credential_id: request.credential_id,
         delegation: bytes.clone(),
         passkey,
+        encryption_key: request.encryption_key,
     };
     if let Some(existing) = load_record(state).await? {
+        let stored_root = DelegationChain::try_from(existing.delegation.as_slice())
+            .ok()
+            .map(|stored| stored.issuer().clone());
+        // Only a ceremony that held the secret records the recipient, so
+        // a re-save from one that did not (a link, a re-minted grant)
+        // keeps the one already recorded for this root.
+        if stored_root.as_ref() == Some(chain.issuer()) && record.encryption_key.is_none() {
+            record.encryption_key = existing.encryption_key.clone();
+        }
         if existing == record {
             return Ok(status(local_root(state).await?));
         }
@@ -213,9 +263,6 @@ pub(crate) async fn persist_root(
         // or signed in, this profile's spaces and delegations hang off
         // the stored root, and a different account arrives through
         // add-account, never by rebinding this profile.
-        let stored_root = DelegationChain::try_from(existing.delegation.as_slice())
-            .ok()
-            .map(|stored| stored.issuer().clone());
         if stored_root.as_ref() != Some(chain.issuer()) {
             if super::account::has_attachment_history(state).await {
                 return Err(TonkWorkerError::Conflict(
@@ -259,6 +306,16 @@ pub(crate) async fn persist_root(
             TonkWorkerError::Internal(format!("failed to save local root: {error}"))
         })?;
 
+    let encryption_key = record
+        .encryption_key
+        .as_deref()
+        .map(parse_encryption_key)
+        .transpose()?;
+    // An operation may be waiting on exactly this: a page answered the
+    // worker's request for a passkey assertion by saving the key.
+    if let Some(recipient) = &encryption_key {
+        super::custody::notify_encryption_key(recipient);
+    }
     Ok(status(LocalRoot {
         root_did: chain.issuer().clone(),
         device_did: state.profile.did(),
@@ -266,7 +323,20 @@ pub(crate) async fn persist_root(
         delegation: chain,
         bytes,
         passkey: record.passkey,
+        encryption_key,
     }))
+}
+
+/// Parse a ceremony-supplied recipient, refusing anything that is not
+/// an X25519 `did:key`: a record holding an Ed25519 DID here would seal
+/// every seed to a key nothing can open.
+fn parse_encryption_key(did: &str) -> Result<dialog_varsig::Did, TonkWorkerError> {
+    let did: dialog_varsig::Did = did
+        .parse()
+        .map_err(|error| TonkWorkerError::Router(format!("invalid encryptionKey: {error}")))?;
+    tonk_identity::sealed::RecipientKey::from_did(&did)
+        .map_err(|error| TonkWorkerError::Router(format!("invalid encryptionKey: {error}")))?;
+    Ok(did)
 }
 
 /// `POST /api/identity/root`.
@@ -283,6 +353,9 @@ pub async fn save(
     // enrollment immediately. Idempotent and best-effort.
     if super::account_state::seed_passkey_facts(&state).await {
         tonk_common::log!("recorded this device's passkey creation facts in the account space");
+    }
+    if super::account_state::seed_encryption_key(&state).await {
+        tonk_common::log!("published the account's encryption key in the account space");
     }
     Ok(Json(status))
 }
@@ -313,6 +386,7 @@ mod tests {
                 credential_id: format!("credential-{root_seed}"),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
                 passkey: None,
+                encryption_key: None,
             },
             grant,
         )
@@ -354,6 +428,54 @@ mod tests {
         let result = serde_json::to_value(result).unwrap();
         assert_eq!(result["passkey"]["createdAt"], 1_754_380_800u64);
         assert_eq!(result["passkey"]["createdOn"], "Chrome on macOS");
+    }
+
+    fn recipient_did(byte: u8) -> dialog_varsig::Did {
+        tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([byte; 32]))
+            .encryption_key()
+            .recipient()
+            .did()
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_encryption_key_with_the_local_root() {
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let device = state.read().await.profile.did();
+        let recipient = recipient_did(1);
+        let (mut request, _) = request_for(1, &device).await;
+        request.encryption_key = Some(recipient.to_string());
+        let _ = save(State(state.clone()), Json(request)).await.unwrap();
+        assert_eq!(
+            local_root(&*state.read().await)
+                .await
+                .unwrap()
+                .encryption_key,
+            Some(recipient.clone())
+        );
+
+        // A later ceremony on the same root that did not hold the secret
+        // (a re-minted grant) leaves the recorded recipient in place.
+        let (again, _) = request_for(1, &device).await;
+        let _ = save(State(state.clone()), Json(again)).await.unwrap();
+        assert_eq!(
+            local_root(&*state.read().await)
+                .await
+                .unwrap()
+                .encryption_key,
+            Some(recipient)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_an_encryption_key_that_is_not_x25519() {
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let device = state.read().await.profile.did();
+        let (mut request, grant) = request_for(1, &device).await;
+        request.encryption_key = Some(grant.issuer().to_string());
+        assert!(matches!(
+            save(State(state), Json(request)).await,
+            Err(TonkWorkerError::Router(_))
+        ));
     }
 
     #[dialog_common::test]
@@ -457,6 +579,7 @@ mod tests {
             credential_id: "renewed-credential".to_string(),
             delegation_hex: hex::encode(grant.to_bytes().unwrap()),
             passkey: None,
+            encryption_key: None,
         };
 
         let _ = super::super::account::unlink(State(state.clone()))

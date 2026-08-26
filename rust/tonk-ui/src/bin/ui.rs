@@ -39,7 +39,7 @@ async fn main() {
     // presence of `window.tonk` to detect a portal guest, and the top
     // page must never look like one.
     tonk_identity::install();
-    tonk_ui::account_gate::install();
+    tonk_ui::custody_relay::install();
     tonk_ui::account::register();
     tonk_ui::activate::register();
 

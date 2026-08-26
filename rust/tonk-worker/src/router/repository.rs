@@ -7,7 +7,6 @@
 //! share a label. The response carries the new repository's routing key
 //! (the DID suffix), which the UI routes by.
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_capability::Subject;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_effects::Use;
@@ -20,7 +19,8 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_credentials::{Ed25519Signer, SignerCredential};
+use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
+use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -37,9 +37,10 @@ use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceStatus, TrackingBranch,
 };
 use url::Url;
+use zeroize::Zeroizing;
 
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
@@ -661,23 +662,17 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             } else {
                 name
             };
-            let has_account = {
-                let tonk = env.state().read().await;
-                super::account::require_account(&tonk).await.is_ok()
-            };
-            if !has_account {
-                crate::router::navigate::notify_account_required(
-                    env.client(),
-                    tonk_worker_api::PendingIntent::CreateSpace {
-                        name,
-                        remote,
-                        template,
-                    },
-                );
+            log!("command CreateSpace name={} remote={:?}", name, remote);
+
+            // The space's seed is custodied under the account before the
+            // space exists. A linked device whose root record predates the
+            // encryption key asks the originating page for a passkey
+            // assertion here, outside the state lock, and resumes once the
+            // page has saved the key.
+            if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
+                log!("CreateSpace '{}' refused: {}", name, error);
                 return;
             }
-
-            log!("command CreateSpace name={} remote={:?}", name, remote);
 
             // 1. Always create local-only first, so the space appears
             //    whether or not a remote was given (and never vanishes on
@@ -1030,27 +1025,6 @@ async fn run_invite(
         .map_err(|e| {
             TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
         })?;
-
-    // A guest visit cannot mint: it installed bounded invite authority, not
-    // the durable membership a delegation is cut from. Refuse ahead of the
-    // remote check — it is the more fundamental answer, and it is cheaper —
-    // so the click spends no delegation and rotates no credential. The bar
-    // turns this code into an offer to join, which is what raises the passkey
-    // prompt.
-    if super::join::is_guest_replica(&tonk, &repository.did()).await? {
-        log!("Invite for repo '{}' refused: guest visit", repo_name);
-        drop(tonk);
-        publish_share_blocked(
-            env.state(),
-            repo_name,
-            subject_entity,
-            tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP,
-            "You're visiting this spot as a guest. Join it to share it with others.",
-            time,
-        )
-        .await;
-        return Ok(());
-    }
 
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
     // remote lands its recipient in a spot that can never fill, so there is
@@ -2721,7 +2695,7 @@ pub async fn create_repository(
     tonk: &TonkState,
     display_name: &str,
     configuration: &RepositoryConfiguration,
-) -> Result<Repository<SignerCredential>, RepositoryError> {
+) -> Result<Repository, RepositoryError> {
     // A space always delegates to an ACCOUNT: the passkey-derived root
     // once one is persisted, else this device's onboarding account,
     // which is a real account custodied locally rather than by WebAuthn
@@ -2771,28 +2745,51 @@ pub async fn create_repository(
     // repository's own `tonk/repository` concept. Generating the signer
     // first (rather than letting `.create()` mint one) is what lets the
     // name derive from the DID instead of the other way around.
-    let signer = Ed25519Signer::generate()
+    // The seed is drawn here rather than inside `generate`, so it can be
+    // sealed to the account below; the signer imports from it the same
+    // way an account root does (non-extractable on the web target), so
+    // the credential the repository stores is the shape it always was.
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut())
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    let signer = Ed25519Signer::import(&*seed)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
     let did = signer.did();
     let key = did.repo_key();
 
-    let repository = tonk
-        .profile
-        .repository(key)
-        .create()
-        .with_credential(signer)
+    // The seed sealed to the account is the ONLY copy of the space secret
+    // that outlives this function: the repository stores the verifier, and
+    // every later act on the space proves through `space -> account ->
+    // device`, the way a joined replica does. So the custody row lands
+    // before anything else does, and a seed that cannot be custodied is a
+    // space that is not created.
+    if !super::account_state::custody_seed(tonk, &did, SeedKind::Space, seed).await {
+        return Err(RepositoryError::Internal(
+            "the space seed could not be custodied under the account".to_string(),
+        ));
+    }
+
+    let verifier: Ed25519Verifier = did.to_string().parse().map_err(|e| {
+        RepositoryError::Internal(format!("space DID is not a valid Ed25519 did:key: {e:?}"))
+    })?;
+    let space_credential = Subject::from(tonk.profile.did())
+        .attenuate(Space::new(key))
+        .create(Credential::from(verifier))
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             RepositoryError::Internal(format!("Failed to create repository '{}': {}", key, e))
         })?;
+    let repository = Repository::from(space_credential);
     log!("Repository created. DID: {}", repository.did());
 
-    // 2. Delegate subject-specific authority to the owner key.
-    let delegation = repository
+    // 2. Delegate subject-specific authority to the owner key, from the
+    //    signer this function still holds.
+    let minter = Repository::from(signer);
+    let delegation = minter
         .access()
-        .claim(&repository)
+        .claim(&minter)
         .delegate(owner.clone())
         .perform(&tonk.operator)
         .await
@@ -2897,112 +2894,6 @@ pub(crate) async fn space_root_prefix(
     DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
         TonkWorkerError::Internal(format!("stored space root delegation is invalid: {error}"))
     })
-}
-
-/// Bring pre-account spaces under the account after linking.
-///
-/// A space created before any account existed delegates to the profile's
-/// device key, the only durable key the client had. Once a root is
-/// persisted, each such space re-delegates from its own signer to the
-/// account root: the stored prefix is replaced, the new authority lands
-/// in the profile's access branch, is retained into the account space,
-/// and the space is provisioned as a consumer under the account's
-/// customer. Spaces already rooted at the account — created while signed
-/// out, or adopted by an earlier pass — skip the redelegation but still
-/// get the retain and the provisioning, both idempotent. Joined replicas
-/// (whose prefix reaches this profile through someone else's chain) are
-/// left alone. Best effort per space: adoption failing must never fail
-/// the link that triggered it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
-    let Ok(root) = super::identity::local_root(tonk).await else {
-        return;
-    };
-    // Spaces created before accreditation are rooted at this device's
-    // ONBOARDING account, not at the profile. Older spaces predating that
-    // change are still profile-rooted, so both count as "mine to
-    // re-issue"; anything else reaches this device through someone
-    // else's chain and is left alone.
-    let profile_did = tonk.profile.did();
-    let onboarding_did = crate::onboarding::did(tonk).await.unwrap_or(None);
-    let reissuable = |audience: &Did| {
-        audience == &profile_did || onboarding_did.as_ref().is_some_and(|did| audience == did)
-    };
-    for key in super::profile_name::real_space_keys(tonk).await {
-        let Ok(repository) = tonk
-            .profile
-            .repository(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-        else {
-            continue;
-        };
-        let subject = repository.did();
-        let Ok(prefix) = space_root_prefix(tonk, &subject).await else {
-            continue;
-        };
-        let chain = if reissuable(prefix.audience()) {
-            // Joined replicas carry a verifier-only credential: nothing
-            // to redelegate from, their authority is the inviter's.
-            let Some(access) = repository.try_access() else {
-                continue;
-            };
-            let delegation = match access
-                .claim(&repository)
-                .delegate(root.root_did.clone())
-                .perform(&tonk.operator)
-                .await
-            {
-                Ok(delegation) => delegation,
-                Err(error) => {
-                    log!("space '{subject}' was not adopted by the account: {error}");
-                    continue;
-                }
-            };
-            let chain = delegation.into_chain();
-            if let Err(error) = tonk
-                .profile
-                .access()
-                .save(UcanDelegation(chain.clone()))
-                .perform(&tonk.operator)
-                .await
-            {
-                log!("adopted space '{subject}' delegation did not save: {error}");
-                continue;
-            }
-            match chain.to_bytes() {
-                Ok(bytes) => {
-                    if let Err(error) = tonk
-                        .profile
-                        .credential()
-                        .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
-                        .save(bytes)
-                        .perform(&tonk.operator)
-                        .await
-                    {
-                        log!("adopted space '{subject}' prefix did not persist: {error}");
-                        continue;
-                    }
-                }
-                Err(error) => {
-                    log!("adopted space '{subject}' prefix did not serialize: {error}");
-                    continue;
-                }
-            }
-            log!("space '{subject}' adopted by the account");
-            chain
-        } else if prefix.audience() == &root.root_did {
-            prefix
-        } else {
-            continue;
-        };
-        super::account_state::retain_space_delegation(tonk, &chain).await;
-        if let Err(error) = super::customer::provision_or_defer(tonk, &subject, &chain, None).await
-        {
-            log!("adopted space '{subject}' provisioning skipped: {error}");
-        }
-    }
 }
 
 /// Lay down the meta-branch facts and profile-side index for an
@@ -5014,8 +4905,83 @@ mod tests {
         existing_space_labels,
     };
     use crate::router::evaluate::evaluate_body;
-    use crate::router::tests::{attach_remote, content_invitations, put_repo, put_repo_info};
+    use crate::router::tests::{content_invitations, put_repo, put_repo_info};
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
+
+    /// The seed sealed to the account is the only copy of a created
+    /// space's secret: the repository stores the verifier, the space still
+    /// proves for the operator through `space -> account -> device`, and
+    /// opening the custodied seed with the account key re-derives exactly
+    /// the space's signer.
+    #[dialog_common::test]
+    async fn it_creates_a_space_with_a_public_key_and_custodies_its_seed() {
+        use dialog_capability::Subject;
+        use dialog_effects::Use;
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::RepositoryExt as _;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "public-key-space").await;
+        let tonk = state.read().await;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(
+            repository.try_access().is_none(),
+            "the repository stores only the verifier",
+        );
+        let subject = repository.did();
+
+        tonk.profile
+            .access()
+            .prove(Subject::from(subject.clone()).attenuate(Use))
+            .audience(&tonk.operator)
+            .perform(&tonk.operator)
+            .await
+            .expect("the space proves through the account without its own key");
+
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::CustodiedSeed> {
+                this: Term::var("this"),
+                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+                kind: Term::var("kind"),
+                recipient: Term::var("recipient"),
+                sealed: Term::var("sealed"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one custodied space seed");
+        assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+            crate::router::tests::test_root_seed(&tonk.profile_name),
+        ));
+        let opened = account
+            .encryption_key()
+            .open(&sealed, &subject)
+            .expect("the account key opens the custodied seed");
+        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
+            .await
+            .unwrap();
+        assert_eq!(reissued.did(), subject, "the seed derives the space's key");
+    }
 
     /// The scaffold notation, embedded at compile time.
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
@@ -6304,62 +6270,6 @@ mod tests {
         assert!(
             address.contains("https://access.example.test/ucan/"),
             "a second attach must not repoint the remote, got {address}",
-        );
-    }
-
-    /// A guest visit holds bounded invite authority, not the durable
-    /// membership a mint delegates from, so the click cannot succeed. Refusing
-    /// before minting means it costs no delegation and rotates no credential —
-    /// and the code is what lets the bar offer to join rather than just
-    /// reporting a failure.
-    ///
-    /// The remote is attached first so guest-ness is the only thing left to
-    /// refuse over: without it this would pass on `not-synced` alone.
-    #[dialog_common::test]
-    async fn it_refuses_to_mint_for_a_guest_visit() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-refuse-guest").await;
-        attach_remote(&app, &key, "https://access.example.test/ucan/").await;
-
-        // Marked a guest through the record writer itself, so the fixture
-        // states no opinion about how guest state is stored beyond the
-        // metadata every retained record carries.
-        {
-            use dialog_repository::{Repository, RepositoryExt as _};
-            let tonk = state.read().await;
-            let repository: Repository = tonk
-                .profile
-                .repository(&key)
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .expect("repo loads");
-            let audience = tonk.operator.did();
-            crate::router::join::store_guest_record(
-                &tonk,
-                &repository.did(),
-                "https://staging.example.test/join?access=fixture",
-                &audience,
-                crate::session::now() + 3600,
-            )
-            .await
-            .expect("guest record stores");
-        }
-
-        run_invite_with_time(&state, &key, 4242.0).await;
-
-        let blocked = share_blocked_rows(&state, &key).await;
-        assert_eq!(blocked.len(), 1, "one refusal recorded");
-        assert_eq!(
-            blocked[0].0,
-            tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP,
-        );
-        assert_eq!(blocked[0].2, 4242.0, "echoes the command's timestamp");
-
-        let invitations = content_invitations(&state, &key).await;
-        assert!(
-            invitations.is_empty(),
-            "a guest's refused mint records no invitation",
         );
     }
 

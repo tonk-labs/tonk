@@ -39,6 +39,9 @@ pub(crate) struct CreateAccountOutput {
     pub invocation_hex: String,
     #[serde(default)]
     pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    /// The account's X25519 recipient, published as `AccountEncryptionKey`.
+    #[serde(default)]
+    pub encryption_key: Option<String>,
     #[serde(default)]
     pub deposits_hex: Vec<String>,
     pub custody_did: String,
@@ -101,6 +104,9 @@ pub(crate) struct CeremonyOutput {
     /// input named the service.
     #[serde(default)]
     pub deposits_hex: Vec<String>,
+    /// The account's X25519 recipient, when the ceremony held the secret.
+    #[serde(default)]
+    pub encryption_key: Option<String>,
 }
 
 /// Verification-only assertion input: the account passkey to assert
@@ -227,6 +233,27 @@ pub(crate) async fn unlock_with_passkey(
     input: UnlockWithPasskeyInput,
 ) -> Result<CeremonyOutput, IdentityBridgeError> {
     call("unlockWithPasskey", input).await
+}
+
+/// Input for [`publish_encryption_key`]: the `/ucan/` endpoint the custody
+/// cell resolves through.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublishEncryptionKeyInput {
+    pub endpoint: String,
+}
+
+/// The account's X25519 recipient, derived through one assertion.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublishedEncryptionKey {
+    pub encryption_key: String,
+}
+
+pub(crate) async fn publish_encryption_key(
+    input: PublishEncryptionKeyInput,
+) -> Result<PublishedEncryptionKey, IdentityBridgeError> {
+    call("publishEncryptionKey", input).await
 }
 
 /// Input for [`authorize_device`].

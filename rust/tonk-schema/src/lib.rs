@@ -64,7 +64,12 @@ pub mod sync;
 pub use sync::*;
 
 pub mod account;
-pub use account::{AccountCustomer, AccountDisplayName, AccountPasskeyCreated};
+pub use account::{
+    AccountCustomer, AccountDisplayName, AccountEncryptionKey, AccountPasskeyCreated,
+};
+
+pub mod custody;
+pub use custody::{CustodiedSeed, SeedKind};
 
 pub mod device_link;
 pub mod replica;

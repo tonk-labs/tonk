@@ -18,8 +18,3 @@ pub const BLOCKED_NOT_SYNCED: &str = "not-synced";
 /// The spot's sync server cannot be shared (a local-only or non-UCAN remote).
 /// Terminal: nothing the user can do from the bar.
 pub const BLOCKED_UNSHAREABLE_REMOTE: &str = "unshareable-remote";
-
-/// This replica is a guest visit: it holds bounded invite authority, not the
-/// durable membership a mint delegates from. Repairable: the bar offers to
-/// join the spot, which is what raises the passkey prompt.
-pub const BLOCKED_NEEDS_MEMBERSHIP: &str = "needs-membership";

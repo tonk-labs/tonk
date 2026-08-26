@@ -14,6 +14,10 @@ pub mod activate;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod account_gate;
 
+/// Running a WebAuthn ceremony on the service worker's behalf.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod custody_relay;
+
 /// API client for interacting with the Tonk service worker.
 pub mod api;
 

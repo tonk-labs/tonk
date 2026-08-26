@@ -40,16 +40,14 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    ACCOUNT_REQUIRED, AccountRequired, CreateSpaceRequest, CreateSpaceResponse, PasskeyMetadata,
-    PendingIntent, RootStatus, SaveRootRequest,
+    CreateSpaceRequest, CreateSpaceResponse, ENCRYPTION_KEY_REQUEST, PasskeyMetadata, RootStatus,
+    SaveRootRequest, WEBAUTHN, WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
     RevokeInvitationAcknowledgement,
 };
-pub use join::{
-    JoinFailureKind, JoinRequest, JoinResponse, MembershipResponse, VisitRequest, VisitResponse,
-};
+pub use join::{JoinFailureKind, JoinRequest, JoinResponse};
 pub use profile::{ProfileInfo, SpaceEntry};
 pub use profiles::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 pub use query::Query;

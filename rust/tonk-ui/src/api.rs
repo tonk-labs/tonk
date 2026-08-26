@@ -3,9 +3,9 @@ use serde::Deserialize;
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDevice,
     AccountLinkRequest, AccountStatus, AccountSummary, ActivateProfileRequest, EvaluateResponse,
-    HostedSpaceDeletionResult, IdentifyResponse, JoinRequest, JoinResponse, MembershipResponse,
-    ProfilesResponse, QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement,
-    RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse, SyncStatusResponse,
+    HostedSpaceDeletionResult, IdentifyResponse, JoinRequest, JoinResponse, ProfilesResponse,
+    QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus,
+    SaveRootRequest, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -417,55 +417,6 @@ pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
     }
 }
 
-/// Open an audience-open invite as a bounded guest without provisioning a root.
-pub async fn visit(url: &str) -> Result<JoinResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/profile/visit", origin()))
-        .json(&JoinRequest {
-            url: url.to_string(),
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/profile/visit returned {}",
-            response.status()
-        )))
-    }
-}
-
-/// Read whether the current local replica is a guest or durable member.
-pub async fn membership(repo: &str) -> Result<MembershipResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    reqwest::Client::new()
-        .get(format!("{}/api/repository/{repo}/membership", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?
-        .error_for_status()
-        .map_err(into_api_error)?
-        .json()
-        .await
-        .map_err(into_api_error)
-}
-
-/// Promote a local guest visit to durable root membership.
-pub async fn join_guest(repo: &str) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    reqwest::Client::new()
-        .post(format!("{}/api/repository/{repo}/membership", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?
-        .error_for_status()
-        .map_err(into_api_error)?;
-    Ok(())
-}
-
 /// Fetches the current user's identity (DID) from the service worker.
 pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -496,6 +447,7 @@ pub async fn save_root(
     credential_id: String,
     delegation_hex: String,
     passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    encryption_key: Option<String>,
 ) -> Result<RootStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -504,6 +456,7 @@ pub async fn save_root(
             credential_id,
             delegation_hex,
             passkey,
+            encryption_key,
         })
         .send()
         .await

@@ -48,7 +48,7 @@ compromise costs is exactly the subtree beneath the key that leaked.
 | Level | Key comes from | Wraps | Compromise costs |
 |---|---|---|---|
 | **Recovery** | passkey PRF, recovery phrase, or the pre-passkey custodian | the account secret | everything |
-| **Account** | `HKDF(account secret)` | space seeds, invite seeds | spaces and invites, not the account |
+| **Account** | `HKDF(account secret)`: the account KEK, and the X25519 encryption key seeds are sealed to | space seeds, invite seeds | spaces and invites, not the account |
 
 ```mermaid
 flowchart TB
@@ -89,12 +89,13 @@ makes re-tagging one fail as tampering.
 1. Generate an **interim account secret**, same shape as an account secret but
    in non-extractable form.
 2. Delegate through the powerline from interim to the account key.
-3. For every new space, generate a secret to derive its keys from. Store it
-   under interim account custody, encrypted, as a credential keyed by the
-   derived `did:key`.
+3. For every new space, generate a secret to derive its keys from. Seal it to
+   the interim account's encryption key and store it as a `CustodiedSeed` fact
+   in the account DB, keyed by the derived `did:key`.
 4. Delegate full authority from every space to the interim account.
-5. For every invite, put the invitation secret under account custody the same
-   way: encrypted, credential keyed by its derived `did:key`.
+5. For every open invite joined, seal the invitation secret the same way, as
+   a `CustodiedSeed` with `kind = tonk:invite`: the membership hangs off
+   that principal, so re-issuing it at rotation is the joiner's job.
 6. Delegate full authority from the invite key to the interim account key.
 
 ## Accreditation (= account rotation)
@@ -106,7 +107,8 @@ makes re-tagging one fail as tampering.
 4. Delegate through the powerline from the new account to the passkey DID.
 5. Re-issue every space and invite under the new account: because their secrets
    are custodied, this mints `space -> account2` directly rather than appending
-   `account1 -> account2`. Move custody from credentials into the account DB.
+   `account1 -> account2`. Open every seed sealed to the old encryption key,
+   re-seal to the new one, retract the old rows.
 6. Revoke the old account's delegation to the profile.
 7. Create a delegation from the new account to the profile.
 8. Delete every space and invite key from credentials, and the old account key.
@@ -129,22 +131,31 @@ enable account key rotation — or to drop them and let chains grow a hop when a
 re-root is needed. Dropping that ability is a one-way door; retaining it is not.
 
 > [!note]
-> Space seeds are wrapped bytes under the account KEK, not non-extractable
-> handles. Non-extractable would be stronger against on-device code execution,
-> but it is also non-replicable: only the device that generated a space could
-> ever re-issue it, and a second device could never hold the origin authority.
-> Wrapping keeps the seeds replicable and re-issuable, which is what account
-> rotation needs. The one non-extractable key we keep is the pre-passkey
-> custodian, because it stands in for a passkey and must be as uncopyable as
-> one.
+> Space seeds are sealed bytes, not non-extractable handles. Non-extractable
+> would be stronger against on-device code execution, but it is also
+> non-replicable: only the device that generated a space could ever re-issue
+> it, and a second device could never hold the origin authority. Sealing keeps
+> the seeds replicable and re-issuable, which is what account rotation needs.
+> The one non-extractable key we keep is the pre-passkey custodian, because it
+> stands in for a passkey and must be as uncopyable as one.
+
+> [!important]
+> Seeds are sealed to the account's **X25519 public key** (2026-08-25), not
+> wrapped under the account KEK. The KEK only exists inside a passkey ceremony,
+> and a CLI device never has one, so a symmetric wrap would make space creation
+> browser-only. Sealing to a public key lets any device holding the account DB
+> seal, while opening still needs the ceremony. The key, the envelope, and the
+> `CustodiedSeed` fact are specified in `authority-facts.md`.
 
 ## Not yet built
 
 - **Destroying the onboarding custodian.** Demotion (overwriting the key record
   with its own public half) is the mechanism, since the credential API has no
   retract for keys. It belongs with step 8 and lands when accreditation does.
-- **Account-clearance wrapping.** `AccountSecret::account_kek` exists; nothing
-  wraps a space or invite seed with it yet.
+- **Seed custody.** `AccountSecret::account_kek` exists; the X25519 encryption
+  key, the `Sealed` envelope, `AccountEncryptionKey`, `CustodiedSeed`, and the
+  seal-on-create writers are step 3 of `authority-facts.md` and not yet landed.
+  Until then a space's secret lives only on the device that created it.
 
 ## Ordering
 

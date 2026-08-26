@@ -1,7 +1,5 @@
 //! Provider-neutral local-root wire types.
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 
 /// Informational metadata recorded when Tonk creates a passkey.
@@ -42,6 +40,11 @@ pub enum RootStatus {
         /// Creation details when this Tonk client created the passkey.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         passkey: Option<PasskeyMetadata>,
+        /// The account's X25519 recipient, when a ceremony on this device
+        /// has recorded it. Absent means custody cannot be set up until
+        /// a passkey assertion derives it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encryption_key: Option<String>,
     },
 }
 
@@ -56,7 +59,33 @@ pub struct SaveRootRequest {
     /// Creation details when this request follows passkey creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passkey: Option<PasskeyMetadata>,
+    /// The account's X25519 recipient (`did:key:z6LS…`) when the
+    /// ceremony held the secret, for the worker to publish as
+    /// `AccountEncryptionKey`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_key: Option<String>,
 }
+
+/// Service-worker message asking the originating document to run a
+/// WebAuthn ceremony on the worker's behalf and answer through the
+/// ordinary API. The worker has no `window`, so a passkey assertion can
+/// only happen on the page that asked for the operation needing it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebAuthnRequest {
+    /// Fixed message discriminator: [`WEBAUTHN`].
+    #[serde(rename = "type")]
+    pub message_type: String,
+    /// What the ceremony must produce; see [`ENCRYPTION_KEY_REQUEST`].
+    pub request: String,
+}
+
+/// The `type` every [`WebAuthnRequest`] message carries.
+pub const WEBAUTHN: &str = "webauthn";
+
+/// Derive the account's encryption key from a passkey assertion and
+/// save it with the root (`POST /api/identity/root` with `encryptionKey`).
+/// The worker waits for that save before continuing.
+pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
 
 /// Request to create a durable space through the local root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,109 +103,4 @@ pub struct CreateSpaceRequest {
 pub struct CreateSpaceResponse {
     /// DID-derived repository routing key.
     pub key: String,
-}
-
-/// Deferred durable operation that requires an account.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum PendingIntent {
-    /// Create a durable space once an account exists.
-    CreateSpace {
-        /// Space display name.
-        name: String,
-        /// Optional sync remote.
-        remote: Option<String>,
-        /// Optional template name.
-        template: Option<String>,
-    },
-    /// Turn an invite into durable membership.
-    DurableJoin {
-        /// Authority-bearing invite URL. Debug output always redacts it.
-        url: String,
-    },
-}
-
-impl fmt::Debug for PendingIntent {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CreateSpace {
-                name,
-                remote,
-                template,
-            } => formatter
-                .debug_struct("CreateSpace")
-                .field("name", name)
-                .field("remote", remote)
-                .field("template", template)
-                .finish(),
-            Self::DurableJoin { .. } => formatter
-                .debug_struct("DurableJoin")
-                .field("url", &"<redacted>")
-                .finish(),
-        }
-    }
-}
-
-/// Service-worker message asking the top document to sign the user in.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccountRequired {
-    /// Fixed message discriminator.
-    #[serde(rename = "type")]
-    pub message_type: String,
-    /// Operation to replay once an account exists.
-    pub intent: PendingIntent,
-}
-
-/// The `type` every [`AccountRequired`] message carries.
-pub const ACCOUNT_REQUIRED: &str = "account-required";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[dialog_common::test]
-    fn it_accepts_only_known_pending_intents() {
-        assert!(
-            serde_json::from_value::<PendingIntent>(serde_json::json!({
-                "kind": "createSpace",
-                "name": "Notes",
-                "remote": null,
-                "revocationUrl": null,
-                "template": null,
-            }))
-            .is_ok()
-        );
-        assert!(
-            serde_json::from_value::<PendingIntent>(serde_json::json!({
-                "kind": "unknown"
-            }))
-            .is_err()
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_omits_invite_urls_from_debug_output() {
-        let secret = "https://tonk.network/join#authority";
-        let debug = format!("{:?}", PendingIntent::DurableJoin { url: secret.into() });
-        assert!(!debug.contains(secret));
-        assert!(debug.contains("<redacted>"));
-    }
-
-    /// The page routes on this discriminator, so it is part of the contract
-    /// between the service worker and the top document, not a local string.
-    #[dialog_common::test]
-    fn it_names_the_account_required_message() {
-        let message = AccountRequired {
-            message_type: ACCOUNT_REQUIRED.to_string(),
-            intent: PendingIntent::DurableJoin {
-                url: "https://tonk.network/join#authority".into(),
-            },
-        };
-        let value = serde_json::to_value(&message).expect("serializes");
-        assert_eq!(value["type"], "account-required");
-    }
 }

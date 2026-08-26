@@ -398,7 +398,10 @@ async fn retract_device_links(state: &TonkState, target: &str) -> Result<(), Ton
 /// Every endpoint must accept it. A partial publication is the dangerous
 /// outcome: the user is told the device is gone while one service still
 /// serves it, so a refusal anywhere is reported rather than swallowed.
-async fn publish_revocation(state: &TonkState, artifact: &[u8]) -> Result<(), TonkWorkerError> {
+pub(super) async fn publish_revocation(
+    state: &TonkState,
+    artifact: &[u8],
+) -> Result<(), TonkWorkerError> {
     use dialog_remote_ucan_s3::UcanAddress;
     use std::collections::BTreeSet;
 

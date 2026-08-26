@@ -25,7 +25,13 @@ pub use account_state::AccountKeys;
 
 mod http;
 
+/// Accreditation: rotate the onboarding account's custody to the passkey
+/// account, then retire it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) mod accreditation;
 pub(crate) mod adopt;
+/// Getting the account's encryption key onto a device that needs it.
+pub(crate) mod custody;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
@@ -238,12 +244,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
-        .route("/api/profile/visit", post(join::visit))
         .route("/api/profile/join", post(join::join))
-        .route(
-            "/api/repository/{repo}/membership",
-            get(join::membership).post(join::join_guest),
-        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
@@ -600,23 +601,57 @@ pub mod tests {
     /// creates a root without an account around it.
     pub async fn test_state_without_account() -> TonkState {
         let state = test_state_without_root().await;
+        persist_test_root(&state).await;
+        state
+    }
+
+    /// Persist the test root on `state`, the way a creation or unlock
+    /// ceremony does: the `root -> device` grant, the recipient custodied
+    /// seeds are sealed to, and that recipient published on profile main.
+    /// Returns the root DID.
+    pub(crate) async fn persist_test_root(state: &TonkState) -> dialog_varsig::Did {
         let root = Ed25519Signer::import(&test_root_seed(&state.profile_name))
             .await
             .unwrap();
+        let root_did = root.did();
         let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
             .await
             .unwrap();
+        // What a creation or unlock ceremony hands back with the root, and
+        // what the account sweep then publishes: the recipient custodied
+        // seeds are sealed to. Published here directly, since the fixture
+        // has no account branch to sweep.
+        let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
+            zeroize::Zeroizing::new(test_root_seed(&state.profile_name)),
+        )
+        .encryption_key()
+        .recipient()
+        .did();
         super::identity::persist_root(
-            &state,
+            state,
             tonk_worker_api::SaveRootRequest {
                 credential_id: "test-credential".to_string(),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
                 passkey: None,
+                encryption_key: Some(recipient.to_string()),
             },
         )
         .await
         .unwrap();
         state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .transaction()
+            .assert(tonk_schema::AccountEncryptionKey::new(
+                root_did.this(),
+                recipient.this(),
+            ))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .expect("the fixture publishes the account's encryption key");
+        root_did
     }
 
     /// Create an isolated test state with a stable local root grant and an
@@ -884,8 +919,8 @@ pub mod tests {
         );
     }
 
-    /// A space created before any root existed is adopted once one does:
-    /// its own signer re-delegates to the root and the stored prefix is
+    /// A space created before any root existed is re-issued once one does:
+    /// its custodied seed re-delegates to the root and the stored prefix is
     /// replaced, so the account holds the authority going forward.
     #[dialog_common::test]
     async fn it_adopts_profile_spaces_once_a_root_exists() {
@@ -893,28 +928,9 @@ pub mod tests {
         let key = put_repo(&app, "adopted").await;
 
         let tonk = state.read().await;
-        let root = Ed25519Signer::import(&test_root_seed(&tonk.profile_name))
-            .await
-            .unwrap();
-        let root_did = {
-            use dialog_varsig::Principal as _;
-            root.did()
-        };
-        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
-            .await
-            .unwrap();
-        super::identity::persist_root(
-            &tonk,
-            tonk_worker_api::SaveRootRequest {
-                credential_id: "test-credential".to_string(),
-                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
-                passkey: None,
-            },
-        )
-        .await
-        .unwrap();
+        let root_did = persist_test_root(&tonk).await;
 
-        super::repository::adopt_profile_spaces(&tonk).await;
+        super::accreditation::rotate_from_onboarding(&tonk).await;
 
         let repository = tonk
             .profile
@@ -1316,35 +1332,6 @@ pub mod tests {
             remote.map(|_| "https://relay.example.test/revocations/".parse().unwrap()),
         );
         (invite.to_url("https://tonk.network/join").unwrap(), key)
-    }
-
-    /// `POST /api/profile/visit` — an accountless guest visit.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn visit_invite(app: &Router, url: &str) -> StatusCode {
-        post_invite_url(app, "/api/profile/visit", url).await
-    }
-
-    /// `POST /api/profile/join` — a durable claim to the local root.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn join_invite_url(app: &Router, url: &str) -> StatusCode {
-        post_invite_url(app, "/api/profile/join", url).await
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn post_invite_url(app: &Router, path: &str, url: &str) -> StatusCode {
-        let body = serde_json::json!({ "url": url }).to_string();
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .uri(path)
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
     }
 
     /// Drive the `tonk:invite` command end to end on a fresh, synced repo
