@@ -1,5 +1,8 @@
 //! Top-document account creation and passkey self-link surface.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use custom_elements::CustomElement;
 use js_sys::Reflect;
 use wasm_bindgen::closure::Closure;
@@ -8,9 +11,11 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
 use tonk_account::AccountStateStatus;
+
+use crate::registration_notice;
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountSpaceDeletionRequest, AccountStatus,
-    RevokeDeviceAcknowledgement,
+    RevokeDeviceAcknowledgement, RootStatus,
 };
 
 use crate::identity_bridge::{
@@ -283,21 +288,18 @@ fn load_activation_notice(host: HtmlElement) {
                 }
             }
         }
-        // Render whatever the state says now, and while an activation is
-        // pending keep asking: the link is opened in another tab (or on
-        // the phone the email is on), and a dashboard that only learns
-        // about it on a manual reload looks stuck at "pending" long
-        // after the account is live.
-        loop {
-            render_registration(&host, &state).await;
-            if state["status"].as_str() != Some("Registered") {
-                return;
-            }
-            wait_for(5_000).await;
-            if let Ok(fresh) = crate::api::customer_state().await {
-                state = fresh;
-            }
-        }
+        // Paint what this read says, then follow the fact instead of
+        // asking again. The activation link is routinely opened
+        // somewhere else -- another tab, or the phone the email is on --
+        // and a dashboard that only learned about it on a manual reload
+        // looked stuck at "pending" long after the account was live.
+        //
+        // A subscription rather than a poll because the state is a fact
+        // on profile main: whoever confirms writes it, sync carries it,
+        // and every tab showing this row repaints. No timer to tune, and
+        // it costs nothing while nothing changes.
+        render_registration(&host, &state).await;
+        watch_registration(&host);
     });
 }
 
@@ -347,6 +349,110 @@ async fn wait_for(ms: i32) {
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// Keep the registration row following the fact.
+///
+/// The row's first paint comes from the dashboard's own read; this is
+/// what keeps it honest afterwards. Registration state is a fact on
+/// profile main, so an activation performed anywhere — another device,
+/// or a phone opening the emailed link — reaches this tab through sync,
+/// and the row repaints without a reload.
+///
+/// Idempotent: the dashboard re-renders on several paths and only the
+/// first call subscribes. The subscription and its delegates are parked
+/// on the element, which outlives them.
+fn watch_registration(host: &HtmlElement) {
+    if Reflect::get(host.as_ref(), &"__tonkRegistrationWatch".into())
+        .map(|value| value.is_truthy())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let host = host.clone();
+    spawn_local(async move {
+        let Ok(RootStatus::Ready { root_did, .. }) = crate::api::root_status().await else {
+            // No account on this profile, so no registration to follow.
+            return;
+        };
+        if !host.is_connected() {
+            return;
+        }
+        let _ = Reflect::set(
+            host.as_ref(),
+            &"__tonkRegistrationWatch".into(),
+            &JsValue::TRUE,
+        );
+
+        let painter = host.clone();
+        let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                paint_registration(&painter, registration_notice::read_frame(&payload));
+            }));
+        let _ = Reflect::set(host.as_ref(), &"__tonkReset".into(), reset.as_ref());
+        reset.forget();
+
+        let painter = host.clone();
+        let update: Closure<dyn FnMut(JsValue, JsValue)> =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                // A delta with no assertion is a moment mid-write, not a
+                // state: leave the row where it is rather than blanking
+                // it and flickering.
+                if let Some(registration) = registration_notice::read_delta(&payload) {
+                    paint_registration(&painter, registration);
+                }
+            }));
+        let _ = Reflect::set(host.as_ref(), &"__tonkUpdate".into(), update.as_ref());
+        update.forget();
+
+        match registration_notice::subscribe(&host, &root_did) {
+            // The subscription cancels upstream when dropped, and this
+            // row lives as long as the panel does, so it is parked on
+            // the element rather than held in a local.
+            Ok(subscription) => {
+                let kept = Closure::<dyn FnMut()>::new(move || {
+                    let _ = &subscription;
+                });
+                let _ = Reflect::set(
+                    host.as_ref(),
+                    &"__tonkRegistrationSub".into(),
+                    kept.as_ref(),
+                );
+                kept.forget();
+            }
+            Err(error) => {
+                // The row keeps this render's snapshot; only liveness is
+                // lost, and reloading still shows the truth.
+                web_sys::console::warn_1(&format!("registration watch: {error}").into());
+            }
+        }
+    });
+}
+
+/// Paint the registration row and its pending banner.
+fn paint_registration(host: &HtmlElement, registration: registration_notice::Registration) {
+    set_text(host, "#account-registration-value", registration.label());
+    let notice = registration.notice();
+    if let Ok(Some(element)) = host.query_selector("#account-activation-notice") {
+        match &notice {
+            Some(message) => {
+                element.set_text_content(Some(message));
+                let _ = element.remove_attribute("hidden");
+            }
+            None => {
+                let _ = element.set_attribute("hidden", "");
+            }
+        }
+    }
+    // The way out of a stuck pending state, and only offered while
+    // there is something to resend.
+    if let Ok(Some(resend)) = host.query_selector("#account-resend-activation") {
+        if notice.is_some() {
+            let _ = resend.remove_attribute("hidden");
+        } else {
+            let _ = resend.set_attribute("hidden", "");
+        }
+    }
 }
 
 fn set_text(host: &HtmlElement, selector: &str, value: &str) {
@@ -1363,6 +1469,157 @@ async fn activation_pending() -> bool {
         .is_ok_and(|state| state["status"].as_str() == Some("Registered"))
 }
 
+/// How long typing must pause before the address is looked up.
+///
+/// Long enough that walking through a domain does not spend a request
+/// per keystroke, short enough that the button has settled by the time
+/// a hand reaches it. The endpoint is rate limited per IP, so a shared
+/// office address is a real budget and this is what keeps typing off it.
+const LOOKUP_IDLE_MS: i32 = 600;
+
+/// Where the entry form sends a user, once the lookup has answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryRoute {
+    /// An account exists: run the assertion, not a creation.
+    SignIn,
+    /// Nothing holds this address.
+    SignUp,
+}
+
+impl EntryRoute {
+    /// The label the button carries, so the ceremony is never a
+    /// surprise.
+    fn label(self) -> &'static str {
+        match self {
+            Self::SignIn => "Sign in",
+            Self::SignUp => "Create account",
+        }
+    }
+
+    /// The stamp left on the form, read back when the button is clicked.
+    fn stamp(self) -> &'static str {
+        match self {
+            Self::SignIn => "sign-in",
+            Self::SignUp => "sign-up",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "sign-in" => Some(Self::SignIn),
+            "sign-up" => Some(Self::SignUp),
+            _ => None,
+        }
+    }
+}
+
+/// Read back what the lookup decided, if it has answered.
+fn entry_answer(host: &HtmlElement) -> Option<EntryRoute> {
+    host.query_selector("#account-entry-form")
+        .ok()
+        .flatten()
+        .and_then(|form| form.get_attribute("data-route"))
+        .as_deref()
+        .and_then(EntryRoute::parse)
+}
+
+/// Look the address up once typing pauses, and label the button with
+/// what it found.
+///
+/// The point is that a user never creates a passkey for an address that
+/// already has one. Knowing which ceremony is coming is the secondary
+/// benefit: a browser prompt is less alarming when the button that
+/// summoned it said what it would do.
+fn bind_entry_lookup(host: &HtmlElement) {
+    let Ok(Some(field)) = host.query_selector("#account-entry-email") else {
+        return;
+    };
+    let host = host.clone();
+    let pending: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+        // Every keystroke restarts the clock, so only the pause fires.
+        if let Some(handle) = pending.borrow_mut().take()
+            && let Some(window) = web_sys::window()
+        {
+            window.clear_timeout_with_handle(handle);
+        }
+        // Typing invalidates the previous answer: a stale "Sign in" on a
+        // half-edited address is worse than no label at all.
+        clear_entry_answer(&host);
+        let host = host.clone();
+        let pending_inner = pending.clone();
+        let tick = Closure::<dyn FnMut()>::once(move || {
+            pending_inner.borrow_mut().take();
+            run_entry_lookup(host);
+        });
+        if let Some(window) = web_sys::window()
+            && let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                tick.as_ref().unchecked_ref(),
+                LOOKUP_IDLE_MS,
+            )
+        {
+            *pending.borrow_mut() = Some(handle);
+        }
+        tick.forget();
+    });
+    let _ = field.add_event_listener_with_callback("input", closure.as_ref().unchecked_ref());
+    closure.forget();
+}
+
+/// Forget what the last lookup decided.
+fn clear_entry_answer(host: &HtmlElement) {
+    if let Ok(Some(form)) = host.query_selector("#account-entry-form") {
+        let _ = form.remove_attribute("data-route");
+    }
+    set_text(host, "#account-entry-submit", "Continue");
+    if let Ok(Some(status)) = host.query_selector("#account-entry-status") {
+        let _ = status.set_attribute("hidden", "");
+    }
+}
+
+/// Ask the access service about the typed address and record the answer.
+fn run_entry_lookup(host: HtmlElement) {
+    let Ok(email) = input(&host, "#account-entry-email") else {
+        return;
+    };
+    spawn_local(async move {
+        let Ok(answer) = crate::api::lookup_address(&email).await else {
+            // A lookup that cannot be made leaves the entry as it was.
+            // Both ceremonies still refuse correctly on their own, so a
+            // missing label costs a surprise, not a wrong outcome.
+            return;
+        };
+        // The field may have moved on while the request was in flight.
+        if input(&host, "#account-entry-email").ok().as_deref() != Some(email.as_str()) {
+            return;
+        }
+        let route = if answer.is_known() {
+            EntryRoute::SignIn
+        } else {
+            EntryRoute::SignUp
+        };
+        if let Ok(Some(form)) = host.query_selector("#account-entry-form") {
+            let _ = form.set_attribute("data-route", route.stamp());
+        }
+        set_text(&host, "#account-entry-submit", route.label());
+        // The pending case is worth saying out loud: the account exists
+        // and does not work yet, and signing in is still the way to it.
+        if let Ok(Some(status)) = host.query_selector("#account-entry-status") {
+            match answer {
+                crate::api::AddressLookup::AwaitingActivation { .. } => {
+                    status.set_text_content(Some(
+                        "This account is waiting for its email to be confirmed. Sign in to pick up where you left off.",
+                    ));
+                    let _ = status.remove_attribute("hidden");
+                }
+                _ => {
+                    let _ = status.set_attribute("hidden", "");
+                }
+            }
+        }
+    });
+}
+
 fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) + 'static) {
     let Ok(Some(element)) = host.query_selector(selector) else {
         return;
@@ -1434,10 +1691,42 @@ fn bind(host: &HtmlElement) {
     prevent_form_navigation(host);
     bind_return_links(host);
     configure_deletion_entry(host);
-    on_click(host, "#account-choose-create", |host| {
+    bind_entry_lookup(host);
+    on_click(host, "#account-entry-submit", |host| {
         clear_error(&host);
-        set_mode(&host, "create");
-        focus_input(&host, "#account-email");
+        let email = match input(&host, "#account-entry-email") {
+            Ok(value) => value,
+            Err(error) => return show_error(&host, error),
+        };
+        // The lookup already ran while they typed; this reads its
+        // answer rather than asking again, so the click does not wait on
+        // a round trip it usually does not need. An unanswered lookup —
+        // still in flight, or failed — sends them to sign-up, which is
+        // the path that refuses correctly on its own if the address
+        // turns out to be taken.
+        match entry_answer(&host) {
+            Some(EntryRoute::SignIn) => {
+                // The link panel owns the assertion, and clicking its
+                // button is how that ceremony starts everywhere else.
+                // Calling it here keeps one definition of the flow
+                // rather than a second copy that can drift from it.
+                set_mode(&host, "link");
+                if let Ok(Some(button)) = host.query_selector("#account-link-submit")
+                    && let Some(button) = button.dyn_ref::<HtmlElement>()
+                {
+                    button.click();
+                }
+            }
+            _ => {
+                set_mode(&host, "create");
+                if let Ok(Some(field)) = host.query_selector("#account-email")
+                    && let Some(field) = field.dyn_ref::<web_sys::HtmlInputElement>()
+                {
+                    field.set_value(&email);
+                }
+                focus_input(&host, "#account-email");
+            }
+        }
     });
     on_click(host, "#account-choose-link", |host| {
         clear_error(&host);
@@ -2156,6 +2445,34 @@ pub fn register() {
         && window.custom_elements().get("tonk-account").is_undefined()
     {
         TonkAccount::define("tonk-account");
+        install_subscription_shim();
+    }
+}
+
+/// Forward host subscription frames to the per-instance delegates.
+///
+/// The host calls `element.reset(payload, opts)` as a method, so the
+/// forwarder lives on the prototype where `this` binds correctly, and
+/// the instance sets `__tonkReset` when it subscribes. Same pattern
+/// `<tonk-display>` and `<ui-sync-status>` use.
+fn install_subscription_shim() {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get("tonk-account");
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    for (method, delegate) in [
+        ("reset", "__tonkReset"),
+        ("update", "__tonkUpdate"),
+        ("error", "__tonkError"),
+    ] {
+        let forwarder = js_sys::Function::new_with_args(
+            "payload, opts",
+            &format!("if (typeof this.{delegate} === 'function') this.{delegate}(payload, opts);"),
+        );
+        let _ = Reflect::set(&proto, &method.into(), &forwarder);
     }
 }
 

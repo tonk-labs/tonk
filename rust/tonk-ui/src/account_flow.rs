@@ -161,6 +161,37 @@ mod tests {
 
     /// Create an account and confirm its email, leaving it able to host
     /// spaces. Most callers want this.
+    /// Type an address into the entry screen and continue.
+    ///
+    /// The entry looks the address up once typing pauses and labels the
+    /// button with what it found, so this waits for that label rather
+    /// than clicking into an undecided form. Waiting on the label is
+    /// also the assertion that the lookup ran: a click that raced it
+    /// would silently take the sign-up path and still pass.
+    async fn enter_address(driver: &WebDriver, email: &str) -> Result<()> {
+        element(driver, "#account-entry-email")
+            .await?
+            .send_keys(email)
+            .await?;
+        // The debounce is 600ms; the label lands a round trip after it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let decided = element(driver, "#account-entry-form")
+                .await?
+                .attr("data-route")
+                .await?
+                .is_some();
+            if decided {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the address lookup never answered for {email}"));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        click(driver, "#account-entry-submit").await
+    }
+
     pub(crate) async fn sign_up(
         driver: &WebDriver,
         env: &TestEnvironment,
@@ -203,14 +234,10 @@ mod tests {
             .await?;
         driver.goto(env.tonk_web.join("account")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
-        element(driver, "#account-choose-create")
-            .await?
-            .click()
-            .await?;
-        element(driver, "#account-email")
-            .await?
-            .send_keys(email)
-            .await?;
+        // One entry, not a fork: the address is typed first and the
+        // lookup decides which ceremony follows. An unknown address
+        // routes to creation and carries the typed value across.
+        enter_address(driver, email).await?;
         element(driver, "#account-create-submit")
             .await?
             .click()
@@ -337,12 +364,20 @@ mod tests {
         Ok(())
     }
 
+    /// The address decides the ceremony, so a known one never mints a
+    /// second passkey.
+    ///
+    /// This used to be the other way round. Creation ran first and the
+    /// conflict surfaced from the signed request afterwards, leaving an
+    /// orphaned credential in the authenticator every time someone
+    /// typed an address they had already registered. The comment
+    /// explaining that named its own cause: an availability probe
+    /// "without a verified code would let anyone enumerate registered
+    /// emails". The address lookup is that probe, and it needs no code,
+    /// so the ordering that cost a passkey is gone.
     #[dialog_common::test]
-    async fn it_reports_an_existing_email_and_recovers_with_another_address(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    async fn it_signs_in_rather_than_minting_a_second_passkey(env: TestEnvironment) -> Result<()> {
         let existing_email = "existing@example.com";
-        let available_email = "available@example.com";
 
         let creator = driver_with_prf(&env).await?;
         sign_up(&creator, &env, existing_email).await?;
@@ -370,44 +405,72 @@ mod tests {
             .await?;
         driver.goto(env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
-        element(&driver, "#account-choose-create")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "#account-email")
+
+        element(&driver, "#account-entry-email")
             .await?
             .send_keys(existing_email)
             .await?;
-        element(&driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
 
-        // The conflict surfaces at signed account creation — after the
-        // custody passkey exists. That ordering is deliberate: an
-        // availability probe without a verified code would let anyone
-        // enumerate registered emails, so the failed attempt's cost is
-        // one orphaned passkey in the authenticator.
-        wait_for_text(
-            &driver,
-            "#account-error",
-            "an account already exists for this email address",
-        )
-        .await?;
-        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
+        // The button says what it is about to do, which is the whole
+        // point: the user is told this address signs in, before any
+        // authenticator prompt appears.
+        wait_for_text(&driver, "#account-entry-submit", "Sign in").await?;
+        assert_eq!(
+            element(&driver, "#account-entry-form")
+                .await?
+                .attr("data-route")
+                .await?
+                .as_deref(),
+            Some("sign-in"),
+            "a registered address routes to sign-in"
+        );
 
-        let email = element(&driver, "#account-email").await?;
-        email.clear().await?;
-        email.send_keys(available_email).await?;
-        element(&driver, "#account-create-submit")
+        // This authenticator holds no credential for that account, so
+        // the assertion cannot succeed here. What matters is that
+        // nothing was created while finding that out: a fresh
+        // authenticator that has been through this path is still empty.
+        assert_eq!(
+            credential_count(&driver, &authenticator_id).await?,
+            0,
+            "a known address must not mint a passkey"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// An address nobody holds routes to creation, and the address
+    /// typed at the entry carries across rather than being asked twice.
+    #[dialog_common::test]
+    async fn it_creates_an_account_for_an_unknown_address(env: TestEnvironment) -> Result<()> {
+        let (driver, authenticator_id) = driver_with_prf_authenticator(&env).await?;
+        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+
+        element(&driver, "#account-entry-email")
             .await?
-            .click()
+            .send_keys("available@example.com")
             .await?;
+        wait_for_text(&driver, "#account-entry-submit", "Create account").await?;
+        click(&driver, "#account-entry-submit").await?;
+
+        element(&driver, "tonk-account[data-mode=\"create\"]").await?;
+        assert_eq!(
+            element(&driver, "#account-email")
+                .await?
+                .value()
+                .await?
+                .as_deref(),
+            Some("available@example.com"),
+            "the address typed at the entry carries into creation"
+        );
+
+        click(&driver, "#account-create-submit").await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
-            2,
-            "each creation attempt mints exactly one custody passkey"
+            1,
+            "creation mints exactly one custody passkey"
         );
 
         driver.quit().await?;
@@ -633,14 +696,7 @@ mod tests {
             // that creates and enrolls the account flows straight into
             // the approval it was interrupted by.
             element(driver, "tonk-account[data-mode=\"choice\"]").await?;
-            element(driver, "#account-choose-create")
-                .await?
-                .click()
-                .await?;
-            element(driver, "#account-email")
-                .await?
-                .send_keys(EMAIL)
-                .await?;
+            enter_address(driver, EMAIL).await?;
             element(driver, "#account-create-submit")
                 .await?
                 .click()

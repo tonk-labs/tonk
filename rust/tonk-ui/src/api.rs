@@ -45,6 +45,108 @@ pub fn origin() -> String {
         .expect("Could not read window location")
 }
 
+/// What the access service knows about an email address.
+///
+/// The three answers the sign-in entry needs, and the reason it can ask
+/// before running a ceremony: creating a passkey for an address that
+/// already has one leaves an orphan credential in the authenticator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddressLookup {
+    /// No customer holds this address. Signing up is the path.
+    Unknown,
+    /// A customer holds it and has confirmed the address.
+    Registered {
+        /// The account's `did:key`, from the document's `alsoKnownAs`.
+        account: String,
+    },
+    /// A customer holds it and has not opened the activation email. The
+    /// passkey exists, so this is still a sign-in: creating a second one
+    /// is the thing being avoided.
+    AwaitingActivation {
+        /// The account's `did:key`.
+        account: String,
+    },
+}
+
+impl AddressLookup {
+    /// Whether an account already exists, whatever its state.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
+/// Resolve an email address to the account behind it.
+///
+/// `did:web:{host}:customer:{domain}:{local}` resolves to this
+/// service's `/customer/{domain}/{local}/did.json`, so the lookup is a
+/// same-origin GET. A suspended account answers 410 and reads as
+/// [`AddressLookup::Unknown`] here: there is no sign-in to offer and no
+/// second account to create, and the refusal a suspended user meets is
+/// the service's, said in full, rather than a hint dropped on a form.
+///
+/// Errors are the caller's to shrug off. A lookup that cannot be made
+/// should leave the entry usable, because the ceremonies behind it
+/// still refuse correctly on their own.
+pub async fn lookup_address(email: &str) -> Result<AddressLookup, TonkUiError> {
+    let address = email.trim().to_lowercase();
+    let Some((local, domain)) = address.rsplit_once('@') else {
+        return Ok(AddressLookup::Unknown);
+    };
+    if local.is_empty() || domain.is_empty() {
+        return Ok(AddressLookup::Unknown);
+    }
+    let url = format!(
+        "{}/customer/{}/{}/did.json",
+        origin(),
+        encode_segment(domain),
+        encode_segment(local)
+    );
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    let status = response.status().as_u16();
+    // 404 is an answer, not a failure: nobody has this address.
+    if status == 404 || status == 410 {
+        return Ok(AddressLookup::Unknown);
+    }
+    if status != 200 && status != 202 {
+        return Err(TonkUiError::ApiError(format!(
+            "address lookup answered {status}"
+        )));
+    }
+    let document: serde_json::Value = response.json().await.map_err(into_api_error)?;
+    let account = document["alsoKnownAs"][0]
+        .as_str()
+        .ok_or_else(|| TonkUiError::ApiError("the DID document names no account".to_string()))?
+        .to_string();
+    Ok(if status == 202 {
+        AddressLookup::AwaitingActivation { account }
+    } else {
+        AddressLookup::Registered { account }
+    })
+}
+
+/// Percent-encode one path segment of a `did:web` lookup.
+///
+/// The DID's own encoding is percent-encoding and resolution decodes it
+/// when building the URL, so what the service reads is this. Anything
+/// outside the `did:mailto` unreserved set is escaped, `/` and `%`
+/// included, which is what keeps a local part from opening a path
+/// segment of its own.
+fn encode_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 /// Fetches the repository record at `GET /api/repository/{name}`.
 ///
 /// `Ok(Some(...))` on 200, `Ok(None)` on 404, `Err(...)` for any
@@ -940,41 +1042,6 @@ fn account_service_error(path: &str, status: reqwest::StatusCode, text: &str) ->
     match serde_json::from_str::<AccountErrorBody>(text) {
         Ok(body) => TonkUiError::Account(body.error.message),
         Err(_) => TonkUiError::ApiError(format!("POST {path} returned {status}: {text}")),
-    }
-}
-
-/// Ask the account service to email a verification code.
-pub async fn request_account_code(service: &str, email: &str) -> Result<(), TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!("{}/codes", service.trim_end_matches('/')))
-        .json(&serde_json::json!({ "email": email }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(account_service_error("/codes", status, &text))
-    }
-}
-
-/// Verify control of an available account email before starting WebAuthn.
-pub async fn preflight_account(service: &str, email: &str, code: &str) -> Result<(), TonkUiError> {
-    let path = "/accounts/preflight";
-    let response = reqwest::Client::new()
-        .post(format!("{}{}", service.trim_end_matches('/'), path))
-        .json(&serde_json::json!({ "email": email, "code": code }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    let status = response.status();
-    let text = response.text().await.map_err(into_api_error)?;
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(account_service_error(path, status, &text))
     }
 }
 

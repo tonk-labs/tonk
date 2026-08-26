@@ -9,11 +9,33 @@
 
   <h1>Account</h1>
 
+  <!-- One entry point, not a fork. Asking which of "create" or "log in"
+       the user wants is asking them to know something the service can
+       answer: whether their address already has an account. Getting it
+       wrong used to be expensive in one direction — "create" with a
+       known address ran the whole passkey ceremony before the conflict
+       surfaced, leaving an orphan credential in the authenticator — so
+       the address is looked up first and the ceremony follows from the
+       answer. -->
   <section id="account-choice" class="account__panel" hidden>
-    <p class="account__lede">Create an account to keep your spaces and access them on any device.</p>
+    <p class="account__lede">Enter your email to sign in, or to create an account if you do not have one yet.</p>
+    <form id="account-entry-form" class="account__form">
+      <label>Email
+        <input id="account-entry-email" name="Email" type="email" autocomplete="email" required>
+      </label>
+      <!-- Labelled by the lookup, so the ceremony is never a surprise;
+           "Continue" until an address resolves. `type="submit"` for the
+           same reason the create panel's is: a single-field form submits
+           on Enter, and implicit submission clicks the submit button. -->
+      <button id="account-entry-submit" class="account__button" type="submit">Continue</button>
+    </form>
+    <p id="account-entry-status" class="account__hint" hidden></p>
+    <!-- The returning user on their own device, who should not have to
+         type an address their authenticator already knows. The passkey
+         is discoverable, so the browser's own picker resolves who they
+         are. -->
     <div class="account__actions">
-      <button id="account-choose-create" class="account__button" type="button">Create account</button>
-      <button id="account-choose-link" class="account__button account__button--secondary" type="button">Log in</button>
+      <button id="account-choose-link" class="account__button account__button--secondary" type="button">Sign in with a passkey</button>
     </div>
     <button id="account-use-different-account" class="account__button account__button--quiet" type="button" hidden>Use a different account</button>
     <div id="account-choice-profiles" class="account__choice-profiles" hidden>
