@@ -846,6 +846,127 @@ mod tests {
         Ok(value["frame"].clone())
     }
 
+    /// The `account/check-email` claim, in the shape the registration
+    /// form dispatches it.
+    fn check_email_claim_json(email: &str) -> serde_json::Value {
+        serde_json::json!({
+            "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": {
+                        "kind": "transient",
+                        "concept": {
+                            "description": "Ask whether an address is registered.",
+                            "with": {
+                                "email": {
+                                    "the": "dom.event.current-target.elements.email/value",
+                                    "as": "Text"
+                                }
+                            }
+                        }
+                    },
+                    "parameters": { "email": email }
+                }
+            }]
+        })
+    }
+
+    /// Asking about an address answers on the overlay, and the answer
+    /// says which of create / sign-in the form should offer.
+    ///
+    /// The unit tests cover the status mapping with no service in sight.
+    /// This is the part they cannot see: the command decodes, the lookup
+    /// reaches a real access service, and the answer lands somewhere the
+    /// form can subscribe to.
+    #[dialog_common::test]
+    async fn it_answers_whether_an_address_is_registered(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        // A profile exists from first boot, so nothing has to be signed
+        // in for the form to ask this.
+        get_json(&driver, "/api/profile").await?;
+
+        let unknown = "nobody-has-this@example.com";
+        let dispatched = post_json(
+            &driver,
+            "/api/profile/branch/main/transact",
+            check_email_claim_json(unknown),
+        )
+        .await?;
+        successful_body("dispatch account/check-email", &dispatched);
+
+        let answered = await_email_status(&driver, unknown).await?;
+        assert_eq!(
+            answered, "unregistered",
+            "an address nobody registered is the create-an-account branch",
+        );
+
+        // Now one that IS registered: the same question, the other
+        // answer, so the form offers sign-in instead of a ceremony that
+        // would fail at the end.
+        let taken = "taken@example.com";
+        sign_up(&driver, &env, taken).await?;
+        let dispatched = post_json(
+            &driver,
+            "/api/profile/branch/main/transact",
+            check_email_claim_json(taken),
+        )
+        .await?;
+        successful_body("dispatch account/check-email", &dispatched);
+
+        let answered = await_email_status(&driver, taken).await?;
+        assert_eq!(
+            answered, "active",
+            "a registered address is the sign-in branch, not a second signup",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Read the overlay answer for `address`, waiting for the row that
+    /// names it rather than whichever row happens to be there.
+    async fn await_email_status(driver: &WebDriver, address: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let rows = post_json(
+                driver,
+                "/api/profile/branch/main/query",
+                serde_json::json!({
+                    "select": {
+                        "this": { "?": "this" },
+                        "address": { "?": "address" },
+                        "state": { "?": "state" }
+                    },
+                    "where": [
+                        { "match": { "the": "xyz.tonk.email-status/address",
+                                     "of": { "?": "this" }, "is": { "?": "address" } } },
+                        { "match": { "the": "xyz.tonk.email-status/state",
+                                     "of": { "?": "this" }, "is": { "?": "state" } } }
+                    ]
+                }),
+            )
+            .await?;
+            if let Some(found) = rows["body"].as_array().and_then(|rows| {
+                rows.iter().find(|row| {
+                    row["address"].as_str() == Some(address)
+                        || row["fields"]["address"].as_str() == Some(address)
+                })
+            }) {
+                let state = found["state"]
+                    .as_str()
+                    .or_else(|| found["fields"]["state"].as_str())
+                    .unwrap_or_default();
+                if !state.is_empty() {
+                    return Ok(state.to_owned());
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("no email-status answer for {address}: {rows}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// Create a space the way the app does: dispatch the `space/create`
     /// transient and wait for the new key to appear in the profile.
     ///

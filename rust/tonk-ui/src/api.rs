@@ -183,6 +183,30 @@ pub async fn evaluate(
 }
 
 /// Profile-side counterpart to [`evaluate`] — POSTs to
+/// Assert a claim on the profile's main branch.
+///
+/// The page's way of causing an effect: a transient lands, its command
+/// runs, and the outcome comes back as facts the page is subscribed to.
+/// Nothing is read from the answer beyond whether the commit landed.
+pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/profile/branch/main/transact", origin()))
+        .json(&claim)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/profile/branch/main/transact returned {status}: {text}"
+        )))
+    }
+}
+
 /// `/api/profile/branch/{branch}/evaluate`. Used by the profile
 /// view's editor so its requests don't get mis-routed through
 /// the named-repo namespace.
