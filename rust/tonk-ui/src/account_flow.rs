@@ -931,19 +931,7 @@ mod tests {
             let rows = post_json(
                 driver,
                 "/api/profile/branch/main/query",
-                serde_json::json!({
-                    "select": {
-                        "this": { "?": "this" },
-                        "address": { "?": "address" },
-                        "state": { "?": "state" }
-                    },
-                    "where": [
-                        { "match": { "the": "xyz.tonk.email-status/address",
-                                     "of": { "?": "this" }, "is": { "?": "address" } } },
-                        { "match": { "the": "xyz.tonk.email-status/state",
-                                     "of": { "?": "this" }, "is": { "?": "state" } } }
-                    ]
-                }),
+                tonk_worker::helpers::email_status_wire_query(),
             )
             .await?;
             if let Some(found) = rows["body"].as_array().and_then(|rows| {
@@ -1073,10 +1061,17 @@ mod tests {
                     method: "POST",
                     headers: { "content-type": "application/json" },
                     body: JSON.stringify(arguments[1]),
-                }).then(async response => done({
-                    status: response.status,
-                    body: await response.json(),
-                })).catch(error => done({ error: String(error) }));
+                }).then(async response => {
+                    // A body is not always JSON — an empty 200, or an
+                    // error page from something upstream of the worker.
+                    // Reporting the status with the raw text says what
+                    // happened; `json()` alone throws and hides it.
+                    const text = await response.text();
+                    let body;
+                    try { body = text ? JSON.parse(text) : null; }
+                    catch (_) { body = { raw: text }; }
+                    done({ status: response.status, body });
+                }).catch(error => done({ error: String(error) }));
                 "#,
                 vec![serde_json::json!(path), body],
             )
