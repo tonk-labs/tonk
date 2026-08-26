@@ -239,6 +239,26 @@ mod tests {
         driver.goto(&link).await?;
         element(driver, "#activate-accept").await?.click().await?;
         element(driver, "#activate-done").await?;
+        // The custody publish that activation unblocks is offered, not
+        // sprung: the dashboard shows a backup button and only a click
+        // runs the assertion. Drain it the way a person does, so every
+        // later unlock finds the cell published — the auto-published
+        // era left this to a race the CLI-link tests kept losing.
+        let pending = get_json(driver, "/api/customer/pending").await?;
+        if successful_body("pending work", &pending)
+            .as_array()
+            .is_some_and(|queue| !queue.is_empty())
+        {
+            driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+            click(driver, "#account-backup-publish").await?;
+            poll_json(
+                driver,
+                "/api/customer/pending",
+                "the queued custody publish",
+                |body| body.as_array().is_some_and(|queue| queue.is_empty()),
+            )
+            .await?;
+        }
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
         driver.goto(account.as_str()).await?;
