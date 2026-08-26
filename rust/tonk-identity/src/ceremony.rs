@@ -69,11 +69,15 @@ pub struct CustodyAccountCeremony {
     pub custody_did: String,
     /// Hex-encoded consent chain for `/provider/add`.
     pub consent_hex: String,
-    /// Hex-encoded sealed account secret, when the custody cell could
-    /// not be published during the ceremony because the account has not
-    /// confirmed its email yet. The caller queues it and publishes once
-    /// activation lands; `None` means the cell is already published.
-    pub sealed_hex: Option<String>,
+    /// Hex-encoded sealed account secret. Ciphertext under the
+    /// passkey's KEK: queued for the vault publish, and recorded on
+    /// profile main so the account's own sync carries the recovery
+    /// envelope.
+    pub sealed_hex: String,
+    /// Hex-encoded pre-signed publish invocation: the ceremony's
+    /// authorization for the worker to upload the cell once activation
+    /// lands, with no further assertion, page, or button.
+    pub publish_invocation_hex: String,
 }
 
 /// Informational metadata captured by the browser that created a passkey.
@@ -257,14 +261,14 @@ pub async fn create_custody_account(
     let account_did = root.did().to_string();
 
     let created = crate::passkey::create_custody_passkey(Some(&email), &account_did).await?;
-    let credential_id = hex::encode(created.id);
+    let credential_id = hex::encode(&created.id);
     let passkey = created_on.map(|created_on| PasskeyCreationMetadata {
         created_at: (js_sys::Date::now() / 1000.0) as u64,
         created_on: created_on.to_string(),
     });
     let evaluation = match created.evaluation {
         Some(evaluation) => evaluation,
-        None => crate::passkey::evaluate_custody_passkey()
+        None => crate::passkey::evaluate_custody_passkey(Some(&created.id))
             .await?
             .evaluation
             .context("the authenticator returned no PRF outputs")?,
@@ -303,13 +307,20 @@ pub async fn create_custody_account(
         passkey,
     )
     .await?;
+    // The one moment the custody key is in hand is now, so it signs the
+    // deferred publish here: once activation and provisioning land, the
+    // worker redeems this invocation and uploads the sealed bytes — no
+    // further assertion, no page, no button.
+    let publish_invocation =
+        crate::custody::build_deferred_publish_invocation(custody.clone(), &sealed).await?;
     Ok(CustodyAccountCeremony {
         root: root_ceremony,
         account,
         deposits_hex,
         custody_did: custody.did().to_string(),
         consent_hex,
-        sealed_hex: Some(hex::encode(&sealed)),
+        sealed_hex: hex::encode(&sealed),
+        publish_invocation_hex: hex::encode(&publish_invocation),
     })
 }
 
@@ -319,10 +330,13 @@ pub async fn create_custody_account(
 /// derives its keys inside a fresh user-verified assertion, and no key
 /// material is ever stored.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn assert_unlock(endpoint: &str) -> Result<(crate::envelope::AccountSecret, String)> {
+async fn assert_unlock(
+    endpoint: &str,
+    credential_id: Option<&[u8]>,
+) -> Result<(crate::envelope::AccountSecret, String)> {
     use crate::envelope::{Envelope, custody_kek, custody_signer};
 
-    let evaluated = crate::passkey::evaluate_custody_passkey().await?;
+    let evaluated = crate::passkey::evaluate_custody_passkey(credential_id).await?;
     let credential_id = hex::encode(evaluated.id);
     let evaluation = evaluated
         .evaluation
@@ -344,7 +358,7 @@ async fn assert_unlock(endpoint: &str) -> Result<(crate::envelope::AccountSecret
 /// root-signed operations: CLI approval, link completion, revocation.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn unlock_root(endpoint: &str) -> Result<Ed25519Signer> {
-    let (secret, _) = assert_unlock(endpoint).await?;
+    let (secret, _) = assert_unlock(endpoint, None).await?;
     secret.signer().await
 }
 
@@ -352,8 +366,11 @@ pub async fn unlock_root(endpoint: &str) -> Result<Ed25519Signer> {
 /// for a device whose root record predates the key: the worker asks the
 /// page for this when it needs custody set up and nothing recorded it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn publish_encryption_key(endpoint: &str) -> Result<String> {
-    let (secret, _) = assert_unlock(endpoint).await?;
+pub async fn publish_encryption_key(
+    endpoint: &str,
+    credential_id: Option<&[u8]>,
+) -> Result<String> {
+    let (secret, _) = assert_unlock(endpoint, credential_id).await?;
     Ok(secret.encryption_key().recipient().did().to_string())
 }
 
@@ -369,10 +386,14 @@ pub struct CustodyEnrollment {
     /// Hex-encoded consent chain for `/provider/add`: the custody
     /// key's agreement to being provided by the account.
     pub consent_hex: String,
-    /// Hex-encoded sealed account secret, when the cell could not be
-    /// published yet — the new custody DID is not provisioned until the
-    /// caller deposits the consent above. `None` once it is published.
-    pub sealed_hex: Option<String>,
+    /// Hex-encoded sealed account secret — ciphertext under the new
+    /// passkey's KEK, recorded on profile main either way.
+    pub sealed_hex: String,
+    /// Hex-encoded pre-signed publish invocation, present when the cell
+    /// could not be published during the ceremony (the new custody DID
+    /// awaits provisioning): the worker redeems it once the deposit
+    /// lands. `None` once the cell is already published.
+    pub publish_invocation_hex: Option<String>,
 }
 
 /// Enroll an additional custody passkey: unlock the account through an
@@ -391,17 +412,17 @@ pub async fn enroll_custody(
     // Unlock through an existing passkey: one assertion recovers the
     // secret, and the new credential seals that same secret. Nothing is
     // read from, or written to, any local store.
-    let (secret, _) = assert_unlock(endpoint).await?;
+    let (secret, _) = assert_unlock(endpoint, None).await?;
     let root = secret.signer().await?;
     if root.did().to_string() != account_did {
         anyhow::bail!("the asserted passkey unlocks a different account");
     }
 
     let created = crate::passkey::create_custody_passkey(label, account_did).await?;
-    let credential_id = hex::encode(created.id);
+    let credential_id = hex::encode(&created.id);
     let evaluation = match created.evaluation {
         Some(evaluation) => evaluation,
-        None => crate::passkey::evaluate_custody_passkey()
+        None => crate::passkey::evaluate_custody_passkey(Some(&created.id))
             .await?
             .evaluation
             .context("the authenticator returned no PRF outputs")?,
@@ -415,7 +436,11 @@ pub async fn enroll_custody(
     // unprovisioned subject — so a refusal here is the expected first
     // outcome, not a failure. Hand the sealed bytes back to be queued
     // and published once provisioning lands.
-    let mut sealed_hex = Some(hex::encode(&sealed));
+    let mut queued = Some(
+        crate::custody::build_deferred_publish_invocation(custody.clone(), &sealed)
+            .await
+            .map(|invocation| hex::encode(&invocation))?,
+    );
     if let Err(publish_error) =
         crate::custody::publish_secret(custody.clone(), &sealed, endpoint, None).await
     {
@@ -429,7 +454,7 @@ pub async fn enroll_custody(
                     .and_then(|envelope| kek.open(&envelope).ok());
                 match published {
                     Some(open) if open.signing_seed() == secret.signing_seed() => {
-                        sealed_hex = None;
+                        queued = None;
                     }
                     _ => anyhow::bail!("the custody space already holds a different account"),
                 }
@@ -443,7 +468,7 @@ pub async fn enroll_custody(
             }
         }
     } else {
-        sealed_hex = None;
+        queued = None;
     }
 
     let consent = crate::custody::mint_custody_consent(custody.clone(), &root.did()).await?;
@@ -456,49 +481,9 @@ pub async fn enroll_custody(
         custody_did: custody.did().to_string(),
         credential_id,
         consent_hex,
-        sealed_hex,
+        sealed_hex: hex::encode(&sealed),
+        publish_invocation_hex: queued,
     })
-}
-
-/// Publish a queued custody cell, with a fresh assertion.
-///
-/// The queued bytes were sealed under this passkey's KEK during the
-/// ceremony that created it; the assertion here re-derives the custody
-/// key that signs the publish, and proves the same credential is
-/// present. A cell that already holds this account's envelope is
-/// success — another device got there first.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn publish_queued_custody(
-    custody_did: &str,
-    sealed: &[u8],
-    endpoint: &str,
-) -> Result<()> {
-    use crate::envelope::{custody_kek, custody_signer};
-
-    let evaluated = crate::passkey::evaluate_custody_passkey().await?;
-    let evaluation = evaluated
-        .evaluation
-        .context("the authenticator returned no PRF outputs")?;
-    let custody = custody_signer(&evaluation.key).await?;
-    if custody.did().to_string() != custody_did {
-        anyhow::bail!("the asserted passkey derives a different custody space");
-    }
-    // Prove the queued bytes open under this passkey before publishing:
-    // a cell that cannot be unsealed by the credential that owns it is
-    // worse than no cell at all.
-    let kek = custody_kek(&evaluation.kek);
-    let envelope = crate::envelope::Envelope::decode(sealed)
-        .map_err(|error| anyhow::anyhow!("the queued envelope is unreadable: {error}"))?;
-    kek.open(&envelope)
-        .map_err(|error| anyhow::anyhow!("the queued envelope did not open: {error}"))?;
-
-    match crate::custody::publish_secret(custody.clone(), sealed, endpoint, None).await {
-        Ok(()) => Ok(()),
-        Err(publish_error) => match crate::custody::resolve_secret(custody, endpoint).await {
-            Ok(Some(_)) => Ok(()),
-            _ => Err(publish_error),
-        },
-    }
 }
 
 /// A passkey unlock's outcome: the device-link ceremony minted from
@@ -529,7 +514,7 @@ pub async fn unlock_account(
     endpoint: &str,
     service: Option<&dialog_varsig::Did>,
 ) -> Result<CustodyUnlock> {
-    let (secret, credential_id) = assert_unlock(endpoint).await?;
+    let (secret, credential_id) = assert_unlock(endpoint, None).await?;
     let root = secret.signer().await?;
     let encryption_key = secret.encryption_key().recipient().did().to_string();
     let deposits_hex = match service {

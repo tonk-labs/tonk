@@ -1828,6 +1828,10 @@ impl TonkServiceWorker {
                 // already have — the grandfathering path.
                 crate::router::profiles::upsert_active_entry(&tonk, None).await;
                 crate::router::account_state::ensure_account_state(&tonk).await;
+                // Queued work whose moment has come — above all the
+                // ceremony's pre-signed custody publish, which drains
+                // with no page once activation happened anywhere.
+                crate::router::customer::drain_pending(&tonk).await;
                 // Custody left under the onboarding account is picked
                 // back up here: the link-time rotation is best-effort,
                 // and a failure there (an unhydrated account, a closed

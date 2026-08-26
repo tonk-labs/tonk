@@ -308,27 +308,71 @@ pub struct QueueCustodyRequest {
     pub custody: String,
     /// Hex-encoded sealed envelope to publish.
     pub sealed_hex: String,
+    /// Hex-encoded pre-signed publish invocation, minted by the
+    /// ceremony that sealed the envelope.
+    pub invocation_hex: String,
 }
 
 /// POST `/api/custody/queue` → record a custody cell for publication
 /// once its space is provisioned and the account confirms its email.
-/// The page publishes it — only a fresh passkey assertion can sign for
-/// the custody key — so this records rather than performs.
+/// The ceremony pre-signed the publish invocation, so the worker drains
+/// this itself — no page, no assertion. The cell is also recorded on
+/// profile main right away: the account's own sync is the durability
+/// channel, and the vault copy only bootstraps a brand-new browser.
 #[wasm_compat]
 pub async fn queue_custody(
     State(state): State<AppState>,
     Json(request): Json<QueueCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
     let state = state.read().await;
-    defer(
-        &state,
-        PendingWork::PublishCustody {
-            custody: request.custody,
-            sealed_hex: request.sealed_hex,
-        },
-    )
-    .await?;
+    record_custody_cell(&state, &request.custody, &request.sealed_hex).await?;
+    // An empty invocation means the ceremony already published the cell
+    // (a passkey enrolled on an active account): the record above is
+    // all that was left to do.
+    if !request.invocation_hex.is_empty() {
+        defer(
+            &state,
+            PendingWork::PublishCustody {
+                custody: request.custody,
+                sealed_hex: request.sealed_hex,
+                invocation_hex: request.invocation_hex,
+            },
+        )
+        .await?;
+        // Nothing may be waiting on activation at all: a provisioning
+        // deposit queued just ahead of this can land right away.
+        drain_pending(&state).await;
+    }
     Ok(Json(()))
+}
+
+/// Record `custody`'s sealed cell on profile main, so the account's own
+/// sync carries the recovery envelope to every device that holds the
+/// profile.
+async fn record_custody_cell(
+    state: &crate::worker::TonkState,
+    custody: &str,
+    sealed_hex: &str,
+) -> Result<(), TonkWorkerError> {
+    let custody: dialog_varsig::Did = custody
+        .parse()
+        .map_err(|error| TonkWorkerError::Router(format!("custody DID is invalid: {error:?}")))?;
+    let cell = hex::decode(sealed_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("sealed cell is not hex: {error}")))?;
+    let account = super::identity::root_did(state).await?;
+    state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(tonk_schema::CustodyCell::new(custody, account, cell))
+        .commit()
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to record the custody cell: {error}"))
+        })?;
+    Ok(())
 }
 
 /// Provision `consumer`, or queue it when the account has not yet
@@ -814,51 +858,56 @@ async fn run_pending(
                 })?;
             provision_consumer(state, &consumer, &consent, consumer_kind.as_deref()).await
         }
-        PendingWork::PublishCustody { custody, .. } => Err(TonkWorkerError::Router(format!(
-            "custody publish for {custody} needs a passkey assertion, so a page must run it"
-        ))),
+        PendingWork::PublishCustody {
+            custody,
+            sealed_hex,
+            invocation_hex,
+        } => {
+            if invocation_hex.is_empty() {
+                // An entry from before invocations were queued: nothing
+                // can sign for it any more, so it is void rather than a
+                // block on the queue.
+                log!("dropping a custody publish for {custody} queued without an invocation");
+                return Ok(());
+            }
+            let invocation = hex::decode(invocation_hex).map_err(|error| {
+                TonkWorkerError::Router(format!("queued invocation is not hex: {error}"))
+            })?;
+            let sealed = hex::decode(sealed_hex).map_err(|error| {
+                TonkWorkerError::Router(format!("queued cell is not hex: {error}"))
+            })?;
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                let origin = service_origin()?;
+                let endpoint = ucan_endpoint(&origin)?;
+                tonk_identity::custody::submit_publish(&invocation, &sealed, endpoint.as_str())
+                    .await
+                    .map_err(|error| {
+                        TonkWorkerError::Internal(format!("custody publish for {custody}: {error}"))
+                    })?;
+                log!("custody cell for {custody} published from the queued invocation");
+                Ok(())
+            }
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            {
+                let _ = (invocation, sealed);
+                Err(TonkWorkerError::Internal(format!(
+                    "the custody publish for {custody} drains in the worker runtime"
+                )))
+            }
+        }
     }
 }
 
-/// `GET /api/customer/pending` → the queued work a page may have to
-/// run: the account panel reads this to learn whether it must raise a
-/// passkey assertion and publish a custody cell.
+/// `GET /api/customer/pending` → the queued work still waiting: the
+/// account panel reads this to say a backup is on its way; the worker
+/// itself drains it.
 #[wasm_compat]
 pub async fn get_pending(
     State(state): State<AppState>,
 ) -> Result<Json<PendingQueue>, TonkWorkerError> {
     let state = state.read().await;
     Ok(Json(load_pending(&state).await?))
-}
-
-/// `POST /api/customer/pending/custody` request body: the custody DID
-/// whose queued publish a page just completed.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CompletedCustodyRequest {
-    /// The custody space whose cell is now published.
-    pub custody: String,
-}
-
-/// `POST /api/customer/pending/custody` → drop the queued publish for
-/// `custody`, which a page completed with its own assertion, then drain
-/// whatever it was holding back.
-#[wasm_compat]
-pub async fn complete_pending_custody(
-    State(state): State<AppState>,
-    Json(request): Json<CompletedCustodyRequest>,
-) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
-    let mut queue = load_pending(&state).await?;
-    let before = queue.len();
-    queue.0.retain(|work| {
-        !matches!(work, PendingWork::PublishCustody { custody, .. } if custody == &request.custody)
-    });
-    if queue.len() != before {
-        save_pending(&state, &queue).await?;
-    }
-    drain_pending(&state).await;
-    Ok(Json(()))
 }
 
 /// Record a customer at `status`, so a test can put the profile in the

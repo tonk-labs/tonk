@@ -5036,6 +5036,7 @@ version = "0.6.8"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "base64",
  "blake3",
  "bs58",
  "dialog-common",
