@@ -400,3 +400,41 @@ mod tests {
         Ok(())
     }
 }
+
+/// The answer to "is this address registered?", on the profile
+/// overlay.
+///
+/// Written by the provider behind `account/check-email` and read by the
+/// registration form, which routes on it: create an account, sign in,
+/// or say why neither is on offer. Overlay-only — the form asks while
+/// the user types, and a durable row per answer would write a row per
+/// keystroke into a branch that syncs.
+///
+/// `address` is carried alongside `state` so a form that has moved on
+/// can tell an answer about what is currently typed from an answer
+/// about what was typed two characters ago.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EmailStatus {
+    /// The entity the form watches, `state:email-status`.
+    pub this: Entity,
+    /// The address this answer is about.
+    pub address: crate::domain::email_status::Address,
+    /// One of `unregistered`, `active`, `pending`, `suspended`,
+    /// `invalid`, `unavailable`.
+    pub state: crate::domain::email_status::State,
+}
+
+impl EmailStatus {
+    /// The entity every answer is written to. One row, replaced on each
+    /// answer: the form only ever cares about the latest one.
+    pub const ENTITY: &str = "state:email-status";
+
+    /// An answer about `address`.
+    pub fn new(this: Entity, address: String, state: &str) -> Self {
+        Self {
+            this,
+            address: crate::domain::email_status::Address(address),
+            state: crate::domain::email_status::State(state.to_owned()),
+        }
+    }
+}

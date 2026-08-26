@@ -300,6 +300,21 @@ pub mod command {
     #[domain("dom.event.current-target.elements.name")]
     pub struct Value(pub String);
 
+    /// The address read from the registration form's submit event:
+    /// `event.currentTarget.elements.email.value` (the `<wa-input
+    /// name="email">` inside `<form onsubmit=account/register>`).
+    ///
+    /// Same read-path convention as [`Value`]: one word, so the input's
+    /// `name` and the attribute segment agree without kebab→camel
+    /// conversion getting in the way.
+    pub mod email {
+        use super::Attribute;
+
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.elements.email")]
+        pub struct Value(pub String);
+    }
+
     /// The remote URL read from a space form's submit event:
     /// `event.currentTarget.elements.remote.value` (the `<wa-input
     /// name="remote">` inside the create / enable-sync forms).
@@ -644,6 +659,34 @@ pub mod command {
         #[domain("dom.event.detail")]
         pub struct Href(pub String);
     }
+}
+
+/// Attributes on the transient overlay row answering "is this address
+/// registered?" for the registration form.
+///
+/// Overlay-only, deliberately. The form asks as the user types, so a
+/// durable fact per answer would write a row per keystroke into a branch
+/// that syncs. The overlay is per-session and unreplicated, which is
+/// what a question about a half-typed address deserves.
+pub mod email_status {
+    use super::Attribute;
+
+    /// The address the answer is about, so a stale answer for an
+    /// address the user has since edited is recognisable as stale.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-status")]
+    #[cardinality(one)]
+    pub struct Address(pub String);
+
+    /// What the access service said: `unregistered` (create an
+    /// account), `active` (sign in), `pending` (sign in, then the
+    /// waiting screen), `suspended` (terminal), `invalid` (not an
+    /// address at all), or `unavailable` (the service could not be
+    /// reached, which is not an answer about the address).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-status")]
+    #[cardinality(one)]
+    pub struct State(pub String);
 }
 
 /// Attributes on the transient self-identity overlay the topbar chip

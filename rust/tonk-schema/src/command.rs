@@ -66,6 +66,54 @@ pub struct CreateSpace {
     pub name: SpaceName,
 }
 
+/// Ask whether an address is already registered, so the form can route
+/// before anyone runs a ceremony.
+///
+/// Answers on the overlay as [`crate::EmailStatus`], not in a response
+/// body: the form subscribes to that row and renders the branch it
+/// names. Asserted as the user types, which is why the answer is
+/// overlay-only.
+///
+/// Creating an account with an address that already has one runs the
+/// whole WebAuthn ceremony and fails at the end, leaving an orphan
+/// passkey in the authenticator. Asking first is what avoids that.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CheckEmail {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The address to ask about, read from the form's `email` input.
+    pub email: crate::domain::command::email::Value,
+}
+
+impl Command for CheckEmail {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Register an account, from the form the registration overlay renders.
+///
+/// The page asserts this and then watches facts: `AccountCustomer`
+/// appears once enrollment lands, and gains a provider at activation.
+/// Nothing is read back from a response, because a command answers with
+/// facts rather than a body.
+///
+/// The provider cannot finish this alone. Creating an account is a
+/// WebAuthn ceremony, which needs a `window` and a user gesture, and the
+/// service worker has neither; it asks the originating client to
+/// authorize with a passkey and continues from what comes back.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RegisterAccount {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The address to register, read from the form's `email` input.
+    pub email: crate::domain::command::email::Value,
+}
+
+impl Command for RegisterAccount {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `CreateSpace` is a [`dialog_capability::Command`]. Note the worker
 /// registers a custom `CreateSpaceHandler` (not a plain `Provider`) so it
 /// can read the optional remote from the facts; the `Command` impl is

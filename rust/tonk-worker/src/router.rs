@@ -19,6 +19,8 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 mod account;
 mod account_deletion;
 mod customer;
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+mod email_status;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
