@@ -67,6 +67,7 @@ pub async fn transact(
     State(state): State<AppState>,
     Path(path): Path<TransactPath>,
     client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
@@ -122,8 +123,8 @@ pub async fn transact(
     // subscription, which the command's scheduled poll broadcasts when it lands.
     // Awaiting the dispatch here serialized the iframe boot behind the command;
     // detaching it returns the commit (~40ms) immediately and lets the command
-    // finish in the background, like an `event.waitUntil`.
-    spawn_dispatch(state, origin, transients.unwrap_or_default()).await;
+    // finish in the background under the fetch event's `waitUntil` lifetime.
+    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
     Ok(response)
 }
 
@@ -133,6 +134,7 @@ pub async fn transact_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileTransactPath>,
     client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
@@ -166,7 +168,7 @@ pub async fn transact_profile(
     // Detached like the repository-scoped `transact` above: the commit returns
     // now, the command providers + poll drain run in the background and broadcast
     // their writes to subscribers when they land.
-    spawn_dispatch(state, origin, transients.unwrap_or_default()).await;
+    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
     Ok(response)
 }
 
@@ -188,10 +190,6 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
     }
 }
 
-/// Run [`super::dispatch`] as detached background work so it never blocks the
-/// transact response. On wasm the SW keeps the spawned task alive on its event
-/// loop and the returned future is immediately ready; native builds (tests) run
-/// the dispatch inline so commands complete deterministically before assertions.
 /// A millisecond wall-clock stamp for sync-queue activity priority. `Date.now()`
 /// in the SW event context; native (tests) has no clock dependency, so 0.
 fn now_millis() -> f64 {
@@ -205,17 +203,35 @@ fn now_millis() -> f64 {
     }
 }
 
+/// Run [`super::dispatch`] as background work so it never blocks the transact
+/// response. The service worker attaches the dispatch promise to the originating
+/// fetch event; native builds run it inline so tests remain deterministic.
 async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
     transients: dialog_artifacts::Changes,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_futures::spawn_local(async move {
-        super::dispatch(&state, origin, transients).await;
-    });
+    match lifetime {
+        Some(Extension(lifetime)) => {
+            let promise = wasm_bindgen_futures::future_to_promise(async move {
+                super::dispatch(&state, origin, transients).await;
+                Ok(wasm_bindgen::JsValue::UNDEFINED)
+            });
+            if let Err(error) = lifetime.extend(&promise) {
+                log!("transact: failed to extend fetch lifetime for command dispatch: {error:?}");
+            }
+        }
+        None => wasm_bindgen_futures::spawn_local(async move {
+            super::dispatch(&state, origin, transients).await;
+        }),
+    }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    super::dispatch(&state, origin, transients).await;
+    {
+        let _ = lifetime;
+        super::dispatch(&state, origin, transients).await;
+    }
 }
 
 async fn transact_on_branch<'a>(
