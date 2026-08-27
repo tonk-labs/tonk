@@ -50,13 +50,41 @@ CodeMirror only — **no ProseMirror**, so the prose/code pairing here is
 genuinely new ground). Its contribution is the cell and execution model,
 and it answers three of the open questions outright.
 
-**Cells are a projection of one document, not stored entities.**
-`Data.init` calls `Cell.tokenize(input)` to split a single source file
-into cells, splitting at labeled expressions
-(`CELL_PATTERN = /(^[A-Za-z_]\w*\s*\:.*$)/gm`). Serialization is the
-inverse: `textInput` joins each cell's `input` with `\n\n`
-(`Notebook/Data.js:239`). The notebook round-trips as plain source, and
-a cell id is just `${url}#${n}`.
+**The model is a keyed, ordered set of cells — not a string.** This is
+the part worth copying. `Model.cells` is a
+`SelectionMap<Cell.Model>` (`Notebook/Notebook.ts:18-25`), structured
+as:
+
+```js
+{ nextID: number, index: ID[], values: Dict<T>, selectionIndex: number }
+```
+
+Three things follow from that shape:
+
+- **Order is an explicit `index: ID[]`**, held separately from the
+  values. Not derived from document position, and not a per-item order
+  key. Insertion is `index.splice(offset, 0, id)`
+  (`SelectionMap.js:99`); removal splices it out.
+- **Ids are opaque counters** (`` `${nextID++}` ``) — identity without
+  meaning, so nothing breaks when items move.
+- **Selection is part of the model** (`selectionIndex`), so "the
+  focused cell" is state, not a DOM concern.
+
+The full collection API is there: `insert(key, dir, items)`, `remove`,
+`join`, `replaceWith`, `keyByOffset`, `selectByOffset`. Cell splitting
+and merging are `SelectionMap` operations, not text surgery.
+
+A string only appears at the boundaries: `Cell.tokenize(input)` splits
+a loaded file into cells at labeled expressions
+(`CELL_PATTERN = /(^[A-Za-z_]\w*\s*\:.*$)/gm`), and `textInput` joins
+each cell's `input` with `\n\n` (`Notebook/Data.js:239`) on the way
+out. Between those, the notebook is a collection.
+
+Storage is the one part not to copy: replicator wrote the whole
+document as a single `code.js` blob to IPFS on an explicit save
+(`Interactivate/Main/Effect.js:11-40`), so it never faced per-edit
+write amplification. A live-persisting editor cannot do that — see
+Storage below.
 
 **Outputs are never persisted.** A cell is `{id, input, output}`, and
 only `input` survives serialization. Output is in-memory, recomputed on
@@ -102,14 +130,16 @@ cell, already an embedded `<tonk-code>`.
 - The seamless interaction is free and already built. Writing prose
   around code is exactly the Observable feel, with no cell-boundary
   friction.
-- The persisted artifact is one markdown string — diffable, portable,
-  readable outside tonk.
+- The persisted artifact reads as one markdown document — diffable,
+  portable, readable outside tonk. (Stored as blocks, not as one
+  string; see Storage below.)
 - But a fence is not an entity. It has no stable id, no place for an
   output, and no per-cell facts. `languageOf` reads only the *first*
   word of the info string and discards the rest, so ```dialog id=abc
   parses as language `dialog` with `id=abc` preserved in `node.attrs.params`
   but unused — an identity channel exists, though nothing reads it today.
-- Ordering is the document's own order. No position machinery at all.
+- Ordering is the document's own order — though the blocks that carry
+  it still need a key of their own (see Storage).
 - Outputs would have to live outside the document, keyed by cell id,
   or be recomputed and never stored.
 
@@ -142,10 +172,28 @@ binder — most of a wiki.
 
 ## Ordering
 
-**Under shape B this section is moot** — document order is the order,
-and there is nothing to sort. It is kept because it applies the moment
-shape A is chosen, and because the `dialog/position` findings are worth
-recording regardless.
+**Live again.** An earlier draft called this moot on the grounds that
+document order is the order. That held only while the document was one
+string. Blocks are the stored unit (see Storage), so their order has to
+live somewhere.
+
+Two shapes, and replicator picked the one this section does not cover:
+
+- **An explicit order list on the parent** — replicator's
+  `index: ID[]`, spliced on insert. One fact holds the whole order;
+  moving a block rewrites that one fact and touches no block. Reading
+  is trivial (the list *is* the order), and it cannot disagree with
+  itself. The cost is that the list is a cardinality-one field, so
+  concurrent inserts by two replicas conflict on it — last-writer-wins
+  over the whole order rather than a per-block merge.
+- **A per-block order key** — what wiki/board/sheets do below, and what
+  `dialog/position` would do properly. Concurrent inserts merge
+  cleanly, but every block carries a key and reading means sorting.
+
+For a single-author notebook the order list is simpler and matches the
+prior art. For a collaborative one it is the weaker choice, and the
+per-block key is what the rest of this section is about. Worth deciding
+explicitly (see Open questions).
 
 Three options, in descending order of how much they'd cost.
 
@@ -319,6 +367,63 @@ concept!: &cell/order-only
 Commands and rules mirror `prose/edit`: a command reads the new source
 off the editor's `change` event plus the cell's identity from
 `data-subject`, and a rule writes it back onto the cell.
+
+## Storage: blocks, projected into one document
+
+**Correction to the shape-B sketch above.** The first cut stored the
+notebook as a single `content` string — the whole markdown document as
+one cardinality-one fact. That is wrong, and the reason is not
+efficiency but fidelity:
+
+- **Every keystroke rewrites the whole document.** The content field is
+  cardinality-one, so each debounced edit supersedes the entire blob.
+  A one-character change in block 12 writes blocks 1–40.
+- **The revision history stops meaning anything.** Blocks rarely
+  change, but every revision claims all of them did. "What changed in
+  this commit" is unanswerable, and the checkpoint model below is built
+  precisely on revisions being meaningful.
+- **It scales with document size, not edit size**, in both storage and
+  sync.
+
+So: **blocks are the stored unit; the document is their projection.**
+The editor already thinks this way. `setMarkdown` narrows to "the span
+of top-level blocks that actually differ, keeping a common prefix and
+suffix of blocks intact", with block identity being structural equality
+on top-level children (`commonPrefixEnd` / `commonSuffixLen`,
+`tonk-prose/src-js/editor/index.ts:64-91`). Storing blocks separately
+matches the granularity the editor already computes.
+
+`serializeMarkdown(doc)` takes any node, so a single block serializes
+on its own; `parseMarkdown` goes the other way. Both directions are
+per-block already.
+
+### One editor, not many
+
+Multiple `<tonk-prose>` instances (one per block) would make storage
+trivial but the editing experience bad: selection across blocks,
+backspace-at-start merging, paste spanning blocks, and undo all stop at
+each editor boundary. "Seamless navigation between them" means
+re-implementing what one ProseMirror gives for free.
+
+So: **one editor over the projected document**, with block-level writes
+underneath. On edit, diff the new document's top-level blocks against
+the stored set and write only the ones that changed — the same
+prefix/suffix narrowing `setMarkdown` does inbound, applied outbound.
+
+### The model this implies
+
+Closer to `wiki.yaml` than `prose.yaml` — the wiki already stores blocks
+as entities with a `page` back-reference and an order key
+(`wiki.yaml:78-90`), which is this exact shape and evidence it works
+here.
+
+That makes the earlier shape A/B framing partly moot: cells (fences)
+stay a *projection* of the document rather than entities, but **blocks**
+are entities. A block that happens to be a `dialog` fence is a cell.
+
+Ordering therefore comes back — the Ordering section above is live
+again, not moot. Blocks need a key, and the `as: text` lexicographic
+pattern is what the wiki and board use today.
 
 ## Execution model — cells as checkpoints
 
@@ -553,6 +658,12 @@ arrive through prose's debounced `change`, which is probably what we
 want for persistence — but auto-evaluate is currently driven by the
 code editor's own `diagnostics` event. Worth confirming those two
 paths don't fight.
+
+**5b. Block order: a list on the parent, or a key per block?** See
+Ordering. The list (replicator's `index: ID[]`) is simpler and moves a
+block by rewriting one fact; the per-block key merges concurrent
+inserts cleanly. This turns on whether notebooks are single-author or
+collaborative, which is a product question, not a technical one.
 
 **6. Where does a notebook's branch live, and who names it?** The
 worker hardcodes `"main"` at every call site and exposes no
