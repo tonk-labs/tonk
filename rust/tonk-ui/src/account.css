@@ -1,634 +1,843 @@
-tonk-account {
-    --account-ink: var(--wa-color-text-normal, light-dark(#1d1d20, #f2f2f3));
-    --account-muted: var(--wa-color-text-quiet, light-dark(#62646b, #a4a5aa));
-    --account-surface: var(--wa-color-surface-raised, light-dark(#ffffff, #191a1d));
-    --account-field: var(--wa-color-surface-default, light-dark(#f5f5f6, #101113));
-    --account-divider: color-mix(in oklab, var(--account-ink) 11%, transparent);
-    --account-shadow:
-        0 0 0 1px rgb(0 0 0 / 6%),
-        0 1px 2px -1px rgb(0 0 0 / 6%),
-        0 12px 32px rgb(0 0 0 / 7%);
+:is(tonk-account, tonk-activate) {
+    --page: #ececec;
+    --ink: #131313;
+    --on-ink: #fbfaef;
+    --soft: #55544f;
+    --ring: rgb(19 19 19 / 85%);
+    --sep: rgb(19 19 19 / 28%);
+    --frost-solid: #fafafa;
+    --panel: #d2d2d2;
+    --wash: rgb(19 19 19 / 6%);
+    --wash-2: rgb(19 19 19 / 12%);
+    --wash-p: rgb(251 250 239 / 16%);
+    --card: #fff;
+    --dim: rgb(16 16 12 / 32%);
+    --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
+    --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
     display: grid;
     min-height: 100dvh;
+    padding: 48px 16px 80px;
     place-items: center;
-    padding: 40px 24px;
     box-sizing: border-box;
-    background: var(--wa-color-surface-default, light-dark(#ffffff, #101113));
-    color: var(--account-ink);
-    font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-    -moz-osx-font-smoothing: grayscale;
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--cond);
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+:root.wa-dark :is(tonk-account, tonk-activate) {
+    --page: #161613;
+    --ink: #e9e6d6;
+    --on-ink: #22221c;
+    --soft: #cdcaba;
+    --ring: rgb(233 230 214 / 55%);
+    --sep: rgb(233 230 214 / 28%);
+    --frost-solid: #1e1e19;
+    --panel: #3b3a34;
+    --wash: rgb(251 250 239 / 9%);
+    --wash-2: rgb(251 250 239 / 15%);
+    --wash-p: rgb(19 19 19 / 14%);
+    --card: #26251f;
+    --dim: rgb(0 0 0 / 45%);
+}
+
+:is(tonk-account, tonk-activate) *,
+:is(tonk-account, tonk-activate) *::before,
+:is(tonk-account, tonk-activate) *::after {
+    box-sizing: border-box;
+}
+
+:is(tonk-account, tonk-activate) ::selection {
+    background: var(--ink);
+    color: var(--on-ink);
+}
+
+:is(tonk-account, tonk-activate) :where(button, input) {
+    margin: 0;
+    border-radius: 0;
+    font: inherit;
+}
+
+:is(tonk-account, tonk-activate) :where(button) {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    appearance: none;
+    background: none;
+    color: inherit;
+    letter-spacing: inherit;
+    text-align: inherit;
+    cursor: pointer;
+}
+
+:is(tonk-account, tonk-activate) :where(a) {
+    color: inherit;
+}
+
+:is(tonk-account, tonk-activate) :focus-visible {
+    outline: 0;
+    box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
 }
 
 .account {
-    width: min(100%, 760px);
-    padding: 40px;
-    box-sizing: border-box;
-    background: var(--account-surface);
-    box-shadow: var(--account-shadow);
+    width: min(576px, calc(100vw - 32px));
 }
 
-.account__masthead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 24px;
+.account__logo {
+    width: 132px;
+    aspect-ratio: 1024 / 343;
+    margin: 0 auto clamp(36px, 6vh, 56px);
+    background: currentcolor;
+    -webkit-mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
+    mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
 }
 
-.account__brand {
-    display: inline-flex;
-    align-items: center;
-    min-height: 44px;
-    gap: 9px;
-    color: inherit;
-    text-decoration: none;
-}
-
-.account__wordmark {
-    font-family: "GestalteName", "Gestalte", sans-serif;
-    font-size: 34px;
-    font-weight: 500;
-    line-height: 1;
-}
-
-.account__badge {
-    padding: 2px 8px;
-    background: #deff1a;
-    color: #2a3005;
-    font-size: 14px;
-    font-weight: 600;
-}
-
-.account__return {
-    display: grid;
-    min-height: 44px;
-    place-items: center;
-    color: var(--account-muted);
-    font-size: 14px;
-    font-weight: 600;
-    text-underline-offset: 3px;
-}
-
-/* Account pages are a settings surface, not editorial content. Reset every
-   property from the app-wide highlighted heading treatment explicitly. */
-.account h1,
-.account h2 {
-    display: block;
-    padding: 0;
-    background: transparent;
-    color: var(--account-ink);
-    -webkit-box-decoration-break: slice;
-    box-decoration-break: slice;
-    text-wrap: balance;
-}
-
-.account h1 {
-    margin: 44px 0 28px;
-    font-family: "Gestalte", Georgia, serif;
-    font-size: clamp(36px, 7vw, 52px);
-    font-weight: 400;
-    line-height: 1;
-    letter-spacing: -0.035em;
-}
-
-.account h2 {
-    margin: 0 0 16px;
-    font-family: "Gestalte", Georgia, serif;
-    font-size: 26px;
-    font-weight: 400;
-    line-height: 1.1;
-    letter-spacing: -0.02em;
-}
-
-.account__dashboard h2 {
-    margin: 0;
-    font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-    font-size: 18px;
-    font-weight: 600;
-    line-height: 1.3;
-    letter-spacing: -0.015em;
-}
-
-.account__lede,
-.account__message,
-.account__hint,
-.account__error,
-.account__section p,
-.account__signout p {
-    text-wrap: pretty;
-}
-
-.account__lede {
-    max-width: 48ch;
-    margin: 0 0 30px;
-    color: var(--account-muted);
-    font-size: 16px;
-    line-height: 1.55;
-}
-
-.account__message {
-    margin: 0 0 22px;
-    color: var(--account-muted);
-    font-size: 15px;
-    line-height: 1.55;
-}
-
-.account__message strong {
-    color: var(--account-ink);
-    font-weight: 600;
-    overflow-wrap: anywhere;
-}
-
-.account__panel[hidden] {
+.account [hidden] {
     display: none;
 }
 
-.account__actions,
+.account__ceremony {
+    width: min(432px, 100%);
+    margin-inline: auto;
+}
+
 .account__form {
-    display: grid;
-    gap: 12px;
+    display: contents;
 }
 
-/* A bare `<button>` shrinks to fit while a block `<a>` fills the line, so the
-   two controls only line up once they share an explicit grid track. */
-.account__actions--inline {
-    grid-auto-flow: column;
-    align-items: center;
-    justify-content: start;
-    column-gap: 20px;
-    margin-top: 20px;
-}
-
-.account__actions--inline .account__button {
-    min-width: 208px;
-}
-
-.account__actions--inline .account__button--quiet {
-    min-width: 0;
-    justify-self: start;
-}
-
-.account__eyebrow {
-    margin: 0 0 18px;
-    color: var(--account-muted);
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-}
-
-/* Label and value share one pair of gridlines across every row, flush with the
-   panel edges, so the block reads as a table rather than a stack of cards. */
-.account__device {
-    display: grid;
-    grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
-    margin: 0;
-    border-block: 1px solid var(--account-divider);
-}
-
-.account__device > div {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: subgrid;
-    align-items: baseline;
-    column-gap: 24px;
-    padding: 14px 0;
-}
-
-.account__device > div + div {
-    border-top: 1px solid var(--account-divider);
-}
-
-.account__device dt {
-    color: var(--account-muted);
-    font-size: 13px;
-    font-weight: 600;
-}
-
-.account__device dd {
-    min-height: 1.45em;
-    margin: 0;
-    overflow-wrap: anywhere;
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 13px;
-    line-height: 1.45;
-}
-
-.account__form label {
-    display: grid;
+.account__stack {
+    display: flex;
+    flex-direction: column;
     gap: 7px;
-    color: var(--account-muted);
+}
+
+.account__ceremony-head {
+    display: flex;
+    height: 36px;
+    margin: 0;
+    padding: 0 16px 9px;
+    align-items: flex-end;
+    background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
+    color: var(--ink);
+    font-family: var(--cond);
     font-size: 13px;
     font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
+    text-wrap: balance;
 }
 
-.account__form input {
-    width: 100%;
-    min-height: 46px;
-    box-sizing: border-box;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in oklab, var(--account-ink) 22%, transparent);
-    border-radius: 0;
-    outline: 0;
-    background: var(--account-field);
-    color: var(--account-ink);
-    font: inherit;
-    transition-property: border-color, box-shadow;
-    transition-duration: 150ms;
-    transition-timing-function: ease-out;
-}
-
-.account__form input:focus {
-    border-color: var(--account-ink);
-    box-shadow: 0 0 0 3px color-mix(in oklab, #deff1a 45%, transparent);
-}
-
-.account__button {
-    display: grid;
-    min-height: 46px;
-    padding: 11px 16px;
-    place-items: center;
-    border: 0;
-    border-radius: 0;
-    background: var(--account-ink);
-    color: var(--account-surface);
-    font: inherit;
+.account__run {
+    display: flex;
+    min-height: 44px;
+    padding: 0 10px 9px 24px;
+    align-items: flex-end;
+    justify-content: flex-end;
+    background: var(--ink);
+    box-shadow: 0 0 0 1px var(--ink);
+    color: var(--on-ink);
+    font-size: 13px;
     font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
     text-decoration: none;
-    cursor: pointer;
-    box-shadow: 0 0 0 1px rgb(0 0 0 / 8%);
-    transition-property: scale, opacity, box-shadow;
+    transition-property: scale, opacity, background-color;
     transition-duration: 150ms;
     transition-timing-function: ease-out;
 }
 
-.account__button:hover:not(:disabled) {
-    box-shadow:
-        0 0 0 1px rgb(0 0 0 / 10%),
-        0 4px 12px rgb(0 0 0 / 10%);
+.account__run:hover:not(:disabled),
+.account__dialog-go:hover:not(:disabled) {
+    background: linear-gradient(var(--wash-p), var(--wash-p)), var(--ink);
 }
 
-.account__button:focus-visible,
-.account__return:focus-visible,
-.account__brand:focus-visible {
-    outline: 3px solid color-mix(in oklab, #deff1a 70%, var(--account-ink));
-    outline-offset: 3px;
-}
-
-.account__button:active:not(:disabled) {
+.account__run:active:not(:disabled),
+.account__dialog-go:active:not(:disabled),
+.account__link:active:not(:disabled),
+.account__ghost:active:not(:disabled) {
     scale: 0.96;
 }
 
-.account__button:disabled {
+.account__run:disabled,
+.account__link:disabled,
+.account__dialog button:disabled {
     cursor: wait;
-    opacity: 0.55;
+    opacity: 0.58;
 }
 
-.account__button--secondary {
-    background: var(--account-field);
-    color: var(--account-ink);
-}
-
-.account__button--quiet,
-.account__button--remove {
-    justify-self: start;
-    min-height: 44px;
-    padding-inline: 0;
-    background: transparent;
-    color: var(--account-muted);
-    box-shadow: none;
-}
-
-.account__button--quiet:hover:not(:disabled),
-.account__button--remove:hover:not(:disabled) {
-    color: var(--account-ink);
-    box-shadow: none;
-}
-
-.account__button--compact {
-    justify-self: end;
-    min-width: 104px;
-}
-
-.account__hint {
-    margin: 14px 0 0;
-    color: var(--account-muted);
-    font-size: 13px;
-    line-height: 1.5;
-}
-
-.account__error {
-    margin: 20px 0 0;
-    padding: 12px 14px;
-    background: color-mix(in oklab, var(--wa-color-danger-fill-loud, #d9363e) 12%, transparent);
-    color: var(--wa-color-danger-on-quiet, #8f1720);
-    font-size: 14px;
-    line-height: 1.45;
-}
-
-.account__dashboard {
-    display: grid;
-    gap: 24px;
-}
-
-.account__status {
-    margin: -16px 0 0;
-    color: var(--account-muted);
-    font-size: 15px;
-    line-height: 1.5;
-}
-
-.account__section {
-    padding: 24px;
-    background: var(--account-surface);
-    box-shadow:
-        0 0 0 1px rgb(0 0 0 / 6%),
-        0 1px 2px -1px rgb(0 0 0 / 6%),
-        0 2px 4px rgb(0 0 0 / 4%);
-}
-
-.account__section p,
-.account__signout p {
-    margin: 8px 0 0;
-    color: var(--account-muted);
-    font-size: 14px;
-    line-height: 1.55;
-}
-
-.account__passkey {
-    background: color-mix(in oklab, #deff1a 9%, var(--account-surface));
-}
-
-.account__passkey .account__hint {
-    margin-top: 8px;
-}
-
-.account__facts {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin: 18px 0 0;
-    border-block: 1px solid var(--account-divider);
-}
-
-.account__facts > div {
-    min-width: 0;
-    padding: 15px 16px 15px 0;
-}
-
-.account__facts > div + div {
-    padding-left: 16px;
-    border-left: 1px solid var(--account-divider);
-}
-
-.account__facts dt {
-    margin-bottom: 5px;
-    color: var(--account-muted);
-    font-size: 12px;
-    font-weight: 600;
-}
-
-.account__facts dd {
-    min-height: 1.45em;
-    margin: 0;
-    overflow-wrap: anywhere;
-    font-size: 14px;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.45;
-}
-
-.account__section-heading {
-    margin-bottom: 18px;
-}
-
-.account__devices,
-.account__profiles {
-    display: grid;
-    margin: 0;
-    padding: 0;
-    border-top: 1px solid var(--account-divider);
-    list-style: none;
-}
-
-.account__device-row,
-.account__profile-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    column-gap: 24px;
-    padding: 16px 0;
-    border-bottom: 1px solid var(--account-divider);
-}
-
-.account__device-identity,
-.account__profile-identity {
+.account__editor-row,
+.account__row {
     display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 10px;
-}
-
-.account__device-name,
-.account__profile-name {
-    overflow: hidden;
-    font-weight: 600;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.account__device-current,
-.account__profile-current {
-    flex: none;
-    padding: 3px 8px;
-    background: var(--account-field);
-    color: var(--account-muted);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-}
-
-.account__device-meta,
-.account__profile-meta {
-    grid-column: 1;
-    min-width: 0;
-    margin-top: 4px;
-    color: var(--account-muted);
+    min-height: 44px;
+    padding: 9px 12px;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 7px 16px;
+    background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
+    color: var(--ink);
+    font-family: var(--sans);
     font-size: 13px;
     line-height: 1.45;
+}
+
+.account__editor-row > span,
+.account__row > span {
+    color: var(--soft);
+}
+
+.account__editor-row input,
+.account__row--field input {
+    width: min(100%, 22ch);
+    min-height: 36px;
+    margin: -5px 0;
+    padding: 5px 0;
+    border: 0;
+    border-bottom: 1px solid var(--sep);
+    outline: 0;
+    background: transparent;
+    color: var(--ink);
+    font: 600 13.5px/1.4 var(--cond);
+    text-align: right;
+}
+
+.account__row--action {
+    align-items: center;
+    width: 100%;
+}
+
+.account__row--action > span {
+    max-width: 22ch;
     text-wrap: pretty;
 }
 
-.account__device-row .account__button--remove,
-.account__profile-row .account__button--switch {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-}
-
-.account__profiles-section .account__button--compact {
-    margin-top: 16px;
-}
-
-.account__choice-profiles {
-    margin-top: 20px;
-}
-
-#account-use-different-account {
-    margin-top: 12px;
-}
-
-.account__signout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 24px;
-    padding-top: 24px;
-    border-top: 1px solid var(--account-divider);
-}
-
-.account__danger {
-    border: 1px solid color-mix(in oklab, var(--wa-color-danger-fill-loud, #d9363e) 48%, transparent);
-}
-
-.account__button--danger {
-    margin-top: 18px;
-    background: var(--wa-color-danger-fill-loud, #c92f38);
-    color: white;
-}
-
-.account__delete-review {
-    display: grid;
-    gap: 14px;
-    margin-top: 20px;
-    padding-top: 20px;
-    border-top: 1px solid var(--account-divider);
-}
-
-.account__delete-spaces {
-    margin: 0;
-    padding-left: 22px;
-    color: var(--account-ink);
-    font-size: 14px;
+.account__narrator,
+.account__error,
+.account__working {
+    width: min(432px, 100%);
+    margin: 7px auto 0;
+    padding: 10px 16px 11px;
+    background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
+    color: var(--soft);
+    font-family: var(--sans);
+    font-size: 13px;
     line-height: 1.55;
+    text-wrap: pretty;
+    overflow-wrap: anywhere;
 }
 
-.account__delete-confirm {
-    display: grid;
-    gap: 8px;
-    font-size: 14px;
-    font-weight: 600;
+.account__narrator p,
+.account__error,
+.account__working {
+    margin-block: 7px 0;
 }
 
-.account__delete-confirm input {
+.account__narrator p {
+    margin: 0;
+}
+
+.account__error {
+    color: var(--ink);
+}
+
+.account__error[data-flash="true"],
+.account__inline-error[data-flash="true"] {
+    animation: account-flash 450ms var(--ease) 2;
+}
+
+.account__working:empty {
+    display: none;
+}
+
+.account__ghost {
+    display: flex;
+    width: max-content;
     min-height: 44px;
-    padding: 10px 12px;
-    border: 1px solid var(--account-divider);
-    background: var(--account-field);
-    color: var(--account-ink);
-    font: inherit;
+    margin: 7px 0 0 auto;
+    padding: 7px 2px;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--ink);
+    font-family: var(--cond);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    text-decoration: underline;
+    text-transform: lowercase;
+    text-underline-offset: 3px;
+    transition-property: scale;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
 }
 
-.account__delete-check {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: start;
-    gap: 10px;
-    color: var(--account-muted);
-    font-size: 14px;
+.account__ghost:hover,
+.account__link:hover {
+    text-decoration-thickness: 2px;
+}
+
+.account__details {
+    padding: 10px 12px;
+    background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
+    font-family: var(--sans);
+    font-size: 12px;
     line-height: 1.5;
 }
 
-@media (prefers-color-scheme: dark) {
-    tonk-account {
-        --account-shadow: 0 0 0 1px rgb(255 255 255 / 8%);
+.account__details summary {
+    min-height: 24px;
+    cursor: pointer;
+    font-family: var(--cond);
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.account__details dl,
+.account__details dd {
+    margin: 8px 0 0;
+}
+
+.account__details dl > div {
+    display: grid;
+    gap: 4px;
+}
+
+.account__details dt {
+    color: var(--soft);
+}
+
+.account__details dd {
+    overflow-wrap: anywhere;
+    font-family: var(--mono);
+}
+
+.account__settings {
+    display: grid;
+    grid-template-columns: 144px 432px;
+    width: 576px;
+    align-items: start;
+}
+
+.account__rail {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.account__rail button {
+    position: relative;
+    display: flex;
+    height: 44px;
+    padding: 0 10px 9px;
+    align-items: flex-end;
+    justify-content: flex-end;
+    border: 1px solid var(--ring);
+    background: var(--frost-solid);
+    color: var(--soft);
+    font-family: var(--cond);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
+}
+
+.account__rail button[aria-selected="true"] {
+    border-right: 0;
+    background: var(--panel);
+    color: var(--ink);
+}
+
+.account__rail button[aria-selected="true"]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: -1px;
+    width: 1px;
+    height: 100%;
+    background: var(--panel);
+}
+
+.account__settings-body {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: clamp(408px, 60vh, 640px);
+    padding: 8px 18px 18px;
+    overflow: auto;
+    border: 1px solid var(--ring);
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--sans);
+}
+
+.account__pane {
+    min-width: 0;
+}
+
+.account__pane .account__row {
+    padding-inline: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.account__section-label {
+    display: block;
+    margin-top: 18px;
+    padding: 0 0 7px;
+    border-bottom: 1px solid var(--sep);
+    color: var(--soft);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.4;
+    text-transform: lowercase;
+}
+
+.account__explanation,
+.account__status,
+.account__inline-error {
+    margin: 6px 0 0;
+    color: var(--soft);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.55;
+    text-wrap: pretty;
+    overflow-wrap: anywhere;
+}
+
+.account__status,
+.account__success > .account__ghost,
+tonk-account[data-mode="success"] .account__error,
+tonk-account[data-mode="success"] .account__working {
+    width: 432px;
+    margin: 7px 0 0 auto;
+}
+
+.account__status {
+    text-align: right;
+}
+
+.account__success > .account__ghost {
+    justify-content: flex-end;
+}
+
+.account__inline-error {
+    color: var(--ink);
+}
+
+.account__link {
+    min-height: 44px;
+    color: var(--ink);
+    font-family: var(--cond);
+    font-weight: 600;
+    text-align: right;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    transition-property: scale;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+}
+
+.account__profiles,
+.account__devices,
+.account__dialog ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.account__profile-row,
+.account__device-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 44px;
+    padding: 9px 0;
+    align-items: baseline;
+    gap: 4px 16px;
+    border-bottom: 1px solid var(--sep);
+    font-family: var(--sans);
+    font-size: 13px;
+}
+
+.account__profile-identity,
+.account__device-identity {
+    min-width: 0;
+}
+
+.account__profile-name,
+.account__device-name {
+    overflow-wrap: anywhere;
+    font-family: var(--cond);
+    font-size: 13.5px;
+    font-weight: 600;
+}
+
+.account__profile-current,
+.account__device-current {
+    margin-left: 7px;
+    color: var(--soft);
+    font-size: 11px;
+    text-transform: lowercase;
+}
+
+.account__profile-meta,
+.account__device-meta {
+    color: var(--soft);
+    font-size: 12px;
+    text-align: right;
+}
+
+.account__button--switch,
+.account__button--remove {
+    grid-row: 1 / span 2;
+    grid-column: 2;
+    min-width: 44px;
+    min-height: 44px;
+    align-self: center;
+    color: var(--ink);
+    font-size: 0;
+    text-align: center;
+}
+
+.account__button--switch::after {
+    content: "›";
+    font-size: 18px;
+}
+
+.account__button--remove {
+    width: auto;
+    padding-left: 12px;
+    font-size: 13px;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.account__choice-profiles .account__profile-row,
+.account__choice-profiles .account__section-label,
+.account__choice-profiles .account__profiles {
+    background: var(--frost-solid);
+}
+
+.account__choice-profiles .account__section-label {
+    margin: 0;
+    padding: 10px 12px 7px;
+    box-shadow: 0 0 0 1px var(--ring);
+}
+
+.account__choice-profiles .account__profile-row {
+    padding-inline: 12px;
+    box-shadow: 0 0 0 1px var(--ring);
+}
+
+.account__confirmation {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+}
+
+.account__scrim {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--dim);
+    cursor: default;
+}
+
+.account__dialog {
+    position: fixed;
+    top: 28vh;
+    left: 50%;
+    z-index: 1;
+    width: min(432px, calc(100vw - 88px));
+    transform: translateX(-50%);
+    font-family: var(--cond);
+}
+
+/* A viewport shorter than the dialog must scroll the dialog, not lose
+   its footer: the surface is fixed, so page scrolling can never bring
+   the buttons back into reach. The destructive confirmation (plan,
+   email field, checkbox) outgrows a 600px-tall window, which left
+   cancel and confirm unreachable there. The head gives up its close-
+   button overhang in this mode — the overhang is horizontal overflow,
+   and a scroll container would answer it with a second scrollbar. */
+@media (max-height: 700px) {
+    .account__dialog {
+        top: 16px;
+        max-height: calc(100vh - 32px);
+        overflow-y: auto;
+        overflow-x: hidden;
     }
 
-    .account__section {
-        box-shadow: 0 0 0 1px rgb(255 255 255 / 8%);
+    .account__dialog-head {
+        margin-right: 0;
     }
 }
 
-@media (max-width: 620px) {
-    tonk-account {
-        place-items: stretch;
-        padding: 0;
-    }
+.account__dialog-head {
+    display: flex;
+    margin-right: -44px;
+    margin-bottom: 7px;
+}
 
+.account__dialog-head h2,
+.account__dialog-head button,
+.account__dialog-body,
+.account__dialog-arming,
+.account__dialog-foot button {
+    background: var(--card);
+    box-shadow: 0 0 0 1px var(--ring);
+}
+
+.account__dialog-head h2 {
+    display: flex;
+    height: 44px;
+    flex: 1;
+    margin: 0;
+    padding: 0 16px 9px;
+    align-items: flex-end;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
+}
+
+.account__dialog-head button {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border-radius: 0 22px 22px 0;
+    font-size: 17px;
+}
+
+.account__dialog-body,
+.account__dialog-arming {
+    min-height: 88px;
+    padding: 16px;
+    font-family: var(--sans);
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.6;
+    text-wrap: pretty;
+    overflow-wrap: anywhere;
+}
+
+.account__dialog-error {
+    margin: 7px 0 0;
+    padding: 10px 16px 11px;
+    background: var(--card);
+    box-shadow: 0 0 0 1px var(--ring);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 12px;
+    line-height: 1.5;
+    text-wrap: pretty;
+}
+
+.account__dialog-arming {
+    min-height: 0;
+    max-height: 45vh;
+    margin-top: 7px;
+    overflow: auto;
+    font-weight: 400;
+}
+
+.account__dialog-arming > p:first-child {
+    margin-top: 0;
+}
+
+.account__dialog-arming li {
+    padding-block: 4px;
+}
+
+.account__confirm-field {
+    display: flex;
+    min-height: 44px;
+    margin-top: 12px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.account__confirm-field span {
+    color: var(--soft);
+}
+
+.account__confirm-field input {
+    min-width: 0;
+    width: 55%;
+    min-height: 36px;
+    padding: 5px 0;
+    border: 0;
+    border-bottom: 1px solid var(--sep);
+    outline: 0;
+    background: transparent;
+    color: var(--ink);
+    font: 600 13px/1.4 var(--cond);
+    text-align: right;
+}
+
+.account__confirm-check {
+    display: grid;
+    min-height: 44px;
+    margin-top: 8px;
+    grid-template-columns: 20px 1fr;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+}
+
+.account__confirm-check input {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--ink);
+}
+
+.account__dialog-foot {
+    display: flex;
+    margin-top: 7px;
+    justify-content: flex-end;
+}
+
+.account__dialog-foot button,
+.account__dialog-go {
+    display: flex;
+    min-width: 144px;
+    min-height: 44px;
+    padding: 0 10px 9px 24px;
+    align-items: flex-end;
+    justify-content: flex-end;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    text-transform: lowercase;
+}
+
+.account__dialog-foot .account__dialog-go,
+.account__dialog > .account__dialog-result {
+    background: var(--ink);
+    box-shadow: 0 0 0 1px var(--ink);
+    color: var(--on-ink);
+    transition-property: scale, opacity, background-color;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+}
+
+.account__dialog-result {
+    width: 100%;
+    margin-top: 7px;
+}
+
+tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
+    animation: account-wait 2.4s var(--ease) infinite;
+}
+
+@keyframes account-wait {
+    0%, 100% { background: var(--ink); }
+    50% { background: linear-gradient(var(--wash-p), var(--wash-p)), var(--ink); }
+}
+
+@keyframes account-flash {
+    50% { background: linear-gradient(var(--wash-2), var(--wash-2)), var(--frost-solid); }
+}
+
+@media (max-width: 607px) {
     .account {
-        min-height: 100dvh;
-        padding: 24px 20px 32px;
-        box-shadow: none;
+        width: min(432px, calc(100vw - 32px));
     }
 
-    .account__masthead {
-        gap: 16px;
-    }
-
-    .account__return {
-        font-size: 13px;
-    }
-
-    .account h1 {
-        margin: 36px 0 24px;
-    }
-
-    .account__section {
-        padding: 20px;
-    }
-
-    .account__facts {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .account__facts > div,
-    .account__facts > div + div {
-        padding: 12px 0;
-        border-left: 0;
-    }
-
-    .account__facts > div + div {
-        border-top: 1px solid var(--account-divider);
-    }
-
-    .account__device {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .account__device > div {
-        row-gap: 5px;
-        padding: 12px 0;
-    }
-
-    .account__actions--inline {
-        grid-auto-flow: row;
-        row-gap: 4px;
-    }
-
-    .account__actions--inline .account__button {
-        min-width: 0;
-    }
-
-    .account__device-row,
-    .account__profile-row,
-    .account__signout {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 8px;
-    }
-
-    .account__device-row .account__button--remove,
-    .account__profile-row .account__button--switch {
-        grid-column: 1;
-        grid-row: auto;
-    }
-
-    .account__button--compact {
+    .account__settings {
+        grid-template-columns: 108px 324px;
         width: 100%;
-        justify-self: stretch;
-        margin-top: 8px;
+    }
+
+    .account__status,
+    .account__success > .account__ghost,
+    tonk-account[data-mode="success"] .account__error,
+    tonk-account[data-mode="success"] .account__working {
+        width: 324px;
+    }
+}
+
+@media (max-width: 463px) {
+    :is(tonk-account, tonk-activate) {
+        padding-top: max(24px, env(safe-area-inset-top));
+    }
+
+    .account__settings {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .account__rail {
+        width: 100%;
+        flex-direction: row;
+        gap: 0;
+    }
+
+    .account__rail button {
+        flex: 1;
+    }
+
+    .account__rail button[aria-selected="true"] {
+        border-right: 1px solid var(--ring);
+        border-bottom: 0;
+    }
+
+    .account__rail button[aria-selected="true"]::after {
+        top: auto;
+        right: 0;
+        bottom: -1px;
+        width: 100%;
+        height: 1px;
+    }
+
+    .account__settings-body {
+        height: min(408px, 60vh);
+    }
+
+    .account__status,
+    .account__success > .account__ghost,
+    tonk-account[data-mode="success"] .account__error,
+    tonk-account[data-mode="success"] .account__working {
+        width: 100%;
+    }
+
+    .account__logo {
+        width: 98px;
+        margin-bottom: 32px;
+    }
+
+    .account__dialog {
+        top: max(12vh, calc(env(safe-area-inset-top) + 48px));
     }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .account__button,
-    .account__form input {
-        transition-duration: 0s;
+    .account__run,
+    .account__link,
+    .account__ghost,
+    .account__dialog-go {
+        transition: none;
+    }
+
+    tonk-account[data-busy="true"] .account__run[data-initiating="true"],
+    .account__error[data-flash="true"],
+    .account__inline-error[data-flash="true"] {
+        animation: none;
     }
 }

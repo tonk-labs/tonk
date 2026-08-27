@@ -15,6 +15,11 @@
 /// that can never fill. Repairable: the bar offers to attach this server.
 pub const BLOCKED_NOT_SYNCED: &str = "not-synced";
 
+/// The active profile is not attached to an account. An invite derives its
+/// durable authority from that account, so the bar hands off to login rather
+/// than minting from a transient local profile.
+pub const BLOCKED_ACCOUNT_REQUIRED: &str = "account-required";
+
 /// The spot's sync server cannot be shared (a local-only or non-UCAN remote).
 /// Terminal: nothing the user can do from the bar.
 pub const BLOCKED_UNSHAREABLE_REMOTE: &str = "unshareable-remote";

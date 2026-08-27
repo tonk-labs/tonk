@@ -950,8 +950,8 @@ pub mod tests {
     ///
     /// Through `PUT /api/repository/{label}` rather than `POST /api/spaces`,
     /// because both reach the same gate in `create_repository` and only the
-    /// latter goes on to seed a template, which needs a library this harness
-    /// serves over no HTTP. `put_repo` asserts the 201 itself.
+    /// latter goes on to seed the scaffold, which needs a library this
+    /// harness serves over no HTTP. `put_repo` asserts the 201 itself.
     #[dialog_common::test]
     async fn it_creates_a_space_once_an_account_is_attached() {
         let (app, _state, _lsp) = super::api_router_with_state(test_state().await);

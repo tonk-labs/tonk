@@ -5,7 +5,7 @@ use js_sys::Reflect;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
+use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, KeyboardEvent, window};
 
 use tonk_account::AccountStateStatus;
 use tonk_worker_api::{
@@ -22,7 +22,21 @@ use crate::identity_bridge::{
 const STYLE_ID: &str = "tonk-account-styles";
 /// Where a pending callback authorization's `(audience, callback)` is parked.
 const CALLBACK: &str = "__tonkCliCallback";
-const DELETION_PLAN: &str = "__tonkAccountDeletionPlan";
+const CONFIRMATION: &str = "__tonkAccountConfirmation";
+const CONFIRMATION_RETURN_FOCUS: &str = "__tonkAccountConfirmationReturnFocus";
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+enum Confirmation {
+    SignOut,
+    Revoke {
+        did: String,
+        self_revoke: bool,
+    },
+    Delete {
+        plan: AccountDeletionPlan,
+        requested_space: Option<String>,
+    },
+}
 
 /// The top-document account element. WebAuthn must not run in sealed guests.
 #[derive(Default)]
@@ -52,6 +66,26 @@ impl CustomElement for TonkAccount {
         let _ = Reflect::set(this.as_ref(), &"__tonkAccountBound".into(), &JsValue::TRUE);
         bind(this);
         load_status(this.clone());
+        // The panel's state is a function of the URL — /settings,
+        // /settings?add=1, /settings/link — and Add account moves
+        // between those with a client-side navigation (a history push
+        // plus a synthetic popstate), never a reload. The top-document
+        // router keeps this element mounted across account routes, so
+        // nothing else re-reads the location: the panel re-derives its
+        // own state whenever history changes under it.
+        {
+            let host = this.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+                if host.is_connected() {
+                    load_status(host.clone());
+                }
+            });
+            if let Some(window) = window() {
+                let _ = window
+                    .add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref());
+            }
+            closure.forget();
+        }
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {}
@@ -136,29 +170,143 @@ fn set_mode(host: &HtmlElement, mode: &str) {
     }
 }
 
+fn select_account_tab(host: &HtmlElement, name: &str, focus: bool) {
+    let Ok(tabs) = host.query_selector_all("[data-account-tab]") else {
+        return;
+    };
+    for index in 0..tabs.length() {
+        let Some(tab) = tabs
+            .item(index)
+            .and_then(|node| node.dyn_into::<HtmlElement>().ok())
+        else {
+            continue;
+        };
+        let selected = tab.get_attribute("data-account-tab").as_deref() == Some(name);
+        let _ = tab.set_attribute("aria-selected", if selected { "true" } else { "false" });
+        let _ = tab.set_attribute("tabindex", if selected { "0" } else { "-1" });
+        if selected && focus {
+            let _ = tab.focus();
+        }
+    }
+    let Ok(panes) = host.query_selector_all("[data-account-pane]") else {
+        return;
+    };
+    for index in 0..panes.length() {
+        let Some(pane) = panes
+            .item(index)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        if pane.get_attribute("data-account-pane").as_deref() == Some(name) {
+            let _ = pane.remove_attribute("hidden");
+        } else {
+            let _ = pane.set_attribute("hidden", "");
+        }
+    }
+}
+
 fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
-    for selector in [
-        "#account-choose-create",
-        "#account-choose-link",
-        "#account-create-submit",
-        "#account-create-back",
-        "#account-link-submit",
-        "#account-link-back",
-        "#account-handoff-submit",
-        "#account-unlink",
-        "#account-delete-review",
-        "#account-delete-submit",
-        "#account-add-profile",
-        "#account-use-different-account",
-    ] {
-        if let Ok(Some(button)) = host.query_selector(selector)
-            && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
+    let _ = host.set_attribute("data-busy", if busy { "true" } else { "false" });
+    let _ = host.set_attribute("aria-busy", if busy { "true" } else { "false" });
+
+    if busy
+        && host
+            .query_selector("[data-initiating]")
+            .ok()
+            .flatten()
+            .is_none()
+        && let Some(active) = window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.active_element())
+        && host.contains(Some(active.as_ref()))
+        && active.tag_name() == "BUTTON"
+    {
+        let _ = active.set_attribute("data-initiating", "true");
+        let _ = active.set_attribute(
+            "data-idle-label",
+            &active.text_content().unwrap_or_default(),
+        );
+    }
+    if busy
+        && host
+            .query_selector("[data-initiating]")
+            .ok()
+            .flatten()
+            .is_none()
+    {
+        let fallback = match host.get_attribute("data-mode").as_deref() {
+            Some("create") => Some("#account-create-submit"),
+            Some("link") => Some("#account-link-submit"),
+            Some("handoff") => Some("#account-handoff-submit"),
+            _ => None,
+        };
+        if let Some(selector) = fallback
+            && let Ok(Some(action)) = host.query_selector(selector)
         {
-            button.set_disabled(busy);
+            let _ = action.set_attribute("data-initiating", "true");
+            let _ = action.set_attribute(
+                "data-idle-label",
+                &action.text_content().unwrap_or_default(),
+            );
+        }
+    }
+    if let Ok(Some(initiating)) = host.query_selector("[data-initiating]") {
+        if busy && !status.is_empty() {
+            initiating.set_text_content(Some(status));
+        } else if !busy {
+            if let Some(label) = initiating.get_attribute("data-idle-label") {
+                initiating.set_text_content(Some(&label));
+            }
+            let _ = initiating.remove_attribute("data-idle-label");
+            let _ = initiating.remove_attribute("data-initiating");
+        }
+    }
+
+    if let Ok(buttons) = host.query_selector_all("button") {
+        for index in 0..buttons.length() {
+            if let Some(button) = buttons
+                .item(index)
+                .and_then(|node| node.dyn_into::<HtmlButtonElement>().ok())
+            {
+                button.set_disabled(busy);
+            }
+        }
+    }
+    if let Ok(inputs) = host.query_selector_all("input") {
+        for index in 0..inputs.length() {
+            if let Some(input) = inputs
+                .item(index)
+                .and_then(|node| node.dyn_into::<HtmlInputElement>().ok())
+            {
+                if busy || input.get_attribute("aria-busy").as_deref() != Some("true") {
+                    input.set_disabled(busy);
+                }
+            }
+        }
+    }
+    if let Ok(links) = host.query_selector_all("a") {
+        for index in 0..links.length() {
+            let Some(link) = links
+                .item(index)
+                .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+            else {
+                continue;
+            };
+            if busy {
+                let _ = link.set_attribute("aria-disabled", "true");
+                let _ = link.set_attribute("tabindex", "-1");
+            } else {
+                let _ = link.remove_attribute("aria-disabled");
+                let _ = link.remove_attribute("tabindex");
+            }
         }
     }
     if let Ok(Some(element)) = host.query_selector("#account-working") {
         element.set_text_content((!status.is_empty()).then_some(status));
+    }
+    if !busy {
+        update_confirmation_arming(host);
     }
 }
 
@@ -166,6 +314,11 @@ fn show_error(host: &HtmlElement, message: impl AsRef<str>) {
     if let Ok(Some(error)) = host.query_selector("#account-error") {
         error.set_text_content(Some(message.as_ref()));
         let _ = error.remove_attribute("hidden");
+        let _ = error.remove_attribute("data-flash");
+        let _ = error.set_attribute("data-flash", "true");
+        if let Ok(error) = error.dyn_into::<HtmlElement>() {
+            let _ = error.focus();
+        }
     }
 }
 
@@ -188,6 +341,15 @@ fn show_success(host: &HtmlElement) {
     clear_error(host);
     set_busy(host, false, "");
     set_mode(host, "success");
+    select_account_tab(
+        host,
+        if revoke_target_from_url().is_some() {
+            "devices"
+        } else {
+            "account"
+        },
+        false,
+    );
     load_summary(host.clone());
     load_devices(host.clone());
     load_profiles(host.clone());
@@ -198,28 +360,47 @@ fn show_success(host: &HtmlElement) {
 /// every other answer: an active customer needs no notice, and a
 /// deployment without registration should not decorate the panel with
 /// its absence.
-/// Say when the account's backup is still on its way. The ceremony
-/// pre-signed the publish, the worker drains it on activation, and no
-/// interaction is needed — this only keeps the wait legible.
+/// Say when the account's backup is still on its way, and settle the
+/// outcome in the DOM. The ceremony pre-signed the publish and the
+/// worker drains it on activation — no interaction is needed — but the
+/// drain is asynchronous, so keep watching until it lands rather than
+/// leaving a notice frozen at whatever the first look saw. Each round's
+/// customer probe is also a retry: the worker replays pending work on
+/// an Active answer.
+///
+/// `data-backup` on the host is the settled answer — "done" once the
+/// queue holds no publish, "stuck" when it still does after a bounded
+/// wait (a reload retries). The e2e suite waits on it before running
+/// any ceremony that resolves the published cell.
 async fn note_pending_backup(host: &HtmlElement) {
-    let waiting = crate::api::pending_work().await.is_ok_and(|queue| {
-        queue.entries().iter().any(|work| {
-            matches!(
-                work,
-                tonk_account::pending::PendingWork::PublishCustody { .. }
-            )
-        })
-    });
-    if !waiting {
-        let _ = hide(host, "#account-backup-notice");
-        return;
+    // A minute of second-spaced checks: far beyond a healthy drain,
+    // bounded so a genuinely stuck queue is reported, not spun on.
+    for round in 0..60 {
+        let waiting = crate::api::pending_work().await.is_ok_and(|queue| {
+            queue.entries().iter().any(|work| {
+                matches!(
+                    work,
+                    tonk_account::pending::PendingWork::PublishCustody { .. }
+                )
+            })
+        });
+        if !waiting {
+            let _ = hide(host, "#account-backup-notice");
+            let _ = host.set_attribute("data-backup", "done");
+            return;
+        }
+        set_text(
+            host,
+            "#account-backup-notice",
+            "Finishing your account's backup…",
+        );
+        let _ = show(host, "#account-backup-notice");
+        if round > 0 {
+            let _ = crate::api::customer_state().await;
+        }
+        wait_for(1_000).await;
     }
-    set_text(
-        host,
-        "#account-backup-notice",
-        "Finishing your account's backup…",
-    );
-    let _ = show(host, "#account-backup-notice");
+    let _ = host.set_attribute("data-backup", "stuck");
 }
 
 /// Unhide the element `selector` names.
@@ -244,6 +425,9 @@ fn load_activation_notice(host: HtmlElement) {
     spawn_local(async move {
         if !wants_enrollment().await {
             set_text(&host, "#account-registration-value", "Not used here");
+            // Nothing is ever queued without registration; settle the
+            // backup state so a waiter has an answer here too.
+            let _ = host.set_attribute("data-backup", "done");
             return;
         }
         let mut state = match crate::api::customer_state().await {
@@ -316,9 +500,12 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
     set_text(host, "#account-registration-value", label);
     // The worker drains the queued backup itself once activation
     // lands — the ceremony pre-signed the publish. Nothing to raise;
-    // just say so while it is still on its way.
+    // just say so while it is still on its way. Detached: the watch is
+    // bounded but long, and the banner cleanup below must not wait on
+    // it.
     if state["status"].as_str() == Some("Active") {
-        note_pending_backup(host).await;
+        let host = host.clone();
+        spawn_local(async move { note_pending_backup(&host).await });
     }
     if state["status"].as_str() != Some("Registered") {
         let _ = hide(host, "#account-activation-notice");
@@ -364,6 +551,182 @@ fn requested_space_deletion() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn confirmation(host: &HtmlElement) -> Option<Confirmation> {
+    Reflect::get(host.as_ref(), &CONFIRMATION.into())
+        .ok()
+        .filter(|value| !value.is_null() && !value.is_undefined())
+        .and_then(|value| serde_wasm_bindgen::from_value(value).ok())
+}
+
+fn update_confirmation_arming(host: &HtmlElement) {
+    let armed = match confirmation(host) {
+        Some(Confirmation::Delete { plan, .. }) => {
+            let email_matches = host
+                .query_selector("#account-delete-email")
+                .ok()
+                .flatten()
+                .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
+                .is_some_and(|input| input.value().trim() == plan.email);
+            let understood = host
+                .query_selector("#account-delete-understood")
+                .ok()
+                .flatten()
+                .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
+                .is_some_and(|input| input.checked());
+            email_matches && understood
+        }
+        Some(_) => true,
+        None => false,
+    };
+    if let Ok(Some(button)) = host.query_selector("#account-delete-submit")
+        && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
+    {
+        button.set_disabled(!armed || host.get_attribute("data-busy").as_deref() == Some("true"));
+    }
+}
+
+fn close_confirmation(host: &HtmlElement) {
+    if host.get_attribute("data-busy").as_deref() == Some("true") {
+        return;
+    }
+    if let Ok(Some(surface)) = host.query_selector("#account-confirmation") {
+        let _ = surface.set_attribute("hidden", "");
+    }
+    let _ = Reflect::delete_property(host.as_ref(), &CONFIRMATION.into());
+    if let Ok(return_focus) = Reflect::get(host.as_ref(), &CONFIRMATION_RETURN_FOCUS.into())
+        && let Ok(return_focus) = return_focus.dyn_into::<HtmlElement>()
+    {
+        let _ = return_focus.focus();
+    }
+    let _ = Reflect::delete_property(host.as_ref(), &CONFIRMATION_RETURN_FOCUS.into());
+}
+
+fn open_confirmation(host: &HtmlElement, pending: Confirmation) -> Result<(), String> {
+    if confirmation(host).is_none()
+        && let Some(active) = window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.active_element())
+    {
+        let _ = Reflect::set(
+            host.as_ref(),
+            &CONFIRMATION_RETURN_FOCUS.into(),
+            active.as_ref(),
+        );
+    }
+    let value = serde_wasm_bindgen::to_value(&pending)
+        .map_err(|_| "could not retain confirmation state".to_string())?;
+    Reflect::set(host.as_ref(), &CONFIRMATION.into(), &value)
+        .map_err(|_| "could not retain confirmation state".to_string())?;
+
+    if let Ok(Some(result)) = host.query_selector("#account-confirm-result-back") {
+        let _ = result.set_attribute("hidden", "");
+    }
+    if let Ok(Some(error)) = host.query_selector("#account-confirm-error") {
+        error.set_text_content(None);
+        let _ = error.set_attribute("hidden", "");
+    }
+    if let Ok(Some(foot)) = host.query_selector(".account__dialog-foot") {
+        let _ = foot.remove_attribute("hidden");
+    }
+    let (title, body, action, destructive) = match &pending {
+        Confirmation::SignOut => (
+            "sign out on this device",
+            "Your existing spaces will stay on this device, but account syncing will stop until you sign in again.",
+            "sign out",
+            false,
+        ),
+        Confirmation::Revoke { self_revoke, .. } => (
+            "remove device access",
+            if *self_revoke {
+                "This permanently disconnects this device from your Tonk account. To use it again, sign in to add it as a new device."
+            } else {
+                "This permanently disconnects the selected device from your Tonk account. To use it again, sign in to add a new device."
+            },
+            "remove access",
+            false,
+        ),
+        Confirmation::Delete {
+            plan,
+            requested_space,
+        } => {
+            render_deletion_plan(host, plan, requested_space.as_deref())?;
+            (
+                if requested_space.is_some() {
+                    "delete owned space permanently"
+                } else {
+                    "delete account permanently"
+                },
+                if requested_space.is_some() {
+                    "This deletes only the selected owned space's hosted content from Tonk services. Your account and every other space remain."
+                } else {
+                    "This is not sign out. Tonk will permanently delete hosted content for owned spaces, account backups, device registrations, and the account record."
+                },
+                if requested_space.is_some() {
+                    "delete selected owned space"
+                } else {
+                    "delete owned spaces and account"
+                },
+                true,
+            )
+        }
+    };
+    set_text(host, "#account-confirm-title", title);
+    set_text(host, "#account-confirm-body", body);
+    set_text(host, "#account-delete-submit", action);
+    if let Ok(Some(arming)) = host.query_selector("#account-delete-arming") {
+        if destructive {
+            let _ = arming.remove_attribute("hidden");
+        } else {
+            let _ = arming.set_attribute("hidden", "");
+        }
+    }
+    if let Ok(Some(surface)) = host.query_selector("#account-confirmation") {
+        let _ = surface.remove_attribute("hidden");
+    }
+    update_confirmation_arming(host);
+    let focus = if destructive {
+        "#account-delete-email"
+    } else {
+        "#account-confirm-cancel"
+    };
+    focus_input_or_button(host, focus);
+    Ok(())
+}
+
+fn show_confirmation_error(host: &HtmlElement, message: impl AsRef<str>) {
+    if let Ok(Some(error)) = host.query_selector("#account-confirm-error") {
+        error.set_text_content(Some(message.as_ref()));
+        let _ = error.remove_attribute("hidden");
+        if let Ok(error) = error.dyn_into::<HtmlElement>() {
+            let _ = error.focus();
+        }
+    }
+}
+
+fn render_confirmation_result(host: &HtmlElement, message: &str) {
+    set_busy(host, false, "");
+    set_text(host, "#account-confirm-title", "complete");
+    set_text(host, "#account-confirm-body", message);
+    if let Ok(Some(arming)) = host.query_selector("#account-delete-arming") {
+        let _ = arming.set_attribute("hidden", "");
+    }
+    if let Ok(Some(foot)) = host.query_selector(".account__dialog-foot") {
+        let _ = foot.set_attribute("hidden", "");
+    }
+    if let Ok(Some(result)) = host.query_selector("#account-confirm-result-back") {
+        let _ = result.remove_attribute("hidden");
+    }
+    focus_input_or_button(host, "#account-confirm-result-back");
+}
+
+fn focus_input_or_button(host: &HtmlElement, selector: &str) {
+    if let Ok(Some(element)) = host.query_selector(selector)
+        && let Ok(element) = element.dyn_into::<HtmlElement>()
+    {
+        let _ = element.focus();
+    }
+}
+
 fn configure_deletion_entry(host: &HtmlElement) {
     if requested_space_deletion().is_none() {
         return;
@@ -395,24 +758,23 @@ fn configure_deletion_entry(host: &HtmlElement) {
     );
 }
 
-fn render_deletion_plan(host: &HtmlElement, plan: &AccountDeletionPlan) -> Result<(), String> {
+fn render_deletion_plan(
+    host: &HtmlElement,
+    plan: &AccountDeletionPlan,
+    requested: Option<&str>,
+) -> Result<(), String> {
     let panel = host
-        .query_selector("#account-delete-review-panel")
+        .query_selector("#account-delete-arming")
         .ok()
         .flatten()
         .ok_or_else(|| "missing deletion review panel".to_string())?;
     let _ = panel.remove_attribute("hidden");
-    let requested = requested_space_deletion();
     let visible: Vec<_> = plan
         .spaces
         .iter()
-        .filter(|space| {
-            requested
-                .as_deref()
-                .is_none_or(|subject| space.subject == subject)
-        })
+        .filter(|space| requested.is_none_or(|subject| space.subject == subject))
         .collect();
-    if let Some(subject) = requested.as_deref()
+    if let Some(subject) = requested
         && visible.is_empty()
     {
         return Err(format!(
@@ -486,11 +848,16 @@ fn render_deletion_plan(host: &HtmlElement, plan: &AccountDeletionPlan) -> Resul
         let _ = blocked.set_attribute("hidden", "");
         blocked.set_text_content(None);
     }
-    let value = serde_wasm_bindgen::to_value(plan)
-        .map_err(|_| "could not retain deletion plan".to_string())?;
-    Reflect::set(host.as_ref(), &DELETION_PLAN.into(), &value)
-        .map_err(|_| "could not retain deletion plan".to_string())?;
-    focus_input(host, "#account-delete-email");
+    if let Ok(Some(email)) = host.query_selector("#account-delete-email")
+        && let Ok(email) = email.dyn_into::<HtmlInputElement>()
+    {
+        email.set_value("");
+    }
+    if let Ok(Some(check)) = host.query_selector("#account-delete-understood")
+        && let Ok(check) = check.dyn_into::<HtmlInputElement>()
+    {
+        check.set_checked(false);
+    }
     Ok(())
 }
 
@@ -544,7 +911,7 @@ fn load_summary(host: HtmlElement) {
 ///
 /// [`crate::account_gate::finish`] returns to the `next` this page was
 /// opened with; only without one does the success panel show, which is the
-/// case where the user came to `/account` on their own.
+/// case where the user came to `/settings` on their own.
 fn settle(host: &HtmlElement) {
     settle_with(host, crate::account_gate::finish());
 }
@@ -616,7 +983,7 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
                 continue;
             };
             let _ = marker.set_attribute("class", "account__device-current");
-            marker.set_text_content(Some("This device"));
+            marker.set_text_content(Some("this device"));
             let _ = identity.append_child(&marker);
         }
 
@@ -626,7 +993,7 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         let _ = meta.set_attribute("class", "account__device-meta");
         let date = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
             .to_locale_date_string("default", &JsValue::UNDEFINED);
-        meta.set_text_content(Some(&format!("Added {}", String::from(date))));
+        meta.set_text_content(Some(&format!("added {}", String::from(date))));
 
         let _ = item.append_child(&identity);
         let _ = item.append_child(&meta);
@@ -640,11 +1007,11 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         let _ = button.set_attribute("type", "button");
         let _ = button.set_attribute("class", "account__button account__button--remove");
         let _ = button.set_attribute("data-revoke", &device.did);
-        let _ = button.set_attribute("aria-label", &format!("Remove access for {}", device.name));
+        let _ = button.set_attribute("aria-label", &format!("remove access for {}", device.name));
         if this_device {
             let _ = button.set_attribute("data-self-revoke", "true");
         }
-        button.set_text_content(Some("Remove access"));
+        button.set_text_content(Some("remove access"));
         let _ = item.append_child(&button);
         let _ = list.append_child(&item);
     }
@@ -657,6 +1024,7 @@ fn profile_row_label(entry: &tonk_worker_api::ProfileRosterEntry) -> String {
         .display_name
         .clone()
         .filter(|name| !name.trim().is_empty())
+        .or_else(|| entry.email.clone().filter(|email| !email.trim().is_empty()))
         .unwrap_or_else(|| entry.profile_name.clone())
 }
 
@@ -689,6 +1057,7 @@ fn render_profile_rows(
         let _ = item.set_attribute("class", "account__profile-row");
         if entry.active {
             let _ = item.set_attribute("data-active", "true");
+            let _ = item.set_attribute("aria-current", "true");
         }
 
         let Ok(identity) = document.create_element("div") else {
@@ -707,7 +1076,7 @@ fn render_profile_rows(
                 continue;
             };
             let _ = marker.set_attribute("class", "account__profile-current");
-            marker.set_text_content(Some("Current"));
+            marker.set_text_content(Some("current"));
             let _ = identity.append_child(&marker);
         }
 
@@ -717,8 +1086,8 @@ fn render_profile_rows(
         let _ = meta.set_attribute("class", "account__profile-meta");
         meta.set_text_content(Some(match &entry.email {
             Some(email) => email,
-            None if entry.provider.is_some() => "Signed in",
-            None => "Local workspace",
+            None if entry.provider.is_some() => "signed in",
+            None => "local workspace",
         }));
 
         let _ = item.append_child(&identity);
@@ -732,7 +1101,6 @@ fn render_profile_rows(
             let _ = button.set_attribute("class", "account__button account__button--switch");
             let _ = button.set_attribute("data-activate", &entry.profile_name);
             let _ = button.set_attribute("aria-label", &format!("Switch to {label}"));
-            button.set_text_content(Some("Switch"));
             let _ = item.append_child(&button);
         }
         let _ = list.append_child(&item);
@@ -742,6 +1110,77 @@ fn render_profile_rows(
 /// Fill the signed-in dashboard's switcher section.
 fn render_profiles(host: &HtmlElement, profiles: &tonk_worker_api::ProfilesResponse) {
     render_profile_rows(host, "#account-profile-list", profiles, false);
+    if let Some(active) = profiles
+        .profiles
+        .iter()
+        .find(|entry| entry.active || entry.profile_name == profiles.active)
+        && let Ok(Some(input)) = host.query_selector("#account-display-name")
+        && let Ok(input) = input.dyn_into::<HtmlInputElement>()
+    {
+        let label = profile_row_label(active);
+        input.set_value(&label);
+        let _ = input.set_attribute("data-confirmed-name", &label);
+        let _ = input.remove_attribute("aria-busy");
+        input.set_disabled(false);
+    }
+}
+
+fn show_display_name_error(host: &HtmlElement, message: &str) {
+    if let Ok(Some(error)) = host.query_selector("#account-display-name-error") {
+        error.set_text_content(Some(message));
+        let _ = error.remove_attribute("hidden");
+        let _ = error.remove_attribute("data-flash");
+        let _ = error.set_attribute("data-flash", "true");
+    }
+}
+
+fn commit_display_name(host: HtmlElement) {
+    let Some(input) = host
+        .query_selector("#account-display-name")
+        .ok()
+        .flatten()
+        .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
+    else {
+        return;
+    };
+    if input.get_attribute("aria-busy").as_deref() == Some("true") {
+        return;
+    }
+    let confirmed = input
+        .get_attribute("data-confirmed-name")
+        .unwrap_or_default();
+    let name = input.value().trim().to_owned();
+    if name.is_empty() {
+        input.set_value(&confirmed);
+        return;
+    }
+    if name == confirmed {
+        return;
+    }
+    input.set_disabled(true);
+    let _ = input.set_attribute("aria-busy", "true");
+    if let Ok(Some(error)) = host.query_selector("#account-display-name-error") {
+        let _ = error.set_attribute("hidden", "");
+    }
+    spawn_local(async move {
+        match crate::api::set_account_display_name(&name).await {
+            Ok(authoritative) => {
+                input.set_value(&authoritative);
+                let _ = input.set_attribute("data-confirmed-name", &authoritative);
+                set_text(
+                    &host,
+                    "#account-profile-list [data-active] .account__profile-name",
+                    &authoritative,
+                );
+            }
+            Err(error) => {
+                input.set_value(&confirmed);
+                show_display_name_error(&host, &error.to_string());
+            }
+        }
+        input.set_disabled(false);
+        let _ = input.remove_attribute("aria-busy");
+    });
 }
 
 /// Fill the Choice panel's compact switcher: the other roster entries,
@@ -776,6 +1215,7 @@ fn load_profiles(host: HtmlElement) {
         match crate::api::list_profiles().await {
             Ok(profiles) => render_profiles(&host, &profiles),
             Err(error) => {
+                show_display_name_error(&host, &error.to_string());
                 web_sys::console::warn_1(&format!("profile roster unavailable: {error}").into());
             }
         }
@@ -853,6 +1293,46 @@ fn query_value(name: &str) -> Option<String> {
     })
 }
 
+fn adding_account() -> bool {
+    query_value("add").as_deref() == Some("1")
+}
+
+/// Rotate only once the user submits Create or Log in.
+///
+/// Merely opening the add-account choice is reversible navigation. Rotating
+/// there persisted an empty profile even when the user immediately went
+/// back. Once the ceremony is actually requested it still needs a fresh
+/// profile first, because the resulting grant is addressed to that profile's
+/// DID.
+async fn prepare_added_profile() -> Result<(), String> {
+    if !adding_account() {
+        return Ok(());
+    }
+    crate::api::add_account_profile()
+        .await
+        .map_err(|error| error.to_string())?;
+    consume_add_account_request();
+    Ok(())
+}
+
+/// Remove only the add marker after rotation, retaining a safe return path.
+/// A failed or cancelled ceremony can then be retried without rotating again.
+fn consume_add_account_request() {
+    let Some(window) = window() else { return };
+    let Ok(pathname) = window.location().pathname() else {
+        return;
+    };
+    let path = query_value("next").map_or(pathname.clone(), |next| {
+        format!(
+            "{pathname}?next={}",
+            url::form_urlencoded::byte_serialize(next.as_bytes()).collect::<String>()
+        )
+    });
+    let _ = window
+        .history()
+        .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
+}
+
 fn revoke_target_from_url() -> Option<String> {
     query_value("revoke")
 }
@@ -869,7 +1349,6 @@ fn consume_revoke_target() {
 }
 
 fn load_devices(host: HtmlElement) {
-    set_mode(&host, "success");
     set_busy(&host, true, "Loading devices…");
     spawn_local(async move {
         // Which row is this device is answered separately from the list:
@@ -921,7 +1400,14 @@ enum Landing {
     Choice { revoke_hint: bool },
 }
 
-fn landing(account_state: Option<AccountStateStatus>, revoke_target: bool) -> Landing {
+fn landing(
+    account_state: Option<AccountStateStatus>,
+    revoke_target: bool,
+    adding_account: bool,
+) -> Landing {
+    if adding_account {
+        return Landing::Choice { revoke_hint: false };
+    }
     match (account_state, revoke_target) {
         (Some(_), true) => Landing::Devices,
         (Some(_), false) => Landing::Success,
@@ -932,7 +1418,7 @@ fn landing(account_state: Option<AccountStateStatus>, revoke_target: bool) -> La
 fn load_status(host: HtmlElement) {
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
-        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
+        .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
     if handoff_route {
         match callback_request() {
             Some((audience, callback, name)) => {
@@ -1002,15 +1488,19 @@ fn load_status(host: HtmlElement) {
                     AccountStatus::Registered { account_state, .. } => Some(account_state),
                     AccountStatus::RootMissing { .. } | AccountStatus::Unregistered { .. } => None,
                 };
-                match landing(account_state, revoke_target_from_url().is_some()) {
-                    Landing::Devices => load_devices(host),
+                match landing(
+                    account_state,
+                    revoke_target_from_url().is_some(),
+                    adding_account(),
+                ) {
+                    Landing::Devices => show_success(&host),
                     Landing::Success => {
                         settle_on_load(&host);
                         apply_link_outcome(&host, link_outcome.as_ref());
                         if account_state == Some(AccountStateStatus::Unhydrated) {
                             show_error(
                                 &host,
-                                "Account state is not synchronized yet. Reload /account to retry before changing your account name.",
+                                "Account state is not synchronized yet. Reload /settings to retry before changing your account name.",
                             );
                         }
                     }
@@ -1044,11 +1534,10 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
         return;
     };
     if status == "ok" {
-        set_text(
-            host,
-            "#account-success-message",
-            "Command-line device linked.",
-        );
+        if let Ok(Some(status)) = host.query_selector("#account-success-message") {
+            status.set_text_content(Some("Command-line device linked."));
+            let _ = status.remove_attribute("hidden");
+        }
     } else {
         let message = message
             .as_deref()
@@ -1064,7 +1553,7 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
 fn pending_callback_request() -> Option<(String, String, String)> {
     let on_link_route = window()
         .and_then(|window| window.location().pathname().ok())
-        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
+        .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
     if on_link_route {
         callback_request()
     } else {
@@ -1101,6 +1590,21 @@ fn load_callback_request(host: HtmlElement, audience: String, callback: String, 
     if let Ok(value) = serde_wasm_bindgen::to_value(&(audience, callback, name)) {
         let _ = Reflect::set(host.as_ref(), &CALLBACK.into(), &value);
     }
+    let label_host = host.clone();
+    spawn_local(async move {
+        if let Ok(profiles) = crate::api::list_profiles().await
+            && let Some(active) = profiles
+                .profiles
+                .iter()
+                .find(|entry| entry.active || entry.profile_name == profiles.active)
+        {
+            set_text(
+                &label_host,
+                "#account-handoff-account",
+                &profile_row_label(active),
+            );
+        }
+    });
     set_busy(&host, false, "");
     set_mode(&host, "handoff");
 }
@@ -1111,8 +1615,8 @@ fn load_callback_request(host: HtmlElement, audience: String, callback: String, 
 fn link_outcome_redirect() -> String {
     window()
         .and_then(|window| window.location().origin().ok())
-        .map(|origin| format!("{origin}/account"))
-        .unwrap_or_else(|| "/account".to_string())
+        .map(|origin| format!("{origin}/settings"))
+        .unwrap_or_else(|| "/settings".to_string())
 }
 
 /// Base64-encode an authorization payload for form delivery.
@@ -1229,7 +1733,7 @@ fn root_for_link<'a>(
 /// existing local link, and this browser has none. An already-linked device can
 /// do it, and afterwards this one signs in normally.
 const UNESTABLISHED_ACCOUNT_GUIDANCE: &str = "This account was created before shared account state existed, so it can't be added to a new \
-     browser yet. Open /account on a browser that is already signed in to this account and \
+     browser yet. Open /settings on a browser that is already signed in to this account and \
      finish account setup there, then sign in here.";
 
 /// Whether this deployment registers accounts with an access service at
@@ -1280,12 +1784,23 @@ fn is_unhydrated(status: &AccountStatus) -> bool {
     )
 }
 
+/// The custody rows a creation ceremony must record before the panel
+/// settles: the consent that provisions the custody space, and the
+/// sealed cell with its pre-signed publish.
+struct CustodyRecord {
+    custody_did: String,
+    consent_hex: String,
+    sealed_hex: String,
+    publish_invocation_hex: String,
+}
+
 async fn complete_remote(
     host: &HtmlElement,
     path: &str,
     ceremony: CeremonyOutput,
     initialize_name: bool,
     enroll_email: Option<&str>,
+    custody: Option<&CustodyRecord>,
 ) -> Result<(), String> {
     let provider = service(host).await?;
     let response = crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
@@ -1330,8 +1845,36 @@ async fn complete_remote(
             web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
             show_error(
                 host,
-                "Your account is ready, but registering it with the sync service failed. Reload /account to retry.",
+                "Your account is ready, but registering it with the sync service failed. Reload /settings to retry.",
             );
+        }
+    }
+    // The custody rows are recorded before ANY settled state renders —
+    // success and the handoff panel alike. The sealed secret and its
+    // pre-signed publish exist only in this page's memory until the
+    // worker records them: a caller who navigates away the moment the
+    // panel looks done (the e2e suite does; a person closing the tab
+    // does too) must not lose the account's backup to the two round
+    // trips that used to follow the render. Neither row can land with
+    // the service before the emailed link is clicked; both queue and
+    // the worker replays them on activation.
+    if let Some(custody) = custody {
+        if let Err(error) =
+            crate::api::provision_custody(&custody.custody_did, &custody.consent_hex).await
+        {
+            web_sys::console::warn_1(&format!("custody provisioning deferred: {error}").into());
+        }
+        if let Err(error) = crate::api::queue_custody_publish(
+            &custody.custody_did,
+            &custody.sealed_hex,
+            &custody.publish_invocation_hex,
+        )
+        .await
+        {
+            // The sealed secret is only in this page's memory until it
+            // is recorded, so failing to queue it is the one loss worth
+            // surfacing.
+            return Err(format!("could not record the account secret: {error}"));
         }
     }
     // A pending callback approval takes precedence over settling: the
@@ -1344,14 +1887,22 @@ async fn complete_remote(
     settle(host);
     // An unhydrated account right after signup is the expected state
     // while the email activation is pending — the access service
-    // refuses the pull until then, the activation banner already says
-    // so, and the background sweep hydrates once it lands. The alert is
-    // for the unexpected case: activation is not what's in the way.
-    if initialize_name && is_unhydrated(&status) && !activation_pending().await {
-        show_error(
-            host,
-            "Your account was created, but its initial name could not be synchronized. Reload /account to retry account hydration.",
-        );
+    // refuses the pull until the emailed link is opened — so the notice
+    // for that state names the one step that unblocks it, in the
+    // person's terms. Only when activation is NOT what's in the way is
+    // the failure unexpected, and then the notice says so instead.
+    if initialize_name && is_unhydrated(&status) {
+        if activation_pending().await {
+            show_error(
+                host,
+                "Your account was created. Check your email and open the verification link to verify your email address.",
+            );
+        } else {
+            show_error(
+                host,
+                "Your account was created, but this browser could not finish syncing it. Reload to retry.",
+            );
+        }
     }
     Ok(())
 }
@@ -1370,10 +1921,63 @@ fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) +
     let host = host.clone();
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         event.prevent_default();
+        if host.get_attribute("data-busy").as_deref() == Some("true") {
+            return;
+        }
         callback(host.clone());
     });
     let _ = element.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
     closure.forget();
+}
+
+fn confirmation_focusables(host: &HtmlElement) -> Vec<HtmlElement> {
+    let Ok(elements) = host.query_selector_all(
+        "#account-confirmation button:not([disabled]), #account-confirmation input:not([disabled]), #account-confirmation summary",
+    ) else {
+        return Vec::new();
+    };
+    (0..elements.length())
+        .filter_map(|index| elements.item(index))
+        .filter_map(|node| node.dyn_into::<HtmlElement>().ok())
+        .filter(|element| {
+            !element.has_attribute("hidden")
+                && element.offset_parent().is_some()
+                && element.tab_index() >= 0
+        })
+        .collect()
+}
+
+fn trap_confirmation_key(host: &HtmlElement, event: &KeyboardEvent) {
+    if host
+        .query_selector("#account-confirmation")
+        .ok()
+        .flatten()
+        .is_none_or(|surface| surface.has_attribute("hidden"))
+    {
+        return;
+    }
+    if event.key() == "Escape" {
+        event.prevent_default();
+        close_confirmation(host);
+        return;
+    }
+    if event.key() != "Tab" {
+        return;
+    }
+    let focusable = confirmation_focusables(host);
+    let (Some(first), Some(last)) = (focusable.first(), focusable.last()) else {
+        return;
+    };
+    let active = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.active_element());
+    if event.shift_key() && active.as_ref() == Some(first.as_ref()) {
+        event.prevent_default();
+        let _ = last.focus();
+    } else if !event.shift_key() && active.as_ref() == Some(last.as_ref()) {
+        event.prevent_default();
+        let _ = first.focus();
+    }
 }
 
 /// Stop every account form from ever navigating.
@@ -1404,7 +2008,7 @@ fn prevent_form_navigation(host: &HtmlElement) {
 /// Point the "back" links at wherever the user came from.
 ///
 /// They read `/` in the markup because that is where someone who opened
-/// `/account` themselves belongs. Arriving through the gate, `/` is the one
+/// `/settings` themselves belongs. Arriving through the gate, `/` is the one
 /// place the user was NOT — leaving means abandoning the space they were
 /// looking at — so the `next` the gate carried wins.
 fn bind_return_links(host: &HtmlElement) {
@@ -1424,9 +2028,7 @@ fn bind_return_links(host: &HtmlElement) {
         let _ = link.set_attribute("href", &next);
         // "Back to Tonk" is the truth for `/`, and a lie for a space. The
         // destination changed, so the label has to.
-        if link.text_content().as_deref() == Some("Back to Tonk") {
-            link.set_text_content(Some("Back"));
-        }
+        link.set_text_content(Some("back"));
     }
 }
 
@@ -1434,6 +2036,96 @@ fn bind(host: &HtmlElement) {
     prevent_form_navigation(host);
     bind_return_links(host);
     configure_deletion_entry(host);
+
+    if let Ok(Some(rail)) = host.query_selector(".account__rail") {
+        let tab_host = host.clone();
+        let click = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            else {
+                return;
+            };
+            let Some(name) = target.get_attribute("data-account-tab") else {
+                return;
+            };
+            select_account_tab(&tab_host, &name, true);
+        });
+        let _ = rail.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+        click.forget();
+
+        let tab_host = host.clone();
+        let keydown = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+            let target_name = match event.key().as_str() {
+                "ArrowLeft" | "ArrowRight" => event
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|target| target.get_attribute("data-account-tab"))
+                    .map(|current| {
+                        if current == "account" {
+                            "devices"
+                        } else {
+                            "account"
+                        }
+                    }),
+                "Home" => Some("account"),
+                "End" => Some("devices"),
+                _ => None,
+            };
+            if let Some(name) = target_name {
+                event.prevent_default();
+                select_account_tab(&tab_host, name, true);
+            }
+        });
+        let _ = rail.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        keydown.forget();
+    }
+
+    if let Ok(Some(name)) = host.query_selector("#account-display-name") {
+        let name_host = host.clone();
+        let keydown = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+            if event.key() == "Enter" {
+                event.prevent_default();
+                commit_display_name(name_host.clone());
+            }
+        });
+        let _ = name.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        keydown.forget();
+
+        let name_host = host.clone();
+        let blur = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
+            commit_display_name(name_host.clone());
+        });
+        let _ = name.add_event_listener_with_callback("blur", blur.as_ref().unchecked_ref());
+        blur.forget();
+    }
+
+    let key_host = host.clone();
+    let keydown = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+        trap_confirmation_key(&key_host, &event);
+    });
+    let _ = host.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+    keydown.forget();
+
+    for selector in [
+        "#account-confirm-close",
+        "#account-confirm-cancel",
+        "[data-confirmation-scrim]",
+    ] {
+        on_click(host, selector, |host| close_confirmation(&host));
+    }
+
+    for event_name in ["input", "change"] {
+        if let Ok(Some(arming)) = host.query_selector("#account-delete-arming") {
+            let arming_host = host.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+                update_confirmation_arming(&arming_host);
+            });
+            let _ = arming
+                .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref());
+            closure.forget();
+        }
+    }
     on_click(host, "#account-choose-create", |host| {
         clear_error(&host);
         set_mode(&host, "create");
@@ -1459,6 +2151,7 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
+                prepare_added_profile().await?;
                 // One ceremony: the secret is generated, sealed under
                 // the new passkey's KEK, published as the custody cell,
                 // and the creation request signed. No key material is
@@ -1494,31 +2187,22 @@ fn bind(host: &HtmlElement) {
                     deposits_hex: created.deposits_hex,
                     encryption_key: created.encryption_key,
                 };
+                let custody = CustodyRecord {
+                    custody_did: created.custody_did,
+                    consent_hex: created.consent_hex,
+                    sealed_hex: created.sealed_hex,
+                    publish_invocation_hex: created.publish_invocation_hex,
+                };
                 set_busy(&host, true, "Creating your account…");
-                complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await?;
-                // Neither of these can land before the emailed link is
-                // clicked: the service provisions nothing, and serves
-                // nothing, for a customer that has not confirmed its
-                // email. Both queue instead, and replay on activation.
-                if let Err(error) =
-                    crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
-                {
-                    web_sys::console::warn_1(
-                        &format!("custody provisioning deferred: {error}").into(),
-                    );
-                }
-                if let Err(error) = crate::api::queue_custody_publish(
-                    &created.custody_did,
-                    &created.sealed_hex,
-                    &created.publish_invocation_hex,
+                complete_remote(
+                    &host,
+                    "/accounts",
+                    ceremony,
+                    true,
+                    Some(&email),
+                    Some(&custody),
                 )
-                .await
-                {
-                    // The sealed secret is only in this page's memory
-                    // until it is recorded, so failing to queue it is
-                    // the one loss worth surfacing.
-                    return Err(format!("could not record the account secret: {error}"));
-                }
+                .await?;
                 Ok::<(), String>(())
             }
             .await;
@@ -1637,6 +2321,7 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
+                prepare_added_profile().await?;
                 let device_did = crate::api::identify()
                     .await
                     .map_err(|error| error.to_string())?
@@ -1657,7 +2342,7 @@ fn bind(host: &HtmlElement) {
                 .await
                 .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking this browser…");
-                complete_remote(&host, "/devices/link", ceremony, false, None).await
+                complete_remote(&host, "/devices/link", ceremony, false, None, None).await
             }
             .await;
             if let Err(error) = result {
@@ -1782,7 +2467,7 @@ fn bind(host: &HtmlElement) {
             // account page. `on_click` already suppressed the navigation, so
             // do it explicitly.
             if let Some(window) = window() {
-                let _ = window.location().set_href("/account");
+                let _ = window.location().set_href("/settings");
             }
             return;
         };
@@ -1797,34 +2482,9 @@ fn bind(host: &HtmlElement) {
 
     on_click(host, "#account-unlink", |host| {
         clear_error(&host);
-        let confirmed = window()
-            .map(|window| {
-                window
-                    .confirm_with_message(
-                        "Sign out on this device? Your existing spaces will stay here, but account syncing will stop until you sign in again.",
-                    )
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if !confirmed {
-            return;
+        if let Err(error) = open_confirmation(&host, Confirmation::SignOut) {
+            show_error(&host, error);
         }
-        set_busy(&host, true, "Signing out…");
-        spawn_local(async move {
-            match crate::api::unlink_account().await {
-                Ok(_) => match window().map(|window| window.location().reload()) {
-                    Some(Ok(())) => {}
-                    _ => {
-                        set_busy(&host, false, "");
-                        set_mode(&host, "choice");
-                    }
-                },
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error.to_string());
-                }
-            }
-        });
     });
 
     on_click(host, "#account-delete-review", |host| {
@@ -1834,7 +2494,11 @@ fn bind(host: &HtmlElement) {
             match crate::api::account_deletion_plan().await {
                 Ok(plan) => {
                     set_busy(&host, false, "");
-                    if let Err(error) = render_deletion_plan(&host, &plan) {
+                    let pending = Confirmation::Delete {
+                        plan,
+                        requested_space: requested_space_deletion(),
+                    };
+                    if let Err(error) = open_confirmation(&host, pending) {
                         show_error(&host, error);
                     }
                 }
@@ -1848,180 +2512,48 @@ fn bind(host: &HtmlElement) {
 
     on_click(host, "#account-delete-submit", |host| {
         clear_error(&host);
-        let plan = Reflect::get(host.as_ref(), &DELETION_PLAN.into())
-            .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<AccountDeletionPlan>(value).ok());
-        let Some(plan) = plan else {
-            return show_error(&host, "Review the current deletion scope first.");
+        let Some(pending) = confirmation(&host) else {
+            return show_confirmation_error(&host, "No confirmation is pending.");
         };
-        let requested = requested_space_deletion();
-        let confirmed_email = match input(&host, "#account-delete-email") {
-            Ok(email) if email == plan.email => email,
-            Ok(_) => {
-                return show_error(&host, "The confirmation email does not match this account.");
-            }
-            Err(error) => return show_error(&host, error),
-        };
-        let understood = host
-            .query_selector("#account-delete-understood")
-            .ok()
-            .flatten()
-            .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
-            .is_some_and(|input| input.checked());
-        if !understood {
-            return show_error(
-                &host,
-                "Confirm that you understand the permanent consequences.",
-            );
-        }
-        let destructive: Vec<_> = plan
-            .spaces
-            .iter()
-            .filter(|space| {
-                space.state != "deleted"
-                    && requested
-                        .as_deref()
-                        .is_none_or(|subject| space.subject == subject)
-            })
-            .cloned()
-            .collect();
-        if requested.is_some() && destructive.len() != 1 {
-            return show_error(&host, "The selected owned space is already deleted.");
-        }
-        let final_confirmation = if requested.is_some() {
-            format!(
-                "Permanently delete {} and its hosted content from Tonk services?\n\nYour account and every other space will remain. Copies already replicated to other devices cannot be erased by Tonk. This cannot be undone.",
-                destructive[0]
-                    .name
-                    .as_deref()
-                    .unwrap_or(&destructive[0].subject),
-            )
-        } else {
-            format!(
-                "Permanently delete {} owned space{}, their hosted content from Tonk services, all account backups, and the account for {}?\n\nJoined spaces will not be deleted. Copies already replicated to other devices cannot be erased by Tonk. This cannot be undone.",
-                destructive.len(),
-                if destructive.len() == 1 { "" } else { "s" },
-                plan.email,
-            )
-        };
-        if !window()
-            .and_then(|window| window.confirm_with_message(&final_confirmation).ok())
-            .unwrap_or(false)
-        {
-            return;
-        }
-        set_busy(&host, true, "Waiting for your passkey…");
-        spawn_local(async move {
-            let result = async {
-                if requested.is_some() {
-                    // Deleting one hosted space is deprovisioning — the
-                    // worker signs `/provider/remove` with this device's
-                    // own authority; no passkey ceremony is involved.
-                    let space = &destructive[0];
-                    let deleted = crate::api::delete_owned_space(&AccountSpaceDeletionRequest {
-                        subject: space.subject.clone(),
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?;
-                    return Ok::<_, String>((Some(deleted.subject), None));
-                }
-                // Account deletion asks the human to verify with the
-                // account's passkey, then the worker signs every
-                // destructive invocation with this device's delegated
-                // authority.
-                let credential_id = match crate::api::root_status()
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    tonk_worker_api::RootStatus::Ready {
-                        root_did,
-                        credential_id,
-                        ..
-                    } => {
-                        if root_did != plan.root_did {
-                            return Err(
-                                "this device's passkey belongs to a different account".into()
-                            );
+        match pending {
+            Confirmation::SignOut => {
+                set_busy(&host, true, "Signing out…");
+                spawn_local(async move {
+                    match crate::api::unlink_account().await {
+                        Ok(_) => match window().map(|window| window.location().reload()) {
+                            Some(Ok(())) => {}
+                            _ => {
+                                set_busy(&host, false, "");
+                                close_confirmation(&host);
+                                set_mode(&host, "choice");
+                            }
+                        },
+                        Err(error) => {
+                            set_busy(&host, false, "");
+                            show_confirmation_error(&host, error.to_string());
                         }
-                        credential_id
                     }
-                    tonk_worker_api::RootStatus::Missing { .. } => {
-                        return Err(
-                            "no account passkey is registered on this device to verify with".into(),
-                        );
-                    }
-                };
-                verify_passkey(VerifyPasskeyInput { credential_id })
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let spaces = destructive
-                    .iter()
-                    .map(|space| AccountSpaceDeletionRequest {
-                        subject: space.subject.clone(),
-                    })
-                    .collect();
-                let deleted = crate::api::delete_account(&AccountDeletionRequest {
-                    spaces,
-                    confirmed_email,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-                Ok((None, Some(deleted)))
+                });
             }
-            .await;
-            match result {
-                Ok((Some(subject), None)) => {
-                    let _ = window().map(|window| {
-                        window.alert_with_message(&format!(
-                            "Owned space {subject} deleted from Tonk services. Your account and other spaces remain. Tonk cannot erase copies already replicated to other devices."
-                        ))
-                    });
-                    if let Some(window) = window() {
-                        let _ = window.location().set_href("/account");
-                    }
-                }
-                Ok((None, Some(result))) => {
-                    let _ = window().map(|window| {
-                        window.alert_with_message(&format!(
-                            "Account deleted. {} owned space{} removed from Tonk services; {} joined space{} left intact.",
-                            result.deleted_spaces,
-                            if result.deleted_spaces == 1 { "" } else { "s" },
-                            result.retained_joined_spaces,
-                            if result.retained_joined_spaces == 1 { "" } else { "s" },
-                        ))
-                    });
-                    if let Some(window) = window() {
-                        let _ = window.location().set_href("/account");
-                    }
-                }
-                Ok(_) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, "the deletion result was incomplete");
-                }
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error);
-                }
+            Confirmation::Revoke { did, self_revoke } => {
+                execute_revoke(host, did, self_revoke);
             }
-        });
+            Confirmation::Delete {
+                plan,
+                requested_space,
+            } => begin_delete(host, plan, requested_space),
+        }
     });
 
-    // "Add account" (dashboard) and "Use a different account" (Choice)
-    // are the same move: rotate onto a fresh profile and land on the
-    // normal sign-in flow there, leaving this profile intact.
+    on_click(host, "#account-confirm-result-back", |_| {
+        tonk_host::navigate_to("/settings");
+    });
+
+    // Opening Add account is reversible navigation. The final Create or Log
+    // in submit prepares the fresh profile immediately before its ceremony.
     for selector in ["#account-add-profile", "#account-use-different-account"] {
-        on_click(host, selector, |host| {
-            clear_error(&host);
-            set_busy(&host, true, "Preparing another sign-in…");
-            spawn_local(async move {
-                match crate::api::add_account_profile().await {
-                    Ok(_) => reload_into_switched_profile(&host),
-                    Err(error) => {
-                        set_busy(&host, false, "");
-                        show_error(&host, error.to_string());
-                    }
-                }
-            });
+        on_click(host, selector, |_| {
+            tonk_host::navigate_to("/settings?add=1");
         });
     }
 
@@ -2080,6 +2612,145 @@ fn bind(host: &HtmlElement) {
     }
 }
 
+fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<String>) {
+    let confirmed_email = match input(&host, "#account-delete-email") {
+        Ok(email) if email == plan.email => email,
+        Ok(_) => {
+            return show_confirmation_error(
+                &host,
+                "The confirmation email does not match this account.",
+            );
+        }
+        Err(error) => return show_confirmation_error(&host, error),
+    };
+    let understood = host
+        .query_selector("#account-delete-understood")
+        .ok()
+        .flatten()
+        .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
+        .is_some_and(|input| input.checked());
+    if !understood {
+        return show_confirmation_error(
+            &host,
+            "Confirm that you understand the permanent consequences.",
+        );
+    }
+    let destructive: Vec<_> = plan
+        .spaces
+        .iter()
+        .filter(|space| {
+            space.state != "deleted"
+                && requested
+                    .as_deref()
+                    .is_none_or(|subject| space.subject == subject)
+        })
+        .cloned()
+        .collect();
+    if requested.is_some() && destructive.len() != 1 {
+        return show_confirmation_error(&host, "The selected owned space is already deleted.");
+    }
+    set_busy(
+        &host,
+        true,
+        if requested.is_some() {
+            "Deleting selected space…"
+        } else {
+            "Waiting for your passkey…"
+        },
+    );
+    spawn_local(async move {
+        let result = async {
+            if requested.is_some() {
+                // Deleting one hosted space is deprovisioning — the
+                // worker signs `/provider/remove` with this device's
+                // own authority; no passkey ceremony is involved.
+                let space = &destructive[0];
+                let deleted = crate::api::delete_owned_space(&AccountSpaceDeletionRequest {
+                    subject: space.subject.clone(),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                return Ok::<_, String>((Some(deleted.subject), None));
+            }
+            // Account deletion asks the human to verify with the
+            // account's passkey, then the worker signs every
+            // destructive invocation with this device's delegated
+            // authority.
+            let credential_id = match crate::api::root_status()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                tonk_worker_api::RootStatus::Ready {
+                    root_did,
+                    credential_id,
+                    ..
+                } => {
+                    if root_did != plan.root_did {
+                        return Err("this device's passkey belongs to a different account".into());
+                    }
+                    credential_id
+                }
+                tonk_worker_api::RootStatus::Missing { .. } => {
+                    return Err(
+                        "no account passkey is registered on this device to verify with".into(),
+                    );
+                }
+            };
+            verify_passkey(VerifyPasskeyInput { credential_id })
+                .await
+                .map_err(|error| error.to_string())?;
+            let spaces = destructive
+                .iter()
+                .map(|space| AccountSpaceDeletionRequest {
+                    subject: space.subject.clone(),
+                })
+                .collect();
+            let deleted = crate::api::delete_account(&AccountDeletionRequest {
+                spaces,
+                confirmed_email,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok((None, Some(deleted)))
+        }
+        .await;
+        match result {
+            Ok((Some(subject), None)) => {
+                render_confirmation_result(
+                    &host,
+                    &format!(
+                        "Owned space {subject} was deleted from Tonk services. Your account and other spaces remain. Tonk cannot erase copies already replicated to other devices."
+                    ),
+                );
+            }
+            Ok((None, Some(result))) => {
+                render_confirmation_result(
+                    &host,
+                    &format!(
+                        "Account deleted. {} owned space{} removed from Tonk services; {} joined space{} left intact.",
+                        result.deleted_spaces,
+                        if result.deleted_spaces == 1 { "" } else { "s" },
+                        result.retained_joined_spaces,
+                        if result.retained_joined_spaces == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                    ),
+                );
+            }
+            Ok(_) => {
+                set_busy(&host, false, "");
+                show_confirmation_error(&host, "the deletion result was incomplete");
+            }
+            Err(error) => {
+                set_busy(&host, false, "");
+                show_confirmation_error(&host, error);
+            }
+        }
+    });
+}
+
 /// Confirm and revoke.
 ///
 /// No passkey ceremony: the worker's own account grant is a powerline,
@@ -2088,18 +2759,13 @@ fn bind(host: &HtmlElement) {
 /// space. Shared by the device list's button and the CLI's `?revoke=`
 /// handoff.
 fn begin_revoke(host: HtmlElement, did: String, self_revoke: bool) {
-    let message = if self_revoke {
-        "Remove access for this device? This permanently disconnects it from your Tonk account. To use it again, sign in to add it as a new device."
-    } else {
-        "Remove access for this device? This permanently disconnects it from your Tonk account. To use it again, sign in to add a new device."
-    };
-    let confirmed = window()
-        .map(|window| window.confirm_with_message(message).unwrap_or(false))
-        .unwrap_or(false);
-    if !confirmed {
-        return;
-    }
     clear_error(&host);
+    if let Err(error) = open_confirmation(&host, Confirmation::Revoke { did, self_revoke }) {
+        show_error(&host, error);
+    }
+}
+
+fn execute_revoke(host: HtmlElement, did: String, self_revoke: bool) {
     set_busy(
         &host,
         true,
@@ -2118,6 +2784,7 @@ fn begin_revoke(host: HtmlElement, did: String, self_revoke: bool) {
                     false,
                     revocation_status(&acknowledgement, self_revoke),
                 );
+                close_confirmation(&host);
                 if self_revoke {
                     disable_authority_actions(&host);
                     return;
@@ -2144,7 +2811,7 @@ fn begin_revoke(host: HtmlElement, did: String, self_revoke: bool) {
             }
             Err(error) => {
                 set_busy(&host, false, "");
-                show_error(&host, error.to_string());
+                show_confirmation_error(&host, error.to_string());
             }
         }
     });
@@ -2245,7 +2912,7 @@ mod tests {
         bind_return_links(&host);
 
         let back = host
-            .query_selector(".account__masthead [data-return]")
+            .query_selector("#account-success [data-return]")
             .unwrap()
             .expect("the success panel offers a way back");
         assert_eq!(
@@ -2254,7 +2921,7 @@ mod tests {
         );
         assert_eq!(
             back.text_content().as_deref(),
-            Some("Back"),
+            Some("back"),
             "the label has to stop claiming it goes to Tonk"
         );
     }
@@ -2267,7 +2934,7 @@ mod tests {
         bind_return_links(&host);
 
         assert_eq!(
-            host.query_selector(".account__masthead [data-return]")
+            host.query_selector("#account-success [data-return]")
                 .unwrap()
                 .expect("the success panel offers a way back")
                 .get_attribute("href")
@@ -2316,7 +2983,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("Log in")
+            Some("log in")
         );
         assert!(
             host.query_selector("#account-retry-local")
@@ -2408,6 +3075,7 @@ mod tests {
     #[dialog_common::test]
     fn it_disables_in_panel_navigation_while_account_work_is_in_flight() {
         let host = host();
+        set_mode(&host, "create");
         set_busy(&host, true, "Creating your account…");
 
         for selector in [
@@ -2423,20 +3091,21 @@ mod tests {
                 .unchecked_into();
             assert!(button.disabled(), "{selector} remained interactive");
         }
+        let initiating = host
+            .query_selector("#account-create-submit")
+            .unwrap()
+            .unwrap();
+        assert!(initiating.has_attribute("data-initiating"));
+        assert_eq!(
+            initiating.text_content().as_deref(),
+            Some("Creating your account…")
+        );
+        assert_eq!(host.get_attribute("aria-busy").as_deref(), Some("true"));
     }
 
     #[dialog_common::test]
-    fn it_authors_a_single_signed_in_dashboard() {
+    fn it_authors_the_attached_account_and_devices_settings_panels() {
         let host = host();
-        assert_eq!(
-            host.query_selector(".account > h1")
-                .unwrap()
-                .expect("account heading")
-                .text_content()
-                .as_deref(),
-            Some("Account")
-        );
-
         let dashboard = host
             .query_selector("#account-success")
             .unwrap()
@@ -2449,12 +3118,11 @@ mod tests {
             "#account-passkey-device-value",
             "#account-profile-list",
             "#account-add-profile",
-            ".account__passkey",
-            ".account__signout",
+            "#account-display-name",
             "#account-delete-review",
-            "#account-delete-submit",
-            "#account-delete-email",
-            "#account-delete-understood",
+            "[role=tablist]",
+            "#account-pane-account",
+            "#account-pane-devices",
         ] {
             assert!(
                 dashboard.query_selector(selector).unwrap().is_some(),
@@ -2462,19 +3130,39 @@ mod tests {
             );
         }
         assert!(
-            host.query_selector(".account__masthead [data-return]")
+            host.query_selector("#account-success [data-return]")
                 .unwrap()
                 .is_some(),
             "the account masthead should offer a conventional return link"
         );
+        assert!(
+            host.query_selector(".account__logo[role=img][aria-label=tonk]")
+                .unwrap()
+                .is_some(),
+            "settings should carry the Tonk wordmark"
+        );
+        let status = host
+            .query_selector("#account-success-message")
+            .unwrap()
+            .expect("optional settings outcome");
+        assert!(
+            status.has_attribute("hidden"),
+            "the settings page should not restate that this device is signed in"
+        );
+        assert_eq!(status.text_content().as_deref(), Some(""));
+
+        let outcome = ("ok".to_string(), None);
+        apply_link_outcome(&host, Some(&outcome));
+        assert!(!status.has_attribute("hidden"));
+        assert_eq!(
+            status.text_content().as_deref(),
+            Some("Command-line device linked.")
+        );
 
         let copy = dashboard.text_content().unwrap();
         assert!(copy.contains("device, browser profile, or password manager"));
-        assert!(copy.contains("do not tell Tonk which passkey manager currently stores it"));
-        assert!(copy.contains("syncing will stop until you sign in again"));
-        assert!(copy.contains("This is not sign out"));
         assert!(copy.contains("Spaces created by other people will not be deleted"));
-        assert!(copy.contains("cannot erase copies that other devices have already replicated"));
+        assert!(copy.contains("cannot erase copies already replicated to other devices"));
         for technical in ["authority", "grant", "relink required"] {
             assert!(
                 !copy.contains(technical),
@@ -2488,8 +3176,41 @@ mod tests {
             "device management should not sit behind an interstitial"
         );
         assert!(
-            host.query_selector("#account-devices").unwrap().is_none(),
-            "the signed-in dashboard should be the only device-management surface"
+            host.query_selector(".account__danger").unwrap().is_none(),
+            "destructive actions must not introduce a red danger surface"
+        );
+
+        select_account_tab(&host, "devices", false);
+        let account_tab = host
+            .query_selector("#account-tab-account")
+            .unwrap()
+            .unwrap();
+        let devices_tab = host
+            .query_selector("#account-tab-devices")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            account_tab.get_attribute("aria-selected").as_deref(),
+            Some("false")
+        );
+        assert_eq!(account_tab.get_attribute("tabindex").as_deref(), Some("-1"));
+        assert_eq!(
+            devices_tab.get_attribute("aria-selected").as_deref(),
+            Some("true")
+        );
+        assert_eq!(devices_tab.get_attribute("tabindex").as_deref(), Some("0"));
+        assert!(
+            host.query_selector("#account-pane-account")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden")
+        );
+        assert!(
+            !host
+                .query_selector("#account-pane-devices")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden")
         );
     }
 
@@ -2533,7 +3254,7 @@ mod tests {
             "an account row shows its email"
         );
         assert!(
-            text.contains("Local workspace"),
+            text.contains("local workspace"),
             "a never-signed-in row says what it is"
         );
         assert!(text.contains("Alice") && text.contains("brave-otter"));
@@ -2542,7 +3263,11 @@ mod tests {
             .query_selector("button[data-activate=\"tonk-0a12\"]")
             .unwrap()
             .expect("the other profile's row offers a switch");
-        assert_eq!(button.text_content().as_deref(), Some("Switch"));
+        assert!(button.text_content().unwrap_or_default().is_empty());
+        assert_eq!(
+            button.get_attribute("aria-label").as_deref(),
+            Some("Switch to brave-otter")
+        );
     }
 
     #[dialog_common::test]
@@ -2558,7 +3283,7 @@ mod tests {
             .query_selector("li[data-active]")
             .unwrap()
             .expect("the active profile renders a marked row");
-        assert!(active.text_content().unwrap().contains("Current"));
+        assert!(active.text_content().unwrap().contains("current"));
         assert!(
             active.query_selector("button").unwrap().is_none(),
             "the active row must not offer an action"
@@ -2607,6 +3332,194 @@ mod tests {
         assert!(
             button.has_attribute("hidden"),
             "without a persisted root, plain log-in suffices"
+        );
+    }
+
+    fn deletion_plan() -> AccountDeletionPlan {
+        AccountDeletionPlan {
+            root_did: "did:key:zAccount".into(),
+            email: "person@example.com".into(),
+            spaces: vec![tonk_worker_api::AccountDeletionSpace {
+                subject: "did:key:zSpace".into(),
+                name: Some("Project One".into()),
+                state: "active".into(),
+            }],
+            joined_spaces: 2,
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_opens_and_closes_the_authored_confirmation_with_focus_restoration() {
+        let host = mounted_account_host().await;
+        // The trigger lives on the success panel, which the template
+        // keeps `hidden` until a mode selects it — and focusing an
+        // element inside a hidden subtree silently no-ops, which would
+        // leave nothing real to restore. Reach the state the button is
+        // actually pressed in.
+        set_mode(&host, "success");
+        let trigger: HtmlElement = host
+            .query_selector("#account-unlink")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        trigger.focus().unwrap();
+
+        open_confirmation(&host, Confirmation::SignOut).unwrap();
+        let surface = host
+            .query_selector("#account-confirmation")
+            .unwrap()
+            .unwrap();
+        assert!(!surface.has_attribute("hidden"));
+        assert_eq!(
+            window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .id(),
+            "account-confirm-cancel"
+        );
+
+        close_confirmation(&host);
+        assert!(surface.has_attribute("hidden"));
+        assert_eq!(
+            window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .id(),
+            "account-unlink"
+        );
+        host.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_loops_keyboard_focus_inside_the_authored_confirmation() {
+        let host = mounted_account_host().await;
+        open_confirmation(&host, Confirmation::SignOut).unwrap();
+        let document = window().unwrap().document().unwrap();
+        let first: HtmlElement = host
+            .query_selector("#account-confirm-close")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        let last: HtmlElement = host
+            .query_selector("#account-delete-submit")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+
+        first.focus().unwrap();
+        let backwards = web_sys::KeyboardEventInit::new();
+        backwards.set_key("Tab");
+        backwards.set_shift_key(true);
+        let backwards =
+            KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &backwards).unwrap();
+        trap_confirmation_key(&host, &backwards);
+        assert_eq!(document.active_element().unwrap().id(), last.id());
+
+        let forwards = web_sys::KeyboardEventInit::new();
+        forwards.set_key("Tab");
+        let forwards =
+            KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &forwards).unwrap();
+        trap_confirmation_key(&host, &forwards);
+        assert_eq!(document.active_element().unwrap().id(), first.id());
+        host.remove();
+    }
+
+    #[dialog_common::test]
+    fn it_requires_exact_deletion_arming_and_replaces_pending_operations() {
+        let host = host();
+        open_confirmation(&host, Confirmation::SignOut).unwrap();
+        open_confirmation(
+            &host,
+            Confirmation::Revoke {
+                did: "did:key:zDevice".into(),
+                self_revoke: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            confirmation(&host),
+            Some(Confirmation::Revoke {
+                did: "did:key:zDevice".into(),
+                self_revoke: false,
+            })
+        );
+
+        open_confirmation(
+            &host,
+            Confirmation::Delete {
+                plan: deletion_plan(),
+                requested_space: None,
+            },
+        )
+        .unwrap();
+        let submit: HtmlButtonElement = host
+            .query_selector("#account-delete-submit")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        let email: HtmlInputElement = host
+            .query_selector("#account-delete-email")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        let understood: HtmlInputElement = host
+            .query_selector("#account-delete-understood")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        assert!(submit.disabled());
+        email.set_value("wrong@example.com");
+        understood.set_checked(true);
+        update_confirmation_arming(&host);
+        assert!(submit.disabled());
+        email.set_value("person@example.com");
+        update_confirmation_arming(&host);
+        assert!(!submit.disabled());
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_every_intermediary_mode_in_the_ceremony_grammar() {
+        let host = host();
+        for selector in [
+            "#account-choice.account__ceremony",
+            "#account-create.account__ceremony",
+            "#account-link.account__ceremony",
+            "#account-handoff.account__ceremony",
+        ] {
+            let panel = host.query_selector(selector).unwrap().expect(selector);
+            assert!(
+                panel
+                    .query_selector(".account__ceremony-head")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                panel
+                    .query_selector(".account__narrator")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(panel.query_selector(".account__ghost").unwrap().is_some());
+        }
+        assert_eq!(
+            host.query_selector("#account-email")
+                .unwrap()
+                .unwrap()
+                .get_attribute("type")
+                .as_deref(),
+            Some("email")
+        );
+        assert!(
+            host.query_selector("#account-handoff details")
+                .unwrap()
+                .is_some(),
+            "technical DIDs stay behind optional disclosure"
         );
     }
 
@@ -2746,7 +3659,7 @@ mod tests {
     /// Enter in a single-field form implicitly submits it — the email panel
     /// has exactly one field and, before this, no submit button, so the
     /// browser submitted the form itself: a GET to the current URL with no
-    /// action, which reloaded `/account?Email=…`, threw the typed address
+    /// action, which reloaded `/settings?Email=…`, threw the typed address
     /// away, and never ran the handler that sends the code. Nothing about
     /// that is specific to the email panel, so the guard covers every form
     /// the panel authors.
@@ -2848,8 +3761,8 @@ mod tests {
         assert_eq!(items.length(), 2);
         let text = list.text_content().unwrap();
         assert!(text.contains("This browser"));
-        assert!(text.contains("This device"));
-        assert!(text.contains("Added"));
+        assert!(text.contains("this device"));
+        assert!(text.contains("added"));
         // Every row is an active grant, so every row is removable — no
         // stored path evidence or passkey involved.
         assert_eq!(
@@ -2867,7 +3780,7 @@ mod tests {
             .query_selector("button[data-revoke=\"did:key:zPhone\"]")
             .unwrap()
             .expect("another device's row has a revoke button");
-        assert_eq!(button.text_content().as_deref(), Some("Remove access"));
+        assert_eq!(button.text_content().as_deref(), Some("remove access"));
     }
 
     /// A `?revoke=` deep link must land on the device list, where the
@@ -2876,14 +3789,31 @@ mod tests {
     #[dialog_common::test]
     fn it_routes_a_revoke_deep_link_to_the_device_list() {
         assert_eq!(
-            landing(Some(AccountStateStatus::Unconfigured), true),
+            landing(Some(AccountStateStatus::Unconfigured), true, false),
             Landing::Devices
         );
         assert_eq!(
-            landing(Some(AccountStateStatus::Ready), false),
+            landing(Some(AccountStateStatus::Ready), false, false),
             Landing::Success
         );
-        assert_eq!(landing(None, true), Landing::Choice { revoke_hint: true });
-        assert_eq!(landing(None, false), Landing::Choice { revoke_hint: false });
+        assert_eq!(
+            landing(None, true, false),
+            Landing::Choice { revoke_hint: true }
+        );
+        assert_eq!(
+            landing(None, false, false),
+            Landing::Choice { revoke_hint: false }
+        );
+    }
+
+    /// Opening Add account is only a choice screen. It must not reuse the
+    /// active account's dashboard, and reaching this screen must not itself
+    /// rotate the worker onto a new profile.
+    #[dialog_common::test]
+    fn it_offers_account_choices_before_preparing_an_added_profile() {
+        assert_eq!(
+            landing(Some(AccountStateStatus::Ready), false, true),
+            Landing::Choice { revoke_hint: false }
+        );
     }
 }

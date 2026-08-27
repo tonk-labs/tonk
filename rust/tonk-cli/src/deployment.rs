@@ -172,7 +172,7 @@ mod tests {
     async fn it_discovers_the_access_remote_from_the_ceremony_deployment() -> Result<()> {
         let (origin, server) = deployment_server("/accounts/").await?;
         let defaults = discover(
-            &format!("{origin}/account/link?intent=login"),
+            &format!("{origin}/settings/link?intent=login"),
             &format!("{origin}/accounts"),
         )
         .await?;
@@ -186,9 +186,9 @@ mod tests {
     fn it_rejects_unsafe_ceremony_urls_before_network_access() {
         for url in [
             "relative",
-            "ftp://deployment.example/account/link",
-            "https://user@deployment.example/account/link",
-            "http://deployment.example/account/link",
+            "ftp://deployment.example/settings/link",
+            "https://user@deployment.example/settings/link",
+            "http://deployment.example/settings/link",
         ] {
             let error = validated_http_url(url, "account ceremony URL")
                 .expect_err("unsafe URL must be rejected");
@@ -199,7 +199,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_records_every_endpoint_the_deployment_advertised() -> Result<()> {
         let (origin, server) = deployment_server("/accounts/").await?;
-        let page = format!("{origin}/account/link?intent=login");
+        let page = format!("{origin}/settings/link?intent=login");
         let defaults = discover(&page, &format!("{origin}/accounts")).await?;
         let record = account_record("did:key:zRoot", &page, Some(&defaults));
         assert_eq!(record.root, "did:key:zRoot");
@@ -219,7 +219,7 @@ mod tests {
     async fn it_records_the_ceremony_origin_when_discovery_fails() -> Result<()> {
         let record = account_record(
             "did:key:zRoot",
-            "https://deployment.example/account/link?intent=login",
+            "https://deployment.example/settings/link?intent=login",
             None,
         );
         assert_eq!(record.root, "did:key:zRoot");
@@ -244,7 +244,7 @@ mod tests {
     async fn it_rejects_a_different_advertised_account_service() -> Result<()> {
         let (origin, server) = deployment_server("/other/").await?;
         let error = discover(
-            &format!("{origin}/account/link"),
+            &format!("{origin}/settings/link"),
             &format!("{origin}/accounts"),
         )
         .await

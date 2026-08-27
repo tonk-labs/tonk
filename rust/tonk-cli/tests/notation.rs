@@ -474,7 +474,6 @@ mod when_serving_the_guide {
             ("notation", guide::NOTATION),
             ("views", guide::VIEWS),
             ("events", guide::EVENTS),
-            ("workspace", guide::WORKSPACE),
         ] {
             for fence in guide_yaml_fences(topic, body) {
                 let location = format!("{topic}:{}", fence.opening_line);
@@ -534,11 +533,6 @@ mod when_serving_the_guide {
         assert!(guide::topic("sync").unwrap().contains("upstream"));
         assert!(guide::topic("views").unwrap().contains("tonk:view"));
         assert!(guide::topic("events").unwrap().contains("rule!"));
-        assert!(
-            guide::topic("workspace")
-                .unwrap()
-                .contains("view: tonk:view")
-        );
         assert!(guide::topic("bogus").is_none());
     }
 
@@ -575,11 +569,7 @@ mod when_serving_the_guide {
 
     #[dialog_common::test]
     fn raw_view_examples_pin_the_entity_they_update() {
-        for (topic, body) in [
-            ("views", guide::VIEWS),
-            ("events", guide::EVENTS),
-            ("workspace", guide::WORKSPACE),
-        ] {
+        for (topic, body) in [("views", guide::VIEWS), ("events", guide::EVENTS)] {
             let lines: Vec<_> = body.lines().collect();
             for (index, line) in lines.iter().enumerate() {
                 if !line.starts_with("view") || !line.contains("!: &") {
@@ -594,39 +584,6 @@ mod when_serving_the_guide {
                     "{topic} guide has an unstable raw view assertion: {line}"
                 );
             }
-        }
-    }
-
-    #[dialog_common::test]
-    fn workspace_guide_tracks_the_optional_sheets_module() {
-        let sheets = include_str!("../../tonk-core/assets/library/sheets.yaml");
-        for declaration in [
-            "concept!: &workspace/sheet",
-            "concept!: &workspace/sheet-order",
-            "concept!: &empty-artifact",
-            "concept!: &tonk/binder",
-            "command!: &workspace/create-sheet",
-            "command!: &workspace/activate-sheet",
-            "command!: &workspace/close-sheet",
-        ] {
-            assert!(
-                sheets.contains(declaration),
-                "sheets module no longer contains {declaration}"
-            );
-        }
-        for name in [
-            "workspace/sheet",
-            "workspace/sheet-order",
-            "empty-artifact",
-            "tonk/binder",
-            "workspace/create-sheet",
-            "workspace/activate-sheet",
-            "workspace/close-sheet",
-        ] {
-            assert!(
-                guide::WORKSPACE.contains(name),
-                "workspace guide omits current module surface {name}"
-            );
         }
     }
 }

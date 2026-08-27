@@ -252,6 +252,21 @@ fn on_delta(host: &HtmlElement, payload: JsValue) {
 /// component carries no inline color. Idempotent: reuses the nodes, only
 /// swapping the modifier class, so a frame doesn't rebuild the DOM.
 fn paint(host: &HtmlElement, status: &str) {
+    // Headless: render nothing and report onto the parent instead, which is
+    // how a host that draws its own disc (the FAB bar's circle) consumes this
+    // subscription. Deliberately addressed to the PARENT rather than a named
+    // tag, so this element stays ignorant of who is using it.
+    if host.has_attribute("headless") {
+        if let Some(parent) = host.parent_element() {
+            let _ = parent.set_attribute("state", disc_state(status));
+            // The disc has three shapes but sync has eight states, so the
+            // precise one travels alongside it for the accessible name —
+            // "revoked" and "conflict" both draw a hollow ring, and losing
+            // the distinction from the label would make them unreportable.
+            let _ = parent.set_attribute("data-sync-status", status);
+        }
+        return;
+    }
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
@@ -288,6 +303,22 @@ fn modifier_class(status: &str) -> &'static str {
         "sync:unavailable" => "sync--unavailable",
         "sync:offline" => "sync--offline",
         _ => "sync--unknown",
+    }
+}
+
+/// Map a `sync:*` status entity to one of the disc's three shapes: filled
+/// (online and syncing), the 135° half-fill (deliberately paused), or the
+/// hollow ring (everything else — not syncing, for whatever reason).
+///
+/// Lossy on purpose. The drawn vocabulary is three shapes, and inventing a
+/// fourth for `revoked` or `conflict` would be an illustration, not a mark.
+/// The precise status rides alongside as `data-sync-status` so nothing that
+/// needs the distinction — the accessible name above all — has to lose it.
+fn disc_state(status: &str) -> &'static str {
+    match status {
+        "sync:idle" | "sync:pending" => "synced",
+        "sync:paused" => "paused",
+        _ => "offline",
     }
 }
 

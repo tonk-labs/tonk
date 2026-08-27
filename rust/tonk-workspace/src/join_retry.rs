@@ -30,10 +30,14 @@ impl CustomElement for TonkJoinRetry {
         let host = this.clone();
         let listener = Closure::wrap(Box::new(move |event: Event| {
             event.prevent_default();
-            let init = CustomEventInit::new();
-            init.set_bubbles(true);
-            if let Ok(retry) = CustomEvent::new_with_event_init_dict("tonk:join-retry", &init) {
-                let _ = host.dispatch_event(&retry);
+            if host.get_attribute("kind").as_deref() == Some(RETRYABLE_KIND) {
+                let init = CustomEventInit::new();
+                init.set_bubbles(true);
+                if let Ok(retry) = CustomEvent::new_with_event_init_dict("tonk:join-retry", &init) {
+                    let _ = host.dispatch_event(&retry);
+                }
+            } else if let Some(win) = window() {
+                let _ = win.location().assign("/join");
             }
         }) as Box<dyn FnMut(Event)>);
         let _ = this.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
@@ -59,13 +63,9 @@ impl CustomElement for TonkJoinRetry {
 }
 
 fn render(this: &HtmlElement) {
-    if this.get_attribute("kind").as_deref() == Some(RETRYABLE_KIND) {
-        this.set_inner_html(
-            r#"<button type="button" class="join-error__retry">Try again</button>"#,
-        );
-    } else {
-        this.set_inner_html("");
-    }
+    this.set_inner_html(
+        r#"<button type="button" class="join-error__retry">join this space</button>"#,
+    );
 }
 
 pub(crate) fn register() {

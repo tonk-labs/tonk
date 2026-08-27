@@ -30,19 +30,10 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
-/// The sheets template — seeded on top of core when chosen. Must lower
-/// self-contained (it re-declares the core concepts it references).
-const SHEETS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/sheets.yaml");
-
-/// The wiki template — seeded on top of core when chosen, like sheets.
-const WIKI_LIBRARY: &str = include_str!("../../tonk-core/assets/library/wiki.yaml");
-
-/// The board template — seeded on top of core when chosen, like sheets.
-const BOARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/board.yaml");
-
-/// The notebook template — a prose document whose `dialog` fences are
-/// live query cells.
-const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
+/// Light-DOM markup mounted by the Hub account custom element. The profile
+/// library supplies its geometry, so their visual contract is checked here
+/// together.
+const HUB_ACCOUNT_MARKUP: &str = include_str!("../../tonk-workspace/src/ui_hub_account.html");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
@@ -67,6 +58,14 @@ fn assert_library_lowers(label: &str, document: &str) {
         !request.claims.is_empty(),
         "{label} should lower to at least one claim",
     );
+}
+
+fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
+    document
+        .split(selector)
+        .nth(1)
+        .and_then(|css| css.split('}').next())
+        .unwrap_or_else(|| panic!("profile library must contain the `{selector}` rule"))
 }
 
 #[test]
@@ -141,9 +140,6 @@ fn kebab_to_camel(segment: &str) -> String {
 fn it_reads_form_controls_at_properties_they_have() {
     assert_form_reads_resolve("standard library (core.yaml)", STANDARD_LIBRARY);
     assert_form_reads_resolve("profile library (profile.yaml)", PROFILE_LIBRARY);
-    assert_form_reads_resolve("sheets template (sheets.yaml)", SHEETS_LIBRARY);
-    assert_form_reads_resolve("wiki template (wiki.yaml)", WIKI_LIBRARY);
-    assert_form_reads_resolve("board template (board.yaml)", BOARD_LIBRARY);
 }
 
 #[test]
@@ -159,80 +155,263 @@ fn it_leaves_network_bearing_space_bindings_unquoted() {
 }
 
 #[test]
-fn it_lowers_core_concatenated_with_the_sheets_template() {
-    // The worker never seeds sheets.yaml alone: for the `sheets`
-    // template it concatenates core.yaml ahead of it into ONE document
-    // and evaluates the whole thing in a single commit. The template
-    // therefore relies on the concepts core declares (tonk:view,
-    // tonk:view/directory, tonk:replica) and must not redeclare them —
-    // duplicate anchors are rejected within a document. Analyze the
-    // same concatenation the seed builds so that collision is caught
-    // here rather than at first launch.
-    let seeded = format!("{STANDARD_LIBRARY}\n{SHEETS_LIBRARY}");
-    assert_library_lowers("core.yaml + sheets.yaml (sheets template)", &seeded);
-}
-
-#[test]
-fn it_lowers_core_concatenated_with_the_wiki_template() {
-    // Same single-document seed as sheets: core.yaml is concatenated
-    // ahead of wiki.yaml, so the template must reuse core's concepts
-    // (tonk:view, tonk:view/directory, tonk:replica, `component`)
-    // without redeclaring their anchors.
-    let seeded = format!("{STANDARD_LIBRARY}\n{WIKI_LIBRARY}");
-    assert_library_lowers("core.yaml + wiki.yaml (wiki template)", &seeded);
-}
-
-#[test]
-fn it_lowers_core_concatenated_with_the_board_template() {
-    // Same single-document seed as sheets and wiki: core.yaml is
-    // concatenated ahead of board.yaml, so the template must reuse
-    // core's concepts (tonk:view, tonk:view/directory, tonk:replica,
-    // `component`) without redeclaring their anchors.
-    let seeded = format!("{STANDARD_LIBRARY}\n{BOARD_LIBRARY}");
-    assert_library_lowers("core.yaml + board.yaml (board template)", &seeded);
-}
-
-#[test]
-fn it_lowers_core_concatenated_with_the_notebook_template() {
-    // Same single-document seed as the other templates: core.yaml is
-    // concatenated ahead of notebook.yaml, so the template must reuse
-    // core's concepts without redeclaring their anchors.
-    let seeded = format!("{STANDARD_LIBRARY}\n{NOTEBOOK_LIBRARY}");
-    assert_library_lowers("core.yaml + notebook.yaml (notebook template)", &seeded);
-}
-
-#[test]
-fn it_overrides_the_space_alias_to_the_wiki_in_wiki() {
-    assert!(
-        WIKI_LIBRARY.contains("entity: tonk:wiki"),
-        "wiki.yaml must override tonk/space -> tonk:wiki",
-    );
-}
-
-#[test]
-fn it_overrides_the_space_alias_to_the_board_in_board() {
-    assert!(
-        BOARD_LIBRARY.contains("entity: tonk:board/canvas"),
-        "board.yaml must override tonk/space -> tonk:board/canvas",
-    );
-}
-
-#[test]
 fn it_defaults_the_space_alias_to_blank_in_core() {
     assert!(
         STANDARD_LIBRARY.contains("entity: tonk:blank"),
         "core.yaml must seed the default tonk/space -> tonk:blank alias",
     );
+}
+
+#[test]
+fn it_describes_space_removal_as_device_local() {
+    let rendered_words = PROFILE_LIBRARY
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        !STANDARD_LIBRARY.contains("model: tonk:sheet"),
-        "core.yaml must not carry the sheets workspace after the split",
+        rendered_words.contains("Remove {name} from this device?"),
+        "the Hub confirmation must name the device-local removal boundary",
+    );
+    assert!(
+        rendered_words.contains("Removing it does not delete other members' copies."),
+        "the Hub confirmation must preserve independent replicas",
+    );
+    assert!(
+        !rendered_words.contains("from this account, on every"),
+        "the Hub must not imply that local removal erases account or peer copies",
     );
 }
 
 #[test]
-fn it_overrides_the_space_alias_to_binder_in_sheets() {
+fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     assert!(
-        SHEETS_LIBRARY.contains("entity: tonk:binder"),
-        "sheets.yaml must override tonk/space -> tonk:binder",
+        PROFILE_LIBRARY
+            .contains("box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);"),
+        "Hub focus rings need both palette poles so selected and ordinary controls stay visible",
     );
+}
+
+#[test]
+fn it_keeps_the_hub_on_the_complete_stone_token_contract() {
+    for token in [
+        "--panel:",
+        "--cur:var(--panel)",
+        "--card-hover:",
+        "--canvas:",
+        "--stub-ink:",
+        "--veil:",
+        "--track:",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(token),
+            "the Hub palette must define `{token}` in its shared contract",
+        );
+    }
+}
+
+#[test]
+fn it_builds_one_centered_hub_launcher_with_an_attached_settings_view() {
+    for contract in [
+        ".hubcol",
+        "width:min(576px, calc(100vw - 32px))",
+        ".hc-view",
+        ".hc-cfg",
+        "create a new space",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the centered Hub launcher must contain `{contract}`",
+        );
+    }
+    let hubbar = PROFILE_LIBRARY
+        .split(".hubbar {")
+        .nth(1)
+        .and_then(|css| css.split('}').next())
+        .expect("the Hub bar rule");
+    for rejected in ["position:fixed", "right:", "border-radius"] {
+        assert!(
+            !hubbar.contains(rejected),
+            "the centered Hub bar must reject `{rejected}`",
+        );
+    }
+    for (selector, width) in [
+        (".hc-acct {", "width:224px"),
+        (".hc-view {", "width:192px"),
+        (".hc-cfg {", "width:112px"),
+        (".hub-page .mode-cap {", "width:48px"),
+    ] {
+        assert!(
+            css_rule(PROFILE_LIBRARY, selector).contains(width),
+            "the proportional desktop Hub cell `{selector}` must contain `{width}`",
+        );
+    }
+    let rejected = "class=\"shead";
+    assert!(
+        !PROFILE_LIBRARY.contains(rejected),
+        "the centered Hub launcher must reject `{rejected}`",
+    );
+    assert_eq!(
+        PROFILE_LIBRARY.matches("no spaces yet").count(),
+        1,
+        "the empty Hub must state the neutral roster fact exactly once",
+    );
+    for rejected in ["signed out", "no spaces available"] {
+        assert!(
+            !PROFILE_LIBRARY.to_lowercase().contains(rejected),
+            "a provider-free local profile must not claim `{rejected}`",
+        );
+    }
+    for contract in [
+        "<ui-hub-account>",
+        "data-account-handoff",
+        "href=\"/space/{subject}\"",
+        "class=\"snew-form\"",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "provider-free Hub access must preserve `{contract}`",
+        );
+    }
+}
+
+#[test]
+fn it_separates_the_account_roster_into_independent_blocks() {
+    let menu = css_rule(PROFILE_LIBRARY, ".account-menu {");
+    for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
+        assert!(
+            menu.contains(contract),
+            "the account roster must contain `{contract}`",
+        );
+    }
+    let profiles = css_rule(PROFILE_LIBRARY, ".account-menu__profiles {");
+    assert!(
+        profiles.contains("gap:7px"),
+        "profiles must keep the same 7px rhythm as Hub space rows",
+    );
+    let row = css_rule(PROFILE_LIBRARY, ".account-menu__row {");
+    assert!(
+        row.contains("box-shadow:0 0 0 1px var(--ring)"),
+        "each account row must carry its own ring",
+    );
+    assert!(
+        !row.contains("border-bottom"),
+        "separated account blocks must not retain fused row dividers",
+    );
+}
+
+#[test]
+fn it_adapts_the_gooey_settings_hierarchy_to_the_wider_launcher() {
+    let settings = css_rule(PROFILE_LIBRARY, ".hub-settings {");
+    for contract in [
+        "display:grid",
+        "grid-template-columns:144px 432px",
+        "width:576px",
+    ] {
+        assert!(
+            settings.contains(contract),
+            "the desktop settings view must contain `{contract}`",
+        );
+    }
+    let rail = css_rule(PROFILE_LIBRARY, ".hub-settings__rail {");
+    for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
+        assert!(
+            rail.contains(contract),
+            "the desktop settings rail must contain `{contract}`",
+        );
+    }
+    let tab = css_rule(PROFILE_LIBRARY, ".hub-settings__rail button {");
+    for contract in ["border:1px solid var(--ring)", "box-shadow:none"] {
+        assert!(
+            tab.contains(contract),
+            "every settings tab must share the panel's inset edge geometry with `{contract}`",
+        );
+    }
+    let selected_tab = css_rule(
+        PROFILE_LIBRARY,
+        ".hub-settings__rail button[aria-selected=\"true\"] {",
+    );
+    assert!(
+        selected_tab.contains("border-right:0"),
+        "the selected desktop tab must erase only its docking edge",
+    );
+    let body = css_rule(PROFILE_LIBRARY, ".hub-settings__body {");
+    assert!(
+        body.contains("height:clamp(408px, 60vh, 640px)"),
+        "the settings body must preserve its capacity and fixed tab geometry",
+    );
+    let medium = PROFILE_LIBRARY
+        .split("@media (max-width:607px)")
+        .nth(1)
+        .expect("the medium Hub breakpoint");
+    let medium_settings = css_rule(medium, ".hub-settings {");
+    for contract in [
+        "grid-template-columns:108px 324px",
+        "width:100%",
+        "margin-left:0",
+    ] {
+        assert!(
+            medium_settings.contains(contract),
+            "the medium settings view must contain `{contract}`",
+        );
+    }
+    let compact = PROFILE_LIBRARY
+        .split("@media (max-width:463px)")
+        .nth(1)
+        .expect("the compact Hub breakpoint");
+    let compact_rail = css_rule(compact, ".hub-settings__rail {");
+    assert!(
+        compact_rail.contains("width:100%"),
+        "the compact settings tabs must span the full attached panel",
+    );
+    for contract in ["border-right:1px solid var(--ring)", "border-bottom:0"] {
+        assert!(
+            compact.contains(contract),
+            "the compact selected tab must move its erased docking edge with `{contract}`",
+        );
+    }
+    for contract in [
+        "class=\"settings-section\">passkeys",
+        "class=\"settings-section\">account management",
+        "Your passkey replaces a password",
+        "passkeys and account",
+        "manage account",
+    ] {
+        assert!(
+            HUB_ACCOUNT_MARKUP.contains(contract),
+            "the adapted settings hierarchy must contain `{contract}`",
+        );
+    }
+}
+
+#[test]
+fn it_renders_join_refusals_as_neutral_edge_walls() {
+    let failure = PROFILE_LIBRARY
+        .split("view!: &join/failure-view")
+        .nth(1)
+        .and_then(|tail| tail.split("# ROUTING (profile branch)").next())
+        .expect("join failure view");
+    let route = PROFILE_LIBRARY
+        .split("view!: &join/route-view")
+        .nth(1)
+        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .expect("join route view");
+
+    for rejected in ["<wa-callout", "variant=\"danger\"", "{reason}"] {
+        assert!(
+            !failure.contains(rejected),
+            "the closed-invitation wall must not expose `{rejected}`",
+        );
+    }
+    assert!(failure.contains("this invitation is closed"));
+    assert!(route.contains("you do not have access to this space"));
+    for wall in [("closed", failure), ("no-access", route)] {
+        assert_eq!(
+            wall.1.matches("class=\"ebtn solid\"").count(),
+            1,
+            "the {} wall must carry exactly one solid ink door",
+            wall.0,
+        );
+        assert!(wall.1.contains("start a new space"));
+        assert!(wall.1.contains("join this space"));
+    }
 }

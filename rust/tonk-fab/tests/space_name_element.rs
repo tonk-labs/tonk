@@ -99,7 +99,7 @@ async fn it_dispatches_a_subscribe_carrying_the_raw_attribute_query() {
     let cb = Closure::<dyn FnMut(CustomEvent)>::new(move |ev: CustomEvent| {
         let detail = ev.detail();
         let json = js_sys::JSON::stringify(&detail)
-            .map(|s| String::from(s))
+            .map(String::from)
             .unwrap_or_default();
         *sink.borrow_mut() = Some(json);
     });
@@ -295,20 +295,23 @@ async fn it_renders_the_name_from_a_delivered_frame() {
 
 const ROSTER_TAG: &str = "ui-member-roster";
 
-/// Mount a `<ui-member-roster space=SPACE>` and return it.
+/// Mount a `<ui-member-roster space=SPACE>` in the `<tonk-menu>` it renders
+/// rows into and return the roster element.
 fn mount_roster() -> web_sys::HtmlElement {
     tonk_fab::register();
+    let menu = document().create_element("tonk-menu").expect("create menu");
     let el = document()
         .create_element(ROSTER_TAG)
         .expect("create")
         .dyn_into::<web_sys::HtmlElement>()
         .expect("html element");
     el.set_attribute("space", SPACE).expect("set space");
+    menu.append_child(el.as_ref()).expect("append roster");
     document()
         .body()
         .expect("body")
-        .append_child(el.as_ref())
-        .expect("append");
+        .append_child(&menu)
+        .expect("append menu");
     el
 }
 
@@ -371,12 +374,14 @@ fn deliver_roster(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) {
         .unwrap_or_else(|_| panic!("{method} call"));
 }
 
-/// Read the rendered member names off the roster host, in DOM order.
+/// Read the rendered member names off the roster's sibling rows, in DOM
+/// order.
 fn rendered_names(el: &web_sys::HtmlElement) -> Vec<String> {
-    let children = el.children();
+    let menu = el.parent_element().expect("roster menu");
+    let children = menu.children();
     (0..children.length())
         .filter_map(|i| children.item(i))
-        .filter(|c| c.class_list().contains("fab__menu-item--member"))
+        .filter(|c| c.get_attribute("data-row-owner").as_deref() == Some(ROSTER_TAG))
         .filter_map(|c| c.text_content())
         .collect()
 }
@@ -412,7 +417,7 @@ async fn it_renders_the_roster_from_delivered_frames() {
     assert_eq!(
         rendered_names(&el),
         vec!["Alice".to_string(), "Bob".to_string()],
-        "a delivered reset frame must be consumed and rendered as one span per member"
+        "a delivered reset frame must be consumed and rendered as one sibling row per member"
     );
 
     // A subsequent `update` delta must also be consumed: retract Alice,
@@ -448,9 +453,12 @@ const ACTIVE_SPACE: &str = "did:key:z6MkActiveSpace";
 const OTHER_SPACE: &str = "did:key:z6MkOtherSpace";
 const THIRD_SPACE: &str = "did:key:z6MkThirdSpace";
 
-/// Mount a `<ui-space-switcher exclude=ACTIVE_SPACE>` and return it.
+/// Mount a `<ui-space-switcher exclude=ACTIVE_SPACE>` in the `<tonk-menu>` it
+/// renders rows into, followed by the authored `more` action, and return the
+/// switcher element.
 fn mount_switcher() -> web_sys::HtmlElement {
     tonk_fab::register();
+    let menu = document().create_element("tonk-menu").expect("create menu");
     let el = document()
         .create_element(SWITCHER_TAG)
         .expect("create")
@@ -458,11 +466,19 @@ fn mount_switcher() -> web_sys::HtmlElement {
         .expect("html element");
     el.set_attribute("exclude", ACTIVE_SPACE)
         .expect("set exclude");
+    let more = document()
+        .create_element("tonk-mi")
+        .expect("create more action");
+    more.set_attribute("data-mi-home", "")
+        .expect("mark more action");
+    more.set_text_content(Some("more"));
+    menu.append_child(el.as_ref()).expect("append switcher");
+    menu.append_child(&more).expect("append more action");
     document()
         .body()
         .expect("body")
-        .append_child(el.as_ref())
-        .expect("append");
+        .append_child(&menu)
+        .expect("append menu");
     el
 }
 
@@ -520,18 +536,15 @@ fn deliver_switcher(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) 
         .unwrap_or_else(|_| panic!("{method} call"));
 }
 
-/// Read the rendered row anchors' `href` off the switcher host, in DOM order
-/// — `.fab__menu-item` WITHOUT `--action`, i.e. the space rows, not the
-/// static "all spots"/"new" items.
-fn rendered_row_hrefs(el: &web_sys::HtmlElement) -> Vec<String> {
-    let children = el.children();
+/// Read the rendered space subjects off the switcher's sibling rows, in DOM
+/// order.
+fn rendered_row_subjects(el: &web_sys::HtmlElement) -> Vec<String> {
+    let menu = el.parent_element().expect("switcher menu");
+    let children = menu.children();
     (0..children.length())
         .filter_map(|i| children.item(i))
-        .filter(|c| {
-            c.class_list().contains("fab__menu-item")
-                && !c.class_list().contains("fab__menu-item--action")
-        })
-        .filter_map(|c| c.get_attribute("href"))
+        .filter(|c| c.get_attribute("data-row-owner").as_deref() == Some(SWITCHER_TAG))
+        .filter_map(|c| c.get_attribute("data-space"))
         .collect()
 }
 
@@ -567,7 +580,7 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
     // asks the right question but never consumes the answer.
     let el = mount_switcher();
     assert!(
-        rendered_row_hrefs(&el).is_empty(),
+        rendered_row_subjects(&el).is_empty(),
         "no rows render before any frame arrives"
     );
 
@@ -599,18 +612,19 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
         ]),
     );
 
-    let hrefs = rendered_row_hrefs(&el);
+    let subjects = rendered_row_subjects(&el);
     assert_eq!(
-        hrefs,
-        vec![format!("/space/{OTHER_SPACE}")],
-        "only the non-self, non-active replica renders as a row: {hrefs:?}"
+        subjects,
+        vec![OTHER_SPACE.to_string()],
+        "only the non-self, non-active replica renders as a row: {subjects:?}"
     );
 
     // The surviving row must wrap a <ui-space-name> for that space's OWN
     // repo name (not the profile-side replica name), and must stamp
     // data-status from the replica's own sync status.
-    let row = el
-        .query_selector(&format!("a[href=\"/space/{OTHER_SPACE}\"]"))
+    let menu = el.parent_element().expect("switcher menu");
+    let row = menu
+        .query_selector(&format!("tonk-mi[data-space=\"{OTHER_SPACE}\"]"))
         .expect("query")
         .expect("surviving row rendered");
     assert_eq!(
@@ -626,6 +640,10 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
         name_el.get_attribute("space").as_deref(),
         Some(OTHER_SPACE),
         "<ui-space-name> must be scoped to this row's own space, not the profile"
+    );
+    assert!(
+        name_el.has_attribute("readonly"),
+        "a switcher row names another space without offering to rename it"
     );
 
     // A subsequent `update` delta must also be consumed: retract the
@@ -645,16 +663,16 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
             &["replica:other"],
         ),
     );
-    let hrefs = rendered_row_hrefs(&el);
+    let subjects = rendered_row_subjects(&el);
     assert_eq!(
-        hrefs,
-        vec![format!("/space/{THIRD_SPACE}")],
-        "an update delta must retract, assert, and re-render, not be ignored: {hrefs:?}"
+        subjects,
+        vec![THIRD_SPACE.to_string()],
+        "an update delta must retract, assert, and re-render, not be ignored: {subjects:?}"
     );
 }
 
 #[dialog_common::test]
-async fn it_appends_the_static_action_items_after_the_rows() {
+async fn it_inserts_rows_before_the_authored_more_action() {
     let el = mount_switcher();
     deliver_switcher(
         &el,
@@ -667,47 +685,40 @@ async fn it_appends_the_static_action_items_after_the_rows() {
         )]),
     );
 
-    let children = el.children();
+    let menu = el.parent_element().expect("switcher menu");
+    let children = menu.children();
     let tags: Vec<String> = (0..children.length())
         .filter_map(|i| children.item(i))
         .map(|c| c.tag_name().to_lowercase())
         .collect();
-    // One row (an <a>), then the "all spots" <a> action, then the "new"
-    // <button> action — actions always trail the rows.
     assert_eq!(
         tags,
-        vec!["a", "a", "button"],
-        "rows must precede the static action items: {tags:?}"
+        vec!["tonk-mi", "ui-space-switcher", "tonk-mi"],
+        "the rendered row must be a menu sibling before the authored action: {tags:?}"
     );
 
-    let all_spots = el
-        .query_selector("a.fab__menu-item--action")
-        .expect("query")
-        .expect("all-spots action item rendered");
-    assert_eq!(all_spots.get_attribute("href").as_deref(), Some("/"));
-    assert!(
-        all_spots
-            .text_content()
-            .unwrap_or_default()
-            .contains("all spots"),
-        "all-spots item must read \"all spots\""
-    );
-
-    let new_button = el
-        .query_selector("button.fab__menu-item--action")
-        .expect("query")
-        .expect("new action item rendered");
-    assert_eq!(new_button.get_attribute("type").as_deref(), Some("button"));
+    let row = children.item(0).expect("rendered space row");
     assert_eq!(
-        new_button.get_attribute("data-dialog").as_deref(),
-        Some("open fab-space-create")
+        row.get_attribute("data-row-owner").as_deref(),
+        Some(SWITCHER_TAG)
+    );
+    assert_eq!(
+        row.get_attribute("data-space").as_deref(),
+        Some(OTHER_SPACE)
+    );
+
+    let more = children.item(2).expect("authored more action");
+    assert!(more.has_attribute("data-mi-home"));
+    assert_eq!(more.text_content().as_deref(), Some("more"));
+    assert!(
+        el.children().length() == 0,
+        "the subscriber must not render nested rows that escape the menu's direct-child layout"
     );
     assert!(
-        new_button
-            .text_content()
-            .unwrap_or_default()
-            .contains("new"),
-        "new item must read \"new\""
+        menu.query_selector(".fab__menu-item--action")
+            .expect("query")
+            .is_none(),
+        "the switcher must not restore the deleted legacy action markup"
     );
 }
 
