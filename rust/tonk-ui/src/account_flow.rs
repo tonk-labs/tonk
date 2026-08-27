@@ -1734,18 +1734,27 @@ mod tests {
 
         // 23. And it really is an invite.
         //
-        // Read from the fact the mint wrote, not from the clipboard:
-        // `navigator.clipboard.readText()` needs a permission the
-        // harness's Chrome does not grant, so asking it answers "" for
-        // reasons that have nothing to do with the share. The copied
-        // text comes from this same row.
-        let invite = await_share_link(&driver).await?;
-        assert!(
-            invite.contains("/join") || invite.contains("/@/"),
-            "the minted link must be an invite, got {invite:?}",
-        );
+        // The narrator IS the observation. The link itself is
+        // overlay-only by design — it carries the membership seed in its
+        // fragment, so `Credential` and `InviteState` are asserted into
+        // the session overlay and never written to a branch — which
+        // means no query from here can read it, and the clipboard needs
+        // a permission the harness's Chrome does not grant. What the
+        // page says once it holds a link is the reachable proof that it
+        // does, and the dialog only says it in that one branch.
+        await_narrator_containing(&driver, "invite someone into a space").await?;
 
         // 24–25. A fresh profile opening it lands in the same space.
+        //
+        // The link comes from the clipboard, read in the page that just
+        // wrote it: the copy is a user gesture, which is what grants the
+        // permission, and the row behind it is overlay-only so no query
+        // from out here can reach it.
+        let invite = clipboard_text(&driver).await?;
+        assert!(
+            invite.contains("/join") || invite.contains("/@/"),
+            "the copied link must be an invite, got {invite:?}",
+        );
         let guest = driver_with_prf(&env).await?;
         guest.goto(&invite).await?;
         await_url_containing(&guest, &key).await?;
@@ -2167,6 +2176,24 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+    }
+
+    /// What the page put on the clipboard.
+    ///
+    /// Readable here because the copy ran from a click: the permission
+    /// follows the gesture. Without one this answers "", which is why
+    /// the assertion above it names what it expected to find.
+    async fn clipboard_text(driver: &WebDriver) -> Result<String> {
+        let text = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                navigator.clipboard.readText().then(done).catch(() => done(""));
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        Ok(text.json().as_str().unwrap_or_default().to_owned())
     }
 
     /// The cluster's action row label, or empty while it is folded.
