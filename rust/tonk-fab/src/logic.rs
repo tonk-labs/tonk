@@ -1826,12 +1826,25 @@ pub fn invite_state_query_body(subject: &str) -> Result<String, String> {
     }
     Ok(json!({
         "predicate": {
-            "with": { "status": {
-                "the": "xyz.tonk.invite/status", "as": "Entity", "cardinality": "one"
-            } },
-            "maybe": { "url": {
-                "the": "xyz.tonk.invite/url", "as": "Text", "cardinality": "one"
-            } }
+            "with": {
+                "status": {
+                    "the": "xyz.tonk.invite/status", "as": "Entity", "cardinality": "one"
+                },
+                // Optional is a FLAG on the attribute, not a separate
+                // block. `maybe:` is the YAML notation's spelling, which
+                // the analyzer translates into this; a hand-built wire
+                // query that uses it declares nothing, and the field is
+                // dropped from the projection without an error.
+                //
+                // That cost a whole share: the invite minted, the row
+                // said `granted`, and the url the control settles the
+                // clipboard write with was simply absent — so it waited
+                // out its timeout and reported "could not copy".
+                "url": {
+                    "the": "xyz.tonk.invite/url", "as": "Text",
+                    "cardinality": "one", "optional": true
+                }
+            }
         },
         "terms": {
             "this": subject,
@@ -1962,12 +1975,22 @@ mod invite_state_query {
         // status and no url yet — would never resolve, and the control
         // would sit on `share` through the whole mint.
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        // Optional is a FLAG, not a block. `maybe:` is the YAML
+        // notation's spelling; on the wire an optional attribute stays
+        // in `with` and carries `"optional": true`. A query that used
+        // `maybe:` declared nothing at all — the field was dropped from
+        // the projection with no error, and the share control waited out
+        // its timeout for a url that was sitting in the row.
         assert!(
-            parsed["predicate"]["maybe"]["url"].is_object(),
-            "url belongs in `maybe`, got {body}",
+            parsed["predicate"]["maybe"].is_null(),
+            "there is no `maybe` block on the wire, got {body}",
+        );
+        assert_eq!(
+            parsed["predicate"]["with"]["url"]["optional"], true,
+            "url must be marked optional in place, got {body}",
         );
         assert!(
-            parsed["predicate"]["with"]["status"].is_object(),
+            parsed["predicate"]["with"]["status"]["optional"].is_null(),
             "status is required, got {body}",
         );
     }
