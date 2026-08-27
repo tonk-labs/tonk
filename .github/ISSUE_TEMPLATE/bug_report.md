@@ -20,6 +20,11 @@ Steps to reproduce the behavior:
 **Expected behavior**
 A clear and concise description of what you expected to happen.
 
+**Storybook context**
+Link the closest screen, journey, or verification ID from `docs/storybook`, if
+known. If no entry describes this behavior, write `missing` so the product map
+is updated with the fix.
+
 **Screenshots**
 If applicable, add screenshots to help explain your problem.
 
