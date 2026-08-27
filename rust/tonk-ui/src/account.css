@@ -372,6 +372,7 @@ tonk-account[data-mode="success"] .account {
     align-items: flex-end;
     justify-content: flex-end;
     border: 1px solid var(--ring);
+    border-right: 0;
     background: var(--frost-solid);
     color: var(--soft);
     font-family: var(--cond);
@@ -382,7 +383,6 @@ tonk-account[data-mode="success"] .account {
 }
 
 .account__rail button[aria-selected="true"] {
-    border-right: 0;
     background: var(--panel);
     color: var(--ink);
 }
@@ -803,10 +803,10 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 
     .account__rail button {
         flex: 1;
+        border-right: 1px solid var(--ring);
     }
 
     .account__rail button[aria-selected="true"] {
-        border-right: 1px solid var(--ring);
         border-bottom: 0;
     }
 
