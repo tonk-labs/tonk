@@ -152,7 +152,7 @@ view!:
     <div class="notebook-space">
       <tonk-notebook
         data-subject="id:notebook/scratch"
-        onchange=block/edit
+        onblockedit=block/edit
         onreorder=notebook/reorder
         style="display: block;"
       >
@@ -249,7 +249,7 @@ view!:
       data-subject={this}
       order={order}
       title={title}
-      onchange=block/edit
+      onblockedit=block/edit
       onreorder=notebook/reorder
       style="display: block;"
     >

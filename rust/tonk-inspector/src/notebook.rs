@@ -348,13 +348,17 @@ impl Notebook {
         *self.projected.borrow_mut() = document;
     }
 
-    /// Dispatch one `block/edit` command: `{subject, source}` on the detail,
-    /// with `data-subject` naming the block the rule writes to.
+    /// Dispatch one `block/edit` command: `{source}` on the detail, with
+    /// `data-subject` naming the block the rule writes to.
+    ///
+    /// The event is `blockedit`, NOT `change`: the inner `<tonk-prose>`
+    /// dispatches its own bubbling `change` carrying `{value, content}`,
+    /// which would reach the same handler and fail to resolve `source`.
     fn dispatch_edit(&self, entity: &str, source: &str) {
         let _ = self.host.dataset().set("subject", entity);
         let detail = js_sys::Object::new();
         let _ = js_sys::Reflect::set(&detail, &"source".into(), &source.into());
-        self.emit("change", &detail);
+        self.emit("blockedit", &detail);
     }
 
     /// Dispatch one `notebook/reorder` command carrying the new order.
