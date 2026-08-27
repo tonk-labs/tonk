@@ -2324,23 +2324,6 @@ mod tests {
         Ok(outcome.json().as_str().map(str::to_owned))
     }
 
-    /// Wait for the bar's account subscription to have answered at all.
-    ///
-    /// Which row it lands on is the question those callers differ about;
-    /// that it has answered is what they all need before reaching in.
-    async fn await_any_share_row(driver: &WebDriver) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            if share_row_offered(driver).await?.is_some() {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("the bar never answered about the account"));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
     /// Wait for the bar to offer `expected` (`account` or `link`).
     async fn await_share_row(driver: &WebDriver, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
