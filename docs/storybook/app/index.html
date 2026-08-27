@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A visual, outside-in map of every Tonk browser and CLI journey.">
+    <title>Tonk product Storybook</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23171712'/%3E%3Cpath d='M15 17h34v10H37v22H27V27H15z' fill='%23c7f36b'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="storybook.css">
+    <script defer src="data.js"></script>
+    <script defer src="storybook.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Storybook navigation">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">T</div>
+          <div>
+            <p class="eyebrow">Product source of truth</p>
+            <p class="brand-name">Tonk Storybook</p>
+          </div>
+        </div>
+
+        <nav class="primary-nav" aria-label="Views">
+          <a href="#overview" data-view-link="overview">
+            <span>Overview</span>
+          </a>
+          <a href="#screens" data-view-link="screens">
+            <span>Screens</span><span class="nav-count" data-count="screens">—</span>
+          </a>
+          <a href="#flows" data-view-link="flows">
+            <span>Flows</span><span class="nav-count" data-count="flows">—</span>
+          </a>
+          <a href="#gaps" data-view-link="gaps">
+            <span>Gaps</span><span class="nav-count" data-count="gaps">—</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-note">
+          <p class="sidebar-note-title">Evidence, not aspiration</p>
+          <p>Every image says whether it came from a running build, production source, or captured CLI output.</p>
+        </div>
+
+        <div class="sidebar-footer">
+          <span class="freshness-dot" aria-hidden="true"></span>
+          <span>Visuals at <code data-visual-commit>—</code></span>
+        </div>
+      </aside>
+
+      <main id="main" tabindex="-1">
+        <header class="topbar">
+          <button class="mobile-menu" type="button" aria-label="Open navigation" aria-expanded="false">
+            <span></span><span></span>
+          </button>
+          <label class="search-box">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <span class="sr-only">Search the current Storybook view</span>
+            <input id="search" type="search" placeholder="Search screens, flows, states, or IDs" autocomplete="off">
+            <kbd>/</kbd>
+          </label>
+          <a class="source-link" href="../README.md">Read the specification <span aria-hidden="true">↗</span></a>
+        </header>
+
+        <section id="overview-view" class="view" data-view="overview" aria-labelledby="overview-title">
+          <div class="hero">
+            <div class="hero-copy">
+              <p class="eyebrow">One product · two surfaces · explicit state</p>
+              <h1 id="overview-title">See the product as users move through it.</h1>
+              <p class="hero-lede">Screens show what people encounter. Flows show how identity, accounts, spaces, authority, and sync change underneath. Gaps say what we still have not proved.</p>
+              <div class="hero-actions">
+                <a class="primary-action" href="#screens">Browse every screen</a>
+                <a class="secondary-action" href="#flows">Trace a user flow</a>
+              </div>
+            </div>
+            <div class="hero-proof" aria-label="Storybook freshness">
+              <p class="proof-kicker">Source status</p>
+              <p class="proof-value"><span class="freshness-dot" aria-hidden="true"></span> Visual inventory current</p>
+              <dl>
+                <div><dt>Flow audit</dt><dd><code data-audit-commit>—</code></dd></div>
+                <div><dt>Visual capture</dt><dd><code data-visual-commit>—</code></dd></div>
+                <div><dt>Verification</dt><dd data-verification-summary>—</dd></div>
+              </dl>
+            </div>
+          </div>
+
+          <div class="metric-grid" aria-label="Storybook coverage summary">
+            <article><strong data-metric="screens">—</strong><span>screen families</span></article>
+            <article><strong data-metric="journeys">—</strong><span>mapped journeys</span></article>
+            <article><strong data-metric="verification">—</strong><span>observable checks</span></article>
+            <article><strong data-metric="bugs">—</strong><span>triage findings</span></article>
+          </div>
+
+          <section class="audience-section" aria-labelledby="audience-title">
+            <div class="section-heading">
+              <div><p class="eyebrow">Choose your altitude</p><h2 id="audience-title">Start where your work starts</h2></div>
+              <p>The same product map is useful for decisions, design critique, implementation, support, and agent context.</p>
+            </div>
+            <div class="audience-grid">
+              <a href="#flows" data-query="account deletion ownership activation"><span>Founder</span><strong>Follow consequential journeys and unresolved product calls.</strong><small>Flows + gaps <span aria-hidden="true">→</span></small></a>
+              <a href="#screens" data-query="browser account Hub space"><span>Designer</span><strong>Compare every visible state with its entry and exit.</strong><small>Screen inventory <span aria-hidden="true">→</span></small></a>
+              <a href="#flows" data-query="interrupt retry source"><span>Engineer</span><strong>Move from user contract to source, tests, and recovery boundaries.</strong><small>Evidence map <span aria-hidden="true">→</span></small></a>
+              <a href="#gaps" data-query="error recovery"><span>Support &amp; QA</span><strong>Start from a symptom, then find the expected result and known gaps.</strong><small>Triage + checks <span aria-hidden="true">→</span></small></a>
+              <a href="#overview" data-doc="../goal.md"><span>Agent</span><strong>Load the vocabulary, invariants, and standing update rules first.</strong><small>Agent entry point <span aria-hidden="true">→</span></small></a>
+            </div>
+          </section>
+
+          <section class="recent-section" aria-labelledby="recent-title">
+            <div class="section-heading compact"><div><p class="eyebrow">Visual index</p><h2 id="recent-title">Representative surfaces</h2></div><a href="#screens">View all <span aria-hidden="true">→</span></a></div>
+            <div id="overview-screens" class="screen-strip"></div>
+          </section>
+        </section>
+
+        <section id="screens-view" class="view" data-view="screens" aria-labelledby="screens-title" hidden>
+          <div class="page-heading">
+            <div><p class="eyebrow">Visual inventory</p><h1 id="screens-title">Every user-visible screen family</h1><p>One canonical image per materially different surface or state. Open a screen to see its flows, source ownership, and capture provenance.</p></div>
+            <div class="view-summary"><strong data-screen-result-count>—</strong><span>shown</span></div>
+          </div>
+          <div id="screen-filters" class="filter-row" aria-label="Filter screens"></div>
+          <div id="screen-groups"></div>
+          <p id="screens-empty" class="empty-state" hidden>No screens match this search.</p>
+        </section>
+
+        <section id="flows-view" class="view" data-view="flows" aria-labelledby="flows-title" hidden>
+          <div class="page-heading">
+            <div><p class="eyebrow">State and journey map</p><h1 id="flows-title">Every user-facing flow</h1><p>Each row names the starting variants, current evidence, and the missing cases that keep it from being called covered.</p></div>
+            <div class="view-summary"><strong data-flow-result-count>—</strong><span>shown</span></div>
+          </div>
+          <div id="flow-filters" class="filter-row" aria-label="Filter flows"></div>
+          <div id="flow-groups" class="flow-groups"></div>
+          <p id="flows-empty" class="empty-state" hidden>No flows match this search.</p>
+        </section>
+
+        <section id="gaps-view" class="view" data-view="gaps" aria-labelledby="gaps-title" hidden>
+          <div class="page-heading">
+            <div><p class="eyebrow">Known unknowns</p><h1 id="gaps-title">Coverage gaps and product calls</h1><p>Unrun checks remain visibly separate from failures. Triage findings are source-pinned hypotheses until a running-product pass confirms them.</p></div>
+            <div class="view-summary"><strong data-gap-result-count>—</strong><span>open</span></div>
+          </div>
+          <div class="gap-layout">
+            <section class="gap-panel" aria-labelledby="triage-title"><div class="panel-heading"><h2 id="triage-title">Triage findings</h2><a href="../bug-triage.md">Open source file ↗</a></div><div id="bug-list"></div></section>
+            <section class="gap-panel" aria-labelledby="verification-title"><div class="panel-heading"><h2 id="verification-title">Verification state</h2><a href="../verification/README.md">Run a pass ↗</a></div><div id="verification-panel"></div></section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="screen-dialog" class="detail-dialog" aria-labelledby="screen-dialog-title">
+      <button class="dialog-close" type="button" aria-label="Close screen details">×</button>
+      <div id="screen-dialog-body"></div>
+    </dialog>
+
+    <dialog id="flow-dialog" class="detail-dialog flow-dialog" aria-labelledby="flow-dialog-title">
+      <button class="dialog-close" type="button" aria-label="Close flow details">×</button>
+      <div id="flow-dialog-body"></div>
+    </dialog>
+
+    <template id="screen-card-template">
+      <article class="screen-card">
+        <button class="screen-card-button" type="button">
+          <span class="screen-image-wrap"><img alt="" loading="lazy"></span>
+          <span class="screen-card-copy"><span class="screen-card-meta"><span class="screen-id"></span><span class="screen-capture"></span></span><strong></strong><small></small></span>
+        </button>
+      </article>
+    </template>
+  </body>
+</html>
