@@ -2384,6 +2384,10 @@ mod tests {
         driver
             .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
             .await?;
+        // Open the stack, THEN take its row — the same two steps the
+        // signup flow makes. Clicking the cell and the row in one pass
+        // reaches for a row the stack has not rendered yet.
+        open_share_stack(driver).await?;
         await_share_row(driver, "account").await?;
         open_register_dialog(driver).await
     }
