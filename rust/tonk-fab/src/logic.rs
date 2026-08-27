@@ -1375,6 +1375,7 @@ pub fn space_list_query_body() -> String {
 }
 
 /// Replace a subscription's keyed snapshot while preserving delivery order.
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn reset_keyed_rows<T>(
     rows: &mut Vec<(String, T)>,
     conclusions: impl IntoIterator<Item = (String, T)>,
