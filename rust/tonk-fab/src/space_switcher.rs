@@ -37,7 +37,7 @@ use js_sys::Reflect;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlElement, window};
 
-use crate::logic::space_list_query_body;
+use crate::logic::{reset_keyed_rows, space_list_query_body};
 use crate::stack_rows;
 use crate::subscribing;
 
@@ -121,12 +121,13 @@ impl subscribing::Subscribing for SpaceSwitcherBehaviour {
     fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
         let conclusions = js_sys::Array::from(payload);
         let mut rows = self.rows.borrow_mut();
-        rows.clear();
+        let mut delivered = Vec::new();
         for i in 0..conclusions.length() {
             if let Some(row) = read_row(&conclusions.get(i)) {
-                rows.push(row);
+                delivered.push(row);
             }
         }
+        reset_keyed_rows(&mut rows, delivered);
         render_menu(host, &rows);
     }
 
