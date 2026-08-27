@@ -1923,6 +1923,30 @@ mod enable_sync_claim {
 }
 
 #[cfg(test)]
+mod account_state_query {
+    use super::*;
+
+    /// The subject must be BOUND.
+    ///
+    /// An unbound `this` is a query error, not a wildcard: the whole
+    /// subscription failed with `UnboundVariable` on every attempt, no
+    /// frame ever arrived, and the bar silently fell back to its
+    /// defaults — reporting stale sync and offering to log in to an
+    /// account that was already active.
+    #[test]
+    fn it_binds_its_subject() {
+        let body = account_customer_query_body();
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            parsed["terms"]["this"].is_object(),
+            "`this` must be bound, got {body}",
+        );
+        assert!(body.contains("xyz.tonk.account/customer-status"));
+        assert!(body.contains("xyz.tonk.account/provider-address"));
+    }
+}
+
+#[cfg(test)]
 mod invite_state_query {
     use super::*;
 
