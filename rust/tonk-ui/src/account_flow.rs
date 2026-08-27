@@ -560,12 +560,15 @@ mod tests {
                         const rail = document.querySelector('.account__rail').getBoundingClientRect();
                         const body = document.querySelector('.account__settings-body').getBoundingClientRect();
                         document.querySelector('#account-tab-account').click();
+                        const selectedTab = document.querySelector('#account-tab-account').getBoundingClientRect();
+                        const selectedTabStyle = getComputedStyle(document.querySelector('#account-tab-account'));
                         const accountHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         document.querySelector('#account-tab-devices').click();
                         const devicesHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         const error = document.querySelector('#account-error');
                         error.hidden = false;
                         const errorRight = Math.round(error.getBoundingClientRect().right);
+                        const errorWidth = Math.round(error.getBoundingClientRect().width);
                         // Read the body's edge in the SAME layout state:
                         // revealing the notice can grow the page past the
                         // viewport, and a classic scrollbar appearing then
@@ -579,10 +582,16 @@ mod tests {
                           settings: Math.round(settings.width),
                           rail: Math.round(rail.width),
                           body: Math.round(body.width),
+                          railTop: Math.round(rail.top),
+                          bodyTop: Math.round(body.top),
+                          selectedTabRight: Math.round(selectedTab.right),
+                          bodyLeft: Math.round(body.left),
+                          selectedTabBorderRight: selectedTabStyle.borderRightWidth,
                           accountHeight,
                           devicesHeight,
                           bodyRight: errorBodyRight,
                           errorRight,
+                          errorWidth,
                           logoVisible: logo.width > 0 && logo.height > 0
                         };"#,
                     Vec::new(),
@@ -595,6 +604,9 @@ mod tests {
             );
             assert_eq!(geometry["rail"], expected_rail);
             assert_eq!(geometry["body"], expected_body);
+            assert_eq!(geometry["railTop"], geometry["bodyTop"]);
+            assert_eq!(geometry["selectedTabRight"], geometry["bodyLeft"]);
+            assert_eq!(geometry["selectedTabBorderRight"], "0px");
             assert_eq!(
                 geometry["accountHeight"], geometry["devicesHeight"],
                 "Account and Devices tabs must keep one panel height at {window_width}px"
@@ -602,6 +614,10 @@ mod tests {
             assert_eq!(
                 geometry["errorRight"], geometry["bodyRight"],
                 "settings notices must align with the panel body at {window_width}px"
+            );
+            assert_eq!(
+                geometry["errorWidth"], geometry["body"],
+                "settings notices must span the panel body at {window_width}px"
             );
             assert_eq!(geometry["logoVisible"], true);
         }

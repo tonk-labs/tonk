@@ -212,6 +212,10 @@
     width: 100%;
 }
 
+.account__row--end {
+    justify-content: flex-end;
+}
+
 .account__row--action > span {
     max-width: 22ch;
     text-wrap: pretty;
@@ -363,9 +367,8 @@ tonk-account[data-mode="success"] .account {
     padding: 0 10px 9px;
     align-items: flex-end;
     justify-content: flex-end;
-    border: 0;
+    border: 1px solid var(--ring);
     background: var(--frost-solid);
-    box-shadow: 0 0 0 1px var(--ring);
     color: var(--soft);
     font-family: var(--cond);
     font-size: 13px;
@@ -375,8 +378,19 @@ tonk-account[data-mode="success"] .account {
 }
 
 .account__rail button[aria-selected="true"] {
+    border-right: 0;
     background: var(--panel);
     color: var(--ink);
+}
+
+.account__rail button[aria-selected="true"]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: -1px;
+    width: 1px;
+    height: 100%;
+    background: var(--panel);
 }
 
 .account__settings-body {
@@ -386,9 +400,8 @@ tonk-account[data-mode="success"] .account {
     height: clamp(408px, 60vh, 640px);
     padding: 8px 18px 18px;
     overflow: auto;
-    border: 0;
+    border: 1px solid var(--ring);
     background: var(--panel);
-    box-shadow: 0 0 0 1px var(--ring);
     color: var(--ink);
     font-family: var(--sans);
 }
@@ -430,7 +443,7 @@ tonk-account[data-mode="success"] .account {
 .account__status,
 tonk-account[data-mode="success"] .account__error,
 tonk-account[data-mode="success"] .account__working {
-    width: 432px;
+    width: 576px;
     margin: 7px 0 0 auto;
 }
 
@@ -786,6 +799,19 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 
     .account__rail button {
         flex: 1;
+    }
+
+    .account__rail button[aria-selected="true"] {
+        border-right: 1px solid var(--ring);
+        border-bottom: 0;
+    }
+
+    .account__rail button[aria-selected="true"]::after {
+        top: auto;
+        right: 0;
+        bottom: -1px;
+        width: 100%;
+        height: 1px;
     }
 
     .account__status,
