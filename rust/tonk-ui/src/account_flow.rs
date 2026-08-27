@@ -1514,6 +1514,118 @@ mod tests {
         Ok(())
     }
 
+    /// Sign up in order to share, end to end, as a person does it.
+    ///
+    /// Every other test here reaches into the worker: it builds a claim
+    /// in Rust, or polls a row, or asserts on `/api/repository`. Each of
+    /// those passes while the thing the user touches is broken — which
+    /// is how the registration dialog shipped latched on "Checking…"
+    /// forever with a green suite.
+    ///
+    /// This one only clicks and reads. It is deliberately the longest
+    /// test in the file, because the value is in the SEQUENCE: steps
+    /// that pass alone still fail in order.
+    ///
+    /// The ceremony's later rows (passkey, verification, display name,
+    /// and the closing copy-link) are not built yet, so this fails part
+    /// way through by design — it is the specification of the flow, and
+    /// what it reports is how far the flow actually gets.
+    #[dialog_common::test]
+    async fn it_signs_up_to_share_and_hands_over_the_link(env: TestEnvironment) -> Result<()> {
+        let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
+
+        // 1–2. The Hub, with nothing in it.
+        driver.goto(env.tonk_web.as_str()).await?;
+        let spaces = space_keys(&driver).await?;
+        assert!(
+            spaces.is_empty(),
+            "a fresh profile has no spaces, got {spaces:?}"
+        );
+
+        // 3–4. Create one, and land in it.
+        submit_hub_wizard(&driver).await?;
+        let key = await_new_space(&driver, &spaces).await?;
+        await_url_containing(&driver, &format!("/space/did:key:{key}")).await?;
+
+        // 5–6. Share offers to log in: nothing is registered.
+        click_share_row(&driver, "[data-mi-share], [data-overflow-share]").await?;
+        await_share_row(&driver, "account").await?;
+
+        // 7–8. The cluster comes up with the address field focused, so
+        // typing works without aiming at anything.
+        click_share_row(&driver, "[data-share-account]").await?;
+        await_register_dialog(&driver).await?;
+        assert_eq!(
+            focused_element_id(&driver).await?,
+            "tonk-register-email",
+            "the address field must take focus when the cluster opens",
+        );
+
+        // 9–10. An address nobody has reveals the create step. The label
+        // IS the routing decision, so asserting it covers the whole loop:
+        // command dispatched, answer written, subscription delivered.
+        let email = "alice@web.mail";
+        type_into_register_dialog(&driver, email).await?;
+        await_register_action(&driver, "create a passkey").await?;
+
+        // 11–12. Running it waits on the platform, and says so.
+        let before = credential_count(&driver, &authenticator).await?;
+        click_register_action(&driver).await?;
+        await_register_action(&driver, "waiting for your device").await?;
+
+        // 12–13. The ceremony settles into a record naming the device.
+        await_credential_count(&driver, &authenticator, before + 1).await?;
+        let passkey = await_settled_row(&driver, "passkey").await?;
+        assert!(
+            passkey.contains(" on "),
+            "the passkey row names the device, got {passkey:?}",
+        );
+
+        // 14. And the narrator asks for the emailed link.
+        await_narrator_containing(&driver, "confirmation link").await?;
+
+        // 15–17. Open it, accept, and come back.
+        let link = activation_link(&env, email).await?;
+        let space_url = driver.current_url().await?;
+        driver.goto(&link).await?;
+        element(&driver, "#activate-accept").await?.click().await?;
+        element(&driver, "#activate-done").await?;
+        driver.goto(space_url.as_str()).await?;
+
+        // 18. The email row settles: the address is confirmed.
+        assert_eq!(
+            await_settled_row(&driver, "email").await?,
+            "verified",
+            "activation must settle the email row",
+        );
+
+        // 19. Then the name, typed and committed.
+        type_into_settled_row(&driver, "display name", "Alice").await?;
+        assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
+
+        // 20–22. The closing action is the thing the share was for.
+        await_register_action(&driver, "copy share link").await?;
+        click_register_action(&driver).await?;
+        await_register_action(&driver, "copying link…").await?;
+        await_narrator_containing(&driver, "invite someone into a space").await?;
+
+        // 23. And it really is an invite.
+        let invite = clipboard_text(&driver).await?;
+        assert!(
+            invite.contains("/join") || invite.contains("/@/"),
+            "the copied link must be an invite, got {invite:?}",
+        );
+
+        // 24–25. A fresh profile opening it lands in the same space.
+        let guest = driver_with_prf(&env).await?;
+        guest.goto(&invite).await?;
+        await_url_containing(&guest, &format!("did:key:{key}")).await?;
+
+        guest.quit().await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The account subscription's query actually returns rows.
     ///
     /// It shipped without binding `this`, which is a query ERROR rather
@@ -1712,6 +1824,153 @@ mod tests {
 
         driver.quit().await?;
         Ok(())
+    }
+
+    /// The id of whatever currently has focus.
+    async fn focused_element_id(driver: &WebDriver) -> Result<String> {
+        let id = driver
+            .execute(r##"return document.activeElement?.id || "";"##, Vec::new())
+            .await?;
+        Ok(id.json().as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Wait until the address bar contains `fragment`.
+    async fn await_url_containing(driver: &WebDriver, fragment: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let url = driver.current_url().await?;
+            if url.as_str().contains(fragment) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("never navigated to {fragment}; still at {url}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait for a space key that was not there before, and return it.
+    async fn await_new_space(driver: &WebDriver, before: &[String]) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let now = space_keys(driver).await?;
+            if let Some(key) = now.iter().find(|key| !before.contains(key)) {
+                return Ok(key.clone());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "no space was created; before={before:?} now={now:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Read a settled row's value by its noun.
+    ///
+    /// A row settles when its step completes: the noun stays and the
+    /// value becomes a record (`passkey  Chrome on macOS`). Waiting on
+    /// the value is how a step's completion is observed.
+    async fn await_settled_row(driver: &WebDriver, noun: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut last = String::new();
+        loop {
+            let value = driver
+                .execute(
+                    r##"
+                    const noun = arguments[0];
+                    for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                        const k = row.querySelector(".k");
+                        if (!k || k.textContent.trim() !== noun) continue;
+                        const v = row.querySelector(".v");
+                        // A row still being edited holds an input; a
+                        // settled one holds text.
+                        if (!v || v.querySelector("input")) return "";
+                        return v.textContent.trim();
+                    }
+                    return "";
+                    "##,
+                    vec![serde_json::json!(noun)],
+                )
+                .await?;
+            last = value.json().as_str().unwrap_or_default().to_owned();
+            if !last.is_empty() {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the {noun:?} row never settled"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Type into the row named `noun` and commit it with Enter.
+    async fn type_into_settled_row(driver: &WebDriver, noun: &str, value: &str) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const [noun, value] = [arguments[0], arguments[1]];
+                for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                    const k = row.querySelector(".k");
+                    if (!k || k.textContent.trim() !== noun) continue;
+                    const input = row.querySelector("input");
+                    if (!input) return done({ error: noun + " row takes no input" });
+                    input.focus();
+                    input.value = value;
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                    return done({ ok: true });
+                }
+                done({ error: "no row named " + noun });
+                "##,
+                vec![serde_json::json!(noun), serde_json::json!(value)],
+            )
+            .await?;
+        let outcome = outcome.json().clone();
+        if let Some(error) = outcome.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not fill the {noun:?} row: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Wait for the narrator to say something containing `fragment`.
+    async fn await_narrator_containing(driver: &WebDriver, fragment: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut last = String::new();
+        loop {
+            let text = driver
+                .execute(
+                    r##"const p = document.querySelector("#tonk-register-status");
+                       return p ? (p.textContent || "").trim() : "";"##,
+                    Vec::new(),
+                )
+                .await?;
+            last = text.json().as_str().unwrap_or_default().to_owned();
+            if last.to_lowercase().contains(&fragment.to_lowercase()) {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the narrator never said {fragment:?}; it reads {last:?}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// What the page put on the clipboard.
+    async fn clipboard_text(driver: &WebDriver) -> Result<String> {
+        let text = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                navigator.clipboard.readText().then(done).catch(() => done(""));
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        Ok(text.json().as_str().unwrap_or_default().to_owned())
     }
 
     /// The cluster's action row label, or empty while it is folded.

@@ -1776,16 +1776,15 @@ pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), Str
         crate::api::submit_account_ceremony(&provider, "/devices/link", &ceremony.invocation_hex)
             .await
             .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
-    crate::api::save_account_link(
-        provider,
-        ceremony.root_did.clone(),
-        ceremony.credential_id.clone(),
-        ceremony.delegation_hex.clone(),
-        descriptor_hex(&response)?,
-        false,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    // Through `persist`, not a direct `save_account_link`.
+    //
+    // `persist` reconciles the ceremony against the root already stored
+    // (`root_for_link`): when the DIDs match it keeps the persisted one
+    // and skips re-saving. Sending the ceremony's own values instead
+    // makes `persist_link` compare them with what is stored and refuse —
+    // `403 provider ceremony does not match the persisted local root` —
+    // even when the user presented the very same passkey.
+    persist(&provider, &ceremony, descriptor_hex(&response)?, false).await?;
     Ok(())
 }
 
@@ -1845,16 +1844,15 @@ pub(crate) async fn run_account_ceremony(
         crate::api::submit_account_ceremony(&provider, "/accounts", &created.invocation_hex)
             .await
             .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
-    crate::api::save_account_link(
-        provider.clone(),
-        created.root_did.clone(),
-        created.credential_id.clone(),
-        created.delegation_hex.clone(),
-        descriptor_hex(&response)?,
-        true,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let ceremony = CeremonyOutput {
+        root_did: created.root_did.clone(),
+        credential_id: created.credential_id.clone(),
+        delegation_hex: created.delegation_hex.clone(),
+        invocation_hex: created.invocation_hex.clone(),
+        deposits_hex: created.deposits_hex.clone(),
+        encryption_key: created.encryption_key.clone(),
+    };
+    persist(&provider, &ceremony, descriptor_hex(&response)?, true).await?;
 
     if wants_enrollment().await {
         narrate("Registering with the sync service…");
