@@ -707,6 +707,24 @@ pub(crate) async fn record_customer_status(
             TonkWorkerError::Internal(format!("commit account customer status: {error}"))
         })?;
 
+    // Activation (or enrollment, or a suspension) is a new answer about
+    // the address, and the registration form reads that answer from the
+    // overlay rather than from this row. Without writing it here an
+    // address asked about BEFORE registering keeps its `unregistered`
+    // answer forever, and the form goes on offering to create an
+    // account for one that has just finished activating.
+    //
+    // Gated exactly as `mod email_status` is: the lookup it shares this
+    // row with is the worker's own, so the module is not built for a
+    // native non-test target and neither is the call into it.
+    #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+    super::email_status::record(
+        state,
+        email,
+        super::email_status::state_for_customer(status),
+    )
+    .await;
+
     Ok(())
 }
 

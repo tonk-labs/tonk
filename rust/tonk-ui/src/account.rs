@@ -1503,10 +1503,7 @@ fn load_status(host: HtmlElement) {
                         settle_on_load(&host);
                         apply_link_outcome(&host, link_outcome.as_ref());
                         if account_state == Some(AccountStateStatus::Unhydrated) {
-                            show_error(
-                                &host,
-                                "Account state is not synchronized yet. Reload /settings to retry before changing your account name.",
-                            );
+                            show_error(&host, unhydrated_guidance().await);
                         }
                     }
                     Landing::Choice { revoke_hint } => {
@@ -2036,6 +2033,26 @@ async fn complete_remote(
         }
     }
     Ok(())
+}
+
+/// What to say about an account whose state has not synchronized.
+///
+/// Before the emailed link is opened the access service refuses the
+/// pull, so an account that has just enrolled is ALWAYS unhydrated —
+/// expected, and not something a reload can change. Naming the
+/// mechanism there ("not synchronized yet") and asking for a retry that
+/// cannot succeed buries the one step that does: confirm the address.
+///
+/// The settle path after a creation ceremony has drawn this distinction
+/// since the panel ran the ceremony itself. The load path reaches the
+/// same state now — the ceremony moved into the registration cluster,
+/// which tells the panel to re-derive — so it has to draw it too.
+async fn unhydrated_guidance() -> &'static str {
+    if activation_pending().await {
+        "Check your email and open the verification link to verify your email address."
+    } else {
+        "Account state is not synchronized yet. Reload /settings to retry before changing your account name."
+    }
 }
 
 /// Whether the customer is registered but not yet email-activated.
