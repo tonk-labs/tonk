@@ -89,5 +89,3 @@ Not checkable without a product decision:
 - Exact CLI exit-code taxonomy beyond currently pinned cancellation behavior.
 - Atomic output-file guarantees for render/export and other file-producing
   commands.
-- The supported service-worker update policy: immediate takeover, prompt, or
-  next-navigation activation.

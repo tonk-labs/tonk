@@ -60,11 +60,33 @@ The crate produces two Wasm bin targets, both referenced from `index.html` by a
 
 ## How the SPA and service worker compose
 
-`index.html` registers `/service_worker.js`, then the shell waits (via the
-`serviceWorkerActivates` bootstrap in `index.html`) until the worker is
-*controlling* the page before issuing any `/api/*` request. The worker is the
-local backend: the UI talks to it over HTTP and listens for change notifications
-on a `BroadcastChannel`, surfaced to Leptos as reactive signals.
+`index.html` starts one memoized registration and update check before the UI
+Wasm mounts. The static `#tonk-boot` overlay stays visible until that promise
+settles, and the top-document application root is not created while a worker
+replacement is in flight. `updateViaCache: "none"` keeps the update job's
+script fetches fresh; an explicit `ServiceWorkerRegistration.update()` starts
+that job on every user-initiated warm load.
+
+The load lifecycle has four cases:
+
+- A first install waits until the worker claims the current document, then
+  continues without reloading.
+- An online warm load checks for a newer worker behind the boot overlay.
+- A real warm replacement activates through the worker's existing
+  `skipWaiting()` and `clients.claim()` path, then reloads once before the
+  application root mounts so the document, shell, and controller agree.
+- An offline warm load keeps its existing controller and cached shell. A failed
+  update check does not unregister the worker or clear CacheStorage, IndexedDB,
+  or other local Tonk state.
+
+The one-shot alignment reload is guarded in `sessionStorage`; a stable load
+clears the guard. There is one rollout boundary: a shell cached before this
+bootstrap ships cannot run code it does not contain. Its existing worker can
+refresh `/` in the background, and the next ordinary navigation runs the new
+load-time update path. Later deployments are detected on the first warm load.
+
+The service worker is the local backend: the UI talks to it over HTTP and
+listens for change notifications on a `BroadcastChannel`.
 
 The crate's library side (see [`src/lib.rs`](./src/lib.rs)) provides the pieces the
 `ui` binary wires together:

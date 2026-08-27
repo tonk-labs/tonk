@@ -134,6 +134,15 @@ The host IO surface and route table must agree on current profile/space. A
 service-worker update or hot swap crosses an asset-version boundary and must
 not mix incompatible shell, Wasm, and guest bundles.
 
+`UI-03` uses immediate load-time alignment: every online load asks the current
+registration to update before mounting the UI. When a replacement activates,
+the document performs one guarded reload so the mounted shell and active worker
+come from the same generation. A failed update check keeps an existing active
+worker usable offline, and neither path clears IndexedDB or CacheStorage. The
+real-browser regressions in `rust/tonk-ui/src/service_worker_upgrade.rs` cover
+the online replacement and offline-return cases; full checklist execution still
+requires a compatible ChromeDriver.
+
 ### Remain in flight
 
 Boot progress, configuration fetch, service-worker control, Wasm/custom-element

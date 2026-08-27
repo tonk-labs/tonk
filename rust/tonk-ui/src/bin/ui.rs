@@ -35,12 +35,10 @@ async fn main() {
     // `route!` table decides what to render.
     tonk_portal::register_site();
 
-    // Install the host IO surface and mount `<tonk-site>` right away —
-    // first paint no longer waits on any data round-trip. Every `/api/*`
-    // fetch the host issues self-gates on service-worker readiness
-    // (`tonk_host::ready::wait`, memoized), so mounting before the SW is
-    // controlling loses nothing: the site's own routing fetches block
-    // themselves until the worker is up.
+    // Install the host IO surface before awaiting readiness; it registers
+    // document-level hooks but does not mount application elements. The
+    // top-document root waits below for the strict service-worker gate, while
+    // every later `/api/*` fetch retains the tolerant memoized host gate.
     tonk_host::install();
 
     // Passkey ceremonies live on the window: `navigator.credentials`
@@ -71,6 +69,10 @@ async fn main() {
     #[cfg(debug_assertions)]
     inject_hot_swap();
 
+    if let Err(error) = tonk_host::ready::require().await {
+        web_sys::console::error_1(&error);
+        return;
+    }
     mount_root();
 }
 
