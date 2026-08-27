@@ -349,7 +349,7 @@ impl NotebookCell {
 /// profile is not reachable as a repository *named* `profile`. Flattening
 /// it sent the LSP looking for a named repo that does not exist, so it
 /// opened no branch and completion fell back to built-ins only.
-fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
+pub(crate) fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
     let location: tonk_host::location::Location = el
         .get_attribute("with")
         .filter(|v| !v.is_empty() && !v.contains('{'))
@@ -373,7 +373,7 @@ fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
 /// the request, annotates space/branch, and returns the parsed response) rather
 /// than issuing its own HTTP. The result is the host's parsed-JSON
 /// `EvaluateResponse`; round-trip it through `serde_json` into the local mirror.
-async fn evaluate(
+pub(crate) async fn evaluate(
     consumer: &Element,
     document: &str,
     transact: bool,

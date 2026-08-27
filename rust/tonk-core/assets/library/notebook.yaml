@@ -1,0 +1,160 @@
+# ===========================================================================
+# notebook — a <tonk-notebook> document whose ```dialog fences are live cells.
+# ===========================================================================
+# The model is deliberately `prose.yaml` with a different view: a notebook IS
+# a prose document. What makes it a notebook is that its fenced `dialog` code
+# blocks are evaluated against the branch and their results rendered beneath
+# them, which is the element's business, not the model's.
+#
+# That is the whole point of the shape. Cells are not entities: they have no
+# order key, no identity facts, and no stored output. Document order is cell
+# order, and the persisted artifact is one markdown string that still renders
+# as ordinary markdown anywhere else.
+#
+# See plan/notebook.md for why this shape won over cells-as-entities, and for
+# the checkpoint model that later gives mutation cells somewhere to land.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute!: &notebook/content
+  description: |
+    The notebook's content as the <tonk-prose> `content` envelope: a
+    versioned wrapper (Tonk-Prose-Version header + HLC ETag) around the
+    markdown body. Stored verbatim and fed back into the editor, so the
+    element drops its own echo by the version and the caret survives.
+  the: xyz.tonk.notebook/content
+  as: text
+
+attribute!: &notebook/title
+  description: The notebook's title.
+  the: xyz.tonk.notebook/title
+  as: text
+
+# ---------------------------------------------------------------------------
+# Concept
+# ---------------------------------------------------------------------------
+
+concept!: &notebook
+  this: tonk:notebook
+  description: A notebook - prose with live dialog query cells.
+  with:
+    title:
+      description: The notebook's title.
+      the: xyz.tonk.notebook/title
+      cardinality: one
+      as: text
+    content:
+      description: The document content (the versioned `content` envelope).
+      the: xyz.tonk.notebook/content
+      cardinality: one
+      as: text
+
+# A single-field projection of a notebook, so an edit upserts just the
+# content rather than re-binding every field. Without it the persist rule
+# would have to bind `title` too — which the edit command does not carry,
+# and inventing one on every keystroke would clobber the real title.
+concept!: &notebook/content-only
+  description: A notebook's content, as a standalone fact.
+  with:
+    content:
+      description: The document content (the versioned `content` envelope).
+      the: xyz.tonk.notebook/content
+      cardinality: one
+      as: text
+
+# ---------------------------------------------------------------------------
+# Command - one per idle edit. `<tonk-notebook>` forwards the inner
+# `<tonk-prose>` change event, so the detail shape is prose's: the versioned
+# envelope on `event.detail.content`. `subject` carries the document identity
+# off the element's `data-subject`.
+# ---------------------------------------------------------------------------
+
+command!: &notebook/edit
+  description: Edit a notebook document.
+  with:
+    subject:
+      description: The notebook entity, stamped on the editor's data-subject.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    content:
+      description: The new content envelope, read from the change event.
+      the: dom.event.detail/content
+      as: text
+
+# ---------------------------------------------------------------------------
+# Rule - persist the edit onto the notebook named by the command's subject.
+# Binding `subject` to `?this` writes the (cardinality-one) content in place,
+# so each edit overwrites rather than accumulating.
+# ---------------------------------------------------------------------------
+
+rule!:
+  description: Persist a notebook edit onto its document.
+  assert!: notebook/content-only
+  when:
+    - assert: notebook/edit
+      where:
+        subject: ?this
+        content: ?content
+
+# ---------------------------------------------------------------------------
+# View - the content is bound as the element's TEXT (between the tags), the
+# way a <textarea> carries its value: written via set_text_content, which is
+# newline- and markup-safe (an attribute value can be normalized in transit,
+# corrupting the multi-line envelope).
+# ---------------------------------------------------------------------------
+
+view!:
+  this: id:notebook/view
+  model: notebook
+  display: |
+    <tonk-notebook
+      onchange=notebook/edit
+      data-subject={this}
+      style="display: block;"
+    >{content}</tonk-notebook>
+
+# ---------------------------------------------------------------------------
+# A directory view so `tonk render notebook` (list of notebooks) resolves.
+# One <tonk-display> per instance - the single-display directory pattern.
+# ---------------------------------------------------------------------------
+
+view/directory!:
+  this: id:notebook/directory
+  model: notebook
+  display: |
+    <div class="notebook-directory">
+      <tonk-display entity={this} model={dom.host/model}></tonk-display>
+    </div>
+
+# ---------------------------------------------------------------------------
+# Seed one notebook so the model resolves on first render. The seed stores a
+# BARE markdown body (no envelope): the editor accepts a bare value as an
+# always-adopt initial document, then stamps versions on subsequent edits.
+# Re-assert this id to reset the document.
+# ---------------------------------------------------------------------------
+
+notebook!:
+  this: id:notebook/scratch
+  title: "Scratch"
+  content: |
+    # Scratch
+
+    A `dialog` fence is a live cell: it evaluates against this branch and
+    renders its results underneath.
+
+    ```dialog
+    concept:
+    ```
+
+    Query cells run on their own, because a query has no effect. Cells that
+    assert are recognized and held: they need a checkpoint to land in, which
+    is not built yet.
+
+    ```dialog
+    person:
+      this: ?who
+      name: ?name
+    ```

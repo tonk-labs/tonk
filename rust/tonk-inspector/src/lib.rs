@@ -22,8 +22,17 @@ pub mod response;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod element;
 
+/// `<tonk-notebook>` — a prose document whose ```dialog fences are live
+/// query cells. Shares this crate's evaluate path and result rendering with
+/// `<tonk-inspector>`; see [`notebook`] for why it lives here rather than in
+/// a crate of its own.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod notebook;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use element::TonkInspectorElement;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use notebook::TonkNotebookElement;
 
 /// Register `<tonk-inspector>`. Idempotent.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -40,6 +49,25 @@ pub fn register() {
     TonkInspectorElement::define("tonk-inspector");
 }
 
+/// Register `<tonk-notebook>`. Idempotent.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn register_notebook() {
+    use custom_elements::CustomElement;
+    use web_sys::window;
+
+    let registered = window()
+        .map(|win| !win.custom_elements().get("tonk-notebook").is_undefined())
+        .unwrap_or(false);
+    if registered {
+        return;
+    }
+    TonkNotebookElement::define("tonk-notebook");
+}
+
 /// Off-target builds have no DOM; the element only exists in the browser.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn register() {}
+
+/// Off-target builds have no DOM; the element only exists in the browser.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn register_notebook() {}

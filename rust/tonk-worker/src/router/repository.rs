@@ -2572,20 +2572,28 @@ const WIKI_LIBRARY_URL: &str = "/library/wiki.yaml";
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const BOARD_LIBRARY_URL: &str = "/library/board.yaml";
 
+/// URL of the served notebook-template asset, appended on top of the
+/// scaffold when the `notebook` template is chosen.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const NOTEBOOK_LIBRARY_URL: &str = "/library/notebook.yaml";
+
 /// The ordered list of library documents to concatenate and seed for a
 /// new repo. Core is always first. The `sheets` template appends the
 /// sheets workspace (which overrides the `tonk/space` alias to the
 /// binder); the `wiki` template appends the wiki (tree + block canvas,
 /// same alias override); the `board` template appends the card canvas
-/// (columns of text/checklist/table cards, same alias override). Every
-/// other template value (including `blank`, `agent`, or an unknown one)
-/// is core alone — the lean default that renders the blank canvas.
+/// (columns of text/checklist/table cards, same alias override); the
+/// `notebook` template appends the prose document whose `dialog` fences
+/// are live query cells. Every other template value (including `blank`,
+/// `agent`, or an unknown one) is core alone — the lean default that
+/// renders the blank canvas.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn seed_library_urls(template: Option<&str>) -> Vec<&'static str> {
     match template {
         Some("sheets") => vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL],
         Some("wiki") => vec![STANDARD_LIBRARY_URL, WIKI_LIBRARY_URL],
         Some("board") => vec![STANDARD_LIBRARY_URL, BOARD_LIBRARY_URL],
+        Some("notebook") => vec![STANDARD_LIBRARY_URL, NOTEBOOK_LIBRARY_URL],
         _ => vec![STANDARD_LIBRARY_URL],
     }
 }
@@ -4873,6 +4881,14 @@ mod seed_library_urls_tests {
         assert_eq!(
             seed_library_urls(Some("board")),
             vec!["/library/core.yaml", "/library/board.yaml"],
+        );
+    }
+
+    #[test]
+    fn it_appends_notebook_for_the_notebook_template() {
+        assert_eq!(
+            seed_library_urls(Some("notebook")),
+            vec!["/library/core.yaml", "/library/notebook.yaml"],
         );
     }
 

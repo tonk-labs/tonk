@@ -40,6 +40,10 @@ const WIKI_LIBRARY: &str = include_str!("../../tonk-core/assets/library/wiki.yam
 /// The board template — seeded on top of core when chosen, like sheets.
 const BOARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/board.yaml");
 
+/// The notebook template — a prose document whose `dialog` fences are
+/// live query cells.
+const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
+
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
 fn assert_library_lowers(label: &str, document: &str) {
@@ -186,6 +190,15 @@ fn it_lowers_core_concatenated_with_the_board_template() {
     // `component`) without redeclaring their anchors.
     let seeded = format!("{STANDARD_LIBRARY}\n{BOARD_LIBRARY}");
     assert_library_lowers("core.yaml + board.yaml (board template)", &seeded);
+}
+
+#[test]
+fn it_lowers_core_concatenated_with_the_notebook_template() {
+    // Same single-document seed as the other templates: core.yaml is
+    // concatenated ahead of notebook.yaml, so the template must reuse
+    // core's concepts without redeclaring their anchors.
+    let seeded = format!("{STANDARD_LIBRARY}\n{NOTEBOOK_LIBRARY}");
+    assert_library_lowers("core.yaml + notebook.yaml (notebook template)", &seeded);
 }
 
 #[test]
