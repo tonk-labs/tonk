@@ -2184,6 +2184,21 @@ mod tests {
     /// follows the gesture. Without one this answers "", which is why
     /// the assertion above it names what it expected to find.
     async fn clipboard_text(driver: &WebDriver) -> Result<String> {
+        // Reading the clipboard is permissioned, and the harness's
+        // Chrome grants nothing by default — the copy being a real
+        // gesture buys write access, not read. Grant read explicitly
+        // over CDP, the same channel the virtual authenticator arrives
+        // on, or this answers "" for a reason that has nothing to do
+        // with the share.
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        let _ = devtools
+            .execute_cdp_with_params(
+                "Browser.grantPermissions",
+                serde_json::json!({
+                    "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
+                }),
+            )
+            .await;
         let text = driver
             .execute_async(
                 r##"
