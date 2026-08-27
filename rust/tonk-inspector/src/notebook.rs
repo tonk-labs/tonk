@@ -41,8 +41,8 @@ use web_sys::{
 };
 
 use crate::blocks::{Block, project, reconcile, split};
+use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
-use crate::render::render_result;
 
 /// The language pack a cell's editor uses — the id `<tonk-code>` resolves a
 /// grammar by (`tonk-code/assets/tonk-code-lang-dialog-yaml.js`).
@@ -60,6 +60,66 @@ const CELL_LANGUAGES: [&str; 2] = ["dialog", "dialog-yaml"];
 
 /// Class of the wrapper the prose code-block node view builds per fence.
 const FENCE_SELECTOR: &str = ".md-code-block";
+
+/// Styles for a cell's output, injected into the editor's shadow root.
+///
+/// Deliberately spare: an output sits between two paragraphs of prose, so it
+/// reads as an annotation on the cell rather than a panel of its own. Colours
+/// come from the Web Awesome tokens the rest of the app uses, with fallbacks
+/// so an output is still legible where the tokens are absent.
+const OUTPUT_CSS: &str = r#"
+.notebook-cell-result { display: block; margin: 0.25rem 0 0.75rem; }
+.nb-out {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--wa-color-text-quiet, #9aa0a6);
+}
+.nb-out__summary {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  padding: 0.125rem 0;
+}
+.nb-out__label {
+  font-family: var(--wa-font-family-code, ui-monospace, monospace);
+  color: var(--wa-color-text-normal, #e8eaed);
+}
+.nb-out__count { font-variant-numeric: tabular-nums; }
+.nb-out__gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+.nb-card {
+  border: 1px solid var(--wa-color-neutral-border-quiet, #3c4043);
+  border-radius: var(--wa-border-radius-m, 0.375rem);
+  padding: 0.375rem 0.5rem;
+  overflow: hidden;
+}
+.nb-card__title {
+  font-family: var(--wa-font-family-code, ui-monospace, monospace);
+  color: var(--wa-color-text-normal, #e8eaed);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 0.125rem;
+}
+.nb-card__field {
+  display: flex; gap: 0.375rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nb-card__key { color: var(--wa-color-text-quiet, #9aa0a6); }
+.nb-card__value {
+  color: var(--wa-color-text-normal, #e8eaed);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.nb-card__more, .nb-out__more {
+  margin-top: 0.25rem;
+  font-style: italic;
+}
+.nb-out--error {
+  display: flex; gap: 0.5rem; align-items: baseline;
+  color: var(--wa-color-danger-on-quiet, #f28b82);
+}
+.nb-out__icon { font-weight: 700; }
+"#;
 
 /// Gap between projection retries, and how many. The observer is the real
 /// mechanism; these are the safety net for a pane that is replaced wholesale
@@ -706,16 +766,19 @@ impl Notebook {
             .map(|n| n as i32)
     }
 
-    /// Carry the page's stylesheet into the editor's shadow root.
+    /// Style the cell outputs inside the editor's shadow root.
     ///
-    /// Results render INSIDE prose's shadow root, which document styles do not
-    /// reach — so `.evaluate-*` layout and the `.notation-*` syntax colours
-    /// simply do not apply, and a result renders as a wall of unstyled text.
-    /// Adopting the same sheet the page uses keeps one source of truth rather
-    /// than a copy that drifts.
+    /// Results render INSIDE prose's shadow root, which document styles do
+    /// not reach — so without this an output is unstyled text at full width,
+    /// which is what made a query look like a wall of YAML.
     ///
-    /// Idempotent, and a no-op where `adoptedStyleSheets` is unavailable —
-    /// results are still readable unstyled.
+    /// A small dedicated sheet rather than adopting the page's: the page's
+    /// rules are written for a full-height inspector panel, and pulling all
+    /// of them across would drag unrelated layout into an editor they were
+    /// never written for. These are the notebook's own output styles, and
+    /// they are the only thing this element renders.
+    ///
+    /// Idempotent — keyed on a flag stamped on the root.
     fn adopt_page_styles(&self) {
         let Some(root) = self.prose.shadow_root() else {
             return;
@@ -729,23 +792,12 @@ impl Notebook {
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
         };
-        let sheets = js_sys::Reflect::get(&document, &"styleSheets".into()).ok();
-        let adopted = js_sys::Array::new();
-        if let Some(sheets) = sheets {
-            let length = js_sys::Reflect::get(&sheets, &"length".into())
-                .ok()
-                .and_then(|n| n.as_f64())
-                .unwrap_or(0.0) as u32;
-            for index in 0..length {
-                if let Ok(sheet) = js_sys::Reflect::get(&sheets, &index.into()) {
-                    adopted.push(&sheet);
-                }
-            }
-        }
-        if adopted.length() == 0 {
+        let Ok(style) = document.create_element("style") else {
             return;
-        }
-        if js_sys::Reflect::set(&root, &"adoptedStyleSheets".into(), &adopted).is_ok() {
+        };
+        style.set_text_content(Some(OUTPUT_CSS));
+        let node: web_sys::Node = root.clone().into();
+        if node.append_child(&style).is_ok() {
             let _ = js_sys::Reflect::set(&root, &"__tonkNotebookStyled".into(), &true.into());
         }
     }

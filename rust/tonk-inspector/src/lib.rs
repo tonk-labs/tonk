@@ -16,13 +16,20 @@
 // result-rendering port can be exercised by the wasm integration tests.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod render;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// The engine-free mirror of the worker's `/evaluate` response. Pure serde
+/// types with no DOM, so they build everywhere — which is what lets the
+/// renderers that read them be tested off-target.
 pub mod response;
 
 /// Projecting ordered blocks into one markdown document and back. Pure
 /// string logic with no DOM, so unlike the elements it builds and tests on
 /// every target.
 pub mod blocks;
+
+/// Rendering a notebook cell's result: compact, capped, and drawn by
+/// `<tonk-display>` where the result names a model. Pure string logic, so it
+/// builds and tests on every target.
+pub mod cell_output;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod element;
