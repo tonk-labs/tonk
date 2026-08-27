@@ -171,6 +171,7 @@ async fn it_installs_authority_from_a_callback_authorization(
         "delegationHex": authorized.delegation_hex,
         "descriptorHex": authorized.descriptor_hex,
         "credentialId": authorized.root_did,
+        "attachmentId": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
     })
     .to_string();
     let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
