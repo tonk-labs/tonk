@@ -123,6 +123,7 @@ pub(crate) async fn request_account_link(
         .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")))
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn request_webauthn(
     client: &crate::router::ClientId,
     request: tonk_worker_api::WebAuthnKind,
