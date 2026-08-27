@@ -128,6 +128,11 @@ const OUTPUT_CSS: &str = r#"
 const RETRY_MS: i32 = 120;
 const RETRIES: u32 = 25;
 
+/// How long to wait for the editor to settle before committing. Must clear
+/// `<tonk-prose>`'s own 400ms change debounce, or a commit reads a prefix of
+/// what was typed.
+const SETTLE_MS: i32 = 600;
+
 /// Class of the result node this element appends into each fence wrapper.
 const RESULT_CLASS: &str = "notebook-cell-result";
 
@@ -621,6 +626,23 @@ impl Notebook {
         let _ = js_sys::Reflect::set(&self.prose, &"value".into(), &JsValue::from_str(&document));
     }
 
+    /// Commit once the editor has settled.
+    ///
+    /// `<tonk-prose>` coalesces edits behind a 400ms debounce, and a fence's
+    /// text reaches the prose document only through that path — so reading
+    /// immediately yields a stale, often mid-word document. Waiting past the
+    /// debounce is what makes the committed text the text that was typed.
+    fn commit_when_settled(self: Rc<Self>) {
+        let notebook = self;
+        let callback = Closure::once_into_js(move || notebook.commit());
+        if let Some(window) = window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.unchecked_ref(),
+                SETTLE_MS,
+            );
+        }
+    }
+
     /// Commit the editor's current document: split it into blocks, diff
     /// against what was projected, and dispatch one command per change.
     ///
@@ -743,7 +765,7 @@ impl Notebook {
             event.stop_propagation();
             let index = notebook.caret_block_index().unwrap_or(-1);
             if tracked.get() >= 0 && index != tracked.get() {
-                notebook.commit();
+                notebook.clone().commit_when_settled();
             }
             tracked.set(index);
         }) as Box<dyn FnMut(Event)>);
@@ -757,7 +779,7 @@ impl Notebook {
         // contenteditable to the host element.
         let notebook = self.clone();
         let on_blur = Closure::wrap(Box::new(move |_event: Event| {
-            notebook.commit();
+            notebook.clone().commit_when_settled();
         }) as Box<dyn FnMut(Event)>);
         let _ = self
             .prose
@@ -973,7 +995,16 @@ impl Cell {
         // away, and the next projection restores the old text.
         let leaving = notebook.clone();
         let on_blur = Closure::wrap(Box::new(move |_event: Event| {
-            leaving.commit();
+            // Let prose settle before reading it. `commit` serializes the
+            // PROSE document, and a fence's live text reaches that document
+            // through the node view's forwarding, behind prose's own 400ms
+            // change debounce. Reading on the blur tick captures the document
+            // mid-word: changing `concept:` to `name:` stored `n:`, the state
+            // at the instant the first keystroke had propagated.
+            //
+            // Longer than that debounce, so what is read is the settled
+            // document rather than a prefix of it.
+            leaving.clone().commit_when_settled();
         }) as Box<dyn FnMut(Event)>);
         let _ =
             editor.add_event_listener_with_callback("focusout", on_blur.as_ref().unchecked_ref());
