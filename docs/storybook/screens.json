@@ -235,7 +235,7 @@
       "capture": "captured CLI output",
       "status": "captured",
       "journey_ids": ["ACCT-C01", "ACCT-C07", "ACCT-C08", "ACCT-C09", "ACCT-C10", "ACCT-C11", "ACCT-C12", "SPACE-10", "SPACE-11", "SPACE-12"],
-      "source_paths": ["rust/tonk-cli/src/account.rs", "rust/tonk-cli/src/account_state.rs", "rust/tonk-cli/src/account_session.rs"]
+      "source_paths": ["rust/tonk-cli/src/account.rs", "rust/tonk-cli/src/account_state.rs", "rust/tonk-cli/src/account_session.rs", "rust/tonk-cli/src/space_link.rs"]
     },
     {
       "id": "CLI-05",

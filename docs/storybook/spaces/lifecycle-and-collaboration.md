@@ -65,9 +65,15 @@ adopting an existing one. Signed-out state selects local-only creation. A valid
 active account selects account ownership, but customer/provider readiness still
 controls whether hosting settles immediately.
 
-`space link` resolves one local-only registered space and the one active
-account. Already-owned, joined, foreign-owned, missing, or signed-out targets
-are rejected before ownership mutation.
+`space link` resolves one registered space and the active account for that
+space's exact profile. The profile must report the same registered account root
+as the local account record. A space already owned by that root is a resumable
+link; joined, foreign-owned, missing, signed-out, or mismatched-account targets
+are rejected before ownership mutation. Before the first ownership transition,
+recorded invitations for the exact repository and durable non-owner members
+also block linking. Once same-account ownership and authority agree, later
+shares do not prevent an interrupted link from resuming, but an upstream for a
+different content service still does.
 
 Invite creation resolves the selected repository, its upstream and named
 remotes, invite kind, link origin, remote embedding, and shortening policy.
@@ -97,6 +103,12 @@ authority/ownership, record the account directory entry, request hosting,
 configure remote/upstream, and synchronize. Remote acceptance can precede a
 lost response. Retry must recognize the same repository subject and never
 create a second logical space or transfer foreign ownership.
+
+> **Technical note:** If the profile that created a local repository is no
+> longer available, link recovery may derive the account-root delegation only
+> from that repository's retained Ed25519 signer. Tonk validates and persists
+> the recovered prefix before using it for provisioning; a repository without
+> its signer remains un-linkable through this recovery path.
 
 Invite minting crosses an authority boundary when the delegation is minted and
 may cross remote boundaries when it pushes the repository or shortens the URL.
@@ -128,7 +140,9 @@ locks and compare the target repository/head rather than display name alone.
 
 Local creation settles with one site, one registration, and the intended
 binding. Account-owned creation or link settles only when ownership is durable
-and any deferred hosting/sync state is explicit. Another device must be able to
+and any deferred hosting/sync state is explicit. A same-account retry continues
+the idempotent provisioning, custody, sync, and account-directory work even if
+an invite was minted after ownership committed. Another device must be able to
 discover the exact repository subject through the account directory.
 
 Join settles with authority addressed to the current profile and a local
@@ -210,6 +224,9 @@ URLs, DIDs, data, or argument values.
 - Signed-in new space while customer activation is pending: ownership can be
   durable before hosting is available.
 - `space link` retries after ownership committed but provider response was lost.
+- The creating profile is gone, but the local repository retains its signer.
+- An invite is minted after ownership commits but before account publication
+  settles; retry must preserve the invite and finish publication.
 - Same local label maps to a different repository subject in an account.
 - Account directory has duplicate display names; pull by name is ambiguous.
 - Pull fetches data but crashes before registry/binding creation.
