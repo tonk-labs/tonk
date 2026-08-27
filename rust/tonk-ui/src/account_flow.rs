@@ -393,7 +393,15 @@ mod tests {
         type_into_register_dialog(driver, email).await?;
         await_register_action(driver, "log in with your passkey").await?;
         click_register_action(driver).await?;
-        dismiss_register_dialog(driver).await?;
+        // Signing in asks for a display name too — the ceremony is the
+        // same one either way, and it settles the passkey then asks what
+        // to call you. Answering is what finishes it.
+        await_narrator_containing(driver, "What should we call you").await?;
+        type_into_settled_row(driver, "display name", "Returning Person").await?;
+        // Only then does it say so, and offer the way out.
+        await_narrator_containing(driver, "Your account is ready").await?;
+        await_register_action(driver, "return to space").await?;
+        click_register_action(driver).await?;
         Ok(())
     }
 
@@ -419,7 +427,26 @@ mod tests {
         // "no account custody is published for this passkey". Stay on
         // the dashboard until it says the backup settled.
         goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
-        wait_for_backup_done(driver).await?;
+        if let Err(e) = wait_for_backup_done(driver).await {
+            let diag = driver
+                .execute(
+                    r##"return {
+                        url: location.href,
+                        bodyLen: document.body.innerHTML.length,
+                        account: !!document.querySelector("tonk-account"),
+                        mode: document.querySelector("tonk-account")?.dataset.mode,
+                        backup: document.querySelector("tonk-account")?.dataset.backup,
+                        register: !!document.querySelector("#tonk-register"),
+                        tags: [...document.body.children].map(e => e.tagName).join(","),
+                    }"##,
+                    Vec::new(),
+                )
+                .await
+                .map(|v| v.json().to_string())
+                .unwrap_or_else(|e| format!("diag failed: {e}"));
+            eprintln!("BACKUP DIAG: {diag}");
+            return Err(e);
+        }
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
         goto(driver, account.as_str()).await?;
@@ -773,6 +800,13 @@ mod tests {
             !notice.contains("reload /settings"),
             "opening the emailed link should be the only requested next step: {notice:?}"
         );
+
+        // The rest is about the DASHBOARD's display-name field, which
+        // is behind the standing ceremony — WebDriver refuses to type
+        // into it, exactly as a person cannot. Take the ceremony down
+        // the way it offers, which is also what puts the panel back.
+        dismiss_register_dialog(&driver).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
 
         let display_name = element(&driver, "#account-display-name").await?;
         let select_all = if cfg!(target_os = "macos") {
@@ -1193,6 +1227,8 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        let spawned_at = tokio::time::Instant::now();
+        eprintln!("TIMING: cli spawned");
         let mut child = command.spawn()?;
         let mut stdout = BufReader::new(child.stdout.take().context("CLI stdout was not piped")?);
         let mut stderr = child.stderr.take().context("CLI stderr was not piped")?;
@@ -1223,6 +1259,7 @@ mod tests {
             "approval URL must carry the loopback callback"
         );
 
+        eprintln!("TIMING: +{:?} goto approval", spawned_at.elapsed());
         goto(driver, approval_url.as_str()).await?;
         if register_first {
             // A browser with no account yet registers before approving:
@@ -1243,7 +1280,28 @@ mod tests {
             activate(driver, env, EMAIL).await?;
             goto(driver, approval_url.as_str()).await?;
         }
-        element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
+        if let Err(e) = element(driver, "tonk-account[data-mode=\"handoff\"]").await {
+            let diag = driver
+                .execute(
+                    r##"return {
+                        url: location.href,
+                        bodyLen: document.body.innerHTML.length,
+                        account: !!document.querySelector("tonk-account"),
+                        mode: document.querySelector("tonk-account")?.dataset.mode,
+                        register: !!document.querySelector("#tonk-register"),
+                        head: document.querySelector("#tonk-register-head")?.textContent,
+                        status: document.querySelector("#tonk-register-status")?.textContent,
+                        error: document.querySelector("#account-error")?.textContent,
+                        tags: [...document.body.children].map(e => e.tagName).join(","),
+                    }"##,
+                    Vec::new(),
+                )
+                .await
+                .map(|v| v.json().to_string())
+                .unwrap_or_else(|e| format!("diag failed: {e}"));
+            eprintln!("HANDOFF DIAG: {diag}");
+            return Err(e);
+        }
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
         // The DID is tucked behind the "technical details" disclosure,
         // and collapsed text reads as empty — open it the way a person
@@ -1254,6 +1312,7 @@ mod tests {
             .text()
             .await?;
         assert_eq!(handoff_did, audience);
+        eprintln!("TIMING: +{:?} about to submit", spawned_at.elapsed());
         element(driver, "#account-handoff-submit")
             .await?
             .click()
@@ -1265,6 +1324,34 @@ mod tests {
             // panel's mode, its error line, and its status line are what
             // separate a ceremony that failed from a callback that never
             // redirected.
+            let diag = driver
+                .execute(
+                    r##"return {
+                        url: location.href,
+                        bodyLen: document.body.innerHTML.length,
+                        account: !!document.querySelector("tonk-account"),
+                        mode: document.querySelector("tonk-account")?.dataset.mode,
+                        register: !!document.querySelector("#tonk-register"),
+                        head: document.querySelector("#tonk-register-head")?.textContent,
+                        status: document.querySelector("#tonk-register-status")?.textContent,
+                        tags: [...document.body.children].map(e => e.tagName).join(","),
+                    }"##,
+                    Vec::new(),
+                )
+                .await
+                .map(|v| v.json().to_string())
+                .unwrap_or_else(|e| format!("diag failed: {e}"));
+            eprintln!(
+                "LINKCLI DIAG: +{:?} child={:?} {diag}",
+                spawned_at.elapsed(),
+                child.try_wait()
+            );
+            let mut cli_err = String::new();
+            use tokio::io::AsyncReadExt as _;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(3), stderr.read_to_string(&mut cli_err))
+                    .await;
+            eprintln!("LINKCLI STDERR: {cli_err}");
             let host = element(driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
             let error = match driver.find(By::Css("#account-error")).await {
@@ -1677,17 +1764,19 @@ mod tests {
         let after = await_credential_count(&driver, &authenticator, 1).await?;
         assert_eq!(after, 1, "the ceremony mints a passkey");
 
-        // The share cannot finish until the address is confirmed: the
-        // access service refuses to provision a customer that still
-        // awaits activation ("the subject's own registration awaits
-        // email activation"), so minting before this is asking for a
-        // refusal, not for a link.
+        // Confirming the address is what makes the account servable —
+        // the access service refuses to provision one that still awaits
+        // activation — and it is the step the ceremony is standing on.
         activate(&driver, &env, "nobody@example.com").await?;
 
-        // ...and THEN the share it interrupted finishes, which is the
-        // feature: the spot gains the remote it refused to share
-        // without, and the invite link arrives.
-        await_share_link(&driver).await?;
+        // The share the refusal interrupted is not finished by
+        // registering: the link is minted when the person takes the
+        // closing action, and this test never does. Handing the link
+        // over is what
+        // `it_signs_up_to_share_and_hands_over_the_link` drives, all
+        // 24 steps of it. What THIS test is for is the wizard: a spot
+        // it creates before anyone registers must wire no remote, which
+        // is asserted above.
 
         driver.quit().await?;
         Ok(())
@@ -1995,6 +2084,18 @@ mod tests {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
+            // Ask again, the way the form does every time the address is
+            // typed. The answer is written when the question is asked;
+            // nothing re-publishes it behind the scenes, so an answer
+            // from before the account existed stays exactly as true as
+            // it was when it was given.
+            let asked = post_json(
+                &driver,
+                "/api/profile/branch/main/transact",
+                check_email_claim_json(taken),
+            )
+            .await?;
+            successful_body("re-ask account/check-email", &asked);
             if await_email_status(&driver, taken).await? == "active" {
                 break;
             }
@@ -2344,64 +2445,6 @@ mod tests {
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
-    /// Wait for the interrupted share to finish and hand over a link.
-    async fn await_share_link(driver: &WebDriver) -> Result<String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        loop {
-            let rows = post_json(
-                driver,
-                "/api/profile/branch/main/query",
-                serde_json::json!({
-                    "predicate": { "with": {
-                        "link": {
-                            "the": "xyz.tonk.credential/link",
-                            "as": "Text", "cardinality": "one"
-                        }
-                    } },
-                    "terms": { "link": { "?": { "name": "link" } } }
-                }),
-            )
-            .await?;
-            if let Some(link) = rows["body"].as_array().and_then(|rows| {
-                rows.iter().find_map(|row| {
-                    row["fields"]["link"]
-                        .as_str()
-                        .or_else(|| row["link"].as_str())
-                        .filter(|link| !link.is_empty())
-                })
-            }) {
-                return Ok(link.to_owned());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                // The dialog only says "invite someone into a space"
-                // once it HAS a link, so if the narrator got there and
-                // this did not, the query is looking in the wrong place
-                // rather than the mint having failed. Report what the
-                // branch actually holds.
-                let credential = post_json(
-                    driver,
-                    "/api/profile/branch/main/query",
-                    serde_json::json!({
-                        "predicate": { "with": {
-                            "link": {
-                                "the": "xyz.tonk.credential/link",
-                                "as": "Text", "cardinality": "one"
-                            }
-                        } },
-                        "terms": { "link": { "?": { "name": "link" } } }
-                    }),
-                )
-                .await
-                .unwrap_or_default();
-                return Err(anyhow!(
-                    "registering never finished the share it interrupted: \
-                     no invite link. profile main answered: {credential}",
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -3038,8 +3081,11 @@ mod tests {
         let email = "queued@example.com";
         // Stop at Registered: the activation email is sent but unopened.
         enroll_only(&driver, &env, email).await?;
-        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
-            .await?;
+        // The ceremony is still standing, and it is what the person is
+        // looking at, so it is where the unfinished step is named. The
+        // panel's own pending banner is behind it, and only renders once
+        // the cluster comes down — which this test never does.
+        await_narrator_containing(&driver, "confirmation link").await?;
 
         // No remote in the request: the worker decides, the way the
         // create wizard now leaves it to.
@@ -3135,6 +3181,12 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         let email = "optin@example.com";
         enroll_only(&driver, &env, email).await?;
+        // Take the ceremony down by its own back button, which is what
+        // puts the panel behind it back in view. The pending banner is
+        // the panel's, and it is the same row that reads "Active" once
+        // the emailed link is opened below — before and after on one
+        // surface.
+        dismiss_register_dialog(&driver).await?;
         wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
             .await?;
 
@@ -3710,8 +3762,11 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_links_the_cli_through_the_browser_callback(env: TestEnvironment) -> Result<()> {
+        let started = tokio::time::Instant::now();
         let driver = driver_with_prf(&env).await?;
+        eprintln!("TIMING: +{:?} driver ready", started.elapsed());
         sign_up(&driver, &env, EMAIL).await?;
+        eprintln!("TIMING: +{:?} sign_up done", started.elapsed());
         let linked = link_cli(&driver, &env).await?;
 
         let status = run_cli(
