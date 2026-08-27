@@ -708,6 +708,39 @@ When that lands, the per-notebook branch becomes optional: cells query
 their own checkpoints directly, per-cell time travel works, and the
 time slider can show state rather than only metadata.
 
+## Addressable notebooks and the URL
+
+`/space/{repo}/notebook/{entity}` routes to one notebook (`route/notebook`
+in `notebook.yaml`). The path segment is `as: entity`, so it arrives as a
+real entity the view binds straight into `<tonk-notebook>` — no lookup and
+no name table. A space can therefore hold many notebooks, and a link can
+name one; the space shell still opens the pinned scratch notebook as the
+landing case, which is now a default rather than the only possibility.
+
+### Reflecting the URL while typing (not built)
+
+The wanted behaviour: start typing in the landing notebook and have the
+address bar become that notebook's own URL, so the page you are on is the
+page you can link to.
+
+`tonk_host::navigate_to` is the wrong tool. It pushes state and then
+**dispatches `popstate` itself**, because `pushState` fires no event and
+the site needs one to re-route (`navigate.rs:134-137`). Re-routing
+remounts the view — that is precisely what must not happen under a caret.
+
+So this needs a *silent* variant: `pushState` (or `replaceState`) with no
+`popstate`, leaving the mounted view alone. Two things to settle first:
+
+- **Push or replace.** Replace keeps Back meaning "the page before the
+  notebook", which is probably right for a URL that is catching up with
+  where you already are. Push makes each notebook a history entry, which
+  is right if typing is understood as navigation. Replace seems truer to
+  "reflect", but it is a real choice.
+- **Whose history.** The notebook renders inside the sealed guest, whose
+  URL is the fake origin (`project_space_fake_origin_nav`), while the
+  address bar belongs to the top page. So the update has to cross the
+  bridge like any other page effect, not call `history` locally.
+
 ## Open questions
 
 **1. Shape A or B — do cells need to be addressable from outside?**

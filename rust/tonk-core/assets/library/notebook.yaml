@@ -196,6 +196,60 @@ view/directory!:
     </div>
 
 # ---------------------------------------------------------------------------
+# The notebook route — `/space/{repo}/notebook/{entity}`.
+#
+# A notebook is addressable, so a space can hold many and a link can name
+# one. The space shell still opens the pinned scratch notebook (the landing
+# case), but that is now the default rather than the only possibility.
+#
+# `entity` is `as: entity`, so the path segment arrives as a real entity the
+# view binds straight into `<tonk-notebook>` — no lookup, no name table.
+# ---------------------------------------------------------------------------
+
+route!: &route/notebook
+  this: id:notebook/route
+  path: "/notebook/{*entity}"
+  concept: tonk:notebook/route
+
+concept!: &notebook/route
+  this: tonk:notebook/route
+  description: A single notebook page (`/space/{repo}/notebook/{entity}`).
+  with:
+    entity:
+      description: The notebook entity from the path, picked off the site.
+      the: xyz.tonk.site/entity
+      cardinality: one
+      as: entity
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+view!:
+  this: id:notebook/route/view
+  model: tonk:notebook/route
+  display: |
+    <div class="notebook-space">
+      <tonk-notebook
+        data-subject={entity}
+        onblockedit=block/edit
+        onreorder=notebook/reorder
+        style="display: block;"
+      >
+        <div class="notebook-data" hidden>
+          <tonk-display model=tonk:notebook></tonk-display>
+          <tonk-display model=tonk:notebook/block></tonk-display>
+        </div>
+      </tonk-notebook>
+    </div>
+
+# ---------------------------------------------------------------------------
 # Command - one per changed block.
 #
 # `<tonk-notebook>` splits the edited document into blocks, diffs them against
