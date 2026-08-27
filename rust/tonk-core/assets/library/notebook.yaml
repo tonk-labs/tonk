@@ -157,9 +157,26 @@ view!:
         style="display: block;"
       >
         <div class="notebook-data" hidden>
+          <tonk-display model=tonk:notebook></tonk-display>
           <tonk-display model=tonk:notebook/block></tonk-display>
         </div>
       </tonk-notebook>
+    </div>
+
+# The notebook row: its block order. The order cannot ride as an attribute
+# on `<tonk-notebook>` because the space view's model is the REPLICA, which
+# has no access to a notebook's fields — so it arrives the same way the
+# blocks do, as a hidden row the element reads.
+view/directory!:
+  this: id:notebook/rows
+  model: tonk:notebook
+  display: |
+    <div class="notebook-rows">
+      <div class="notebook-row"
+        subject={this}
+        data-notebook={this}
+        data-order={order}
+        data-title={title}></div>
     </div>
 
 # The block rows the element reads. A hidden <tonk-display> per model

@@ -162,6 +162,7 @@ impl CustomElement for TonkNotebookElement {
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),
             projected: RefCell::new(String::new()),
+            projected_once: std::cell::Cell::new(false),
             settling: std::cell::Cell::new(false),
         });
 
@@ -220,6 +221,9 @@ struct Notebook {
     /// The document text last handed to the editor. Guards against writing
     /// back the editor's own echo of a store update.
     projected: RefCell<String>,
+    /// Whether the store's blocks have been projected into the editor yet.
+    /// Until they have, an edit has nothing truthful to diff against.
+    projected_once: std::cell::Cell<bool>,
     /// True while this element is mutating its own DOM. The observer watches
     /// the editor subtree, and binding a fence writes into it (a result slot,
     /// a `source` attribute), so without this each bind re-enters the
@@ -324,7 +328,19 @@ impl Notebook {
             return;
         }
 
-        let order = self.host.get_attribute("order").unwrap_or_default();
+        // The order arrives as a hidden row, not an attribute: the space view
+        // that mounts this element has the REPLICA as its model, so it cannot
+        // bind a notebook's fields. Fall back to the attribute for a caller
+        // that can supply one directly.
+        let order = self
+            .host
+            .query_selector(".notebook-row")
+            .ok()
+            .flatten()
+            .and_then(|row| row.dyn_into::<HtmlElement>().ok())
+            .and_then(|row| row.dataset().get("order"))
+            .or_else(|| self.host.get_attribute("order"))
+            .unwrap_or_default();
         let mut ordered: Vec<Block> = Vec::new();
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for entity in order.lines().map(str::trim).filter(|e| !e.is_empty()) {
@@ -348,6 +364,7 @@ impl Notebook {
         let sources: Vec<String> = ordered.iter().map(|b| b.source.clone()).collect();
         let document = project(&sources);
         *self.blocks.borrow_mut() = ordered;
+        self.projected_once.set(true);
         if document == *self.projected.borrow() {
             return;
         }
@@ -377,6 +394,17 @@ impl Notebook {
             return;
         }
 
+        // Never commit before the store's blocks have been projected. Until
+        // then `blocks` is empty, so `reconcile` reads every block as newly
+        // created: the edit mints fresh entities, leaves the real ones
+        // untouched, and writes an order naming only the new ones — which is
+        // exactly "I typed something and on reload it was gone".
+        //
+        // An explicit flag, not `blocks.is_empty()`: a genuinely empty
+        // notebook has no blocks either, and must still accept its first.
+        if !self.projected_once.get() {
+            return;
+        }
         let next = split(&document);
         let edit = reconcile(&self.blocks.borrow(), &next);
 
