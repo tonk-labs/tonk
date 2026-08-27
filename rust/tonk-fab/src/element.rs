@@ -242,7 +242,14 @@ fn restamp_space(this: &HtmlElement, space: &str) {
         ("ui-sync-status", "with", format!("main@{space}")),
     ] {
         if let Ok(Some(child)) = this.query_selector(selector) {
-            let _ = child.set_attribute(attribute, &value);
+            // Only when it changes: every one of these targets observes
+            // the attribute, and a redundant write still fires its
+            // `attributeChangedCallback`. Restamping runs from inside
+            // this element's own callback, so a needless write is a
+            // needless re-entry.
+            if child.get_attribute(attribute).as_deref() != Some(value.as_str()) {
+                let _ = child.set_attribute(attribute, &value);
+            }
         }
     }
 }
