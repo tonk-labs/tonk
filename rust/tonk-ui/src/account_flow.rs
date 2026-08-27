@@ -1748,6 +1748,44 @@ mod tests {
         Ok(())
     }
 
+    /// The Hub offers to link an account, and does it in one step.
+    ///
+    /// It used to read "log in" and navigate to `/settings`, which put
+    /// two surfaces between the label and the ceremony — press it, land
+    /// on a panel, press "link an account" there, meet the cluster only
+    /// then. It also named the wrong act: the address decides whether it
+    /// creates a passkey or signs you in, so half of "log in"'s readers
+    /// were told something untrue before they had typed anything.
+    ///
+    /// Both halves are asserted from the page, because both are what a
+    /// person sees: the word on the control, and what one press does.
+    #[dialog_common::test]
+    async fn it_links_an_account_from_the_hub_in_one_step(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        // The word on the control, before anything is linked.
+        enter_hub(&driver).await?;
+        wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
+
+        // One press. The Hub is a sealed guest, so the cluster it asks
+        // for is raised by the TOP page — which is also why pressing it
+        // must not navigate the Hub anywhere.
+        let before = driver.current_url().await?;
+        click(&driver, "[data-account-trigger]").await?;
+        await_register_dialog(&driver).await?;
+
+        driver.enter_default_frame().await?;
+        assert_eq!(
+            driver.current_url().await?,
+            before,
+            "linking an account happens in place, with no page in between",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The account subscription's query actually returns rows.
     ///
     /// It shipped without binding `this`, which is a query ERROR rather

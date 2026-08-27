@@ -992,11 +992,67 @@ pub(crate) fn run_signup_ceremony() {
                     set_status("Click the confirmation link we sent to your email.");
                     if let Some(host) = host_element() {
                         await_activation(&host);
+                        probe_while_waiting();
                     }
                 }
             }
         }
     });
+}
+
+/// Ask the service whether the account activated yet, until it has.
+///
+/// Activation reaches this device as a fact on profile main, and
+/// [`await_activation`] is subscribed to it — but only the browser that
+/// OPENED the link writes that fact. Confirm from a phone, or another
+/// browser, and this one is never told: its worker learns nothing until
+/// something calls the status probe, which is why a reload used to be
+/// the fix.
+///
+/// So poll the probe, not the answer. `GET /api/customer` reconciles the
+/// fact on every read and replays the work deferred during the wait, so
+/// a device that was merely waiting still ends up with the same rows as
+/// the device that clicked. The subscription remains what redraws the
+/// ceremony; this only gives it something to see.
+///
+/// Stops when the cluster goes away, so a dismissed ceremony leaves no
+/// timer running.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn probe_while_waiting() {
+    /// Long enough not to hammer the service through a wait measured in
+    /// however long it takes to reach an inbox, short enough that
+    /// confirming elsewhere feels answered rather than stuck.
+    const EVERY: i32 = 3_000;
+
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            // The ceremony is gone (dismissed, or finished): nothing
+            // left to report to.
+            let Some(host) = host_element() else {
+                return;
+            };
+            // Past the wait already — the subscription got there first.
+            if host.query_selector(NAME_ROW).ok().flatten().is_some() {
+                return;
+            }
+            // The answer is a FACT the probe writes, so the reply here
+            // is deliberately ignored: reading it would give the
+            // ceremony a second source of truth to disagree with.
+            let _ = crate::api::customer_state().await;
+            sleep(EVERY).await;
+        }
+    });
+}
+
+/// Resolve after `millis`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn sleep(millis: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, millis);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 /// The cluster host, when it is on screen.
