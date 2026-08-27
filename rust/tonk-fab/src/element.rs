@@ -149,7 +149,6 @@ impl CustomElement for TonkFab {
         mount_refusal_dialogs();
         restore_position(this);
         self.listeners.borrow_mut().extend(attach_presence(this));
-        self.listeners.borrow_mut().extend(attach_account(this));
         self.activation_watch = crate::activation::watch(this);
     }
 
@@ -579,15 +578,22 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
         }
         if row.has_attribute("data-share-account") {
             bar::close(&host, &shared);
-            if let Some(space) = host
-                .get_attribute("space")
-                .filter(|space| !space.is_empty())
-            {
-                let next = format!("/space/{space}");
-                navigate(&format!("/settings?next={}", urlencoding::encode(&next)));
-            } else {
-                navigate("/settings");
-            }
+            // Raise the ceremony over the space rather than navigating to
+            // `/settings`: leaving the space loses what the click was for,
+            // and the share cannot finish somewhere else. The space rides
+            // along so the interrupted share mints once an account exists.
+            //
+            // The top page does the raising — WebAuthn needs a `window`
+            // and a user gesture, and this frame has neither — so this
+            // asks through the portal bridge.
+            let space = host.get_attribute("space").unwrap_or_default();
+            tonk_host::request_registration(
+                &serde_json::json!({
+                    "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+                    "space": space,
+                })
+                .to_string(),
+            );
             return;
         }
         if let (Some(member), Some(space)) = (
@@ -644,7 +650,7 @@ fn navigate(path: &str) {
 /// No remote is supplied by the page: the worker resolves where the space
 /// syncs from the account's provider registration.
 fn create_space() {
-    let claim = crate::logic::create_space_claim_json("Untitled", "", "");
+    let claim = crate::logic::create_space_claim_json("Untitled");
     transact(&claim);
 }
 
@@ -1171,7 +1177,7 @@ fn apply_unknown_space(this: &HtmlElement) {
 }
 
 /// Swap the share menu between its safe account handoff and copy action.
-fn apply_account_ready(this: &HtmlElement, ready: bool) {
+pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
     if ready {
         let _ = this.remove_attribute(ACCOUNT_REQUIRED_ATTR);
     } else {
@@ -1191,51 +1197,6 @@ fn apply_account_ready(this: &HtmlElement, ready: bool) {
             let _ = copy.set_attribute("hidden", "");
         }
     }
-}
-
-/// Ask whether the active profile is attached to an account.
-async fn check_account(this: HtmlElement) {
-    let Some(win) = window() else { return };
-    let Ok(value) = JsFuture::from(win.fetch_with_str("/api/account")).await else {
-        return;
-    };
-    let Ok(response) = value.dyn_into::<Response>() else {
-        return;
-    };
-    if !response.ok() {
-        return;
-    }
-    let Ok(json) = response.json() else { return };
-    let Ok(value) = JsFuture::from(json).await else {
-        return;
-    };
-    let registered = Reflect::get(&value, &"status".into())
-        .ok()
-        .and_then(|value| value.as_string())
-        .as_deref()
-        == Some("registered");
-    apply_account_ready(&this, registered);
-}
-
-/// Probe on connect and again when this tab returns from account management.
-fn attach_account(this: &HtmlElement) -> Vec<Bound> {
-    spawn_local(check_account(this.clone()));
-    let Some(document) = window().and_then(|window| window.document()) else {
-        return Vec::new();
-    };
-    let host = this.clone();
-    vec![crate::shadow::bind(
-        document.unchecked_ref(),
-        "visibilitychange",
-        move |_| {
-            let hidden = window()
-                .and_then(|window| window.document())
-                .is_some_and(|document| document.visibility_state() == VisibilityState::Hidden);
-            if !hidden && host.is_connected() {
-                spawn_local(check_account(host.clone()));
-            }
-        },
-    )]
 }
 
 /// Return this bar's repository endpoint once its space binding is resolved.

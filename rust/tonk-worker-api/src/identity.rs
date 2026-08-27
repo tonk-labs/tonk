@@ -146,19 +146,3 @@ pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
 /// enrolls it, and the outcome reaches every reader as facts — the
 /// worker is not waiting on a response body.
 pub const CREATE_ACCOUNT_REQUEST: &str = "create-account";
-
-/// Request to create a durable space through the local root.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSpaceRequest {
-    /// Space display name.
-    pub name: String,
-    /// Optional sync remote URL.
-    pub remote: Option<String>,
-}
-
-/// Created space routing key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSpaceResponse {
-    /// DID-derived repository routing key.
-    pub key: String,
-}

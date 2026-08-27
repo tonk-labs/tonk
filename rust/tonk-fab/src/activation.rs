@@ -1,60 +1,124 @@
 //! The pending-email condition shared by the bar and its share stack.
+//!
+//! Driven by a subscription to the account's own `AccountCustomer` row,
+//! not by polling `GET /api/customer`.
+//!
+//! The probe it replaces ran every 10 seconds for the life of the bar,
+//! and on a device that never registered every one of them answered
+//! `409 ROOT_REQUIRED` — the route wants a local passkey root to read
+//! the record. The poll swallowed that and returned, so the condition it
+//! meant to render was never right on exactly the devices that needed
+//! it, while the console filled with conflicts.
+//!
+//! A subscription answers once, when the fact changes, which is also
+//! precisely when the condition changes.
 
-use wasm_bindgen::JsCast;
+use js_sys::{JSON, Reflect};
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement, window};
 
+use tonk_host::consumer::{self, Subscription};
+
 const BANNER_ID: &str = "fabb-activation-banner";
 const CLUSTER_ID: &str = "fabb-activation-cluster";
-const POLL_MS: i32 = 10_000;
+
+/// Distinguishes this element's account subscription from its others.
+const SUB_TAG: &str = "fabb-activation";
 
 pub(crate) struct ActivationWatch {
-    interval: i32,
-    _tick: Closure<dyn FnMut()>,
+    subscription: Option<Subscription>,
+    _frames: Vec<Closure<dyn FnMut(JsValue, JsValue)>>,
 }
 
 impl Drop for ActivationWatch {
     fn drop(&mut self) {
-        if let Some(window) = window() {
-            window.clear_interval_with_handle(self.interval);
+        if let Some(mut subscription) = self.subscription.take() {
+            subscription.cancel();
         }
     }
 }
 
 pub(crate) fn watch(this: &HtmlElement) -> Option<ActivationWatch> {
-    poll(this);
-    let host = this.clone();
-    let tick = Closure::<dyn FnMut()>::new(move || poll(&host));
-    let interval = window()?
-        .set_interval_with_callback_and_timeout_and_arguments_0(
-            tick.as_ref().unchecked_ref(),
-            POLL_MS,
-        )
-        .ok()?;
+    // The account row lives on the profile branch, not this space's.
+    let _ = this.set_attribute("with", "main@profile:tonk");
+
+    let mut frames = Vec::new();
+    for method in ["reset", "update"] {
+        let host = this.clone();
+        let is_delta = method == "update";
+        let frame =
+            Closure::<dyn FnMut(JsValue, JsValue)>::new(move |payload: JsValue, _opts: JsValue| {
+                apply(&host, &payload, is_delta);
+            });
+        if Reflect::set(this.as_ref(), &method.into(), frame.as_ref()).is_err() {
+            return None;
+        }
+        frames.push(frame);
+    }
+
+    let query = JSON::parse(&crate::logic::account_customer_query_body()).ok()?;
+    let subscription = match consumer::subscribe(this, &query, Some(&SUB_TAG.into())) {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            tonk_common::log!("activation: could not watch the account: {error:?}");
+            None
+        }
+    };
+
+    // An account nobody has registered yet resolves to no row at all —
+    // `provider` is required on the concept, so "enrolled but unserved"
+    // does not match. That absence IS the answer, and nothing else will
+    // say it, so paint it now rather than waiting for a frame.
+    render(this, None, None);
+
     Some(ActivationWatch {
-        interval,
-        _tick: tick,
+        subscription,
+        _frames: frames,
     })
 }
 
-pub(crate) fn poll(this: &HtmlElement) {
-    let host = this.clone();
-    spawn_local(async move {
-        let Ok(body) = tonk_host::get_json("/api/customer").await else {
-            return;
-        };
-        let Ok(state) = serde_json::from_str::<serde_json::Value>(&body) else {
-            return;
-        };
-        render(&host, state["status"].as_str(), state["email"].as_str());
-    });
+/// Render whichever row the frame carries.
+///
+/// `status` is cardinality-one on the account, so the newest asserted
+/// row is the current answer; a bare retract leaves the condition alone.
+fn apply(host: &HtmlElement, payload: &JsValue, is_delta: bool) {
+    let rows = if is_delta {
+        Reflect::get(payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED)
+    } else {
+        payload.clone()
+    };
+    let rows = js_sys::Array::from(&rows);
+    let Some(index) = rows.length().checked_sub(1) else {
+        return;
+    };
+    let row = rows.get(index);
+    if row.is_undefined() || row.is_null() {
+        return;
+    }
+    let Ok(fields) = Reflect::get(&row, &"fields".into()) else {
+        return;
+    };
+    let read = |name: &str| {
+        Reflect::get(&fields, &name.into())
+            .ok()
+            .and_then(|value| value.as_string())
+    };
+    render(host, read("status").as_deref(), read("email").as_deref());
 }
 
 fn render(this: &HtmlElement, status: Option<&str>, email: Option<&str>) {
     if !this.is_connected() {
         return;
     }
+    // Which of the share stack's two rows shows — "log in to share" or
+    // the copy row — is the same question this subscription already
+    // answers, so it is answered here rather than by a second probe.
+    // `element.rs` used to fetch `/api/account` once on connect for it,
+    // which went stale the moment someone registered: the bar kept
+    // offering to log in to an account that now existed.
+    crate::element::apply_account_ready(this, status.is_some());
     let status = status.unwrap_or_default();
     let _ = this.set_attribute("data-customer-status", status);
     if let Some(email) = email {
@@ -119,9 +183,10 @@ fn ensure_banner(this: &HtmlElement, email: &str) {
     set_banner_copy(&banner, email);
 
     let host = this.clone();
+    // No refresh on open: the subscription is already current, which is
+    // the point of it.
     let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
         open_cluster(&host);
-        poll(&host);
     });
     let _ = banner.add_event_listener_with_callback("fabb-open", on_open.as_ref().unchecked_ref());
     on_open.forget();
@@ -161,7 +226,6 @@ fn open_cluster(this: &HtmlElement) {
         r#"<p slot="statement">activate sync for this account</p>
 <tonk-field noun="email" settled changeable data-activation-email></tonk-field>
 <p slot="narrator" data-activation-narrator>Open the link in your activation email. <button data-resend-activation>resend activation email</button></p>
-<tonk-button slot="run" variant="primary" solid data-check-activation>check activation</tonk-button>
 <span slot="ghost">back to your space</span>"#,
     );
     style_narrator_verb(&cluster);
@@ -210,14 +274,6 @@ fn open_cluster(this: &HtmlElement) {
         let _ =
             resend.add_event_listener_with_callback("click", on_resend.as_ref().unchecked_ref());
         on_resend.forget();
-    }
-
-    if let Ok(Some(check)) = cluster.query_selector("[data-check-activation]") {
-        let host = this.clone();
-        let on_check = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| poll(&host));
-        let _ =
-            check.add_event_listener_with_callback("fabb-press", on_check.as_ref().unchecked_ref());
-        on_check.forget();
     }
 
     if let Some(body) = document.body() {
@@ -281,8 +337,21 @@ pub(crate) fn remove() {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn registration_poll_is_deliberately_slow_and_non_spinning() {
-        assert_eq!(super::POLL_MS, 10_000);
+    /// The condition is read from the account's own row, not fetched.
+    ///
+    /// This replaces a test pinning a 10-second poll interval. The poll
+    /// it guarded answered `409 ROOT_REQUIRED` on every tick for a
+    /// device that had never registered, and swallowed it — so the
+    /// condition was never right on the devices that needed it. What is
+    /// worth pinning now is that the read is a query over raw attribute
+    /// URIs, which nothing seeded can break.
+    #[dialog_common::test]
+    fn it_reads_the_condition_from_the_account_row() {
+        let body = crate::logic::account_customer_query_body();
+        assert!(body.contains("xyz.tonk.account/customer-status"));
+        assert!(body.contains("xyz.tonk.account/provider-address"));
+        // A concept name would need the profile to have been seeded with
+        // a matching definition; the raw URIs need nothing.
+        assert!(!body.contains("tonk:account"));
     }
 }

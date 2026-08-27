@@ -90,17 +90,6 @@ command!: &space/create
         transient would never trigger the handler.
       the: dom.event.current-target.elements.name/value
       as: text
-    template:
-      description: >
-        Which template to seed: "wiki" for linked pages, "sheets" for
-        the tabbed workspace, "board" for the card canvas, or
-        blank/absent for the lean default (the blank canvas). Read from
-        the wizard's `template` control on submit, exactly as `name`
-        and `remote` are. The worker's CreateSpaceHandler reads it via
-        template_from_facts; an older form that omits it decodes as
-        blank.
-      the: dom.event.current-target.elements.template/value
-      as: text
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -564,105 +553,7 @@ view/directory!:
              registers stays local until it is shared. -->
         <form class="snew-form" onsubmit=space/create>
           <input type="hidden" name="name" value="Untitled">
-          <!-- No remote: the worker resolves where a spot syncs from the
-               account's own registration. Prefilling `origin + /ucan/`
-               here made every create look like a deliberate choice of
-               this server, so a spot created before anyone registered
-               was wired to a service that refuses to serve it. -->
-
-          <!-- Screen 1: start chooser (navigation only, no submit) -->
-          <div class="onb-screen onb-screen--start">
-            <label class="onb-nav onb-nav--close" for="wiz-closed">
-              <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
-            </label>
-            <div class="onb-head">
-              <h3>How do you want to start?</h3>
-              <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
-            </div>
-            <div class="onb-choices">
-              <label class="onb-card" for="wiz-tmpl">
-                <wa-card appearance="outlined">
-                  <div class="onb-art onb-art--tmpl">
-                    <div class="onb-swatch"></div>
-                    <div class="onb-lines"><i></i><i></i><i></i></div>
-                  </div>
-                  <div class="onb-card__name">From a template</div>
-                  <div class="onb-card__desc">Seed the view with a ready-made layout.</div>
-                  <div class="onb-card__cta">choose a template &rsaquo;</div>
-                </wa-card>
-              </label>
-              <label class="onb-card" for="wiz-agent">
-                <wa-card appearance="outlined">
-                  <div class="onb-art onb-art--agent">
-                    <div class="onb-prompt"><i></i><i></i><i></i><i></i></div>
-                  </div>
-                  <div class="onb-card__name">Build with an agent</div>
-                  <div class="onb-card__desc">Start blank; hand the spot to an agent from inside it.</div>
-                  <div class="onb-card__cta">start blank &rsaquo;</div>
-                </wa-card>
-              </label>
-            </div>
-          </div>
-
-          <!-- Screen 2: details — the only submit. Template picker
-               (template path) or agent note (agent path); no name field —
-               the spot starts "Untitled" and is renamed in place. The
-               heading follows the path via the same checked-radio sibling
-               selectors that page the screens. -->
-          <div class="onb-screen onb-screen--details">
-            <label class="onb-nav onb-nav--back" for="wiz-start">
-              <wa-button variant="neutral" appearance="plain" size="small">
-                <wa-icon slot="start" name="angle-left"></wa-icon>back
-              </wa-button>
-            </label>
-            <label class="onb-nav onb-nav--close" for="wiz-closed">
-              <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
-            </label>
-            <div class="onb-head">
-              <h3 class="onb-h onb-h--tmpl">Pick a template</h3>
-              <h3 class="onb-h onb-h--agent">Build with an agent</h3>
-            </div>
-            <!-- Template picker. Native radios drive a 3-up grid of card
-                 <label>s (reliable side-by-side layout, matching the
-                 wireframe); the checked radio paints its card with the brand
-                 lime so the selection is unmistakable. The radios feed the form
-                 as `template`; blank is the default. -->
-            <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
-            <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
-            <input class="onb-tpl" type="radio" name="template" value="wiki" id="tpl-wiki">
-            <input class="onb-tpl" type="radio" name="template" value="board" id="tpl-board">
-            <div class="onb-grid">
-              <label class="onb-tcard" data-for="tpl-wiki" for="tpl-wiki">
-                <div class="tmpl__art tmpl__art--wiki">
-                  <span class="title"></span><i></i><i></i><i></i><i></i>
-                </div>
-                <div class="onb-card__name">Wiki</div>
-                <div class="onb-card__desc">Linked pages of editable blocks, with comments.</div>
-              </label>
-              <label class="onb-tcard" data-for="tpl-sheets" for="tpl-sheets">
-                <div class="tmpl__art tmpl__art--sheets"><span class="grid"></span></div>
-                <div class="onb-card__name">Sheets</div>
-                <div class="onb-card__desc">A tabbed workspace of artifacts.</div>
-              </label>
-              <label class="onb-tcard" data-for="tpl-board" for="tpl-board">
-                <div class="tmpl__art tmpl__art--board">
-                  <div class="col"><i class="tall"></i><i></i></div>
-                  <div class="col"><i></i><i></i><i></i></div>
-                  <div class="col"><i></i><i class="tall"></i></div>
-                </div>
-                <div class="onb-card__name">Board</div>
-                <div class="onb-card__desc">Columns of text, checklist and table cards on a pannable canvas.</div>
-              </label>
-              <label class="onb-tcard" data-for="tpl-blank" for="tpl-blank">
-                <div class="onb-card__name">Blank</div>
-                <div class="onb-card__desc">An empty canvas to build by hand or with an agent.</div>
-              </label>
-            </div>
-            <p class="onb-agent-note onb-lede">An agent will build this spot from a blank canvas.</p>
-            <div class="onb-fields">
-              <wa-button type="submit" variant="brand">Create spot</wa-button>
-            </div>
-          </div>
+          <button class="snew chrome" type="submit">create a new space<span class="g" aria-hidden="true">&#9656;</span></button>
         </form>
       </div>
 

@@ -1508,7 +1508,7 @@ mod create_space {
 
     #[test]
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
-        let claim = create_space_claim_json("Untitled", "https://x", "blank");
+        let claim = create_space_claim_json("Untitled");
         let text = claim.to_string();
         // Verbatim, kebab-cased as declared — the handler matches on these.
         // Every control is read at `/value`: the segment after the control
@@ -1516,25 +1516,32 @@ mod create_space {
         // so a descriptive leaf resolves to `undefined` there and the
         // handler would never see the field here.
         assert!(text.contains("dom.event.current-target.elements.name/value"));
-        assert!(text.contains("dom.event.current-target.elements.remote/value"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
-        assert_eq!(params["remote"], "https://x");
     }
 
+    /// The claim declares `name` and nothing else.
+    ///
+    /// Both dropped fields cost a whole create when they were declared
+    /// and unbacked: a field the form does not carry fails to resolve
+    /// against the event, and the command aborts before the handler runs
+    /// — which is how `template` broke creation outright after the Hub
+    /// lost its wizard.
+    ///
+    /// `remote` is gone for a second reason: the page supplying one made
+    /// every create look like a deliberate choice of this server, so a
+    /// spot created before anyone registered was wired to a service that
+    /// refuses to serve it. The worker resolves it from the account.
     #[test]
-    fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "", "blank");
-        // The descriptor's `with.remote` mapping is always present (it is
-        // schema metadata) — what must be absent is the `remote` PARAMETER,
-        // the thing that actually becomes a fact. Asserting on a bare
-        // substring of the whole claim would also match the `with.remote`
-        // key and pass even if the parameter were still being sent.
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("remote")
-                .is_none()
-        );
+    fn it_declares_only_the_field_the_form_carries() {
+        let claim = create_space_claim_json("Untitled");
+        let with = &claim["claims"][0]["application"]["predicate"]["concept"]["with"];
+        let declared: Vec<&String> = with.as_object().expect("a with block").keys().collect();
+        assert_eq!(declared, vec!["name"], "only `name` is backed by a control");
+
+        let params = &claim["claims"][0]["application"]["parameters"];
+        assert!(params.get("remote").is_none(), "the worker resolves it");
+        assert!(params.get("template").is_none(), "template seeding is gone");
     }
 }
 
@@ -2000,7 +2007,7 @@ mod wire_types {
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),
             rename_repo_claim_json("did:key:zX", "N").to_string(),
-            create_space_claim_json("N", "https://r", "blank").to_string(),
+            create_space_claim_json("N").to_string(),
             profile_rename_claim_json("N").to_string(),
             invite_claim_json("did:key:zX", 1.0).to_string(),
             pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),

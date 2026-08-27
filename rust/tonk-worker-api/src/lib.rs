@@ -60,15 +60,24 @@ pub use sync::{
     Comparison, SyncDisposition, SyncResponse, SyncState, SyncStatusResponse, classify,
 };
 
-/// keeps this consistent with [`rename_repo_claim_json`].
-pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
-    let mut parameters = json!({ "name": name });
-    if !remote.is_empty() {
-        parameters["remote"] = json!(remote);
-    }
-    if !template.is_empty() {
-        parameters["template"] = json!(template);
-    }
+/// The `space/create` claim, in the shape the seeded descriptor decodes.
+///
+/// Defined here so every dispatcher builds the same transient: the Hub's
+/// form, the FAB's `new` row, and the browser tests that drive creation
+/// the way the app does.
+///
+/// `name` alone. No `remote`: where a space syncs is resolved worker-side
+/// from the account's own registration, and a page that supplied one made
+/// every create look like a deliberate choice of this server — which wired
+/// spots created before anyone registered to a service that refuses to
+/// serve them. No `template` either: template seeding went with the
+/// template libraries, and a field the form does not carry fails to
+/// resolve and aborts the whole command.
+///
+/// The inline `with:` block must stay identical to the descriptor in
+/// `profile.yaml`, or the transient mints a different entity and no
+/// handler fires.
+pub fn create_space_claim_json(name: &str) -> Value {
     json!({
         "claims": [{
             "op": "assert",
@@ -76,15 +85,13 @@ pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Valu
                 "predicate": {
                     "kind": "transient",
                     "concept": {
-                        "description": "A request to create a new space from the wizard form.",
+                        "description": "A request to create a new space.",
                         "with": {
-                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                            "name": { "the": "dom.event.current-target.elements.name/value", "as": "Text" }
                         }
                     }
                 },
-                "parameters": parameters
+                "parameters": { "name": name }
             }
         }]
     })
