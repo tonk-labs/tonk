@@ -90,12 +90,24 @@ impl CustomElement for TonkNotebookElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        // `<tonk-display>` forwards its routing context by stamping `with`
+        // AFTER mounting the view, so the first `connectedCallback` often has
+        // no context to resolve. Observe it, and mount when it lands.
+        &["with"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        // Mount ONCE. `connectedCallback` fires on every re-attach, and
+        // `<tonk-display>` stamps `with` after mounting the view — so a second
+        // pass here would build a second provider and a second editor, and the
+        // fresh empty one would win the projection. Keyed on the editor
+        // already being present rather than on a flag, so a re-attach that
+        // kept the subtree is recognized as such.
+        if this.query_selector("tonk-prose").ok().flatten().is_some() {
+            return;
+        }
         let Some((repo, branch)) = resolve_context(this) else {
             this.set_inner_html(
                 "<div class=\"tonk-notebook\">\
@@ -105,6 +117,12 @@ impl CustomElement for TonkNotebookElement {
             );
             return;
         };
+
+        // A prior pass may have left the no-context message; clear it now
+        // that the context resolved, or it sits above the editor forever.
+        if let Ok(Some(message)) = this.query_selector(".tonk-notebook > .error") {
+            message.remove();
+        }
 
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
@@ -155,6 +173,23 @@ impl CustomElement for TonkNotebookElement {
         // covering both the initial render and every fence added later by
         // typing. `ready` alone would miss the latter.
         notebook.observe(self.observer.clone(), self.mutation.clone());
+    }
+
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        _name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if old == new {
+            return;
+        }
+        // The context arriving is the cue to mount. `connected_callback`
+        // returns early when it cannot resolve one, so without this a
+        // notebook whose `with` is stamped post-mount stays on its error
+        // message forever.
+        self.connected_callback(this);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
