@@ -778,7 +778,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
             }
             log!("command Invite repo={}", repo_name);
 
-            if let Err(error) = run_invite(&env, &repo_name, time).await {
+            // A pass that attached a remote leaves the space ready but
+            // unminted, so run once more. Bounded to a single retry: the
+            // second pass either mints or refuses for a reason attaching
+            // cannot fix.
+            let outcome = run_invite(&env, &repo_name, time).await;
+            if let Ok(RunInvite::Attached) = outcome
+                && let Err(error) = run_invite(&env, &repo_name, time).await
+            {
+                log!(
+                    "Invite for repo '{}' failed after attaching: {}",
+                    repo_name,
+                    error
+                );
+            }
+            if let Err(error) = outcome {
                 log!("Invite for repo '{}' failed: {}", repo_name, error);
             }
         })
@@ -916,12 +930,23 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
 ///
 /// Split out from [`InviteHandler::run`] so the `?` early-return funnels
 /// into the single `log!` there — the command future itself returns `()`.
+/// What one pass of [`run_invite`] settled.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+enum RunInvite {
+    /// Minted, refused, or otherwise finished — nothing more to do.
+    Settled,
+    /// The space had no remote and one was just attached, so a second
+    /// pass can now mint. Returned rather than recursing: re-entering
+    /// an async fn from inside itself needs boxing for no gain.
+    Attached,
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_invite(
     env: &crate::router::CommandEnv,
     repo_name: &str,
     time: f64,
-) -> Result<(), TonkWorkerError> {
+) -> Result<RunInvite, TonkWorkerError> {
     use dialog_artifacts::Entity;
     use dialog_varsig::Principal as _;
     use tonk_schema::command::{Authorization, Credential};
@@ -965,7 +990,7 @@ async fn run_invite(
             time,
         )
         .await;
-        return Ok(());
+        return Ok(RunInvite::Settled);
     }
 
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
@@ -1001,6 +1026,38 @@ async fn run_invite(
                 log!("Invite: could not ask the page to link an account: {error}");
             }
 
+            // `not-synced` is not a refusal either: the account has a
+            // provider, this space simply has no remote yet, and
+            // attaching one is this handler's next step rather than a
+            // question for the caller. Sharing a local-only spot is
+            // exactly the moment it earns its remote.
+            //
+            // Without this the click had nowhere to go. The control's
+            // own prompt for this case was removed when the worker took
+            // the decision over, so the share refused, nothing attached,
+            // and the button span until it timed out.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NOT_SYNCED {
+                let provider = {
+                    let tonk = env.state().read().await;
+                    super::customer::provider_address(&tonk).await
+                };
+                match provider {
+                    Some(remote) => {
+                        log!("Invite for repo '{repo_name}': attaching {remote} before minting");
+                        match enable_sync_inner(env.state(), repo_name, &remote).await {
+                            // Attached. Report it and let the caller mint:
+                            // re-entering `run_invite` here would be async
+                            // recursion, which needs boxing for no gain.
+                            Ok(()) => return Ok(RunInvite::Attached),
+                            Err(error) => {
+                                log!("Invite for repo '{repo_name}': attach failed: {error}")
+                            }
+                        }
+                    }
+                    None => log!("Invite for repo '{repo_name}': the account names no provider"),
+                }
+            }
+
             publish_share_blocked(
                 env.state(),
                 repo_name,
@@ -1010,7 +1067,7 @@ async fn run_invite(
                 time,
             )
             .await;
-            return Ok(());
+            return Ok(RunInvite::Settled);
         }
     };
 
@@ -1167,7 +1224,7 @@ async fn run_invite(
     super::create_invite::retain_invite_authority(&tonk, repo_name, &chain).await?;
 
     log!("Minted invitation for repo '{}'", repo_name);
-    Ok(())
+    Ok(RunInvite::Settled)
 }
 
 /// Record why a share click could not mint, on the spot's content-branch
