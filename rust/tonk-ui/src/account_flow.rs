@@ -1741,6 +1741,7 @@ mod tests {
 
         // 20–22. The closing action is the thing the share was for.
         await_register_action(&driver, "copy share link").await?;
+        watch_clipboard(&driver).await?;
         click_register_action(&driver).await?;
         await_register_action(&driver, "copying link…").await?;
         await_narrator_containing(&driver, "invite someone into a space").await?;
@@ -1763,7 +1764,7 @@ mod tests {
         // wrote it: the copy is a user gesture, which is what grants the
         // permission, and the row behind it is overlay-only so no query
         // from out here can reach it.
-        let invite = clipboard_text(&driver).await?;
+        let invite = copied_text(&driver).await?;
         assert!(
             invite.contains("/join") || invite.contains("/@/"),
             "the copied link must be an invite, got {invite:?}",
@@ -2191,37 +2192,47 @@ mod tests {
         }
     }
 
-    /// What the page put on the clipboard.
+    /// Watch what the page copies.
     ///
-    /// Readable here because the copy ran from a click: the permission
-    /// follows the gesture. Without one this answers "", which is why
-    /// the assertion above it names what it expected to find.
-    async fn clipboard_text(driver: &WebDriver) -> Result<String> {
-        // Reading the clipboard is permissioned, and the harness's
-        // Chrome grants nothing by default — the copy being a real
-        // gesture buys write access, not read. Grant read explicitly
-        // over CDP, the same channel the virtual authenticator arrives
-        // on, or this answers "" for a reason that has nothing to do
-        // with the share.
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        let _ = devtools
-            .execute_cdp_with_params(
-                "Browser.grantPermissions",
-                serde_json::json!({
-                    "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
-                }),
-            )
-            .await;
-        let text = driver
-            .execute_async(
+    /// Installed BEFORE the copy runs, because reading the clipboard
+    /// back is not available here: the permission is not granted to the
+    /// harness, and granting it over CDP did not change the answer. What
+    /// the page passes to `writeText` is the same string the person ends
+    /// up with, and it is observable.
+    async fn watch_clipboard(driver: &WebDriver) -> Result<()> {
+        driver
+            .execute(
                 r##"
-                const done = arguments[arguments.length - 1];
-                navigator.clipboard.readText().then(done).catch(() => done(""));
+                window.__tonkCopied = "";
+                const clipboard = navigator.clipboard;
+                const write = clipboard.writeText.bind(clipboard);
+                clipboard.writeText = (text) => {
+                    window.__tonkCopied = text;
+                    return write(text).catch(() => {});
+                };
                 "##,
                 Vec::new(),
             )
             .await?;
-        Ok(text.json().as_str().unwrap_or_default().to_owned())
+        Ok(())
+    }
+
+    /// What the page passed to `writeText`, once it has.
+    async fn copied_text(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let text = driver
+                .execute(r##"return window.__tonkCopied || "";"##, Vec::new())
+                .await?;
+            let text = text.json().as_str().unwrap_or_default().to_owned();
+            if !text.is_empty() {
+                return Ok(text);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the page never copied anything"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     /// The cluster's action row label, or empty while it is folded.
