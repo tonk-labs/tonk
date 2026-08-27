@@ -794,7 +794,7 @@ choice worth making deliberately.
 
 ---
 
-# Appendix: `<tonk-probe>` — a display without resolution
+# Appendix: `<tonk-concept>` — a display without resolution
 
 Not part of the notebook, recorded here because it came out of debugging
 one. Belongs in its own plan when picked up.
@@ -825,28 +825,45 @@ Two inventions, both downstream of one missing capability.
 
 ## The shape
 
-Supply the concept definition and the template **inline**, so neither is
-resolved from the branch. Only the data subscription remains — phase 3
-of what `<tonk-display>` already does.
+Supply the concept **inline** and let the existing renderer take the
+template, so neither is resolved from the branch. Only the data
+subscription remains — phase 3 of what `<tonk-display>` already does.
 
 ```html
-<tonk-probe with="main@{space}" entity="state:here">
-  <script type="text/tonk-concept">
-    the: tonk:sync
+<tonk-concept with="main@{space}" entity="state:here">
+  <script type="text/dialog-yaml">
+  concept!:
     with:
       state:
         the: xyz.tonk.sync/state
         as: entity
   </script>
-  <script type="text/tonk-template">
+  <tonk-view>
     <span class="sync sync--{state}"><span class="disc"></span></span>
-  </script>
-</tonk-probe>
+  </tonk-view>
+</tonk-concept>
 ```
 
 A space cannot redefine either, because neither is read from the space
 branch — which is the property the hand-rolled elements were reaching
 for.
+
+### Only the concept needs a script
+
+`<tonk-view>` already exists and is exactly the renderer half: children
+at connect time become the template, it holds the binding plan, and it
+paints on `render(conclusion)` — *"No network, no subscriptions, no
+upward events… purely 'given X, paint'"* (`tonk-display/src/view.rs`).
+Its usual owner is `<tonk-display>`, which arranges data and lifetime.
+
+So this element is not a new display. It is the **middle piece**: hold a
+supplied concept, subscribe, and drive a `<tonk-view>` — the same
+division of labour, with resolution removed. The template is authored as
+a `<tonk-view>` child exactly as it is today; nothing new is invented for
+it.
+
+The notation is `text/dialog-yaml` — the same name the editor's language
+pack uses, so one notation has one name everywhere.
 
 ### Why `<script>` and not attributes
 
@@ -877,6 +894,11 @@ be parsed as markup and its bindings walked too early.
 removed rather than deferred — PR #793's microtask and the event-based
 variant (stash `fabb-event-reporting-wip`) both become unnecessary.
 
+Names considered and rejected: `tonk-probe` (says nothing about what it
+holds), `tonk-view` (taken, and it is the half this composes with),
+`tonk-query` (accurate but names the mechanism rather than the content).
+`<tonk-concept>` says what goes inside it.
+
 ## Open
 
 - **Light DOM or shadow.** `ui-sync-status` renders light so the app
@@ -884,7 +906,7 @@ variant (stash `fabb-event-reporting-wip`) both become unnecessary.
   keep that working.
 - **Does the FAB still want to own its pixels?** Today the bar draws its
   own disc and the headless element only feeds it, which the FABB notes
-  give as deliberate. With `<tonk-probe>` the bar could just contain one.
+  give as deliberate. With `<tonk-concept>` the bar could just contain one.
   Simpler, but check whether the original reason survives.
 - **How much of `tonk-display` phase 3 is reusable as-is** versus needing
   a second entry point into the same code.
