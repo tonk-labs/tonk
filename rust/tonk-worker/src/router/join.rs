@@ -3012,6 +3012,14 @@ pub(crate) mod tests {
             .this();
         let after = snapshot(&state, &key).await;
         assert!(after.authority, "the accepted authority proves");
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let session_expires_at = state.read().await.session_expires_at;
+        assert_eq!(
+            proof_window(&state, &subject).await,
+            Some(session_expires_at),
+            "only the renewable browser session bounds a pre-account join; \
+             there is no one-hour guest hop",
+        );
         let memberships = content_memberships(&state, &key).await;
         assert!(
             memberships.iter().any(|row| row.member.0 == onboarding),
