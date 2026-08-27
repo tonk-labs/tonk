@@ -197,11 +197,11 @@ pub fn reconcile(stored: &[Block], next: &[String]) -> Edit {
         .filter(|(index, _)| !taken[*index])
         .map(|(index, _)| index)
         .collect::<std::collections::VecDeque<_>>();
-    for slot in 0..next.len() {
-        if claimed[slot].is_none()
+    for slot in claimed.iter_mut() {
+        if slot.is_none()
             && let Some(index) = spare.pop_front()
         {
-            claimed[slot] = Some(index);
+            *slot = Some(index);
             taken[index] = true;
         }
     }
