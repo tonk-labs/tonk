@@ -1659,6 +1659,14 @@
       "result": "—"
     },
     {
+      "claim": "Missing or unsafe return redirects use a legible local fallback without changing the terminal outcome (Settle).",
+      "device": "hybrid + responsive",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-18",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -2184,7 +2192,7 @@
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 109
+    "unrun": 110
   },
   "visualCommit": "49a873a23"
 }
