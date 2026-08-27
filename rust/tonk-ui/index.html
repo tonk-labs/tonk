@@ -83,25 +83,7 @@
                     opacity 400ms ease 300ms,
                     visibility 0s 700ms;
             }
-            /* Wordmark replica — the same position and size as the Hub logo
-               in profile.yaml, so the mounted page takes over in place. */
-            .tonk-boot-brand {
-                position: absolute;
-                top: clamp(62px, 11vh, 106px);
-                left: 50%;
-                color: inherit;
-                transform: translateX(-50%);
-            }
-            .tonk-boot-logo {
-                display: block;
-                width: 132px;
-                aspect-ratio: 1024 / 343;
-                background: currentcolor;
-                -webkit-mask: url("/images/tonk-wordmark.svg") center / contain
-                    no-repeat;
-                mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
-            }
-            /* Loading, centered where the Hub's directory will land. */
+            /* Destination-neutral loading indicator. */
             .tonk-boot-center {
                 flex: 1;
                 display: flex;
@@ -163,14 +145,6 @@
                     animation: none;
                     opacity: 1;
                     scale: 0.5;
-                }
-            }
-            @media (max-width: 519px) {
-                .tonk-boot-brand {
-                    top: 62px;
-                }
-                .tonk-boot-logo {
-                    width: 98px;
                 }
             }
         </style>
@@ -649,15 +623,11 @@
     <body>
         <!-- Static boot shell: the ONLY body content until the wasm mounts
          `<tonk-site>` — the async-stylesheet strategy in <head> depends on
-         that staying true. It replicates the Hub wordmark so the app's own header
-         appears to simply take over, and shows the shared loading pulse while
-         the Trunk initializer reports progress to assistive technology. Styled by the
-         inline critical CSS in <head>; hidden purely by CSS
+         that staying true. It shows the shared loading pulse while the Trunk
+         initializer reports progress to assistive technology. Styled by the inline
+         critical CSS in <head>; hidden purely by CSS
          (`body:has(tonk-site)`) — the wasm never has to know it exists. -->
         <div id="tonk-boot" aria-live="polite">
-            <div class="tonk-boot-brand" role="img" aria-label="tonk">
-                <span class="tonk-boot-logo" aria-hidden="true"></span>
-            </div>
             <div class="tonk-boot-center">
                 <span class="tonk-pulse" aria-hidden="true"></span>
                 <p class="tonk-boot-status" data-boot-status>loading…</p>
