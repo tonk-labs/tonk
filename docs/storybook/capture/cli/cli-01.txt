@@ -1,0 +1,29 @@
+$ tonk help -a
+
+commands:
+  help        Show help for a command or built-in guide
+  show        Describe the schema, a concept, an entity, or a view
+  status      Report how local main relates to its upstream and its current hash
+  concept     Define a concept with typed fields
+  view        Define a view for a concept
+  assert      Create an instance of a concept, or update fields on one
+  query       Read instances of a concept, every field bound
+  retract     Retract a field, or a whole instance
+  eval        Evaluate an asserted-notation document (the full DSL)
+  render      Render a view to HTML, headlessly
+  invite      Create an invite URL granting access to this space
+  join        Join a shared space from an invite URL
+  push        Push local main to its upstream
+  pull        Pull local main from its upstream
+  remote      List or manage remotes
+  space       List or manage spaces
+  identity    Show (or reset) the local profile DID
+  account     Sign in to a Tonk account on this device, and manage it
+  blob        Store and inspect content-addressed blobs (images, files)
+  export      Export local main's artifacts as CSV
+  import      Import artifacts from a CSV file onto local main
+  migrate     One-time conversions: carry directories, spaces, delegations
+  telemetry   Show or toggle anonymous usage telemetry
+  update      Update tonk to the latest release
+
+[exit 0]

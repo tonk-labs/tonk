@@ -1,8 +1,21 @@
-# Tonk user-flow storybook
+# Tonk product Storybook
 
-A written, test-oriented description of every user journey that enters through
-`tonk` or the Tonk browser shell. It records what the user can do, which durable
-state changes, what may fail, and what evidence would prove the journey works.
+A visual, test-oriented description of every user journey that enters through
+`tonk` or the Tonk browser shell. It pairs canonical screenshots with the
+durable state changes, failure boundaries, and evidence needed to prove each
+journey works.
+
+## Open the explorer
+
+From the repository development shell, run `dev:storybook`, then open
+<http://127.0.0.1:4173/docs/storybook/app/>. The explorer also ships in the
+Cloudflare asset bundle at `/storybook/`; availability on a shared environment
+depends on that environment being deployed from a commit containing this work.
+
+The static files are dependency-free. Search by user language or stable IDs,
+open any screen to see its source owners and flows, and use the Gaps view to
+separate unrun checks from known findings. The Markdown files remain the
+reviewable source of truth; `screens.json` connects them to the visual layer.
 
 ## Purpose
 
@@ -32,8 +45,10 @@ one of its functions has a unit test.
   participate.
 - Not a line-coverage target. Line coverage can help find dead regions, but the
   acceptance unit here is an observable journey and its recovery boundaries.
-- Not proof that the current build works. Every document is presently drafted
-  from source and tests; none is marked verified against a running build yet.
+- Not proof that every journey works. Runtime captures prove the appearance of
+  six reachable browser states at one commit; source fixtures and CLI captures
+  prove authored output only. The recovery matrix remains unverified until its
+  checklist is executed.
 
 ## Conventions
 
@@ -121,9 +136,12 @@ For each journey:
   class and state transition, not the Cartesian product of every flag and
   network status. Pairwise state coverage is required; triples are required
   when a known invariant spans three axes.
-- **Current branch.** The source audit is pinned to commit `a3f8670b1`. The
-  worktree is one commit behind and diverged from local `origin/staging`, so
-  staging behavior must be verified separately rather than inferred.
+- **Source pins.** The written flow audit is pinned to commit `a3f8670b1`; the
+  visual inventory is pinned separately to commit `49a873a23`. A screenshot at
+  the visual commit does not silently upgrade the older recovery audit.
+- **Environment boundary.** These are local source and runtime artifacts.
+  Staging and production behavior must be verified separately rather than
+  inferred from a local deployment.
 
 ## Structure
 
@@ -133,6 +151,22 @@ goal.md                                standing drafting and verification rules
 glossary.md                            shared product vocabulary
 journey-catalog.md                     complete entry-point and journey inventory
 bug-triage.md                          suspected defects found during the audit
+screens.json                           screen inventory, provenance, and journey map
+AGENTS.md / CLAUDE.md                  standing agent entry and update rules
+
+app/
+  index.html                           dependency-free visual explorer
+  data.json / data.js                  deterministic generated product map
+  screens/                             canonical browser and CLI screenshots
+
+capture/
+  README.md                            capture protocol and evidence labels
+  fixture.html                         production-source and transcript renderer
+  cli/                                 isolated, captured CLI transcripts
+
+scripts/
+  build.py                             inventory, coverage, and freshness validator
+  check-links.py                       local documentation and asset link validator
 
 foundations/
   state-model.md                       orthogonal account, space, and sync states
@@ -182,11 +216,16 @@ coverage only; it does not mean the corresponding checks pass.
 | `cross-cutting/failure-and-recovery.md` | drafted |
 | `verification/accounts.md` | drafted |
 | `verification/cli-spaces-ui.md` | drafted |
+| `screens.json` | drafted |
+| `capture/README.md` | drafted |
+| `app/index.html` | drafted |
 
 No document is verified yet. The first pass should run the account P1 items,
 then the hybrid browser/CLI items, then destructive space and account actions.
-The current map contains 78 stable journey IDs, 99 verification items, and 6
-source-pinned triage findings.
+The current map contains 26 screen families, 78 stable journey IDs, 99
+verification items, and 6 source-pinned triage findings. Fifteen browser screen
+families have image evidence; the eleven CLI families use isolated transcripts
+captured from the binary at the visual commit.
 
 ## Reference
 
@@ -206,4 +245,7 @@ The relevant source locations are:
   activation-link surface.
 - [`rust/tonk-ui/src/account_flow.rs`](../../rust/tonk-ui/src/account_flow.rs):
   real-browser account and browser/CLI integration tests.
+- [`rust/tonk-fab`](../../rust/tonk-fab): rendered-space navigation, share,
+  switching, sync, and appearance controls.
+- [`rust/tonk-portal`](../../rust/tonk-portal): rendered-space host and routing.
 - [`flake.nix`](../../flake.nix): repository-defined E2E command.
