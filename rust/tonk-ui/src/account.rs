@@ -1739,6 +1739,104 @@ fn is_unhydrated(status: &AccountStatus) -> bool {
     )
 }
 
+/// Run the account-creation ceremony, with no panel to report into.
+///
+/// The same work `/account`'s create button does, lifted out of its
+/// click handler so the registration cluster can run it too. Progress
+/// goes to `narrate` rather than to `set_busy`, and the service is
+/// resolved from the deployment rather than from a host element's
+/// `service` attribute — the two callers differ in nothing else.
+///
+/// Extracted rather than duplicated: two copies of a passkey ceremony
+/// would drift, and the half that drifted would leave an orphan
+/// credential in someone's authenticator.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn run_account_ceremony(
+    email: &str,
+    narrate: impl Fn(&str),
+) -> Result<(), String> {
+    prepare_added_profile().await?;
+    narrate("Waiting for your passkey…");
+
+    // One ceremony: the secret is generated, sealed under the new
+    // passkey's KEK, published as the custody cell, and the creation
+    // request signed. No key material is ever stored — every later
+    // custody operation derives its keys inside a fresh assertion.
+    let device_did = crate::api::identify()
+        .await
+        .map_err(|error| error.to_string())?
+        .did;
+    let created = create_account(CreateAccountInput {
+        email: email.to_owned(),
+        device_did,
+        device_name: crate::device_name::current(),
+        remote: proposed_remote()?,
+        created_on: Some(crate::device_name::current()),
+        service_did: deployment_service_did().await,
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+
+    crate::api::save_root(
+        created.credential_id.clone(),
+        created.delegation_hex.clone(),
+        created.passkey.clone(),
+        created.encryption_key.clone(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    narrate("Creating your account…");
+    let provider = crate::deployment::get()
+        .await?
+        .account_service_url
+        .to_string();
+    let response =
+        crate::api::submit_account_ceremony(&provider, "/accounts", &created.invocation_hex)
+            .await
+            .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
+    crate::api::save_account_link(
+        provider.clone(),
+        created.root_did.clone(),
+        created.credential_id.clone(),
+        created.delegation_hex.clone(),
+        descriptor_hex(&response)?,
+        true,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if wants_enrollment().await {
+        narrate("Registering with the sync service…");
+        if let Err(error) = crate::api::enroll_customer(Some(email), &created.deposits_hex).await {
+            web_sys::console::warn_1(&format!("customer enrollment failed: {error}").into());
+        }
+    }
+
+    // Neither of these can land before the emailed link is clicked: the
+    // service provisions nothing, and serves nothing, for a customer
+    // that has not confirmed its email. Both queue instead, and replay
+    // on activation.
+    if let Err(error) =
+        crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
+    {
+        web_sys::console::warn_1(&format!("custody provisioning deferred: {error}").into());
+    }
+    if let Err(error) = crate::api::queue_custody_publish(
+        &created.custody_did,
+        &created.sealed_hex,
+        &created.publish_invocation_hex,
+    )
+    .await
+    {
+        // The sealed secret is only in this page's memory until it is
+        // recorded, so failing to queue it is the one loss worth
+        // surfacing.
+        return Err(format!("could not record the account secret: {error}"));
+    }
+    Ok(())
+}
+
 async fn complete_remote(
     host: &HtmlElement,
     path: &str,

@@ -73,20 +73,29 @@ const DIALOG_HTML: &str = r##"
 
      Not a `wa-dialog`: this is a column of blocks, and the way out is a
      bare word at the foot rather than a titlebar close. */
+  /* The dim carries the whole separation — the surface never dims — so
+     it has to actually hide what is behind it. A light-theme value
+     hardcoded here read as nearly transparent against the dark theme,
+     and the page showed through and collided with the rows. */
   #tonk-register-dim {
     position: fixed; inset: 0; z-index: 20;
-    background: rgba(19, 19, 19, .52);
-    opacity: 0; transition: opacity .4s cubic-bezier(.2, 0, 0, 1);
+    background: var(--dim);
+    opacity: 0; transition: opacity .4s var(--ease);
     pointer-events: none;
   }
   #tonk-register-dim.on { opacity: 1; pointer-events: auto; }
 
   #tonk-register-cluster {
     position: fixed; inset: 0; z-index: 21; overflow: auto;
-    transition: opacity .4s cubic-bezier(.2, 0, 0, 1);
+    transition: opacity .4s var(--ease);
   }
   #tonk-register-cluster[hidden] { display: none; }
 
+  #tonk-register {
+    font-family: var(--cond);
+    font-size: 13px;
+    color: var(--ink);
+  }
   #tonk-register .ocol {
     width: min(432px, calc(100vw - 48px));
     margin: 22vh auto 80px;
@@ -95,10 +104,14 @@ const DIALOG_HTML: &str = r##"
   #tonk-register .ostack { display: flex; flex-direction: column; gap: 7px; }
 
   /* The dim does the separating, so the blocks need no blur of their own. */
+  /* `--ring` is the study's edge: translucent ink, not a grey border
+     token. Reaching for the app's `--wa-color-*` set instead put a
+     near-white ring around every block in the dark theme, which nothing
+     else in the design has. */
   #tonk-register .mblk {
-    background: var(--wa-color-surface-raised, rgba(255, 255, 255, .92));
-    color: var(--wa-color-text-normal, #131313);
-    box-shadow: 0 0 0 1px var(--wa-color-neutral-fill-loud, rgba(19, 19, 19, .85));
+    background: var(--modal, var(--card));
+    color: var(--ink);
+    box-shadow: 0 0 0 1px var(--ring);
   }
 
   #tonk-register .m-head {
@@ -111,10 +124,10 @@ const DIALOG_HTML: &str = r##"
     position: relative; height: 36px;
     display: flex; align-items: flex-end; justify-content: space-between;
     gap: 16px; padding: 0 10px 9px 16px; overflow: hidden;
-    transition: height .4s cubic-bezier(.2, 0, 0, 1),
-                opacity .4s cubic-bezier(.2, 0, 0, 1),
-                padding-top .4s cubic-bezier(.2, 0, 0, 1),
-                padding-bottom .4s cubic-bezier(.2, 0, 0, 1);
+    transition: height .4s var(--ease),
+                opacity .4s var(--ease),
+                padding-top .4s var(--ease),
+                padding-bottom .4s var(--ease);
   }
   #tonk-register .orow.pre,
   #tonk-register .obtn.pre {
@@ -122,7 +135,7 @@ const DIALOG_HTML: &str = r##"
     padding-top: 0; padding-bottom: 0; pointer-events: none;
   }
   #tonk-register .orow .k {
-    color: var(--wa-color-text-quiet, #55544f);
+    color: var(--soft);
     white-space: nowrap; display: flex; align-items: flex-end; gap: 8px;
   }
   #tonk-register .orow .v {
@@ -135,39 +148,43 @@ const DIALOG_HTML: &str = r##"
 
   /* The editor: inline text, no caret of its own, a block cursor
      hard-blinking on the tail. The cursor IS the affordance. */
+  /* A real `<input>`, not the study's contenteditable span.
+     Conditional mediation is the reason: WebAuthn will only offer a
+     discoverable passkey through `autocomplete="username webauthn"` on
+     an actual form control, so a span could never surface the autofill
+     this ceremony is built around. Styled to sit in the row like the
+     study's editor — no chrome, right-aligned, the row's own type. */
   #tonk-register .ed {
-    outline: none; caret-color: transparent; min-width: 2px; white-space: nowrap;
+    appearance: none; -webkit-appearance: none;
+    background: none; border: 0; outline: none; padding: 0; margin: 0;
+    font: inherit; color: inherit; letter-spacing: inherit;
+    text-align: right; width: 100%; min-width: 0;
   }
-  #tonk-register .ed:empty::before { content: "\200b"; }
-  #tonk-register .cur {
-    display: inline-block; width: 7px; height: 13px;
-    background: var(--wa-color-text-normal, #131313);
-    vertical-align: -1px; margin-left: 1px;
-    animation: tonk-register-blink 1.05s steps(1, end) infinite;
+  #tonk-register .ed::placeholder {
+    color: var(--soft); opacity: .55;
   }
-  @keyframes tonk-register-blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
 
   /* An action step: solid ink, full rung, the word bottom-right. While a
      ceremony is out of our hands the block blinks rather than spins. */
   #tonk-register .obtn {
     display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px;
     height: 36px; padding: 0 10px 9px 24px; overflow: hidden;
-    background: var(--wa-color-neutral-fill-loud, #131313);
-    color: var(--wa-color-neutral-on-loud, #fbfaef);
-    box-shadow: 0 0 0 1px var(--wa-color-neutral-fill-loud, #131313);
+    background: var(--ink);
+    color: var(--on-ink);
+    box-shadow: 0 0 0 1px var(--ink);
     font-size: 13px; cursor: pointer; white-space: nowrap; border: 0;
-    transition: height .4s cubic-bezier(.2, 0, 0, 1),
-                opacity .4s cubic-bezier(.2, 0, 0, 1);
+    transition: height .4s var(--ease),
+                opacity .4s var(--ease);
   }
   #tonk-register .obtn.wait {
     cursor: default;
-    animation: tonk-register-wait 2.4s cubic-bezier(.2, 0, 0, 1) infinite;
+    animation: tonk-register-wait 2.4s var(--ease) infinite;
   }
   @keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
 
   /* A mistake flashes rather than colouring: attention is earned by
      blinking, never by hue. */
-  #tonk-register .flash { animation: tonk-register-flash .45s cubic-bezier(.2, 0, 0, 1) 2; }
+  #tonk-register .flash { animation: tonk-register-flash .45s var(--ease) 2; }
   @keyframes tonk-register-flash { 50% { opacity: .55 } }
 
   /* The narrator: one block whose sentence changes with the step. */
@@ -177,17 +194,18 @@ const DIALOG_HTML: &str = r##"
   }
   #tonk-register .oexp p {
     margin: 0; font-size: 13px; line-height: 1.55;
-    color: var(--wa-color-text-quiet, #55544f);
+    color: var(--soft);
   }
   #tonk-register .oexp p b {
-    font-weight: 600; color: var(--wa-color-text-normal, #131313);
+    font-weight: 600; color: var(--ink);
   }
 
   /* The way out: the quietest thing on screen. */
   #tonk-register .ghost {
     align-self: flex-end; margin-top: 10px; background: none; border: 0;
+    padding: 0; display: block;
     font-size: 13px; cursor: pointer;
-    color: var(--wa-color-text-normal, #131313);
+    color: var(--ink);
     text-decoration: underline; text-underline-offset: 3px;
   }
 </style>
@@ -199,10 +217,9 @@ const DIALOG_HTML: &str = r##"
       <div class="m-head mblk" id="tonk-register-head">link an account</div>
       <div class="orow mblk" id="tonk-register-email-row">
         <span class="k">email</span>
-        <span class="v"><span class="ed" id="tonk-register-email"
-              contenteditable="plaintext-only" inputmode="email"
-              enterkeyhint="go" autocomplete="username webauthn"
-              aria-label="email"></span><i class="cur" aria-hidden="true"></i></span>
+        <span class="v"><input class="ed" id="tonk-register-email" type="email"
+              inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
+              aria-label="email" placeholder="you@example.com"></span>
       </div>
       <!-- Unfolds once the address is committed and the lookup answers:
            "create a passkey" for an address nobody has, "log in with your
@@ -242,6 +259,8 @@ pub fn open() {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     commit_on_enter(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    focus_on_row_click(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_answers(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     open_when_upgraded(&host);
@@ -269,7 +288,7 @@ fn open_when_upgraded(host: &Element) {
     raise.forget();
 }
 
-/// Put the caret at the end of the address, where the block cursor is.
+/// Seat the cursor in the address field.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn focus_address(host: &Element) {
     let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
@@ -277,20 +296,6 @@ fn focus_address(host: &Element) {
     };
     if let Some(element) = field.dyn_ref::<HtmlElement>() {
         let _ = element.focus();
-    }
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let (Some(document), Some(selection)) =
-        (window.document(), window.get_selection().ok().flatten())
-    else {
-        return;
-    };
-    if let Ok(range) = document.create_range() {
-        let _ = range.select_node_contents(&field);
-        range.collapse_with_to_start(false);
-        let _ = selection.remove_all_ranges();
-        let _ = selection.add_range(&range);
     }
 }
 
@@ -359,6 +364,37 @@ fn add_row(host: &Element, id: &str, noun: &str, value: &str) -> Option<Element>
     Some(row)
 }
 
+/// Whether the answer has named a step the user can take.
+///
+/// The action row is revealed by [`show_answer`] once the address
+/// lookup resolves, and hidden otherwise — so its visibility IS the
+/// question "is there something to run yet".
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn action_is_offered() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector(ACTION).ok().flatten())
+        .is_some_and(|action| !action.has_attribute("hidden"))
+}
+
+/// Clicking anywhere in a row seats the cursor in its editor.
+///
+/// The editor is a bare span with a block cursor for a seat, so without
+/// this the only target is the glyph itself. In the study the row owns
+/// the click for the same reason.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn focus_on_row_click(host: &Element) {
+    let Some(row) = host.query_selector(EMAIL_ROW).ok().flatten() else {
+        return;
+    };
+    let target = host.clone();
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        focus_address(&target);
+    });
+    let _ = row.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+    listener.forget();
+}
+
 /// Enter in the address field runs the step the answer named.
 ///
 /// The action row is revealed by the lookup, not by this — but the row
@@ -376,9 +412,17 @@ fn commit_on_enter(host: &Element) {
             if event.key() != "Enter" {
                 return;
             }
-            // A contenteditable would otherwise take the newline.
+            // The field sits in no form, but Enter still submits on
+            // some platforms; stop it reaching anything else.
             event.prevent_default();
-            submit();
+            // Only once the lookup has named a step. The action row is
+            // hidden until then, and starting a ceremony on Enter alone
+            // means one fires the moment a half-typed address happens to
+            // look plausible — before anyone has said which of create or
+            // sign in they meant.
+            if action_is_offered() {
+                submit();
+            }
         });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
@@ -639,11 +683,61 @@ fn show_answer(answer: &Answer) {
     if !typed.eq_ignore_ascii_case(answer.address.trim()) {
         return;
     }
-    // The one write. Every visible consequence of the answer — which
-    // status line shows, what the button reads, whether it can be
-    // pressed — is a `[data-when]` rule in `DIALOG_HTML` keyed on this
-    // attribute.
     let _ = host.set_attribute("data-state", &answer.state);
+    set_status(status_for(&answer.state));
+
+    // The action row unfolds only once the lookup has named a step, and
+    // says which one. Before that there is nothing to offer: an address
+    // nobody has asked about could be either branch, and guessing wrong
+    // runs a creation ceremony against an account that already exists.
+    let Some(action) = host.query_selector(ACTION).ok().flatten() else {
+        return;
+    };
+    match action_label(&answer.state) {
+        Some(label) => {
+            action.set_text_content(Some(label));
+            unfold(&action);
+        }
+        None => {
+            let _ = action.set_attribute("hidden", "");
+        }
+    }
+}
+
+/// What the action row offers for an answer, or `None` when it offers
+/// nothing.
+///
+/// This is the routing the address lookup exists for: someone who
+/// already has an account is signing in, not making a second one, and
+/// sending them through a creation ceremony leaves an orphan passkey in
+/// their authenticator.
+pub(crate) fn action_label(state: &str) -> Option<&'static str> {
+    use tonk_schema::email_state as answer;
+    match state {
+        answer::UNREGISTERED => Some("create a passkey"),
+        answer::ACTIVE | answer::PENDING => Some("log in with your passkey"),
+        // Checking, or an answer nothing can act on.
+        _ => None,
+    }
+}
+
+/// The narrator's line for an answer.
+pub(crate) fn status_for(state: &str) -> &'static str {
+    use tonk_schema::email_state as answer;
+    match state {
+        answer::CHECKING => "Checking…",
+        answer::UNREGISTERED => {
+            "A passkey replaces a password. Your device saves it to itself, a browser \
+             profile, or a password manager — Tonk never keeps a copy."
+        }
+        answer::ACTIVE => "You already have an account. Log in to finish sharing.",
+        answer::PENDING => "This address is enrolled. Log in, then confirm your email.",
+        answer::SUSPENDED => "This account is suspended, so it cannot host a copy.",
+        answer::INVALID => "That does not look like an email address.",
+        answer::UNAVAILABLE => "Could not reach the service. Check your connection.",
+        answer::PENDING_CEREMONY => "Setting up your account…",
+        _ => "",
+    }
 }
 
 /// Whether an address is worth asking the service about.
@@ -725,31 +819,37 @@ fn submit() {
     });
 }
 
-/// Run the signup ceremony the worker asked for.
+/// Run the signup ceremony for the typed address.
 ///
-/// Reached from `custody_relay`'s `CreateAccount` branch: the worker
-/// cannot create an account (WebAuthn needs a `window` and a user
-/// gesture) so it asks the page, and this is the page's half.
+/// The page's half of `account/register`: the worker cannot create an
+/// account (WebAuthn needs a `window` and a user gesture) so it asks,
+/// and this answers.
 ///
-/// **Not implemented yet.** The ceremony currently lives inline in
-/// `/account`'s create-submit handler, interleaved with that panel's
-/// `set_busy` / `show_error` / `set_mode` calls, so there is nothing to
-/// call from here. Extracting it is the `account/ceremony-complete`
-/// work in `plan/system-page-commands.md`: the page runs the ceremony
-/// and asserts a command carrying its output, and a handler applies it
-/// — which also stops the panel and this dialog from keeping two
-/// copies of the same logic.
-///
-/// Until then this says so rather than silently doing nothing. A
-/// dropped request is what made the dialog report "the share link is on
-/// its way" with no ceremony ever run.
+/// The ceremony itself lives in `account.rs`, shared with `/account`'s
+/// create button rather than copied — two passkey ceremonies would
+/// drift, and the half that drifted would leave an orphan credential in
+/// someone's authenticator.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn run_signup_ceremony() {
-    tonk_common::log!(
-        "register: the worker asked for a signup ceremony, which is not wired yet \
-         (see plan/system-page-commands.md, account/ceremony-complete)"
-    );
-    set_status("Account creation is not available here yet.");
+    let Some(email) = address().filter(|email| is_plausible(email)) else {
+        set_status("Enter the address you want to use.");
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        match crate::account::run_account_ceremony(&email, set_status).await {
+            Ok(()) => {
+                // What happens next arrives as facts: `AccountCustomer`
+                // appears at enrollment and gains a provider once the
+                // emailed link is opened. The dialog is subscribed, so
+                // it renders them rather than being told.
+                set_status("Check your email to finish setting up your account.");
+            }
+            Err(error) => {
+                tonk_common::log!("register: the ceremony did not complete: {error}");
+                set_status(&error);
+            }
+        }
+    });
 }
 
 /// The `tonk:enable-sync` claim that finishes an interrupted share:

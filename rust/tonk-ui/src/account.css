@@ -1,21 +1,4 @@
 :is(tonk-account, tonk-activate) {
-    --page: #ececec;
-    --ink: #131313;
-    --on-ink: #fbfaef;
-    --soft: #55544f;
-    --ring: rgb(19 19 19 / 85%);
-    --sep: rgb(19 19 19 / 28%);
-    --frost-solid: #fafafa;
-    --panel: #d2d2d2;
-    --wash: rgb(19 19 19 / 6%);
-    --wash-2: rgb(19 19 19 / 12%);
-    --wash-p: rgb(251 250 239 / 16%);
-    --card: #fff;
-    --dim: rgb(16 16 12 / 32%);
-    --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
-    --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-    --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
     display: grid;
     min-height: 100dvh;
     padding: 48px 16px 80px;
@@ -28,21 +11,6 @@
     -moz-osx-font-smoothing: grayscale;
 }
 
-:root.wa-dark :is(tonk-account, tonk-activate) {
-    --page: #161613;
-    --ink: #e9e6d6;
-    --on-ink: #22221c;
-    --soft: #cdcaba;
-    --ring: rgb(233 230 214 / 55%);
-    --sep: rgb(233 230 214 / 28%);
-    --frost-solid: #1e1e19;
-    --panel: #3b3a34;
-    --wash: rgb(251 250 239 / 9%);
-    --wash-2: rgb(251 250 239 / 15%);
-    --wash-p: rgb(19 19 19 / 14%);
-    --card: #26251f;
-    --dim: rgb(0 0 0 / 45%);
-}
 
 :is(tonk-account, tonk-activate) *,
 :is(tonk-account, tonk-activate) *::before,

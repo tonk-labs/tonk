@@ -97,8 +97,6 @@ features = [
     "HtmlInputElement",
     "History",
     "KeyboardEvent",
-    "Range",
-    "Selection",
     "KeyboardEventInit",
     "HtmlScriptElement",
     "Location",
