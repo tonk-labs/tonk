@@ -1571,14 +1571,13 @@ fn callback_request() -> Option<(String, String, String)> {
     ))
 }
 
-/// Approve a waiting command-line profile and post the grant straight back.
+/// Approve a waiting command-line profile and return the grant through loopback.
 ///
 /// The page runs the passkey ceremony, mints the `account → profile`
-/// powerline, and delivers it to the loopback listener the CLI is holding
-/// open. Delivery is a form POST rather than `fetch`: a cross-origin form
-/// submission needs no preflight and no permissive CORS header on a server
-/// that exists for one request. This page renders in the top document, not
-/// the sealed guest, so the submission is not subject to an iframe sandbox.
+/// powerline, and delivers it to the loopback listener the CLI is holding open.
+/// The HTTPS page navigates there with a bodyless GET carrying the grant in the
+/// URL fragment; the loopback page then submits it by same-origin POST. This
+/// keeps the grant out of the cross-scheme request Safari warns about.
 fn load_callback_request(host: HtmlElement, audience: String, callback: String, name: String) {
     if let Ok(Some(label)) = host.query_selector("#account-handoff-name") {
         label.set_text_content(Some(&name));
@@ -1628,32 +1627,13 @@ pub(crate) fn encode_authorization(payload: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(payload)
 }
 
-/// Deliver an authorization to the waiting process by form POST.
-fn post_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), String> {
-    let document = window()
-        .and_then(|window| window.document())
-        .ok_or("document is unavailable")?;
-    let form = document
-        .create_element("form")
-        .map_err(|_| "could not build the delivery form")?;
-    form.set_attribute("method", "POST")
-        .map_err(|_| "could not address the delivery form")?;
-    form.set_attribute("action", callback)
-        .map_err(|_| "could not address the delivery form")?;
-    for (name, value) in fields {
-        let input = document
-            .create_element("input")
-            .map_err(|_| "could not build the delivery form")?;
-        let _ = input.set_attribute("type", "hidden");
-        let _ = input.set_attribute("name", name);
-        let _ = input.set_attribute("value", value);
-        let _ = form.append_child(&input);
-    }
-    let body = document.body().ok_or("document has no body")?;
-    body.append_child(&form)
-        .map_err(|_| "could not attach the delivery form")?;
-    form.unchecked_ref::<web_sys::HtmlFormElement>()
-        .submit()
+/// Deliver an authorization to the waiting process through a loopback bridge.
+fn deliver_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), String> {
+    let target = crate::callback_url::delivery_url(callback, fields)?;
+    window()
+        .ok_or("window is unavailable")?
+        .location()
+        .set_href(&target)
         .map_err(|_| "could not deliver the authorization".to_owned())
 }
 
@@ -2433,7 +2413,7 @@ fn bind(host: &HtmlElement) {
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);
                     let redirect = link_outcome_redirect();
-                    post_to_callback(
+                    deliver_to_callback(
                         &callback,
                         &[("authorize", &encoded), ("redirect", &redirect)],
                     )
@@ -2472,7 +2452,7 @@ fn bind(host: &HtmlElement) {
             return;
         };
         let redirect = link_outcome_redirect();
-        if let Err(error) = post_to_callback(
+        if let Err(error) = deliver_to_callback(
             &callback,
             &[("deny", "declined in the browser"), ("redirect", &redirect)],
         ) {
