@@ -1793,6 +1793,17 @@ pub fn account_customer_query_body() -> String {
             }
         } },
         "terms": {
+            // `this` has to be bound, even when the subject is unknown:
+            // an unbound one is a query error, not a wildcard, and the
+            // whole subscription fails with `UnboundVariable`. It failed
+            // silently — no frames ever arrived, so the bar fell back to
+            // its defaults and went on offering "log in to share" to
+            // someone who had just registered.
+            //
+            // A variable rather than a subject because the account's DID
+            // is not known here; there is one customer row per profile,
+            // so whatever binds is it.
+            "this": { "?": { "name": "account" } },
             "status": { "?": { "name": "status" } },
             "provider": { "?": { "name": "provider" } }
         }

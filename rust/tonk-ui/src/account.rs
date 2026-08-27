@@ -1739,6 +1739,56 @@ fn is_unhydrated(status: &AccountStatus) -> bool {
     )
 }
 
+/// Sign in with an existing passkey, with no panel to report into.
+///
+/// The counterpart to [`run_account_ceremony`], and the reason the
+/// address is looked up before either runs: sending someone who already
+/// has an account through creation leaves an orphan passkey in their
+/// authenticator and fails at the end — which it did, with
+/// `409 a different account is already signed in on this profile`,
+/// because saving a new root over an existing one is what creation does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), String> {
+    narrate("Waiting for your passkey…");
+    let device_did = crate::api::identify()
+        .await
+        .map_err(|error| error.to_string())?
+        .did;
+
+    // One assertion derives the custody keypair, one presigned GET
+    // fetches the sealed envelope, and the unwrapped secret self-issues
+    // this device's delegation.
+    let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
+        device_did,
+        device_name: crate::device_name::current(),
+        endpoint: proposed_remote()?,
+        service_did: deployment_service_did().await,
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+
+    narrate("Linking this browser…");
+    let provider = crate::deployment::get()
+        .await?
+        .account_service_url
+        .to_string();
+    let response =
+        crate::api::submit_account_ceremony(&provider, "/devices/link", &ceremony.invocation_hex)
+            .await
+            .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
+    crate::api::save_account_link(
+        provider,
+        ceremony.root_did.clone(),
+        ceremony.credential_id.clone(),
+        ceremony.delegation_hex.clone(),
+        descriptor_hex(&response)?,
+        false,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Run the account-creation ceremony, with no panel to report into.
 ///
 /// The same work `/account`'s create button does, lifted out of its

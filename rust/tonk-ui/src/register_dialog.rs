@@ -707,8 +707,33 @@ pub(crate) fn run_signup_ceremony() {
         set_status("Enter the address you want to use.");
         return;
     };
+    // Which ceremony is the answer's to choose, not this function's.
+    // Running creation for an address that already has an account tries
+    // to save a second root over the first and fails with
+    // `409 a different account is already signed in on this profile` —
+    // after the user has already been through a passkey prompt.
+    let state = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.get_attribute("data-state"))
+        .unwrap_or_default();
+    let existing = matches!(
+        state.as_str(),
+        tonk_schema::email_state::ACTIVE | tonk_schema::email_state::PENDING
+    );
+
     wasm_bindgen_futures::spawn_local(async move {
-        match crate::account::run_account_ceremony(&email, set_status).await {
+        let outcome = if existing {
+            crate::account::run_login_ceremony(set_status).await
+        } else {
+            crate::account::run_account_ceremony(&email, set_status).await
+        };
+        match outcome {
+            Ok(()) if existing => {
+                // Signing in needs no email round trip: the account is
+                // already activated, so what is left arrives as facts.
+                set_status("You are signed in.");
+            }
             Ok(()) => {
                 // What happens next arrives as facts: `AccountCustomer`
                 // appears at enrollment and gains a provider once the
@@ -875,6 +900,39 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The button's label and the ceremony it runs must agree.
+    ///
+    /// They are chosen from the same answer, so a mismatch means
+    /// someone is offered "log in" and put through creation — which
+    /// fails, after a passkey prompt, with `409 a different account is
+    /// already signed in on this profile`.
+    #[dialog_common::test]
+    fn it_offers_the_ceremony_it_will_actually_run() {
+        use tonk_schema::email_state as answer;
+
+        for state in [answer::ACTIVE, answer::PENDING] {
+            assert_eq!(
+                action_label(state),
+                Some("log in with your passkey"),
+                "{state} has an account already",
+            );
+        }
+        assert_eq!(
+            action_label(answer::UNREGISTERED),
+            Some("create a passkey"),
+            "nobody has this address",
+        );
+        // Nothing to offer where no ceremony would help.
+        for state in [
+            answer::CHECKING,
+            answer::SUSPENDED,
+            answer::INVALID,
+            answer::UNAVAILABLE,
+        ] {
+            assert_eq!(action_label(state), None, "{state} offers no step");
+        }
+    }
 
     /// A lookup must not also decode as a registration.
     ///
