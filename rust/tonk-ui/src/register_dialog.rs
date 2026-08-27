@@ -297,6 +297,32 @@ fn commit_on_enter(host: &Element) {
         });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
+
+    // And anywhere else in the cluster. The address field is only the
+    // FIRST place a step is taken from; once its row settles the focus
+    // moves on, and Enter answered nothing for every step after it —
+    // "copy share link" had to be clicked. The action row is the step
+    // being offered wherever the cursor happens to be, so Enter runs it.
+    let cluster = host.clone();
+    let anywhere =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
+            if event.key() != "Enter" {
+                return;
+            }
+            // A row taking input commits itself; its own handler decides
+            // what Enter means there.
+            let typing = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .is_some_and(|element| element.matches("input").unwrap_or(false));
+            if typing || !action_is_offered() {
+                return;
+            }
+            event.prevent_default();
+            submit();
+        });
+    let _ = cluster.add_event_listener_with_callback("keydown", anywhere.as_ref().unchecked_ref());
+    anywhere.forget();
 }
 
 /// Take the dialog down.
@@ -787,20 +813,30 @@ fn claim(description: &str, email: &str) -> serde_json::Value {
 /// interrupted.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn submit() {
-    // The action row means different things at different steps. Once the
-    // account is ready it is the close — mint the invite the refused
-    // share wanted, copy it, and say so.
-    let closing = web_sys::window()
+    // The action row means different things at different steps, and its
+    // label is which one — the same word the person just read.
+    let label = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.query_selector(ACTION).ok().flatten())
         .map(|action| action.text_content().unwrap_or_default())
-        .is_some_and(|label| label.trim() == "copy share link");
-    if closing {
-        copy_the_share_link();
-        return;
+        .unwrap_or_default();
+    match label.trim() {
+        COPY_LINK => copy_the_share_link(),
+        RETURN_TO_SPACE => close(),
+        _ => run_signup_ceremony(),
     }
-    run_signup_ceremony();
 }
+
+/// Mint the invite and copy it: the close, once an account exists.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const COPY_LINK: &str = "copy share link";
+
+/// And the step after it. The ceremony ends where it interrupted
+/// something, so it offers the way back rather than leaving the person
+/// to find the dismiss themselves — which also keeps the whole flow
+/// runnable on Enter, the way every step before it is.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const RETURN_TO_SPACE: &str = "return to space";
 
 /// Mint the invite the share was interrupted for, and copy it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -814,7 +850,7 @@ fn copy_the_share_link() {
         if let Err(error) = crate::api::transact_profile(claim).await {
             tonk_common::log!("register: could not finish the share: {error}");
             set_status("Could not create the link. Share the spot again.");
-            set_action("copy share link", true);
+            set_action(COPY_LINK, true);
             return;
         }
         // The link arrives as a fact on the space's own branch, so this
@@ -822,12 +858,13 @@ fn copy_the_share_link() {
         match await_invite_link(&space).await {
             Some(link) => {
                 write_to_clipboard(&link).await;
-                hide_action();
                 set_status("You can use the copied link to invite someone into a space.");
+                set_action(RETURN_TO_SPACE, true);
+                focus_action();
             }
             None => {
                 set_status("The link is taking longer than expected. Share the spot again.");
-                set_action("copy share link", true);
+                set_action(COPY_LINK, true);
             }
         }
     });
@@ -1089,6 +1126,24 @@ fn set_action(label: &str, ready: bool) {
     unfold(&action);
 }
 
+/// Put the cursor on the offered step.
+///
+/// Enter runs whatever the action row offers, but only if something in
+/// the cluster has focus — after a row settles, the field that had it is
+/// gone. Seating focus on the step itself is what lets the whole
+/// ceremony be taken with Enter, which is how every step before the
+/// close already worked.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn focus_action() {
+    let Some(action) = host_element().and_then(|host| host.query_selector(ACTION).ok().flatten())
+    else {
+        return;
+    };
+    if let Some(element) = action.dyn_ref::<HtmlElement>() {
+        let _ = element.focus();
+    }
+}
+
 /// Fold the action row away.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn hide_action() {
@@ -1208,7 +1263,7 @@ fn offer_the_link(name: &str) {
             match pending_share() {
                 Some(_) => {
                     set_status("Your account is ready.");
-                    set_action("copy share link", true);
+                    set_action(COPY_LINK, true);
                 }
                 None => {
                     hide_action();
