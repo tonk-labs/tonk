@@ -121,6 +121,130 @@ pub fn split(document: &str) -> Vec<String> {
     blocks
 }
 
+/// A stored block: its entity and the source it currently holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Block {
+    /// The block entity, as it appears in the notebook's order list.
+    pub entity: String,
+    /// The block's markdown source.
+    pub source: String,
+}
+
+/// What an edit did to a notebook's blocks.
+///
+/// Separating these is the point: a paragraph cut from one place and pasted
+/// into another is a *move*, and writing its source again would be a lie —
+/// the text never changed, only where it sits. Only `order` moved, and the
+/// revision should say so.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Edit {
+    /// Blocks whose source changed: `(entity, new source)`. One write each.
+    pub changed: Vec<(String, String)>,
+    /// Sources with no stored block to attribute them to. The caller mints
+    /// an entity per created block.
+    pub created: Vec<String>,
+    /// Blocks no longer in the document.
+    pub removed: Vec<String>,
+    /// The new order, as stored entities and placeholders for the created
+    /// blocks (`None` marks the n-th entry of `created`, in order).
+    pub order: Vec<Option<String>>,
+    /// Whether the order differs from the one that was projected.
+    pub reordered: bool,
+}
+
+/// Diff an edited document's blocks against the stored ones.
+///
+/// Matching is by content, not by position: an unchanged source keeps its
+/// entity wherever it moved to, so cut-and-paste reads as a reorder. Blocks
+/// are matched in one pass so duplicates (two identical paragraphs) each
+/// claim a distinct stored block rather than both claiming the first.
+///
+/// What is left over after content matching is paired up positionally —
+/// an edited block usually sits where it always did, so an unmatched new
+/// source and an unmatched stored block at the same index are the same
+/// block, edited. That is what keeps a typo fix from reading as
+/// delete-plus-create and orphaning the block's identity.
+pub fn reconcile(stored: &[Block], next: &[String]) -> Edit {
+    // Content -> stored blocks with that exact source, in order. A repeated
+    // source keeps every candidate so identical paragraphs stay distinct.
+    let mut by_source: std::collections::HashMap<&str, std::collections::VecDeque<usize>> =
+        std::collections::HashMap::new();
+    for (index, block) in stored.iter().enumerate() {
+        by_source
+            .entry(block.source.as_str())
+            .or_default()
+            .push_back(index);
+    }
+
+    // Pass one: claim an untouched stored block for every source that still
+    // appears verbatim.
+    let mut claimed: Vec<Option<usize>> = vec![None; next.len()];
+    let mut taken = vec![false; stored.len()];
+    for (slot, source) in next.iter().enumerate() {
+        if let Some(candidates) = by_source.get_mut(source.as_str())
+            && let Some(index) = candidates.pop_front()
+        {
+            claimed[slot] = Some(index);
+            taken[index] = true;
+        }
+    }
+
+    // Pass two: pair the leftovers positionally. Walking both in order means
+    // an edited block matches the stored block that occupied its place.
+    let mut spare = stored
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !taken[*index])
+        .map(|(index, _)| index)
+        .collect::<std::collections::VecDeque<_>>();
+    for slot in 0..next.len() {
+        if claimed[slot].is_none()
+            && let Some(index) = spare.pop_front()
+        {
+            claimed[slot] = Some(index);
+            taken[index] = true;
+        }
+    }
+
+    let mut edit = Edit::default();
+    for (slot, source) in next.iter().enumerate() {
+        match claimed[slot] {
+            Some(index) => {
+                let block = &stored[index];
+                if &block.source != source {
+                    edit.changed.push((block.entity.clone(), source.clone()));
+                }
+                edit.order.push(Some(block.entity.clone()));
+            }
+            None => {
+                edit.created.push(source.clone());
+                edit.order.push(None);
+            }
+        }
+    }
+    for (index, block) in stored.iter().enumerate() {
+        if !taken[index] {
+            edit.removed.push(block.entity.clone());
+        }
+    }
+
+    // The order changed unless every surviving block sits where it did and
+    // nothing was added or removed.
+    let previous: Vec<&str> = stored.iter().map(|b| b.entity.as_str()).collect();
+    let settled: Vec<Option<&str>> = edit
+        .order
+        .iter()
+        .map(|slot| slot.as_deref())
+        .collect::<Vec<_>>();
+    edit.reordered = settled.len() != previous.len()
+        || settled
+            .iter()
+            .zip(previous.iter())
+            .any(|(now, before)| *now != Some(*before));
+
+    edit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +323,135 @@ mod tests {
             "- a\n- b".to_owned(),
         ];
         assert_eq!(split(&project(&blocks)), blocks);
+    }
+
+    fn stored(pairs: &[(&str, &str)]) -> Vec<Block> {
+        pairs
+            .iter()
+            .map(|(entity, source)| Block {
+                entity: (*entity).to_owned(),
+                source: (*source).to_owned(),
+            })
+            .collect()
+    }
+
+    fn sources(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    /// The point of content matching: a paragraph cut and pasted elsewhere
+    /// keeps its entity and writes NO source. Only the order moved.
+    #[dialog_common::test]
+    fn it_reads_a_moved_block_as_a_reorder_not_a_rewrite() {
+        let before = stored(&[("a", "first"), ("b", "second"), ("c", "third")]);
+        let edit = reconcile(&before, &sources(&["third", "first", "second"]));
+
+        assert!(edit.changed.is_empty(), "a move rewrites nothing");
+        assert!(edit.created.is_empty());
+        assert!(edit.removed.is_empty());
+        assert!(edit.reordered);
+        assert_eq!(
+            edit.order,
+            vec![
+                Some("c".to_owned()),
+                Some("a".to_owned()),
+                Some("b".to_owned())
+            ]
+        );
+    }
+
+    /// Editing a block in place writes that one block and leaves the order
+    /// alone — the common case, and the one write amplification would ruin.
+    #[dialog_common::test]
+    fn it_writes_only_the_edited_block() {
+        let before = stored(&[("a", "first"), ("b", "second"), ("c", "third")]);
+        let edit = reconcile(&before, &sources(&["first", "second edited", "third"]));
+
+        assert_eq!(
+            edit.changed,
+            vec![("b".to_owned(), "second edited".to_owned())]
+        );
+        assert!(edit.created.is_empty());
+        assert!(edit.removed.is_empty());
+        assert!(!edit.reordered, "an in-place edit is not a reorder");
+    }
+
+    #[dialog_common::test]
+    fn it_reports_an_inserted_block_as_created() {
+        let before = stored(&[("a", "first"), ("b", "second")]);
+        let edit = reconcile(&before, &sources(&["first", "middle", "second"]));
+
+        assert_eq!(edit.created, vec!["middle".to_owned()]);
+        assert!(edit.changed.is_empty(), "neighbours are untouched");
+        assert_eq!(
+            edit.order,
+            vec![Some("a".to_owned()), None, Some("b".to_owned())]
+        );
+        assert!(edit.reordered);
+    }
+
+    #[dialog_common::test]
+    fn it_reports_a_deleted_block_as_removed() {
+        let before = stored(&[("a", "first"), ("b", "second"), ("c", "third")]);
+        let edit = reconcile(&before, &sources(&["first", "third"]));
+
+        assert_eq!(edit.removed, vec!["b".to_owned()]);
+        assert!(edit.changed.is_empty());
+        assert_eq!(edit.order, vec![Some("a".to_owned()), Some("c".to_owned())]);
+    }
+
+    /// Two identical paragraphs must claim two different stored blocks, not
+    /// both claim the first — otherwise one is spuriously reported removed.
+    #[dialog_common::test]
+    fn it_keeps_duplicate_sources_distinct() {
+        let before = stored(&[("a", "same"), ("b", "same")]);
+        let edit = reconcile(&before, &sources(&["same", "same"]));
+
+        assert!(edit.changed.is_empty());
+        assert!(edit.removed.is_empty());
+        assert!(edit.created.is_empty());
+        assert!(!edit.reordered);
+    }
+
+    /// A move AND an edit in one pass: the moved block keeps its identity,
+    /// and only the genuinely edited one is written.
+    #[dialog_common::test]
+    fn it_separates_a_move_from_an_edit_in_the_same_pass() {
+        let before = stored(&[("a", "first"), ("b", "second"), ("c", "third")]);
+        let edit = reconcile(&before, &sources(&["third", "first edited", "second"]));
+
+        assert_eq!(
+            edit.changed,
+            vec![("a".to_owned(), "first edited".to_owned())],
+            "only the edited block is written"
+        );
+        assert_eq!(
+            edit.order,
+            vec![
+                Some("c".to_owned()),
+                Some("a".to_owned()),
+                Some("b".to_owned())
+            ]
+        );
+    }
+
+    /// Nothing changed at all: no writes, no reorder. Leaving a block you
+    /// only read must be free.
+    #[dialog_common::test]
+    fn it_reports_no_edit_when_nothing_changed() {
+        let before = stored(&[("a", "first"), ("b", "second")]);
+        let edit = reconcile(&before, &sources(&["first", "second"]));
+
+        assert_eq!(
+            edit,
+            Edit {
+                changed: Vec::new(),
+                created: Vec::new(),
+                removed: Vec::new(),
+                order: vec![Some("a".to_owned()), Some("b".to_owned())],
+                reordered: false,
+            }
+        );
     }
 
     #[dialog_common::test]
