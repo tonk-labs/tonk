@@ -18,6 +18,7 @@ use axum::{
 use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
+use send_wrapper::SendWrapper;
 use tokio::sync::Mutex;
 use tonk_common::log;
 use tower_service::Service;
@@ -26,6 +27,32 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
+
+/// The fetch event whose lifetime owns background work started by one of its
+/// routed handlers.
+///
+/// Axum request extensions require `Send + Sync`, while browser event handles
+/// are confined to the service-worker thread. `SendWrapper` makes that
+/// confinement explicit and lets a handler add its completion promise to the
+/// originating event before the response promise settles.
+#[derive(Clone)]
+pub(crate) struct FetchLifetime(SendWrapper<FetchEvent>);
+
+impl FetchLifetime {
+    fn new(event: FetchEvent) -> Self {
+        Self(SendWrapper::new(event))
+    }
+
+    /// Keep the originating service-worker event alive until `promise`
+    /// settles.
+    pub(crate) fn extend(&self, promise: &Promise) -> Result<(), JsValue> {
+        use wasm_bindgen::JsCast as _;
+
+        let event: &FetchEvent = &self.0;
+        let extendable: &web_sys::ExtendableEvent = event.unchecked_ref();
+        extendable.wait_until(promise)
+    }
+}
 
 // Global `self.fetch(...)` in the service-worker scope. Fetches
 // issued from an SW bypass the SW's own `onfetch` listener (per
@@ -154,6 +181,7 @@ async fn handle_via_router(
     router: Arc<Mutex<Router>>,
     browser_request: Request,
     client_id: String,
+    lifetime: FetchLifetime,
     rewritten_path: Option<String>,
 ) -> Result<JsValue, JsValue> {
     let mut request: axum::http::Request<Body> = RequestConversion::from(browser_request)
@@ -175,6 +203,7 @@ async fn handle_via_router(
     if !client_id.is_empty() {
         request.extensions_mut().insert(ClientId(client_id.clone()));
     }
+    request.extensions_mut().insert(lifetime);
 
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
@@ -1993,7 +2022,9 @@ impl TonkServiceWorker {
             .starts_with("/api/")
             .then(|| self.sync_scheduler.enter_loading(js_sys::Date::now()));
 
-        future_to_promise(async move {
+        let lifetime = FetchLifetime::new(event);
+        let routed_lifetime = lifetime.clone();
+        let response = future_to_promise(async move {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             let _loading_guard = loading_guard;
             // Opportunistic cleanup of stale bridge sessions and view
@@ -2003,12 +2034,25 @@ impl TonkServiceWorker {
 
             match route_for(&path, &effective_client_id, &state).await {
                 Route::Handle { rewritten_path } => {
-                    handle_via_router(router, request, effective_client_id, rewritten_path).await
+                    handle_via_router(
+                        router,
+                        request,
+                        effective_client_id,
+                        routed_lifetime,
+                        rewritten_path,
+                    )
+                    .await
                 }
                 Route::Passthrough => passthrough(request, is_navigation).await,
                 Route::Reject => reject_404(),
             }
-        })
+        });
+        // Register the response synchronously so handlers may add further
+        // lifetime promises while routing is in progress. `respondWith` keeps
+        // the response itself alive, but only `waitUntil` permits the detached
+        // command dispatch registered by `/transact` to outlive that response.
+        let _ = lifetime.extend(&response);
+        response
     }
 
     /// Handles `message` events from view clients. Routes the
