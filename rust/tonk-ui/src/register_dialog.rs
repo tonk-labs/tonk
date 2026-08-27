@@ -51,13 +51,10 @@ thread_local! {
 /// The dialog's host id, and the parts the handlers address.
 const DIALOG_ID: &str = "tonk-register";
 const EMAIL_INPUT: &str = "#tonk-register-email";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ACTION: &str = "#tonk-register-action";
 const DISMISS: &str = "#tonk-register-dismiss";
 const STATUS: &str = "#tonk-register-status";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const EMAIL_ROW: &str = "#tonk-register-email-row";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const NAME_ROW: &str = "#tonk-register-name-row";
 
 /// `wa-*` throughout, the same vocabulary the rest of the app uses. The
@@ -479,14 +476,11 @@ fn account_query_body() -> String {
 }
 
 /// The subscription tag for the answer row./// The subscription tag for the answer row.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ANSWER_TAG: &str = "tonk-register-answer";
 /// Distinguishes the activation watch from the address lookup.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ACCOUNT_TAG: &str = "tonk-register-account";
 
 /// The overlay row the worker writes each answer to.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ANSWER_SUBJECT: &str = "state:email-status";
 
 /// The query for the answer row: the two raw attributes
@@ -495,7 +489,6 @@ const ANSWER_SUBJECT: &str = "state:email-status";
 ///
 /// Raw attribute URIs rather than a concept name, so a profile seeded
 /// from an older `profile.yaml` cannot break the read.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn answer_query_body() -> String {
     serde_json::json!({
         "predicate": { "with": {
@@ -576,7 +569,6 @@ fn watch_answers(host: &Element) {
     });
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 /// An answer as the dialog reads it: which address it is about, and what
 /// the service said.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -671,7 +663,6 @@ fn show_answer(answer: &Answer) {
     }
 }
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// What the action row offers for an answer, or `None` when it offers
 /// nothing.
 ///
@@ -689,7 +680,6 @@ pub(crate) fn action_label(state: &str) -> Option<&'static str> {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 /// The narrator's line for an answer.
 pub(crate) fn status_for(state: &str) -> &'static str {
     use tonk_schema::email_state as answer;
@@ -733,7 +723,6 @@ pub(crate) fn check_email_claim(email: &str) -> serde_json::Value {
     claim("Ask whether an address is registered.", email)
 }
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// The `account/register` claim.
 pub(crate) fn register_claim(email: &str) -> serde_json::Value {
     let mut claim = claim("Register an account for this address.", email);
@@ -1177,7 +1166,6 @@ fn profile_rename_claim(name: &str) -> serde_json::Value {
     })
 }
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// The `tonk:enable-sync` claim that finishes an interrupted share:
 /// attach where the account syncs, and mint.
 ///
@@ -1276,7 +1264,6 @@ fn remember_space(space: &str) {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 /// The spot a finished registration should go on to share.
 pub(crate) fn pending_share() -> Option<String> {
     web_sys::window()
