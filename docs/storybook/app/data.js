@@ -1402,6 +1402,22 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "The settings panel reflects an account the registration cluster created, in place (Settle).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-25",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "The cluster answers about an address it has already been told about (Resolve).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-26",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Registered customer sees pending notice and resend recovery (Remain in flight).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -2151,7 +2167,7 @@ window.STORYBOOK_DATA = {
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 105
+    "unrun": 107
   },
   "visualCommit": "49a873a23"
 };
