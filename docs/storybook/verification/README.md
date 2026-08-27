@@ -163,5 +163,5 @@ The CLI execution verifies its existing pre-approval Ctrl-C and fresh-callback
 assertions only; the broader `HANDOFF-04`/`HANDOFF-05` rows also require durable
 state and late-callback checks, so their Result cells remain `—`. No UI test was
 executed, and neither `test:web:debug` nor `test:web:release` was run. Static
-counts, compilation, and discovery are not pass results for the 99 checklist
+counts, compilation, and discovery are not pass results for the 102 checklist
 items.

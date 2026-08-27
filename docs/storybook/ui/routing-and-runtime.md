@@ -29,6 +29,23 @@ Navigation and reload reproduce the same canonical route. A service-worker
 update cannot strand the user between old HTML and new Wasm/assets; an offline
 return either uses a coherent cached build or shows a recoverable boot error.
 
+### Loading presentation decision
+
+The boot shell is destination-neutral: before routing settles it shows the
+shared pulse instead of previewing Hub branding or a progress bar. Download
+progress remains available through the live status region, while a detected or
+watchdog-terminal failure makes the status visible with reload guidance.
+Reduced-motion mode keeps a static pulse.
+
+The same pulse occupies transient space-content loading, missing-entity, and
+missing-model slots. Those states must heal in place when the route stamp or
+repository arrives rather than flashing a developer-facing concept error.
+
+This is a source-derived presentation decision for `UI-01`, `UI-02`, `UI-04`,
+`WEB-01`, `WEB-03`, and `WEB-06`, pinned to `a3f8657d3`. No browser image was
+recaptured for this decision; the existing artifacts remain evidence only for
+the visual commit recorded in `screens.json`.
+
 ## The interaction, event by event
 
 ```mermaid
