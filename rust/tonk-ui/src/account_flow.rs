@@ -16,7 +16,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     use tokio::process::{Child, Command};
 
-    use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator};
+    use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
     const EMAIL: &str = "person@example.com";
 
@@ -297,7 +297,7 @@ mod tests {
         email: &str,
     ) -> Result<()> {
         wait_for_service_worker(driver).await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(driver, "#account-choose-create")
             .await?
@@ -332,7 +332,7 @@ mod tests {
     ) -> Result<()> {
         let link = activation_link(env, email).await?;
         let account = driver.current_url().await?;
-        driver.goto(&link).await?;
+        goto(&driver, &link).await?;
         element(driver, "#activate-accept").await?.click().await?;
         element(driver, "#activate-done").await?;
         // Activation is what unblocks the deferred account work, and the
@@ -344,11 +344,11 @@ mod tests {
         // profile rotation orphans it — both of which surfaced in CI as
         // "no account custody is published for this passkey". Stay on
         // the dashboard until it says the backup settled.
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         wait_for_backup_done(driver).await?;
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
-        driver.goto(account.as_str()).await?;
+        goto(&driver, account.as_str()).await?;
         Ok(())
     }
 
@@ -359,7 +359,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         let mut legacy = env.tonk_web.join("account")?;
         legacy.set_query(Some("next=%2Fspace%2Fdid%3Akey%3AzOne&add=1"));
-        driver.goto(legacy.as_str()).await?;
+        goto(&driver, legacy.as_str()).await?;
         element(&driver, "tonk-account").await?;
         let current = driver.current_url().await?;
         assert_eq!(current.path(), "/settings");
@@ -369,7 +369,7 @@ mod tests {
         legacy_link.set_query(Some(
             "audience=did%3Akey%3AzCli&callback=http%3A%2F%2F127.0.0.1%3A9999&name=terminal",
         ));
-        driver.goto(legacy_link.as_str()).await?;
+        goto(&driver, legacy_link.as_str()).await?;
         element(&driver, "tonk-account").await?;
         let current = driver.current_url().await?;
         assert_eq!(current.path(), "/settings/link");
@@ -472,7 +472,7 @@ mod tests {
             );
         }
         let settings = driver.current_url().await?;
-        driver.goto(settings.as_str()).await?;
+        goto(&driver, settings.as_str()).await?;
         wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
 
         driver.quit().await?;
@@ -503,7 +503,7 @@ mod tests {
         "#;
 
         driver.enter_default_frame().await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         let settings_light = driver
             .execute(
@@ -522,7 +522,7 @@ mod tests {
             .json()
             .clone();
 
-        driver.goto(env.tonk_web.as_str()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         let hub_light = driver
             .execute(
@@ -567,7 +567,7 @@ mod tests {
         );
 
         driver.enter_default_frame().await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         for (window_width, expected_total, expected_rail, expected_body) in
             [(1200, 576, 144, 432), (607, 432, 108, 324)]
@@ -720,7 +720,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         let mut activation = env.tonk_web.join("activate")?;
         activation.set_query(Some("ucan=AA"));
-        driver.goto(activation.as_str()).await?;
+        goto(&driver, activation.as_str()).await?;
         element(&driver, "tonk-activate #activate-confirm").await?;
 
         assert!(
@@ -830,7 +830,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         click(&driver, "#account-unlink").await?;
         element(&driver, "[role=alertdialog]").await?;
@@ -876,7 +876,7 @@ mod tests {
 
         let (driver, authenticator_id) = driver_with_prf_authenticator(&env).await?;
         wait_for_service_worker(&driver).await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(&driver, "#account-choose-create")
             .await?
@@ -1134,7 +1134,7 @@ mod tests {
             "approval URL must carry the loopback callback"
         );
 
-        driver.goto(approval_url.as_str()).await?;
+        goto(&driver, approval_url.as_str()).await?;
         if register_first {
             // A browser with no account yet registers before approving:
             // the link page opens on the signup panels, and the ceremony
@@ -1163,7 +1163,7 @@ mod tests {
             // customer confirms its email. Do it now, then come back to
             // the approval.
             activate(driver, env, EMAIL).await?;
-            driver.goto(approval_url.as_str()).await?;
+            goto(&driver, approval_url.as_str()).await?;
         }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
@@ -1772,11 +1772,9 @@ mod tests {
                 }),
             )
             .await?;
-        claimer.goto(env.tonk_web.as_str()).await?;
+        goto(&claimer, env.tonk_web.as_str()).await?;
         wait_for_service_worker(&claimer).await?;
-        claimer
-            .goto(env.tonk_web.join("settings")?.as_str())
-            .await?;
+        goto(&claimer, env.tonk_web.join("settings")?.as_str()).await?;
         element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
         element(&claimer, "#account-choose-link")
             .await?
@@ -1981,14 +1979,14 @@ mod tests {
         let (first_profile, first_label) = active_profile_and_label(profiles_before_add)?;
 
         // The real Hub frame renders the first account's space.
-        driver.goto(env.tonk_web.as_str()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;
 
         // Add account first opens a reversible Choice flow. It must not
         // rotate or grow the profile roster until a ceremony is submitted.
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         element(&driver, "#account-add-profile")
             .await?
@@ -2043,7 +2041,7 @@ mod tests {
                 .to_string();
 
         // The second account's sealed Hub has its own empty roster.
-        driver.goto(env.tonk_web.as_str()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         if let Err(error) =
             wait_for_text_containing(&driver, "[data-account-trigger]", &second_label).await
@@ -2422,7 +2420,7 @@ mod tests {
         url.query_pairs_mut()
             .append_pair("audience", audience)
             .append_pair("callback", &callback);
-        driver.goto(url.as_str()).await?;
+        goto(&driver, url.as_str()).await?;
 
         // The panel names the profile that is waiting, so the user knows what
         // they are approving. The DID sits behind the "technical
@@ -2479,7 +2477,7 @@ mod tests {
                 "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
             )
             .append_pair("callback", &callback);
-        driver.goto(url.as_str()).await?;
+        goto(&driver, url.as_str()).await?;
 
         element(&driver, "tonk-account[data-mode=\"handoff\"]").await?;
         element(&driver, "#account-handoff-cancel")
@@ -2727,7 +2725,7 @@ mod tests {
             .context("CLI device was absent from the account device list")?
             .to_string();
 
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         // The device list lives on the Devices tab, whose pane is
         // hidden until selected — and hidden text reads as empty.
@@ -2875,7 +2873,7 @@ mod tests {
         // which is exactly what a new browser is.
         let added = post_json(&creator, "/api/profiles/add", serde_json::json!({})).await?;
         successful_body("add profile", &added);
-        creator.goto(env.tonk_web.as_str()).await?;
+        goto(&creator, env.tonk_web.as_str()).await?;
         legacy_link(&creator, &env).await?;
 
         let root = get_json(&creator, "/api/identity/root").await?;

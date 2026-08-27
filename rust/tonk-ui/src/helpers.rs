@@ -97,8 +97,40 @@ mod native {
             }
 
             let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
-            driver.goto(&self.tonk_web.to_string()).await?;
+            // Bound each navigation well under the suite's patience. The
+            // default page-load allowance is five minutes, so one wedged
+            // renderer would eat the whole run before `goto` below ever
+            // gets its second chance.
+            driver
+                .set_page_load_timeout(std::time::Duration::from_secs(60))
+                .await?;
+            goto(&driver, &self.tonk_web.to_string()).await?;
             Ok(driver)
+        }
+    }
+
+    /// Navigates, retrying once when the renderer wedges mid-load.
+    ///
+    /// A navigation whose renderer stops responding surfaces as
+    /// chromedriver's 'timed out receiving message from renderer' after the
+    /// page-load allowance. The page's own boot watchdog cannot act there —
+    /// a hung renderer runs no scripts — so the recovery lives on this side
+    /// of the DevTools pipe: one fresh navigation to the same URL, the same
+    /// restart a person's reload performs.
+    pub async fn goto(driver: &WebDriver, url: impl AsRef<str>) -> Result<()> {
+        use thirtyfour::error::WebDriverErrorInner;
+        let url = url.as_ref();
+        match driver.goto(url).await {
+            Err(error)
+                if matches!(
+                    error.as_inner(),
+                    WebDriverErrorInner::WebDriverTimeout(_) | WebDriverErrorInner::Timeout(_)
+                ) =>
+            {
+                eprintln!("navigation to {url} wedged ({error}); retrying once");
+                Ok(driver.goto(url).await?)
+            }
+            other => Ok(other?),
         }
     }
 
