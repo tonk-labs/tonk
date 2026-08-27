@@ -67,13 +67,18 @@ impl CustomElement for TonkAccount {
         bind(this);
         load_status(this.clone());
         // The panel's state is a function of the URL — /settings,
-        // /settings?add=1, /settings/link — and Add account moves
-        // between those with a client-side navigation (a history push
-        // plus a synthetic popstate), never a reload. The top-document
-        // router keeps this element mounted across account routes, so
-        // nothing else re-reads the location: the panel re-derives its
-        // own state whenever history changes under it.
-        {
+        // /settings?add=1, /settings/link — and of whether this browser
+        // has an account. Neither reaches it as a reload.
+        //
+        // Add account moves between those routes with a client-side
+        // navigation (a history push plus a synthetic popstate), and the
+        // top-document router keeps this element mounted across account
+        // routes, so nothing else re-reads the location. The ceremony
+        // that creates or links the account runs in the registration
+        // cluster, which says so with `ACCOUNT_CHANGED` rather than
+        // reaching in here. Both are the same answer: re-derive from
+        // what the worker reports now.
+        for event in ["popstate", crate::register_dialog::ACCOUNT_CHANGED] {
             let host = this.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
                 if host.is_connected() {
@@ -82,7 +87,7 @@ impl CustomElement for TonkAccount {
             });
             if let Some(window) = window() {
                 let _ = window
-                    .add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref());
+                    .add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());
             }
             closure.forget();
         }
@@ -498,6 +503,16 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
         _ => "Not registered",
     };
     set_text(host, "#account-registration-value", label);
+    // The load found the state unsynchronized and left the generic
+    // reason up. This is the first point that knows whether the emailed
+    // link is what it is waiting on, so it is where that is said —
+    // once, since the marker comes off with it.
+    if host.has_attribute(UNHYDRATED_ON_LOAD) {
+        let _ = host.remove_attribute(UNHYDRATED_ON_LOAD);
+        if state["status"].as_str() == Some("Registered") {
+            show_error(host, VERIFY_EMAIL);
+        }
+    }
     // The worker drains the queued backup itself once activation
     // lands — the ceremony pre-signed the publish. Nothing to raise;
     // just say so while it is still on its way. Detached: the watch is
@@ -1515,13 +1530,23 @@ fn load_status(host: HtmlElement) {
                 ) {
                     Landing::Devices => show_success(&host),
                     Landing::Success => {
+                        // Marked BEFORE settling, because settling starts
+                        // the customer probe and that probe's answer is
+                        // what decides which message this state deserves.
+                        // Asking a second time from here instead would
+                        // put two probes in flight at once — and the
+                        // probe is not a read: it replays the work
+                        // deferred while the account was unserved, the
+                        // account backup among it.
+                        if account_state == Some(AccountStateStatus::Unhydrated) {
+                            let _ = host.set_attribute(UNHYDRATED_ON_LOAD, "true");
+                        } else {
+                            let _ = host.remove_attribute(UNHYDRATED_ON_LOAD);
+                        }
                         settle_on_load(&host);
                         apply_link_outcome(&host, link_outcome.as_ref());
                         if account_state == Some(AccountStateStatus::Unhydrated) {
-                            show_error(
-                                &host,
-                                "Account state is not synchronized yet. Reload /settings to retry before changing your account name.",
-                            );
+                            show_error(&host, UNSYNCHRONIZED);
                         }
                     }
                     Landing::Choice { revoke_hint } => {
@@ -2039,10 +2064,7 @@ async fn complete_remote(
     // the failure unexpected, and then the notice says so instead.
     if initialize_name && is_unhydrated(&status) {
         if activation_pending().await {
-            show_error(
-                host,
-                "Your account was created. Check your email and open the verification link to verify your email address.",
-            );
+            show_error(host, VERIFY_EMAIL);
         } else {
             show_error(
                 host,
@@ -2052,6 +2074,22 @@ async fn complete_remote(
     }
     Ok(())
 }
+
+/// Marks a load that found the account state unsynchronized, so the
+/// customer probe's answer can say which of the two reasons it was.
+const UNHYDRATED_ON_LOAD: &str = "data-unhydrated-on-load";
+
+/// An account whose state has not synchronized, reason unknown.
+const UNSYNCHRONIZED: &str = "Account state is not synchronized yet. Reload /settings to retry before changing your account name.";
+
+/// The same state, when the emailed link is what it is waiting on.
+///
+/// Before that link is opened the access service refuses the pull, so a
+/// freshly enrolled account is ALWAYS unsynchronized — expected, and not
+/// something a reload can change. Naming the mechanism there and asking
+/// for a retry that cannot succeed buries the one step that does.
+const VERIFY_EMAIL: &str =
+    "Check your email and open the verification link to verify your email address.";
 
 /// Whether the customer is registered but not yet email-activated.
 async fn activation_pending() -> bool {

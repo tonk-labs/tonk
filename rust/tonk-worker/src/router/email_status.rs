@@ -170,19 +170,51 @@ async fn lookup(email: &str) -> &'static str {
 /// Write the answer to the profile overlay, replacing any earlier one.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn publish(env: &crate::router::CommandEnv, email: &str, state: &'static str) {
+    let tonk = env.state().read().await;
+    record(&tonk, email, state).await;
+}
+
+/// The lookup vocabulary for a registration status.
+///
+/// The form reads one set of words whether they came from the lookup or
+/// from the service's own receipt, so a registration answers in the
+/// lookup's terms rather than in its own.
+pub(crate) fn state_for_customer(status: tonk_account::customer::CustomerStatus) -> &'static str {
+    use tonk_account::customer::CustomerStatus;
+    match status {
+        CustomerStatus::Registered => state::PENDING,
+        CustomerStatus::Active => state::ACTIVE,
+        CustomerStatus::Suspended => state::SUSPENDED,
+    }
+}
+
+/// Record an answer about `email` on the profile overlay.
+///
+/// Shared by the lookup and by [`record_customer_status`], which is the
+/// other place an answer about an address is learned: activation is a
+/// NEW answer about it, and without writing one here an address checked
+/// before registering stayed `unregistered` in the overlay forever —
+/// so the form kept offering to create an account for one that had just
+/// finished activating.
+///
+/// [`record_customer_status`]: crate::router::customer::record_customer_status
+pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer: &'static str) {
     use tonk_common::log;
     use tonk_schema::EmailStatus;
 
+    let email = email.trim();
+    if email.is_empty() {
+        return;
+    }
     let Ok(this) = EmailStatus::ENTITY.parse::<dialog_artifacts::Entity>() else {
         return;
     };
-    let tonk = env.state().read().await;
     if let Err(error) = tonk
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .overlay()
-        .assert(EmailStatus::new(this, email.trim().to_owned(), state))
+        .assert(EmailStatus::new(this, email.to_owned(), answer))
         .write()
         .perform(&tonk.operator)
         .await
