@@ -201,6 +201,7 @@ impl Notebook {
         self.bind_fences();
 
         let notebook = self.clone();
+        let watched = slot.clone();
         let callback = Closure::wrap(Box::new(move || {
             if notebook.settling.get() {
                 return;
@@ -209,6 +210,17 @@ impl Notebook {
             notebook.project_blocks();
             notebook.bind_fences();
             notebook.settling.set(false);
+            // The row container may have just appeared; make sure it is
+            // observed so later store updates reach the projection.
+            if let (Some(observer), Ok(Some(rows))) = (
+                watched.borrow().as_ref(),
+                notebook.host.query_selector(".notebook-data"),
+            ) {
+                let init = MutationObserverInit::new();
+                init.set_child_list(true);
+                init.set_subtree(true);
+                let _ = observer.observe_with_options(&rows, &init);
+            }
         }) as Box<dyn FnMut()>);
 
         let Ok(observer) = MutationObserver::new(callback.as_ref().unchecked_ref()) else {
@@ -222,8 +234,20 @@ impl Notebook {
         // Watch the ROW CONTAINER, not the host: the editor also lives under
         // the host, so a subtree observer there would see `project_blocks`'s
         // own write into the editor and re-fire itself forever.
-        if let Ok(Some(rows)) = self.host.query_selector(".notebook-data") {
-            let _ = observer.observe_with_options(&rows, &init);
+        //
+        // The container is rendered by a nested `<tonk-display>` that resolves
+        // asynchronously, so it is usually absent at connect. Watch the host's
+        // direct children (childList WITHOUT subtree, which the editor's own
+        // mutations never reach) until it appears, then watch it properly.
+        match self.host.query_selector(".notebook-data") {
+            Ok(Some(rows)) => {
+                let _ = observer.observe_with_options(&rows, &init);
+            }
+            _ => {
+                let shallow = MutationObserverInit::new();
+                shallow.set_child_list(true);
+                let _ = observer.observe_with_options(&self.host, &shallow);
+            }
         }
 
         *retained.borrow_mut() = Some(callback);
@@ -297,6 +321,9 @@ impl Notebook {
         // mount, while the property routes through `setMarkdown`, which
         // narrows to the blocks that actually differ and leaves the caret
         // alone. Writing text content on a live editor would reset it.
+        //
+        // `commit` compares against `projected` (set just above), so the
+        // `change` this write provokes finds nothing to write back.
         let _ = js_sys::Reflect::set(&self.prose, &"value".into(), &JsValue::from_str(&document));
     }
 
@@ -398,7 +425,17 @@ impl Notebook {
         // keystroke. Blur covers leaving without typing again.
         let notebook = self.clone();
         let tracked = last.clone();
-        let on_change = Closure::wrap(Box::new(move |_event: Event| {
+        let on_change = Closure::wrap(Box::new(move |event: Event| {
+            // The inner editor's `change` is ITS event, and it bubbles and is
+            // composed. Left alone it reaches the host, where the view has
+            // wired `onblockedit`/command handlers, and its `{value, content}`
+            // detail fails to resolve `source`. Worse, `project_blocks`'
+            // `.value` write goes through `setMarkdown`, which dispatches a
+            // transaction and so fires this event too — the notebook's own
+            // projection would raise an edit command for a change nobody made.
+            // Stop it here; the notebook re-emits its own `blockedit` per
+            // changed block on commit.
+            event.stop_propagation();
             let index = notebook.caret_block_index().unwrap_or(-1);
             if tracked.get() >= 0 && index != tracked.get() {
                 notebook.commit();
