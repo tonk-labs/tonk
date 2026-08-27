@@ -344,6 +344,24 @@ mod tests {
         Ok(())
     }
 
+    /// Sign in to an existing account for `email`, from the cluster.
+    ///
+    /// The counterpart to [`run_cluster_ceremony`]: the address decides
+    /// which of the two runs, so signing in is the same control and the
+    /// same field, answered differently. The old login panel it
+    /// replaced is no longer reachable — one entry raises this instead.
+    pub(crate) async fn run_cluster_login(driver: &WebDriver, email: &str) -> Result<()> {
+        element(driver, "#account-choose-link")
+            .await?
+            .click()
+            .await?;
+        await_register_dialog(driver).await?;
+        type_into_register_dialog(driver, email).await?;
+        await_register_action(driver, "log in with your passkey").await?;
+        click_register_action(driver).await?;
+        Ok(())
+    }
+
     /// Follow the emailed activation link and accept, leaving the
     /// customer `Active` and its queued work drained.
     pub(crate) async fn activate(
@@ -871,8 +889,7 @@ mod tests {
         click(&driver, "#account-delete-submit").await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
 
-        click(&driver, "#account-choose-link").await?;
-        click(&driver, "#account-link-submit").await?;
+        run_cluster_login(&driver, EMAIL).await?;
         if let Err(wait_error) = element(&driver, "tonk-account[data-mode=\"success\"]").await {
             let host = element(&driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
@@ -3268,14 +3285,7 @@ mod tests {
         wait_for_service_worker(&claimer).await?;
         goto(&claimer, env.tonk_web.join("settings")?.as_str()).await?;
         element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
-        element(&claimer, "#account-choose-link")
-            .await?
-            .click()
-            .await?;
-        element(&claimer, "#account-link-submit")
-            .await?
-            .click()
-            .await?;
+        run_cluster_login(&claimer, "claimer@example.com").await?;
         if let Err(wait_error) = element(&claimer, "tonk-account[data-mode=\"success\"]").await {
             let host = element(&claimer, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
