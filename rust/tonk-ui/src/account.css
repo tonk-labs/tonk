@@ -251,6 +251,10 @@
     color: var(--ink);
 }
 
+.account__error:focus-visible {
+    box-shadow: 0 0 0 1px var(--ring);
+}
+
 .account__error[data-flash="true"],
 .account__inline-error[data-flash="true"] {
     animation: account-flash 450ms var(--ease) 2;
@@ -387,8 +391,8 @@ tonk-account[data-mode="success"] .account {
     content: "";
     position: absolute;
     top: 0;
-    right: -1px;
-    width: 1px;
+    right: -2px;
+    width: 2px;
     height: 100%;
     background: var(--panel);
 }
@@ -809,9 +813,9 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     .account__rail button[aria-selected="true"]::after {
         top: auto;
         right: 0;
-        bottom: -1px;
+        bottom: -2px;
         width: 100%;
-        height: 1px;
+        height: 2px;
     }
 
     .account__status,

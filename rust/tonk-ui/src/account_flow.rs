@@ -560,15 +560,19 @@ mod tests {
                         const rail = document.querySelector('.account__rail').getBoundingClientRect();
                         const body = document.querySelector('.account__settings-body').getBoundingClientRect();
                         document.querySelector('#account-tab-account').click();
-                        const selectedTab = document.querySelector('#account-tab-account').getBoundingClientRect();
-                        const selectedTabStyle = getComputedStyle(document.querySelector('#account-tab-account'));
+                        const selectedTabElement = document.querySelector('#account-tab-account');
+                        const selectedTab = selectedTabElement.getBoundingClientRect();
+                        const selectedTabStyle = getComputedStyle(selectedTabElement);
+                        const selectedTabBridge = getComputedStyle(selectedTabElement, '::after');
                         const accountHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         document.querySelector('#account-tab-devices').click();
                         const devicesHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         const error = document.querySelector('#account-error');
                         error.hidden = false;
+                        error.focus();
                         const errorRight = Math.round(error.getBoundingClientRect().right);
                         const errorWidth = Math.round(error.getBoundingClientRect().width);
+                        const errorFocusShadow = getComputedStyle(error).boxShadow;
                         // Read the body's edge in the SAME layout state:
                         // revealing the notice can grow the page past the
                         // viewport, and a classic scrollbar appearing then
@@ -587,11 +591,13 @@ mod tests {
                           selectedTabRight: Math.round(selectedTab.right),
                           bodyLeft: Math.round(body.left),
                           selectedTabBorderRight: selectedTabStyle.borderRightWidth,
+                          selectedTabBridgeWidth: selectedTabBridge.width,
                           accountHeight,
                           devicesHeight,
                           bodyRight: errorBodyRight,
                           errorRight,
                           errorWidth,
+                          errorFocusShadow,
                           logoVisible: logo.width > 0 && logo.height > 0
                         };"#,
                     Vec::new(),
@@ -607,6 +613,7 @@ mod tests {
             assert_eq!(geometry["railTop"], geometry["bodyTop"]);
             assert_eq!(geometry["selectedTabRight"], geometry["bodyLeft"]);
             assert_eq!(geometry["selectedTabBorderRight"], "0px");
+            assert_eq!(geometry["selectedTabBridgeWidth"], "2px");
             assert_eq!(
                 geometry["accountHeight"], geometry["devicesHeight"],
                 "Account and Devices tabs must keep one panel height at {window_width}px"
@@ -618,6 +625,13 @@ mod tests {
             assert_eq!(
                 geometry["errorWidth"], geometry["body"],
                 "settings notices must span the panel body at {window_width}px"
+            );
+            assert!(
+                !geometry["errorFocusShadow"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("inset"),
+                "focused settings notices must keep their ordinary frame"
             );
             assert_eq!(geometry["logoVisible"], true);
         }
