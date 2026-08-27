@@ -1228,6 +1228,9 @@ mod tests {
             // the approval it was interrupted by.
             element(driver, "tonk-account[data-mode=\"choice\"]").await?;
             run_cluster_ceremony(driver, EMAIL).await?;
+            // The cluster stays up over the approval it interrupted, so
+            // take it down before reading what is underneath.
+            dismiss_register_dialog(driver).await?;
             // Let the creation ceremony finish before navigating
             // anywhere: it lands back on the approval it interrupted,
             // and leaving mid-flight loses whatever it had not yet
