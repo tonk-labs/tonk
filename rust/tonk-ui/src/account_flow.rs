@@ -148,10 +148,21 @@ mod tests {
     /// context. Callers that navigate or inspect top-document account UI must
     /// call `enter_default_frame` again first.
     async fn enter_hub(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        element(driver, ".hub-page").await?;
+        Ok(())
+    }
+
+    /// Enter the sealed guest frame, whatever page it is showing.
+    ///
+    /// The guest renders at an opaque origin, so `contentDocument` is
+    /// unreachable from the top document: reaching its DOM at all means
+    /// switching the driver's browsing context to it. Every helper that
+    /// touches the bar or a space page goes through here.
+    async fn enter_guest(driver: &WebDriver) -> Result<()> {
         driver.enter_default_frame().await?;
         let frame = element(driver, "tonk-site > iframe").await?;
         frame.enter_frame().await?;
-        element(driver, ".hub-page").await?;
         Ok(())
     }
 
@@ -1545,10 +1556,10 @@ mod tests {
         // 3–4. Create one, and land in it.
         submit_hub_wizard(&driver).await?;
         let key = await_new_space(&driver, &spaces).await?;
-        await_url_containing(&driver, &format!("/space/did:key:{key}")).await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
 
         // 5–6. Share offers to log in: nothing is registered.
-        click_share_row(&driver, "[data-mi-share], [data-overflow-share]").await?;
+        open_share_stack(&driver).await?;
         await_share_row(&driver, "account").await?;
 
         // 7–8. The cluster comes up with the address field focused, so
@@ -1619,7 +1630,7 @@ mod tests {
         // 24–25. A fresh profile opening it lands in the same space.
         let guest = driver_with_prf(&env).await?;
         guest.goto(&invite).await?;
-        await_url_containing(&guest, &format!("did:key:{key}")).await?;
+        await_url_containing(&guest, &key).await?;
 
         guest.quit().await?;
         driver.quit().await?;
@@ -2068,65 +2079,101 @@ mod tests {
         }
     }
 
-    /// Open the FAB's share menu and click a row in it.
+    /// Click the bar's `share` cell, which opens the share stack.
     ///
-    /// The bar lives in the profile frame and its rows are custom
-    /// elements, so this reaches through the frame rather than clicking
-    /// from the top document, which cannot see them.
-    async fn click_share_row(driver: &WebDriver, marker: &str) -> Result<()> {
-        let outcome = driver
-            .execute_async(
-                r##"
-                const done = arguments[arguments.length - 1];
-                const marker = arguments[0];
-                const roots = [document];
-                for (const frame of document.querySelectorAll("iframe")) {
-                    try { if (frame.contentDocument) roots.push(frame.contentDocument); } catch (e) {}
-                }
-                for (const root of roots) {
-                    const bar = root.querySelector("tonk-fab");
-                    if (!bar) continue;
-                    // Open the share menu, then take the row it holds.
-                    const share = bar.querySelector("[data-mi-share], [data-overflow-share]");
-                    if (share) share.click();
-                    const row = bar.querySelector(marker);
-                    if (!row) continue;
-                    row.click();
-                    return done({ ok: true });
-                }
-                done({ error: "no bar row matching " + marker });
-                "##,
-                vec![serde_json::json!(marker)],
-            )
-            .await?;
-        let value = outcome.json().clone();
-        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
-            return Err(anyhow!("could not click the share row: {error}"));
+    /// The cell is in the bar's shadow root; the stack it reveals is
+    /// slotted light content.
+    async fn open_share_stack(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let outcome = driver
+                .execute(
+                    r##"
+                    const bar = document.querySelector("tonk-fab");
+                    if (!bar || !bar.shadowRoot) return false;
+                    const cell = bar.shadowRoot.querySelector('[data-cell="share"]');
+                    if (!cell) return false;
+                    cell.click();
+                    return true;
+                    "##,
+                    Vec::new(),
+                )
+                .await?;
+            if outcome.json().as_bool() == Some(true) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the bar never showed a share cell to click"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        Ok(())
     }
 
-    /// Which of the share menu's two rows the bar is offering.
+    /// Open the FAB's share stack and click one of its rows.
+    ///
+    /// Two DOM boundaries sit between the driver and the row. The bar
+    /// lives in the sealed guest, at an opaque origin, so the browsing
+    /// context has to be switched into it; and the cell that OPENS the
+    /// stack lives in the bar's shadow root, while the row the stack
+    /// holds is a slotted light child. Querying the light tree alone
+    /// finds the row but never opens the stack it is hidden inside.
+    async fn click_share_row(driver: &WebDriver, marker: &str) -> Result<()> {
+        enter_guest(driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let outcome = driver
+                .execute(
+                    r##"
+                    const marker = arguments[0];
+                    const bar = document.querySelector("tonk-fab");
+                    if (!bar) return { error: "no bar" };
+                    // The stack opens from a shadow cell.
+                    const cell = bar.shadowRoot
+                        && bar.shadowRoot.querySelector('[data-cell="share"]');
+                    if (!cell) return { error: "no share cell" };
+                    if (cell.getAttribute("aria-expanded") !== "true") cell.click();
+                    // The rows are slotted light children.
+                    const row = bar.querySelector(marker);
+                    if (!row) return { error: "no row matching " + marker };
+                    if (row.hasAttribute("hidden")) return { error: "row is hidden: " + marker };
+                    row.click();
+                    return { ok: true };
+                    "##,
+                    vec![serde_json::json!(marker)],
+                )
+                .await?;
+            let value = outcome.json().clone();
+            if value.get("ok").is_some() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let reason = value
+                    .get("error")
+                    .and_then(|error| error.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!("could not click the share row: {reason}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Which of the share stack's two rows the bar is offering.
     ///
     /// `log in to share` before an account exists, the copy row after —
     /// the visible half of the account subscription. Returns `None`
     /// while neither is showing.
     async fn share_row_offered(driver: &WebDriver) -> Result<Option<String>> {
+        enter_guest(driver).await?;
         let outcome = driver
             .execute(
                 r##"
-                const roots = [document];
-                for (const frame of document.querySelectorAll("iframe")) {
-                    try { if (frame.contentDocument) roots.push(frame.contentDocument); } catch (e) {}
-                }
-                for (const root of roots) {
-                    const bar = root.querySelector("tonk-fab");
-                    if (!bar) continue;
-                    const account = bar.querySelector("[data-share-account]");
-                    const link = bar.querySelector("[data-share-link]");
-                    if (account && !account.hasAttribute("hidden")) return "account";
-                    if (link && !link.hasAttribute("hidden")) return "link";
-                }
+                const bar = document.querySelector("tonk-fab");
+                if (!bar) return null;
+                const account = bar.querySelector("[data-share-account]");
+                const link = bar.querySelector("[data-share-link]");
+                if (account && !account.hasAttribute("hidden")) return "account";
+                if (link && !link.hasAttribute("hidden")) return "link";
                 return null;
                 "##,
                 Vec::new(),
@@ -2166,6 +2213,7 @@ mod tests {
     /// and a user gesture, which neither the worker nor the profile
     /// frame has.
     async fn await_register_dialog(driver: &WebDriver) -> Result<()> {
+        driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let present = driver
@@ -2178,7 +2226,57 @@ mod tests {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("the share refusal never raised the cluster"));
+                // The raise crosses two realms — a guest row click, a
+                // portal message, a top-page handler — and a plain
+                // timeout says only that it did not arrive. Report both
+                // ends so the next reader knows WHICH hop dropped it
+                // rather than starting the bisect over.
+                let diag = driver
+                    .execute(
+                        r##"
+                        return {
+                            url: location.href,
+                            hasTonk: typeof window.tonk,
+                            register: window.tonk && typeof window.tonk.register,
+                            ids: Array.from(document.querySelectorAll("[id]"))
+                                .map(n => n.id).filter(i => i.includes("register")),
+                            dialogs: Array.from(document.querySelectorAll("dialog, .tonk-ceremony, .tonk-cluster"))
+                                .map(n => n.tagName + "." + n.className),
+                        };
+                        "##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|value| value.json().to_string())
+                    .unwrap_or_else(|error| format!("diagnostic failed: {error}"));
+                // And the guest side: did the row exist, was it hidden,
+                // and does the guest have the bridge method the click
+                // forwards through?
+                enter_guest(driver).await?;
+                let guest = driver
+                    .execute(
+                        r##"
+                        const bar = document.querySelector("tonk-fab");
+                        const row = bar && bar.querySelector("[data-share-account]");
+                        return {
+                            bar: !!bar,
+                            row: !!row,
+                            rowHidden: row ? row.hasAttribute("hidden") : null,
+                            tonk: typeof window.tonk,
+                            register: (window.tonk && typeof window.tonk.register) || null,
+                            space: bar ? bar.getAttribute("space") : null,
+                        };
+                        "##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|value| value.json().to_string())
+                    .unwrap_or_else(|error| format!("guest diagnostic failed: {error}"));
+                driver.enter_default_frame().await?;
+                return Err(anyhow!(
+                    "the share refusal never raised the cluster.\n  \
+                     top page: {diag}\n  guest: {guest}"
+                ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }

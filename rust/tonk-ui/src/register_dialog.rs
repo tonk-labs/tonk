@@ -1057,7 +1057,8 @@ pub(crate) fn finish_ceremony() {
     row.set_inner_html(
         r##"<span class="k">display name</span>
             <span class="v"><input class="ed" id="tonk-register-name" type="text"
-                  enterkeyhint="go" aria-label="display name"></span>"##,
+                  enterkeyhint="go" aria-label="display name"><i class="cur"
+                  aria-hidden="true"></i></span>"##,
     );
     let action = host.query_selector(ACTION).ok().flatten();
     match action {
