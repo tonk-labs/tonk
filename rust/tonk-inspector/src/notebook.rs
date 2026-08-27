@@ -68,6 +68,16 @@ const FENCE_SELECTOR: &str = ".md-code-block";
 /// come from the Web Awesome tokens the rest of the app uses, with fallbacks
 /// so an output is still legible where the tokens are absent.
 const OUTPUT_CSS: &str = r#"
+/* A cell is part of the prose, not a widget sitting in it: no frame, no
+   card. `<tonk-code>` draws its border from a variable, so this removes the
+   frame for notebook cells only rather than changing the element everywhere
+   it is used. */
+.md-code-block tonk-code {
+  --tonk-code-border: transparent;
+  --tonk-code-radius: 0;
+}
+.md-code-block { margin: 0.5rem 0; }
+
 .notebook-cell-result { display: block; margin: 0.25rem 0 0.75rem; }
 .nb-out {
   font-size: 0.8125rem;
@@ -626,6 +636,57 @@ impl Notebook {
         let _ = js_sys::Reflect::set(&self.prose, &"value".into(), &JsValue::from_str(&document));
     }
 
+    /// Record a cell's source as the text that was just evaluated.
+    ///
+    /// Called with the body the cell ran, so the stored source and the
+    /// rendered result are the same text by construction. Writes ONE block —
+    /// the one this cell projects from — rather than re-splitting the
+    /// document, so it cannot disturb a block the author is editing
+    /// elsewhere.
+    ///
+    /// A cell's fence is the block's whole source, so the stored text is the
+    /// body wrapped back in its fence.
+    fn record_cell_source(self: &Rc<Self>, cell_id: &str, body: &str) {
+        // Which block this cell came from. The cell id indexes the fences in
+        // document order, and `blocks` is in that same order, so find the
+        // n-th block that is a fence.
+        let Ok(index) = cell_id.parse::<usize>() else {
+            return;
+        };
+        let entity = {
+            let blocks = self.blocks.borrow();
+            let mut fences = blocks
+                .iter()
+                .filter(|b| b.source.trim_start().starts_with("```"));
+            match fences.nth(index) {
+                Some(block) => block.entity.clone(),
+                None => return,
+            }
+        };
+
+        let fenced = format!("```{CELL_LANGUAGE}\n{}\n```", body.trim_end());
+        // Unchanged is not worth a write, and a write per keystroke is
+        // exactly what block storage exists to avoid.
+        {
+            let blocks = self.blocks.borrow();
+            if blocks
+                .iter()
+                .any(|b| b.entity == entity && b.source == fenced)
+            {
+                return;
+            }
+        }
+        // Keep the local view in step so the next projection does not read
+        // this back as an external change and fight the editor.
+        {
+            let mut blocks = self.blocks.borrow_mut();
+            if let Some(block) = blocks.iter_mut().find(|b| b.entity == entity) {
+                block.source = fenced.clone();
+            }
+        }
+        self.dispatch_edit(&entity, &fenced);
+    }
+
     /// Commit once the editor has settled.
     ///
     /// `<tonk-prose>` coalesces edits behind a 400ms debounce, and a fence's
@@ -1015,14 +1076,14 @@ impl Cell {
             result,
         };
 
-        cell.install(notebook);
+        cell.install(notebook, id);
         cell
     }
 
     /// Listen for the editor's `diagnostics` frame and evaluate on a clean
     /// one. Mirrors the inspector's auto-evaluate: the LSP has just validated
     /// the buffer, so this is the moment the document is worth running.
-    fn install(&self, notebook: &Rc<Notebook>) {
+    fn install(&self, notebook: &Rc<Notebook>, id: &str) {
         let editor = self.editor.clone();
         // In-flight guard: a diagnostics burst must not stack evaluates, and
         // a late reply from a superseded run must not overwrite a newer one.
@@ -1031,6 +1092,8 @@ impl Cell {
         let cell_result = self.result.clone();
         let cell_editor = editor.clone();
         let held_closures = notebook.closures.clone();
+        let notebook_for_cell = notebook.clone();
+        let cell_id = id.to_owned();
         let closure = Closure::wrap(Box::new(move |event: Event| {
             let detail = event
                 .dyn_ref::<CustomEvent>()
@@ -1051,6 +1114,19 @@ impl Cell {
                 cell_result.set_inner_html("");
                 return;
             }
+            // Store the text we are ABOUT TO RUN, not a re-read of the
+            // document later.
+            //
+            // A cell's stored source and its rendered result must be the same
+            // text — otherwise a notebook shows an answer to a question it
+            // does not contain. Re-reading the prose document at commit time
+            // could not guarantee that: prose coalesces edits behind a
+            // debounce, so the read raced the typing and stored a prefix
+            // (`concept:` edited to `name:` was stored as `n:`).
+            //
+            // Handing the evaluated body straight to the notebook removes the
+            // race rather than timing around it: what ran is what is written.
+            notebook_for_cell.record_cell_source(&cell_id, &body);
             // A mutation cell is recognized but never auto-run: there is
             // nowhere for its writes to land yet (checkpoints are a later
             // step), and running it against the live branch is exactly what
