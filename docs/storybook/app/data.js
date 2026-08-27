@@ -244,12 +244,12 @@ window.STORYBOOK_DATA = {
       "variants": "Root missing, unregistered, unconfigured, unhydrated, ready, malformed state."
     },
     {
-      "evidence": "Whole happy hybrid flows for callback/default/discovered provider.",
-      "gaps": "OS-open failure, callback collision, timeout, malformed callback, restart after approval at every write.",
+      "evidence": "Loopback bridge contract tests and whole happy hybrid flows for callback/default/discovered provider.",
+      "gaps": "Real Safari/Chrome/Firefox bridge pass, OS-open failure, callback collision, timeout, malformed callback, restart after approval at every write.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C02",
       "title": "Start tonk account login and approve in an already-linked browser.",
-      "variants": "Default page; --via; --no-open; custom name; TTY/pipe."
+      "variants": "Default page; --via; --no-open; custom name; TTY/pipe; Safari cross-scheme warning."
     },
     {
       "evidence": "Whole browser flow for registration before linking CLI.",
@@ -1602,6 +1602,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "HTTPS approval reaches loopback without relying on a cross-scheme POST body (Remain in flight).",
+      "device": "hybrid + Safari/Chrome/Firefox",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-16",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -2103,7 +2111,7 @@ window.STORYBOOK_DATA = {
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 99
+    "unrun": 100
   },
   "visualCommit": "49a873a23"
 };
