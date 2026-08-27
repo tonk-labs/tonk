@@ -68,13 +68,27 @@ const FENCE_SELECTOR: &str = ".md-code-block";
 /// come from the Web Awesome tokens the rest of the app uses, with fallbacks
 /// so an output is still legible where the tokens are absent.
 const OUTPUT_CSS: &str = r#"
-/* A cell is part of the prose, not a widget sitting in it: no frame, no
-   card. `<tonk-code>` draws its border from a variable, so this removes the
-   frame for notebook cells only rather than changing the element everywhere
-   it is used. */
+/* A cell is part of the prose, not a widget sitting in it — so no frame.
+   What marks it instead is a faint wash: enough that the block reads as a
+   distinct surface, far too little to draw the eye away from the text.
+   `color-mix` against the page's own foreground makes it an inverse of
+   whatever background is in play, so it works in either theme without two
+   sets of colours; the fallback is a flat translucent white for browsers
+   without it.
+
+   Done through `<tonk-code>`'s own variables, so the element is unchanged
+   everywhere else it is used. */
 .md-code-block tonk-code {
   --tonk-code-border: transparent;
-  --tonk-code-radius: 0;
+  --tonk-code-radius: 4px;
+  --tonk-code-bg: rgba(127, 127, 127, 0.06);
+  --tonk-code-bg: color-mix(in srgb, currentColor 6%, transparent);
+}
+/* The cell you are in reads a shade stronger — enough to locate yourself,
+   not enough to announce itself. */
+.md-code-block:focus-within tonk-code {
+  --tonk-code-bg: rgba(127, 127, 127, 0.11);
+  --tonk-code-bg: color-mix(in srgb, currentColor 11%, transparent);
 }
 .md-code-block { margin: 0.5rem 0; }
 
@@ -777,7 +791,31 @@ impl Notebook {
         let _ = self.host.dataset().set("subject", entity);
         let detail = js_sys::Object::new();
         let _ = js_sys::Reflect::set(&detail, &"source".into(), &source.into());
+        // The owning notebook rides along on EVERY edit, not just a creating
+        // one. A block written with only its source does not match
+        // `tonk:notebook/block`, so it renders no row: the order names an
+        // entity that never appears, and a newly typed block vanishes on
+        // reload. Re-asserting it on an existing block is a no-op.
+        let notebook = self.notebook_entity();
+        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.as_str().into());
         self.emit("blockedit", &detail);
+    }
+
+    /// The notebook these blocks belong to.
+    ///
+    /// Read from a stored block rather than the host's `data-subject`, which
+    /// `dispatch_edit` repoints at whichever entity it is currently writing.
+    fn notebook_entity(&self) -> String {
+        if let Ok(Some(row)) = self.host.query_selector(".notebook-row")
+            && let Ok(row) = row.dyn_into::<HtmlElement>()
+            && let Some(entity) = row.dataset().get("notebook")
+        {
+            return entity;
+        }
+        self.host
+            .dataset()
+            .get("subject")
+            .unwrap_or_else(|| "id:notebook/scratch".to_owned())
     }
 
     /// Dispatch one `notebook/reorder` command carrying the new order.

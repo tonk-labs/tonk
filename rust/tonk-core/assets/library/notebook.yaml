@@ -316,6 +316,15 @@ command!: &block/edit
       description: The block's new markdown source.
       the: dom.event.detail/source
       as: text
+    notebook:
+      description: |
+        The notebook the block belongs to. Carried on every edit, not just a
+        creating one: a block written with only its source does not match
+        `tonk:notebook/block`, so it renders no row and the projection cannot
+        see it — the order names an entity that never appears. Re-asserting
+        it on an existing block is a no-op.
+      the: dom.event.detail/notebook
+      as: entity
 
 # The order command, asserted only when blocks are added, removed or moved -
 # an edit that just changes a block's text leaves the order untouched.
@@ -337,12 +346,13 @@ command!: &notebook/reorder
 
 rule!:
   description: Persist a block edit onto its block.
-  assert!: block/source-only
+  assert!: notebook/block
   when:
     - assert: block/edit
       where:
         subject: ?this
         source: ?source
+        notebook: ?notebook
 
 rule!:
   description: Persist a reorder onto its notebook.
