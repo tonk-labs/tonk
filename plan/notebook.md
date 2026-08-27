@@ -946,7 +946,39 @@ holds), `tonk-view` (taken, and it is the half this composes with),
 
 ---
 
-## Where this stands (verified in browser, 2026-08-27)
+## Verified working (browser, 2026-08-27)
+
+A cell evaluates and renders its results. Confirmed on a fresh space: the
+seeded `concept:` cell returned 116 result rows, rendered under the fence.
+Blocks project from the store into one document; the fence is a real
+`<tonk-code>` with the `dialog-yaml` pack, an LSP buffer URI scoped to the
+branch, and a result slot.
+
+Three bugs stood between the earlier state and this, each hiding the next:
+
+1. **Two editors.** Both lifecycle callbacks deferred their mount, and the
+   mount-once guard ran *inside* the deferred task — so both passed before
+   either appended. The second won the screen while this element's state
+   pointed at the first. Fixed by claiming the mount synchronously.
+2. **Fences live in a shadow root.** `<tonk-prose>` renders its document
+   into a shadow root, so `bind_fences` was querying a light DOM with no
+   children and found nothing — every cell stayed an unbound markdown
+   block. A MutationObserver does not cross that boundary either, so the
+   watch had to be registered on the root as it appears.
+3. **`tonk-code-connect` retargets.** The event is `composed`, so crossing
+   the shadow boundary rewrites `event.target` to the shadow HOST. The
+   provider read `event.target`, found a `<tonk-prose>` with no `connect`
+   method, and dropped the announcement — no LSP client, so no
+   diagnostics, and the auto-evaluate that waits on a clean diagnostics
+   frame never fired. Fixed in `tonk-code` itself
+   (`composedPath()[0]`), since it affects any shadow-hosted editor.
+
+Note for future debugging: a page `fetch` of a rebuilt bundle can be
+served from HTTP cache and read as "the fix is not deployed" when it is.
+`fetch(url, {cache: 'reload'})` is the honest check, and clearing
+`caches` plus a hard reload is what actually refreshes the guest.
+
+## Earlier notes (superseded)
 
 Working: blocks project from the store into one document, and the
 document renders. Confirmed on a fresh space.
