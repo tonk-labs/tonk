@@ -1739,7 +1739,7 @@ mod tests {
         // harness's Chrome does not grant, so asking it answers "" for
         // reasons that have nothing to do with the share. The copied
         // text comes from this same row.
-        let invite = await_invite_link(&driver, &key).await?;
+        let invite = await_share_link(&driver).await?;
         assert!(
             invite.contains("/join") || invite.contains("/@/"),
             "the minted link must be an invite, got {invite:?}",
@@ -2169,53 +2169,6 @@ mod tests {
         }
     }
 
-    /// The invite link the mint recorded for `space`.
-    ///
-    /// The same row the ceremony copies from, queried directly. What
-    /// reaches the clipboard is not observable here (the permission is
-    /// not granted to the harness), so the fact behind it is what the
-    /// assertion can stand on.
-    async fn await_invite_link(driver: &WebDriver, space: &str) -> Result<String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let rows = post_json(
-                driver,
-                &format!("/api/repository/{space}/branch/main/query"),
-                serde_json::json!({
-                    "predicate": { "with": {
-                        "status": {
-                            "the": "xyz.tonk.invite/status",
-                            "as": "Entity", "cardinality": "one"
-                        },
-                        "url": {
-                            "the": "xyz.tonk.invite/url", "as": "Text",
-                            "cardinality": "one", "optional": true
-                        }
-                    } },
-                    "terms": {
-                        "this": space,
-                        "status": { "?": { "name": "status" } },
-                        "url": { "?": { "name": "url" } }
-                    }
-                }),
-            )
-            .await
-            .unwrap_or_default();
-            if let Some(url) = rows["body"]
-                .as_array()
-                .and_then(|rows| rows.first())
-                .and_then(|row| row["url"].as_str())
-                .filter(|url| !url.is_empty())
-            {
-                return Ok(url.to_owned());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("the share never recorded an invite link"));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
     /// The cluster's action row label, or empty while it is folded.
     async fn register_action_label(driver: &WebDriver) -> Result<String> {
         let label = driver
@@ -2303,8 +2256,29 @@ mod tests {
                 return Ok(link.to_owned());
             }
             if tokio::time::Instant::now() >= deadline {
+                // The dialog only says "invite someone into a space"
+                // once it HAS a link, so if the narrator got there and
+                // this did not, the query is looking in the wrong place
+                // rather than the mint having failed. Report what the
+                // branch actually holds.
+                let credential = post_json(
+                    driver,
+                    "/api/profile/branch/main/query",
+                    serde_json::json!({
+                        "predicate": { "with": {
+                            "link": {
+                                "the": "xyz.tonk.credential/link",
+                                "as": "Text", "cardinality": "one"
+                            }
+                        } },
+                        "terms": { "link": { "?": { "name": "link" } } }
+                    }),
+                )
+                .await
+                .unwrap_or_default();
                 return Err(anyhow!(
-                    "registering never finished the share it interrupted: no invite link",
+                    "registering never finished the share it interrupted: \
+                     no invite link. profile main answered: {credential}",
                 ));
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
