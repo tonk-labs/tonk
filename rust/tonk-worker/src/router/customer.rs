@@ -706,6 +706,19 @@ pub(crate) async fn record_customer_status(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("commit account customer status: {error}"))
         })?;
+
+    // Refresh the address lookup's answer to match.
+    //
+    // `EmailStatus` was only ever written by the lookup handler, so an
+    // address checked before registering stayed `unregistered` forever
+    // — and the form went on offering to create an account for an
+    // address that had just finished activating one. The registration
+    // state changing IS a new answer about that address, and this is
+    // the one place it changes.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if !email.is_empty() {
+        super::email_status::republish(state, email, status).await;
+    }
     Ok(())
 }
 

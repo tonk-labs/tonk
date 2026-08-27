@@ -169,6 +169,48 @@ async fn lookup(email: &str) -> &'static str {
 
 /// Write the answer to the profile overlay, replacing any earlier one.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Rewrite the lookup's answer to match a registration state change.
+///
+/// Called from `record_customer_status`, which is where that state
+/// changes. Without it an address checked before registering stays
+/// `unregistered` in the overlay forever, and the form keeps offering
+/// to create an account for one that has just finished activating.
+///
+/// Takes the worker state rather than a `CommandEnv`: activation is a
+/// route, not a command, and has no originating transient.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn republish(
+    tonk: &crate::worker::TonkState,
+    email: &str,
+    status: tonk_account::customer::CustomerStatus,
+) {
+    use tonk_account::customer::CustomerStatus;
+    use tonk_common::log;
+    use tonk_schema::EmailStatus;
+
+    // The lookup's own vocabulary, so the form reads one set of words.
+    let answer = match status {
+        CustomerStatus::Active => state::ACTIVE,
+        CustomerStatus::Registered => state::PENDING,
+        CustomerStatus::Suspended => state::SUSPENDED,
+    };
+    let Ok(this) = EmailStatus::ENTITY.parse::<dialog_artifacts::Entity>() else {
+        return;
+    };
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .overlay()
+        .assert(EmailStatus::new(this, email.trim().to_owned(), answer))
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("failed to refresh the email status: {error}");
+    }
+}
+
 async fn publish(env: &crate::router::CommandEnv, email: &str, state: &'static str) {
     use tonk_common::log;
     use tonk_schema::EmailStatus;
@@ -276,6 +318,25 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RegisterAccou
 
 #[cfg(test)]
 mod tests {
+
+    /// Activation is a new answer about the address.
+    ///
+    /// `EmailStatus` used to be written only by the lookup handler, so
+    /// an address checked before registering stayed `unregistered`
+    /// forever — and the form kept offering to create an account for one
+    /// that had just finished activating. The states below are what
+    /// `republish` maps a registration status onto, in the lookup's own
+    /// vocabulary so the form reads one set of words.
+    #[dialog_common::test]
+    fn it_answers_with_the_lookup_vocabulary_after_activation() {
+        // `Active` is what an opened activation link produces, and the
+        // form must route it to sign-in rather than creation.
+        assert_eq!(state_for_status(200), state::ACTIVE);
+        // Enrolled but unconfirmed.
+        assert_eq!(state_for_status(202), state::PENDING);
+        assert_eq!(state_for_status(410), state::SUSPENDED);
+    }
+
     use super::*;
 
     #[dialog_common::test]
