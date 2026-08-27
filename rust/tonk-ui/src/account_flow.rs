@@ -423,13 +423,6 @@ mod tests {
             );
         }
 
-        let select_all = || {
-            if cfg!(target_os = "macos") {
-                Key::Meta + "a"
-            } else {
-                Key::Control + "a"
-            }
-        };
         // The name write lands in the account state, whose first sync
         // races this test right after activation — until the pull lands
         // the worker refuses it as account_state_unavailable, and the
@@ -441,7 +434,18 @@ mod tests {
             // A save in flight disables the input, and typing into a
             // disabled input errors — that too reads as "not yet".
             let typed = async {
-                display_name.send_keys(select_all()).await?;
+                driver
+                    .execute(
+                        r#"const input = document.querySelector('#account-display-name');
+                        input.focus();
+                        input.select();
+                        if (input.selectionStart !== 0 || input.selectionEnd !== input.value.length) {
+                            throw new Error('display name was not fully selected');
+                        }
+                        return true;"#,
+                        Vec::new(),
+                    )
+                    .await?;
                 display_name.send_keys("Settings Name").await?;
                 display_name.send_keys(Key::Enter).await?;
                 Ok::<(), thirtyfour::error::WebDriverError>(())
@@ -1762,6 +1766,11 @@ mod tests {
              directory; last `account space` output was: {last_seen}"
         );
 
+        // Clearing origin storage unregisters the service worker, but the
+        // worker controlling the current page can stay alive with the linked
+        // profile in memory. Leave its scope first, then stop that surviving
+        // process after the clear so the next visit really is a fresh device.
+        goto(&claimer, "about:blank").await?;
         let devtools = ChromeDevTools::new(claimer.handle.clone());
         devtools
             .execute_cdp_with_params(
@@ -1772,6 +1781,8 @@ mod tests {
                 }),
             )
             .await?;
+        devtools.execute_cdp("ServiceWorker.enable").await?;
+        devtools.execute_cdp("ServiceWorker.stopAllWorkers").await?;
         goto(&claimer, env.tonk_web.as_str()).await?;
         wait_for_service_worker(&claimer).await?;
         goto(&claimer, env.tonk_web.join("settings")?.as_str()).await?;
