@@ -84,6 +84,9 @@ type ObserverCell = Rc<RefCell<Option<MutationObserver>>>;
 /// The custom element.
 #[derive(Default)]
 pub struct TonkNotebookElement {
+    /// Set the instant a mount is claimed, so the two lifecycle callbacks
+    /// that can both fire cannot each spawn one.
+    mounting: Rc<std::cell::Cell<bool>>,
     closures: Closures,
     observer: ObserverCell,
     mutation: MutationClosure,
@@ -116,12 +119,25 @@ impl CustomElement for TonkNotebookElement {
         // document, while this instance polls a detached subtree forever.
         // (Diagnostic signature: `connected=false` with rows present in the
         // document but none under the host.)
+        // Claim the mount SYNCHRONOUSLY, before deferring. Both this callback
+        // and `attribute_changed_callback` spawn a task, and a DOM check
+        // inside those tasks is too late: each runs its guard before either
+        // has appended anything, so both pass and two editors mount. The
+        // second one wins the screen while this element's state points at the
+        // first — which is the orphaned-prose symptom, not a separate bug.
+        if self.mounting.replace(true) {
+            return;
+        }
         let host = this.clone();
         let closures = self.closures.clone();
         let observer = self.observer.clone();
         let mutation = self.mutation.clone();
+        let mounting = self.mounting.clone();
         spawn_local(async move {
             if !host.is_connected() {
+                // Not in the document: release the claim so the re-attach
+                // that follows can mount for real.
+                mounting.set(false);
                 return;
             }
             mount(&host, closures, observer, mutation);
@@ -150,6 +166,9 @@ impl CustomElement for TonkNotebookElement {
         }
         self.mutation.borrow_mut().take();
         self.closures.borrow_mut().clear();
+        // Release the claim: a re-attach must be able to mount again, and its
+        // own guard on the already-present provider stops a duplicate.
+        self.mounting.set(false);
     }
 }
 
