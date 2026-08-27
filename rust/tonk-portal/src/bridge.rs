@@ -9,7 +9,7 @@
 //!
 //! [`MessageChannel`]: https://developer.mozilla.org/docs/Web/API/MessageChannel
 //!
-//! The author-facing object is unchanged:
+//! The author-facing object is:
 //!
 //! ```text
 //! window.tonk = {
@@ -20,6 +20,7 @@
 //!   navigate(href)    -> void,
 //!   reload()           -> void,
 //!   setTitle(text)    -> void,
+//!   setBackground(color) -> void,
 //!   open(href)        -> void,
 //!   ready: Promise<void>,
 //! }
@@ -47,7 +48,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use js_sys::{Object, Reflect};
+use js_sys::{Function, Object, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::location::{Allow, Location};
 use tonk_worker_api::Conclusion;
@@ -55,7 +56,28 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{AbortController, Element, HtmlIFrameElement, MessageEvent, MessagePort, window};
+use web_sys::{
+    AbortController, Element, HtmlElement, HtmlIFrameElement, MessageEvent, MessagePort, window,
+};
+
+/// One page surface whose inline background is temporarily owned by a
+/// `<tonk-site>` guest. The original value is restored when that guest reloads
+/// or disconnects, so a light app cannot leak its browser-chrome color into the
+/// next route.
+struct BackgroundSurface {
+    element: HtmlElement,
+    original: String,
+}
+
+/// The document theme-color temporarily owned by a full-page site. Safari's
+/// top and bottom browser chrome follow this metadata during an in-place route
+/// transition; repainting only `html`/`body` leaves the original Tonk shell
+/// tint visible around an otherwise full-bleed guest.
+struct BackgroundThemeColor {
+    element: Element,
+    original: Option<String>,
+    created: bool,
+}
 
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
 /// it is reachable from the element lifecycle, the prototype `reset`
@@ -93,6 +115,11 @@ pub(crate) struct PortalState {
     /// synced/untrusted content guest's forwarded route is denied with a
     /// typed error. See `forwarded_route`.
     allow: Allow,
+    /// Root surfaces repainted for this site's guest, saved on the first
+    /// `background` effect and restored with the rest of the portal state.
+    background_surfaces: Option<Vec<BackgroundSurface>>,
+    /// Theme-color metadata paired with [`Self::background_surfaces`].
+    background_theme_color: Option<BackgroundThemeColor>,
 }
 
 /// One live subscription: the iframe's correlation id (so frames are
@@ -118,6 +145,8 @@ impl PortalState {
             _dispatcher: None,
             with: None,
             allow: Allow::none(),
+            background_surfaces: None,
+            background_theme_color: None,
         }
     }
 
@@ -152,6 +181,9 @@ impl PortalState {
     /// realm: orphaned transferred streams are the prime suspect for the
     /// renderer crash on space→hub navigation.
     pub(crate) fn clear_subs(&mut self) {
+        if self.restore_background() {
+            forward_page_background("");
+        }
         self.subs.clear();
         for relay in self.relays.drain(..) {
             relay.abort();
@@ -171,6 +203,111 @@ impl PortalState {
     pub(crate) fn track_relay(&mut self, controller: AbortController) {
         self.relays.push(controller);
     }
+
+    /// Paint the parent document's root canvas to match this full-page guest.
+    /// Safari uses that canvas behind its floating chrome; an iframe cannot
+    /// paint those pixels itself even when it extends to the large viewport.
+    fn set_background(&mut self, color: &str) {
+        if self.background_surfaces.is_none() {
+            self.background_surfaces = Some(page_background_surfaces());
+        }
+        if self.background_theme_color.is_none() {
+            self.background_theme_color = page_background_theme_color();
+        }
+        if let Some(surfaces) = self.background_surfaces.as_ref() {
+            for surface in surfaces {
+                let _ = surface
+                    .element
+                    .style()
+                    .set_property("background-color", color);
+            }
+        }
+        if let Some(theme_color) = self.background_theme_color.as_ref() {
+            let _ = theme_color.element.set_attribute("content", color);
+        }
+    }
+
+    /// Restore the inline values saved by [`Self::set_background`]. Returns
+    /// whether this portal owned a background effect.
+    fn restore_background(&mut self) -> bool {
+        let mut owned = false;
+        if let Some(surfaces) = self.background_surfaces.take() {
+            owned = true;
+            for surface in surfaces {
+                let style = surface.element.style();
+                if surface.original.is_empty() {
+                    let _ = style.remove_property("background-color");
+                } else {
+                    let _ = style.set_property("background-color", &surface.original);
+                }
+            }
+        }
+        if let Some(theme_color) = self.background_theme_color.take() {
+            owned = true;
+            if theme_color.created {
+                theme_color.element.remove();
+            } else if let Some(original) = theme_color.original {
+                let _ = theme_color.element.set_attribute("content", &original);
+            } else {
+                let _ = theme_color.element.remove_attribute("content");
+            }
+        }
+        owned
+    }
+}
+
+/// The root surfaces Safari propagates into the browser-chrome backdrop.
+fn page_background_surfaces() -> Vec<BackgroundSurface> {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return Vec::new();
+    };
+    let mut elements = Vec::new();
+    if let Some(root) = document
+        .document_element()
+        .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+    {
+        elements.push(root);
+    }
+    if let Some(body) = document.body() {
+        elements.push(body);
+    }
+    elements
+        .into_iter()
+        .map(|element| BackgroundSurface {
+            original: element
+                .style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            element,
+        })
+        .collect()
+}
+
+/// Resolve (or create) the metadata Safari uses to tint its floating browser
+/// chrome. The exact prior state is retained so leaving the site restores an
+/// existing theme color or removes the temporary element entirely.
+fn page_background_theme_color() -> Option<BackgroundThemeColor> {
+    let document = window()?.document()?;
+    if let Some(element) = document.query_selector("meta[name=\"theme-color\"]").ok()? {
+        return Some(BackgroundThemeColor {
+            original: element.get_attribute("content"),
+            element,
+            created: false,
+        });
+    }
+
+    let element = document.create_element("meta").ok()?;
+    element.set_attribute("name", "theme-color").ok()?;
+    document
+        .query_selector("head")
+        .ok()??
+        .append_child(&element)
+        .ok()?;
+    Some(BackgroundThemeColor {
+        element,
+        original: None,
+        created: true,
+    })
 }
 
 /// The bootstrap script prepended into the iframe's `srcdoc`. It defines
@@ -265,6 +402,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // parent performs the real assignment. Fire-and-forget (no response).
     setTitle:function(text){
       ready.then(function(){port.postMessage({v:1,type:"title",text:text});});
+    },
+    // Match the HOST page's root canvas to a full-page guest. Mobile Safari
+    // paints that root color behind its floating browser chrome; iframe pixels
+    // are clipped before that region. Nested sites relay this effect outward.
+    setBackground:function(color){
+      ready.then(function(){port.postMessage({v:1,type:"background",color:color});});
     },
     // Open a link from the HOST: the opaque guest has neither `allow-popups`
     // nor `allow-top-navigation`, so a click on an external link posts its
@@ -427,6 +570,90 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     }
   };
   window.tonk=tonk;
+
+  // A root document's background is special on mobile Safari: the browser
+  // propagates it behind floating chrome, while iframe pixels are clipped at
+  // the page viewport. Report the deepest surface that actually covers the
+  // guest viewport. Looking only at html/body is insufficient for native apps:
+  // their page canvas commonly lives inside an open custom-element shadow root,
+  // while the injected guest body retains Tonk's dark fallback color. The
+  // parent accepts this effect only from a `<tonk-site>` (generic widget
+  // portals cannot repaint the page).
+  document.addEventListener("DOMContentLoaded",function(){
+    var last="",queued=false,observed=new WeakSet(),observers=[];
+    function visibleColor(color){
+      return color&&color!=="transparent"&&
+        color!=="rgba(0, 0, 0, 0)"&&color!=="rgba(0,0,0,0)";
+    }
+    function watch(root){
+      if(!root||observed.has(root)) return;
+      observed.add(root);
+      var observer=new MutationObserver(schedule);
+      observer.observe(root,{subtree:true,childList:true,attributes:true,
+        attributeFilter:["class","style"]});
+      observers.push(observer);
+    }
+    function viewportSize(){
+      var root=document.documentElement;
+      return {width:(root&&root.clientWidth)||window.innerWidth,
+        height:(root&&root.clientHeight)||window.innerHeight};
+    }
+    function coversViewport(node){
+      if(!node||!node.getBoundingClientRect) return false;
+      var rect=node.getBoundingClientRect(),viewport=viewportSize();
+      return rect.left<=1&&rect.top<=1&&rect.right>=viewport.width-1&&
+        rect.bottom>=viewport.height-1;
+    }
+    function surfaceAt(x,y){
+      var root=document,node=root.elementFromPoint(x,y);
+      while(node&&node.shadowRoot&&node.shadowRoot.elementFromPoint){
+        root=node.shadowRoot; watch(root);
+        var inner=root.elementFromPoint(x,y);
+        if(!inner||inner===node) break;
+        node=inner;
+      }
+      while(node){
+        if(coversViewport(node)){
+          var color=getComputedStyle(node).backgroundColor;
+          if(visibleColor(color)) return color;
+        }
+        if(node.parentElement){ node=node.parentElement; continue; }
+        var owner=node.getRootNode&&node.getRootNode();
+        node=owner&&owner.host?owner.host:null;
+      }
+      return "";
+    }
+    function rootColor(){
+      var viewport=viewportSize(),width=viewport.width,height=viewport.height;
+      var right=Math.max(0,width-1),bottom=Math.max(0,height-1);
+      var points=[[width/2,height/2],[1,1],[right,1],[1,bottom],[right,bottom]];
+      for(var p=0;p<points.length;p++){
+        var surface=surfaceAt(points[p][0],points[p][1]);
+        if(surface) return surface;
+      }
+      var nodes=[document.body,document.documentElement];
+      for(var i=0;i<nodes.length;i++){
+        if(!nodes[i]) continue;
+        var color=getComputedStyle(nodes[i]).backgroundColor;
+        if(visibleColor(color)) return color;
+      }
+      return "";
+    }
+    function report(){
+      queued=false;
+      var color=rootColor();
+      if(!color||color===last) return;
+      last=color; tonk.setBackground(color);
+    }
+    function schedule(){
+      if(queued) return;
+      queued=true; requestAnimationFrame(report);
+    }
+    watch(document.documentElement);
+    window.addEventListener("resize",schedule);
+    if(window.visualViewport) window.visualViewport.addEventListener("resize",schedule);
+    schedule();
+  },{once:true});
 
   // Override window.fetch so guest code (and our own loaders) can fetch
   // same-origin, SW-routed resources the opaque iframe can't reach itself.
@@ -1578,6 +1805,7 @@ fn make_dispatcher(
             "navigate" => handle_navigate(&state, &data),
             "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
+            "background" => handle_background(&host, &state, &data),
             "open" => handle_open(&state, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
@@ -1889,6 +2117,69 @@ fn title_text(data: &JsValue) -> Option<String> {
         return None;
     }
     get_str(data, "text").filter(|text| !text.is_empty())
+}
+
+/// Paint the parent page canvas on behalf of a full-page `<tonk-site>` guest
+/// and relay the effect through any enclosing site. Generic `<tonk-portal>`
+/// widgets are deliberately excluded: embedded content does not own the page.
+fn handle_background(host: &Element, state: &Rc<RefCell<PortalState>>, data: &JsValue) {
+    if host.tag_name() != "TONK-SITE" {
+        return;
+    }
+    let Some(color) = background_color(data) else {
+        return;
+    };
+    if color.is_empty() {
+        state.borrow_mut().restore_background();
+    } else {
+        state.borrow_mut().set_background(&color);
+    }
+    forward_page_background(&color);
+}
+
+/// Read and browser-validate a CSS `background-color` from the bridge. An empty
+/// string is the explicit release signal; malformed values are ignored.
+fn background_color(data: &JsValue) -> Option<String> {
+    if get_str(data, "type")? != "background" {
+        return None;
+    }
+    let color = get_str(data, "color")?;
+    let color = color.trim();
+    if color.is_empty() {
+        return Some(String::new());
+    }
+    let document = window()?.document()?;
+    let probe = document
+        .create_element("span")
+        .ok()?
+        .dyn_into::<HtmlElement>()
+        .ok()?;
+    let style = probe.style();
+    style.set_property("background-color", color).ok()?;
+    let normalized = style
+        .get_property_value("background-color")
+        .ok()?
+        .trim()
+        .to_owned();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+/// Pass the page-canvas effect through a parent guest's own bridge. The real
+/// top document intentionally has no `window.tonk`, which ends the relay after
+/// its root surfaces have been painted.
+fn forward_page_background(color: &str) {
+    let Some(win) = window() else {
+        return;
+    };
+    let Ok(tonk) = Reflect::get(&win, &"tonk".into()) else {
+        return;
+    };
+    let Ok(set_background) =
+        Reflect::get(&tonk, &"setBackground".into()).and_then(|value| value.dyn_into::<Function>())
+    else {
+        return;
+    };
+    let _ = set_background.call1(&tonk, &JsValue::from_str(color));
 }
 
 /// Open a link on the guest's behalf. The sealed guest has no `allow-popups`
@@ -3928,6 +4219,21 @@ mod tests {
         object.into()
     }
 
+    fn background_message(kind: &str, color: &str) -> JsValue {
+        let object = js_sys::Object::new();
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("type"),
+            &JsValue::from_str(kind),
+        );
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("color"),
+            &JsValue::from_str(color),
+        );
+        object.into()
+    }
+
     /// `title_text` accepts only a `{ type: "title", text }` shape with
     /// non-empty text; everything else yields `None`, so an unrelated
     /// message never retitles the tab and an unresolved `{name}` never
@@ -3954,6 +4260,220 @@ mod tests {
             title_text(&JsValue::from_str("not an object")),
             None,
             "a non-object payload should yield None"
+        );
+    }
+
+    /// A site may claim a real CSS color or explicitly release its claim with
+    /// an empty string. Invalid CSS and unrelated envelopes must not repaint a
+    /// parent document.
+    #[dialog_common::test]
+    async fn it_reads_only_a_valid_site_background_message() {
+        let valid = background_color(&background_message("background", "#f4efe3"));
+        assert!(valid.as_deref().is_some_and(|color| !color.is_empty()));
+        assert_eq!(
+            background_color(&background_message("background", "")),
+            Some(String::new()),
+            "an empty color explicitly releases the site background"
+        );
+        assert_eq!(
+            background_color(&background_message("background", "not a color")),
+            None,
+            "malformed CSS must be ignored"
+        );
+        assert_eq!(
+            background_color(&background_message("other", "#f4efe3")),
+            None,
+            "an unrelated message must be ignored"
+        );
+    }
+
+    /// Native full-page apps often paint inside an open shadow root while the
+    /// injected guest body retains Tonk's fallback theme. The guest must report
+    /// the surface readers actually see, not that hidden body color.
+    #[dialog_common::test]
+    async fn it_reports_a_full_page_shadow_surface_as_the_site_background() {
+        install_message_listener();
+        let document = document();
+        let root = document
+            .document_element()
+            .expect("document root")
+            .dyn_into::<HtmlElement>()
+            .expect("html element");
+        let body = document.body().expect("document body");
+        let root_before = root
+            .style()
+            .get_property_value("background-color")
+            .unwrap_or_default();
+        let body_before = body
+            .style()
+            .get_property_value("background-color")
+            .unwrap_or_default();
+
+        let site = document.create_element("tonk-site").expect("site");
+        let iframe: HtmlIFrameElement = document
+            .create_element("iframe")
+            .expect("iframe")
+            .dyn_into()
+            .expect("HtmlIFrameElement");
+        iframe
+            .set_attribute("sandbox", "allow-scripts")
+            .expect("sandbox");
+        let style = iframe.style();
+        let _ = style.set_property("position", "absolute");
+        let _ = style.set_property("left", "-10000px");
+        let _ = style.set_property("width", "320px");
+        let _ = style.set_property("height", "200px");
+        site.append_child(&iframe).expect("attach iframe");
+        body.append_child(&site).expect("attach site");
+
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        register_portal(&iframe, &site, &state);
+        let content = r#"
+            <test-page-surface></test-page-surface>
+            <script>
+              customElements.define("test-page-surface",class extends HTMLElement{
+                connectedCallback(){
+                  var root=this.attachShadow({mode:"open"});
+                  root.innerHTML="<style>:host{display:block;position:fixed;inset:0}.page{position:absolute;inset:0;background:#f4efe3}</style><div class='page'></div>";
+                }
+              });
+            </script>
+        "#;
+        iframe.set_srcdoc(&bootstrap_srcdoc(content, ""));
+
+        let expected = background_color(&background_message("background", "#f4efe3"))
+            .expect("valid background");
+        for _ in 0..200 {
+            let current = root
+                .style()
+                .get_property_value("background-color")
+                .unwrap_or_default();
+            if current == expected {
+                break;
+            }
+            sleep(5).await;
+        }
+        assert_eq!(
+            root.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            expected,
+            "the shadow-root page canvas should reach the host document"
+        );
+        assert_eq!(
+            body.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            expected
+        );
+
+        state.borrow_mut().clear_subs();
+        unregister_portal(&iframe);
+        site.remove();
+        assert_eq!(
+            root.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            root_before
+        );
+        assert_eq!(
+            body.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            body_before
+        );
+    }
+
+    /// A full-page site owns the parent canvas only for its own lifetime. A
+    /// generic embedded portal cannot repaint it, and teardown restores the
+    /// exact inline values that preceded the site effect.
+    #[dialog_common::test]
+    async fn it_scopes_and_restores_the_site_background() {
+        let document = document();
+        let root = document
+            .document_element()
+            .expect("document root")
+            .dyn_into::<HtmlElement>()
+            .expect("html element");
+        let body = document.body().expect("document body");
+        let root_before = root
+            .style()
+            .get_property_value("background-color")
+            .unwrap_or_default();
+        let body_before = body
+            .style()
+            .get_property_value("background-color")
+            .unwrap_or_default();
+        let theme_color_before = document
+            .query_selector("meta[name=\"theme-color\"]")
+            .expect("theme-color query")
+            .map(|element| element.get_attribute("content"));
+        let message = background_message("background", "#f4efe3");
+        let expected = background_color(&message).expect("valid color");
+
+        let embedded = document.create_element("tonk-portal").expect("portal");
+        let embedded_state = Rc::new(RefCell::new(PortalState::new()));
+        handle_background(&embedded, &embedded_state, &message);
+        assert_eq!(
+            root.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            root_before,
+            "an embedded widget must not own the page canvas"
+        );
+        assert_eq!(
+            document
+                .query_selector("meta[name=\"theme-color\"]")
+                .expect("theme-color query")
+                .map(|element| element.get_attribute("content")),
+            theme_color_before,
+            "an embedded widget must not tint Safari chrome"
+        );
+
+        let site = document.create_element("tonk-site").expect("site");
+        let site_state = Rc::new(RefCell::new(PortalState::new()));
+        handle_background(&site, &site_state, &message);
+        assert_eq!(
+            root.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            expected
+        );
+        assert_eq!(
+            body.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            expected
+        );
+        assert_eq!(
+            document
+                .query_selector("meta[name=\"theme-color\"]")
+                .expect("theme-color query")
+                .and_then(|element| element.get_attribute("content")),
+            Some(expected.clone()),
+            "a full-page site must tint Safari chrome to match its canvas"
+        );
+
+        site_state.borrow_mut().clear_subs();
+        assert_eq!(
+            root.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            root_before
+        );
+        assert_eq!(
+            body.style()
+                .get_property_value("background-color")
+                .unwrap_or_default(),
+            body_before
+        );
+        assert_eq!(
+            document
+                .query_selector("meta[name=\"theme-color\"]")
+                .expect("theme-color query")
+                .map(|element| element.get_attribute("content")),
+            theme_color_before,
+            "leaving the site must restore the exact prior theme-color state"
         );
     }
 

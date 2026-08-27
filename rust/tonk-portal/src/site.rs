@@ -45,6 +45,78 @@ use crate::shared::{connect_portal, install_method_shims};
 /// `connect_portal`.
 type StateCell = Rc<RefCell<Option<Rc<RefCell<PortalState>>>>>;
 
+/// Inline root styles temporarily owned by a connected `<tonk-site>`.
+///
+/// Web Awesome gives `body` a `min-height: 100vh`. On iOS Safari `100vh`
+/// remains the large layout viewport while the visible/dynamic viewport is
+/// shorter beneath the floating toolbar. Even a fixed `100dvh` site iframe
+/// then sits inside a document with a real surplus scroll range. Lock both
+/// root surfaces to the dynamic viewport for the site's lifetime and restore
+/// their exact preceding inline values when the site disconnects (for example
+/// when navigating to the top-level account UI).
+struct PageViewportLock {
+    surfaces: Vec<PageViewportSurface>,
+}
+
+struct PageViewportSurface {
+    element: HtmlElement,
+    height: String,
+    min_height: String,
+    overflow: String,
+}
+
+impl PageViewportLock {
+    fn acquire() -> Option<Self> {
+        let document = window()?.document()?;
+        let mut elements = Vec::new();
+        if let Some(root) = document
+            .document_element()
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        {
+            elements.push(root);
+        }
+        if let Some(body) = document.body() {
+            elements.push(body);
+        }
+
+        let surfaces = elements
+            .into_iter()
+            .map(|element| {
+                let style = element.style();
+                let surface = PageViewportSurface {
+                    height: style.get_property_value("height").unwrap_or_default(),
+                    min_height: style.get_property_value("min-height").unwrap_or_default(),
+                    overflow: style.get_property_value("overflow").unwrap_or_default(),
+                    element,
+                };
+                let style = surface.element.style();
+                let _ = style.set_property("height", "100dvh");
+                let _ = style.set_property("min-height", "0");
+                let _ = style.set_property("overflow", "hidden");
+                surface
+            })
+            .collect();
+        Some(Self { surfaces })
+    }
+
+    fn restore(self) {
+        for surface in self.surfaces {
+            restore_inline_property(&surface.element, "height", &surface.height);
+            restore_inline_property(&surface.element, "min-height", &surface.min_height);
+            restore_inline_property(&surface.element, "overflow", &surface.overflow);
+        }
+    }
+}
+
+fn restore_inline_property(element: &HtmlElement, name: &str, value: &str) {
+    let style = element.style();
+    if value.is_empty() {
+        let _ = style.remove_property(name);
+    } else {
+        let _ = style.set_property(name, value);
+    }
+}
+
 /// The `<tonk-site>` element. Holds the shared [`PortalState`] once its iframe is
 /// up (`None` until the async site registration completes).
 #[derive(Default)]
@@ -53,6 +125,8 @@ pub(crate) struct TonkSite {
     /// The self-heal subscription on this site's own `tonk:site` stamp.
     /// Held for the element's lifetime; its `Drop` cancels upstream.
     heal: Rc<RefCell<Option<Subscription>>>,
+    /// Root viewport lock held for exactly this element's connected lifetime.
+    viewport: Option<PageViewportLock>,
 }
 
 impl CustomElement for TonkSite {
@@ -67,6 +141,9 @@ impl CustomElement for TonkSite {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        if self.viewport.is_none() {
+            self.viewport = PageViewportLock::acquire();
+        }
         resolve_and_render(this, self.inner.clone());
         install_self_heal(this, self.heal.clone());
         // Navigation is just a `path` attribute change, handled by
@@ -79,6 +156,9 @@ impl CustomElement for TonkSite {
         teardown(&self.inner);
         // Cancel the self-heal subscription (Drop cancels upstream).
         self.heal.borrow_mut().take();
+        if let Some(viewport) = self.viewport.take() {
+            viewport.restore();
+        }
     }
 
     fn attribute_changed_callback(
@@ -469,6 +549,25 @@ fn load_claim(site: &str, path: &str) -> wasm_bindgen::JsValue {
     JSON::parse(&body).unwrap_or(wasm_bindgen::JsValue::NULL)
 }
 
+/// Size a `<tonk-site>` iframe as the page canvas.
+///
+/// `100dvh` follows mobile browser chrome while it expands and collapses.
+/// Do not floor it with `100lvh`: on iOS Safari the large viewport remains
+/// taller than the visible page while the floating toolbar is present, so that
+/// floor creates an outer scroll range before the keyboard even opens and makes
+/// the exposed strip grow after a focus transition. Pinning the frame to the
+/// viewport also keeps Safari's focus scrolling from moving the outer document;
+/// the guest's `visualViewport` still reports the usable area above the keyboard.
+fn style_site_iframe(iframe: &HtmlIFrameElement) {
+    let style = iframe.style();
+    let _ = style.set_property("position", "fixed");
+    let _ = style.set_property("inset", "0");
+    let _ = style.set_property("width", "100%");
+    let _ = style.set_property("height", "100dvh");
+    let _ = style.set_property("border", "0");
+    let _ = style.set_property("display", "block");
+}
+
 /// Build the guest content (the `tonk:site` display) and bring up the sealed
 /// iframe via [`connect_portal`]. The iframe always renders in `runtime` mode
 /// (the guest needs our element runtime). If an iframe already exists (a
@@ -501,26 +600,7 @@ fn render_in_iframe(
     // and reach: un-routed guest operations are pinned to `with`, and a
     // forwarded route is honored only if `allow` permits it (typed denial
     // otherwise).
-    connect_portal(
-        host,
-        cell.as_ref(),
-        Some(with),
-        allow,
-        |iframe: &HtmlIFrameElement| {
-            let style = iframe.style();
-            // `<tonk-site>` itself is `display: contents` (a transparent routing
-            // element), so the iframe sizes against the surrounding layout, not the
-            // element. `100dvh`/`100%` are viewport-/parent-relative so the iframe
-            // fills regardless of nesting (top-level body child, or a flex slot in a
-            // space chrome) instead of collapsing to the iframe's intrinsic ~150px.
-            let _ = style.set_property("width", "100%");
-            let _ = style.set_property("height", "100dvh");
-            let _ = style.set_property("flex", "1 1 auto");
-            let _ = style.set_property("align-self", "stretch");
-            let _ = style.set_property("border", "0");
-            let _ = style.set_property("display", "block");
-        },
-    );
+    connect_portal(host, cell.as_ref(), Some(with), allow, style_site_iframe);
 }
 
 /// Register `<tonk-site>`. Idempotent. Installs the page-level `hello` /
@@ -553,6 +633,146 @@ mod tests {
 
     fn document() -> web_sys::Document {
         window().expect("window").document().expect("document")
+    }
+
+    /// The fixed iframe is not enough when the host page's own `body` still
+    /// has Web Awesome's `100vh` minimum. A connected site must override both
+    /// document roots with the dynamic viewport and return every inline value
+    /// when it leaves.
+    #[dialog_common::test]
+    fn it_locks_and_restores_the_host_page_dynamic_viewport() {
+        let document = document();
+        let root = document
+            .document_element()
+            .expect("document root")
+            .dyn_into::<HtmlElement>()
+            .expect("html element");
+        let body = document.body().expect("document body");
+        let values = |element: &HtmlElement| {
+            let style = element.style();
+            (
+                style.get_property_value("height").unwrap_or_default(),
+                style.get_property_value("min-height").unwrap_or_default(),
+                style.get_property_value("overflow").unwrap_or_default(),
+            )
+        };
+        let root_before = values(&root);
+        let body_before = values(&body);
+
+        let lock = PageViewportLock::acquire().expect("page viewport lock");
+        for element in [&root, &body] {
+            assert_eq!(
+                values(element),
+                ("100dvh".to_owned(), "0px".to_owned(), "hidden".to_owned()),
+                "a site document must have no large-viewport scroll range"
+            );
+        }
+
+        lock.restore();
+        assert_eq!(values(&root), root_before);
+        assert_eq!(values(&body), body_before);
+    }
+
+    /// The site canvas must track Safari's dynamic viewport without a large-
+    /// viewport floor. The latter is taller than the visible page while the
+    /// floating toolbar is present and creates the surplus scroll range this
+    /// sizing rule is meant to prevent.
+    #[dialog_common::test]
+    fn it_tracks_mobile_chrome_without_a_large_viewport_floor() {
+        let iframe: HtmlIFrameElement = document()
+            .create_element("iframe")
+            .expect("iframe")
+            .dyn_into()
+            .expect("HtmlIFrameElement");
+
+        style_site_iframe(&iframe);
+
+        assert_eq!(
+            iframe.style().get_property_value("position").unwrap(),
+            "fixed",
+            "focus scrolling must not displace the site canvas"
+        );
+        assert_eq!(
+            iframe.style().get_property_value("inset").unwrap(),
+            "0px",
+            "the fixed frame should cover every viewport edge"
+        );
+        assert_eq!(
+            iframe.style().get_property_value("height").unwrap(),
+            "100dvh",
+            "the frame should continue following the dynamic viewport"
+        );
+        assert_eq!(
+            iframe.style().get_property_value("min-height").unwrap(),
+            "",
+            "a large-viewport floor creates surplus page height on iOS"
+        );
+    }
+
+    /// A viewport-height iframe in normal flow makes any chrome sibling extend
+    /// the parent document beyond one viewport. Browsers with persistent
+    /// scrollbars expose that as a second scrollbar; focus scrolling can also
+    /// move through the surplus range. The fixed site canvas must not
+    /// contribute to its parent's scroll extent.
+    #[dialog_common::test]
+    fn it_keeps_the_site_canvas_out_of_the_parent_scroll_range() {
+        let document = document();
+        let container: HtmlElement = document
+            .create_element("div")
+            .expect("container")
+            .dyn_into()
+            .expect("HtmlElement");
+        let style = container.style();
+        let _ = style.set_property("position", "absolute");
+        let _ = style.set_property("left", "-10000px");
+        let _ = style.set_property("top", "0");
+        let _ = style.set_property("width", "200px");
+        let _ = style.set_property("height", "100px");
+        let _ = style.set_property("overflow", "auto");
+
+        let marker: HtmlElement = document
+            .create_element("div")
+            .expect("marker")
+            .dyn_into()
+            .expect("HtmlElement");
+        let _ = marker.style().set_property("height", "1px");
+
+        let legacy: HtmlIFrameElement = document
+            .create_element("iframe")
+            .expect("legacy iframe")
+            .dyn_into()
+            .expect("HtmlIFrameElement");
+        let legacy_style = legacy.style();
+        let _ = legacy_style.set_property("width", "100%");
+        let _ = legacy_style.set_property("height", "100%");
+        let _ = legacy_style.set_property("display", "block");
+        let _ = legacy_style.set_property("visibility", "hidden");
+
+        let body = document.body().expect("body");
+        let _ = container.append_child(&legacy);
+        let _ = container.append_child(&marker);
+        let _ = body.append_child(&container);
+        assert!(
+            container.scroll_height() > container.client_height(),
+            "a flow iframe plus a sibling should reproduce outer overflow"
+        );
+
+        let _ = container.remove_child(&legacy);
+        let fixed: HtmlIFrameElement = document
+            .create_element("iframe")
+            .expect("fixed iframe")
+            .dyn_into()
+            .expect("HtmlIFrameElement");
+        style_site_iframe(&fixed);
+        let _ = fixed.style().set_property("visibility", "hidden");
+        let _ = container.insert_before(&fixed, Some(&marker));
+        assert_eq!(
+            container.scroll_height(),
+            container.client_height(),
+            "the fixed site canvas must not create an outer scroll range"
+        );
+
+        container.remove();
     }
 
     /// Yield a few microtasks so deferred installs and spawned claims run.
