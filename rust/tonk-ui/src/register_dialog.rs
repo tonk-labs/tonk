@@ -343,6 +343,12 @@ pub fn close() {
     {
         host.remove();
     }
+    // Whatever was under it may now be about a different account than
+    // when it was raised. The settings panel decides which face to show
+    // from a read it does at boot, and nothing else asks it to look
+    // again.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    crate::account::resettle();
 }
 
 /// Ask about the address as it is typed, so the dialog can offer
@@ -1266,8 +1272,13 @@ fn offer_the_link(name: &str) {
                     set_action(COPY_LINK, true);
                 }
                 None => {
-                    hide_action();
+                    // Opened on its own there is no link to hand over,
+                    // but there is still a way out to offer: hiding the
+                    // action left the ceremony finished and standing,
+                    // with only the back arrow to leave by.
                     set_status("Your account is ready.");
+                    set_action(RETURN_TO_SPACE, true);
+                    focus_action();
                 }
             }
         }

@@ -318,7 +318,10 @@ mod tests {
         goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
         run_cluster_ceremony(driver, email).await?;
-        element(driver, "tonk-account[data-mode=\"success\"]").await?;
+        // And that is where it stops. Creating an account leaves the
+        // ceremony standing on "awaiting confirmation" — the emailed
+        // link is the next step, and the cluster says so — so there is
+        // no dashboard to land on yet. `activate` is what finishes it.
         Ok(())
     }
 
@@ -372,10 +375,6 @@ mod tests {
             passkey.contains(" on "),
             "the passkey row names the device, got {passkey:?}",
         );
-        // Always leave it down. The cluster sits over whatever raised
-        // it, and every caller goes on to read what is underneath, so
-        // dismissing here is one decision instead of one per caller.
-        dismiss_register_dialog(driver).await?;
         Ok(())
     }
 
@@ -754,10 +753,17 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         enroll_only(&driver, &env, "verify-first@example.com").await?;
 
-        let notice = element(&driver, "#account-error").await?.text().await?;
+        // The ceremony is still standing, and it is what the person is
+        // looking at — so it is where the next step has to be named. The
+        // panel behind it used to carry this notice, back when creation
+        // happened in the panel itself.
+        let notice = element(&driver, "#tonk-register-status")
+            .await?
+            .text()
+            .await?;
         assert!(
-            notice.contains("verification link"),
-            "pending setup should direct the person to the verification email: {notice:?}"
+            notice.contains("confirmation link"),
+            "pending setup should direct the person to the emailed link: {notice:?}"
         );
         assert!(
             !notice.contains("hydration") && !notice.contains("could not be synchronized"),
@@ -765,7 +771,7 @@ mod tests {
         );
         assert!(
             !notice.contains("reload /settings"),
-            "email verification should be the only requested next step: {notice:?}"
+            "opening the emailed link should be the only requested next step: {notice:?}"
         );
 
         let display_name = element(&driver, "#account-display-name").await?;

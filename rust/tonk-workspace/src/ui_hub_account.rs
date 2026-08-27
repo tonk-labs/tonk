@@ -828,7 +828,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("log in"),
+            Some("link an account"),
             "an unattached first-run profile must not present its storage name as an account"
         );
         let original_url = window().unwrap().location().href().unwrap();
@@ -839,11 +839,15 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        assert!(menu.hidden(), "login must not open the profile roster");
+        assert!(menu.hidden(), "linking must not open the profile roster");
+        // In place, not away. It used to navigate to /settings, which
+        // put a panel and a second button between the label and the
+        // ceremony; the trigger asks the top page for the ceremony
+        // instead, and the Hub stays where it is.
         assert_eq!(
-            window().unwrap().location().pathname().unwrap(),
-            "/settings",
-            "login must navigate directly to account setup"
+            window().unwrap().location().href().unwrap(),
+            original_url,
+            "linking an account must not navigate the Hub anywhere"
         );
         window()
             .unwrap()
