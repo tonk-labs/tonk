@@ -39,11 +39,21 @@ type TonkCodeLike = HTMLElement & {
   } | null;
 };
 
+/** Fence info words that name no language pack of their own but should
+ *  still resolve to one. `dialog` is what an author writes for a tonk
+ *  query cell; the pack that exists is `dialog-yaml`. Without the alias
+ *  the embedded editor raises "no language pack for dialog" and the block
+ *  renders unhighlighted. */
+const LANGUAGE_ALIASES: Record<string, string> = {
+  dialog: "dialog-yaml",
+};
+
 /** First word of the fence info string → tonk-code `language` id. */
 function languageOf(node: Node): string | null {
   const params = (node.attrs.params as string) ?? "";
   const id = params.trim().split(/\s+/)[0];
-  return id || null;
+  if (!id) return null;
+  return LANGUAGE_ALIASES[id] ?? id;
 }
 
 /** Prefix/suffix diff between two strings; null when equal. */
