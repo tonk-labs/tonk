@@ -66,6 +66,26 @@ impl CustomElement for TonkAccount {
         let _ = Reflect::set(this.as_ref(), &"__tonkAccountBound".into(), &JsValue::TRUE);
         bind(this);
         load_status(this.clone());
+        // The panel's state is a function of the URL — /settings,
+        // /settings?add=1, /settings/link — and Add account moves
+        // between those with a client-side navigation (a history push
+        // plus a synthetic popstate), never a reload. The top-document
+        // router keeps this element mounted across account routes, so
+        // nothing else re-reads the location: the panel re-derives its
+        // own state whenever history changes under it.
+        {
+            let host = this.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+                if host.is_connected() {
+                    load_status(host.clone());
+                }
+            });
+            if let Some(window) = window() {
+                let _ = window
+                    .add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref());
+            }
+            closure.forget();
+        }
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {}
@@ -340,28 +360,47 @@ fn show_success(host: &HtmlElement) {
 /// every other answer: an active customer needs no notice, and a
 /// deployment without registration should not decorate the panel with
 /// its absence.
-/// Say when the account's backup is still on its way. The ceremony
-/// pre-signed the publish, the worker drains it on activation, and no
-/// interaction is needed — this only keeps the wait legible.
+/// Say when the account's backup is still on its way, and settle the
+/// outcome in the DOM. The ceremony pre-signed the publish and the
+/// worker drains it on activation — no interaction is needed — but the
+/// drain is asynchronous, so keep watching until it lands rather than
+/// leaving a notice frozen at whatever the first look saw. Each round's
+/// customer probe is also a retry: the worker replays pending work on
+/// an Active answer.
+///
+/// `data-backup` on the host is the settled answer — "done" once the
+/// queue holds no publish, "stuck" when it still does after a bounded
+/// wait (a reload retries). The e2e suite waits on it before running
+/// any ceremony that resolves the published cell.
 async fn note_pending_backup(host: &HtmlElement) {
-    let waiting = crate::api::pending_work().await.is_ok_and(|queue| {
-        queue.entries().iter().any(|work| {
-            matches!(
-                work,
-                tonk_account::pending::PendingWork::PublishCustody { .. }
-            )
-        })
-    });
-    if !waiting {
-        let _ = hide(host, "#account-backup-notice");
-        return;
+    // A minute of second-spaced checks: far beyond a healthy drain,
+    // bounded so a genuinely stuck queue is reported, not spun on.
+    for round in 0..60 {
+        let waiting = crate::api::pending_work().await.is_ok_and(|queue| {
+            queue.entries().iter().any(|work| {
+                matches!(
+                    work,
+                    tonk_account::pending::PendingWork::PublishCustody { .. }
+                )
+            })
+        });
+        if !waiting {
+            let _ = hide(host, "#account-backup-notice");
+            let _ = host.set_attribute("data-backup", "done");
+            return;
+        }
+        set_text(
+            host,
+            "#account-backup-notice",
+            "Finishing your account's backup…",
+        );
+        let _ = show(host, "#account-backup-notice");
+        if round > 0 {
+            let _ = crate::api::customer_state().await;
+        }
+        wait_for(1_000).await;
     }
-    set_text(
-        host,
-        "#account-backup-notice",
-        "Finishing your account's backup…",
-    );
-    let _ = show(host, "#account-backup-notice");
+    let _ = host.set_attribute("data-backup", "stuck");
 }
 
 /// Unhide the element `selector` names.
@@ -386,6 +425,9 @@ fn load_activation_notice(host: HtmlElement) {
     spawn_local(async move {
         if !wants_enrollment().await {
             set_text(&host, "#account-registration-value", "Not used here");
+            // Nothing is ever queued without registration; settle the
+            // backup state so a waiter has an answer here too.
+            let _ = host.set_attribute("data-backup", "done");
             return;
         }
         let mut state = match crate::api::customer_state().await {
@@ -458,9 +500,12 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
     set_text(host, "#account-registration-value", label);
     // The worker drains the queued backup itself once activation
     // lands — the ceremony pre-signed the publish. Nothing to raise;
-    // just say so while it is still on its way.
+    // just say so while it is still on its way. Detached: the watch is
+    // bounded but long, and the banner cleanup below must not wait on
+    // it.
     if state["status"].as_str() == Some("Active") {
-        note_pending_backup(host).await;
+        let host = host.clone();
+        spawn_local(async move { note_pending_backup(&host).await });
     }
     if state["status"].as_str() != Some("Registered") {
         let _ = hide(host, "#account-activation-notice");
@@ -1739,12 +1784,23 @@ fn is_unhydrated(status: &AccountStatus) -> bool {
     )
 }
 
+/// The custody rows a creation ceremony must record before the panel
+/// settles: the consent that provisions the custody space, and the
+/// sealed cell with its pre-signed publish.
+struct CustodyRecord {
+    custody_did: String,
+    consent_hex: String,
+    sealed_hex: String,
+    publish_invocation_hex: String,
+}
+
 async fn complete_remote(
     host: &HtmlElement,
     path: &str,
     ceremony: CeremonyOutput,
     initialize_name: bool,
     enroll_email: Option<&str>,
+    custody: Option<&CustodyRecord>,
 ) -> Result<(), String> {
     let provider = service(host).await?;
     let response = crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
@@ -1793,6 +1849,34 @@ async fn complete_remote(
             );
         }
     }
+    // The custody rows are recorded before ANY settled state renders —
+    // success and the handoff panel alike. The sealed secret and its
+    // pre-signed publish exist only in this page's memory until the
+    // worker records them: a caller who navigates away the moment the
+    // panel looks done (the e2e suite does; a person closing the tab
+    // does too) must not lose the account's backup to the two round
+    // trips that used to follow the render. Neither row can land with
+    // the service before the emailed link is clicked; both queue and
+    // the worker replays them on activation.
+    if let Some(custody) = custody {
+        if let Err(error) =
+            crate::api::provision_custody(&custody.custody_did, &custody.consent_hex).await
+        {
+            web_sys::console::warn_1(&format!("custody provisioning deferred: {error}").into());
+        }
+        if let Err(error) = crate::api::queue_custody_publish(
+            &custody.custody_did,
+            &custody.sealed_hex,
+            &custody.publish_invocation_hex,
+        )
+        .await
+        {
+            // The sealed secret is only in this page's memory until it
+            // is recorded, so failing to queue it is the one loss worth
+            // surfacing.
+            return Err(format!("could not record the account secret: {error}"));
+        }
+    }
     // A pending callback approval takes precedence over settling: the
     // ceremony ran on the link page precisely to approve a waiting
     // device, and the account it just made is what the grant issues from.
@@ -1803,14 +1887,22 @@ async fn complete_remote(
     settle(host);
     // An unhydrated account right after signup is the expected state
     // while the email activation is pending — the access service
-    // refuses the pull until then, the activation banner already says
-    // so, and the background sweep hydrates once it lands. The alert is
-    // for the unexpected case: activation is not what's in the way.
-    if initialize_name && is_unhydrated(&status) && !activation_pending().await {
-        show_error(
-            host,
-            "Your account was created. Check your email and open the verification link to verify your email address.",
-        );
+    // refuses the pull until the emailed link is opened — so the notice
+    // for that state names the one step that unblocks it, in the
+    // person's terms. Only when activation is NOT what's in the way is
+    // the failure unexpected, and then the notice says so instead.
+    if initialize_name && is_unhydrated(&status) {
+        if activation_pending().await {
+            show_error(
+                host,
+                "Your account was created. Check your email and open the verification link to verify your email address.",
+            );
+        } else {
+            show_error(
+                host,
+                "Your account was created, but this browser could not finish syncing it. Reload to retry.",
+            );
+        }
     }
     Ok(())
 }
@@ -2095,31 +2187,22 @@ fn bind(host: &HtmlElement) {
                     deposits_hex: created.deposits_hex,
                     encryption_key: created.encryption_key,
                 };
+                let custody = CustodyRecord {
+                    custody_did: created.custody_did,
+                    consent_hex: created.consent_hex,
+                    sealed_hex: created.sealed_hex,
+                    publish_invocation_hex: created.publish_invocation_hex,
+                };
                 set_busy(&host, true, "Creating your account…");
-                complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await?;
-                // Neither of these can land before the emailed link is
-                // clicked: the service provisions nothing, and serves
-                // nothing, for a customer that has not confirmed its
-                // email. Both queue instead, and replay on activation.
-                if let Err(error) =
-                    crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
-                {
-                    web_sys::console::warn_1(
-                        &format!("custody provisioning deferred: {error}").into(),
-                    );
-                }
-                if let Err(error) = crate::api::queue_custody_publish(
-                    &created.custody_did,
-                    &created.sealed_hex,
-                    &created.publish_invocation_hex,
+                complete_remote(
+                    &host,
+                    "/accounts",
+                    ceremony,
+                    true,
+                    Some(&email),
+                    Some(&custody),
                 )
-                .await
-                {
-                    // The sealed secret is only in this page's memory
-                    // until it is recorded, so failing to queue it is
-                    // the one loss worth surfacing.
-                    return Err(format!("could not record the account secret: {error}"));
-                }
+                .await?;
                 Ok::<(), String>(())
             }
             .await;
@@ -2259,7 +2342,7 @@ fn bind(host: &HtmlElement) {
                 .await
                 .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking this browser…");
-                complete_remote(&host, "/devices/link", ceremony, false, None).await
+                complete_remote(&host, "/devices/link", ceremony, false, None, None).await
             }
             .await;
             if let Err(error) = result {
@@ -3268,6 +3351,12 @@ mod tests {
     #[dialog_common::test]
     async fn it_opens_and_closes_the_authored_confirmation_with_focus_restoration() {
         let host = mounted_account_host().await;
+        // The trigger lives on the success panel, which the template
+        // keeps `hidden` until a mode selects it — and focusing an
+        // element inside a hidden subtree silently no-ops, which would
+        // leave nothing real to restore. Reach the state the button is
+        // actually pressed in.
+        set_mode(&host, "success");
         let trigger: HtmlElement = host
             .query_selector("#account-unlink")
             .unwrap()
