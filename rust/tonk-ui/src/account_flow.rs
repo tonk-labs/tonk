@@ -1300,6 +1300,22 @@ mod tests {
         // The callback's bridge page re-posts the fragment on loopback and
         // redirects back here, where the outcome uses the account styling.
         if let Err(wait_error) = element(driver, "tonk-account[data-mode=\"success\"]").await {
+            // The hop to the CLI's loopback listener is where this
+            // stops, and Chrome's own error page says why — a refused
+            // connection and a port Chrome will not dial are different
+            // problems with different fixes, and the page names which.
+            let hop = driver
+                .execute(
+                    r##"return {
+                        url: location.href,
+                        text: (document.body.innerText || "").slice(0, 300),
+                    }"##,
+                    Vec::new(),
+                )
+                .await
+                .map(|value| value.json().to_string())
+                .unwrap_or_else(|error| format!("unreadable: {error}"));
+            eprintln!("CALLBACK HOP: {hop}");
             let host = element(driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
             let error = match driver.find(By::Css("#account-error")).await {
@@ -1585,7 +1601,12 @@ mod tests {
                     .as_str()
                     .or_else(|| found["fields"]["state"].as_str())
                     .unwrap_or_default();
-                if !state.is_empty() {
+                // `checking` is the question being asked, not an answer
+                // to it: the handler writes it before the lookup runs so
+                // the form can say it is working. Returning it would
+                // report whatever was read first rather than what the
+                // address turned out to be.
+                if !state.is_empty() && state != tonk_schema::email_state::CHECKING {
                     return Ok(state.to_owned());
                 }
             }

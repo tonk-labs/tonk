@@ -86,11 +86,25 @@ mod native {
 
             caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
             caps.accept_insecure_certs(true)?;
+            // Both origins in ONE flag: Chrome takes a comma-separated
+            // list and a second copy of the switch replaces the first
+            // rather than adding to it. The app's own origin, and the
+            // loopback the CLI's authorization callback listens on —
+            // the browser is sent there to hand the authorization back,
+            // and it is a plain-http hop out of an https page.
             let secure_origin = format!(
-                "--unsafely-treat-insecure-origin-as-secure={}",
+                "--unsafely-treat-insecure-origin-as-secure={},http://127.0.0.1",
                 self.tonk_web.origin().ascii_serialization()
             );
             caps.add_arg(&secure_origin)?;
+            // The CLI's authorization callback listens on loopback at an
+            // OS-assigned port, and the browser is sent there to hand the
+            // authorization back. Chrome refuses a fixed list of ports
+            // outright (ERR_UNSAFE_PORT), and an ephemeral draw can land
+            // on one — the hop then dies on Chrome's own error page,
+            // which carries no `<tonk-account>`, so the wait after it
+            // reports a missing panel rather than a refused port.
+            caps.add_arg("--explicitly-allowed-ports=0-65535")?;
 
             if let Ok(chrome_binary) = std::env::var("CHROME") {
                 caps.set_binary(&chrome_binary)?;
