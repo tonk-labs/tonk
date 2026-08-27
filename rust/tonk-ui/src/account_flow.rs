@@ -1882,9 +1882,8 @@ mod tests {
 
         let taken = "taken@example.com";
         sign_up(&driver, &env, taken).await?;
-        driver.goto(env.tonk_web.as_str()).await?;
 
-        open_register_dialog(&driver).await?;
+        open_register_dialog_from_a_space(&driver, &env, "Signed In").await?;
         type_into_register_dialog(&driver, taken).await?;
         let label = await_register_action(&driver, "log in with your passkey").await?;
         assert_eq!(
@@ -1912,8 +1911,7 @@ mod tests {
 
         let taken = "taken@example.com";
         sign_up(&driver, &env, taken).await?;
-        driver.goto(env.tonk_web.as_str()).await?;
-        open_register_dialog(&driver).await?;
+        open_register_dialog_from_a_space(&driver, &env, "Edited Away").await?;
 
         // Ask about the registered address, then immediately edit to one
         // nobody has. The first answer ("Sign in") is in flight when the
@@ -2332,6 +2330,25 @@ mod tests {
     async fn open_register_dialog(driver: &WebDriver) -> Result<()> {
         click_share_row(driver, "[data-share-account]").await?;
         await_register_dialog(driver).await
+    }
+
+    /// Raise the cluster from a space of its own.
+    ///
+    /// The bar is a space's control, so the Hub has no `tonk-fab` and no
+    /// share row to take — reaching for one there fails with "no bar".
+    /// A test that only wants the cluster still has to come at it the
+    /// way a person does: from inside a space, through share.
+    async fn open_register_dialog_from_a_space(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        name: &str,
+    ) -> Result<()> {
+        let key = create_space(driver, name).await?;
+        driver
+            .goto(env.tonk_web.join(&format!("space/did:key:{key}"))?.as_str())
+            .await?;
+        await_share_row(driver, "account").await?;
+        open_register_dialog(driver).await
     }
 
     /// Wait for the registration cluster to be raised in the TOP page.
