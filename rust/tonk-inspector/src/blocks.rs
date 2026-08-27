@@ -558,6 +558,32 @@ mod tests {
         );
     }
 
+    /// The invariant a seed must satisfy: blocks written into the store have
+    /// to be exactly what `split` produces from their own projection.
+    /// Otherwise the first edit re-partitions the document — a heading seeded
+    /// apart from its paragraph merges on parse, every later block shifts by
+    /// one, and the writes land on the wrong entities.
+    #[dialog_common::test]
+    fn it_leaves_correctly_partitioned_blocks_alone() {
+        // As `notebook.yaml` seeds them: the heading already grouped with the
+        // paragraph it introduces.
+        let seeded = vec![
+            "# Scratch\n\nA `dialog-yaml` fence is a live cell.".to_owned(),
+            "```dialog-yaml\nconcept:\n```".to_owned(),
+            "Query cells run on their own.".to_owned(),
+        ];
+        assert_eq!(split(&project(&seeded)), seeded);
+
+        // And the failure it guards: a heading seeded on its own merges with
+        // the next block, so three stored blocks parse back as two.
+        let ungrouped = vec![
+            "# Scratch".to_owned(),
+            "A `dialog-yaml` fence is a live cell.".to_owned(),
+            "Query cells run on their own.".to_owned(),
+        ];
+        assert_ne!(split(&project(&ungrouped)), ungrouped);
+    }
+
     #[dialog_common::test]
     fn it_round_trips_an_empty_document() {
         let blocks: Vec<String> = Vec::new();

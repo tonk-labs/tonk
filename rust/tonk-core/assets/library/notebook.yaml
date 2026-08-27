@@ -341,22 +341,21 @@ notebook!:
     id:notebook/scratch/1
     id:notebook/scratch/2
     id:notebook/scratch/3
-    id:notebook/scratch/4
 
+# The seeded blocks must be exactly what `split` produces from the projected
+# document, or the first edit re-partitions the whole notebook: a heading is
+# grouped with the paragraph it introduces, so seeding them apart makes the
+# stored blocks and the parsed ones disagree, and every block shifts by one.
 notebook/block!:
   this: id:notebook/scratch/1
   notebook: id:notebook/scratch
-  source: "# Scratch"
+  source: |-
+    # Scratch
+
+    A `dialog-yaml` fence is a live cell: it evaluates against this branch and renders its results underneath.
 
 notebook/block!:
   this: id:notebook/scratch/2
-  notebook: id:notebook/scratch
-  source: >-
-    A `dialog-yaml` fence is a live cell: it evaluates against this branch and
-    renders its results underneath.
-
-notebook/block!:
-  this: id:notebook/scratch/3
   notebook: id:notebook/scratch
   source: |-
     ```dialog-yaml
@@ -364,7 +363,7 @@ notebook/block!:
     ```
 
 notebook/block!:
-  this: id:notebook/scratch/4
+  this: id:notebook/scratch/3
   notebook: id:notebook/scratch
   source: >-
     Query cells run on their own, because a query has no effect. Cells that
