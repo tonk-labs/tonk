@@ -425,6 +425,55 @@ Ordering therefore comes back — the Ordering section above is live
 again, not moot. Blocks need a key, and the `as: text` lexicographic
 pattern is what the wiki and board use today.
 
+## When a block commits
+
+Not on every keystroke, and not on a timer. **A block commits when the
+author leaves it** — the caret moves to a different block, or a new
+block is created. Double-Enter out of a paragraph therefore saves it,
+which is what an author already does to move on.
+
+The reason is the same one that made blocks the stored unit: a
+revision should say what the author did, not what their keyboard did.
+Debouncing at 400 ms cuts a paragraph into revisions at the pauses in
+someone's typing, which is noise dressed as history. Block-exit
+commits give one revision per block the author finished — legible in a
+log, and meaningful as a checkpoint.
+
+It also removes a hazard specific to cells: a `dialog` fence
+mid-typing is usually invalid, so committing every 400 ms would store
+a stream of broken sources. Committing on exit stores what the author
+settled on.
+
+### Mechanism
+
+`<tonk-prose>`'s `change` event is debounced (400 ms) and carries the
+whole document, so it is the wrong signal — it says "the document
+changed", not "this block is finished". The right one is the caret.
+
+The editor handle exposes the raw ProseMirror view
+(`ProseEditor.view`, documented as the "power-user escape hatch",
+`tonk-prose/src-js/editor/api.ts:34`), reachable from the `ready`
+event's detail or the element's `.editor` property. From the view:
+
+- `view.state.selection.$head` gives the caret's position, and its
+  depth-1 ancestor index is the block the caret sits in.
+- Compare that index against the last one on every transaction; when
+  it changes, the block just left is the one to commit.
+- A block whose text is unchanged commits nothing — the diff against
+  the projected blocks decides, so leaving a block you only read is
+  free.
+
+Commit-on-exit needs two safety nets, or edits can be lost:
+
+- **Blur and disconnect must flush.** Leaving the editor entirely (or
+  the element unmounting) is also "leaving the block". `<tonk-prose>`
+  already flushes its pending debounced change on disconnect
+  (`index.ts:361`), which is the same instinct.
+- **A long-lived block still wants a backstop.** Someone writing three
+  paragraphs without leaving the block should not risk all of it. A
+  slow idle timer (much longer than 400 ms) as a floor, with block-exit
+  as the normal path, keeps the guarantee without the noise.
+
 ## Presentation: hide the code, show the view (later)
 
 Observable's defining look is that a cell shows its *output*, with the
