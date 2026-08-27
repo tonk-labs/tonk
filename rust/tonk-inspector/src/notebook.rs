@@ -262,6 +262,7 @@ fn mount(
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),
             projected: RefCell::new(String::new()),
+            next_cell: std::cell::Cell::new(0),
             projected_once: std::cell::Cell::new(false),
             settling: std::cell::Cell::new(false),
         });
@@ -313,6 +314,8 @@ struct Notebook {
     /// The document text last handed to the editor. Guards against writing
     /// back the editor's own echo of a store update.
     projected: RefCell<String>,
+    /// Next cell id. Monotonic, so an id is never reused by a later fence.
+    next_cell: std::cell::Cell<u32>,
     /// Whether the store's blocks have been projected into the editor yet.
     /// Until they have, an edit has nothing truthful to diff against.
     projected_once: std::cell::Cell<bool>,
@@ -703,6 +706,50 @@ impl Notebook {
             .map(|n| n as i32)
     }
 
+    /// Carry the page's stylesheet into the editor's shadow root.
+    ///
+    /// Results render INSIDE prose's shadow root, which document styles do not
+    /// reach — so `.evaluate-*` layout and the `.notation-*` syntax colours
+    /// simply do not apply, and a result renders as a wall of unstyled text.
+    /// Adopting the same sheet the page uses keeps one source of truth rather
+    /// than a copy that drifts.
+    ///
+    /// Idempotent, and a no-op where `adoptedStyleSheets` is unavailable —
+    /// results are still readable unstyled.
+    fn adopt_page_styles(&self) {
+        let Some(root) = self.prose.shadow_root() else {
+            return;
+        };
+        if js_sys::Reflect::get(&root, &"__tonkNotebookStyled".into())
+            .map(|flag| flag.is_truthy())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let Some(document) = window().and_then(|w| w.document()) else {
+            return;
+        };
+        let sheets = js_sys::Reflect::get(&document, &"styleSheets".into()).ok();
+        let adopted = js_sys::Array::new();
+        if let Some(sheets) = sheets {
+            let length = js_sys::Reflect::get(&sheets, &"length".into())
+                .ok()
+                .and_then(|n| n.as_f64())
+                .unwrap_or(0.0) as u32;
+            for index in 0..length {
+                if let Ok(sheet) = js_sys::Reflect::get(&sheets, &index.into()) {
+                    adopted.push(&sheet);
+                }
+            }
+        }
+        if adopted.length() == 0 {
+            return;
+        }
+        if js_sys::Reflect::set(&root, &"adoptedStyleSheets".into(), &adopted).is_ok() {
+            let _ = js_sys::Reflect::set(&root, &"__tonkNotebookStyled".into(), &true.into());
+        }
+    }
+
     /// Where the editor's document actually lives.
     ///
     /// `<tonk-prose>` renders into a SHADOW ROOT, so the element itself has no
@@ -725,6 +772,7 @@ impl Notebook {
         let Ok(wrappers) = self.editor_root().query_selector_all(FENCE_SELECTOR) else {
             return;
         };
+        self.adopt_page_styles();
         for index in 0..wrappers.length() {
             let Some(wrapper) = wrappers
                 .item(index)
@@ -750,11 +798,18 @@ impl Notebook {
             let id = match wrapper.dataset().get("notebookCell") {
                 Some(id) => id,
                 None => {
-                    // Index-derived, stable for as long as the fence keeps its
-                    // position. Only used to key the LSP buffer and the cell
-                    // map; nothing persists it, so a shift on insert is
-                    // harmless here (see `plan/notebook.md`, open question 4).
-                    let id = index.to_string();
+                    // A MONOTONIC counter, not the loop index. Two fences with
+                    // the same index at different times are different cells:
+                    // an unbound fence appearing at index 0 would reuse the id
+                    // of a cell already bound there, collide in `cells`, and be
+                    // skipped — left with no LSP source, so no diagnostics and
+                    // no evaluation. Which is exactly what a second code block
+                    // looked like.
+                    //
+                    // Only keys the LSP buffer and the cell map; nothing
+                    // persists it (see `plan/notebook.md`, open question 4).
+                    let id = self.next_cell.get().to_string();
+                    self.next_cell.set(self.next_cell.get() + 1);
                     let _ = wrapper.dataset().set("notebookCell", &id);
                     id
                 }
@@ -856,6 +911,7 @@ impl Cell {
 
         let cell_result = self.result.clone();
         let cell_editor = editor.clone();
+        let held_closures = notebook.closures.clone();
         let closure = Closure::wrap(Box::new(move |event: Event| {
             let detail = event
                 .dyn_ref::<CustomEvent>()
@@ -881,11 +937,53 @@ impl Cell {
             // step), and running it against the live branch is exactly what
             // the design forbids.
             if has_mutation(&body) {
-                cell_result.set_inner_html(
-                    "<div class=\"notebook-cell-held\">\
-                       This cell mutates. Mutation cells do not run automatically.\
-                     </div>",
-                );
+                // A mutation is never run on a diagnostics frame. Offer it
+                // instead: the same bolt the inspector uses to commit, so a
+                // cell that writes is run deliberately rather than by typing.
+                if cell_result
+                    .query_selector(".evaluate-play")
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    cell_result.set_inner_html(
+                        "<div class=\"notebook-cell-held\">\
+                           <button type=\"button\" class=\"evaluate-play is-visible\" \
+                             title=\"Run this cell (it writes)\">\
+                             <wa-icon name=\"bolt\" variant=\"solid\"></wa-icon>\
+                           </button>\
+                         </div>",
+                    );
+                    if let Some(play) = cell_result.query_selector(".evaluate-play").ok().flatten()
+                    {
+                        let consumer = cell_editor.clone();
+                        let slot = cell_result.clone();
+                        let run =
+                            Closure::wrap(Box::new(move |event: Event| {
+                                event.prevent_default();
+                                event.stop_propagation();
+                                let Some(body) = reflect_string(consumer.as_ref(), "value") else {
+                                    return;
+                                };
+                                let slot = slot.clone();
+                                let consumer = consumer.clone();
+                                spawn_local(async move {
+                                    // `transact: true` — the deliberate act.
+                                    match evaluate(&consumer, &body, true).await {
+                                        Ok(response) => slot
+                                            .set_inner_html(&render_result(None, Some(&response))),
+                                        Err(message) => slot
+                                            .set_inner_html(&render_result(Some(&message), None)),
+                                    }
+                                });
+                            }) as Box<dyn FnMut(Event)>);
+                        let _ = play.add_event_listener_with_callback(
+                            "click",
+                            run.as_ref().unchecked_ref(),
+                        );
+                        held_closures.borrow_mut().push(run);
+                    }
+                }
                 return;
             }
             if running.get() {

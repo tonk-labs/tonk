@@ -91,6 +91,9 @@ class TonkCodeBlockView implements NodeView {
   readonly #editor: TonkCodeLike;
   /** Guards the CM⇄PM sync against echo loops. */
   #updating = false;
+  /** Whether a Backspace on an empty code block has already been pressed
+   *  once, so the next one removes the block. See `#maybeEscape`. */
+  #armedForDelete = false;
 
   constructor(node: Node, outer: EditorView, getPos: GetPos) {
     this.#node = node;
@@ -147,9 +150,26 @@ class TonkCodeBlockView implements NodeView {
 
     if (event.key === "Backspace" && doc.length === 0) {
       event.preventDefault();
-      this.#replaceWithParagraph();
+      // Deleting the last CHARACTER must not also delete the BLOCK. Emptying
+      // a code block is ordinary editing — you are about to type something
+      // else — so a single Backspace that happens to land on an empty editor
+      // would drop the fence out from under the caret. Require a second,
+      // deliberate press: the first arms, the next one converts.
+      //
+      // The flag clears on any other key, so typing after emptying the block
+      // leaves it a code block, and it clears on blur so a stale arm cannot
+      // surprise a later visit.
+      if (this.#armedForDelete) {
+        this.#armedForDelete = false;
+        this.#replaceWithParagraph();
+      } else {
+        this.#armedForDelete = true;
+      }
       return;
     }
+    // Any other key in the block disarms: only consecutive Backspaces at an
+    // empty document mean "remove this block".
+    this.#armedForDelete = false;
 
     let dir: -1 | 1 | 0 = 0;
     if (
