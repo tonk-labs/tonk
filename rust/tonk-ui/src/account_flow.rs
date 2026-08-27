@@ -214,6 +214,13 @@ mod tests {
     /// then a reload with caches and workers cleared — so this wait
     /// only has to outlast that ladder.
     async fn wait_for_service_worker(driver: &WebDriver) -> Result<()> {
+        // From the TOP page. Inside the sealed guest
+        // `navigator.serviceWorker.controller` is null — the frame is at
+        // an opaque origin and is not the registration's client — so a
+        // caller that had just reached into the bar would wait out the
+        // whole deadline on a worker that has been in control the entire
+        // time.
+        driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
         loop {
             let controlled = driver
@@ -2243,9 +2250,11 @@ mod tests {
                 )
                 .await?;
             if outcome.json().as_bool() == Some(true) {
+                driver.enter_default_frame().await?;
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await?;
                 return Err(anyhow!("the bar never showed a share cell to click"));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -2287,6 +2296,12 @@ mod tests {
                 .await?;
             let value = outcome.json().clone();
             if value.get("ok").is_some() {
+                // Back to the top page. A helper that leaves the driver
+                // inside the guest hands the next one a context where
+                // `navigator.serviceWorker.controller` is null and the
+                // account UI does not exist — which reads as the worker
+                // never taking control, from a page it never claimed.
+                driver.enter_default_frame().await?;
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
@@ -2294,6 +2309,7 @@ mod tests {
                     .get("error")
                     .and_then(|error| error.as_str())
                     .unwrap_or("unknown");
+                driver.enter_default_frame().await?;
                 return Err(anyhow!("could not click the share row: {reason}"));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -2321,6 +2337,7 @@ mod tests {
                 Vec::new(),
             )
             .await?;
+        driver.enter_default_frame().await?;
         Ok(outcome.json().as_str().map(str::to_owned))
     }
 
