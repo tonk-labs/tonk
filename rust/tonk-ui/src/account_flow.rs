@@ -2244,49 +2244,19 @@ mod tests {
         }
     }
 
-    /// Drive the Hub's create wizard to a blank spot.
+    /// Create a space from the Hub, the way a person does.
     ///
-    /// The wizard pages with CSS-only radios (`#wiz-start` opens it,
-    /// `#wiz-agent` is the blank path), and the Hub renders inside a
-    /// sealed guest, so this reaches in through the frame rather than
-    /// clicking from the top document — which cannot see those controls.
+    /// Through WebDriver's frame switching, not
+    /// `iframe.contentDocument`: the Hub renders in a SEALED guest at an
+    /// opaque origin, so script in the outer page cannot reach its
+    /// document at all — a reach-in returns `no guest frame` and says
+    /// nothing about the app.
     async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
-        let outcome = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                const frame = document.querySelector("iframe");
-                const root = frame?.contentDocument;
-                if (!root) return done({ error: "no guest frame" });
-                const check = (id) => {
-                    const radio = root.getElementById(id);
-                    if (!radio) return false;
-                    radio.checked = true;
-                    radio.dispatchEvent(new Event("change", { bubbles: true }));
-                    return true;
-                };
-                // Open the wizard, then take the blank path.
-                if (!check("wiz-start")) return done({ error: "no #wiz-start" });
-                if (!check("wiz-agent")) return done({ error: "no #wiz-agent" });
-                // Submit the form itself: `wa-button[type=submit]` is a
-                // custom element, so requestSubmit is what a click would
-                // reach anyway and does not depend on it having upgraded.
-                const form = root.querySelector("form.onb-overlay-body, form[onsubmit], form");
-                if (!form) return done({ error: "no wizard form" });
-                setTimeout(() => {
-                    form.requestSubmit
-                        ? form.requestSubmit()
-                        : form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-                    done({ ok: true });
-                }, 100);
-                "#,
-                Vec::new(),
-            )
-            .await?;
-        let value = outcome.json().clone();
-        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
-            return Err(anyhow!("could not drive the Hub wizard: {error}"));
-        }
+        enter_hub(driver).await?;
+        wait_for_displayed(driver, ".snew").await?.click().await?;
+        // Back to the top document: everything after this — the space
+        // page, the bar, the cluster — lives there.
+        driver.enter_default_frame().await?;
         Ok(())
     }
 
