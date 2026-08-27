@@ -318,11 +318,6 @@ mod tests {
         goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
         run_cluster_ceremony(driver, email).await?;
-        // The ceremony ends with the cluster still raised, over the
-        // panel it was opened from. Callers read the account dashboard
-        // afterwards, which that covers, so take it down and let the
-        // panel settle — the same thing a person does to get back.
-        dismiss_register_dialog(driver).await?;
         element(driver, "tonk-account[data-mode=\"success\"]").await?;
         Ok(())
     }
@@ -377,6 +372,10 @@ mod tests {
             passkey.contains(" on "),
             "the passkey row names the device, got {passkey:?}",
         );
+        // Always leave it down. The cluster sits over whatever raised
+        // it, and every caller goes on to read what is underneath, so
+        // dismissing here is one decision instead of one per caller.
+        dismiss_register_dialog(driver).await?;
         Ok(())
     }
 
@@ -395,8 +394,6 @@ mod tests {
         type_into_register_dialog(driver, email).await?;
         await_register_action(driver, "log in with your passkey").await?;
         click_register_action(driver).await?;
-        // Same as the create path: the cluster stays up over the panel
-        // its callers go on to read.
         dismiss_register_dialog(driver).await?;
         Ok(())
     }
@@ -1228,9 +1225,6 @@ mod tests {
             // the approval it was interrupted by.
             element(driver, "tonk-account[data-mode=\"choice\"]").await?;
             run_cluster_ceremony(driver, EMAIL).await?;
-            // The cluster stays up over the approval it interrupted, so
-            // take it down before reading what is underneath.
-            dismiss_register_dialog(driver).await?;
             // Let the creation ceremony finish before navigating
             // anywhere: it lands back on the approval it interrupted,
             // and leaving mid-flight loses whatever it had not yet
