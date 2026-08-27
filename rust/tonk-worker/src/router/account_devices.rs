@@ -138,9 +138,9 @@ pub struct RegisterDeviceRequest {
 ///
 /// The push is what makes registration visible before the grant is even
 /// delivered: the waiting device's first account pull brings the row
-/// down with the authority it describes. A failed push is logged rather
-/// than fatal — the fact is committed, and the ordinary sync sweep
-/// publishes it.
+/// down with the authority it describes. If the one-shot push races the
+/// worker's ordinary account sweep, finish through that serialized sweep
+/// before delivering the grant.
 ///
 /// [`DeviceLink`]: tonk_schema::DeviceLink
 #[wasm_compat]
@@ -169,8 +169,18 @@ pub async fn register(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("describe the registered device: {error}"))
         })?;
-    if let Err(error) = super::account_state::push_account_main(&state).await {
-        log!("registered device not yet published: {error}");
+    if let Err(push_error) = super::account_state::push_account_main(&state).await {
+        let (status, swept) = super::account_state::ensure_account_state_swept(&state).await;
+        if !matches!(status, tonk_account::AccountStateStatus::Ready) {
+            return Err(TonkWorkerError::Internal(format!(
+                "publish the registered device after {push_error}: account state is {status:?}"
+            )));
+        }
+        swept.map_err(|sweep_error| {
+            TonkWorkerError::Internal(format!(
+                "publish the registered device after {push_error}: {sweep_error}"
+            ))
+        })?;
     }
     // The delegation CID is the attachment id now: it names the exact
     // grant this registration described, which is what the id was for.
