@@ -330,19 +330,6 @@ view!:
     </tonk-notebook>
 
 # ---------------------------------------------------------------------------
-# A directory view so `tonk render notebook` (list of notebooks) resolves.
-# One <tonk-display> per instance - the single-display directory pattern.
-# ---------------------------------------------------------------------------
-
-view/directory!:
-  this: id:notebook/directory
-  model: notebook
-  display: |
-    <div class="notebook-directory">
-      <tonk-display entity={this} model={dom.host/model}></tonk-display>
-    </div>
-
-# ---------------------------------------------------------------------------
 # Seed one notebook so the model resolves on first render: a few blocks and
 # the order naming them. Re-assert these ids to reset the document.
 # ---------------------------------------------------------------------------
