@@ -15,6 +15,7 @@
 //! onboarding account is retired only once nothing is sealed to it.
 
 use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Repository;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::subject::Subject as UcanSubject;
@@ -23,7 +24,9 @@ use dialog_varsig::{Did, Principal as _};
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_identity::sealed::{EncryptionKey, RecipientKey, Sealed};
-use tonk_schema::{CustodiedSeed, SeedKind, prelude::DidExt as _};
+use tonk_schema::{
+    CustodiedSeed, InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _,
+};
 
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
@@ -241,7 +244,9 @@ async fn reissue_membership(
             continue;
         };
         let last_issuer = prefix.proofs().last().map(|hop| hop.issuer().clone());
-        if prefix.audience() == onboarding && last_issuer.as_ref() == Some(&principal_did) {
+        if (prefix.audience() == onboarding || prefix.audience() == root)
+            && last_issuer.as_ref() == Some(&principal_did)
+        {
             found = Some((space, prefix));
             break;
         }
@@ -252,31 +257,267 @@ async fn reissue_membership(
         )));
     };
 
-    let hop = DelegationBuilder::new()
-        .issuer(Signer::from(principal))
-        .audience(root)
-        .subject(UcanSubject::Specific(space.clone()))
-        .command(vec![])
-        .try_build()
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("{space}: mint hop: {error}")))?;
-    let mut hops: Vec<_> = prefix.proofs().cloned().collect();
-    hops.pop();
-    let mut hops = hops.into_iter();
-    let first = hops
-        .next()
-        .ok_or_else(|| TonkWorkerError::Internal(format!("{space}: chain has one hop")))?;
-    let mut chain = DelegationChain::new(first);
-    for delegation in hops {
-        chain = chain
-            .push(delegation)
-            .map_err(|error| TonkWorkerError::Internal(format!("{space}: rebuild: {error}")))?;
-    }
-    let chain = chain
-        .push(hop)
-        .map_err(|error| TonkWorkerError::Internal(format!("{space}: rebuild: {error}")))?;
+    let chain = if prefix.audience() == root {
+        // A previous attempt installed the new prefix but stopped before
+        // moving the roster or custody row. Reuse it and finish the commit.
+        prefix.clone()
+    } else {
+        let hop = DelegationBuilder::new()
+            .issuer(Signer::from(principal))
+            .audience(root)
+            .subject(UcanSubject::Specific(space.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .map_err(|error| TonkWorkerError::Internal(format!("{space}: mint hop: {error}")))?;
+        let mut hops: Vec<_> = prefix.proofs().cloned().collect();
+        hops.pop();
+        let mut hops = hops.into_iter();
+        let first = hops
+            .next()
+            .ok_or_else(|| TonkWorkerError::Internal(format!("{space}: chain has one hop")))?;
+        let mut chain = DelegationChain::new(first);
+        for delegation in hops {
+            chain = chain
+                .push(delegation)
+                .map_err(|error| TonkWorkerError::Internal(format!("{space}: rebuild: {error}")))?;
+        }
+        chain
+            .push(hop)
+            .map_err(|error| TonkWorkerError::Internal(format!("{space}: rebuild: {error}")))?
+    };
+
+    replace_retained_membership(tonk, &space, &prefix, &chain).await?;
     install_prefix(tonk, &space, &chain).await?;
-    super::join::retain_claim_authority(tonk, space.repo_key(), &chain).await;
+    migrate_membership_rows(tonk, &space, onboarding, root).await?;
+    Ok(())
+}
+
+/// Put the account-rooted membership proof in the shared space before
+/// removing the onboarding leaf it replaces.
+///
+/// The ordering keeps at least one retained path at every step. The old leaf
+/// is removed before the persisted prefix changes, so an interrupted attempt
+/// can still identify and retry that cleanup from the onboarding prefix.
+async fn replace_retained_membership(
+    tonk: &TonkState,
+    space: &Did,
+    previous: &DelegationChain,
+    replacement: &DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    let branch = tonk
+        .reactor
+        .repository(space.repo_key())
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{space}: open content: {error}")))?;
+    branch
+        .handle()
+        .delegations()
+        .retain(UcanDelegation(replacement.clone()))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: retain account membership: {error}"))
+        })?;
+
+    if previous.audience() != replacement.audience() {
+        let leaf = previous.proofs().last().cloned().ok_or_else(|| {
+            TonkWorkerError::Internal(format!("{space}: membership chain has no leaf"))
+        })?;
+        branch
+            .handle()
+            .delegations()
+            .retract(UcanDelegation(DelegationChain::new(leaf)))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "{space}: retract onboarding membership: {error}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+/// Move the shared roster bundle from the onboarding account to the full
+/// account in one content commit.
+///
+/// Membership entities are derived from `(space, member)`, so changing the
+/// member DID necessarily changes the entity every role, name, and provenance
+/// stamp addresses. Existing account-side stamps win on a resumed or repeated
+/// migration; onboarding values only fill fields the account row lacks.
+async fn migrate_membership_rows(
+    tonk: &TonkState,
+    space: &Did,
+    onboarding: &Did,
+    root: &Did,
+) -> Result<(), TonkWorkerError> {
+    let repo = space.repo_key();
+    let session = tonk
+        .reactor
+        .repository(repo)
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{space}: open roster: {error}")))?;
+    let branch = session.handle();
+    let previous = Membership::new(onboarding.clone(), space.clone());
+    let replacement = Membership::new(root.clone(), space.clone());
+
+    let previous_rows: Vec<Membership> = branch
+        .query()
+        .select(Query::<Membership> {
+            this: Term::from(previous.this().clone()),
+            subject: Term::var("subject"),
+            member: Term::var("member"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read onboarding membership: {error:?}"))
+        })?;
+    if previous_rows.is_empty() {
+        let replacement_rows: Vec<Membership> = branch
+            .query()
+            .select(Query::<Membership> {
+                this: Term::from(replacement.this().clone()),
+                subject: Term::var("subject"),
+                member: Term::var("member"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("{space}: read account membership: {error:?}"))
+            })?;
+        return if replacement_rows.is_empty() {
+            Err(TonkWorkerError::NotFound(format!(
+                "{space}: no onboarding membership to accredit"
+            )))
+        } else {
+            Ok(())
+        };
+    }
+
+    let previous_entity = previous.this().clone();
+    let replacement_entity = replacement.this().clone();
+    let previous_roles: Vec<MemberRole> = branch
+        .query()
+        .select(Query::<MemberRole> {
+            this: Term::from(previous_entity.clone()),
+            role: Term::var("role"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{space}: read role: {error:?}")))?;
+    let replacement_roles: Vec<MemberRole> = branch
+        .query()
+        .select(Query::<MemberRole> {
+            this: Term::from(replacement_entity.clone()),
+            role: Term::var("role"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read account role: {error:?}"))
+        })?;
+    let previous_names: Vec<MemberName> = branch
+        .query()
+        .select(Query::<MemberName> {
+            this: Term::from(previous_entity.clone()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{space}: read name: {error:?}")))?;
+    let replacement_names: Vec<MemberName> = branch
+        .query()
+        .select(Query::<MemberName> {
+            this: Term::from(replacement_entity.clone()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read account name: {error:?}"))
+        })?;
+    let previous_provenance: Vec<InvitedVia> = branch
+        .query()
+        .select(Query::<InvitedVia> {
+            this: Term::from(previous_entity.clone()),
+            invitation: Term::var("invitation"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read invite provenance: {error:?}"))
+        })?;
+    let replacement_provenance: Vec<InvitedVia> = branch
+        .query()
+        .select(Query::<InvitedVia> {
+            this: Term::from(replacement_entity.clone()),
+            invitation: Term::var("invitation"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read account provenance: {error:?}"))
+        })?;
+
+    let mut transaction = tonk
+        .reactor
+        .repository(repo)
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(replacement);
+    for row in previous_rows {
+        transaction = transaction.retract(row);
+    }
+    for row in previous_roles {
+        if replacement_roles.is_empty() {
+            transaction = transaction.assert(MemberRole {
+                this: replacement_entity.clone(),
+                role: row.role.clone(),
+            });
+        }
+        transaction = transaction.retract(row);
+    }
+    for row in previous_names {
+        if replacement_names.is_empty() {
+            transaction = transaction.assert(MemberName {
+                this: replacement_entity.clone(),
+                name: row.name.clone(),
+            });
+        }
+        transaction = transaction.retract(row);
+    }
+    for row in previous_provenance {
+        if replacement_provenance.is_empty() {
+            transaction = transaction.assert(InvitedVia {
+                this: replacement_entity.clone(),
+                invitation: row.invitation.clone(),
+            });
+        }
+        transaction = transaction.retract(row);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: migrate membership roster: {error}"))
+        })?;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
     Ok(())
 }
 
@@ -463,12 +704,50 @@ mod tests {
     use super::*;
     use crate::router::api_router_with_state;
     use crate::router::join::tests::{handcrafted_invite_url, post_join};
-    use crate::router::tests::{persist_test_root, put_repo, test_state_without_root};
+    use crate::router::tests::{
+        content_invited_via, content_member_names, content_member_roles, content_memberships,
+        persist_test_root, put_repo, test_state_without_root,
+    };
     use axum::http::StatusCode;
     use dialog_capability::Subject;
     use dialog_effects::Use;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
+
+    async fn retained_audience_count(
+        state: &crate::router::AppState,
+        repo: &str,
+        audience: &Did,
+    ) -> usize {
+        use dialog_artifacts::{ArtifactSelector, Value};
+        use futures_util::StreamExt as _;
+
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(repo)
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the content branch opens");
+        let selector = ArtifactSelector::new()
+            .the(
+                dialog_repository::DELEGATION_AUDIENCE
+                    .parse()
+                    .expect("the audience attribute parses"),
+            )
+            .is(Value::String(audience.to_string()));
+        branch
+            .handle()
+            .claims()
+            .select(selector)
+            .perform(&tonk.operator)
+            .await
+            .expect("retained audiences read")
+            .filter_map(|row| async move { row.ok() })
+            .count()
+            .await
+    }
 
     /// A space created and a space joined under the onboarding account
     /// both end up rooted at the passkey account, their seeds re-sealed
@@ -569,6 +848,99 @@ mod tests {
                 .unwrap();
             assert!(links.is_empty(), "the onboarding link row is retracted");
         }
+    }
+
+    /// Accreditation replaces the onboarding account in the shared roster;
+    /// it must not leave a second, retired identity behind in the space.
+    #[dialog_common::test]
+    async fn it_replaces_the_onboarding_membership_with_the_account() {
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let (url, joined_key) = handcrafted_invite_url(98, 99).await;
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        let onboarding = crate::onboarding::did(&*state.read().await)
+            .await
+            .unwrap()
+            .expect("the join minted the onboarding account");
+        let before_memberships = content_memberships(&state, &joined_key).await;
+        let before_membership = before_memberships
+            .iter()
+            .find(|row| row.member.0 == onboarding.this())
+            .expect("the onboarding membership is recorded")
+            .clone();
+        let before_role = content_member_roles(&state, &joined_key)
+            .await
+            .into_iter()
+            .find(|row| row.this == *before_membership.this())
+            .expect("the onboarding membership has a role");
+        let before_name = content_member_names(&state, &joined_key)
+            .await
+            .into_iter()
+            .find(|row| row.this == *before_membership.this())
+            .expect("the onboarding membership has a display name");
+        let before_provenance = content_invited_via(&state, &joined_key)
+            .await
+            .into_iter()
+            .find(|row| row.this == *before_membership.this())
+            .expect("the onboarding membership has invite provenance");
+        assert_eq!(
+            retained_audience_count(&state, &joined_key, &onboarding).await,
+            1,
+            "the joined space retains its onboarding membership leaf",
+        );
+
+        let root = {
+            let tonk = state.read().await;
+            let root = persist_test_root(&tonk).await;
+            rotate_from_onboarding(&tonk).await;
+            root
+        };
+
+        let memberships = content_memberships(&state, &joined_key).await;
+        assert_eq!(memberships.len(), 1, "accreditation leaves one member row");
+        let membership = &memberships[0];
+        assert_eq!(
+            membership.member.0,
+            root.this(),
+            "the account is the member"
+        );
+        assert_ne!(
+            membership.this(),
+            before_membership.this(),
+            "the membership entity is derived from the new account",
+        );
+
+        let roles = content_member_roles(&state, &joined_key).await;
+        assert_eq!(
+            roles.len(),
+            1,
+            "the retired membership leaves no role stamp"
+        );
+        assert_eq!(roles[0].this, *membership.this());
+        assert_eq!(roles[0].role, before_role.role);
+
+        let names = content_member_names(&state, &joined_key).await;
+        assert_eq!(
+            names.len(),
+            1,
+            "the retired membership leaves no name stamp"
+        );
+        assert_eq!(names[0].this, *membership.this());
+        assert_eq!(names[0].name, before_name.name);
+
+        let provenance = content_invited_via(&state, &joined_key).await;
+        assert_eq!(
+            provenance.len(),
+            1,
+            "the retired membership leaves no provenance stamp",
+        );
+        assert_eq!(provenance[0].this, *membership.this());
+        assert_eq!(provenance[0].invitation, before_provenance.invitation);
+        assert_eq!(
+            retained_audience_count(&state, &joined_key, &onboarding).await,
+            0,
+            "no retained proof still names the onboarding account",
+        );
     }
 
     /// A link whose account sweep failed (a pending email activation
