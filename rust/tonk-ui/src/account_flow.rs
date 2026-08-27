@@ -1802,15 +1802,18 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
 
+        // `create_space` answers with the full DID; prefixing `did:key:`
+        // again names nothing, and the bar then has no space to answer
+        // about.
         let key = create_space(&driver, "Shareable").await?;
         driver
-            .goto(env.tonk_web.join(&format!("space/did:key:{key}"))?.as_str())
+            .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
             .await?;
         await_share_row(&driver, "account").await?;
 
         sign_up(&driver, &env, "bar-flips@example.com").await?;
         driver
-            .goto(env.tonk_web.join(&format!("space/did:key:{key}"))?.as_str())
+            .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
             .await?;
 
         await_share_row(&driver, "link").await?;
@@ -1877,11 +1880,19 @@ mod tests {
     async fn it_offers_sign_in_for_an_address_that_already_has_an_account(
         env: TestEnvironment,
     ) -> Result<()> {
+        // Register the address in a profile of its own, then ask about
+        // it from a fresh one. The share row that raises the cluster is
+        // only offered while THIS browser has no account, so a profile
+        // that just signed up cannot reach the cluster to ask anything —
+        // and the question here is what the lookup says about an address
+        // someone else already holds.
+        let owner = driver_with_prf(&env).await?;
+        let taken = "taken@example.com";
+        sign_up(&owner, &env, taken).await?;
+        owner.quit().await?;
+
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
-
-        let taken = "taken@example.com";
-        sign_up(&driver, &env, taken).await?;
 
         open_register_dialog_from_a_space(&driver, &env, "Signed In").await?;
         type_into_register_dialog(&driver, taken).await?;
@@ -1906,11 +1917,17 @@ mod tests {
     async fn it_ignores_an_answer_about_an_address_that_was_edited_away(
         env: TestEnvironment,
     ) -> Result<()> {
+        // Registered elsewhere, for the same reason as
+        // `it_offers_sign_in_for_an_address_that_already_has_an_account`:
+        // a profile with its own account is never offered the row that
+        // raises the cluster.
+        let owner = driver_with_prf(&env).await?;
+        let taken = "taken@example.com";
+        sign_up(&owner, &env, taken).await?;
+        owner.quit().await?;
+
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
-
-        let taken = "taken@example.com";
-        sign_up(&driver, &env, taken).await?;
         open_register_dialog_from_a_space(&driver, &env, "Edited Away").await?;
 
         // Ask about the registered address, then immediately edit to one
@@ -2307,6 +2324,23 @@ mod tests {
         Ok(outcome.json().as_str().map(str::to_owned))
     }
 
+    /// Wait for the bar's account subscription to have answered at all.
+    ///
+    /// Which row it lands on is the question those callers differ about;
+    /// that it has answered is what they all need before reaching in.
+    async fn await_any_share_row(driver: &WebDriver) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if share_row_offered(driver).await?.is_some() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the bar never answered about the account"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// Wait for the bar to offer `expected` (`account` or `link`).
     async fn await_share_row(driver: &WebDriver, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -2343,9 +2377,12 @@ mod tests {
         env: &TestEnvironment,
         name: &str,
     ) -> Result<()> {
+        // `create_space` answers with the full DID, so the path takes it
+        // whole: prefixing `did:key:` again names a space that does not
+        // exist, and the page then has nothing to raise a share from.
         let key = create_space(driver, name).await?;
         driver
-            .goto(env.tonk_web.join(&format!("space/did:key:{key}"))?.as_str())
+            .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
             .await?;
         await_share_row(driver, "account").await?;
         open_register_dialog(driver).await
@@ -3173,6 +3210,13 @@ mod tests {
         )
         .await?;
         successful_body("push synced space", &pushed);
+
+        // Creating a space navigates the page into it — the handler
+        // sends the client there once the replica lands — so the
+        // deletion controls are no longer on screen. Go back to where
+        // they live.
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account").await?;
 
         click(&driver, "#account-delete-review").await?;
         element(&driver, "[role=alertdialog]").await?;
