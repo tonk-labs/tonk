@@ -1,0 +1,22 @@
+$ tonk space new -h
+
+Create (or adopt) a space, register it, and use it here
+
+Usage: tonk space new [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Space name ([a-z0-9][a-z0-9-_]*)
+
+Options:
+      --site <PATH>   Store the site at this directory instead of the canonical location
+      --space <NAME>  Operate on this space instead of the active directory binding. Precedence: --space > TONK_SPACE > `tonk space use` in the nearest ancestor directory
+  -v, --verbose       Print full error chains: every layer of context down to the root cause, not just the outermost message
+  -h, --help          Print help (see more with '--help')
+  -V, --version       Print version
+
+Examples:
+  tonk space new garden
+  tonk space new work --site ~/work/site
+  tonk space new proj --site ~/proj/.tonk
+
+[exit 0]

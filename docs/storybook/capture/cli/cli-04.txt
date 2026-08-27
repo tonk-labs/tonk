@@ -1,0 +1,24 @@
+$ tonk account -h
+
+Sign in to a Tonk account on this device, and manage it
+
+Usage: tonk account [OPTIONS] [COMMAND]
+
+Commands:
+  status   Show whether this device is signed in, and to which account
+  sync     Pull the account so devices, spots, and names read current facts
+  login    Sign in to your account with a synced passkey in the browser
+  logout   Sign out of the account on this device
+  delete   Review and permanently delete this account in the browser
+  space    List or pull the spaces your account directory lists
+  devices  List the devices linked to this profile's account
+  revoke   Revoke one of the account's devices by DID
+
+Options:
+      --json          Emit versioned camelCase JSON for the bare status form
+      --space <NAME>  Operate on this space instead of the active directory binding. Precedence: --space > TONK_SPACE > `tonk space use` in the nearest ancestor directory
+  -v, --verbose       Print full error chains: every layer of context down to the root cause, not just the outermost message
+  -h, --help          Print help
+  -V, --version       Print version
+
+[exit 0]

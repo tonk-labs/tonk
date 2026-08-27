@@ -1,0 +1,48 @@
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/ISSUE_TEMPLATE/bug_report.md'
+      - '.github/pull_request_template.md'
+      - '.github/workflows/storybook.yml'
+      - 'docs/storybook/**'
+      - 'rust/tonk-cli/**'
+      - 'rust/tonk-fab/**'
+      - 'rust/tonk-portal/**'
+      - 'rust/tonk-ui/**'
+  push:
+    branches:
+      - stable
+      - staging
+    paths:
+      - 'docs/storybook/**'
+      - 'rust/tonk-cli/**'
+      - 'rust/tonk-fab/**'
+      - 'rust/tonk-portal/**'
+      - 'rust/tonk-ui/**'
+
+name: 'Storybook'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: 'Validate product map'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 'Check generated data, inventory, and local links'
+        shell: bash
+        run: |
+          python3 docs/storybook/scripts/build.py --check
+          python3 docs/storybook/scripts/check-links.py docs/storybook
+      - name: 'Require a Storybook decision for product changes'
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          python3 docs/storybook/scripts/build.py --check --base '${{ github.event.pull_request.base.sha }}'

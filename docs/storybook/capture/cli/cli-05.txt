@@ -1,0 +1,20 @@
+$ tonk account login -h
+
+Sign in to your account with a synced passkey in the browser
+
+Usage: tonk account login [OPTIONS]
+
+Options:
+      --name <NAME>   Override the automatically generated OS/version device name
+      --space <NAME>  Operate on this space instead of the active directory binding. Precedence: --space > TONK_SPACE > `tonk space use` in the nearest ancestor directory
+  -v, --verbose       Print full error chains: every layer of context down to the root cause, not just the outermost message
+      --no-open       Print the approval URL without asking the OS to open it
+      --via <URL>     Authorize through a page that posts the grant back directly, instead of registering a handoff with the account service
+  -h, --help          Print help (see more with '--help')
+  -V, --version       Print version
+
+Examples:
+  tonk account login
+  tonk account login --name workstation
+
+[exit 0]
