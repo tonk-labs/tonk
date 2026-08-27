@@ -1978,7 +1978,7 @@ mod tests {
     /// the value is how a step's completion is observed.
     async fn await_settled_row(driver: &WebDriver, noun: &str) -> Result<String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-        let mut last = String::new();
+        let mut last;
         loop {
             let value = driver
                 .execute(
@@ -2042,7 +2042,7 @@ mod tests {
     /// Wait for the narrator to say something containing `fragment`.
     async fn await_narrator_containing(driver: &WebDriver, fragment: &str) -> Result<String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-        let mut last = String::new();
+        let mut last;
         loop {
             let text = driver
                 .execute(
@@ -2153,7 +2153,7 @@ mod tests {
         expected: usize,
     ) -> Result<usize> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-        let mut last = 0;
+        let mut last;
         loop {
             last = credential_count(driver, authenticator_id).await?;
             if last >= expected {
@@ -2312,7 +2312,7 @@ mod tests {
     /// Wait for the bar to offer `expected` (`account` or `link`).
     async fn await_share_row(driver: &WebDriver, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut last = None;
+        let mut last;
         loop {
             last = share_row_offered(driver).await?;
             if last.as_deref() == Some(expected) {
@@ -2446,7 +2446,7 @@ mod tests {
     /// subscription delivered, cluster rendered.
     async fn await_register_action(driver: &WebDriver, expected: &str) -> Result<String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut last = String::new();
+        let mut last;
         loop {
             let label = driver
                 .execute(

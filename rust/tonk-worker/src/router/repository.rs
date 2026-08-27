@@ -4543,12 +4543,28 @@ mod form_attribute_tests {
     /// a `cargo nextest archive`, which carries no sibling data files.
     const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
+    /// The create form carries no remote, and the handler is fine with
+    /// that.
+    ///
+    /// It used to: the Hub filled a hidden input from
+    /// `<tonk-default-remote auto>`, and this test pinned the two
+    /// spellings together. Then a spot stopped earning its remote at
+    /// creation — the worker resolves where a space syncs from the
+    /// account's own registration, so a spot made before anyone
+    /// registers stays local until it is shared. A form that names a
+    /// remote would wire one anyway, which is the behaviour
+    /// `it_creates_a_local_only_spot_from_the_hub_wizard` refuses.
+    ///
+    /// `REMOTE_ATTR` stays readable so a frozen older descriptor that
+    /// still declares the field keeps working; it is simply no longer
+    /// where the answer comes from.
     #[test]
-    fn it_reads_the_attribute_the_create_form_declares() {
+    fn it_declares_no_remote_on_the_create_form() {
         assert!(
-            PROFILE_LIBRARY.contains(REMOTE_ATTR),
-            "profile.yaml declares no `the: {REMOTE_ATTR}` — the handler \
-             would read this field as absent on every submit",
+            !PROFILE_LIBRARY.contains(REMOTE_ATTR),
+            "profile.yaml declares `the: {REMOTE_ATTR}` again — a spot \
+             would wire a remote at creation instead of earning one when \
+             it is shared",
         );
     }
 }
