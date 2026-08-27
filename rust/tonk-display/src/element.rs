@@ -1979,16 +1979,13 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
     s.carousel = Some(carousel);
 }
 
-/// Mount a fresh `<tonk-view>` (initialized with `display` as
-/// inner HTML) for this slide. Two paths:
-///
-/// - **Carousel present** (multi-view fallback): wrap the view in
-///   a `<wa-carousel-item>` and insert it before the trailing
-///   notation slide so the inspector stays last.
-/// - **Carousel absent** (single-view mode): append the
-///   `<tonk-view>` straight into the host so the user's template
-///   flows in its natural layout — no aspect ratio, no
-///   carousel-imposed sizing.
+// How a slide mounts, for the reader arriving here from
+// `mount_view_slide`: with a carousel present (the multi-view fallback) the
+// view is wrapped in a `<wa-carousel-item>` and inserted before the trailing
+// notation slide, so the inspector stays last; without one it is appended
+// straight into the host, so the template flows in its natural layout with no
+// aspect ratio and no carousel-imposed sizing.
+
 /// Forward the display host's OWN routing context (`with`) onto the view
 /// it just mounted — so a view whose content resolves its own context
 /// (`<tonk-tree>`, `<tonk-inspector>`, a nested `<ui-sync-status>`) sees
