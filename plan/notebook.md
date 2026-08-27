@@ -425,6 +425,54 @@ Ordering therefore comes back — the Ordering section above is live
 again, not moot. Blocks need a key, and the `as: text` lexicographic
 pattern is what the wiki and board use today.
 
+## Presentation: hide the code, show the view (later)
+
+Observable's defining look is that a cell shows its *output*, with the
+source folded away until you ask for it. Worth having, and it fits the
+shape without new storage.
+
+The channel already exists. `languageOf` reads only the **first word**
+of a fence's info string and discards the rest, but ProseMirror keeps
+the whole string in `node.attrs.params`
+(`tonk-prose/src-js/editor/code-block.ts:43`). So:
+
+````
+```dialog pinned
+person: ?who
+```
+````
+
+parses as language `dialog` with `pinned` preserved and currently
+unread. That gives per-cell presentation flags that live *in the
+markdown*, survive a round trip, and need no facts of their own — a
+notebook stays a plain markdown file.
+
+Sketch of the behaviour:
+
+- **Default**: a cell with a result collapses its editor and shows the
+  output. Clicking the output (or a gutter affordance) reveals the
+  source.
+- **`pinned`**: the source always shows. For a cell that is being
+  explained rather than one whose answer matters.
+- A cell with no result yet, or an error, always shows its source —
+  hiding an editor with an error in it would be hostile.
+
+Two things to be careful about, neither blocking:
+
+- **Editing must stay reachable.** A collapsed cell whose reveal
+  affordance is easy to miss turns a notebook read-only by accident.
+  The caret arriving via keyboard navigation should expand it, which
+  the node view's existing boundary escapes already route.
+- **Reading `params` means touching the prose crate.** The node-view
+  map is a hardcoded object literal inside `codeBlocks()`, so a
+  presentation flag either extends that or is read by
+  `<tonk-notebook>` off the fence's own source text (which this crate
+  already parses — see [`crate::blocks`]).
+
+Not part of the first build; recorded because it shapes what the fence
+info string is *for*, and that is worth fixing before cells acquire a
+different identity channel.
+
 ## Execution model — cells as checkpoints
 
 **A cell is a transaction. Evaluating it produces a checkpoint. Reload
