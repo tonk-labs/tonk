@@ -16,7 +16,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     use tokio::process::{Child, Command};
 
-    use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator};
+    use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
     const EMAIL: &str = "person@example.com";
 
@@ -186,7 +186,7 @@ mod tests {
     /// The latest activation link the access service captured for `email`.
     async fn activation_link(env: &TestEnvironment, email: &str) -> Result<String> {
         let endpoint = env.access_service.join("_test/emails")?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let inbox: Vec<(String, String)> = reqwest::get(endpoint.clone()).await?.json().await?;
             if let Some((_, link)) = inbox.iter().rev().find(|(to, _)| to == email) {
@@ -198,6 +198,75 @@ mod tests {
                 ));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Wait until the service worker controls the page.
+    ///
+    /// Polled from the test side in small steps. The previous shape — one
+    /// `execute_async` that resolved on `controllerchange` — was bounded
+    /// by chromedriver's script timeout, and a cold CI runner spends
+    /// longer than that installing the worker (compiling its wasm is the
+    /// long pole), which surfaced as "script timeout" flakes. A poll has
+    /// no long-running script to time out. The page's boot path nudges
+    /// an already-active worker to claim it, and a boot that wedges is
+    /// recovered by the page's own watchdog (index.html) — a reload,
+    /// then a reload with caches and workers cleared — so this wait
+    /// only has to outlast that ladder.
+    async fn wait_for_service_worker(driver: &WebDriver) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+        loop {
+            let controlled = driver
+                .execute(
+                    "return !!(navigator.serviceWorker && navigator.serviceWorker.controller);",
+                    vec![],
+                )
+                .await
+                .ok()
+                .and_then(|ret| ret.json().as_bool());
+            if controlled == Some(true) {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the service worker never took control of the page"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait until the dashboard reports the deferred account work done:
+    /// the custody cell published and nothing left in the queue.
+    ///
+    /// The signal is DOM state the page itself settles —
+    /// `tonk-account[data-backup]` — not a REST probe re-deriving it:
+    /// the dashboard is the one place that can run the queued publish
+    /// (it takes a passkey assertion), so it is also the authority on
+    /// whether the publish happened. "done" is the settled state.
+    /// "stuck" means this load's attempt left the queue non-empty and
+    /// the next load retries, so that is the one case worth a reload.
+    ///
+    /// Call with the dashboard as the current page.
+    async fn wait_for_backup_done(driver: &WebDriver) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            // An absent panel or attribute is "not yet": the load that
+            // settles it may still be running.
+            let backup = match driver.find(By::Css("tonk-account")).await {
+                Ok(host) => host.attr("data-backup").await.ok().flatten(),
+                Err(_) => None,
+            };
+            match backup.as_deref() {
+                Some("done") => return Ok(()),
+                Some("stuck") => driver.refresh().await?,
+                _ => {}
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the dashboard never reported the account backup done \
+                 (last state: {backup:?})"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -238,26 +307,8 @@ mod tests {
         env: &TestEnvironment,
         email: &str,
     ) -> Result<()> {
-        driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                navigator.serviceWorker.ready.then(() => {
-                    if (navigator.serviceWorker.controller) {
-                        done(true);
-                    } else {
-                        navigator.serviceWorker.addEventListener(
-                            "controllerchange",
-                            () => done(true),
-                            { once: true },
-                        );
-                    }
-                }).catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_service_worker(driver).await?;
+        goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(driver, "#account-choose-create")
             .await?
@@ -292,22 +343,23 @@ mod tests {
     ) -> Result<()> {
         let link = activation_link(env, email).await?;
         let account = driver.current_url().await?;
-        driver.goto(&link).await?;
+        goto(driver, &link).await?;
         element(driver, "#activate-accept").await?.click().await?;
         element(driver, "#activate-done").await?;
-        // The ceremony pre-signed the custody publish and the worker
-        // drains it on activation — no page, no click. All that is
-        // left is to wait for the queue to empty.
-        poll_json(
-            driver,
-            "/api/customer/pending",
-            "the queued custody publish to drain",
-            |body| body.as_array().is_some_and(|queue| queue.is_empty()),
-        )
-        .await?;
+        // Activation is what unblocks the deferred account work, and the
+        // custody-cell publish in that queue is what every later ceremony
+        // (unlock, CLI approval, legacy link) resolves. The dashboard
+        // publishes it in the background of its load, so returning as
+        // soon as the page renders hands a race to whatever the caller
+        // does next: navigating away kills the in-flight publish, and a
+        // profile rotation orphans it — both of which surfaced in CI as
+        // "no account custody is published for this passkey". Stay on
+        // the dashboard until it says the backup settled.
+        goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_backup_done(driver).await?;
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
-        driver.goto(account.as_str()).await?;
+        goto(driver, account.as_str()).await?;
         Ok(())
     }
 
@@ -318,7 +370,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         let mut legacy = env.tonk_web.join("account")?;
         legacy.set_query(Some("next=%2Fspace%2Fdid%3Akey%3AzOne&add=1"));
-        driver.goto(legacy.as_str()).await?;
+        goto(&driver, legacy.as_str()).await?;
         element(&driver, "tonk-account").await?;
         let current = driver.current_url().await?;
         assert_eq!(current.path(), "/settings");
@@ -328,7 +380,7 @@ mod tests {
         legacy_link.set_query(Some(
             "audience=did%3Akey%3AzCli&callback=http%3A%2F%2F127.0.0.1%3A9999&name=terminal",
         ));
-        driver.goto(legacy_link.as_str()).await?;
+        goto(&driver, legacy_link.as_str()).await?;
         element(&driver, "tonk-account").await?;
         let current = driver.current_url().await?;
         assert_eq!(current.path(), "/settings/link");
@@ -348,7 +400,12 @@ mod tests {
         // that generates and seals the secret, so the dashboard
         // describes it immediately.
         wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
+        // The device list lives on the Devices tab, whose pane is
+        // hidden until selected — and hidden text reads as empty.
+        click(&driver, "#account-tab-devices").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
+        // Back to the Account tab: everything below reads from it.
+        click(&driver, "#account-tab-account").await?;
         let first = get_json(&driver, "/api/account/summary").await?;
         let again = get_json(&driver, "/api/account/summary").await?;
         let first = successful_body("account summary", &first);
@@ -377,18 +434,56 @@ mod tests {
             );
         }
 
-        let display_name = element(&driver, "#account-display-name").await?;
-        let select_all = if cfg!(target_os = "macos") {
-            Key::Meta + "a"
-        } else {
-            Key::Control + "a"
+        let select_all = || {
+            if cfg!(target_os = "macos") {
+                Key::Meta + "a"
+            } else {
+                Key::Control + "a"
+            }
         };
-        display_name.send_keys(select_all).await?;
-        display_name.send_keys("Settings Name").await?;
-        display_name.send_keys(Key::Enter).await?;
-        wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
+        // The name write lands in the account state, whose first sync
+        // races this test right after activation — until the pull lands
+        // the worker refuses it as account_state_unavailable, and the
+        // input springs back to its previous value. Each retry is the
+        // same user gesture; the deadline is on the outcome.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let display_name = element(&driver, "#account-display-name").await?;
+            // A save in flight disables the input, and typing into a
+            // disabled input errors — that too reads as "not yet".
+            let typed = async {
+                display_name.send_keys(select_all()).await?;
+                display_name.send_keys("Settings Name").await?;
+                display_name.send_keys(Key::Enter).await?;
+                Ok::<(), thirtyfour::error::WebDriverError>(())
+            }
+            .await;
+            if typed.is_err() {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let settled = tokio::time::Instant::now() + Duration::from_secs(5);
+            let saved = loop {
+                if let Ok(found) = driver.find(By::Css("#account-display-name")).await
+                    && found.prop("value").await?.as_deref() == Some("Settings Name")
+                    && found.attr("aria-busy").await?.is_none()
+                {
+                    break true;
+                }
+                if tokio::time::Instant::now() >= settled {
+                    break false;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            };
+            if saved {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the display name never saved; the account state likely never hydrated"
+            );
+        }
         let settings = driver.current_url().await?;
-        driver.goto(settings.as_str()).await?;
+        goto(&driver, settings.as_str()).await?;
         wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
 
         driver.quit().await?;
@@ -419,7 +514,7 @@ mod tests {
         "#;
 
         driver.enter_default_frame().await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         let settings_light = driver
             .execute(
@@ -438,7 +533,7 @@ mod tests {
             .json()
             .clone();
 
-        driver.goto(env.tonk_web.as_str()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         let hub_light = driver
             .execute(
@@ -483,7 +578,7 @@ mod tests {
         );
 
         driver.enter_default_frame().await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         for (window_width, expected_total, expected_rail, expected_body) in
             [(1200, 576, 144, 432), (607, 432, 108, 324)]
@@ -501,6 +596,13 @@ mod tests {
                         const error = document.querySelector('#account-error');
                         error.hidden = false;
                         const errorRight = Math.round(error.getBoundingClientRect().right);
+                        // Read the body's edge in the SAME layout state:
+                        // revealing the notice can grow the page past the
+                        // viewport, and a classic scrollbar appearing then
+                        // shifts the centered column half a gutter — a
+                        // comparison across that boundary measures the
+                        // scrollbar, not the alignment.
+                        const errorBodyRight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().right);
                         error.hidden = true;
                         const logo = document.querySelector('.account__logo').getBoundingClientRect();
                         return {
@@ -509,7 +611,7 @@ mod tests {
                           body: Math.round(body.width),
                           accountHeight,
                           devicesHeight,
-                          bodyRight: Math.round(body.right),
+                          bodyRight: errorBodyRight,
                           errorRight,
                           logoVisible: logo.width > 0 && logo.height > 0
                         };"#,
@@ -629,7 +731,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         let mut activation = env.tonk_web.join("activate")?;
         activation.set_query(Some("ucan=AA"));
-        driver.goto(activation.as_str()).await?;
+        goto(&driver, activation.as_str()).await?;
         element(&driver, "tonk-activate #activate-confirm").await?;
 
         assert!(
@@ -739,7 +841,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         click(&driver, "#account-unlink").await?;
         element(&driver, "[role=alertdialog]").await?;
@@ -784,26 +886,8 @@ mod tests {
         creator.quit().await?;
 
         let (driver, authenticator_id) = driver_with_prf_authenticator(&env).await?;
-        driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                navigator.serviceWorker.ready.then(() => {
-                    if (navigator.serviceWorker.controller) {
-                        done(true);
-                    } else {
-                        navigator.serviceWorker.addEventListener(
-                            "controllerchange",
-                            () => done(true),
-                            { once: true },
-                        );
-                    }
-                }).catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(&driver, "#account-choose-create")
             .await?
@@ -1061,7 +1145,7 @@ mod tests {
             "approval URL must carry the loopback callback"
         );
 
-        driver.goto(approval_url.as_str()).await?;
+        goto(driver, approval_url.as_str()).await?;
         if register_first {
             // A browser with no account yet registers before approving:
             // the link page opens on the signup panels, and the ceremony
@@ -1090,10 +1174,14 @@ mod tests {
             // customer confirms its email. Do it now, then come back to
             // the approval.
             activate(driver, env, EMAIL).await?;
-            driver.goto(approval_url.as_str()).await?;
+            goto(driver, approval_url.as_str()).await?;
         }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
+        // The DID is tucked behind the "technical details" disclosure,
+        // and collapsed text reads as empty — open it the way a person
+        // checking the fingerprint would.
+        click(driver, "#account-handoff details summary").await?;
         let handoff_did = element(driver, "#account-handoff-did")
             .await?
             .text()
@@ -2954,29 +3042,9 @@ mod tests {
                 }),
             )
             .await?;
-        claimer.goto(env.tonk_web.as_str()).await?;
-        claimer
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                navigator.serviceWorker.ready.then(() => {
-                    if (navigator.serviceWorker.controller) {
-                        done(true);
-                    } else {
-                        navigator.serviceWorker.addEventListener(
-                            "controllerchange",
-                            () => done(true),
-                            { once: true },
-                        );
-                    }
-                }).catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        claimer
-            .goto(env.tonk_web.join("settings")?.as_str())
-            .await?;
+        goto(&claimer, env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&claimer).await?;
+        goto(&claimer, env.tonk_web.join("settings")?.as_str()).await?;
         element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
         element(&claimer, "#account-choose-link")
             .await?
@@ -3155,14 +3223,14 @@ mod tests {
         let (first_profile, first_label) = active_profile_and_label(profiles_before_add)?;
 
         // The real Hub frame renders the first account's space.
-        driver.goto(env.tonk_web.as_str()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;
 
         // Add account first opens a reversible Choice flow. It must not
         // rotate or grow the profile roster until a ceremony is submitted.
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         element(&driver, "#account-add-profile")
             .await?
@@ -3217,7 +3285,7 @@ mod tests {
                 .to_string();
 
         // The second account's sealed Hub has its own empty roster.
-        driver.goto(env.tonk_web.as_str()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         if let Err(error) =
             wait_for_text_containing(&driver, "[data-account-trigger]", &second_label).await
@@ -3596,11 +3664,13 @@ mod tests {
         url.query_pairs_mut()
             .append_pair("audience", audience)
             .append_pair("callback", &callback);
-        driver.goto(url.as_str()).await?;
+        goto(&driver, url.as_str()).await?;
 
         // The panel names the profile that is waiting, so the user knows what
-        // they are approving.
+        // they are approving. The DID sits behind the "technical
+        // details" disclosure; collapsed text reads as empty.
         element(&driver, "tonk-account[data-mode=\"handoff\"]").await?;
+        click(&driver, "#account-handoff details summary").await?;
         let shown = element(&driver, "#account-handoff-did")
             .await?
             .text()
@@ -3612,7 +3682,10 @@ mod tests {
             .click()
             .await?;
 
-        let (field, value) = tokio::time::timeout(Duration::from_secs(30), delivered)
+        // Generous: approving runs a passkey assertion, the unlock, and
+        // the device registration before the callback POST, and a loaded
+        // CI runner stretches each of them.
+        let (field, value) = tokio::time::timeout(Duration::from_secs(60), delivered)
             .await
             .context("the page never delivered an authorization")??;
         assert_eq!(field, "authorize", "approving must deliver a grant");
@@ -3648,7 +3721,7 @@ mod tests {
                 "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
             )
             .append_pair("callback", &callback);
-        driver.goto(url.as_str()).await?;
+        goto(&driver, url.as_str()).await?;
 
         element(&driver, "tonk-account[data-mode=\"handoff\"]").await?;
         element(&driver, "#account-handoff-cancel")
@@ -3656,7 +3729,7 @@ mod tests {
             .click()
             .await?;
 
-        let (field, _) = tokio::time::timeout(Duration::from_secs(30), delivered)
+        let (field, _) = tokio::time::timeout(Duration::from_secs(60), delivered)
             .await
             .context("cancelling never reached the waiting process")??;
         assert_eq!(
@@ -3884,8 +3957,11 @@ mod tests {
             .context("CLI device was absent from the account device list")?
             .to_string();
 
-        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        // The device list lives on the Devices tab, whose pane is
+        // hidden until selected — and hidden text reads as empty.
+        click(&driver, "#account-tab-devices").await?;
         wait_for_text_containing(&driver, "#account-device-list", "e2e terminal").await?;
         let selector = format!("#account-device-list button[data-revoke=\"{cli_did}\"]");
         click(&driver, &selector).await?;
@@ -4029,7 +4105,7 @@ mod tests {
         // which is exactly what a new browser is.
         let added = post_json(&creator, "/api/profiles/add", serde_json::json!({})).await?;
         successful_body("add profile", &added);
-        creator.goto(env.tonk_web.as_str()).await?;
+        goto(&creator, env.tonk_web.as_str()).await?;
         legacy_link(&creator, &env).await?;
 
         let root = get_json(&creator, "/api/identity/root").await?;
@@ -4071,36 +4147,85 @@ mod tests {
         .await?;
         successful_body("create space command", &created);
 
-        // Two correct outcomes race here. When the account pull has
-        // already delivered the published `AccountEncryptionKey`, the
-        // worker seals straight to it and no assertion is needed. When
-        // it has not, the worker asks this page: a consent card
-        // appears, and its button runs the assertion that records the
-        // key with the root. Both paths end with the space custodied
-        // under the account; only the root record differs.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut asserted = false;
-        loop {
+        // Two correct endings race from here. Either the worker needs
+        // this page's assertion — it raises the consent card and waits
+        // on its button — or the account pull has already delivered the
+        // encryption key the first profile published, and the worker
+        // seals straight to it without asking. Which side wins is
+        // timing, not behaviour, so drive whichever happens: click the
+        // card whenever it shows, and wait on the durable outcome — the
+        // space exists and its seed is custodied.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut asserted_through_the_card = false;
+        let key = loop {
             if let Ok(button) = creator.find(By::Css("#tonk-custody-continue")).await {
-                button.click().await?;
-                asserted = true;
-                break;
+                // A card that re-renders between find and click is "not
+                // yet", the same staleness `click` absorbs elsewhere.
+                if button.click().await.is_ok() {
+                    asserted_through_the_card = true;
+                }
             }
-            let profile = get_json(&creator, "/api/profile").await?;
-            if profile["body"]["space"]
-                .as_array()
-                .is_some_and(|spaces| !spaces.is_empty())
+            if let Ok(profile) = get_json(&creator, "/api/profile").await
+                && profile.get("error").is_none()
+                && let Some(key) = profile["body"]["space"]
+                    .as_array()
+                    .and_then(|spaces| spaces.first())
+                    .and_then(|space| space["key"].as_str())
             {
-                break;
+                break key.to_string();
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "neither the consent card nor the created space appeared"
+                "the create finished neither way: no consent card appeared \
+                 and no space was recorded"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        };
 
-        let asserted_recipient = if asserted {
+        // Whichever path ran, the new space's seed ends up sealed to the
+        // account's X25519 recipient. The custody fact follows the seal,
+        // so poll for it rather than assert on the first read.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let recipient = loop {
+            let rows = post_json(
+                &creator,
+                "/api/profile/branch/main/query",
+                serde_json::json!({
+                    "terms": {
+                        "this": { "?": { "name": "this" } },
+                        "subject": { "?": { "name": "subject" } },
+                        "recipient": { "?": { "name": "recipient" } }
+                    },
+                    "predicate": {
+                        "with": {
+                            "subject": { "the": "xyz.tonk.custody/subject", "cardinality": "one", "as": "Entity" },
+                            "recipient": { "the": "xyz.tonk.custody/recipient", "cardinality": "one", "as": "Entity" }
+                        }
+                    }
+                }),
+            )
+            .await?;
+            let rows = rows["body"].as_array().cloned().unwrap_or_default();
+            if let Some(sealed_to) = rows.iter().find_map(|row| {
+                let subject = row["fields"]["subject"].as_str().unwrap_or_default();
+                let sealed_to = row["fields"]["recipient"].as_str().unwrap_or_default();
+                (subject.ends_with(&key) && !sealed_to.is_empty()).then(|| sealed_to.to_string())
+            }) {
+                break sealed_to;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the new space's seed was never custodied: {rows:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        assert!(recipient.starts_with("did:key:z6LS"), "{recipient}");
+
+        // The card path exists to record the key on the device root —
+        // that is what the assertion was for — and it must be the same
+        // recipient the seed was sealed to. The direct-seal path leaves
+        // the legacy root record keyless by design.
+        if asserted_through_the_card {
             let root = poll_json(
                 &creator,
                 "/api/identity/root",
@@ -4108,70 +4233,13 @@ mod tests {
                 |body| body.get("encryptionKey").is_some(),
             )
             .await?;
-            let recipient = root["encryptionKey"]
-                .as_str()
-                .context("root status omitted the key")?
-                .to_string();
-            assert!(recipient.starts_with("did:key:z6LS"), "{recipient}");
-            Some(recipient)
-        } else {
-            None
-        };
-
-        let profile = poll_json(
-            &creator,
-            "/api/profile",
-            "the space to be created",
-            |body| {
-                body["space"]
-                    .as_array()
-                    .is_some_and(|spaces| !spaces.is_empty())
-            },
-        )
-        .await?;
-        let key = profile["space"][0]["key"]
-            .as_str()
-            .context("profile space entry omitted its key")?
-            .to_string();
-
-        let rows = post_json(
-            &creator,
-            "/api/profile/branch/main/query",
-            serde_json::json!({
-                "terms": {
-                    "this": { "?": { "name": "this" } },
-                    "subject": { "?": { "name": "subject" } },
-                    "recipient": { "?": { "name": "recipient" } }
-                },
-                "predicate": {
-                    "with": {
-                        "subject": { "the": "xyz.tonk.custody/subject", "cardinality": "one", "as": "Entity" },
-                        "recipient": { "the": "xyz.tonk.custody/recipient", "cardinality": "one", "as": "Entity" }
-                    }
-                }
-            }),
-        )
-        .await?;
-        let rows = successful_body("custodied seeds", &rows)
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert!(
-            rows.iter().any(|row| {
-                let subject = row["fields"]["subject"].as_str().unwrap_or_default();
-                let sealed_to = row["fields"]["recipient"].as_str().unwrap_or_default();
-                subject.ends_with(&key)
-                    && match &asserted_recipient {
-                        // The page's assertion derived the recipient;
-                        // the seed must be sealed to exactly that key.
-                        Some(recipient) => sealed_to == recipient,
-                        // The pulled fact supplied it; any X25519
-                        // recipient is the account's published key.
-                        None => sealed_to.starts_with("did:key:z6LS"),
-                    }
-            }),
-            "the new space's seed is sealed to the account's key: {rows:?}"
-        );
+            assert_eq!(
+                root["encryptionKey"].as_str(),
+                Some(recipient.as_str()),
+                "the assertion's key and the seed's recipient must be the \
+                 same account key: {root}"
+            );
+        }
 
         creator.quit().await?;
         Ok(())

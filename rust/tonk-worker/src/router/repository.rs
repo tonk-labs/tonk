@@ -5646,7 +5646,9 @@ mod tests {
             "inactive pending and refusal slots should not survive a ready result",
         );
         assert!(CORE.contains("local spot &middot; no sync remote"));
-        assert!(CORE.contains("Use Share to turn on sync and create an agent link."));
+        assert!(
+            CORE.contains("Use connect in the condition banner, then create the agent link again.")
+        );
     }
 
     /// Regression guard for the dialog-injected replica identity fact the
