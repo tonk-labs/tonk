@@ -65,152 +65,8 @@ const EMAIL_ROW: &str = "#tonk-register-email-row";
 /// input's autofill. `wa-input` forwards the attribute to the inner
 /// native input, which is where it has to land.
 const DIALOG_HTML: &str = r##"
-<style>
-  /* The cluster, from `fabb/onboard.html`: rows stack over a dimmed
-     page and the surface itself never dims. Each row settles into a
-     record as its step completes, so what you have already answered
-     stays legible above what you are answering now.
-
-     Not a `wa-dialog`: this is a column of blocks, and the way out is a
-     bare word at the foot rather than a titlebar close. */
-  /* The dim carries the whole separation — the surface never dims — so
-     it has to actually hide what is behind it. A light-theme value
-     hardcoded here read as nearly transparent against the dark theme,
-     and the page showed through and collided with the rows. */
-  #tonk-register-dim {
-    position: fixed; inset: 0; z-index: 20;
-    background: var(--dim);
-    opacity: 0; transition: opacity .4s var(--ease);
-    pointer-events: none;
-  }
-  #tonk-register-dim.on { opacity: 1; pointer-events: auto; }
-
-  #tonk-register-cluster {
-    position: fixed; inset: 0; z-index: 21; overflow: auto;
-    transition: opacity .4s var(--ease);
-  }
-  #tonk-register-cluster[hidden] { display: none; }
-
-  #tonk-register {
-    font-family: var(--cond);
-    font-size: 13px;
-    color: var(--ink);
-  }
-  #tonk-register .ocol {
-    width: min(432px, calc(100vw - 48px));
-    margin: 22vh auto 80px;
-    display: flex; flex-direction: column;
-  }
-  #tonk-register .ostack { display: flex; flex-direction: column; gap: 7px; }
-
-  /* The dim does the separating, so the blocks need no blur of their own. */
-  /* `--ring` is the study's edge: translucent ink, not a grey border
-     token. Reaching for the app's `--wa-color-*` set instead put a
-     near-white ring around every block in the dark theme, which nothing
-     else in the design has. */
-  #tonk-register .mblk {
-    background: var(--modal, var(--card));
-    color: var(--ink);
-    box-shadow: 0 0 0 1px var(--ring);
-  }
-
-  #tonk-register .m-head {
-    height: 36px; display: flex; align-items: flex-end;
-    padding: 0 16px 9px; font-size: 13px; white-space: nowrap;
-  }
-
-  /* One row per step. `pre` is the folded state a row unfolds out of. */
-  #tonk-register .orow {
-    position: relative; height: 36px;
-    display: flex; align-items: flex-end; justify-content: space-between;
-    gap: 16px; padding: 0 10px 9px 16px; overflow: hidden;
-    transition: height .4s var(--ease),
-                opacity .4s var(--ease),
-                padding-top .4s var(--ease),
-                padding-bottom .4s var(--ease);
-  }
-  #tonk-register .orow.pre,
-  #tonk-register .obtn.pre {
-    height: 0 !important; opacity: 0;
-    padding-top: 0; padding-bottom: 0; pointer-events: none;
-  }
-  #tonk-register .orow .k {
-    color: var(--soft);
-    white-space: nowrap; display: flex; align-items: flex-end; gap: 8px;
-  }
-  #tonk-register .orow .v {
-    min-width: 0; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; text-align: right;
-  }
-  /* Descender room for the clip, handed straight back so the seat holds. */
-  #tonk-register .orow .v,
-  #tonk-register .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
-
-  /* The editor: inline text, no caret of its own, a block cursor
-     hard-blinking on the tail. The cursor IS the affordance. */
-  /* A real `<input>`, not the study's contenteditable span.
-     Conditional mediation is the reason: WebAuthn will only offer a
-     discoverable passkey through `autocomplete="username webauthn"` on
-     an actual form control, so a span could never surface the autofill
-     this ceremony is built around. Styled to sit in the row like the
-     study's editor — no chrome, right-aligned, the row's own type. */
-  #tonk-register .ed {
-    appearance: none; -webkit-appearance: none;
-    background: none; border: 0; outline: none; padding: 0; margin: 0;
-    font: inherit; color: inherit; letter-spacing: inherit;
-    text-align: right; width: 100%; min-width: 0;
-  }
-  #tonk-register .ed::placeholder {
-    color: var(--soft); opacity: .55;
-  }
-
-  /* An action step: solid ink, full rung, the word bottom-right. While a
-     ceremony is out of our hands the block blinks rather than spins. */
-  #tonk-register .obtn {
-    display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px;
-    height: 36px; padding: 0 10px 9px 24px; overflow: hidden;
-    background: var(--ink);
-    color: var(--on-ink);
-    box-shadow: 0 0 0 1px var(--ink);
-    font-size: 13px; cursor: pointer; white-space: nowrap; border: 0;
-    transition: height .4s var(--ease),
-                opacity .4s var(--ease);
-  }
-  #tonk-register .obtn.wait {
-    cursor: default;
-    animation: tonk-register-wait 2.4s var(--ease) infinite;
-  }
-  @keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
-
-  /* A mistake flashes rather than colouring: attention is earned by
-     blinking, never by hue. */
-  #tonk-register .flash { animation: tonk-register-flash .45s var(--ease) 2; }
-  @keyframes tonk-register-flash { 50% { opacity: .55 } }
-
-  /* The narrator: one block whose sentence changes with the step. */
-  #tonk-register .oexp {
-    margin-top: 7px; min-height: 36px; padding: 10px 16px 11px;
-    display: flex; flex-direction: column; gap: 2px;
-  }
-  #tonk-register .oexp p {
-    margin: 0; font-size: 13px; line-height: 1.55;
-    color: var(--soft);
-  }
-  #tonk-register .oexp p b {
-    font-weight: 600; color: var(--ink);
-  }
-
-  /* The way out: the quietest thing on screen. */
-  #tonk-register .ghost {
-    align-self: flex-end; margin-top: 10px; background: none; border: 0;
-    padding: 0; display: block;
-    font-size: 13px; cursor: pointer;
-    color: var(--ink);
-    text-decoration: underline; text-underline-offset: 3px;
-  }
-</style>
-<div id="tonk-register-dim"></div>
-<div id="tonk-register-cluster" role="dialog" aria-modal="true"
+<div id="tonk-register-dim" class="tonk-dim"></div>
+<div id="tonk-register-cluster" class="tonk-cluster" role="dialog" aria-modal="true"
      aria-labelledby="tonk-register-head">
   <div class="ocol">
     <div class="ostack" id="tonk-register-stack">
@@ -219,7 +75,8 @@ const DIALOG_HTML: &str = r##"
         <span class="k">email</span>
         <span class="v"><input class="ed" id="tonk-register-email" type="email"
               inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
-              aria-label="email" placeholder="you@example.com"></span>
+              aria-label="email" placeholder="you@example.com"><i class="cur"
+              aria-hidden="true"></i></span>
       </div>
       <!-- Unfolds once the address is committed and the lookup answers:
            "create a passkey" for an address nobody has, "log in with your
@@ -250,6 +107,7 @@ pub fn open() {
         return;
     };
     host.set_id(DIALOG_ID);
+    host.set_class_name("tonk-ceremony");
     host.set_inner_html(DIALOG_HTML);
     let _ = body.append_child(&host);
 
@@ -279,7 +137,9 @@ fn open_when_upgraded(host: &Element) {
     let host = host.clone();
     let raise = Closure::<dyn FnMut()>::new(move || {
         if let Ok(Some(dim)) = host.query_selector("#tonk-register-dim") {
-            let _ = dim.set_class_name("on");
+            // `add_1`, not `set_class_name`: the element already
+            // carries `tonk-dim`, which is what styles it at all.
+            let _ = dim.class_list().add_1("on");
         }
         focus_address(&host);
     });
@@ -766,12 +626,24 @@ pub(crate) fn check_email_claim(email: &str) -> serde_json::Value {
 
 /// The `account/register` claim.
 pub(crate) fn register_claim(email: &str) -> serde_json::Value {
-    claim("Register an account for this address.", email)
+    let mut claim = claim("Register an account for this address.", email);
+    // The marker is what makes this a REGISTRATION and not a lookup.
+    // Both carry `{this, email}`, and decode does not consider concept
+    // identity — so without it every keystroke's `check-email` also
+    // decoded as `account/register`, and a passkey prompt appeared
+    // while the user was still typing.
+    claim["claims"][0]["application"]["predicate"]["concept"]["with"]["marker"] = serde_json::json!({
+        "the": "dom.event.current-target.dataset/register-account",
+        "as": "Entity"
+    });
+    claim["claims"][0]["application"]["parameters"]["marker"] =
+        serde_json::json!(tonk_schema::command::RegisterAccount::MARKER);
+    claim
 }
 
-/// Both commands read one field from the same read-path, so they differ
-/// only in the descriptor's description — which is what mints a distinct
-/// command entity for each.
+/// The two commands read one field from the same read-path. A distinct
+/// description mints a distinct command entity, but that alone does not
+/// keep them apart at decode — see [`register_claim`].
 fn claim(description: &str, email: &str) -> serde_json::Value {
     serde_json::json!({
         "claims": [{
@@ -1003,6 +875,38 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A lookup must not also decode as a registration.
+    ///
+    /// `CheckEmail` and `RegisterAccount` are both `{this, email}`, and
+    /// decode does not consider concept identity — so before the marker,
+    /// every keystroke's lookup ALSO fired the register handler, and a
+    /// passkey prompt appeared while the user was still typing.
+    #[dialog_common::test]
+    fn it_marks_a_registration_so_a_lookup_cannot_be_mistaken_for_one() {
+        let lookup = check_email_claim("someone@example.com");
+        let register = register_claim("someone@example.com");
+
+        let marker_of = |claim: &serde_json::Value| {
+            claim["claims"][0]["application"]["parameters"]["marker"].clone()
+        };
+        assert!(
+            marker_of(&lookup).is_null(),
+            "a lookup carries no marker: {lookup}",
+        );
+        assert_eq!(
+            marker_of(&register),
+            serde_json::json!(tonk_schema::command::RegisterAccount::MARKER),
+            "a registration is the only one that does",
+        );
+
+        // The declared field must be there too, or the marker never
+        // becomes a fact the handler can match on.
+        let declared =
+            &register["claims"][0]["application"]["predicate"]["concept"]["with"]["marker"];
+        assert_eq!(declared["as"], "Entity", "a `:`-bearing value is an entity");
+    }
+
     use super::*;
 
     /// The dialog asks about addresses the browser would accept, and

@@ -307,6 +307,27 @@ pub mod command {
     /// Same read-path convention as [`Value`]: one word, so the input's
     /// `name` and the attribute segment agree without kebab→camel
     /// conversion getting in the way.
+    /// Marks a transient as an account registration, and not the
+    /// address lookup that shares its shape.
+    ///
+    /// `CheckEmail` and `RegisterAccount` were both `{this, email}`, and
+    /// decode does not consider concept identity — so every keystroke's
+    /// lookup ALSO decoded as a registration, and the worker asked the
+    /// page to run a passkey ceremony while the user was still typing.
+    ///
+    /// An `Entity`, not a `String`: the value (`tonk:register-account`)
+    /// has a `:`, and the worker's untagged `Value` decode reads any
+    /// `:`-bearing string as an `Entity`.
+    pub mod register {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The marker only a registration carries.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct RegisterAccount(pub Entity);
+    }
+
     pub mod email {
         use super::Attribute;
 

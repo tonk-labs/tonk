@@ -2505,3 +2505,193 @@ tonk-code:focus-within {
     block-size: 100%;
     min-block-size: 0;
 }
+
+
+/* ── The ceremony cluster ──────────────────────────────────────────
+ *
+ * A column of blocks over a dimmed page, from `fabb/onboard.html`:
+ * "the page dims, the surface never". Rows settle into records as
+ * their step completes, so what has been answered stays legible above
+ * what is being answered now.
+ *
+ * Written as classes rather than against one element's id: the
+ * registration cluster is the first surface built this way, not the
+ * only one it suits. `.ed` in particular is the study's editor — a
+ * bare input wearing the row's own type, with a block cursor for a
+ * seat — and any row that takes a value wants it.
+ */
+  /* The cluster, from `fabb/onboard.html`: rows stack over a dimmed
+     page and the surface itself never dims. Each row settles into a
+     record as its step completes, so what you have already answered
+     stays legible above what you are answering now.
+
+     Not a `wa-dialog`: this is a column of blocks, and the way out is a
+     bare word at the foot rather than a titlebar close. */
+  /* The dim carries the whole separation — the surface never dims — so
+     it has to actually hide what is behind it. A light-theme value
+     hardcoded here read as nearly transparent against the dark theme,
+     and the page showed through and collided with the rows. */
+  .tonk-dim {
+    position: fixed; inset: 0; z-index: 20;
+    background: var(--dim);
+    opacity: 0; transition: opacity .4s var(--ease);
+    pointer-events: none;
+  }
+  .tonk-dim.on { opacity: 1; pointer-events: auto; }
+
+  .tonk-cluster {
+    position: fixed; inset: 0; z-index: 21; overflow: auto;
+    transition: opacity .4s var(--ease);
+  }
+  .tonk-cluster[hidden] { display: none; }
+
+  /* The study's chrome type: condensed, 600, 13px, slightly tracked and
+     lowercased. Inheriting the page's body font instead made everything
+     read thin and a size too large. */
+  .tonk-ceremony {
+    font-family: var(--cond);
+    font-weight: 600;
+    font-size: 13px;
+    line-height: 1;
+    letter-spacing: .02em;
+    text-transform: lowercase;
+    color: var(--ink);
+  }
+  .tonk-ceremony ::selection {
+    background: var(--ink);
+    color: var(--on-ink);
+  }
+  .tonk-ceremony .ocol {
+    width: min(432px, calc(100vw - 48px));
+    margin: 22vh auto 80px;
+    display: flex; flex-direction: column;
+  }
+  .tonk-ceremony .ostack { display: flex; flex-direction: column; gap: 7px; }
+
+  /* The dim does the separating, so the blocks need no blur of their own. */
+  /* `--ring` is the study's edge: translucent ink, not a grey border
+     token. Reaching for the app's `--wa-color-*` set instead put a
+     near-white ring around every block in the dark theme, which nothing
+     else in the design has. */
+  .tonk-ceremony .mblk {
+    background: var(--modal, var(--card));
+    color: var(--ink);
+    box-shadow: 0 0 0 1px var(--ring);
+  }
+
+  .tonk-ceremony .m-head {
+    height: 36px; display: flex; align-items: flex-end;
+    padding: 0 16px 9px; font-size: 13px; white-space: nowrap;
+  }
+
+  /* One row per step. `pre` is the folded state a row unfolds out of. */
+  .tonk-ceremony .orow {
+    position: relative; height: 36px;
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 16px; padding: 0 10px 9px 16px; overflow: hidden;
+    transition: height .4s var(--ease),
+                opacity .4s var(--ease),
+                padding-top .4s var(--ease),
+                padding-bottom .4s var(--ease);
+  }
+  .tonk-ceremony .orow.pre,
+  .tonk-ceremony .obtn.pre {
+    height: 0 !important; opacity: 0;
+    padding-top: 0; padding-bottom: 0; pointer-events: none;
+  }
+  .tonk-ceremony .orow .k {
+    color: var(--soft);
+    white-space: nowrap; display: flex; align-items: flex-end; gap: 8px;
+  }
+  .tonk-ceremony .orow .v {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; text-align: right;
+    display: flex; align-items: flex-end; justify-content: flex-end;
+    flex: 1;
+  }
+  /* Descender room for the clip, handed straight back so the seat holds. */
+  .tonk-ceremony .orow .v,
+  .tonk-ceremony .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
+
+  /* The editor: inline text, no caret of its own, a block cursor
+     hard-blinking on the tail. The cursor IS the affordance. */
+  /* A real `<input>`, not the study's contenteditable span.
+     Conditional mediation is the reason: WebAuthn will only offer a
+     discoverable passkey through `autocomplete="username webauthn"` on
+     an actual form control, so a span could never surface the autofill
+     this ceremony is built around. Styled to sit in the row like the
+     study's editor — no chrome, right-aligned, the row's own type. */
+  /* A real input, wearing the study's editor.
+     `caret-color: transparent` hides the native caret so the block
+     cursor beside it is the only seat marker — the same trick the study
+     plays on its contenteditable. */
+  .tonk-ceremony .ed {
+    appearance: none; -webkit-appearance: none;
+    background: none; border: 0; outline: none; padding: 0; margin: 0;
+    font: inherit; letter-spacing: inherit; text-transform: none;
+    color: var(--ink); caret-color: transparent;
+    text-align: right; width: 100%; min-width: 0;
+    /* The row is `align-items: flex-end`, so the input has to sit on the
+       same baseline as the noun beside it rather than centring itself in
+       whatever height it claims. */
+    height: 1em; line-height: 1;
+  }
+  .tonk-ceremony .ed::placeholder {
+    color: var(--soft); opacity: .55; text-transform: none;
+  }
+
+  /* The block cursor: hard-blinking, on the tail of the value. Hidden
+     while the field is unfocused, since the seat is only meaningful
+     where the typing goes. */
+  .tonk-ceremony .cur {
+    display: inline-block; width: 7px; height: 13px;
+    background: var(--ink); vertical-align: -1px; margin-left: 1px;
+    animation: tonk-register-caret 1.05s steps(1, end) infinite;
+  }
+  .tonk-ceremony .v:not(:focus-within) .cur { visibility: hidden; }
+  @keyframes tonk-register-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+
+  /* An action step: solid ink, full rung, the word bottom-right. While a
+     ceremony is out of our hands the block blinks rather than spins. */
+  .tonk-ceremony .obtn {
+    display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px;
+    height: 36px; padding: 0 10px 9px 24px; overflow: hidden;
+    background: var(--ink);
+    color: var(--on-ink);
+    box-shadow: 0 0 0 1px var(--ink);
+    font-size: 13px; cursor: pointer; white-space: nowrap; border: 0;
+    transition: height .4s var(--ease),
+                opacity .4s var(--ease);
+  }
+  .tonk-ceremony .obtn.wait {
+    cursor: default;
+    animation: tonk-register-wait 2.4s var(--ease) infinite;
+  }
+  @keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
+
+  /* A mistake flashes rather than colouring: attention is earned by
+     blinking, never by hue. */
+  .tonk-ceremony .flash { animation: tonk-register-flash .45s var(--ease) 2; }
+  @keyframes tonk-register-flash { 50% { opacity: .55 } }
+
+  /* The narrator: one block whose sentence changes with the step. */
+  .tonk-ceremony .oexp {
+    margin-top: 7px; min-height: 36px; padding: 10px 16px 11px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .tonk-ceremony .oexp p {
+    margin: 0; font-size: 13px; line-height: 1.55;
+    color: var(--soft);
+  }
+  .tonk-ceremony .oexp p b {
+    font-weight: 600; color: var(--ink);
+  }
+
+  /* The way out: the quietest thing on screen. */
+  .tonk-ceremony .ghost {
+    align-self: flex-end; margin-top: 10px; background: none; border: 0;
+    padding: 0; display: block;
+    font-size: 13px; cursor: pointer;
+    color: var(--ink);
+    text-decoration: underline; text-underline-offset: 3px;
+  }

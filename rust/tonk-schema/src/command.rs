@@ -107,6 +107,18 @@ pub struct RegisterAccount {
     pub this: Entity,
     /// The address to register, read from the form's `email` input.
     pub email: crate::domain::command::email::Value,
+    /// Per-command marker keeping this distinct from [`CheckEmail`],
+    /// which is otherwise the same shape.
+    ///
+    /// Without it every keystroke's lookup also decoded as a
+    /// registration, and a passkey prompt appeared while the user was
+    /// still typing their address.
+    pub marker: crate::domain::command::register::RegisterAccount,
+}
+
+impl RegisterAccount {
+    /// The value [`Self::marker`] carries.
+    pub const MARKER: &str = "tonk:register-account";
 }
 
 impl Command for RegisterAccount {
