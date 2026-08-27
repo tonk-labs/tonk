@@ -71,20 +71,6 @@ mod state;
 #[cfg(target_arch = "wasm32")]
 mod view;
 
-/// `<ui-element>` — a display whose concept and template are supplied inline,
-/// so neither is resolved from a branch. The host-chrome counterpart to
-/// `<tonk-display>`; see the module docs for why it exists.
-///
-/// The element half needs a DOM and a host to subscribe through, so it is
-/// wasm-only; its concept parsing is pure text and lives in a submodule that
-/// builds (and tests) everywhere.
-#[cfg(target_arch = "wasm32")]
-pub mod ui_element;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "ui_element/concept.rs"]
-pub mod ui_element_concept;
-
 /// Register every custom element this crate ships:
 /// `<tonk-display>` (the orchestrator with subscriptions),
 /// `<tonk-view>` (the dumb single-template renderer driven by
@@ -101,5 +87,4 @@ pub fn register() {
     fallback::register();
     component::register();
     upload::register();
-    ui_element::register();
 }
