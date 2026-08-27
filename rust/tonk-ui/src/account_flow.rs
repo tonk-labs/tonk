@@ -1691,19 +1691,29 @@ mod tests {
         await_narrator_containing(&driver, "confirmation link").await?;
 
         // 15–17. Open it, accept, and come back.
+        // A NEW TAB, which is what the emailed link opens — and what
+        // the ceremony requires. The cluster is a DOM element with no
+        // persistence, so navigating the space tab away and back would
+        // destroy it, and the confirmation would have nothing left to
+        // settle. Activation reaches the waiting tab as a fact on
+        // profile main, which is why it can cross tabs at all.
         let link = activation_link(&env, email).await?;
-        let space_url = driver.current_url().await?;
+        let ceremony = driver.window().await?;
+        let confirm = driver.new_tab().await?;
+        driver.switch_to_window(confirm).await?;
         driver.goto(&link).await?;
         element(&driver, "#activate-accept").await?.click().await?;
         element(&driver, "#activate-done").await?;
-        driver.goto(space_url.as_str()).await?;
+        driver.close_window().await?;
+        driver.switch_to_window(ceremony).await?;
 
         // 18. The email row settles: the address is confirmed.
-        assert_eq!(
-            await_settled_row(&driver, "email").await?,
-            "verified",
-            "activation must settle the email row",
-        );
+        //
+        // Waiting for the VALUE, not merely for a settled row: the row
+        // is already settled at `awaiting confirmation` while the link
+        // is out, so asking only "has it settled" answers yes before
+        // activation has reached this tab at all.
+        await_row_value(&driver, "email", "verified").await?;
 
         // 19. Then the name, typed and committed.
         type_into_settled_row(&driver, "display name", "Alice").await?;
@@ -1993,6 +2003,28 @@ mod tests {
         }
     }
 
+    /// Wait for a row to read `expected`.
+    ///
+    /// A row's value changes as its step advances (`awaiting
+    /// confirmation` → `verified`), so the value is the observation and
+    /// settledness alone is not.
+    async fn await_row_value(driver: &WebDriver, noun: &str, expected: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last = String::new();
+        loop {
+            last = await_settled_row(driver, noun).await.unwrap_or(last);
+            if last == expected {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the {noun:?} row never reached {expected:?}; it reads {last:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// Read a settled row's value by its noun.
     ///
     /// A row settles when its step completes: the noun stays and the
@@ -2006,16 +2038,22 @@ mod tests {
                 .execute(
                     r##"
                     const noun = arguments[0];
+                    // LAST match, not first: the ceremony stacks rows as
+                    // it advances, and more than one can carry the same
+                    // noun — the address row says which address, and the
+                    // row below it says where its confirmation got to.
+                    // The newest is the step being reported on.
+                    let seen = "";
                     for (const row of document.querySelectorAll("#tonk-register .orow")) {
                         const k = row.querySelector(".k");
                         if (!k || k.textContent.trim() !== noun) continue;
                         const v = row.querySelector(".v");
                         // A row still being edited holds an input; a
                         // settled one holds text.
-                        if (!v || v.querySelector("input")) return "";
-                        return v.textContent.trim();
+                        if (!v || v.querySelector("input")) continue;
+                        seen = v.textContent.trim();
                     }
-                    return "";
+                    return seen;
                     "##,
                     vec![serde_json::json!(noun)],
                 )

@@ -59,6 +59,12 @@ const STATUS: &str = "#tonk-register-status";
 const EMAIL_ROW: &str = "#tonk-register-email-row";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const NAME_ROW: &str = "#tonk-register-name-row";
+/// The row standing while the emailed link is out. It is the SAME row
+/// that becomes `email · verified`: activation confirms the address it
+/// is already about, so a second row would leave the ceremony claiming
+/// to await a confirmation that had arrived.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 
 /// `wa-*` throughout, the same vocabulary the rest of the app uses. The
 /// loader on this page auto-registers any `<wa-…>` it finds, so these
@@ -478,7 +484,7 @@ fn account_query_body() -> String {
     .to_string()
 }
 
-/// The subscription tag for the answer row./// The subscription tag for the answer row.
+/// The subscription tag for the answer row.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ANSWER_TAG: &str = "tonk-register-answer";
 /// Distinguishes the activation watch from the address lookup.
@@ -1051,7 +1057,11 @@ pub(crate) fn finish_ceremony() {
     if host.query_selector(NAME_ROW).ok().flatten().is_some() {
         return;
     }
-    settle_named_row(EMAIL_ROW, "email", "verified");
+    // The row that was awaiting the link is the one that resolves; the
+    // address row above it keeps saying which address. Where no
+    // confirmation row stands — signing in with an existing passkey
+    // never raises one — there is nothing to settle.
+    settle_named_row(CONFIRM_ROW, "email", "verified");
     set_status("What should we call you?");
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {

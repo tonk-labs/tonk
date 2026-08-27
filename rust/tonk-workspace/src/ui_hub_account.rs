@@ -184,7 +184,7 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
             label.set_text_content(Some(if active.provider.is_some() {
                 profile_label(active)
             } else {
-                "log in"
+                crate::hub_account::trigger_label(Some("false"))
             }));
         }
         let _ = this.set_attribute("data-active-profile", &active.profile_name);
@@ -292,11 +292,22 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
-                if let Some(path) = crate::hub_account::account_trigger_destination(
+                if crate::hub_account::trigger_asks_to_link(
                     host.get_attribute("data-active-provider").as_deref(),
                 ) {
                     close_menu(&host, false);
-                    tonk_host::navigate_to(path);
+                    // The Hub is a sealed guest: WebAuthn needs a
+                    // `window` and a user gesture, which an opaque
+                    // realm does not have. The top page raises the
+                    // cluster, asked through the same bridge the share
+                    // row asks through.
+                    tonk_host::request_registration(
+                        &serde_json::json!({
+                            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+                            "space": "",
+                        })
+                        .to_string(),
+                    );
                     return;
                 }
                 let expanded = account_trigger(&host)
