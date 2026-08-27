@@ -589,6 +589,27 @@ impl Notebook {
         if document == *self.projected.borrow() {
             return;
         }
+
+        // NEVER overwrite an edit in progress.
+        //
+        // The editor's current text is the author's; `projected` is what this
+        // element last wrote. When they differ, the author has typed since —
+        // and writing the store's projection over that discards the typing and
+        // jumps the caret to the end. Which is exactly what "I changed the
+        // query, it reverted, and my keystrokes ended up in the paragraph
+        // below" looks like.
+        //
+        // The store's version is not lost: `commit` writes the author's text
+        // on block exit, the rows update, and the next projection matches.
+        // A genuine remote change while typing is deferred to that same
+        // moment rather than snatching the document mid-keystroke.
+        if let Some(live) = reflect_string(self.prose.as_ref(), "value")
+            && !live.is_empty()
+            && live != *self.projected.borrow()
+        {
+            return;
+        }
+
         *self.projected.borrow_mut() = document.clone();
         // `.value`, not text content: the light-DOM text is read once at
         // mount, while the property routes through `setMarkdown`, which
@@ -942,6 +963,21 @@ impl Cell {
         let _ =
             editor.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
         notebook.closures.borrow_mut().push(closure);
+
+        // Commit when the caret LEAVES this cell.
+        //
+        // The document-level tracking watches prose's top-level block index,
+        // which an edit inside a fence never moves — the caret is in the
+        // fence's own CodeMirror, not in the prose document. Without this a
+        // cell's edits are never written at all: you change a query, click
+        // away, and the next projection restores the old text.
+        let leaving = notebook.clone();
+        let on_blur = Closure::wrap(Box::new(move |_event: Event| {
+            leaving.commit();
+        }) as Box<dyn FnMut(Event)>);
+        let _ =
+            editor.add_event_listener_with_callback("focusout", on_blur.as_ref().unchecked_ref());
+        notebook.closures.borrow_mut().push(on_blur);
 
         let cell = Cell {
             editor: editor.clone(),
