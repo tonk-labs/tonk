@@ -88,15 +88,6 @@ wa-tree-item:not(:defined) {
 }
 /* Control Panel launcher faces — self-hosted like the others. Gestalte
    (display) is shipped as OpenType; IBM Plex Sans/Mono as woff2. */
-/* GestalteName — a separate wordmark cut, used ONLY for the "tonk" wordmark
-   (the launcher brand). Ships as TrueType at its single weight (500). */
-@font-face {
-    font-family: "GestalteName";
-    font-style: normal;
-    font-weight: 500;
-    font-display: swap;
-    src: url("/fonts/gestaltename-500.ttf") format("truetype");
-}
 @font-face {
     font-family: "Gestalte";
     font-style: normal;

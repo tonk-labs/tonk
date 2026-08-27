@@ -297,11 +297,11 @@ view/directory!:
           background:var(--cur); }
         .hcell .g { font-size:14px; font-weight:500; }
         .settings-icon { width:9px; height:9px; flex:none; }
-        /* The mode stays in the grid but reads as a half-lit circle, seated
-           with the text instead of as a second sidebar glyph. */
+        /* The mode stays in the grid but reads as a half-lit circle, centred
+           inside its own cell instead of as a second sidebar glyph. */
         .hub-page ui-mode-switch { display:flex; flex:none; }
-        .hub-page .mode-cap { display:flex; align-items:flex-end; justify-content:center;
-          width:48px; height:36px; padding:0 0 8px; flex:none;
+        .hub-page .mode-cap { display:flex; align-items:center; justify-content:center;
+          width:48px; height:36px; padding:0; flex:none;
           border-left:1px solid var(--sep); background:var(--frost); }
         .hub-page .mode-cap:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost); }
         .hub-page .mode-cap:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost); }

@@ -257,6 +257,7 @@
 }
 
 .account__ghost {
+    position: relative;
     display: flex;
     width: max-content;
     min-height: 36px;
@@ -272,16 +273,29 @@
     font-size: 13px;
     font-weight: 600;
     line-height: 1;
-    text-decoration: underline;
+    text-decoration: none;
     text-transform: lowercase;
-    text-underline-offset: 3px;
     white-space: nowrap;
     transition-property: scale;
     transition-duration: 150ms;
     transition-timing-function: ease-out;
 }
 
-.account__ghost:hover,
+.account__ghost::after {
+    content: "";
+    position: absolute;
+    right: 2px;
+    bottom: 6px;
+    left: 2px;
+    height: 1px;
+    background: currentcolor;
+    pointer-events: none;
+}
+
+.account__ghost:hover::after {
+    height: 2px;
+}
+
 .account__link:hover {
     text-decoration-thickness: 2px;
 }
@@ -372,8 +386,9 @@ tonk-account[data-mode="success"] .account {
     height: clamp(408px, 60vh, 640px);
     padding: 8px 18px 18px;
     overflow: auto;
-    border: 1px solid var(--ring);
+    border: 0;
     background: var(--panel);
+    box-shadow: 0 0 0 1px var(--ring);
     color: var(--ink);
     font-family: var(--sans);
 }
@@ -413,7 +428,6 @@ tonk-account[data-mode="success"] .account {
 }
 
 .account__status,
-.account__success > .account__ghost,
 tonk-account[data-mode="success"] .account__error,
 tonk-account[data-mode="success"] .account__working {
     width: 432px;
@@ -511,8 +525,12 @@ tonk-account[data-mode="success"] .account__working {
 }
 
 .account__button--remove {
+    display: flex;
     width: auto;
     padding-left: 12px;
+    align-self: start;
+    align-items: flex-start;
+    justify-content: flex-end;
     font-size: 13px;
     text-decoration: underline;
     text-underline-offset: 3px;
@@ -771,7 +789,6 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     }
 
     .account__status,
-    .account__success > .account__ghost,
     tonk-account[data-mode="success"] .account__error,
     tonk-account[data-mode="success"] .account__working {
         width: 100%;
@@ -809,7 +826,6 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     }
 
     .account__status,
-    .account__success > .account__ghost,
     tonk-account[data-mode="success"] .account__error,
     tonk-account[data-mode="success"] .account__working {
         width: 100%;

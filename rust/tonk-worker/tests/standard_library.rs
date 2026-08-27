@@ -245,6 +245,13 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
             "the proportional desktop Hub cell `{selector}` must contain `{width}`",
         );
     }
+    let mode_cap = css_rule(PROFILE_LIBRARY, ".hub-page .mode-cap {");
+    for declaration in ["align-items:center", "justify-content:center", "padding:0"] {
+        assert!(
+            mode_cap.contains(declaration),
+            "the theme switch cell must center its mark with `{declaration}`",
+        );
+    }
     let rejected = "class=\"shead";
     assert!(
         !PROFILE_LIBRARY.contains(rejected),

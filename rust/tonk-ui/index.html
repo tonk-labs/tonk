@@ -51,17 +51,6 @@
        follows the `color-scheme` meta above, the same OS signal the
        wa-dark/wa-light classes are toggled by. -->
         <style>
-            /* The wordmark cut, duplicated from styles.css (the canonical
-               @font-face set) because that file is async and the shell
-               shows "tonk" at first paint. Browsers dedupe identical
-               @font-face descriptors; the preload below has the bytes. */
-            @font-face {
-                font-family: "GestalteName";
-                font-style: normal;
-                font-weight: 500;
-                font-display: swap;
-                src: url("/fonts/gestaltename-500.ttf") format("truetype");
-            }
             #tonk-boot {
                 position: fixed;
                 inset: 0;
@@ -94,30 +83,23 @@
                     opacity 400ms ease 300ms,
                     visibility 0s 700ms;
             }
-            /* Header replica — token-for-token with the Hub brand
-               row (profile.yaml), so the real header takes over in
-               place. */
+            /* Wordmark replica — the same position and size as the Hub logo
+               in profile.yaml, so the mounted page takes over in place. */
             .tonk-boot-brand {
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                flex: none;
+                position: absolute;
+                top: clamp(62px, 11vh, 106px);
+                left: 50%;
+                color: inherit;
+                transform: translateX(-50%);
             }
             .tonk-boot-logo {
-                font-family: "GestalteName", "Gestalte", sans-serif;
-                font-size: var(--wa-font-size-4xl, 52px);
-                font-weight: 500;
-                line-height: 1;
-                text-transform: lowercase;
-            }
-            .tonk-boot-badge {
-                font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-                font-weight: 600;
-                font-size: 19px;
-                line-height: 1.1;
-                padding: 3px 11px;
-                color: var(--wa-color-brand-on-loud, #2a3005);
-                background: #deff1a;
+                display: block;
+                width: 132px;
+                aspect-ratio: 1024 / 343;
+                background: currentcolor;
+                -webkit-mask: url("/images/tonk-wordmark.svg") center / contain
+                    no-repeat;
+                mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
             }
             /* Loading, centered where the Hub's directory will land. */
             .tonk-boot-center {
@@ -183,6 +165,14 @@
                     scale: 0.5;
                 }
             }
+            @media (max-width: 519px) {
+                .tonk-boot-brand {
+                    top: 62px;
+                }
+                .tonk-boot-logo {
+                    width: 98px;
+                }
+            }
         </style>
 
         <!-- V9  -->
@@ -218,18 +208,6 @@
        for the `@font-face` declarations. Files live in
        `assets/fonts/` and are copied into the dist by the
        Trunk `copy-dir` rule below. No external font CDN. -->
-        <!-- The wordmark cut only (27 KB): the boot shell shows "tonk"
-       immediately, and without the preload the face would arrive after
-       the shell's first paint and flash the fallback. Fonts are always
-       CORS-fetched, so `crossorigin` is required for the preload to
-       match. The other faces load on demand as usual. -->
-        <link
-            rel="preload"
-            href="/fonts/gestaltename-500.ttf"
-            as="font"
-            type="font/ttf"
-            crossorigin
-        />
         <!-- Web Awesome loader — injected when the browser goes idle, NOT
        eagerly. The loader module statically imports ~16 runtime chunks
        (discover/startLoader/icon+translation registries/base-path utils),
@@ -671,16 +649,14 @@
     <body>
         <!-- Static boot shell: the ONLY body content until the wasm mounts
          `<tonk-site>` — the async-stylesheet strategy in <head> depends on
-         that staying true. It replicates the Hub header (wordmark + badge,
-         same tokens as the profile card) so the app's own header
+         that staying true. It replicates the Hub wordmark so the app's own header
          appears to simply take over, and shows the shared loading pulse while
          the Trunk initializer reports progress to assistive technology. Styled by the
          inline critical CSS in <head>; hidden purely by CSS
          (`body:has(tonk-site)`) — the wasm never has to know it exists. -->
         <div id="tonk-boot" aria-live="polite">
-            <div class="tonk-boot-brand">
-                <span class="tonk-boot-logo">tonk</span>
-                <span class="tonk-boot-badge">space</span>
+            <div class="tonk-boot-brand" role="img" aria-label="tonk">
+                <span class="tonk-boot-logo" aria-hidden="true"></span>
             </div>
             <div class="tonk-boot-center">
                 <span class="tonk-pulse" aria-hidden="true"></span>
