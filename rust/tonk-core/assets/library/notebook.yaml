@@ -206,6 +206,54 @@ view/directory!:
 # view binds straight into `<tonk-notebook>` — no lookup, no name table.
 # ---------------------------------------------------------------------------
 
+# The index — `/space/{repo}/notebook`. Lists every notebook in the space,
+# each linking to its own page. Declared BEFORE the `{*entity}` route so a
+# bare `/notebook` matches this rather than being read as an entity named
+# nothing.
+route!: &route/notebooks
+  this: id:notebook/index/route
+  path: "/notebook"
+  concept: tonk:notebook/index
+
+concept!: &notebook/index
+  this: tonk:notebook/index
+  description: The notebook index — every notebook in this space.
+  with:
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+# The index lists notebooks by rendering the `tonk:notebook` directory view,
+# which is the row-per-notebook shape the element already reads. Each row
+# links to `notebook/{entity}` — a relative href, so it resolves under
+# whatever space path the page is served at.
+view!:
+  this: id:notebook/index/view
+  model: tonk:notebook/index
+  display: |
+    <div class="notebook-index">
+      <h1>Notebooks</h1>
+      <tonk-display model=tonk:notebook view=id:notebook/link></tonk-display>
+    </div>
+
+# One row of the index.
+view/directory!:
+  this: id:notebook/link
+  model: tonk:notebook
+  display: |
+    <div class="notebook-index__list">
+      <a class="notebook-index__item" href="notebook/{this}">
+        <span class="notebook-index__title">{title}</span>
+      </a>
+    </div>
+
 route!: &route/notebook
   this: id:notebook/route
   path: "/notebook/{*entity}"
