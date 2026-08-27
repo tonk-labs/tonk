@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import re
@@ -126,6 +127,7 @@ def load_screens(journey_ids: set[str]) -> tuple[dict, list[dict]]:
     screens = manifest.get("screens", [])
     seen: set[str] = set()
     mapped: set[str] = set()
+    artifact_digests: dict[str, tuple[str, Path]] = {}
     errors: list[str] = []
     for screen in screens:
         screen_id = screen.get("id", "")
@@ -137,6 +139,16 @@ def load_screens(journey_ids: set[str]) -> tuple[dict, list[dict]]:
         artifact = BOOK / screen.get("artifact", "")
         if not artifact.is_file():
             errors.append(f"{screen_id}: missing artifact {artifact.relative_to(ROOT)}")
+        else:
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            if prior := artifact_digests.get(digest):
+                prior_id, prior_artifact = prior
+                errors.append(
+                    f"{screen_id}: artifact is identical to {prior_id}: "
+                    f"{artifact.relative_to(ROOT)} and {prior_artifact.relative_to(ROOT)}"
+                )
+            else:
+                artifact_digests[digest] = (screen_id, artifact)
         for source in screen.get("source_paths", []):
             if not (ROOT / source).exists():
                 errors.append(f"{screen_id}: missing source path {source}")

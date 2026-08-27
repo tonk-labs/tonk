@@ -295,14 +295,6 @@
     document.body.toggleAttribute("data-menu-open", open);
     event.currentTarget.setAttribute("aria-expanded", String(open));
   });
-  document.querySelectorAll(".audience-grid a[data-query]").forEach((link) => link.addEventListener("click", () => {
-    search.value = link.dataset.query;
-    state.query = link.dataset.query;
-  }));
-  document.querySelectorAll(".audience-grid a[data-doc]").forEach((link) => link.addEventListener("click", (event) => {
-    event.preventDefault();
-    location.href = link.dataset.doc;
-  }));
   window.addEventListener("hashchange", route);
 
   setMetadata();

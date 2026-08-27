@@ -65,3 +65,13 @@ repository.
   particular shared environment has deployed that artifact is a separate live
   verification step.
 - Screenshot diffs are review evidence, not automatic product correctness.
+
+## Follow-up polish
+
+- [x] Replace the ornamental card treatment with a flat, grid-led visual system.
+- [x] Remove links that only open repository Markdown from the product map.
+- [x] Recapture `WEB-02` from the populated Hub route and verify it is distinct
+  from `WEB-03`.
+- [x] Reject byte-identical screen artifacts during the Storybook build.
+- [x] Recheck desktop, compact, navigation, detail, role, and gap views in an
+  isolated browser.
