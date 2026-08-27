@@ -943,3 +943,39 @@ holds), `tonk-view` (taken, and it is the half this composes with),
   Simpler, but check whether the original reason survives.
 - **How much of `tonk-display` phase 3 is reusable as-is** versus needing
   a second entry point into the same code.
+
+---
+
+## Where this stands (verified in browser, 2026-08-27)
+
+Working: blocks project from the store into one document, and the
+document renders. Confirmed on a fresh space.
+
+**Not working: the fence never becomes a `<tonk-code>`**, so there are no
+diagnostics, no autocomplete, and no result slot to render into. What
+renders is prose's `PlainCodeBlockView` fallback — a bare CodeMirror.
+This is why the notebook reads as "a glorified markdown viewer".
+
+Measured, on the latest build:
+
+- `tonk-code` IS defined in the guest frame (`customElements.get` true,
+  `__tonkCodeChunks` present), so the `whenDefined` guard resolves.
+- Yet `tonkCodeCount: 0`, `fenceWrappers: 0`, `resultSlots: 0`.
+- The mounted `<tonk-prose>` is connected but **empty**
+  (`childElementCount: 0`), while a `ProseMirror md-doc` renders
+  *outside* it, its `.cm-editor` having no parent element.
+
+So the visible document belongs to a DIFFERENT prose element than the one
+this element mounted — an orphan from an earlier mount pass. The
+mount-once guard (now keyed on the provider, which attaches
+synchronously) stops a second provider, but something is still producing
+a second editor whose document is the one on screen.
+
+That is the next thing to chase, and it is the same shape as the bug
+`project_blocks` had: an element operating on a detached tree while the
+document renders from another instance. Instrument which prose element
+receives the `ready` event before changing anything.
+
+Related and unresolved: writes reach the store (verified), but the first
+edit landed misaligned until the seed was corrected to match how `split`
+partitions; that fix is committed but not yet re-verified end to end.
