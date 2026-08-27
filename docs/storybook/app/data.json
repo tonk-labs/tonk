@@ -1394,6 +1394,14 @@
       "result": "—"
     },
     {
+      "claim": "Activation confirmed in another browser reaches the waiting one without a reload (Remain in flight).",
+      "device": "two-actor + second-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-23",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Registered customer sees pending notice and resend recovery (Remain in flight).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -2119,7 +2127,7 @@
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 101
+    "unrun": 102
   },
   "visualCommit": "49a873a23"
 }
