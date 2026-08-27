@@ -46,6 +46,19 @@ thread_local! {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     static DELEGATES: RefCell<Vec<Closure<dyn FnMut(JsValue, JsValue)>>> =
         const { RefCell::new(Vec::new()) };
+    /// The newest answer the dialog has been told about, held so a
+    /// change to the typed address can be answered from what is already
+    /// known rather than only from the next frame.
+    ///
+    /// Two things make the next frame an unreliable place to learn this.
+    /// The answer row is a singleton, so asking about an address it
+    /// already names is a write that changes nothing — and an
+    /// established subscriber is sent a frame only when the poll
+    /// reported a change, so the answer never arrives again. And the
+    /// frame that DID carry it may have landed before anything was
+    /// typed, when it was an answer about nothing on screen.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    static ANSWER: RefCell<Option<Answer>> = const { RefCell::new(None) };
 }
 
 /// The dialog's host id, and the parts the handlers address.
@@ -325,6 +338,33 @@ fn commit_on_enter(host: &Element) {
     anywhere.forget();
 }
 
+/// The event this dialog fires on the top page once the ceremony has
+/// given this browser an account.
+///
+/// The ceremony moved into the cluster, but the account panel under it
+/// still renders from a status it read when it was connected — so
+/// `/settings` went on offering to link an account that now exists, and
+/// `/settings/link` went on refusing the approval it was told to
+/// register for. The panel is not the one that learns this any more, so
+/// it is told: the cluster and the panel share a document, which makes a
+/// DOM event the whole channel. It carries nothing — the panel re-reads
+/// the status, the same way it already re-derives itself on `popstate`,
+/// rather than being handed a state to render.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) const ACCOUNT_CHANGED: &str = "tonk:account-changed";
+
+/// Say that this browser's account changed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn announce_account_change() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(event) = web_sys::Event::new(ACCOUNT_CHANGED) else {
+        return;
+    };
+    let _ = window.dispatch_event(&event);
+}
+
 /// Take the dialog down.
 pub fn close() {
     OPEN.with(|open| open.set(false));
@@ -336,6 +376,9 @@ pub fn close() {
             }
         });
         DELEGATES.with(|held| held.borrow_mut().clear());
+        // The answer belongs to the dialog that asked, so the next one
+        // starts from nothing rather than from what this one was told.
+        ANSWER.with(|held| *held.borrow_mut() = None);
     }
     if let Some(host) = web_sys::window()
         .and_then(|window| window.document())
@@ -359,9 +402,29 @@ fn watch_address(host: &Element) {
     };
     let listener = Closure::<dyn FnMut()>::new(move || {
         schedule_check();
+        // Answer from what is already known, without waiting for the
+        // lookup to come back: an address the dialog has an answer for
+        // is answered now, and the lookup behind the debounce only
+        // confirms it. Without this the dialog waits on a frame that a
+        // repeat answer never produces.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        render_known_answer();
     });
     let _ = input.add_event_listener_with_callback("input", listener.as_ref().unchecked_ref());
     listener.forget();
+}
+
+/// Render the newest answer the dialog holds against what is typed now.
+///
+/// [`show_answer`] is what decides whether it is still about the typed
+/// address, so an answer about something the user has edited away from
+/// renders nothing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn render_known_answer() {
+    let held = ANSWER.with(|held| held.borrow().clone());
+    if let Some(answer) = held {
+        show_answer(&answer);
+    }
 }
 
 thread_local! {
@@ -573,6 +636,7 @@ fn watch_answers(host: &Element) {
             Closure::<dyn FnMut(JsValue, JsValue)>::new(move |payload: JsValue, _opts: JsValue| {
                 let _ = &target;
                 if let Some(answer) = read_answer(&payload, is_delta) {
+                    ANSWER.with(|held| *held.borrow_mut() = Some(answer.clone()));
                     show_answer(&answer);
                 }
             });
@@ -1000,6 +1064,14 @@ pub(crate) fn run_signup_ceremony() {
                 );
             }
             Ok(()) => {
+                // The account exists as of this line — created, or
+                // signed in to — which is the whole of what the panel
+                // under the cluster has to be told. Said here rather
+                // than on the way out: the ceremony can end with the
+                // cluster still up, waiting on an emailed link, and a
+                // panel that shows the account only once the dialog is
+                // dismissed is a panel that disagrees with the page.
+                announce_account_change();
                 // The passkey is the step's record, named by the device
                 // that holds it — "Chrome on macOS" is more use than a
                 // credential id nobody can act on.

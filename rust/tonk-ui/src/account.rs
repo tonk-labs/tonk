@@ -67,13 +67,18 @@ impl CustomElement for TonkAccount {
         bind(this);
         load_status(this.clone());
         // The panel's state is a function of the URL — /settings,
-        // /settings?add=1, /settings/link — and Add account moves
-        // between those with a client-side navigation (a history push
-        // plus a synthetic popstate), never a reload. The top-document
-        // router keeps this element mounted across account routes, so
-        // nothing else re-reads the location: the panel re-derives its
-        // own state whenever history changes under it.
-        {
+        // /settings?add=1, /settings/link — and of whether this browser
+        // has an account. Neither reaches it as a reload.
+        //
+        // Add account moves between those routes with a client-side
+        // navigation (a history push plus a synthetic popstate), and the
+        // top-document router keeps this element mounted across account
+        // routes, so nothing else re-reads the location. The ceremony
+        // that creates or links the account runs in the registration
+        // cluster, which says so with `ACCOUNT_CHANGED` rather than
+        // reaching in here. Both are the same answer: re-derive from
+        // what the worker reports now.
+        for event in ["popstate", crate::register_dialog::ACCOUNT_CHANGED] {
             let host = this.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
                 if host.is_connected() {
@@ -82,7 +87,7 @@ impl CustomElement for TonkAccount {
             });
             if let Some(window) = window() {
                 let _ = window
-                    .add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref());
+                    .add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());
             }
             closure.forget();
         }
