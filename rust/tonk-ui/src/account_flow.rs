@@ -394,7 +394,39 @@ mod tests {
         type_into_register_dialog(driver, email).await?;
         await_register_action(driver, "log in with your passkey").await?;
         click_register_action(driver).await?;
+        // Wait for the ceremony's own receipt before taking the cluster
+        // down, the way signing up does. Dismissing on the click alone
+        // races the assertion the platform is still holding, so a caller
+        // that goes straight on to read the panel is reading it before
+        // there is anything to read.
+        await_settled_row(driver, "passkey").await?;
         dismiss_register_dialog(driver).await?;
+        Ok(())
+    }
+
+    /// Confirm the emailed address from a SECOND TAB, leaving the
+    /// tab that raised the ceremony exactly where it is.
+    ///
+    /// Which is what the emailed link does, and what the cluster
+    /// requires: it is a DOM element with no persistence, so navigating
+    /// the ceremony's own tab to the link and back destroys it, and the
+    /// confirmation comes home to nothing. Activation reaches the
+    /// waiting tab as a fact on profile main, which is why it can cross
+    /// tabs at all.
+    pub(crate) async fn activate_in_another_tab(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        email: &str,
+    ) -> Result<()> {
+        let link = activation_link(env, email).await?;
+        let ceremony = driver.window().await?;
+        let confirm = driver.new_tab().await?;
+        driver.switch_to_window(confirm).await?;
+        goto(driver, &link).await?;
+        element(driver, "#activate-accept").await?.click().await?;
+        element(driver, "#activate-done").await?;
+        driver.close_window().await?;
+        driver.switch_to_window(ceremony).await?;
         Ok(())
     }
 
@@ -1675,13 +1707,24 @@ mod tests {
         // access service refuses to provision a customer that still
         // awaits activation ("the subject's own registration awaits
         // email activation"), so minting before this is asking for a
-        // refusal, not for a link.
-        activate(&driver, &env, "nobody@example.com").await?;
+        // refusal, not for a link. In a second tab, because the cluster
+        // is a DOM element with no persistence and this tab is holding
+        // the ceremony that the share is waiting on.
+        activate_in_another_tab(&driver, &env, "nobody@example.com").await?;
+
+        // Confirmation comes home to the waiting cluster as a fact, and
+        // the ceremony walks the rest of its steps: the address settles
+        // as verified, the name commits, and the closing action is the
+        // thing the share was for.
+        await_row_value(&driver, "email", "verified").await?;
+        type_into_settled_row(&driver, "display name", "Nobody").await?;
+        await_register_action(&driver, "copy share link").await?;
+        click_register_action(&driver).await?;
 
         // ...and THEN the share it interrupted finishes, which is the
         // feature: the spot gains the remote it refused to share
         // without, and the invite link arrives.
-        await_share_link(&driver).await?;
+        await_share_link(&driver, &key).await?;
 
         driver.quit().await?;
         Ok(())
@@ -1757,22 +1800,10 @@ mod tests {
         // 14. And the narrator asks for the emailed link.
         await_narrator_containing(&driver, "confirmation link").await?;
 
-        // 15–17. Open it, accept, and come back.
-        // A NEW TAB, which is what the emailed link opens — and what
-        // the ceremony requires. The cluster is a DOM element with no
-        // persistence, so navigating the space tab away and back would
-        // destroy it, and the confirmation would have nothing left to
-        // settle. Activation reaches the waiting tab as a fact on
-        // profile main, which is why it can cross tabs at all.
-        let link = activation_link(&env, email).await?;
-        let ceremony = driver.window().await?;
-        let confirm = driver.new_tab().await?;
-        driver.switch_to_window(confirm).await?;
-        driver.goto(&link).await?;
-        element(&driver, "#activate-accept").await?.click().await?;
-        element(&driver, "#activate-done").await?;
-        driver.close_window().await?;
-        driver.switch_to_window(ceremony).await?;
+        // 15–17. Open it, accept, and come back — in the tab the
+        // emailed link opens, which is also the only place the cluster
+        // survives it.
+        activate_in_another_tab(&driver, &env, email).await?;
 
         // 18. The email row settles: the address is confirmed.
         //
@@ -2342,57 +2373,49 @@ mod tests {
     }
 
     /// Wait for the interrupted share to finish and hand over a link.
-    async fn await_share_link(driver: &WebDriver) -> Result<String> {
+    ///
+    /// Read from the SPACE's branch, keyed by the space, because that is
+    /// where the mint writes: `enable-sync` attaches the remote and
+    /// asserts `xyz.tonk.invite/url` on the spot it shared. Profile main
+    /// never carries it, so asking there answers `[]` for a share that
+    /// worked — which is exactly the report this used to give. The
+    /// dialog reads the same row to fill the clipboard, so this is the
+    /// row the person ends up with, not a proxy for it.
+    async fn await_share_link(driver: &WebDriver, space: &str) -> Result<String> {
+        let ask = serde_json::json!({
+            "predicate": { "with": {
+                "status": {
+                    "the": "xyz.tonk.invite/status", "as": "Entity", "cardinality": "one"
+                },
+                "url": {
+                    "the": "xyz.tonk.invite/url", "as": "Text",
+                    "cardinality": "one", "optional": true
+                }
+            } },
+            "terms": {
+                "this": space,
+                "status": { "?": { "name": "status" } },
+                "url": { "?": { "name": "url" } }
+            }
+        });
+        let endpoint = format!("/api/repository/{space}/branch/main/query");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
-            let rows = post_json(
-                driver,
-                "/api/profile/branch/main/query",
-                serde_json::json!({
-                    "predicate": { "with": {
-                        "link": {
-                            "the": "xyz.tonk.credential/link",
-                            "as": "Text", "cardinality": "one"
-                        }
-                    } },
-                    "terms": { "link": { "?": { "name": "link" } } }
-                }),
-            )
-            .await?;
+            let rows = post_json(driver, &endpoint, ask.clone()).await?;
             if let Some(link) = rows["body"].as_array().and_then(|rows| {
                 rows.iter().find_map(|row| {
-                    row["fields"]["link"]
+                    row["fields"]["url"]
                         .as_str()
-                        .or_else(|| row["link"].as_str())
-                        .filter(|link| !link.is_empty())
+                        .or_else(|| row["url"].as_str())
+                        .filter(|url| !url.is_empty())
                 })
             }) {
                 return Ok(link.to_owned());
             }
             if tokio::time::Instant::now() >= deadline {
-                // The dialog only says "invite someone into a space"
-                // once it HAS a link, so if the narrator got there and
-                // this did not, the query is looking in the wrong place
-                // rather than the mint having failed. Report what the
-                // branch actually holds.
-                let credential = post_json(
-                    driver,
-                    "/api/profile/branch/main/query",
-                    serde_json::json!({
-                        "predicate": { "with": {
-                            "link": {
-                                "the": "xyz.tonk.credential/link",
-                                "as": "Text", "cardinality": "one"
-                            }
-                        } },
-                        "terms": { "link": { "?": { "name": "link" } } }
-                    }),
-                )
-                .await
-                .unwrap_or_default();
                 return Err(anyhow!(
                     "registering never finished the share it interrupted: \
-                     no invite link. profile main answered: {credential}",
+                     no invite link. {space} answered: {rows}",
                 ));
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
