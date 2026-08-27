@@ -548,29 +548,10 @@ mod tests {
             settings_dark, hub_dark,
             "dark settings tokens drifted from Hub"
         );
-        let hub_heights = driver
-            .execute(
-                r#"document.querySelector('[data-open-settings]').click();
-                    const body = document.querySelector('.hub-settings__body');
-                    document.querySelector('[data-settings-tab="account"]').click();
-                    const account = Math.round(body.getBoundingClientRect().height);
-                    document.querySelector('[data-settings-tab="devices"]').click();
-                    const devices = Math.round(body.getBoundingClientRect().height);
-                    return {account, devices};"#,
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(
-            hub_heights.json()["account"],
-            hub_heights.json()["devices"],
-            "Hub Account and Devices tabs must keep one panel height"
-        );
-
         driver.enter_default_frame().await?;
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        for (window_width, expected_total, expected_rail, expected_body) in
-            [(1200, 576, 144, 432), (607, 432, 108, 324)]
+        for (window_width, expected_total, expected_rail, expected_body) in [(1200, 720, 144, 576)]
         {
             driver.set_window_rect(0, 0, window_width, 900).await?;
             let geometry = driver
@@ -763,12 +744,12 @@ mod tests {
         let desktop = desktop.json();
         assert_eq!(desktop["hostDisplay"], "grid");
         assert_eq!(desktop["hostHeight"], desktop["viewportHeight"]);
-        assert_eq!(desktop["page"], "rgb(236, 236, 236)");
+        assert_eq!(desktop["page"], "rgb(232, 230, 228)");
         assert_eq!(desktop["mainWidth"], 576);
         assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
         assert_eq!(desktop["ceremonyWidth"], 432);
         assert_eq!(desktop["logoWidth"], 132);
-        assert_eq!(desktop["actionHeight"], 44);
+        assert_eq!(desktop["actionHeight"], 36);
         assert_eq!(desktop["heading"], "activate your account");
         assert_eq!(desktop["overflow"], false);
 
@@ -788,7 +769,7 @@ mod tests {
             .await?;
         assert_eq!(done.json()["heading"], "account activated");
         assert_eq!(done.json()["rowWidth"], 432);
-        assert_eq!(done.json()["actionHeight"], 44);
+        assert_eq!(done.json()["actionHeight"], 36);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
         let compact = driver

@@ -1,17 +1,17 @@
 :is(tonk-account, tonk-activate) {
-    --page: #ececec;
-    --ink: #131313;
-    --on-ink: #fbfaef;
-    --soft: #55544f;
-    --ring: rgb(19 19 19 / 85%);
-    --sep: rgb(19 19 19 / 28%);
-    --frost-solid: #fafafa;
-    --panel: #d2d2d2;
-    --wash: rgb(19 19 19 / 6%);
-    --wash-2: rgb(19 19 19 / 12%);
-    --wash-p: rgb(251 250 239 / 16%);
-    --card: #fff;
-    --dim: rgb(16 16 12 / 32%);
+    --page: #e8e6e4;
+    --ink: #38182a;
+    --on-ink: #f7f6f5;
+    --soft: #5b4953;
+    --ring: rgb(56 24 42 / 85%);
+    --sep: rgb(56 24 42 / 28%);
+    --frost-solid: #f7f6f5;
+    --panel: #d0ccc8;
+    --wash: rgb(56 24 42 / 6%);
+    --wash-2: rgb(56 24 42 / 12%);
+    --wash-p: rgb(56 24 42 / 16%);
+    --card: #fcfbfb;
+    --dim: rgb(56 24 42 / 32%);
     --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
     --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -29,18 +29,18 @@
 }
 
 :root.wa-dark :is(tonk-account, tonk-activate) {
-    --page: #161613;
-    --ink: #e9e6d6;
-    --on-ink: #22221c;
-    --soft: #cdcaba;
-    --ring: rgb(233 230 214 / 55%);
-    --sep: rgb(233 230 214 / 28%);
-    --frost-solid: #1e1e19;
-    --panel: #3b3a34;
-    --wash: rgb(251 250 239 / 9%);
-    --wash-2: rgb(251 250 239 / 15%);
-    --wash-p: rgb(19 19 19 / 14%);
-    --card: #26251f;
+    --page: #161313;
+    --ink: #e2dfdd;
+    --on-ink: #221c1d;
+    --soft: #c8c3bf;
+    --ring: rgb(226 223 221 / 55%);
+    --sep: rgb(226 223 221 / 28%);
+    --frost-solid: #1b1718;
+    --panel: #3c3335;
+    --wash: rgb(226 223 221 / 9%);
+    --wash-2: rgb(226 223 221 / 15%);
+    --wash-p: rgb(34 28 29 / 14%);
+    --card: #261f20;
     --dim: rgb(0 0 0 / 45%);
 }
 
@@ -134,7 +134,7 @@
 
 .account__run {
     display: flex;
-    min-height: 44px;
+    min-height: 36px;
     padding: 0 10px 9px 24px;
     align-items: flex-end;
     justify-content: flex-end;
@@ -174,7 +174,7 @@
 .account__editor-row,
 .account__row {
     display: flex;
-    min-height: 44px;
+    min-height: 36px;
     padding: 9px 12px;
     align-items: baseline;
     justify-content: space-between;
@@ -259,10 +259,10 @@
 .account__ghost {
     display: flex;
     width: max-content;
-    min-height: 44px;
+    min-height: 36px;
     margin: 7px 0 0 auto;
     padding: 7px 2px;
-    align-items: center;
+    align-items: baseline;
     gap: 5px;
     border: 0;
     background: transparent;
@@ -275,6 +275,7 @@
     text-decoration: underline;
     text-transform: lowercase;
     text-underline-offset: 3px;
+    white-space: nowrap;
     transition-property: scale;
     transition-duration: 150ms;
     transition-timing-function: ease-out;
@@ -324,9 +325,13 @@
 
 .account__settings {
     display: grid;
-    grid-template-columns: 144px 432px;
-    width: 576px;
+    grid-template-columns: 144px 576px;
+    width: 720px;
     align-items: start;
+}
+
+tonk-account[data-mode="success"] .account {
+    width: min(720px, calc(100vw - 32px));
 }
 
 .account__rail {
@@ -340,12 +345,13 @@
 .account__rail button {
     position: relative;
     display: flex;
-    height: 44px;
+    height: 36px;
     padding: 0 10px 9px;
     align-items: flex-end;
     justify-content: flex-end;
-    border: 1px solid var(--ring);
+    border: 0;
     background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
     color: var(--soft);
     font-family: var(--cond);
     font-size: 13px;
@@ -355,19 +361,8 @@
 }
 
 .account__rail button[aria-selected="true"] {
-    border-right: 0;
     background: var(--panel);
     color: var(--ink);
-}
-
-.account__rail button[aria-selected="true"]::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    right: -1px;
-    width: 1px;
-    height: 100%;
-    background: var(--panel);
 }
 
 .account__settings-body {
@@ -461,12 +456,11 @@ tonk-account[data-mode="success"] .account__working {
 .account__profile-row,
 .account__device-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    min-height: 44px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    min-height: 36px;
     padding: 9px 0;
     align-items: baseline;
     gap: 4px 16px;
-    border-bottom: 1px solid var(--sep);
     font-family: var(--sans);
     font-size: 13px;
 }
@@ -488,7 +482,7 @@ tonk-account[data-mode="success"] .account__working {
 .account__device-current {
     margin-left: 7px;
     color: var(--soft);
-    font-size: 11px;
+    font-size: 13px;
     text-transform: lowercase;
 }
 
@@ -501,10 +495,10 @@ tonk-account[data-mode="success"] .account__working {
 
 .account__button--switch,
 .account__button--remove {
-    grid-row: 1 / span 2;
-    grid-column: 2;
+    grid-row: 1;
+    grid-column: 3;
     min-width: 44px;
-    min-height: 44px;
+    min-height: 36px;
     align-self: center;
     color: var(--ink);
     font-size: 0;
@@ -755,32 +749,15 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     50% { background: linear-gradient(var(--wash-2), var(--wash-2)), var(--frost-solid); }
 }
 
-@media (max-width: 607px) {
+@media (max-width: 751px) {
     .account {
-        width: min(432px, calc(100vw - 32px));
-    }
-
-    .account__settings {
-        grid-template-columns: 108px 324px;
-        width: 100%;
-    }
-
-    .account__status,
-    .account__success > .account__ghost,
-    tonk-account[data-mode="success"] .account__error,
-    tonk-account[data-mode="success"] .account__working {
-        width: 324px;
-    }
-}
-
-@media (max-width: 463px) {
-    :is(tonk-account, tonk-activate) {
-        padding-top: max(24px, env(safe-area-inset-top));
+        width: min(576px, calc(100vw - 32px));
     }
 
     .account__settings {
         display: flex;
         flex-direction: column;
+        width: 100%;
     }
 
     .account__rail {
@@ -793,21 +770,42 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
         flex: 1;
     }
 
-    .account__rail button[aria-selected="true"] {
-        border-right: 1px solid var(--ring);
-        border-bottom: 0;
-    }
-
-    .account__rail button[aria-selected="true"]::after {
-        top: auto;
-        right: 0;
-        bottom: -1px;
+    .account__status,
+    .account__success > .account__ghost,
+    tonk-account[data-mode="success"] .account__error,
+    tonk-account[data-mode="success"] .account__working {
         width: 100%;
-        height: 1px;
+    }
+}
+
+@media (max-width: 463px) {
+    :is(tonk-account, tonk-activate) {
+        padding-top: max(24px, env(safe-area-inset-top));
     }
 
     .account__settings-body {
         height: min(408px, 60vh);
+    }
+
+    .account__profile-row,
+    .account__device-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+        min-height: 44px;
+    }
+
+    .account__profile-meta,
+    .account__device-meta {
+        text-align: left;
+    }
+
+    .account__button--switch,
+    .account__button--remove {
+        grid-row: auto;
+        grid-column: auto;
+        justify-self: start;
+        min-height: 44px;
+        padding-left: 0;
     }
 
     .account__status,

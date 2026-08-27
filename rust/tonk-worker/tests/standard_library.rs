@@ -210,7 +210,7 @@ fn it_keeps_the_hub_on_the_complete_stone_token_contract() {
 }
 
 #[test]
-fn it_builds_one_centered_hub_launcher_with_an_attached_settings_view() {
+fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
     for contract in [
         ".hubcol",
         "width:min(576px, calc(100vw - 32px))",
@@ -263,7 +263,6 @@ fn it_builds_one_centered_hub_launcher_with_an_attached_settings_view() {
     }
     for contract in [
         "<ui-hub-account>",
-        "data-account-handoff",
         "href=\"/space/{subject}\"",
         "class=\"snew-form\"",
     ] {
@@ -300,87 +299,10 @@ fn it_separates_the_account_roster_into_independent_blocks() {
 }
 
 #[test]
-fn it_adapts_the_gooey_settings_hierarchy_to_the_wider_launcher() {
-    let settings = css_rule(PROFILE_LIBRARY, ".hub-settings {");
-    for contract in [
-        "display:grid",
-        "grid-template-columns:144px 432px",
-        "width:576px",
-    ] {
-        assert!(
-            settings.contains(contract),
-            "the desktop settings view must contain `{contract}`",
-        );
-    }
-    let rail = css_rule(PROFILE_LIBRARY, ".hub-settings__rail {");
-    for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
-        assert!(
-            rail.contains(contract),
-            "the desktop settings rail must contain `{contract}`",
-        );
-    }
-    let tab = css_rule(PROFILE_LIBRARY, ".hub-settings__rail button {");
-    for contract in ["border:1px solid var(--ring)", "box-shadow:none"] {
-        assert!(
-            tab.contains(contract),
-            "every settings tab must share the panel's inset edge geometry with `{contract}`",
-        );
-    }
-    let selected_tab = css_rule(
-        PROFILE_LIBRARY,
-        ".hub-settings__rail button[aria-selected=\"true\"] {",
-    );
-    assert!(
-        selected_tab.contains("border-right:0"),
-        "the selected desktop tab must erase only its docking edge",
-    );
-    let body = css_rule(PROFILE_LIBRARY, ".hub-settings__body {");
-    assert!(
-        body.contains("height:clamp(408px, 60vh, 640px)"),
-        "the settings body must preserve its capacity and fixed tab geometry",
-    );
-    let medium = PROFILE_LIBRARY
-        .split("@media (max-width:607px)")
-        .nth(1)
-        .expect("the medium Hub breakpoint");
-    let medium_settings = css_rule(medium, ".hub-settings {");
-    for contract in [
-        "grid-template-columns:108px 324px",
-        "width:100%",
-        "margin-left:0",
-    ] {
-        assert!(
-            medium_settings.contains(contract),
-            "the medium settings view must contain `{contract}`",
-        );
-    }
-    let compact = PROFILE_LIBRARY
-        .split("@media (max-width:463px)")
-        .nth(1)
-        .expect("the compact Hub breakpoint");
-    let compact_rail = css_rule(compact, ".hub-settings__rail {");
-    assert!(
-        compact_rail.contains("width:100%"),
-        "the compact settings tabs must span the full attached panel",
-    );
-    for contract in ["border-right:1px solid var(--ring)", "border-bottom:0"] {
-        assert!(
-            compact.contains(contract),
-            "the compact selected tab must move its erased docking edge with `{contract}`",
-        );
-    }
-    for contract in [
-        "class=\"settings-section\">passkeys",
-        "class=\"settings-section\">account management",
-        "Your passkey replaces a password",
-        "passkeys and account",
-        "manage account",
-    ] {
-        assert!(
-            HUB_ACCOUNT_MARKUP.contains(contract),
-            "the adapted settings hierarchy must contain `{contract}`",
-        );
-    }
+fn it_keeps_the_retired_inline_settings_surface_out_of_the_hub() {
+    assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
+    assert!(!HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
+    assert!(HUB_ACCOUNT_MARKUP.contains("href=\"/settings\""));
 }
 
 #[test]
@@ -402,7 +324,7 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the closed-invitation wall must not expose `{rejected}`",
         );
     }
-    assert!(failure.contains("this invitation is closed"));
+    assert!(failure.contains("this share link is closed"));
     assert!(route.contains("you do not have access to this space"));
     for wall in [("closed", failure), ("no-access", route)] {
         assert_eq!(

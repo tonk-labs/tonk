@@ -445,6 +445,8 @@ pub(crate) fn open_panel(
     let usable = state.borrow().usable_width_px.max(0.0);
     let width = if panel == Panel::Overflow || anchor == Cell::More {
         usable.min(logic::SPACE_CELL_PX)
+    } else if panel == Panel::Share {
+        logic::SHARE_CELL_PX
     } else {
         rung.offset_width() as f64
     };
