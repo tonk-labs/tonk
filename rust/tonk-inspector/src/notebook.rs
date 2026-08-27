@@ -341,6 +341,19 @@ impl Notebook {
             notebook.project_blocks();
             notebook.bind_fences();
             notebook.settling.set(false);
+            // Re-register the shadow watch every tick: the root only exists
+            // once the editor has mounted, which is after this observer was
+            // created. Observing an already-observed target with the same
+            // options is a no-op.
+            if let (Some(observer), Some(root)) =
+                (watched.borrow().as_ref(), notebook.prose.shadow_root())
+            {
+                let init = MutationObserverInit::new();
+                init.set_child_list(true);
+                init.set_subtree(true);
+                let node: web_sys::Node = root.into();
+                let _ = observer.observe_with_options(node.unchecked_ref::<Element>(), &init);
+            }
             // Re-register the pane watch every tick: the pane may have only
             // just arrived, and observing an already-observed target with the
             // same options is a no-op.
@@ -369,6 +382,13 @@ impl Notebook {
         init.set_attributes(true);
         init.set_character_data(true);
         let _ = observer.observe_with_options(&self.prose, &init);
+        // And the shadow root, where the document actually renders. A
+        // MutationObserver does not cross a shadow boundary, so watching only
+        // the host misses every fence.
+        if let Some(root) = self.prose.shadow_root() {
+            let node: web_sys::Node = root.into();
+            let _ = observer.observe_with_options(node.unchecked_ref::<Element>(), &init);
+        }
         // The hidden block rows are siblings of the editor, under the host.
         // Watch the ROW CONTAINER, not the host: the editor also lives under
         // the host, so a subtree observer there would see `project_blocks`'s
@@ -683,10 +703,26 @@ impl Notebook {
             .map(|n| n as i32)
     }
 
+    /// Where the editor's document actually lives.
+    ///
+    /// `<tonk-prose>` renders into a SHADOW ROOT, so the element itself has no
+    /// children and a light-DOM query finds nothing — which is why every fence
+    /// scan came back empty and the cells looked like plain markdown. Falls
+    /// back to the element for a build that ever renders light.
+    fn editor_root(&self) -> Element {
+        self.prose
+            .shadow_root()
+            .map(|root| {
+                let node: web_sys::Node = root.into();
+                node.unchecked_into::<Element>()
+            })
+            .unwrap_or_else(|| self.prose.clone())
+    }
+
     /// Find every `dialog` fence in the document and bind the ones not yet
     /// bound. Idempotent — the stamped id is what makes a re-scan cheap.
     fn bind_fences(self: &Rc<Self>) {
-        let Ok(wrappers) = self.prose.query_selector_all(FENCE_SELECTOR) else {
+        let Ok(wrappers) = self.editor_root().query_selector_all(FENCE_SELECTOR) else {
             return;
         };
         for index in 0..wrappers.length() {
