@@ -1,20 +1,14 @@
-//! `<ui-hub-account>` — the Hub account switcher and settings surface.
+//! `<ui-hub-account>` — the Hub account switcher and settings route.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::Date;
-use tonk_worker_api::{
-    AccountDevice, AccountSummary, IdentifyResponse, ProfileRosterEntry, ProfilesResponse,
-};
+use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
 use wasm_bindgen::JsCast as _;
-use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{
-    Element, Event, HtmlElement, HtmlInputElement, KeyboardEvent, Node, UrlSearchParams, window,
-};
+use web_sys::{Element, Event, HtmlElement, KeyboardEvent, Node, window};
 
 type EventClosure = Closure<dyn FnMut(Event)>;
 type KeyClosure = Closure<dyn FnMut(KeyboardEvent)>;
@@ -33,123 +27,6 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
     {
         element.set_hidden(hidden);
     }
-}
-
-fn format_date(seconds: u64) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let date = Date::new(&JsValue::from_f64(seconds as f64 * 1_000.0));
-    let month = MONTHS
-        .get(date.get_utc_month() as usize)
-        .copied()
-        .unwrap_or("");
-    format!(
-        "{} {month} {}",
-        date.get_utc_date(),
-        date.get_utc_full_year()
-    )
-}
-
-fn render_account_summary(this: &HtmlElement, summary: &AccountSummary) {
-    set_text(
-        this,
-        "[data-account-email]",
-        summary.email.as_deref().unwrap_or("Unavailable"),
-    );
-    if let Some(passkey) = &summary.passkey {
-        set_text(
-            this,
-            "[data-passkey-created]",
-            &format_date(passkey.created_at),
-        );
-        set_text(this, "[data-passkey-created-on]", &passkey.created_on);
-    } else {
-        set_text(this, "[data-passkey-created]", "Not recorded");
-        set_text(this, "[data-passkey-created-on]", "Not recorded");
-    }
-    set_hidden(this, "[data-account-summary-error]", true);
-}
-
-fn revoke_path(device: &AccountDevice) -> String {
-    let params = UrlSearchParams::new().expect("URLSearchParams is available in browsers");
-    params.append("revoke", &device.did);
-    format!(
-        "/settings?{}",
-        params.to_string().as_string().unwrap_or_default()
-    )
-}
-
-fn render_devices(this: &HtmlElement, devices: &[AccountDevice], own: &str) {
-    let Some(document) = window().and_then(|window| window.document()) else {
-        return;
-    };
-    let Some(list) = this.query_selector("[data-device-list]").ok().flatten() else {
-        return;
-    };
-    list.set_inner_html("");
-    if devices.is_empty() {
-        list.set_text_content(Some("No devices found."));
-    }
-
-    for device in devices {
-        let Ok(row) = document.create_element("article") else {
-            continue;
-        };
-        row.set_class_name("device-row");
-        let _ = row.set_attribute("data-device", &device.did);
-        let _ = row.set_attribute("data-status", "active");
-
-        let Ok(heading) = document.create_element("div") else {
-            continue;
-        };
-        heading.set_class_name("device-row__heading");
-        let Ok(name) = document.create_element("strong") else {
-            continue;
-        };
-        name.set_text_content(Some(&device.name));
-        let _ = heading.append_child(&name);
-        let Ok(state) = document.create_element("span") else {
-            continue;
-        };
-        state.set_class_name("device-row__state");
-        let this_device = device.did == own;
-        state.set_text_content(Some(if this_device {
-            "current device"
-        } else {
-            "active"
-        }));
-        let _ = heading.append_child(&state);
-        let _ = row.append_child(&heading);
-
-        let Ok(added) = document.create_element("div") else {
-            continue;
-        };
-        added.set_class_name("device-row__added");
-        added.set_text_content(Some(&format!("added {}", format_date(device.created_at))));
-        let _ = row.append_child(&added);
-
-        if !this_device {
-            let Ok(remove) = document.create_element("button") else {
-                continue;
-            };
-            remove.set_class_name("device-row__remove");
-            let _ = remove.set_attribute("type", "button");
-            let _ = remove.set_attribute("data-revoke", "");
-            let _ = remove.set_attribute("data-navigate", &revoke_path(device));
-            remove.set_text_content(Some("remove access"));
-            let _ = row.append_child(&remove);
-        }
-        let _ = list.append_child(&row);
-    }
-    set_hidden(this, "[data-devices-error]", true);
-}
-
-fn render_local_profile(this: &HtmlElement) {
-    set_hidden(this, "[data-local-profile]", false);
-    set_hidden(this, "[data-attached-account]", true);
-    set_hidden(this, "[data-local-devices]", false);
-    set_hidden(this, "[data-attached-devices]", true);
 }
 
 fn profile_label(profile: &ProfileRosterEntry) -> &str {
@@ -239,11 +116,8 @@ struct UiHubAccount {
     click: Option<EventClosure>,
     keydown: Option<KeyClosure>,
     outside_pointer: Option<EventClosure>,
-    focusout: Option<EventClosure>,
-    settings_opener: Rc<RefCell<Option<HtmlElement>>>,
     generation: Rc<Cell<u64>>,
     action_pending: Rc<Cell<bool>>,
-    display_name_pending: Rc<Cell<bool>>,
 }
 
 impl CustomElement for UiHubAccount {
@@ -276,7 +150,6 @@ impl CustomElement for UiHubAccount {
         load_profiles(this.clone(), self.generation.clone(), token);
 
         let host = this.clone();
-        let settings_opener = self.settings_opener.clone();
         let generation = self.generation.clone();
         let action_pending = self.action_pending.clone();
         let click: EventClosure = Closure::wrap(Box::new(move |event: Event| {
@@ -325,8 +198,9 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
-                open_settings(&host, &settings_opener);
-                load_settings(host.clone(), generation.clone(), generation.get());
+                event.prevent_default();
+                close_menu(&host, false);
+                tonk_host::navigate_to("/settings");
                 return;
             }
             if target
@@ -336,13 +210,6 @@ impl CustomElement for UiHubAccount {
                 .is_some()
             {
                 close_menu(&host, false);
-                close_settings(&host, &settings_opener, false);
-                return;
-            }
-            if let Some(tab) = target.closest("[data-settings-tab]").ok().flatten()
-                && let Some(name) = tab.get_attribute("data-settings-tab")
-            {
-                select_settings_tab(&host, &name);
                 return;
             }
             if let Some(profile) = target.closest("button[data-profile]").ok().flatten()
@@ -367,78 +234,16 @@ impl CustomElement for UiHubAccount {
                 tonk_host::navigate_to(ADD_ACCOUNT_PATH);
                 return;
             }
-            if let Some(navigation) = target
-                .closest("[data-navigate], [data-account-handoff]")
-                .ok()
-                .flatten()
-            {
-                let path = navigation
-                    .get_attribute("data-navigate")
-                    .unwrap_or_else(|| "/settings".into());
-                tonk_host::navigate_to(&path);
-            }
         }));
         let _ = this.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
 
         let host = this.clone();
-        let settings_opener = self.settings_opener.clone();
-        let display_name_pending = self.display_name_pending.clone();
-        let generation_for_key = self.generation.clone();
         let keydown: KeyClosure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
-            let display_name_target = event
-                .target()
-                .and_then(|target| target.dyn_into::<Element>().ok())
-                .is_some_and(|target| {
-                    target
-                        .closest("[data-display-name]")
-                        .ok()
-                        .flatten()
-                        .is_some()
-                });
-            if event.key() == "Enter" && display_name_target {
-                event.prevent_default();
-                commit_display_name(
-                    host.clone(),
-                    display_name_pending.clone(),
-                    generation_for_key.clone(),
-                    generation_for_key.get(),
-                );
-            } else if event.key() == "Escape" {
-                if settings_open(&host) {
-                    event.prevent_default();
-                    close_settings(&host, &settings_opener, true);
-                } else {
-                    close_menu(&host, true);
-                }
+            if event.key() == "Escape" {
+                close_menu(&host, true);
             }
         }));
         let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-
-        let host = this.clone();
-        let display_name_pending = self.display_name_pending.clone();
-        let generation_for_blur = self.generation.clone();
-        let focusout: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            let display_name_target = event
-                .target()
-                .and_then(|target| target.dyn_into::<Element>().ok())
-                .is_some_and(|target| {
-                    target
-                        .closest("[data-display-name]")
-                        .ok()
-                        .flatten()
-                        .is_some()
-                });
-            if display_name_target {
-                commit_display_name(
-                    host.clone(),
-                    display_name_pending.clone(),
-                    generation_for_blur.clone(),
-                    generation_for_blur.get(),
-                );
-            }
-        }));
-        let _ =
-            this.add_event_listener_with_callback("focusout", focusout.as_ref().unchecked_ref());
 
         let host = this.clone();
         let outside_pointer: EventClosure = Closure::wrap(Box::new(move |event: Event| {
@@ -459,21 +264,13 @@ impl CustomElement for UiHubAccount {
 
         self.click = Some(click);
         self.keydown = Some(keydown);
-        self.focusout = Some(focusout);
         self.outside_pointer = Some(outside_pointer);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
         self.generation.set(self.generation.get().wrapping_add(1));
         self.action_pending.set(false);
-        self.display_name_pending.set(false);
         set_action_pending(this, false);
-        if let Ok(Some(input)) = this.query_selector("[data-display-name]")
-            && let Ok(input) = input.dyn_into::<HtmlInputElement>()
-        {
-            input.set_disabled(false);
-            let _ = input.remove_attribute("aria-busy");
-        }
         if let Some(click) = self.click.take() {
             let _ =
                 this.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
@@ -481,10 +278,6 @@ impl CustomElement for UiHubAccount {
         if let Some(keydown) = self.keydown.take() {
             let _ = this
                 .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-        }
-        if let Some(focusout) = self.focusout.take() {
-            let _ = this
-                .remove_event_listener_with_callback("focusout", focusout.as_ref().unchecked_ref());
         }
         if let Some(pointer) = self.outside_pointer.take()
             && let Some(document) = window().and_then(|window| window.document())
@@ -495,7 +288,6 @@ impl CustomElement for UiHubAccount {
             );
         }
         close_menu(this, false);
-        close_settings(this, &self.settings_opener, false);
     }
 
     fn attribute_changed_callback(
@@ -536,84 +328,6 @@ fn load_profiles(this: HtmlElement, generation: Rc<Cell<u64>>, token: u64) {
                 set_hidden(&this, "[data-account-error]", true);
             }
             Err(error) => show_error(&this, "[data-account-error]", &error.message),
-        }
-    });
-}
-
-fn load_settings(this: HtmlElement, generation: Rc<Cell<u64>>, token: u64) {
-    if this.get_attribute("data-active-provider").as_deref() == Some("false") {
-        render_local_profile(&this);
-        return;
-    }
-
-    set_text(&this, "[data-account-email]", "Loading…");
-    set_text(&this, "[data-passkey-created]", "Loading…");
-    set_text(&this, "[data-passkey-created-on]", "Loading…");
-    set_hidden(&this, "[data-account-summary-error]", true);
-    set_hidden(&this, "[data-devices-error]", true);
-
-    let summary_host = this.clone();
-    let summary_generation = generation.clone();
-    spawn_local(async move {
-        let result = tonk_host::get_json("/api/account/summary")
-            .await
-            .and_then(|body| {
-                serde_json::from_str::<AccountSummary>(&body).map_err(|error| {
-                    tonk_host::error::ErrorDetail::new(
-                        tonk_host::error::ErrorKind::Parse,
-                        format!("parse account summary: {error}"),
-                    )
-                })
-            });
-        if !current(&summary_generation, token) {
-            return;
-        }
-        match result {
-            Ok(summary) => render_account_summary(&summary_host, &summary),
-            Err(error) => {
-                set_text(&summary_host, "[data-account-email]", "Unavailable");
-                set_text(&summary_host, "[data-passkey-created]", "Unavailable");
-                set_text(&summary_host, "[data-passkey-created-on]", "Unavailable");
-                show_error(
-                    &summary_host,
-                    "[data-account-summary-error]",
-                    &error.message,
-                );
-            }
-        }
-    });
-
-    spawn_local(async move {
-        let result = async {
-            let identity = tonk_host::get_json("/api/identify")
-                .await
-                .and_then(|body| {
-                    serde_json::from_str::<IdentifyResponse>(&body).map_err(|error| {
-                        tonk_host::error::ErrorDetail::new(
-                            tonk_host::error::ErrorKind::Parse,
-                            format!("parse current identity: {error}"),
-                        )
-                    })
-                })?;
-            let devices = tonk_host::get_json("/api/account/devices")
-                .await
-                .and_then(|body| {
-                    serde_json::from_str::<Vec<AccountDevice>>(&body).map_err(|error| {
-                        tonk_host::error::ErrorDetail::new(
-                            tonk_host::error::ErrorKind::Parse,
-                            format!("parse account devices: {error}"),
-                        )
-                    })
-                })?;
-            Ok::<_, tonk_host::error::ErrorDetail>((devices, identity.did))
-        }
-        .await;
-        if !current(&generation, token) {
-            return;
-        }
-        match result {
-            Ok((devices, own)) => render_devices(&this, &devices, &own),
-            Err(error) => show_error(&this, "[data-devices-error]", &error.message),
         }
     });
 }
@@ -670,62 +384,6 @@ fn activate_profile(
     });
 }
 
-fn commit_display_name(
-    this: HtmlElement,
-    pending: Rc<Cell<bool>>,
-    generation: Rc<Cell<u64>>,
-    token: u64,
-) {
-    if pending.get() {
-        return;
-    }
-    let Some(input) = this
-        .query_selector("[data-display-name]")
-        .ok()
-        .flatten()
-        .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
-    else {
-        return;
-    };
-    let confirmed = input
-        .get_attribute("data-confirmed-name")
-        .unwrap_or_default();
-    let name = input.value().trim().to_owned();
-    if name.is_empty() {
-        input.set_value(&confirmed);
-        return;
-    }
-    if name == confirmed {
-        return;
-    }
-
-    pending.set(true);
-    input.set_disabled(true);
-    let _ = input.set_attribute("aria-busy", "true");
-    set_hidden(&this, "[data-display-name-error]", true);
-    spawn_local(async move {
-        let result = tonk_host::set_account_display_name(&name).await;
-        if !current(&generation, token) {
-            return;
-        }
-        pending.set(false);
-        input.set_disabled(false);
-        let _ = input.remove_attribute("aria-busy");
-        match result {
-            Ok(authoritative) => {
-                input.set_value(&authoritative);
-                let _ = input.set_attribute("data-confirmed-name", &authoritative);
-                let _ = this.set_attribute("data-active-name", &authoritative);
-                set_text(&this, "[data-account-label]", &authoritative);
-            }
-            Err(error) => {
-                input.set_value(&confirmed);
-                show_error(&this, "[data-display-name-error]", &error.message);
-            }
-        }
-    });
-}
-
 fn account_trigger(this: &HtmlElement) -> Option<HtmlElement> {
     this.query_selector("[data-account-trigger]")
         .ok()
@@ -734,18 +392,8 @@ fn account_trigger(this: &HtmlElement) -> Option<HtmlElement> {
 }
 
 fn open_menu(this: &HtmlElement) {
-    let return_view = if settings_open(this) {
-        "settings"
-    } else {
-        "spaces"
-    };
-    let _ = this.set_attribute("data-account-return-view", return_view);
-    set_hidden(this, "[data-settings-view]", true);
     if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
         let _ = spaces.remove_attribute("aria-current");
-    }
-    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
-        let _ = settings.remove_attribute("aria-current");
     }
     if let Some(root) = this.closest(".hubcol").ok().flatten() {
         let _ = root.set_attribute("data-hub-view", "accounts");
@@ -787,140 +435,15 @@ fn close_menu(this: &HtmlElement, restore_focus: bool) {
         return;
     }
 
-    let return_to_settings =
-        this.get_attribute("data-account-return-view").as_deref() == Some("settings");
-    let _ = this.remove_attribute("data-account-return-view");
-    set_hidden(this, "[data-settings-view]", !return_to_settings);
     if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
-        if return_to_settings {
-            let _ = spaces.remove_attribute("aria-current");
-        } else {
-            let _ = spaces.set_attribute("aria-current", "page");
-        }
+        let _ = spaces.set_attribute("aria-current", "page");
     }
-    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
-        if return_to_settings {
-            let _ = settings.set_attribute("aria-current", "page");
-        } else {
-            let _ = settings.remove_attribute("aria-current");
-        }
-    }
-    if let Some(root) = this.closest(".hubcol").ok().flatten() {
-        if return_to_settings {
-            let _ = root.set_attribute("data-hub-view", "settings");
-        } else {
-            let _ = root.remove_attribute("data-hub-view");
-        }
-        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
-            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
-        {
-            stack.set_hidden(return_to_settings);
-        }
-    }
-}
-
-fn settings_open(this: &HtmlElement) -> bool {
-    this.query_selector("[data-settings-view]")
-        .ok()
-        .flatten()
-        .and_then(|element| element.dyn_into::<HtmlElement>().ok())
-        .is_some_and(|view| !view.hidden())
-}
-
-fn open_settings(this: &HtmlElement, opener: &Rc<RefCell<Option<HtmlElement>>>) {
-    close_menu(this, false);
-    *opener.borrow_mut() = this
-        .query_selector("[data-open-settings]")
-        .ok()
-        .flatten()
-        .and_then(|element| element.dyn_into().ok());
-    set_hidden(this, "[data-settings-view]", false);
-    if let Some(root) = this.closest(".hubcol").ok().flatten() {
-        let _ = root.set_attribute("data-hub-view", "settings");
-        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
-            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
-        {
-            stack.set_hidden(true);
-        }
-    }
-    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
-        let _ = spaces.remove_attribute("aria-current");
-    }
-    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
-        let _ = settings.set_attribute("aria-current", "page");
-    }
-    select_settings_tab(this, "account");
-
-    if this.get_attribute("data-active-provider").as_deref() == Some("false") {
-        render_local_profile(this);
-    } else {
-        set_hidden(this, "[data-local-profile]", true);
-        set_hidden(this, "[data-attached-account]", false);
-        set_hidden(this, "[data-local-devices]", true);
-        set_hidden(this, "[data-attached-devices]", false);
-    }
-    if let Some(name) = this.get_attribute("data-active-name")
-        && let Ok(Some(input)) = this.query_selector("[data-display-name]")
-        && let Ok(input) = input.dyn_into::<web_sys::HtmlInputElement>()
-    {
-        input.set_value(&name);
-        let _ = input.set_attribute("data-confirmed-name", &name);
-    }
-}
-
-fn close_settings(
-    this: &HtmlElement,
-    opener: &Rc<RefCell<Option<HtmlElement>>>,
-    restore_focus: bool,
-) {
-    set_hidden(this, "[data-settings-view]", true);
     if let Some(root) = this.closest(".hubcol").ok().flatten() {
         let _ = root.remove_attribute("data-hub-view");
         if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
             && let Ok(stack) = stack.dyn_into::<HtmlElement>()
         {
             stack.set_hidden(false);
-        }
-    }
-    if let Ok(Some(settings)) = this.query_selector("[data-open-settings]") {
-        let _ = settings.remove_attribute("aria-current");
-    }
-    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
-        let _ = spaces.set_attribute("aria-current", "page");
-    }
-    if let Some(opener) = opener.borrow_mut().take()
-        && restore_focus
-    {
-        let _ = opener.focus();
-    }
-}
-
-fn select_settings_tab(this: &HtmlElement, selected: &str) {
-    if let Ok(tabs) = this.query_selector_all("[data-settings-tab]") {
-        for index in 0..tabs.length() {
-            let Some(tab) = tabs
-                .item(index)
-                .and_then(|node| node.dyn_into::<Element>().ok())
-            else {
-                continue;
-            };
-            let active = tab.get_attribute("data-settings-tab").as_deref() == Some(selected);
-            let _ = tab.set_attribute("aria-selected", if active { "true" } else { "false" });
-            let _ = tab.set_attribute("tabindex", if active { "0" } else { "-1" });
-        }
-    }
-    if let Ok(panes) = this.query_selector_all("[data-settings-pane]") {
-        for index in 0..panes.length() {
-            let Some(pane) = panes
-                .item(index)
-                .and_then(|node| node.dyn_into::<Element>().ok())
-            else {
-                continue;
-            };
-            let hidden = pane.get_attribute("data-settings-pane").as_deref() != Some(selected);
-            if let Ok(pane) = pane.dyn_into::<HtmlElement>() {
-                pane.set_hidden(hidden);
-            }
         }
     }
 }
@@ -937,9 +460,7 @@ pub(crate) fn register() {
 
 #[cfg(test)]
 mod tests {
-    use tonk_worker_api::{
-        AccountDevice, AccountSummary, PasskeyMetadata, ProfileRosterEntry, ProfilesResponse,
-    };
+    use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
     use wasm_bindgen::JsCast as _;
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
     use web_sys::{Event, EventInit, HtmlElement, KeyboardEvent, KeyboardEventInit, window};
@@ -990,7 +511,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_mounts_the_complete_header_and_attached_settings_view() {
+    fn it_mounts_the_complete_header_without_an_inline_settings_view() {
         let host = account_element();
 
         assert!(
@@ -1002,8 +523,7 @@ mod tests {
         assert!(
             host.query_selector("[data-settings-view]")
                 .expect("valid selector")
-                .is_some(),
-            "the registered element must mount its attached settings view"
+                .is_none()
         );
         assert_eq!(host.query_selector_all(".hubbar > *").unwrap().length(), 4);
         for rejected in [
@@ -1014,22 +534,11 @@ mod tests {
         ] {
             assert!(host.query_selector(rejected).unwrap().is_none());
         }
-        let display_name = host
-            .query_selector("[data-display-name]")
+        let settings = host
+            .query_selector("a[data-open-settings]")
             .expect("valid selector")
-            .expect("display name input");
-        assert_eq!(
-            display_name.get_attribute("id").as_deref(),
-            Some("display-name")
-        );
-        assert_eq!(
-            display_name.get_attribute("name").as_deref(),
-            Some("display-name")
-        );
-        let copy = host.text_content().unwrap_or_default();
-        assert!(copy.contains("passkeys and account"));
-        assert!(copy.contains("manage account"));
-        assert!(!copy.contains("passkeys and destructive account actions"));
+            .expect("settings route");
+        assert_eq!(settings.get_attribute("href").as_deref(), Some("/settings"));
         host.remove();
     }
 
@@ -1166,7 +675,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_treats_the_account_roster_as_a_tab_and_restores_the_previous_view_on_dismiss() {
+    fn it_treats_the_account_roster_as_a_tab_and_restores_spaces_on_dismiss() {
         let document = window().unwrap().document().unwrap();
         let hubcol: HtmlElement = document.create_element("main").unwrap().dyn_into().unwrap();
         hubcol.set_class_name("hubcol");
@@ -1194,23 +703,8 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        let settings_button: HtmlElement = host
-            .query_selector("[data-open-settings]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        let settings: HtmlElement = host
-            .query_selector("[data-settings-view]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-
-        settings_button.click();
         trigger.click();
         assert!(!menu.hidden());
-        assert!(settings.hidden(), "the roster replaces the settings view");
         assert!(stack.hidden());
         assert_eq!(
             hubcol.get_attribute("data-hub-view").as_deref(),
@@ -1220,7 +714,6 @@ mod tests {
             trigger.get_attribute("aria-current").as_deref(),
             Some("page")
         );
-        assert!(settings_button.get_attribute("aria-current").is_none());
         assert!(
             host.query_selector("[data-return-spaces]")
                 .unwrap()
@@ -1238,17 +731,9 @@ mod tests {
             )
             .unwrap();
         assert!(menu.hidden());
-        assert!(!settings.hidden(), "closing the roster restores settings");
-        assert!(stack.hidden());
-        assert_eq!(
-            hubcol.get_attribute("data-hub-view").as_deref(),
-            Some("settings")
-        );
+        assert!(!stack.hidden(), "closing the roster restores spaces");
+        assert!(hubcol.get_attribute("data-hub-view").is_none());
         assert!(trigger.get_attribute("aria-current").is_none());
-        assert_eq!(
-            settings_button.get_attribute("aria-current").as_deref(),
-            Some("page")
-        );
 
         host.query_selector("[data-return-spaces]")
             .unwrap()
@@ -1258,7 +743,6 @@ mod tests {
             .click();
         trigger.click();
         assert!(!menu.hidden());
-        assert!(settings.hidden());
         assert!(stack.hidden(), "the roster replaces the spaces view");
         assert_eq!(
             trigger.get_attribute("aria-current").as_deref(),
@@ -1273,7 +757,6 @@ mod tests {
         );
         trigger.click();
         assert!(!menu.hidden(), "the active account tab is not a toggle");
-        assert!(settings.hidden());
         assert!(stack.hidden());
         assert_eq!(
             trigger.get_attribute("aria-current").as_deref(),
@@ -1290,7 +773,6 @@ mod tests {
             )
             .unwrap();
         assert!(menu.hidden());
-        assert!(settings.hidden());
         assert!(!stack.hidden(), "dismissing the roster restores spaces");
         assert!(trigger.get_attribute("aria-current").is_none());
         assert_eq!(
@@ -1303,139 +785,6 @@ mod tests {
         );
 
         hubcol.remove();
-    }
-
-    #[wasm_bindgen_test]
-    fn it_renders_truthful_account_and_device_settings_only() {
-        let host = account_element();
-        super::render_account_summary(
-            &host,
-            &AccountSummary {
-                email: Some("ada@example.com".into()),
-                passkey: Some(PasskeyMetadata {
-                    created_at: 1_754_380_800,
-                    created_on: "Chrome on macOS".into(),
-                }),
-            },
-        );
-        assert_eq!(
-            host.query_selector("[data-account-email]")
-                .unwrap()
-                .unwrap()
-                .text_content()
-                .as_deref(),
-            Some("ada@example.com")
-        );
-        assert_eq!(
-            host.query_selector("[data-passkey-created]")
-                .unwrap()
-                .unwrap()
-                .text_content()
-                .as_deref(),
-            Some("5 Aug 2025")
-        );
-        assert_eq!(
-            host.query_selector("[data-passkey-created-on]")
-                .unwrap()
-                .unwrap()
-                .text_content()
-                .as_deref(),
-            Some("Chrome on macOS")
-        );
-
-        let devices = vec![
-            AccountDevice {
-                did: "did:key:current".into(),
-                name: "This browser".into(),
-                created_at: 1_754_380_800,
-            },
-            AccountDevice {
-                did: "did:key:other/one".into(),
-                name: "Other browser".into(),
-                created_at: 1_754_380_800,
-            },
-        ];
-        super::render_devices(&host, &devices, "did:key:current");
-        assert_eq!(
-            host.query_selector_all("[data-device]").unwrap().length(),
-            2
-        );
-        assert_eq!(
-            host.query_selector_all("[data-revoke]").unwrap().length(),
-            1
-        );
-        let revoke = host.query_selector("[data-revoke]").unwrap().unwrap();
-        assert_eq!(
-            revoke.get_attribute("data-navigate").as_deref(),
-            Some("/settings?revoke=did%3Akey%3Aother%2Fone")
-        );
-        let text = host.text_content().unwrap_or_default();
-        assert!(text.contains("current device"));
-        assert!(text.contains("active"));
-        assert_eq!(
-            host.query_selector_all("[data-settings-tab]")
-                .unwrap()
-                .length(),
-            2
-        );
-        for forbidden in ["usage", "upgrade", "metering", "syncing"] {
-            assert!(
-                !text.to_ascii_lowercase().contains(forbidden),
-                "settings must not contain {forbidden}"
-            );
-        }
-        host.remove();
-    }
-
-    #[wasm_bindgen_test]
-    fn it_renders_legacy_unreachable_and_local_profile_states() {
-        let host = account_element();
-        super::render_account_summary(
-            &host,
-            &AccountSummary {
-                email: None,
-                passkey: None,
-            },
-        );
-        assert_eq!(
-            host.query_selector("[data-account-email]")
-                .unwrap()
-                .unwrap()
-                .text_content()
-                .as_deref(),
-            Some("Unavailable")
-        );
-        assert_eq!(
-            host.query_selector("[data-passkey-created]")
-                .unwrap()
-                .unwrap()
-                .text_content()
-                .as_deref(),
-            Some("Not recorded")
-        );
-
-        super::render_local_profile(&host);
-        let local: HtmlElement = host
-            .query_selector("[data-local-profile]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        let attached: HtmlElement = host
-            .query_selector("[data-attached-account]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        assert!(!local.hidden());
-        assert!(attached.hidden());
-        assert!(
-            local
-                .text_content()
-                .unwrap()
-                .contains("This profile is not connected to an account")
-        );
-        host.remove();
     }
 
     #[wasm_bindgen_test]
@@ -1510,62 +859,16 @@ mod tests {
             .dyn_into()
             .unwrap();
         settings.click();
-        let settings_view: HtmlElement = host
-            .query_selector("[data-settings-view]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        assert!(!settings_view.hidden());
-        assert!(stack.hidden());
-        let local_account: HtmlElement = host
-            .query_selector("[data-local-profile]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        assert!(!local_account.hidden());
-        assert!(
-            local_account
-                .text_content()
-                .unwrap()
-                .contains("not connected to an account")
+        assert_eq!(
+            window().unwrap().location().pathname().unwrap(),
+            "/settings"
         );
-        assert!(
-            local_account
-                .query_selector("[data-account-handoff]")
-                .unwrap()
-                .is_some()
-        );
-
-        let devices: HtmlElement = host
-            .query_selector("[data-settings-tab=\"devices\"]")
+        window()
             .unwrap()
+            .history()
             .unwrap()
-            .dyn_into()
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original_url))
             .unwrap();
-        devices.click();
-        let local_devices: HtmlElement = host
-            .query_selector("[data-local-devices]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        assert!(!local_devices.hidden());
-        assert!(
-            local_devices
-                .text_content()
-                .unwrap()
-                .contains("require an account")
-        );
-
-        let spaces: HtmlElement = host
-            .query_selector("[data-return-spaces]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        spaces.click();
         assert!(!stack.hidden());
         assert!(stack.query_selector(".srow[href]").unwrap().is_some());
         assert!(
@@ -1580,7 +883,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_owns_the_attached_settings_view_and_header_lifecycle() {
+    fn it_routes_settings_to_the_top_level_page() {
         let document = window().unwrap().document().unwrap();
         let hubcol: HtmlElement = document.create_element("main").unwrap().dyn_into().unwrap();
         hubcol.set_class_name("hubcol");
@@ -1602,90 +905,28 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        let spaces_button: HtmlElement = host
-            .query_selector("[data-return-spaces]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
+        assert_eq!(settings_button.tag_name(), "A");
+        assert_eq!(
+            settings_button.get_attribute("href").as_deref(),
+            Some("/settings")
+        );
+        let original_url = window().unwrap().location().href().unwrap();
         settings_button.click();
-
-        let settings: HtmlElement = host
-            .query_selector("[data-settings-view]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        let menu: HtmlElement = host
-            .query_selector("[data-account-menu]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        assert!(!settings.hidden());
-        assert!(stack.hidden());
         assert_eq!(
-            hubcol.get_attribute("data-hub-view").as_deref(),
-            Some("settings")
+            window().unwrap().location().pathname().unwrap(),
+            "/settings"
         );
-        assert_eq!(
-            settings_button.get_attribute("aria-current").as_deref(),
-            Some("page")
-        );
-        assert!(spaces_button.get_attribute("aria-current").is_none());
-        assert!(menu.hidden(), "opening settings closes the account menu");
-
-        let devices_tab: HtmlElement = host
-            .query_selector("[data-settings-tab=\"devices\"]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        devices_tab.click();
-        assert_eq!(
-            devices_tab.get_attribute("aria-selected").as_deref(),
-            Some("true")
-        );
-        let account_pane: HtmlElement = host
-            .query_selector("[data-settings-pane=\"account\"]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        let devices_pane: HtmlElement = host
-            .query_selector("[data-settings-pane=\"devices\"]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        assert!(account_pane.hidden());
-        assert!(!devices_pane.hidden());
-
-        spaces_button.click();
-        assert!(settings.hidden());
-        assert!(!stack.hidden());
-        assert!(hubcol.get_attribute("data-hub-view").is_none());
-        assert_eq!(
-            spaces_button.get_attribute("aria-current").as_deref(),
-            Some("page")
-        );
-        assert!(settings_button.get_attribute("aria-current").is_none());
-
-        settings_button.click();
-        let escape_init = KeyboardEventInit::new();
-        escape_init.set_key("Escape");
-        escape_init.set_bubbles(true);
-        settings
-            .dispatch_event(
-                &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &escape_init).unwrap(),
-            )
-            .unwrap();
-        assert!(settings.hidden());
         assert!(
-            document
-                .active_element()
-                .is_some_and(|active| active.is_same_node(Some(&settings_button)))
+            !stack.hidden(),
+            "routing must not swap in the old inline view"
         );
+        assert!(hubcol.get_attribute("data-hub-view").is_none());
+        window()
+            .unwrap()
+            .history()
+            .unwrap()
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original_url))
+            .unwrap();
         hubcol.remove();
     }
 }

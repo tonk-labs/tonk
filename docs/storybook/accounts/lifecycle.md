@@ -36,6 +36,25 @@ root, account repository, and all local spaces. A later same-account login
 reattaches the profile rather than creating a duplicate device row. A different
 account requires a different browser profile or an explicit CLI logout first.
 
+### Settings presentation decision
+
+Account settings open at `/settings` rather than first reproducing a Hub-local
+panel. On desktop, the Account and Devices tabs share a 720 px settings frame
+with a 144 px rail and 576 px body. Both tabs keep the same panel height; the
+selected tab meets the body without a double border, and status notices span
+the body without gaining an extra inset focus seam. Compact layouts stack the
+same content without removing actions.
+
+The account pane separates irreversible deletion into a labelled section. Its
+permanent-delete control is described by both the hosted-data consequence and
+the boundary that spaces created by other people and already-replicated copies
+are not erased.
+
+This is a source-derived presentation decision for `ACCT-B04`, `ACCT-B14`,
+`ACCT-B15`, `WEB-11`, `WEB-12`, and `WEB-13`, pinned to `a3f8657d3`. The
+production-source fixture images were not recaptured and remain pinned to the
+visual commit in `screens.json`.
+
 ## The interaction, event by event
 
 ```mermaid

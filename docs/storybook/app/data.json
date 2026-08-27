@@ -1397,7 +1397,7 @@
       "claim": "Activation confirmed in another browser reaches the waiting one without a reload (Remain in flight).",
       "device": "two-actor + second-browser",
       "file": "verification/accounts.md",
-      "id": "LIFE-23",
+      "id": "LIFE-24",
       "priority": "P1",
       "result": "—"
     },
@@ -1487,6 +1487,14 @@
       "file": "verification/accounts.md",
       "id": "LIFE-22",
       "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Settings geometry preserves one coherent Account/Devices surface (Settings presentation decision).",
+      "device": "browser + keyboard + responsive",
+      "file": "verification/accounts.md",
+      "id": "LIFE-23",
+      "priority": "P2",
       "result": "—"
     },
     {
@@ -1962,6 +1970,14 @@
       "result": "—"
     },
     {
+      "claim": "The share stack remains aligned and contained for a long member roster (Share-menu presentation decision).",
+      "device": "browser + touch",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-05",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
       "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",
       "device": "cli",
       "file": "verification/cli-spaces-ui.md",
@@ -2120,6 +2136,14 @@
       "id": "UI-10",
       "priority": "P3",
       "result": "—"
+    },
+    {
+      "claim": "Boot and transient space loading use one accessible, destination-neutral treatment (Loading presentation decision).",
+      "device": "browser + reduced-motion + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-11",
+      "priority": "P2",
+      "result": "—"
     }
   ],
   "verificationResults": {
@@ -2127,7 +2151,7 @@
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 102
+    "unrun": 105
   },
   "visualCommit": "49a873a23"
 }

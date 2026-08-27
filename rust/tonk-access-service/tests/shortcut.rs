@@ -236,7 +236,7 @@ mod http {
         );
         let body = response.text().await?;
         assert!(
-            body.contains("This invite link is no longer available"),
+            body.contains("This share link is no longer available"),
             "unexpected expired-link page: {body}",
         );
         assert!(

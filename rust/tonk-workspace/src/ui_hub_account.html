@@ -12,7 +12,7 @@
   <button class="hcell hc-view" type="button" data-return-spaces aria-current="page">
     spaces
   </button>
-  <button class="hcell hc-cfg" type="button" data-open-settings aria-label="settings">
+  <a class="hcell hc-cfg" href="/settings" data-open-settings aria-label="settings">
     <span class="settings-word">settings</span>
     <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
       <g stroke="currentColor" stroke-width="1.2">
@@ -22,7 +22,7 @@
       <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
       <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
     </svg>
-  </button>
+  </a>
   <ui-mode-switch></ui-mode-switch>
 </nav>
 
@@ -33,102 +33,3 @@
   </button>
   <div class="account-menu__error" data-account-error role="status" hidden></div>
 </div>
-
-<section class="hub-settings" data-settings-view aria-label="settings" hidden>
-  <nav class="hub-settings__rail" aria-label="settings sections" role="tablist">
-    <button
-      type="button"
-      data-settings-tab="account"
-      role="tab"
-      aria-selected="true"
-      aria-controls="hub-settings-account"
-    >account</button>
-    <button
-      type="button"
-      data-settings-tab="devices"
-      role="tab"
-      aria-selected="false"
-      aria-controls="hub-settings-devices"
-      tabindex="-1"
-    >devices</button>
-  </nav>
-
-  <div class="hub-settings__body">
-    <section
-      id="hub-settings-account"
-      class="hub-settings__pane"
-      data-settings-pane="account"
-      role="tabpanel"
-    >
-      <div data-local-profile hidden>
-        <p class="settings-explanation">This profile is not connected to an account.</p>
-        <div class="settings-row settings-row--action">
-          <span>account</span>
-          <button type="button" class="settings-link" data-account-handoff>
-            create account or log in
-          </button>
-        </div>
-      </div>
-      <div data-attached-account>
-        <label class="settings-row settings-row--field">
-          <span>display name</span>
-          <input
-            id="display-name"
-            name="display-name"
-            type="text"
-            data-display-name
-            autocomplete="name"
-          />
-        </label>
-        <div class="hub-settings__error" data-display-name-error role="status" hidden></div>
-        <div class="settings-row">
-          <span>account email</span>
-          <strong data-account-email>Loading…</strong>
-        </div>
-        <div class="settings-section">passkeys</div>
-        <div class="settings-row">
-          <strong data-passkey-created-on>Loading…</strong>
-          <strong>created <span data-passkey-created>Loading…</span></strong>
-        </div>
-        <p class="settings-explanation">
-          Your passkey replaces a password and may be saved to a device, browser profile, or
-          password manager.
-        </p>
-        <div class="hub-settings__error" data-account-summary-error role="status" hidden></div>
-        <div class="settings-section">account management</div>
-        <div class="settings-row settings-row--action">
-          <span>passkeys and account</span>
-          <button type="button" class="settings-link" data-account-handoff>
-            manage account
-          </button>
-        </div>
-      </div>
-    </section>
-
-    <section
-      id="hub-settings-devices"
-      class="hub-settings__pane"
-      data-settings-pane="devices"
-      role="tabpanel"
-      hidden
-    >
-      <div data-local-devices hidden>
-        <p class="settings-explanation">Attached devices require an account.</p>
-        <div class="settings-row settings-row--action">
-          <span>account</span>
-          <button type="button" class="settings-link" data-account-handoff>
-            create account or log in
-          </button>
-        </div>
-      </div>
-      <div data-attached-devices>
-        <p class="settings-explanation">
-          Devices with access to this account. Device removal continues in account management.
-        </p>
-        <div class="settings-section">devices</div>
-        <div data-device-list aria-live="polite">Loading…</div>
-        <div class="hub-settings__error" data-devices-error role="status" hidden></div>
-      </div>
-    </section>
-  </div>
-</section>
