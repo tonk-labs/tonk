@@ -258,12 +258,22 @@ fn paint(host: &HtmlElement, status: &str) {
     // tag, so this element stays ignorant of who is using it.
     if host.has_attribute("headless") {
         if let Some(parent) = host.parent_element() {
-            let _ = parent.set_attribute("state", disc_state(status));
-            // The disc has three shapes but sync has eight states, so the
-            // precise one travels alongside it for the accessible name —
-            // "revoked" and "conflict" both draw a hollow ring, and losing
-            // the distinction from the label would make them unreportable.
-            let _ = parent.set_attribute("data-sync-status", status);
+            // DEFERRED, not written inline. `paint` runs from
+            // `connected_callback`, and the parent is itself a custom element:
+            // writing an observed attribute on it synchronously re-enters that
+            // element's `attributeChangedCallback` while `custom_elements`
+            // still holds this one's state mutex, which panics with "cannot
+            // recursively acquire mutex" and takes the whole guest down.
+            // A microtask lands the same write once the callback has returned.
+            let status = status.to_owned();
+            spawn_local(async move {
+                let _ = parent.set_attribute("state", disc_state(&status));
+                // The disc has three shapes but sync has eight states, so the
+                // precise one travels alongside it for the accessible name —
+                // "revoked" and "conflict" both draw a hollow ring, and losing
+                // the distinction from the label would make them unreportable.
+                let _ = parent.set_attribute("data-sync-status", &status);
+            });
         }
         return;
     }
