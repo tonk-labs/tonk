@@ -1611,7 +1611,14 @@ mod tests {
         let after = await_credential_count(&driver, &authenticator, 1).await?;
         assert_eq!(after, 1, "the ceremony mints a passkey");
 
-        // ...and the share it interrupted must finish, which is the
+        // The share cannot finish until the address is confirmed: the
+        // access service refuses to provision a customer that still
+        // awaits activation ("the subject's own registration awaits
+        // email activation"), so minting before this is asking for a
+        // refusal, not for a link.
+        activate(&driver, &env, "nobody@example.com").await?;
+
+        // ...and THEN the share it interrupted finishes, which is the
         // feature: the spot gains the remote it refused to share
         // without, and the invite link arrives.
         await_share_link(&driver).await?;
