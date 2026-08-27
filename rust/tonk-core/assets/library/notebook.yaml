@@ -19,18 +19,37 @@
 # Attributes
 # ---------------------------------------------------------------------------
 
-attribute!: &notebook/content
+attribute!: &notebook/order
   description: |
-    The notebook's content as the <tonk-prose> `content` envelope: a
-    versioned wrapper (Tonk-Prose-Version header + HLC ETag) around the
-    markdown body. Stored verbatim and fed back into the editor, so the
-    element drops its own echo by the version and the caret survives.
-  the: xyz.tonk.notebook/content
+    The notebook's block order: block entities as a newline-separated list,
+    in document order. One fact holds the whole sequence, so moving a block
+    rewrites this and touches no block.
+
+    Order lives here rather than as a key on each block because a notebook
+    is authored by one person at a time: the list is trivial to read (it IS
+    the order, no sort) and a move is one write. The tradeoff is that two
+    replicas inserting at once conflict on the list as a whole rather than
+    merging per block; if notebooks become collaborative, this is the field
+    that has to become a per-block position instead.
+  the: xyz.tonk.notebook/order
   as: text
 
 attribute!: &notebook/title
   description: The notebook's title.
   the: xyz.tonk.notebook/title
+  as: text
+
+attribute!: &block/notebook
+  description: The notebook this block belongs to.
+  the: xyz.tonk.notebook.block/notebook
+  as: entity
+
+attribute!: &block/source
+  description: |
+    One block's markdown source: a paragraph, a heading, a list, or a fenced
+    code block. A ```dialog fence is a cell — the element evaluates it and
+    renders the result beneath.
+  the: xyz.tonk.notebook.block/source
   as: text
 
 # ---------------------------------------------------------------------------
@@ -46,64 +65,114 @@ concept!: &notebook
       the: xyz.tonk.notebook/title
       cardinality: one
       as: text
-    content:
-      description: The document content (the versioned `content` envelope).
-      the: xyz.tonk.notebook/content
+    order:
+      description: The block order, newline-separated in document order.
+      the: xyz.tonk.notebook/order
       cardinality: one
       as: text
 
-# A single-field projection of a notebook, so an edit upserts just the
-# content rather than re-binding every field. Without it the persist rule
-# would have to bind `title` too — which the edit command does not carry,
-# and inventing one on every keystroke would clobber the real title.
-concept!: &notebook/content-only
-  description: A notebook's content, as a standalone fact.
+# One block of a notebook. Blocks are the STORED unit: the document the
+# editor shows is these blocks projected (joined with a blank line), and an
+# edit writes back only the blocks that actually changed. Storing the
+# document whole instead would make every keystroke supersede every block,
+# so each revision would claim all of them changed - which guts the
+# checkpoint model, whose whole basis is revisions saying what moved.
+concept!: &notebook/block
+  this: tonk:notebook/block
+  description: One markdown block of a notebook.
   with:
-    content:
-      description: The document content (the versioned `content` envelope).
-      the: xyz.tonk.notebook/content
+    notebook:
+      description: The notebook this block belongs to.
+      the: xyz.tonk.notebook.block/notebook
+      cardinality: one
+      as: entity
+    source:
+      description: The block's markdown source.
+      the: xyz.tonk.notebook.block/source
+      cardinality: one
+      as: text
+
+# Single-field projections, so an edit upserts one field rather than
+# re-binding every field of the concept (the wiki/board pattern).
+concept!: &block/source-only
+  description: A block's source, as a standalone fact.
+  with:
+    source:
+      description: The block's markdown source.
+      the: xyz.tonk.notebook.block/source
+      cardinality: one
+      as: text
+
+concept!: &notebook/order-only
+  description: A notebook's block order, as a standalone fact.
+  with:
+    order:
+      description: The block order, newline-separated in document order.
+      the: xyz.tonk.notebook/order
       cardinality: one
       as: text
 
 # ---------------------------------------------------------------------------
-# Command - one per idle edit. `<tonk-notebook>` forwards the inner
-# `<tonk-prose>` change event, so the detail shape is prose's: the versioned
-# envelope on `event.detail.content`. `subject` carries the document identity
-# off the element's `data-subject`.
+# Command - one per changed block.
+#
+# `<tonk-notebook>` splits the edited document into blocks, diffs them against
+# the ones it projected, and asserts one command per block that actually
+# changed - so a one-character edit writes one block, not the document.
 # ---------------------------------------------------------------------------
 
-command!: &notebook/edit
-  description: Edit a notebook document.
+command!: &block/edit
+  description: Write one notebook block's source.
   with:
     subject:
-      description: The notebook entity, stamped on the editor's data-subject.
+      description: The block entity, stamped on the element's data-subject.
       the: dom.event.current-target.dataset/subject
       as: entity
-    content:
-      description: The new content envelope, read from the change event.
-      the: dom.event.detail/content
+    source:
+      description: The block's new markdown source.
+      the: dom.event.detail/source
+      as: text
+
+# The order command, asserted only when blocks are added, removed or moved -
+# an edit that just changes a block's text leaves the order untouched.
+command!: &notebook/reorder
+  description: Set a notebook's block order.
+  with:
+    subject:
+      description: The notebook entity.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    order:
+      description: The new block order, newline-separated.
+      the: dom.event.detail/order
       as: text
 
 # ---------------------------------------------------------------------------
-# Rule - persist the edit onto the notebook named by the command's subject.
-# Binding `subject` to `?this` writes the (cardinality-one) content in place,
-# so each edit overwrites rather than accumulating.
+# Rules - persist each edit onto the entity its command names.
 # ---------------------------------------------------------------------------
 
 rule!:
-  description: Persist a notebook edit onto its document.
-  assert!: notebook/content-only
+  description: Persist a block edit onto its block.
+  assert!: block/source-only
   when:
-    - assert: notebook/edit
+    - assert: block/edit
       where:
         subject: ?this
-        content: ?content
+        source: ?source
+
+rule!:
+  description: Persist a reorder onto its notebook.
+  assert!: notebook/order-only
+  when:
+    - assert: notebook/reorder
+      where:
+        subject: ?this
+        order: ?order
 
 # ---------------------------------------------------------------------------
-# View - the content is bound as the element's TEXT (between the tags), the
-# way a <textarea> carries its value: written via set_text_content, which is
-# newline- and markup-safe (an attribute value can be normalized in transit,
-# corrupting the multi-line envelope).
+# View - the element reads its blocks from the store, projects them into one
+# markdown document for the embedded <tonk-prose>, and writes back per block.
+# `order` rides as an attribute; the blocks themselves are queried by the
+# element, since a view cannot express "join these in this order".
 # ---------------------------------------------------------------------------
 
 view!:
@@ -111,10 +180,11 @@ view!:
   model: notebook
   display: |
     <tonk-notebook
-      onchange=notebook/edit
       data-subject={this}
+      order={order}
+      title={title}
       style="display: block;"
-    >{content}</tonk-notebook>
+    ></tonk-notebook>
 
 # ---------------------------------------------------------------------------
 # A directory view so `tonk render notebook` (list of notebooks) resolves.
@@ -130,31 +200,43 @@ view/directory!:
     </div>
 
 # ---------------------------------------------------------------------------
-# Seed one notebook so the model resolves on first render. The seed stores a
-# BARE markdown body (no envelope): the editor accepts a bare value as an
-# always-adopt initial document, then stamps versions on subsequent edits.
-# Re-assert this id to reset the document.
+# Seed one notebook so the model resolves on first render: a few blocks and
+# the order naming them. Re-assert these ids to reset the document.
 # ---------------------------------------------------------------------------
 
 notebook!:
   this: id:notebook/scratch
   title: "Scratch"
-  content: |
-    # Scratch
+  order: |
+    id:notebook/scratch/1
+    id:notebook/scratch/2
+    id:notebook/scratch/3
+    id:notebook/scratch/4
 
+notebook/block!:
+  this: id:notebook/scratch/1
+  notebook: id:notebook/scratch
+  source: "# Scratch"
+
+notebook/block!:
+  this: id:notebook/scratch/2
+  notebook: id:notebook/scratch
+  source: >-
     A `dialog` fence is a live cell: it evaluates against this branch and
     renders its results underneath.
 
+notebook/block!:
+  this: id:notebook/scratch/3
+  notebook: id:notebook/scratch
+  source: |-
     ```dialog
     concept:
     ```
 
+notebook/block!:
+  this: id:notebook/scratch/4
+  notebook: id:notebook/scratch
+  source: >-
     Query cells run on their own, because a query has no effect. Cells that
     assert are recognized and held: they need a checkpoint to land in, which
     is not built yet.
-
-    ```dialog
-    person:
-      this: ?who
-      name: ?name
-    ```

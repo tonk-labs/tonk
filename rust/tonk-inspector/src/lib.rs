@@ -19,6 +19,11 @@ pub mod render;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod response;
 
+/// Projecting ordered blocks into one markdown document and back. Pure
+/// string logic with no DOM, so unlike the elements it builds and tests on
+/// every target.
+pub mod blocks;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod element;
 
