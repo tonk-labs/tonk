@@ -61,6 +61,10 @@ const CELL_LANGUAGES: [&str; 2] = ["dialog", "dialog-yaml"];
 /// Class of the wrapper the prose code-block node view builds per fence.
 const FENCE_SELECTOR: &str = ".md-code-block";
 
+/// Gap between projection retries. Short enough that a lost race is not
+/// visible, long enough that eight of them span the displays settling.
+const RETRY_MS: i32 = 60;
+
 /// Class of the result node this element appends into each fence wrapper.
 const RESULT_CLASS: &str = "notebook-cell-result";
 
@@ -278,19 +282,55 @@ impl Notebook {
         // asynchronously, so it is usually absent at connect. Watch the host's
         // direct children (childList WITHOUT subtree, which the editor's own
         // mutations never reach) until it appears, then watch it properly.
-        match self.host.query_selector(".notebook-data") {
-            Ok(Some(rows)) => {
-                let _ = observer.observe_with_options(&rows, &init);
-            }
-            _ => {
-                let shallow = MutationObserverInit::new();
-                shallow.set_child_list(true);
-                let _ = observer.observe_with_options(&self.host, &shallow);
-            }
+        // Watch the container if it is here, and the host's direct children
+        // otherwise so its arrival is noticed. Both, in fact: the container is
+        // usually a static child of the view template (so present now) while
+        // its ROWS render later, deep inside — and a host-level childList
+        // watch never sees those. Registering both is safe because a
+        // MutationObserver deduplicates targets, and the shallow host watch
+        // cannot see the editor's own mutations (they are not direct
+        // children).
+        if let Ok(Some(rows)) = self.host.query_selector(".notebook-data") {
+            let _ = observer.observe_with_options(&rows, &init);
         }
+        let shallow = MutationObserverInit::new();
+        shallow.set_child_list(true);
+        let _ = observer.observe_with_options(&self.host, &shallow);
 
         *retained.borrow_mut() = Some(callback);
         *slot.borrow_mut() = Some(observer);
+
+        // The rows can also land BEFORE the observer registers — the nested
+        // displays resolve on their own schedule, and a MutationObserver only
+        // reports future mutations. Re-check on a few animation frames so a
+        // race that lost is still caught; each pass is idempotent (an
+        // unchanged projection is a no-op) and they stop as soon as one
+        // projects.
+        self.clone().retry_projection(8);
+    }
+
+    /// Re-attempt the projection for a few frames, in case the rows landed
+    /// before the observer was watching.
+    fn retry_projection(self: Rc<Self>, remaining: u32) {
+        if remaining == 0 || self.projected_once.get() {
+            return;
+        }
+        let notebook = self.clone();
+        let callback = Closure::once_into_js(move || {
+            if !notebook.settling.get() {
+                notebook.settling.set(true);
+                notebook.project_blocks();
+                notebook.bind_fences();
+                notebook.settling.set(false);
+            }
+            notebook.retry_projection(remaining - 1);
+        });
+        if let Some(window) = window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.unchecked_ref(),
+                RETRY_MS,
+            );
+        }
     }
 
     /// Read the hidden block rows and project them into the editor.
