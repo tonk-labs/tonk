@@ -140,6 +140,7 @@ impl CustomElement for TonkNotebookElement {
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),
             projected: RefCell::new(String::new()),
+            settling: std::cell::Cell::new(false),
         });
 
         notebook.install_editor_listeners();
@@ -180,6 +181,11 @@ struct Notebook {
     /// The document text last handed to the editor. Guards against writing
     /// back the editor's own echo of a store update.
     projected: RefCell<String>,
+    /// True while this element is mutating its own DOM. The observer watches
+    /// the editor subtree, and binding a fence writes into it (a result slot,
+    /// a `source` attribute), so without this each bind re-enters the
+    /// observer callback that triggered it.
+    settling: std::cell::Cell<bool>,
 }
 
 impl Notebook {
@@ -192,8 +198,13 @@ impl Notebook {
 
         let notebook = self.clone();
         let callback = Closure::wrap(Box::new(move || {
+            if notebook.settling.get() {
+                return;
+            }
+            notebook.settling.set(true);
             notebook.project_blocks();
             notebook.bind_fences();
+            notebook.settling.set(false);
         }) as Box<dyn FnMut()>);
 
         let Ok(observer) = MutationObserver::new(callback.as_ref().unchecked_ref()) else {
@@ -203,9 +214,13 @@ impl Notebook {
         init.set_child_list(true);
         init.set_subtree(true);
         let _ = observer.observe_with_options(&self.prose, &init);
-        // The hidden block rows are siblings of the editor, under the host —
-        // watch there too or a store update never reaches the projection.
-        let _ = observer.observe_with_options(&self.host, &init);
+        // The hidden block rows are siblings of the editor, under the host.
+        // Watch the ROW CONTAINER, not the host: the editor also lives under
+        // the host, so a subtree observer there would see `project_blocks`'s
+        // own write into the editor and re-fire itself forever.
+        if let Ok(Some(rows)) = self.host.query_selector(".notebook-data") {
+            let _ = observer.observe_with_options(&rows, &init);
+        }
 
         *retained.borrow_mut() = Some(callback);
         *slot.borrow_mut() = Some(observer);
@@ -270,8 +285,15 @@ impl Notebook {
         let sources: Vec<String> = ordered.iter().map(|b| b.source.clone()).collect();
         let document = project(&sources);
         *self.blocks.borrow_mut() = ordered;
+        if document == *self.projected.borrow() {
+            return;
+        }
         *self.projected.borrow_mut() = document.clone();
-        self.prose.set_text_content(Some(&document));
+        // `.value`, not text content: the light-DOM text is read once at
+        // mount, while the property routes through `setMarkdown`, which
+        // narrows to the blocks that actually differ and leaves the caret
+        // alone. Writing text content on a live editor would reset it.
+        let _ = js_sys::Reflect::set(&self.prose, &"value".into(), &JsValue::from_str(&document));
     }
 
     /// Commit the editor's current document: split it into blocks, diff
