@@ -297,7 +297,7 @@ mod tests {
         email: &str,
     ) -> Result<()> {
         wait_for_service_worker(driver).await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(driver, "#account-choose-create")
             .await?
@@ -332,7 +332,7 @@ mod tests {
     ) -> Result<()> {
         let link = activation_link(env, email).await?;
         let account = driver.current_url().await?;
-        goto(&driver, &link).await?;
+        goto(driver, &link).await?;
         element(driver, "#activate-accept").await?.click().await?;
         element(driver, "#activate-done").await?;
         // Activation is what unblocks the deferred account work, and the
@@ -344,11 +344,11 @@ mod tests {
         // profile rotation orphans it — both of which surfaced in CI as
         // "no account custody is published for this passkey". Stay on
         // the dashboard until it says the backup settled.
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         wait_for_backup_done(driver).await?;
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
-        goto(&driver, account.as_str()).await?;
+        goto(driver, account.as_str()).await?;
         Ok(())
     }
 
@@ -1134,7 +1134,7 @@ mod tests {
             "approval URL must carry the loopback callback"
         );
 
-        goto(&driver, approval_url.as_str()).await?;
+        goto(driver, approval_url.as_str()).await?;
         if register_first {
             // A browser with no account yet registers before approving:
             // the link page opens on the signup panels, and the ceremony
@@ -1163,7 +1163,7 @@ mod tests {
             // customer confirms its email. Do it now, then come back to
             // the approval.
             activate(driver, env, EMAIL).await?;
-            goto(&driver, approval_url.as_str()).await?;
+            goto(driver, approval_url.as_str()).await?;
         }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
