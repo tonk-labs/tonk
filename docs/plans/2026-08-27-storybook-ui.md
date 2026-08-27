@@ -75,3 +75,4 @@ repository.
 - [x] Reject byte-identical screen artifacts during the Storybook build.
 - [x] Recheck desktop, compact, navigation, detail, role, and gap views in an
   isolated browser.
+- [x] Mirror the `rust/tonk-ui` palette and shipped Tonk logo assets.
