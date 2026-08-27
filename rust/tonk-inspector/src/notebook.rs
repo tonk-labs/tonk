@@ -165,11 +165,19 @@ fn mount(
     {
         // Mount ONCE. `connectedCallback` fires on every re-attach, and
         // `<tonk-display>` stamps `with` after mounting the view — so a second
-        // pass here would build a second provider and a second editor, and the
-        // fresh empty one would win the projection. Keyed on the editor
-        // already being present rather than on a flag, so a re-attach that
-        // kept the subtree is recognized as such.
-        if this.query_selector("tonk-prose").ok().flatten().is_some() {
+        // pass would build a second provider and a second editor, and the
+        // fresh empty one would win the projection.
+        //
+        // Keyed on the PROVIDER, which is attached synchronously below. The
+        // editor is not: it waits for `<tonk-code>` to be defined, so a guard
+        // on `tonk-prose` is still false when the next callback arrives and
+        // every pass mounts again.
+        if this
+            .query_selector("tonk-diagnostics-provider")
+            .ok()
+            .flatten()
+            .is_some()
+        {
             return;
         }
         let Some((repo, branch)) = resolve_context(this) else {
