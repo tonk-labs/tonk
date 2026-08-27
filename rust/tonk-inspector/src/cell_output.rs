@@ -124,7 +124,16 @@ fn render_block(block: &QueryMatchBlock) -> String {
 /// are listed, which is the honest fallback for a result nothing knows how to
 /// present.
 fn render_card(result: &QueryResult) -> String {
-    let title = esc(short_entity(&result.this));
+    // Prefer a `name` over the entity URI: `db:attribute` and `attribute`
+    // are the same row, and the readable one belongs in the title. The URI
+    // stays as the tooltip, so nothing is lost.
+    let named = result
+        .fields
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let title = esc(named.unwrap_or_else(|| short_entity(&result.this)));
     if let Some(model) = model_of(&result.fields) {
         return format!(
             "<div class=\"nb-card nb-card--display\">\
@@ -138,6 +147,9 @@ fn render_card(result: &QueryResult) -> String {
     let fields: String = result
         .fields
         .iter()
+        // `name` is the title now; repeating it as a row wastes a line on
+        // every card.
+        .filter(|(key, _)| key.as_str() != "name")
         .take(FIELD_CAP)
         .map(|(name, value)| {
             format!(
@@ -159,9 +171,10 @@ fn render_card(result: &QueryResult) -> String {
         String::new()
     };
     format!(
-        "<div class=\"nb-card\">\
+        "<div class=\"nb-card\" title=\"{}\">\
            <div class=\"nb-card__title\">{title}</div>{fields}{elided}\
-         </div>"
+         </div>",
+        esc(&result.this)
     )
 }
 
@@ -184,10 +197,21 @@ fn scalar(value: &serde_json::Value) -> String {
         serde_json::Value::Bool(flag) => flag.to_string(),
         serde_json::Value::Number(number) => number.to_string(),
         serde_json::Value::String(text) => {
-            // Long prose (a description) would blow the card open.
             let trimmed = text.trim();
-            if trimmed.chars().count() > 80 {
-                let head: String = trimmed.chars().take(79).collect();
+            // A field whose value is itself serialized JSON (a concept's
+            // `source`, for one) shows as `{"description":"…` — punctuation,
+            // not information. Say what it is instead.
+            if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+            {
+                return match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(parsed) => scalar(&parsed),
+                    Err(_) => "{…}".to_owned(),
+                };
+            }
+            // Long prose would blow the card open.
+            if trimmed.chars().count() > 60 {
+                let head: String = trimmed.chars().take(59).collect();
                 format!("{head}…")
             } else {
                 trimmed.to_owned()
@@ -307,6 +331,33 @@ mod tests {
         assert_eq!(scalar(&json!([1, 2, 3])), "[3]");
         assert_eq!(scalar(&json!({"a": 1})), "{1}");
         assert_eq!(scalar(&json!(null)), "—");
+    }
+
+    /// `db:attribute` and `attribute` are the same row; the readable one
+    /// belongs in the title, and repeating it as a field wastes a line.
+    #[dialog_common::test]
+    fn it_titles_a_card_by_its_name() {
+        let html = render_card(&result(
+            "db:attribute",
+            &[("name", json!("attribute")), ("transient", json!(false))],
+        ));
+        assert!(html.contains(">attribute</div>"));
+        assert!(
+            !html.contains("nb-card__key\">name"),
+            "name is not repeated"
+        );
+        assert!(
+            html.contains("title=\"db:attribute\""),
+            "URI kept as tooltip"
+        );
+    }
+
+    /// A field holding serialized JSON showed as `{"description":"…` —
+    /// punctuation, not information.
+    #[dialog_common::test]
+    fn it_summarises_a_json_encoded_field() {
+        let encoded = json!(r#"{"description":"x","with":{"a":1}}"#);
+        assert_eq!(scalar(&encoded), "{2}");
     }
 
     #[dialog_common::test]
