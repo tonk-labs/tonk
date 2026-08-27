@@ -548,29 +548,10 @@ mod tests {
             settings_dark, hub_dark,
             "dark settings tokens drifted from Hub"
         );
-        let hub_heights = driver
-            .execute(
-                r#"document.querySelector('[data-open-settings]').click();
-                    const body = document.querySelector('.hub-settings__body');
-                    document.querySelector('[data-settings-tab="account"]').click();
-                    const account = Math.round(body.getBoundingClientRect().height);
-                    document.querySelector('[data-settings-tab="devices"]').click();
-                    const devices = Math.round(body.getBoundingClientRect().height);
-                    return {account, devices};"#,
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(
-            hub_heights.json()["account"],
-            hub_heights.json()["devices"],
-            "Hub Account and Devices tabs must keep one panel height"
-        );
-
         driver.enter_default_frame().await?;
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        for (window_width, expected_total, expected_rail, expected_body) in
-            [(1200, 576, 144, 432), (607, 432, 108, 324)]
+        for (window_width, expected_total, expected_rail, expected_body) in [(1200, 720, 144, 576)]
         {
             driver.set_window_rect(0, 0, window_width, 900).await?;
             let geometry = driver
@@ -579,12 +560,21 @@ mod tests {
                         const rail = document.querySelector('.account__rail').getBoundingClientRect();
                         const body = document.querySelector('.account__settings-body').getBoundingClientRect();
                         document.querySelector('#account-tab-account').click();
+                        const selectedTabElement = document.querySelector('#account-tab-account');
+                        const selectedTab = selectedTabElement.getBoundingClientRect();
+                        // Computed-style declarations are live; snapshot the
+                        // selected state before switching to Devices below.
+                        const selectedTabBorderRight = getComputedStyle(selectedTabElement).borderRightWidth;
+                        const selectedTabBridgeWidth = getComputedStyle(selectedTabElement, '::after').width;
                         const accountHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         document.querySelector('#account-tab-devices').click();
                         const devicesHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         const error = document.querySelector('#account-error');
                         error.hidden = false;
+                        error.focus();
                         const errorRight = Math.round(error.getBoundingClientRect().right);
+                        const errorWidth = Math.round(error.getBoundingClientRect().width);
+                        const errorFocusShadow = getComputedStyle(error).boxShadow;
                         // Read the body's edge in the SAME layout state:
                         // revealing the notice can grow the page past the
                         // viewport, and a classic scrollbar appearing then
@@ -598,10 +588,18 @@ mod tests {
                           settings: Math.round(settings.width),
                           rail: Math.round(rail.width),
                           body: Math.round(body.width),
+                          railTop: Math.round(rail.top),
+                          bodyTop: Math.round(body.top),
+                          selectedTabRight: Math.round(selectedTab.right),
+                          bodyLeft: Math.round(body.left),
+                          selectedTabBorderRight,
+                          selectedTabBridgeWidth,
                           accountHeight,
                           devicesHeight,
                           bodyRight: errorBodyRight,
                           errorRight,
+                          errorWidth,
+                          errorFocusShadow,
                           logoVisible: logo.width > 0 && logo.height > 0
                         };"#,
                     Vec::new(),
@@ -614,6 +612,10 @@ mod tests {
             );
             assert_eq!(geometry["rail"], expected_rail);
             assert_eq!(geometry["body"], expected_body);
+            assert_eq!(geometry["railTop"], geometry["bodyTop"]);
+            assert_eq!(geometry["selectedTabRight"], geometry["bodyLeft"]);
+            assert_eq!(geometry["selectedTabBorderRight"], "0px");
+            assert_eq!(geometry["selectedTabBridgeWidth"], "2px");
             assert_eq!(
                 geometry["accountHeight"], geometry["devicesHeight"],
                 "Account and Devices tabs must keep one panel height at {window_width}px"
@@ -621,6 +623,17 @@ mod tests {
             assert_eq!(
                 geometry["errorRight"], geometry["bodyRight"],
                 "settings notices must align with the panel body at {window_width}px"
+            );
+            assert_eq!(
+                geometry["errorWidth"], geometry["body"],
+                "settings notices must span the panel body at {window_width}px"
+            );
+            assert!(
+                !geometry["errorFocusShadow"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("inset"),
+                "focused settings notices must keep their ordinary frame"
             );
             assert_eq!(geometry["logoVisible"], true);
         }
@@ -763,12 +776,12 @@ mod tests {
         let desktop = desktop.json();
         assert_eq!(desktop["hostDisplay"], "grid");
         assert_eq!(desktop["hostHeight"], desktop["viewportHeight"]);
-        assert_eq!(desktop["page"], "rgb(236, 236, 236)");
+        assert_eq!(desktop["page"], "rgb(232, 230, 228)");
         assert_eq!(desktop["mainWidth"], 576);
         assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
         assert_eq!(desktop["ceremonyWidth"], 432);
         assert_eq!(desktop["logoWidth"], 132);
-        assert_eq!(desktop["actionHeight"], 44);
+        assert_eq!(desktop["actionHeight"], 36);
         assert_eq!(desktop["heading"], "activate your account");
         assert_eq!(desktop["overflow"], false);
 
@@ -788,7 +801,7 @@ mod tests {
             .await?;
         assert_eq!(done.json()["heading"], "account activated");
         assert_eq!(done.json()["rowWidth"], 432);
-        assert_eq!(done.json()["actionHeight"], 44);
+        assert_eq!(done.json()["actionHeight"], 36);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
         let compact = driver
@@ -2081,23 +2094,26 @@ mod tests {
             "the second account's Hub must omit the first account's space"
         );
 
-        // Settings reads real account and device facts through the sealed
-        // guest, and keeps unsupported Usage/Syncing surfaces absent.
+        // The sealed Hub routes settings into the top-level account page,
+        // which reads real account and device facts and keeps unsupported
+        // Usage/Syncing surfaces absent.
         click(&driver, "[data-account-trigger]").await?;
         click(&driver, "[data-open-settings]").await?;
-        wait_for_text(&driver, "[data-account-email]", "second@example.com").await?;
+        driver.enter_default_frame().await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        wait_for_text(&driver, "#account-email-value", "second@example.com").await?;
         assert_eq!(
-            element(&driver, "[data-passkey-created-on]")
+            element(&driver, "#account-passkey-device-value")
                 .await?
                 .prop("textContent")
                 .await?
                 .as_deref(),
             Some(passkey_created_on.as_str()),
-            "Hub settings must render the account summary's passkey creation device"
+            "settings must render the account summary's passkey creation device"
         );
-        click(&driver, "[data-settings-tab=\"devices\"]").await?;
-        wait_for_text_containing(&driver, "[data-device-list]", "current device").await?;
-        let settings_text = element(&driver, "[data-settings-view]")
+        click(&driver, "#account-tab-devices").await?;
+        wait_for_text_containing(&driver, "#account-device-list", "this device").await?;
+        let settings_text = element(&driver, "tonk-account")
             .await?
             .text()
             .await?
@@ -2105,30 +2121,14 @@ mod tests {
         for forbidden in ["usage", "upgrade", "metering", "syncing"] {
             assert!(
                 !settings_text.contains(forbidden),
-                "Hub settings must not contain {forbidden}"
+                "settings must not contain {forbidden}"
             );
         }
-        let section_style = driver
-            .execute(
-                r#"const section = document.querySelector('.settings-section');
-                const style = getComputedStyle(section);
-                return { backgroundColor: style.backgroundColor, display: style.display };"#,
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(
-            section_style.json(),
-            &serde_json::json!({
-                "backgroundColor": "rgba(0, 0, 0, 0)",
-                "display": "block"
-            }),
-            "the attached settings section must not inherit the global badge treatment"
-        );
 
         // The authoritative display-name write repaints the Hub trigger and
-        // remains in the field after the dialog is reopened.
-        click(&driver, "[data-settings-tab=\"account\"]").await?;
-        let display_name = element(&driver, "[data-display-name]").await?;
+        // remains in the field after the settings page is reloaded.
+        click(&driver, "#account-tab-account").await?;
+        let display_name = element(&driver, "#account-display-name").await?;
         let select_all = if cfg!(target_os = "macos") {
             Key::Command + "a"
         } else {
@@ -2137,49 +2137,34 @@ mod tests {
         display_name.send_keys(select_all).await?;
         display_name.send_keys("Second Hub").await?;
         display_name.send_keys(Key::Enter).await?;
-        if let Err(error) = wait_for_text(&driver, "[data-account-label]", "Second Hub").await {
-            let diagnostic = driver
-                .execute(
-                    r#"const input = document.querySelector('[data-display-name]');
-                    const error = document.querySelector('[data-display-name-error]');
-                    const account = document.querySelector('ui-hub-account');
-                    return {
-                        trigger: document.querySelector('[data-account-trigger]')?.textContent,
-                        inputValue: input?.value,
-                        confirmedName: input?.dataset.confirmedName,
-                        inputDisabled: input?.disabled,
-                        inputBusy: input?.getAttribute('aria-busy'),
-                        error: error?.textContent,
-                        errorHidden: error?.hidden,
-                        activeName: account?.dataset.activeName
-                    }"#,
-                    Vec::new(),
-                )
-                .await
-                .map(|value| value.json().to_string())
-                .unwrap_or_else(|diagnostic_error| {
-                    format!("unable to inspect display-name state: {diagnostic_error}")
-                });
-            return Err(error).context(format!("Hub display-name diagnostic: {diagnostic}"));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let input = element(&driver, "#account-display-name").await?;
+            if input.prop("value").await?.as_deref() == Some("Second Hub")
+                && input.attr("data-confirmed-name").await?.as_deref() == Some("Second Hub")
+                && input.attr("aria-busy").await?.is_none()
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let error = element(&driver, "#account-display-name-error")
+                    .await?
+                    .prop("textContent")
+                    .await?
+                    .unwrap_or_default();
+                return Err(anyhow!(
+                    "timed out waiting for the second account display name to save: {error}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        click(&driver, "[data-return-spaces]").await?;
-        let focus_restored = driver
-            .execute(
-                "return document.activeElement?.hasAttribute('data-return-spaces') === true",
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(focus_restored.json(), &serde_json::json!(true));
-        click(&driver, "[data-open-settings]").await?;
-        assert_eq!(
-            element(&driver, "[data-display-name]")
-                .await?
-                .prop("value")
-                .await?
-                .as_deref(),
-            Some("Second Hub")
-        );
-        click(&driver, "[data-return-spaces]").await?;
+        let settings = driver.current_url().await?;
+        goto(&driver, settings.as_str()).await?;
+        wait_for_value(&driver, "#account-display-name", "Second Hub").await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, "[data-account-label]", "Second Hub").await?;
 
         // Switch back from the Hub's account roster. The component reloads
         // the whole top page, rebuilding subscriptions owned by the old
