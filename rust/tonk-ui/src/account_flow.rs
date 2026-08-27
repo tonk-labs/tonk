@@ -2284,11 +2284,18 @@ mod tests {
                         && bar.shadowRoot.querySelector('[data-cell="share"]');
                     if (!cell) return { error: "no share cell" };
                     if (cell.getAttribute("aria-expanded") !== "true") cell.click();
-                    // The rows are slotted light children.
+                    // The rows are slotted light children, and each is a
+                    // `<tonk-mi>` whose click listener sits on `.row`
+                    // INSIDE its own shadow root — picking a row is the
+                    // stack's only verb, and that is where it is heard.
+                    // Clicking the host element reaches no listener, so
+                    // the stack rendered, hovered, and did nothing.
                     const row = bar.querySelector(marker);
                     if (!row) return { error: "no row matching " + marker };
                     if (row.hasAttribute("hidden")) return { error: "row is hidden: " + marker };
-                    row.click();
+                    const inner = row.shadowRoot && row.shadowRoot.querySelector(".row");
+                    if (!inner) return { error: "row has no shadow .row: " + marker };
+                    inner.click();
                     return { ok: true };
                     "##,
                     vec![serde_json::json!(marker)],
