@@ -176,7 +176,7 @@ view/directory!:
         subject={this}
         data-notebook={this}
         data-order={order}
-        data-title={title}></div>
+        data-title={title}><a class="notebook-index__item" href="notebook/{this}">{title}</a></div>
     </div>
 
 # The block rows the element reads. A hidden <tonk-display> per model
@@ -234,24 +234,20 @@ concept!: &notebook/index
 # which is the row-per-notebook shape the element already reads. Each row
 # links to `notebook/{entity}` — a relative href, so it resolves under
 # whatever space path the page is served at.
+# The index renders the same `id:notebook/rows` directory view the notebook
+# page uses for its data pane — a model may have only ONE directory view, and
+# a second would win arbitrarily, breaking whichever page lost.
+#
+# Those rows carry `data-notebook` and `data-title`, so the index is CSS over
+# the same markup rather than a competing view: the row becomes a link
+# through `data-title` and an anchor the stylesheet draws.
 view!:
   this: id:notebook/index/view
   model: tonk:notebook/index
   display: |
     <div class="notebook-index">
       <h1>Notebooks</h1>
-      <tonk-display model=tonk:notebook view=id:notebook/link></tonk-display>
-    </div>
-
-# One row of the index.
-view/directory!:
-  this: id:notebook/link
-  model: tonk:notebook
-  display: |
-    <div class="notebook-index__list">
-      <a class="notebook-index__item" href="notebook/{this}">
-        <span class="notebook-index__title">{title}</span>
-      </a>
+      <tonk-display model=tonk:notebook></tonk-display>
     </div>
 
 route!: &route/notebook

@@ -2472,6 +2472,10 @@ tonk-code:focus-within {
   font-size: var(--wa-font-size-xl, 1.5rem);
   margin: 0 0 var(--wa-space-m, 1rem);
 }
+/* The row this draws is the same one the notebook page hides in its data
+   pane (`.notebook-data[hidden]`), so the link is invisible there and shown
+   only here, where the index gives it a home. */
+.notebook-index .notebook-row { display: block; }
 .notebook-index__item {
   display: block;
   padding: var(--wa-space-s, 0.75rem) var(--wa-space-m, 1rem);
@@ -2483,3 +2487,4 @@ tonk-code:focus-within {
   background: var(--wa-color-neutral-fill-quiet);
 }
 .notebook-index__title { font-weight: 500; }
+.notebook-index .notebook-block-rows { display: none; }
