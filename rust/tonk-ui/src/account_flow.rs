@@ -1709,10 +1709,16 @@ mod tests {
         await_narrator_containing(&driver, "invite someone into a space").await?;
 
         // 23. And it really is an invite.
-        let invite = clipboard_text(&driver).await?;
+        //
+        // Read from the fact the mint wrote, not from the clipboard:
+        // `navigator.clipboard.readText()` needs a permission the
+        // harness's Chrome does not grant, so asking it answers "" for
+        // reasons that have nothing to do with the share. The copied
+        // text comes from this same row.
+        let invite = await_invite_link(&driver, &key).await?;
         assert!(
             invite.contains("/join") || invite.contains("/@/"),
-            "the copied link must be an invite, got {invite:?}",
+            "the minted link must be an invite, got {invite:?}",
         );
 
         // 24–25. A fresh profile opening it lands in the same space.
@@ -2058,18 +2064,51 @@ mod tests {
         }
     }
 
-    /// What the page put on the clipboard.
-    async fn clipboard_text(driver: &WebDriver) -> Result<String> {
-        let text = driver
-            .execute_async(
-                r##"
-                const done = arguments[arguments.length - 1];
-                navigator.clipboard.readText().then(done).catch(() => done(""));
-                "##,
-                Vec::new(),
+    /// The invite link the mint recorded for `space`.
+    ///
+    /// The same row the ceremony copies from, queried directly. What
+    /// reaches the clipboard is not observable here (the permission is
+    /// not granted to the harness), so the fact behind it is what the
+    /// assertion can stand on.
+    async fn await_invite_link(driver: &WebDriver, space: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let rows = post_json(
+                driver,
+                &format!("/api/repository/{space}/branch/main/query"),
+                serde_json::json!({
+                    "predicate": { "with": {
+                        "status": {
+                            "the": "xyz.tonk.invite/status",
+                            "as": "Entity", "cardinality": "one"
+                        },
+                        "url": {
+                            "the": "xyz.tonk.invite/url", "as": "Text",
+                            "cardinality": "one", "optional": true
+                        }
+                    } },
+                    "terms": {
+                        "this": space,
+                        "status": { "?": { "name": "status" } },
+                        "url": { "?": { "name": "url" } }
+                    }
+                }),
             )
-            .await?;
-        Ok(text.json().as_str().unwrap_or_default().to_owned())
+            .await
+            .unwrap_or_default();
+            if let Some(url) = rows["body"]
+                .as_array()
+                .and_then(|rows| rows.first())
+                .and_then(|row| row["url"].as_str())
+                .filter(|url| !url.is_empty())
+            {
+                return Ok(url.to_owned());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the share never recorded an invite link"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     /// The cluster's action row label, or empty while it is folded.
