@@ -51,10 +51,10 @@ thread_local! {
 /// The dialog's host id, and the parts the handlers address.
 const DIALOG_ID: &str = "tonk-register";
 const EMAIL_INPUT: &str = "#tonk-register-email";
-const SUBMIT: &str = "#tonk-register-submit";
+const ACTION: &str = "#tonk-register-action";
 const DISMISS: &str = "#tonk-register-dismiss";
 const STATUS: &str = "#tonk-register-status";
-const LEDE: &str = "#tonk-register-lede";
+const EMAIL_ROW: &str = "#tonk-register-email-row";
 
 /// `wa-*` throughout, the same vocabulary the rest of the app uses. The
 /// loader on this page auto-registers any `<wa-…>` it finds, so these
@@ -64,82 +64,160 @@ const LEDE: &str = "#tonk-register-lede";
 /// binds to: the browser offers a discoverable passkey inside this
 /// input's autofill. `wa-input` forwards the attribute to the inner
 /// native input, which is where it has to land.
-const DIALOG_HTML: &str = r#"
+const DIALOG_HTML: &str = r##"
 <style>
-  /* Every state's copy is in the markup; the answer selects which of it
-     shows. The one write is `data-state` on the host, so what a state
-     looks like is decided here rather than by DOM writes scattered
-     through the handler.
+  /* The cluster, from `fabb/onboard.html`: rows stack over a dimmed
+     page and the surface itself never dims. Each row settles into a
+     record as its step completes, so what you have already answered
+     stays legible above what you are answering now.
 
-     `[data-when]` lists the states a line belongs to, matched on word
-     boundaries so `pending` does not also match `pending-ceremony`. */
-  #tonk-register [data-when] { display: none; }
-  /* Before any answer there is no `data-state`, so the neutral label
-     has to show on its own. Without this the button collapses to
-     nothing and the dialog renders with no footer at all. */
-  #tonk-register:not([data-state]) [data-when~="idle"],
-  #tonk-register[data-state=""] [data-when~="idle"],
-  #tonk-register[data-state="unregistered"] [data-when~="unregistered"],
-  #tonk-register[data-state="active"] [data-when~="active"],
-  #tonk-register[data-state="pending"] [data-when~="pending"],
-  #tonk-register[data-state="suspended"] [data-when~="suspended"],
-  #tonk-register[data-state="invalid"] [data-when~="invalid"],
-  #tonk-register[data-state="unavailable"] [data-when~="unavailable"],
-  #tonk-register[data-state="registering"] [data-when~="registering"],
-  #tonk-register[data-state="checking"] [data-when~="checking"] {
-    display: revert;
-  }
-
-  /* Nothing to submit: no answer yet, or an answer that no ceremony
-     would help with. */
-  #tonk-register:not([data-state]) #tonk-register-submit,
-  #tonk-register[data-state=""] #tonk-register-submit,
-  #tonk-register[data-state="checking"] #tonk-register-submit,
-  #tonk-register[data-state="registering"] #tonk-register-submit,
-  #tonk-register[data-state="suspended"] #tonk-register-submit,
-  #tonk-register[data-state="invalid"] #tonk-register-submit,
-  #tonk-register[data-state="unavailable"] #tonk-register-submit {
+     Not a `wa-dialog`: this is a column of blocks, and the way out is a
+     bare word at the foot rather than a titlebar close. */
+  #tonk-register-dim {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(19, 19, 19, .52);
+    opacity: 0; transition: opacity .4s cubic-bezier(.2, 0, 0, 1);
     pointer-events: none;
-    opacity: .5;
+  }
+  #tonk-register-dim.on { opacity: 1; pointer-events: auto; }
+
+  #tonk-register-cluster {
+    position: fixed; inset: 0; z-index: 21; overflow: auto;
+    transition: opacity .4s cubic-bezier(.2, 0, 0, 1);
+  }
+  #tonk-register-cluster[hidden] { display: none; }
+
+  #tonk-register .ocol {
+    width: min(432px, calc(100vw - 48px));
+    margin: 22vh auto 80px;
+    display: flex; flex-direction: column;
+  }
+  #tonk-register .ostack { display: flex; flex-direction: column; gap: 7px; }
+
+  /* The dim does the separating, so the blocks need no blur of their own. */
+  #tonk-register .mblk {
+    background: var(--wa-color-surface-raised, rgba(255, 255, 255, .92));
+    color: var(--wa-color-text-normal, #131313);
+    box-shadow: 0 0 0 1px var(--wa-color-neutral-fill-loud, rgba(19, 19, 19, .85));
   }
 
-  #tonk-register-status {
-    margin: .6rem 0 0;
-    min-height: 1.2em;
-    font-size: .9em;
-    color: var(--wa-color-text-quiet, #9a9aa0);
+  #tonk-register .m-head {
+    height: 36px; display: flex; align-items: flex-end;
+    padding: 0 16px 9px; font-size: 13px; white-space: nowrap;
+  }
+
+  /* One row per step. `pre` is the folded state a row unfolds out of. */
+  #tonk-register .orow {
+    position: relative; height: 36px;
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 16px; padding: 0 10px 9px 16px; overflow: hidden;
+    transition: height .4s cubic-bezier(.2, 0, 0, 1),
+                opacity .4s cubic-bezier(.2, 0, 0, 1),
+                padding-top .4s cubic-bezier(.2, 0, 0, 1),
+                padding-bottom .4s cubic-bezier(.2, 0, 0, 1);
+  }
+  #tonk-register .orow.pre,
+  #tonk-register .obtn.pre {
+    height: 0 !important; opacity: 0;
+    padding-top: 0; padding-bottom: 0; pointer-events: none;
+  }
+  #tonk-register .orow .k {
+    color: var(--wa-color-text-quiet, #55544f);
+    white-space: nowrap; display: flex; align-items: flex-end; gap: 8px;
+  }
+  #tonk-register .orow .v {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; text-align: right;
+  }
+  /* Descender room for the clip, handed straight back so the seat holds. */
+  #tonk-register .orow .v,
+  #tonk-register .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
+
+  /* The editor: inline text, no caret of its own, a block cursor
+     hard-blinking on the tail. The cursor IS the affordance. */
+  #tonk-register .ed {
+    outline: none; caret-color: transparent; min-width: 2px; white-space: nowrap;
+  }
+  #tonk-register .ed:empty::before { content: "\200b"; }
+  #tonk-register .cur {
+    display: inline-block; width: 7px; height: 13px;
+    background: var(--wa-color-text-normal, #131313);
+    vertical-align: -1px; margin-left: 1px;
+    animation: tonk-register-blink 1.05s steps(1, end) infinite;
+  }
+  @keyframes tonk-register-blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+
+  /* An action step: solid ink, full rung, the word bottom-right. While a
+     ceremony is out of our hands the block blinks rather than spins. */
+  #tonk-register .obtn {
+    display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px;
+    height: 36px; padding: 0 10px 9px 24px; overflow: hidden;
+    background: var(--wa-color-neutral-fill-loud, #131313);
+    color: var(--wa-color-neutral-on-loud, #fbfaef);
+    box-shadow: 0 0 0 1px var(--wa-color-neutral-fill-loud, #131313);
+    font-size: 13px; cursor: pointer; white-space: nowrap; border: 0;
+    transition: height .4s cubic-bezier(.2, 0, 0, 1),
+                opacity .4s cubic-bezier(.2, 0, 0, 1);
+  }
+  #tonk-register .obtn.wait {
+    cursor: default;
+    animation: tonk-register-wait 2.4s cubic-bezier(.2, 0, 0, 1) infinite;
+  }
+  @keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
+
+  /* A mistake flashes rather than colouring: attention is earned by
+     blinking, never by hue. */
+  #tonk-register .flash { animation: tonk-register-flash .45s cubic-bezier(.2, 0, 0, 1) 2; }
+  @keyframes tonk-register-flash { 50% { opacity: .55 } }
+
+  /* The narrator: one block whose sentence changes with the step. */
+  #tonk-register .oexp {
+    margin-top: 7px; min-height: 36px; padding: 10px 16px 11px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  #tonk-register .oexp p {
+    margin: 0; font-size: 13px; line-height: 1.55;
+    color: var(--wa-color-text-quiet, #55544f);
+  }
+  #tonk-register .oexp p b {
+    font-weight: 600; color: var(--wa-color-text-normal, #131313);
+  }
+
+  /* The way out: the quietest thing on screen. */
+  #tonk-register .ghost {
+    align-self: flex-end; margin-top: 10px; background: none; border: 0;
+    font-size: 13px; cursor: pointer;
+    color: var(--wa-color-text-normal, #131313);
+    text-decoration: underline; text-underline-offset: 3px;
   }
 </style>
-<wa-dialog id="tonk-register-dialog" label="Share needs a hosted copy"
-           style="--width: 26rem">
-  <p id="tonk-register-lede" style="margin:0 0 1rem">
-    Sharing a spot means someone else can open it, so it needs a copy
-    that our service hosts. Linking it to an account is what lets us
-    host one.
-  </p>
-  <form id="tonk-register-form">
-    <wa-input id="tonk-register-email" name="email" type="email"
-              label="Email" placeholder="you@example.com"
-              autocomplete="username webauthn" required
-              autofocus></wa-input>
-    <p id="tonk-register-status">
-      <span data-when="checking">Checking…</span>
-      <span data-when="active">You already have an account. Sign in to finish sharing.</span>
-      <span data-when="pending">This address is enrolled. Sign in, then confirm your email.</span>
-      <span data-when="suspended">This account is suspended, so it cannot host a copy.</span>
-      <span data-when="invalid">That does not look like an email address.</span>
-      <span data-when="unavailable">Could not reach the service. Check your connection.</span>
-      <span data-when="registering">Setting up your account…</span>
-    </p>
-  </form>
-  <wa-button id="tonk-register-dismiss" slot="footer" appearance="plain"
-             variant="neutral">Not now</wa-button>
-  <wa-button id="tonk-register-submit" slot="footer" variant="brand">
-    <span data-when="idle checking unregistered invalid unavailable registering suspended">Link to an account</span>
-    <span data-when="active pending">Sign in</span>
-  </wa-button>
-</wa-dialog>
-"#;
+<div id="tonk-register-dim"></div>
+<div id="tonk-register-cluster" role="dialog" aria-modal="true"
+     aria-labelledby="tonk-register-head">
+  <div class="ocol">
+    <div class="ostack" id="tonk-register-stack">
+      <div class="m-head mblk" id="tonk-register-head">link an account</div>
+      <div class="orow mblk" id="tonk-register-email-row">
+        <span class="k">email</span>
+        <span class="v"><span class="ed" id="tonk-register-email"
+              contenteditable="plaintext-only" inputmode="email"
+              enterkeyhint="go" autocomplete="username webauthn"
+              aria-label="email"></span><i class="cur" aria-hidden="true"></i></span>
+      </div>
+      <!-- Unfolds once the address is committed and the lookup answers:
+           "create a passkey" for an address nobody has, "log in with your
+           passkey" for one that is taken. Which of the two is the whole
+           reason the address is checked before any ceremony runs. -->
+      <button class="obtn pre" id="tonk-register-action" hidden></button>
+    </div>
+    <div class="oexp mblk">
+      <p id="tonk-register-status" aria-live="polite"></p>
+    </div>
+    <button class="ghost" id="tonk-register-dismiss">
+      <span aria-hidden="true">&#9666;</span> back to space</button>
+  </div>
+</div>
+"##;
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
@@ -159,28 +237,21 @@ pub fn open() {
     let _ = body.append_child(&host);
 
     on_click(&host, DISMISS, close);
-    on_click(&host, SUBMIT, submit);
+    on_click(&host, ACTION, submit);
     watch_address(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    commit_on_enter(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_answers(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     open_when_upgraded(&host);
 }
 
-/// Turn on the footer region, then open the dialog.
+/// Raise the cluster: dim the page, show the column, seat the cursor.
 ///
-/// `wa-dialog` renders a footer only when its `withFooter` property is
-/// set; it does NOT infer one from slotted content. The FAB's dialogs
-/// get away without setting it because their markup is parsed as part
-/// of the document, so their children exist before the element
-/// upgrades. This dialog is built by assigning `innerHTML` to a
-/// detached div, where `wa-dialog` upgrades mid-parse with no children
-/// yet — it rendered no footer, the `slot="footer"` buttons were
-/// assigned to a slot that did not exist, and the dialog came up with
-/// no buttons at all.
-///
-/// Deferred a task so the custom element is upgraded before either
-/// property is set.
+/// Deferred a task so the appended markup has been laid out — the dim
+/// transitions from its resting opacity, and a class set in the same
+/// frame as the insert would jump straight to the end state.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn open_when_upgraded(host: &Element) {
     let Some(window) = web_sys::window() else {
@@ -188,23 +259,129 @@ fn open_when_upgraded(host: &Element) {
     };
     let host = host.clone();
     let raise = Closure::<dyn FnMut()>::new(move || {
-        let Some(dialog) = host.query_selector("#tonk-register-dialog").ok().flatten() else {
-            return;
-        };
-        let _ = js_sys::Reflect::set(
-            dialog.as_ref(),
-            &"withFooter".into(),
-            &wasm_bindgen::JsValue::TRUE,
-        );
-        let _ = js_sys::Reflect::set(
-            dialog.as_ref(),
-            &"open".into(),
-            &wasm_bindgen::JsValue::TRUE,
-        );
+        if let Ok(Some(dim)) = host.query_selector("#tonk-register-dim") {
+            let _ = dim.set_class_name("on");
+        }
+        focus_address(&host);
     });
     let _ = window
         .set_timeout_with_callback_and_timeout_and_arguments_0(raise.as_ref().unchecked_ref(), 0);
     raise.forget();
+}
+
+/// Put the caret at the end of the address, where the block cursor is.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn focus_address(host: &Element) {
+    let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
+        return;
+    };
+    if let Some(element) = field.dyn_ref::<HtmlElement>() {
+        let _ = element.focus();
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let (Some(document), Some(selection)) =
+        (window.document(), window.get_selection().ok().flatten())
+    else {
+        return;
+    };
+    if let Ok(range) = document.create_range() {
+        let _ = range.select_node_contents(&field);
+        range.collapse_with_to_start(false);
+        let _ = selection.remove_all_ranges();
+        let _ = selection.add_range(&range);
+    }
+}
+
+/// Unfold a row into the stack: appended folded, then released a frame
+/// later so the height transition has something to animate from.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn unfold(row: &Element) {
+    row.remove_attribute("hidden").ok();
+    row.class_list().add_1("pre").ok();
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let row = row.clone();
+    let release = Closure::<dyn FnMut()>::new(move || {
+        let _ = row.class_list().remove_1("pre");
+    });
+    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        release.as_ref().unchecked_ref(),
+        16,
+    );
+    release.forget();
+}
+
+/// Settle a row into its record: the noun stays, the value becomes ink,
+/// and the block cursor goes.
+///
+/// A settled row is the step's receipt. It stays on screen so what you
+/// have already answered is legible above what you are answering now,
+/// which is the whole reason the ceremony is a stack rather than a
+/// sequence of replaced screens.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn settle(row: &Element, noun: &str, value: &str) {
+    row.set_inner_html("");
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    for (class, text) in [("k", noun), ("v", value)] {
+        if let Ok(span) = document.create_element("span") {
+            span.set_class_name(class);
+            span.set_text_content(Some(text));
+            let _ = row.append_child(&span);
+        }
+    }
+}
+
+/// Add a row to the stack, folded, ready to unfold.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn add_row(host: &Element, id: &str, noun: &str, value: &str) -> Option<Element> {
+    let document = web_sys::window()?.document()?;
+    let stack = host.query_selector("#tonk-register-stack").ok()??;
+    let row = document.create_element("div").ok()?;
+    row.set_id(id);
+    row.set_class_name("orow mblk pre");
+    settle(&row, noun, value);
+    // Before the action row, so the button stays at the foot of the stack.
+    let action = host.query_selector(ACTION).ok().flatten();
+    match action {
+        Some(action) => {
+            let _ = stack.insert_before(&row, Some(&action));
+        }
+        None => {
+            let _ = stack.append_child(&row);
+        }
+    }
+    unfold(&row);
+    Some(row)
+}
+
+/// Enter in the address field runs the step the answer named.
+///
+/// The action row is revealed by the lookup, not by this — but the row
+/// is a shortcut, not a gate: someone who has typed their address and
+/// pressed Enter has said what they came to say, so the ceremony starts
+/// without a second click. Enter before an answer has arrived does
+/// nothing, because there is no step to run yet.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn commit_on_enter(host: &Element) {
+    let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
+        return;
+    };
+    let listener =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
+            if event.key() != "Enter" {
+                return;
+            }
+            // A contenteditable would otherwise take the newline.
+            event.prevent_default();
+            submit();
+        });
+    let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
+    listener.forget();
 }
 
 /// Take the dialog down.
@@ -701,17 +878,13 @@ pub fn describe(payload: &str) {
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
     }
-    if let Some(lede) = document.query_selector(LEDE).ok().flatten() {
-        lede.set_text_content(Some(
-            "Your account is waiting on its email. Open the link we sent, then share again.",
-        ));
-    }
-    if let Some(dialog) = document
-        .query_selector("#tonk-register-dialog")
+    set_status("Your account is waiting on its email. Open the link we sent, then share again.");
+    if let Some(head) = document
+        .query_selector("#tonk-register-head")
         .ok()
         .flatten()
     {
-        let _ = dialog.set_attribute("label", "Confirm your email to share");
+        head.set_text_content(Some("confirm your email to share"));
     }
 }
 

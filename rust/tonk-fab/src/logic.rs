@@ -1763,6 +1763,36 @@ mod invite_link {
 /// attributes depends on nothing seeded and works on spots that predate this
 /// feature. `this` binds to the spot's subject DID, the entity the worker
 /// keys the refusal by.
+/// Whether this profile's account is registered and served.
+///
+/// The bar shows "log in to share" or the copy row depending on this.
+/// A live query rather than a `GET /api/account` probe: the answer
+/// changes the moment registration completes, and a one-shot read taken
+/// on connect is stale by then — the bar kept offering to log in to
+/// someone who just had.
+///
+/// `provider` is required here (as it is on the concept), so an account
+/// that enrolled but has no provider yet does not resolve at all. That
+/// is the intent: "has a provider" means "finished registering", so the
+/// absence is the answer.
+pub fn account_customer_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "status": {
+                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
+            },
+            "provider": {
+                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "status": { "?": { "name": "status" } },
+            "provider": { "?": { "name": "provider" } }
+        }
+    })
+    .to_string()
+}
+
 /// The share control's single subscription: where this space's invite
 /// has got to.
 ///

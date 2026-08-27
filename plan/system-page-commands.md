@@ -563,6 +563,66 @@ This also dissolves the extraction problem: the account-shaped logic
 moves into a handler, so `/account`'s panel and the registration dialog
 stop needing to share a function. Both just assert the command.
 
+## The registration surface
+
+Not a `wa-dialog`. The design is `fabb/onboard.html` in the gooey
+repo — **a cluster over the space**, in its own words: "the page dims,
+the surface never."
+
+```
+┌─────────────────────────────┐
+│ link an account             │   ← heading row
+├─────────────────────────────┤
+│ email              you@…  ▌ │   ← editor row: noun left, value right,
+├─────────────────────────────┤     block cursor on the tail
+│ To share this space it needs│   ← the narrator, one paragraph,
+│ a copy our service hosts…   │     aria-live, sometimes one quiet verb
+└─────────────────────────────┘
+                ◂ back to space
+```
+
+Rows stack and **settle**: an editor row commits on Enter (or blur when
+valid), loses its cursor, and becomes a record — `email  you@example.com`
+— while the next row unfolds beneath it. Nothing is ever a form with a
+submit button at the bottom.
+
+The ceremony, in order: **email → passkey → activation → name**, then a
+closing action. Each step gets its own row, and the narrator explains
+only the step in front of you.
+
+```
+link an account
+email        you@example.com      settled
+passkey      Chrome on macOS      settled
+check email  waiting…             waits on a fact, takes no input
+name         Irakli               settled
+[ copy share link ▸ ]             only when a share started this
+```
+
+**No code row.** The mockup asks for six digits, but activation here is
+an emailed *link* — so the row says to open it and waits, rather than
+inventing a step the service does not have. It advances when
+`AccountCustomer` gains its provider, which the dialog is already
+subscribed to: the fact is the transition, not a form submission.
+
+**The closing action depends on why the dialog opened.** Raised by a
+share, the last row becomes *copy share link*: it mints the invite the
+refused click wanted, copies it, and closes. Raised on its own, there is
+nothing to go back to and it simply closes. That is what makes the
+ceremony finish the thing that interrupted it rather than dropping the
+user back where they started.
+
+Mapping onto what exists: the `EmailStatus` states we already write are
+what choose the step. `unregistered` unfolds the passkey row;
+`active`/`pending` route to sign-in instead; `checking` holds; the
+terminal states stop with the narrator saying why.
+
+Wording, per the FABB bar's own "log in to share": the heading is **link
+an account**, not "create an account" — someone who already has one is
+linking it, not making a second. The narrator says what linking buys
+(somewhere for this space to sync from) rather than describing account
+creation.
+
 ## Open
 
 In dependency order.
