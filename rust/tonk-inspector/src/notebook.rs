@@ -35,7 +35,7 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
@@ -214,7 +214,16 @@ fn mount(
         };
         let _ = prose.set_attribute("placeholder", "Write, and add a ```dialog-yaml block…");
 
-        let _ = provider.append_child(&prose);
+        // Attach the provider now, but hold the EDITOR back until
+        // `<tonk-code>` is defined.
+        //
+        // Prose decides per code block, at draw time, whether to mount a real
+        // `<tonk-code>` node view or fall back to a plain CodeMirror
+        // (`code-block.ts:320`), and it never re-decides. Its bundle is
+        // imported asynchronously by the guest, so a prose editor mounted
+        // first draws every fence as the fallback: no `<tonk-code>`, hence no
+        // LSP client, no diagnostics, no autocomplete, and nothing for this
+        // element to hang a result on — a glorified markdown viewer.
         let _ = this.append_child(&provider);
 
         let notebook = Rc::new(Notebook {
@@ -238,6 +247,23 @@ fn mount(
         // covering both the initial render and every fence added later by
         // typing. `ready` alone would miss the latter.
         notebook.observe(observer_slot, mutation_slot);
+
+        // Now mount the editor, once its embedded-editor dependency exists.
+        let registry = window().map(|w| w.custom_elements());
+        match registry.and_then(|r| r.when_defined("tonk-code").ok()) {
+            Some(defined) => {
+                let provider = provider.clone();
+                let prose = notebook.prose.clone();
+                spawn_local(async move {
+                    let _ = JsFuture::from(defined).await;
+                    let _ = provider.append_child(&prose);
+                });
+            }
+            // No registry (not a browser) — mount anyway rather than never.
+            None => {
+                let _ = provider.append_child(&notebook.prose);
+            }
+        }
     }
 }
 
