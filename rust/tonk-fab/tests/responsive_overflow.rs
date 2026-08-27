@@ -432,6 +432,14 @@ async fn the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster() {
         .expect("create parent")
         .dyn_into::<HtmlElement>()
         .expect("html parent");
+    parent
+        .style()
+        .set_property("position", "fixed")
+        .expect("fix parent position");
+    parent
+        .style()
+        .set_property("bottom", "8px")
+        .expect("dock parent at bottom");
     let fab = document
         .create_element("tonk-fab")
         .expect("create fab")
@@ -474,6 +482,10 @@ async fn the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster() {
 
     let scrollport = menu.unchecked_ref::<HtmlElement>();
     assert_eq!(computed(&menu, "overflow-y"), "auto");
+    assert!(
+        scrollport.client_height() > 0,
+        "an upward stack must have space above its bottom-docked bar"
+    );
     assert!(
         scrollport.scroll_height() > scrollport.client_height(),
         "a long member roster must scroll inside the share stack"
