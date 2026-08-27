@@ -791,3 +791,100 @@ choice worth making deliberately.
 4. **Query-a-snapshot (dialog).** Tracked separately. When it lands,
    the per-notebook branch becomes optional and per-cell time travel
    plus a stateful time slider follow.
+
+---
+
+# Appendix: `<tonk-probe>` — a display without resolution
+
+Not part of the notebook, recorded here because it came out of debugging
+one. Belongs in its own plan when picked up.
+
+## The hole
+
+`<tonk-display>` resolves a **model name** to a concept and a **view**
+for that model, both from the space branch, then subscribes to the
+entity data. Host chrome cannot use it: a view living on the space
+branch would need per-space seeding, and a space could redefine the
+chrome that frames it.
+
+So host chrome hand-rolls the whole thing instead. `<ui-sync-status>`
+holds its own `Subscription`, its own `reset`/`update`/`error` closures,
+its own teardown — a display element's guts, minus the display. The same
+is true of `<ui-space-name>`, `<ui-member-roster>`,
+`<ui-space-switcher>`, and `tonk-fab/src/subscribing.rs` exists purely to
+factor out the duplication.
+
+Then, because such an element renders nothing where the bar draws its own
+disc, it needs a *second* invention: a `headless` mode that reports the
+answer by writing an attribute onto its parent. That backchannel is what
+panicked the sealed guest (PR #793) — the parent observes the attribute,
+so the write re-enters its `attributeChangedCallback` while
+`custom_elements` still holds its state mutex.
+
+Two inventions, both downstream of one missing capability.
+
+## The shape
+
+Supply the concept definition and the template **inline**, so neither is
+resolved from the branch. Only the data subscription remains — phase 3
+of what `<tonk-display>` already does.
+
+```html
+<tonk-probe with="main@{space}" entity="state:here">
+  <script type="text/tonk-concept">
+    the: tonk:sync
+    with:
+      state:
+        the: xyz.tonk.sync/state
+        as: entity
+  </script>
+  <script type="text/tonk-template">
+    <span class="sync sync--{state}"><span class="disc"></span></span>
+  </script>
+</tonk-probe>
+```
+
+A space cannot redefine either, because neither is read from the space
+branch — which is the property the hand-rolled elements were reaching
+for.
+
+### Why `<script>` and not attributes
+
+The convention already exists here twice, and both precedents carry the
+reasoning:
+
+- `<tonk-notation>` puts its source in
+  `<script type="text/tonk-notation">`, *"inert by virtue of its unknown
+  MIME type, so the browser doesn't execute it and it doesn't render
+  visually"* (`tonk-display/src/notation.rs:1-12`). It also observes the
+  script for text changes, so an inline source stays live.
+- `<tonk-display>`'s component holder uses `<script type="tonk/module">`
+  and documents the two parser properties that matter here
+  (`component.rs:19-24`): the parser gives `<script>` **raw-text
+  treatment**, so JS braces and `<` survive; and the **template walker
+  never descends into scripts**, so `{…}` inside is not mistaken for a
+  binding.
+
+Both properties are exactly what a held template needs. An attribute
+would normalize newlines and fight quoting; a `<template>` element would
+be parsed as markup and its bindings walked too early.
+
+## What it deletes
+
+`<ui-sync-status>`, `<ui-space-name>`, `<ui-member-roster>`,
+`<ui-space-switcher>`, and `subscribing.rs` become declarations. The
+`headless` backchannel goes with them, so the re-entry panic class is
+removed rather than deferred — PR #793's microtask and the event-based
+variant (stash `fabb-event-reporting-wip`) both become unnecessary.
+
+## Open
+
+- **Light DOM or shadow.** `ui-sync-status` renders light so the app
+  stylesheet styles `.sync` / `.disc`. Inline templates in light DOM
+  keep that working.
+- **Does the FAB still want to own its pixels?** Today the bar draws its
+  own disc and the headless element only feeds it, which the FABB notes
+  give as deliberate. With `<tonk-probe>` the bar could just contain one.
+  Simpler, but check whether the original reason survives.
+- **How much of `tonk-display` phase 3 is reusable as-is** versus needing
+  a second entry point into the same code.
