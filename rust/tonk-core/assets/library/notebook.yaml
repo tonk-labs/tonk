@@ -1,5 +1,5 @@
 # ===========================================================================
-# notebook — a <tonk-notebook> document whose ```dialog fences are live cells.
+# notebook — a <tonk-notebook> document whose ```dialog-yaml fences are live cells.
 # ===========================================================================
 # The model is deliberately `prose.yaml` with a different view: a notebook IS
 # a prose document. What makes it a notebook is that its fenced `dialog` code
@@ -47,7 +47,7 @@ attribute!: &block/notebook
 attribute!: &block/source
   description: |
     One block's markdown source: a paragraph, a heading, a list, or a fenced
-    code block. A ```dialog fence is a cell — the element evaluates it and
+    code block. A ```dialog-yaml fence is a cell — the element evaluates it and
     renders the result beneath.
   the: xyz.tonk.notebook.block/source
   as: text
@@ -140,12 +140,26 @@ name!:
   this: id:tonk/space
   entity: tonk:notebook/space
 
+# The element sits DIRECTLY in this view rather than behind a nested
+# `<tonk-display>`. Context propagates across exactly one display boundary
+# (`forward_with`): the space route hands this view `with="{branch}@{repo}"`,
+# and a nested display of our own would have no `with` of its own to forward,
+# so `<tonk-notebook>` would resolve no repository.
 view!:
   this: id:notebook/space/view
   model: tonk:notebook/space
   display: |
     <div class="notebook-space">
-      <tonk-display entity="id:notebook/scratch" model="tonk:notebook"></tonk-display>
+      <tonk-notebook
+        data-subject="id:notebook/scratch"
+        onchange=block/edit
+        onreorder=notebook/reorder
+        style="display: block;"
+      >
+        <div class="notebook-data" hidden>
+          <tonk-display model=tonk:notebook/block></tonk-display>
+        </div>
+      </tonk-notebook>
     </div>
 
 # The block rows the element reads. A hidden <tonk-display> per model
@@ -280,14 +294,14 @@ notebook/block!:
   this: id:notebook/scratch/2
   notebook: id:notebook/scratch
   source: >-
-    A `dialog` fence is a live cell: it evaluates against this branch and
+    A `dialog-yaml` fence is a live cell: it evaluates against this branch and
     renders its results underneath.
 
 notebook/block!:
   this: id:notebook/scratch/3
   notebook: id:notebook/scratch
   source: |-
-    ```dialog
+    ```dialog-yaml
     concept:
     ```
 

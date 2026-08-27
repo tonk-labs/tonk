@@ -43,9 +43,15 @@ use web_sys::{
 use crate::element::{evaluate, resolve_context};
 use crate::render::render_result;
 
-/// The fence language that marks a code block as a query cell. Other
-/// languages stay ordinary code blocks: still editable, never evaluated.
-const CELL_LANGUAGE: &str = "dialog";
+/// The language pack a cell's editor uses — the id `<tonk-code>` resolves a
+/// grammar by (`tonk-code/assets/tonk-code-lang-dialog-yaml.js`).
+const CELL_LANGUAGE: &str = "dialog-yaml";
+
+/// Fence info words that mark a code block as a query cell. `dialog` is the
+/// spelling an author reaches for; `dialog-yaml` is what the language pack is
+/// actually called, and both must work — a fence tagged `dialog` that
+/// silently stayed inert would be a trap.
+const CELL_LANGUAGES: [&str; 2] = ["dialog", "dialog-yaml"];
 
 /// Class of the wrapper the prose code-block node view builds per fence.
 const FENCE_SELECTOR: &str = ".md-code-block";
@@ -205,8 +211,14 @@ impl Notebook {
             let Some(editor) = wrapper.query_selector("tonk-code").ok().flatten() else {
                 continue;
             };
-            if editor.get_attribute("language").as_deref() != Some(CELL_LANGUAGE) {
+            let language = editor.get_attribute("language").unwrap_or_default();
+            if !CELL_LANGUAGES.contains(&language.as_str()) {
                 continue;
+            }
+            // `dialog` has no pack of its own; point the editor at the real
+            // grammar so it highlights instead of erroring on load.
+            if language != CELL_LANGUAGE {
+                let _ = editor.set_attribute("language", CELL_LANGUAGE);
             }
             let id = match wrapper.dataset().get("notebookCell") {
                 Some(id) => id,
