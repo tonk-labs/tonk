@@ -1180,8 +1180,8 @@ mod tests {
             .await?
             .click()
             .await?;
-        // The callback answers the form POST with a redirect back to the
-        // account page, which renders the outcome in its own styling.
+        // The callback's bridge page re-posts the fragment on loopback and
+        // redirects back here, where the outcome uses the account styling.
         if let Err(wait_error) = element(driver, "tonk-account[data-mode=\"success\"]").await {
             // Say WHERE the approval stopped, not just that it did: the
             // panel's mode, its error line, and its status line are what
@@ -2356,9 +2356,10 @@ mod tests {
 
     /// A listener standing in for a waiting `tonk account login --via`.
     ///
-    /// The CLI's half is a loopback server that accepts one form POST; a test
-    /// needs no CLI process to play that part, only the same contract. It
-    /// hands back whatever the page delivered.
+    /// The CLI's half is a loopback server that accepts a bodyless GET, serves
+    /// a fragment bridge, then accepts one same-origin form POST. A test needs
+    /// no CLI process to play that part, only the same contract. It hands back
+    /// whatever the page delivered.
     /// The one-shot slot a delivered authorization lands in.
     type Delivery =
         std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<(String, String)>>>>;
@@ -2390,8 +2391,33 @@ mod tests {
             "received"
         }
 
+        async fn bridge() -> axum::response::Html<&'static str> {
+            axum::response::Html(
+                r##"<!doctype html>
+<meta charset="utf-8">
+<p>Returning authorization to Tonk…</p>
+<script>
+  const fields = new URLSearchParams(window.location.hash.slice(1));
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = window.location.pathname + window.location.search;
+  for (const [name, value] of fields) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+  document.body.appendChild(form);
+  form.submit();
+</script>
+"##,
+            )
+        }
+
         let app = axum::Router::new()
-            .route("/", axum::routing::post(deliver))
+            .route("/", axum::routing::get(bridge).post(deliver))
             .with_state(slot);
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
@@ -2401,7 +2427,7 @@ mod tests {
 
     /// The browser half of `tonk account login --via`: the page reads the
     /// waiting profile's DID and callback out of the URL, runs a real passkey
-    /// ceremony, and posts the grant back.
+    /// ceremony, and returns the grant through the loopback bridge.
     ///
     /// No CLI process is involved — a listener plays its part, since what the
     /// CLI contributes is one loopback endpoint and a contract. What this
@@ -2439,7 +2465,7 @@ mod tests {
             .await?;
 
         // Generous: approving runs a passkey assertion, the unlock, and
-        // the device registration before the callback POST, and a loaded
+        // the device registration before the callback navigation, and a loaded
         // CI runner stretches each of them.
         let (field, value) = tokio::time::timeout(Duration::from_secs(60), delivered)
             .await
