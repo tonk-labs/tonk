@@ -2026,7 +2026,7 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
             // provisioned, pushed, and listed for the account's other
             // devices. Signed out, it is local-only until `tonk space link`
             // says otherwise.
-            let account = match account_for_new_space(&store) {
+            let account = match account_for_new_space(&store).await {
                 Ok(account) => account,
                 Err(exit) => return exit,
             };
@@ -2180,7 +2180,7 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
 /// a quiet fallback to local-only: creating a local space when the user
 /// expects an account-owned one is exactly the surprise `tonk space link`
 /// exists to undo.
-fn account_for_new_space(
+async fn account_for_new_space(
     store: &tonk_cli::space::SpaceStore,
 ) -> Result<Option<tonk_cli::space::AccountRecord>, ExitCode> {
     let account = match store.account() {
@@ -2190,8 +2190,12 @@ fn account_for_new_space(
     let Some(account) = account else {
         return Ok(None);
     };
-    match tonk_cli::account::sign_in_phase(store) {
-        Ok(tonk_cli::account::SignInPhase::Active) => {}
+    let profile = match identity::open().await {
+        Ok(profile) => profile,
+        Err(error) => return Err(print_failure(error)),
+    };
+    match tonk_cli::account::status_in(&profile, store).await {
+        Ok(account::AccountStatus::Registered { root_did, .. }) if root_did == account.root => {}
         Ok(_) => {
             return Err(print_error(format!(
                 "this device is signed out of {}; run `tonk account login`",
