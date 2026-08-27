@@ -52,6 +52,10 @@ const CELL_LANGUAGE: &str = "dialog-yaml";
 /// spelling an author reaches for; `dialog-yaml` is what the language pack is
 /// actually called, and both must work — a fence tagged `dialog` that
 /// silently stayed inert would be a trap.
+///
+/// An UNTAGGED fence (bare ```) is a cell too: in a notebook the common case
+/// is a query, so typing three backticks should give you one without having
+/// to remember the tag.
 const CELL_LANGUAGES: [&str; 2] = ["dialog", "dialog-yaml"];
 
 /// Class of the wrapper the prose code-block node view builds per fence.
@@ -460,11 +464,12 @@ impl Notebook {
                 continue;
             };
             let language = editor.get_attribute("language").unwrap_or_default();
-            if !CELL_LANGUAGES.contains(&language.as_str()) {
+            // A bare fence has no language at all; treat it as a cell.
+            if !language.is_empty() && !CELL_LANGUAGES.contains(&language.as_str()) {
                 continue;
             }
-            // `dialog` has no pack of its own; point the editor at the real
-            // grammar so it highlights instead of erroring on load.
+            // Neither `dialog` nor the empty string names a pack; point the
+            // editor at the real grammar so it highlights instead of erroring.
             if language != CELL_LANGUAGE {
                 let _ = editor.set_attribute("language", CELL_LANGUAGE);
             }
@@ -517,6 +522,24 @@ impl Cell {
             .expect("document creates an element");
         result.set_class_name(RESULT_CLASS);
         let _ = wrapper.append_child(&result);
+
+        // Tab inside a cell belongs to the editor (accept a completion, else
+        // indent), but the embedded editor sits in a ProseMirror node view
+        // whose host is focusable, so an unhandled Tab moves focus out of the
+        // document instead. Swallow it here: CodeMirror's own keymap has
+        // already run by the time this fires on the host, so preventing the
+        // default only stops the focus move.
+        let closure = Closure::wrap(Box::new(move |event: Event| {
+            let Some(keyboard) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+                return;
+            };
+            if keyboard.key() == "Tab" {
+                event.prevent_default();
+            }
+        }) as Box<dyn FnMut(Event)>);
+        let _ =
+            editor.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+        notebook.closures.borrow_mut().push(closure);
 
         let cell = Cell {
             editor: editor.clone(),
