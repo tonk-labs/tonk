@@ -90,32 +90,6 @@ command!: &space/create
         transient would never trigger the handler.
       the: dom.event.current-target.elements.name/value
       as: text
-    remote:
-      description: >
-        Sync URL, read from the form's hidden `remote` input. The
-        worker's `CreateSpaceHandler` matches on `name` alone (so this
-        command keeps decoding against an older profile descriptor that
-        lacks this field), and reads `remote` opportunistically: the Hub
-        form defaults it to this server via `<tonk-default-remote auto>`;
-        if that URL cannot be resolved, blank still creates a local-only
-        space. A URL is attached after creation as the `origin` remote
-        with `main` tracking `origin/main`. Single
-        word `remote` (not `remote-url`) because read-path segments are
-        kebab→camel-cased.
-      the: dom.event.current-target.elements.remote/value
-      as: text
-    revocation:
-      description: >
-        Explicit immutable-artifact relay, stored beside the remote and
-        read from the form's hidden `revocation` input — which
-        `<tonk-default-remote relay-field="revocation">` fills from this
-        deployment's `/.well-known/tonk`. Optional exactly like
-        `remote`: blank attaches a remote with no relay. The leaf is
-        `value` (the input's value slot), NOT `revocation-url` — the
-        segment after the control name is a JS property, so any other
-        leaf reads `undefined` and aborts the whole command on submit.
-      the: dom.event.current-target.elements.revocation/value
-      as: text
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -573,15 +547,12 @@ view/directory!:
         </div>
         <!-- Creating asks nothing up front: the space starts "Untitled" (the
              worker uniquifies the sentinel) and is renamed in place with the
-             bar's block cursor the moment you land in it. The hidden inputs
-             carry the sync remote and its revocation relay, filled on connect
-             by <tonk-default-remote auto> — without them the worker still
-             creates the space, silently local-only. -->
+             bar's block cursor the moment you land in it. No remote is
+             carried: the worker resolves where a spot syncs from the
+             account's own registration, so a spot created before anyone
+             registers stays local until it is shared. -->
         <form class="snew-form" onsubmit=space/create>
           <input type="hidden" name="name" value="Untitled">
-          <input type="hidden" name="remote" value="">
-          <input type="hidden" name="revocation" value="">
-          <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
           <button class="snew chrome" type="submit">create a new space<span class="g" aria-hidden="true">&#9656;</span></button>
         </form>
       </div>
