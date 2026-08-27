@@ -61,9 +61,12 @@ const CELL_LANGUAGES: [&str; 2] = ["dialog", "dialog-yaml"];
 /// Class of the wrapper the prose code-block node view builds per fence.
 const FENCE_SELECTOR: &str = ".md-code-block";
 
-/// Gap between projection retries. Short enough that a lost race is not
-/// visible, long enough that eight of them span the displays settling.
-const RETRY_MS: i32 = 60;
+/// Gap between projection retries, and how many. The observer is the real
+/// mechanism; these are the safety net for a pane that is replaced wholesale
+/// (which detaches the watched node) rather than filled in place. Measured
+/// against a cold load, where the nested displays settle around a second in.
+const RETRY_MS: i32 = 120;
+const RETRIES: u32 = 25;
 
 /// Class of the result node this element appends into each fence wrapper.
 const RESULT_CLASS: &str = "notebook-cell-result";
@@ -103,6 +106,63 @@ impl CustomElement for TonkNotebookElement {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        // DEFERRED one microtask, and guarded on `is_connected`.
+        //
+        // The custom-element reaction queue delivers this callback after the
+        // enclosing reaction ends — and when a `<tonk-display>` render pass is
+        // that enclosing reaction, its diff may have already detached this
+        // element again by then. Mounting anyway builds an editor inside an
+        // orphan: the store's rows render into the element that IS in the
+        // document, while this instance polls a detached subtree forever.
+        // (Diagnostic signature: `connected=false` with rows present in the
+        // document but none under the host.)
+        let host = this.clone();
+        let closures = self.closures.clone();
+        let observer = self.observer.clone();
+        let mutation = self.mutation.clone();
+        spawn_local(async move {
+            if !host.is_connected() {
+                return;
+            }
+            mount(&host, closures, observer, mutation);
+        });
+    }
+
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        _name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if old == new {
+            return;
+        }
+        // The context arriving is the cue to mount: `mount` bails when it
+        // cannot resolve one, so without this a notebook whose `with` is
+        // stamped post-mount would stay on its error message forever.
+        self.connected_callback(this);
+    }
+
+    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+        if let Some(observer) = self.observer.borrow_mut().take() {
+            observer.disconnect();
+        }
+        self.mutation.borrow_mut().take();
+        self.closures.borrow_mut().clear();
+    }
+}
+
+/// Build the editor and start watching for rows. Split out of
+/// `connected_callback` so the deferred, connectedness-guarded path is the
+/// only way in.
+fn mount(
+    this: &HtmlElement,
+    closures: Closures,
+    observer_slot: ObserverCell,
+    mutation_slot: MutationClosure,
+) {
+    {
         // Mount ONCE. `connectedCallback` fires on every re-attach, and
         // `<tonk-display>` stamps `with` after mounting the view — so a second
         // pass here would build a second provider and a second editor, and the
@@ -162,7 +222,7 @@ impl CustomElement for TonkNotebookElement {
             prose,
             repo,
             branch,
-            closures: self.closures.clone(),
+            closures: closures.clone(),
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),
             projected: RefCell::new(String::new()),
@@ -177,32 +237,7 @@ impl CustomElement for TonkNotebookElement {
         // connect. Watch the subtree and bind whatever fences appear —
         // covering both the initial render and every fence added later by
         // typing. `ready` alone would miss the latter.
-        notebook.observe(self.observer.clone(), self.mutation.clone());
-    }
-
-    fn attribute_changed_callback(
-        &mut self,
-        this: &HtmlElement,
-        _name: String,
-        old: Option<String>,
-        new: Option<String>,
-    ) {
-        if old == new {
-            return;
-        }
-        // The context arriving is the cue to mount. `connected_callback`
-        // returns early when it cannot resolve one, so without this a
-        // notebook whose `with` is stamped post-mount stays on its error
-        // message forever.
-        self.connected_callback(this);
-    }
-
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        if let Some(observer) = self.observer.borrow_mut().take() {
-            observer.disconnect();
-        }
-        self.mutation.borrow_mut().take();
-        self.closures.borrow_mut().clear();
+        notebook.observe(observer_slot, mutation_slot);
     }
 }
 
@@ -253,16 +288,19 @@ impl Notebook {
             notebook.project_blocks();
             notebook.bind_fences();
             notebook.settling.set(false);
-            // The row container may have just appeared; make sure it is
-            // observed so later store updates reach the projection.
-            if let (Some(observer), Ok(Some(rows))) = (
+            // Re-register the pane watch every tick: the pane may have only
+            // just arrived, and observing an already-observed target with the
+            // same options is a no-op.
+            if let (Some(observer), Ok(Some(pane))) = (
                 watched.borrow().as_ref(),
                 notebook.host.query_selector(".notebook-data"),
             ) {
                 let init = MutationObserverInit::new();
                 init.set_child_list(true);
                 init.set_subtree(true);
-                let _ = observer.observe_with_options(&rows, &init);
+                init.set_character_data(true);
+                init.set_attributes(true);
+                let _ = observer.observe_with_options(&pane, &init);
             }
         }) as Box<dyn FnMut()>);
 
@@ -272,6 +310,11 @@ impl Notebook {
         let init = MutationObserverInit::new();
         init.set_child_list(true);
         init.set_subtree(true);
+        // Rows carry their data in `data-*` attributes, so a store update that
+        // rewrites an existing row is an ATTRIBUTE change, not a child list
+        // one. Without this a block edit never reaches the projection.
+        init.set_attributes(true);
+        init.set_character_data(true);
         let _ = observer.observe_with_options(&self.prose, &init);
         // The hidden block rows are siblings of the editor, under the host.
         // Watch the ROW CONTAINER, not the host: the editor also lives under
@@ -282,16 +325,18 @@ impl Notebook {
         // asynchronously, so it is usually absent at connect. Watch the host's
         // direct children (childList WITHOUT subtree, which the editor's own
         // mutations never reach) until it appears, then watch it properly.
-        // Watch the container if it is here, and the host's direct children
-        // otherwise so its arrival is noticed. Both, in fact: the container is
-        // usually a static child of the view template (so present now) while
-        // its ROWS render later, deep inside — and a host-level childList
-        // watch never sees those. Registering both is safe because a
-        // MutationObserver deduplicates targets, and the shallow host watch
-        // cannot see the editor's own mutations (they are not direct
-        // children).
-        if let Ok(Some(rows)) = self.host.query_selector(".notebook-data") {
-            let _ = observer.observe_with_options(&rows, &init);
+        // Watch the ROW PANE's whole subtree. The rows render deep inside it,
+        // from nested `<tonk-display>`s that resolve on their own schedule —
+        // often hundreds of milliseconds after connect, and always after any
+        // bounded retry would have given up.
+        //
+        // The pane is a static child of the view template, so it is normally
+        // here already. When it is not, watch the host's DIRECT children so
+        // its arrival is noticed and the pane can then be watched properly.
+        // Deliberately not a host SUBTREE watch: that would see the editor's
+        // own mutations and re-enter the projection that caused them.
+        if let Ok(Some(pane)) = self.host.query_selector(".notebook-data") {
+            let _ = observer.observe_with_options(&pane, &init);
         }
         let shallow = MutationObserverInit::new();
         shallow.set_child_list(true);
@@ -306,7 +351,7 @@ impl Notebook {
         // race that lost is still caught; each pass is idempotent (an
         // unchanged projection is a no-op) and they stop as soon as one
         // projects.
-        self.clone().retry_projection(8);
+        self.clone().retry_projection(RETRIES);
     }
 
     /// Re-attempt the projection for a few frames, in case the rows landed
