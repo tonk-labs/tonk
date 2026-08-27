@@ -1,0 +1,18 @@
+$ tonk remote -h
+
+List or manage remotes
+
+Usage: tonk remote [OPTIONS] [COMMAND]
+
+Commands:
+  add           Register a UCAN-S3 access-service remote
+  set-upstream  Wire local main's upstream to <remote>/main
+
+Options:
+      --json          Emit versioned camelCase JSON when listing
+      --space <NAME>  Operate on this space instead of the active directory binding. Precedence: --space > TONK_SPACE > `tonk space use` in the nearest ancestor directory
+  -v, --verbose       Print full error chains: every layer of context down to the root cause, not just the outermost message
+  -h, --help          Print help
+  -V, --version       Print version
+
+[exit 0]

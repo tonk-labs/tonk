@@ -462,6 +462,7 @@ pub async fn authorizing_page(
             "delegationHex": authorized.delegation_hex,
             "descriptorHex": authorized.descriptor_hex,
             "credentialId": authorized.root_did,
+            "attachmentId": "0707070707070707070707070707070707070707070707070707070707070707",
         })
         .to_string();
         let encoded = base64::engine::general_purpose::STANDARD.encode(payload);

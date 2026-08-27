@@ -3795,10 +3795,16 @@ mod tests {
         assert_eq!(field, "authorize", "approving must deliver a grant");
 
         // What arrived is what the CLI decodes: base64 over a payload
-        // carrying both the delegation and the descriptor.
+        // carrying the delegation, descriptor, exact service attachment, and
+        // provider needed for a crash-safe CLI activation.
         let decoded = base64::engine::general_purpose::STANDARD.decode(&value)?;
         let payload: serde_json::Value = serde_json::from_slice(&decoded)?;
-        for field in ["delegationHex", "descriptorHex"] {
+        for field in [
+            "delegationHex",
+            "descriptorHex",
+            "attachmentId",
+            "serviceUrl",
+        ] {
             assert!(
                 payload
                     .get(field)

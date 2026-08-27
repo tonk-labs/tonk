@@ -1374,6 +1374,21 @@ pub fn space_list_query_body() -> String {
     .to_string()
 }
 
+/// Replace a subscription's keyed snapshot while preserving delivery order.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn reset_keyed_rows<T>(
+    rows: &mut Vec<(String, T)>,
+    conclusions: impl IntoIterator<Item = (String, T)>,
+) {
+    rows.clear();
+    for (id, row) in conclusions {
+        match rows.iter_mut().find(|(existing_id, _)| existing_id == &id) {
+            Some(existing) => existing.1 = row,
+            None => rows.push((id, row)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod space_list {
     use super::*;
@@ -1388,6 +1403,21 @@ mod space_list {
         assert!(body.contains("\"this\":{\"?\""));
         // No concept named — nothing seeded is consulted.
         assert!(!body.contains("tonk:space"));
+    }
+
+    #[test]
+    fn a_reset_keeps_one_row_per_replica_entity() {
+        let mut rows = vec![("stale".to_owned(), "stale")];
+
+        reset_keyed_rows(
+            &mut rows,
+            [
+                ("replica:space".to_owned(), "first"),
+                ("replica:space".to_owned(), "latest"),
+            ],
+        );
+
+        assert_eq!(rows, vec![("replica:space".to_owned(), "latest")]);
     }
 }
 

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A visual, outside-in map of every Tonk browser and CLI journey.">
+    <title>Tonk product Storybook</title>
+    <link rel="icon" href="assets/tonk-mark.svg">
+    <link rel="stylesheet" href="storybook.css">
+    <script defer src="data.js"></script>
+    <script defer src="storybook.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Storybook navigation">
+        <div class="brand">
+          <span class="brand-wordmark" role="img" aria-label="Tonk"></span>
+          <span class="brand-name">Product map</span>
+        </div>
+
+        <nav class="primary-nav" aria-label="Views">
+          <a href="#overview" data-view-link="overview">
+            <span>Overview</span>
+          </a>
+          <a href="#screens" data-view-link="screens">
+            <span>Screens</span><span class="nav-count" data-count="screens">—</span>
+          </a>
+          <a href="#flows" data-view-link="flows">
+            <span>Flows</span><span class="nav-count" data-count="flows">—</span>
+          </a>
+          <a href="#gaps" data-view-link="gaps">
+            <span>Gaps</span><span class="nav-count" data-count="gaps">—</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <span class="freshness-dot" aria-hidden="true"></span>
+          <span>Visuals at <code data-visual-commit>—</code></span>
+        </div>
+      </aside>
+
+      <main id="main" tabindex="-1">
+        <header class="topbar">
+          <button class="mobile-menu" type="button" aria-label="Open navigation" aria-expanded="false">
+            <span></span><span></span>
+          </button>
+          <label class="search-box">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <span class="sr-only">Search the current Storybook view</span>
+            <input id="search" type="search" placeholder="Search screens, flows, states, or IDs" autocomplete="off">
+            <kbd>/</kbd>
+          </label>
+        </header>
+
+        <section id="overview-view" class="view" data-view="overview" aria-labelledby="overview-title">
+          <div class="hero">
+            <div class="hero-copy">
+              <p class="eyebrow">Overview / 00</p>
+              <h1 id="overview-title">Tonk product map</h1>
+              <p class="hero-lede">Browse the browser and CLI screens, then trace the user flows and state changes behind them.</p>
+              <div class="hero-actions">
+                <a class="primary-action" href="#screens">All screens</a>
+                <a class="secondary-action" href="#flows">All flows</a>
+              </div>
+            </div>
+            <div class="hero-proof" aria-label="Storybook freshness">
+              <p class="proof-kicker">Revision</p>
+              <dl>
+                <div><dt>Flow audit</dt><dd><code data-audit-commit>—</code></dd></div>
+                <div><dt>Visual capture</dt><dd><code data-visual-commit>—</code></dd></div>
+                <div><dt>Verification</dt><dd data-verification-summary>—</dd></div>
+              </dl>
+            </div>
+          </div>
+
+          <div class="metric-grid" aria-label="Storybook coverage summary">
+            <article><strong data-metric="screens">—</strong><span>screen families</span></article>
+            <article><strong data-metric="journeys">—</strong><span>mapped journeys</span></article>
+            <article><strong data-metric="verification">—</strong><span>observable checks</span></article>
+            <article><strong data-metric="bugs">—</strong><span>triage findings</span></article>
+          </div>
+
+          <section class="audience-section" aria-labelledby="audience-title">
+            <div class="section-heading">
+              <h2 id="audience-title">Browse by role</h2>
+            </div>
+            <div class="audience-grid">
+              <a href="#flows"><span>Founder</span><strong>Consequential journeys and open product decisions.</strong><small>Flows <span aria-hidden="true">→</span></small></a>
+              <a href="#screens"><span>Designer</span><strong>Visible states, entry points, and exits.</strong><small>Screens <span aria-hidden="true">→</span></small></a>
+              <a href="#flows"><span>Engineer</span><strong>User contracts, source paths, and recovery boundaries.</strong><small>Flows <span aria-hidden="true">→</span></small></a>
+              <a href="#gaps"><span>Support &amp; QA</span><strong>Symptoms, expected results, and coverage gaps.</strong><small>Gaps <span aria-hidden="true">→</span></small></a>
+              <a href="#flows"><span>Agent</span><strong>Flow IDs, variants, evidence, and gaps.</strong><small>Flows <span aria-hidden="true">→</span></small></a>
+            </div>
+          </section>
+
+          <section class="recent-section" aria-labelledby="recent-title">
+            <div class="section-heading compact"><h2 id="recent-title">Screens</h2><a href="#screens">View all <span aria-hidden="true">→</span></a></div>
+            <div id="overview-screens" class="screen-strip"></div>
+          </section>
+        </section>
+
+        <section id="screens-view" class="view" data-view="screens" aria-labelledby="screens-title" hidden>
+          <div class="page-heading">
+            <div><p class="eyebrow">Visual inventory</p><h1 id="screens-title">Every user-visible screen family</h1><p>One canonical image per materially different surface or state. Open a screen to see its flows, source ownership, and capture provenance.</p></div>
+            <div class="view-summary"><strong data-screen-result-count>—</strong><span>shown</span></div>
+          </div>
+          <div id="screen-filters" class="filter-row" aria-label="Filter screens"></div>
+          <div id="screen-groups"></div>
+          <p id="screens-empty" class="empty-state" hidden>No screens match this search.</p>
+        </section>
+
+        <section id="flows-view" class="view" data-view="flows" aria-labelledby="flows-title" hidden>
+          <div class="page-heading">
+            <div><p class="eyebrow">State and journey map</p><h1 id="flows-title">Every user-facing flow</h1><p>Each row names the starting variants, current evidence, and the missing cases that keep it from being called covered.</p></div>
+            <div class="view-summary"><strong data-flow-result-count>—</strong><span>shown</span></div>
+          </div>
+          <div id="flow-filters" class="filter-row" aria-label="Filter flows"></div>
+          <div id="flow-groups" class="flow-groups"></div>
+          <p id="flows-empty" class="empty-state" hidden>No flows match this search.</p>
+        </section>
+
+        <section id="gaps-view" class="view" data-view="gaps" aria-labelledby="gaps-title" hidden>
+          <div class="page-heading">
+            <div><p class="eyebrow">Known unknowns</p><h1 id="gaps-title">Coverage gaps and product calls</h1><p>Unrun checks remain visibly separate from failures. Triage findings are source-pinned hypotheses until a running-product pass confirms them.</p></div>
+            <div class="view-summary"><strong data-gap-result-count>—</strong><span>open</span></div>
+          </div>
+          <div class="gap-layout">
+            <section class="gap-panel" aria-labelledby="triage-title"><div class="panel-heading"><h2 id="triage-title">Triage findings</h2></div><div id="bug-list"></div></section>
+            <section class="gap-panel" aria-labelledby="verification-title"><div class="panel-heading"><h2 id="verification-title">Verification state</h2></div><div id="verification-panel"></div></section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="screen-dialog" class="detail-dialog" aria-labelledby="screen-dialog-title">
+      <button class="dialog-close" type="button" aria-label="Close screen details">×</button>
+      <div id="screen-dialog-body"></div>
+    </dialog>
+
+    <dialog id="flow-dialog" class="detail-dialog flow-dialog" aria-labelledby="flow-dialog-title">
+      <button class="dialog-close" type="button" aria-label="Close flow details">×</button>
+      <div id="flow-dialog-body"></div>
+    </dialog>
+
+    <template id="screen-card-template">
+      <article class="screen-card">
+        <button class="screen-card-button" type="button">
+          <span class="screen-image-wrap"><img alt="" loading="lazy"></span>
+          <span class="screen-card-copy"><span class="screen-card-meta"><span class="screen-id"></span><span class="screen-capture"></span></span><strong></strong><small></small></span>
+        </button>
+      </article>
+    </template>
+  </body>
+</html>

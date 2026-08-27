@@ -26,7 +26,7 @@ pub struct AccountSessionState {
     pub version: u8,
     /// The only attachment authorized for remote account access.
     pub active: Option<ActiveAccount>,
-    /// Crash-recoverable browser handoff phase.
+    /// Crash-recoverable activation or a legacy browser handoff.
     pub pending_login: Option<PendingLogin>,
 }
 
@@ -38,6 +38,19 @@ impl Default for AccountSessionState {
             pending_login: None,
         }
     }
+}
+
+fn validate_state(state: &AccountSessionState) -> Result<()> {
+    if state.version != VERSION {
+        anyhow::bail!(
+            "unsupported account-session state version {}",
+            state.version
+        );
+    }
+    if state.active.is_some() && state.pending_login.is_some() {
+        anyhow::bail!("account-session state cannot be active and pending simultaneously");
+    }
+    Ok(())
 }
 
 /// Provider sign-in phase visible without opening a Dialog profile.
@@ -75,12 +88,7 @@ pub fn inspect_local(store: &SpaceStore) -> Result<LocalPhase> {
         let bytes = std::fs::read(entry.path())?;
         let state: AccountSessionState =
             serde_json::from_slice(&bytes).context("stored account-session state is malformed")?;
-        if state.version != VERSION {
-            anyhow::bail!(
-                "unsupported account-session state version {}",
-                state.version
-            );
-        }
+        validate_state(&state)?;
         return Ok(if state.active.is_some() {
             LocalPhase::Active
         } else if state.pending_login.is_some() {
@@ -92,11 +100,12 @@ pub fn inspect_local(store: &SpaceStore) -> Result<LocalPhase> {
     Ok(LocalPhase::SignedOut)
 }
 
-/// Durable browser handoff phase.
+/// Durable login recovery phase.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PendingLogin {
-    /// The browser has not completed the handoff yet.
+    /// A legacy browser handoff whose process-local callback cannot be
+    /// resumed. A new client reports this state and asks the user to log out.
     Waiting {
         /// Provider service URL.
         provider: String,
@@ -107,10 +116,6 @@ pub enum PendingLogin {
     },
     /// Grant material is durable locally and activation can be replayed.
     Activating {
-        /// Provider service URL.
-        provider: String,
-        /// Raw secret retained for recovery diagnostics/re-consumption.
-        secret: String,
         /// Exact completed account generation.
         account: ActiveAccount,
     },
@@ -147,6 +152,14 @@ pub struct AccountSessionReadGuard {
 pub struct AccountSessionWriteGuard {
     _file: File,
     store: SpaceStore,
+}
+
+/// Exclusive token retained from durable activation staging through final
+/// promotion. Its contents are intentionally private: only this module may
+/// decide which staged generation the token authorizes.
+pub struct AccountActivationGuard {
+    _guard: AccountSessionWriteGuard,
+    pending: PendingLogin,
 }
 
 fn lock_file(store: &SpaceStore) -> Result<File> {
@@ -191,6 +204,16 @@ fn state_path(profile: &Profile, store: &SpaceStore) -> Result<PathBuf> {
         .join(format!("{STATE_FILE_PREFIX}-{profile_key}.json")))
 }
 
+fn legacy_provider_bytes(
+    result: std::result::Result<Vec<u8>, dialog_effects::credential::CredentialError>,
+) -> Result<Option<Vec<u8>>> {
+    match result {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if crate::account_state::credential_is_missing(&error) => Ok(None),
+        Err(error) => Err(error).context("failed to load the legacy account provider"),
+    }
+}
+
 async fn load_raw(
     profile: &Profile,
     _operator: &Operator<NativeSpace>,
@@ -207,12 +230,7 @@ async fn load_raw(
     };
     let state: AccountSessionState =
         serde_json::from_slice(&bytes).context("stored account-session state is malformed")?;
-    if state.version != VERSION {
-        anyhow::bail!(
-            "unsupported account-session state version {}",
-            state.version
-        );
-    }
+    validate_state(&state)?;
     Ok(Some(state))
 }
 
@@ -259,10 +277,9 @@ async fn save_raw(
     Ok(())
 }
 
-/// Project the persisted root and provider record into an active
-/// session, when both are present. This is what the legacy migration in
-/// [`ensure_initialized`] reads, and what a completed callback link
-/// activates from.
+/// Project the persisted root and provider record into an active session,
+/// when both are present. This is used only to migrate legacy installs that
+/// predate canonical account-session state.
 async fn projected_active(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
@@ -274,13 +291,15 @@ async fn projected_active(
         .root_did
         .parse()
         .context("stored root DID is invalid")?;
-    let bytes = profile
-        .credential()
-        .site(crate::account::ACCOUNT_LINK_SITE)
-        .load::<Vec<u8>>()
-        .perform(operator)
-        .await;
-    let Ok(bytes) = bytes else {
+    let Some(bytes) = legacy_provider_bytes(
+        profile
+            .credential()
+            .site(crate::account::ACCOUNT_LINK_SITE)
+            .load::<Vec<u8>>()
+            .perform(operator)
+            .await,
+    )?
+    else {
         return Ok(None);
     };
     if bytes.is_empty() {
@@ -323,27 +342,59 @@ pub async fn ensure_initialized(
     save_raw(profile, operator, &guard.store, &state).await
 }
 
-/// Activate the session for a link that just persisted its root and
-/// provider record: the callback flow's counterpart to the legacy
-/// migration above, which only runs when no canonical state exists yet.
-pub async fn activate_link(
+/// Persist the exact post-callback account generation before compatibility
+/// projection writes begin, retaining the exclusive transition lock.
+pub async fn stage_activation(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     store: &SpaceStore,
-    attachment_id: Option<String>,
-) -> Result<()> {
+    account: ActiveAccount,
+) -> Result<AccountActivationGuard> {
     let guard = exclusive_transition_guard(store)?;
     ensure_initialized(profile, operator, &guard).await?;
-    let mut active = projected_active(profile, operator)
-        .await?
-        .context("link completed but its root and provider record did not persist")?;
-    if let Some(attachment_id) = attachment_id {
-        active.attachment_id = attachment_id;
-    }
     let mut state = load_raw(profile, operator, store)
         .await?
         .unwrap_or_default();
-    state.active = Some(active);
+    let pending = PendingLogin::Activating { account };
+    match (&state.active, &state.pending_login) {
+        (None, None) => {
+            state.pending_login = Some(pending.clone());
+            save_raw(profile, operator, store, &state).await?;
+        }
+        (None, Some(existing)) if existing == &pending => {}
+        _ => {
+            anyhow::bail!(
+                "cannot stage account activation while another account transition exists"
+            );
+        }
+    }
+    Ok(AccountActivationGuard {
+        _guard: guard,
+        pending,
+    })
+}
+
+/// Atomically promote the exact staged callback generation to active.
+pub async fn finalize_activation(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    guard: AccountActivationGuard,
+    account: &ActiveAccount,
+) -> Result<()> {
+    let expected = PendingLogin::Activating {
+        account: account.clone(),
+    };
+    if guard.pending != expected {
+        anyhow::bail!("activation guard belongs to a different account generation");
+    }
+    let store = &guard._guard.store;
+    let mut state = load_raw(profile, operator, store)
+        .await?
+        .context("account-session state has not been initialized")?;
+    if state.active.is_some() || state.pending_login.as_ref() != Some(&expected) {
+        anyhow::bail!("staged account activation changed before finalization");
+    }
+    state.active = Some(account.clone());
     state.pending_login = None;
     save_raw(profile, operator, store, &state).await
 }
@@ -382,6 +433,7 @@ pub async fn logout_transition_for_store(
     let mut state = load_raw(profile, operator, store)
         .await?
         .unwrap_or_default();
+    let existed = state.active.is_some() || state.pending_login.is_some();
     let mut detached = Vec::new();
     if let Some(active) = state.active.take() {
         detached.push(active);
@@ -389,7 +441,6 @@ pub async fn logout_transition_for_store(
     if let Some(PendingLogin::Activating { account, .. }) = state.pending_login.take() {
         detached.push(account);
     }
-    let existed = !detached.is_empty() || state.pending_login.is_some();
     state.pending_login = None;
     if existed {
         save_raw(profile, operator, store, &state).await?;
@@ -445,4 +496,351 @@ pub(crate) async fn install_for_integration_test(
     let store = operator.store();
     let _guard = exclusive_transition_guard(store)?;
     save_raw(profile, operator.local(), store, state).await
+}
+
+#[cfg(test)]
+mod tests {
+    use dialog_capability::Subject;
+    use dialog_effects::storage::Directory;
+    use dialog_operator::DeriveOperator as _;
+    use dialog_storage::provider::storage::Storage;
+
+    use super::*;
+
+    async fn isolated_session() -> (
+        tempfile::TempDir,
+        SpaceStore,
+        Profile,
+        Operator<NativeSpace>,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SpaceStore::at(temp.path().join("state"));
+        let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
+        let storage = Storage::<NativeSpace>::default();
+        let profile = Profile::open(format!("account-session-test-{}", rand::random::<u64>()))
+            .at(profile_dir)
+            .perform(&storage)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(store.account_dir()).unwrap();
+        let account_dir = store.account_dir().canonicalize().unwrap();
+        let operator = profile
+            .derive(b"tonk/account-session-test/v1")
+            .allow(Subject::any())
+            .base(Directory::At(account_dir.to_string_lossy().into()))
+            .build(storage)
+            .await
+            .unwrap();
+        (temp, store, profile, operator)
+    }
+
+    fn active_account(attachment_id: &str) -> ActiveAccount {
+        ActiveAccount {
+            provider: "https://accounts.example".to_string(),
+            credential_id: "credential".to_string(),
+            root_did: "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX".to_string(),
+            delegation_cid: "bafk-delegation".to_string(),
+            delegation_hex: "00".to_string(),
+            descriptor_hex: Some("01".to_string()),
+            attachment_id: attachment_id.to_string(),
+            attached_at: 42,
+        }
+    }
+
+    #[dialog_common::test]
+    fn activating_decodes_the_legacy_duplicate_fields_but_does_not_reemit_them() {
+        let account = active_account("legacy-generation");
+        let legacy = serde_json::json!({
+            "activating": {
+                "provider": "https://accounts.example",
+                "secret": "legacy-unused-secret",
+                "account": account,
+            }
+        });
+
+        let decoded: PendingLogin = serde_json::from_value(legacy).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            serde_json::json!({
+                "activating": {
+                    "account": active_account("legacy-generation"),
+                }
+            })
+        );
+    }
+
+    #[dialog_common::test]
+    fn legacy_migration_distinguishes_absence_from_storage_failure() {
+        use dialog_effects::credential::CredentialError;
+
+        assert_eq!(
+            legacy_provider_bytes(Err(CredentialError::NotFound("missing".to_owned()))).unwrap(),
+            None
+        );
+        let error = legacy_provider_bytes(Err(CredentialError::Storage(
+            "permission denied".to_owned(),
+        )))
+        .expect_err("a transient provider read failure must not become signed out");
+        assert!(error.to_string().contains("legacy account provider"));
+    }
+
+    #[dialog_common::test]
+    async fn inspect_local_distinguishes_signed_out_pending_and_active_states() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::SignedOut);
+
+        save_raw(&profile, &operator, &store, &AccountSessionState::default())
+            .await
+            .unwrap();
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::SignedOut);
+
+        let mut state = AccountSessionState {
+            pending_login: Some(PendingLogin::Waiting {
+                provider: "https://accounts.example".to_string(),
+                secret: "one-time-secret".to_string(),
+                token_hash: "token-hash".to_string(),
+            }),
+            ..Default::default()
+        };
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::Pending);
+
+        state.pending_login = Some(PendingLogin::Activating {
+            account: active_account("pending-generation"),
+        });
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::Pending);
+
+        state.pending_login = None;
+        state.active = Some(active_account("active-generation"));
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::Active);
+    }
+
+    #[dialog_common::test]
+    async fn active_and_pending_authority_fails_closed() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let state = AccountSessionState {
+            active: Some(active_account("active-generation")),
+            pending_login: Some(PendingLogin::Activating {
+                account: active_account("pending-generation"),
+            }),
+            ..Default::default()
+        };
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+
+        let error =
+            inspect_local(&store).expect_err("contradictory state must not be reported as active");
+        assert!(error.to_string().contains("active and pending"));
+
+        let guard = shared_remote_guard(&store).unwrap();
+        let error = load_guarded(&profile, &operator, &guard)
+            .await
+            .expect_err("contradictory state must not authorize a remote request");
+        assert!(error.to_string().contains("active and pending"));
+    }
+
+    #[dialog_common::test]
+    async fn stage_activation_is_the_first_durable_post_callback_write() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("callback-generation");
+
+        let guard = stage_activation(&profile, &operator, &store, account.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            load_raw(&profile, &operator, &store).await.unwrap(),
+            Some(AccountSessionState {
+                version: VERSION,
+                active: None,
+                pending_login: Some(PendingLogin::Activating { account }),
+            })
+        );
+        drop(guard);
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::Pending);
+    }
+
+    #[dialog_common::test]
+    async fn activation_resume_is_idempotent_and_rejects_a_different_generation() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("callback-generation");
+        let mut other = account.clone();
+        other.delegation_cid = "fresh-delegation".to_owned();
+        other.delegation_hex = "02".to_owned();
+
+        drop(
+            stage_activation(&profile, &operator, &store, account.clone())
+                .await
+                .unwrap(),
+        );
+        drop(
+            stage_activation(&profile, &operator, &store, account.clone())
+                .await
+                .expect("reopening the exact generation is idempotent"),
+        );
+
+        let error = match stage_activation(&profile, &operator, &store, other).await {
+            Ok(_) => panic!("a different callback generation must not replace pending state"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("another account transition"));
+        assert_eq!(
+            load_raw(&profile, &operator, &store).await.unwrap(),
+            Some(AccountSessionState {
+                version: VERSION,
+                active: None,
+                pending_login: Some(PendingLogin::Activating { account }),
+            })
+        );
+    }
+
+    #[dialog_common::test]
+    async fn finalize_activation_promotes_only_the_exact_staged_generation() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("callback-generation");
+        let other = active_account("other-generation");
+
+        let guard = stage_activation(&profile, &operator, &store, account.clone())
+            .await
+            .unwrap();
+        let error = finalize_activation(&profile, &operator, guard, &other)
+            .await
+            .expect_err("a stale finalizer must not promote another generation");
+        assert!(error.to_string().contains("different account generation"));
+
+        assert_eq!(
+            load_raw(&profile, &operator, &store).await.unwrap(),
+            Some(AccountSessionState {
+                version: VERSION,
+                active: None,
+                pending_login: Some(PendingLogin::Activating {
+                    account: account.clone(),
+                }),
+            })
+        );
+
+        let guard = stage_activation(&profile, &operator, &store, account.clone())
+            .await
+            .expect("the exact generation remains resumable");
+        finalize_activation(&profile, &operator, guard, &account)
+            .await
+            .expect("the exact generation is promoted");
+        assert_eq!(
+            load_raw(&profile, &operator, &store).await.unwrap(),
+            Some(AccountSessionState {
+                version: VERSION,
+                active: Some(account),
+                pending_login: None,
+            })
+        );
+    }
+
+    #[dialog_common::test]
+    async fn pre_commit_final_save_failure_preserves_the_pending_generation() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("callback-generation");
+        let guard = stage_activation(&profile, &operator, &store, account.clone())
+            .await
+            .unwrap();
+        let tmp = state_path(&profile, &store)
+            .unwrap()
+            .with_extension("json.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+
+        let error = finalize_activation(&profile, &operator, guard, &account)
+            .await
+            .expect_err("an obstructed atomic replacement must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to create account-session temp file"),
+            "unexpected save failure: {error:#}"
+        );
+        assert_eq!(
+            load_raw(&profile, &operator, &store).await.unwrap(),
+            Some(AccountSessionState {
+                version: VERSION,
+                active: None,
+                pending_login: Some(PendingLogin::Activating { account }),
+            })
+        );
+    }
+
+    #[dialog_common::test]
+    async fn stage_activation_resumes_the_identical_generation_after_restart() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("callback-generation");
+        let first = stage_activation(&profile, &operator, &store, account.clone())
+            .await
+            .unwrap();
+        drop(first);
+        let before = load_raw(&profile, &operator, &store).await.unwrap();
+
+        let resumed = stage_activation(&profile, &operator, &store, account)
+            .await
+            .unwrap();
+
+        assert_eq!(load_raw(&profile, &operator, &store).await.unwrap(), before);
+        drop(resumed);
+    }
+
+    #[dialog_common::test]
+    async fn logout_clears_a_durable_waiting_handoff() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let state = AccountSessionState {
+            pending_login: Some(PendingLogin::Waiting {
+                provider: "https://accounts.example".to_string(),
+                secret: "one-time-secret".to_string(),
+                token_hash: "token-hash".to_string(),
+            }),
+            ..Default::default()
+        };
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::Pending);
+
+        let detached = logout_transition_for_store(&profile, &operator, &store)
+            .await
+            .unwrap();
+
+        assert!(detached.is_empty());
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::SignedOut);
+        assert_eq!(
+            load_raw(&profile, &operator, &store)
+                .await
+                .unwrap()
+                .unwrap()
+                .pending_login,
+            None
+        );
+    }
+
+    #[dialog_common::test]
+    async fn logout_detaches_a_durable_activating_generation_exactly_once() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let pending_account = active_account("pending-generation");
+        let state = AccountSessionState {
+            pending_login: Some(PendingLogin::Activating {
+                account: pending_account.clone(),
+            }),
+            ..Default::default()
+        };
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+
+        assert_eq!(
+            logout_transition_for_store(&profile, &operator, &store)
+                .await
+                .unwrap(),
+            vec![pending_account]
+        );
+        assert_eq!(inspect_local(&store).unwrap(), LocalPhase::SignedOut);
+        assert!(
+            logout_transition_for_store(&profile, &operator, &store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
