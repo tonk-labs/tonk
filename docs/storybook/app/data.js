@@ -1914,6 +1914,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "Sharing a spot with no account raises registration in place and finishes the interrupted share (Cross a boundary).",
+      "device": "fresh-browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-00",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Invite remote/base/shortening variants produce the intended URL without leaking authority (Resolve).",
       "device": "cli + offline",
       "file": "verification/cli-spaces-ui.md",
@@ -2111,7 +2119,7 @@ window.STORYBOOK_DATA = {
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 100
+    "unrun": 101
   },
   "visualCommit": "49a873a23"
 };
