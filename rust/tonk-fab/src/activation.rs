@@ -27,16 +27,24 @@ const CLUSTER_ID: &str = "fabb-activation-cluster";
 /// Distinguishes this element's account subscription from its others.
 const SUB_TAG: &str = "fabb-activation";
 
+thread_local! {
+    /// The live subscription, held here rather than in the watch because
+    /// it is opened a microtask after `watch` has already returned.
+    static OPEN: std::cell::RefCell<Option<Subscription>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub(crate) struct ActivationWatch {
-    subscription: Option<Subscription>,
     _frames: Vec<Closure<dyn FnMut(JsValue, JsValue)>>,
 }
 
 impl Drop for ActivationWatch {
     fn drop(&mut self) {
-        if let Some(mut subscription) = self.subscription.take() {
-            subscription.cancel();
-        }
+        OPEN.with(|open| {
+            if let Some(mut subscription) = open.borrow_mut().take() {
+                subscription.cancel();
+            }
+        });
     }
 }
 
@@ -58,14 +66,21 @@ pub(crate) fn watch(this: &HtmlElement) -> Option<ActivationWatch> {
         frames.push(frame);
     }
 
+    // Deferred a microtask, with a connected guard.
+    //
+    // `watch` runs from `connectedCallback`, and the custom-element
+    // reaction queue delivers that to an element that is not yet in the
+    // document — so subscribing here directly fails with
+    // `no host claimed the event (connected=false)`. The host listens on
+    // `document`, and a detached element's event never reaches it.
+    //
+    // The share row then never learned the account existed, and clicking
+    // share waited for a link that was never going to arrive.
     let query = JSON::parse(&crate::logic::account_customer_query_body()).ok()?;
-    let subscription = match consumer::subscribe(this, &query, Some(&SUB_TAG.into())) {
-        Ok(subscription) => Some(subscription),
-        Err(error) => {
-            tonk_common::log!("activation: could not watch the account: {error:?}");
-            None
-        }
-    };
+    match consumer::subscribe(this, &query, Some(&SUB_TAG.into())) {
+        Ok(subscription) => OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
+        Err(error) => tonk_common::log!("activation: could not watch: {error:?}"),
+    }
 
     // An account nobody has registered yet resolves to no row at all —
     // `provider` is required on the concept, so "enrolled but unserved"
@@ -73,10 +88,7 @@ pub(crate) fn watch(this: &HtmlElement) -> Option<ActivationWatch> {
     // say it, so paint it now rather than waiting for a frame.
     render(this, None, None);
 
-    Some(ActivationWatch {
-        subscription,
-        _frames: frames,
-    })
+    Some(ActivationWatch { _frames: frames })
 }
 
 /// Render whichever row the frame carries.
