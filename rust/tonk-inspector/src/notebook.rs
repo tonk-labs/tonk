@@ -782,13 +782,34 @@ impl Cell {
         // The LSP buffer URI scopes completion and diagnostics to this branch,
         // the same shape the inspector's cells use. The provider keys its
         // client by this string, so it must be unique per editor.
-        let _ = editor.set_attribute(
-            "source",
-            &format!(
-                "tonk-buffer:///{}/{}/notebook-{id}",
-                notebook.repo, notebook.branch
-            ),
+        let source = format!(
+            "tonk-buffer:///{}/{}/notebook-{id}",
+            notebook.repo, notebook.branch
         );
+        let _ = editor.set_attribute("source", &source);
+
+        // Announce the editor to the provider ourselves.
+        //
+        // `<tonk-code>` fires `tonk-code-connect` from its own
+        // `connectedCallback`, but these editors are created by prose's node
+        // view INSIDE its shadow root, on prose's schedule — which can be
+        // before this element appended the editor into the provider at all.
+        // A bubbling announcement made while the tree is still detached
+        // reaches nothing, and the provider then has no LSP client for the
+        // buffer: no diagnostics, no completion, and so no auto-evaluate.
+        //
+        // Re-announcing here is safe: the provider keys its documents by
+        // `source`, so a repeat under the same URI is idempotent.
+        let detail = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&detail, &"source".into(), &source.as_str().into());
+        let _ = js_sys::Reflect::set(&detail, &"language".into(), &CELL_LANGUAGE.into());
+        let init = web_sys::CustomEventInit::new();
+        init.set_detail(&detail);
+        init.set_bubbles(true);
+        init.set_composed(true);
+        if let Ok(event) = CustomEvent::new_with_event_init_dict("tonk-code-connect", &init) {
+            let _ = editor.dispatch_event(&event);
+        }
 
         let result = window()
             .and_then(|w| w.document())
