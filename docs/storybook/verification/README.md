@@ -116,6 +116,35 @@ serially where shared listeners/locks require it.
 
 ## Results so far
 
+### Visual inventory pass — 2026-08-27
+
+At visual commit `49a873a23`, the repository web stack built and served at
+`http://127.0.0.1:8080/` after removing an inherited `NO_COLOR=1` value that
+mdBook rejects as a boolean. An isolated headless Chrome profile at 1440 by 960
+captured `WEB-01` through `WEB-06` from the running product: empty Hub, populated
+Hub, space home, expanded space actions, account-required share, and invalid
+space route. These captures prove those visible states only; they do not pass
+the linked account, authority, sync, interruption, or restart checks.
+
+`WEB-07` through `WEB-15` were captured from the production-source fixture,
+which fetched the checked-in account/activation HTML and CSS and populated
+documented test values. The fixture did not run WebAuthn, account services, or
+the state transition into those screens.
+
+The current `tonk` binary was built with `cargo build -p tonk-cli --bin tonk`.
+Eleven CLI screen families were captured from exact command help or the empty
+space-list result using isolated XDG, spaces, telemetry, and update paths; no
+real account/profile command ran and `HOME` was not replaced. The captures prove
+the displayed output, not mutation, recovery, remote, or TTY behavior.
+
+The resulting explorer was checked in isolated Chrome at desktop and 390 by 844
+viewports. Overview, Screens, Flows, Gaps, filters, search, detail routes,
+screen-to-flow navigation, the compact navigation drawer, local assets, console,
+and network requests were inspected. The final reload had no console messages
+or failed asset requests.
+
+### Earlier source and test pass — 2026-08-26
+
 No checklist pass has run and no document is verified. Fresh evidence at commit
 `a3f8670b1` on 2026-08-26 is limited to:
 

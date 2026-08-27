@@ -28,6 +28,11 @@ failure-aware coverage target.
    separate implementation plan before adding or changing tests and code.
 10. Pin every audit and verification pass to a commit and name anything that was
     not actually executed.
+11. Treat a user-visible product change or bug fix as incomplete until its
+    screen, journey, verification, or triage IDs are updated, or the pull
+    request records why the visible contract is unchanged.
+12. Keep captures honest: running product, production-source fixture, and
+    captured CLI output are distinct evidence classes and must remain visible.
 
 ## Completion condition
 
@@ -44,5 +49,6 @@ The storybook is complete when:
 - the running-product pass agrees with the written behavior or the difference
   has an explicit product decision.
 
-Source audit pinned to Tonk commit `a3f8670b1`; no running-product verification
-has yet been recorded.
+Source audit pinned to Tonk commit `a3f8670b1`. Visual inventory pinned to Tonk
+commit `49a873a23`; its screenshots do not constitute a complete journey
+verification pass.

@@ -1,0 +1,17 @@
+$ tonk migrate -h
+
+One-time conversions: carry directories, spaces, delegations
+
+Usage: tonk migrate [OPTIONS] <COMMAND>
+
+Commands:
+  carry    Move a pre-tonk .carry/ directory to .tonk/
+  account  Move stored delegations into their durable homes
+
+Options:
+      --space <NAME>  Operate on this space instead of the active directory binding. Precedence: --space > TONK_SPACE > `tonk space use` in the nearest ancestor directory
+  -v, --verbose       Print full error chains: every layer of context down to the root cause, not just the outermost message
+  -h, --help          Print help (see more with '--help')
+  -V, --version       Print version
+
+[exit 0]

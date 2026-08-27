@@ -1,0 +1,5 @@
+$ tonk space
+
+(no spaces registered; create one with `tonk space new <name>`)
+
+[exit 0]
