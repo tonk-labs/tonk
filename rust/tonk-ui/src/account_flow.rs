@@ -562,8 +562,10 @@ mod tests {
                         document.querySelector('#account-tab-account').click();
                         const selectedTabElement = document.querySelector('#account-tab-account');
                         const selectedTab = selectedTabElement.getBoundingClientRect();
-                        const selectedTabStyle = getComputedStyle(selectedTabElement);
-                        const selectedTabBridge = getComputedStyle(selectedTabElement, '::after');
+                        // Computed-style declarations are live; snapshot the
+                        // selected state before switching to Devices below.
+                        const selectedTabBorderRight = getComputedStyle(selectedTabElement).borderRightWidth;
+                        const selectedTabBridgeWidth = getComputedStyle(selectedTabElement, '::after').width;
                         const accountHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         document.querySelector('#account-tab-devices').click();
                         const devicesHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
@@ -590,8 +592,8 @@ mod tests {
                           bodyTop: Math.round(body.top),
                           selectedTabRight: Math.round(selectedTab.right),
                           bodyLeft: Math.round(body.left),
-                          selectedTabBorderRight: selectedTabStyle.borderRightWidth,
-                          selectedTabBridgeWidth: selectedTabBridge.width,
+                          selectedTabBorderRight,
+                          selectedTabBridgeWidth,
                           accountHeight,
                           devicesHeight,
                           bodyRight: errorBodyRight,
