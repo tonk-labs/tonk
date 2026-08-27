@@ -317,27 +317,30 @@ mod tests {
         wait_for_service_worker(driver).await?;
         goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
-        element(driver, "#account-choose-create")
+        run_cluster_ceremony(driver, email).await?;
+        Ok(())
+    }
+
+    /// Run the account ceremony for `email` from the raised cluster.
+    ///
+    /// The panel that asked "create account or log in" before knowing
+    /// the address is gone: one entry raises this, and the address
+    /// lookup picks which ceremony runs. Every caller that used to click
+    /// through those panels goes through here.
+    pub(crate) async fn run_cluster_ceremony(driver: &WebDriver, email: &str) -> Result<()> {
+        element(driver, "#account-choose-link")
             .await?
             .click()
             .await?;
-        element(driver, "#account-email")
-            .await?
-            .send_keys(email)
-            .await?;
-        element(driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
-        if let Err(wait_error) = element(driver, "tonk-account[data-mode=\"success\"]").await {
-            let host = element(driver, "tonk-account").await?;
-            let mode = host.attr("data-mode").await?.unwrap_or_default();
-            let error = element(driver, "#account-error").await?.text().await?;
-            let working = element(driver, "#account-working").await?.text().await?;
-            return Err(wait_error).context(format!(
-                "account creation stopped in mode {mode:?}; error={error:?}; status={working:?}"
-            ));
-        }
+        await_register_dialog(driver).await?;
+        type_into_register_dialog(driver, email).await?;
+        await_register_action(driver, "create a passkey").await?;
+        click_register_action(driver).await?;
+        let passkey = await_settled_row(driver, "passkey").await?;
+        anyhow::ensure!(
+            passkey.contains(" on "),
+            "the passkey row names the device, got {passkey:?}",
+        );
         Ok(())
     }
 
@@ -894,8 +897,19 @@ mod tests {
         Ok(())
     }
 
+    /// A taken address is routed, not refused.
+    ///
+    /// Creation used to be chosen before the address was known, so
+    /// typing one that already had an account ran creation against it
+    /// and failed at the end — after the custody passkey existed. The
+    /// cost was an orphaned credential in the authenticator per attempt,
+    /// and the recovery was to retype and try again.
+    ///
+    /// The lookup answers first now, and the answer picks the ceremony:
+    /// an address someone holds offers sign-in. Nothing is minted for
+    /// the wrong one.
     #[dialog_common::test]
-    async fn it_reports_an_existing_email_and_recovers_with_another_address(
+    async fn it_offers_sign_in_for_a_taken_address_without_minting(
         env: TestEnvironment,
     ) -> Result<()> {
         let existing_email = "existing@example.com";
@@ -909,44 +923,29 @@ mod tests {
         wait_for_service_worker(&driver).await?;
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
-        element(&driver, "#account-choose-create")
+        element(&driver, "#account-choose-link")
             .await?
             .click()
             .await?;
-        element(&driver, "#account-email")
-            .await?
-            .send_keys(existing_email)
-            .await?;
-        element(&driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
+        await_register_dialog(&driver).await?;
 
-        // The conflict surfaces at signed account creation — after the
-        // custody passkey exists. That ordering is deliberate: an
-        // availability probe without a verified code would let anyone
-        // enumerate registered emails, so the failed attempt's cost is
-        // one orphaned passkey in the authenticator.
-        wait_for_text(
-            &driver,
-            "#account-error",
-            "an account already exists for this email address",
-        )
-        .await?;
-        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
-
-        let email = element(&driver, "#account-email").await?;
-        email.clear().await?;
-        email.send_keys(available_email).await?;
-        element(&driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        // The taken address offers sign-in...
+        type_into_register_dialog(&driver, existing_email).await?;
+        await_register_action(&driver, "log in with your passkey").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
-            2,
-            "each creation attempt mints exactly one custody passkey"
+            0,
+            "an address that already has an account must mint nothing",
+        );
+
+        // ...and editing to a free one offers creation, in the same
+        // cluster, with nothing to undo in between.
+        type_into_register_dialog(&driver, available_email).await?;
+        await_register_action(&driver, "create a passkey").await?;
+        assert_eq!(
+            credential_count(&driver, &authenticator_id).await?,
+            0,
+            "changing the address must not have minted anything either",
         );
 
         driver.quit().await?;
@@ -1172,18 +1171,7 @@ mod tests {
             // that creates and enrolls the account flows straight into
             // the approval it was interrupted by.
             element(driver, "tonk-account[data-mode=\"choice\"]").await?;
-            element(driver, "#account-choose-create")
-                .await?
-                .click()
-                .await?;
-            element(driver, "#account-email")
-                .await?
-                .send_keys(EMAIL)
-                .await?;
-            element(driver, "#account-create-submit")
-                .await?
-                .click()
-                .await?;
+            run_cluster_ceremony(driver, EMAIL).await?;
             // Let the creation ceremony finish before navigating
             // anywhere: it lands back on the approval it interrupted,
             // and leaving mid-flight loses whatever it had not yet
@@ -1434,6 +1422,12 @@ mod tests {
     #[dialog_common::test]
     async fn it_answers_whether_an_address_is_registered(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
+        // These calls are `fetch` FROM THE PAGE, answered by the service
+        // worker — so a page has to be loaded and the worker has to be
+        // controlling it. Without that the request leaves for the static
+        // server, which has no `/api/*` and answers 405.
+        driver.goto(env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
         // A profile exists from first boot, so nothing has to be signed
         // in for the form to ask this.
         get_json(&driver, "/api/profile").await?;
@@ -1920,6 +1914,7 @@ mod tests {
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
 
         // Ask about the address while nobody has it.
         let taken = "activates@example.com";
@@ -3487,19 +3482,7 @@ mod tests {
             "opening Add account must not switch profiles"
         );
 
-        element(&driver, "#account-choose-create")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "#account-email")
-            .await?
-            .send_keys("second@example.com")
-            .await?;
-        element(&driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        run_cluster_ceremony(&driver, "second@example.com").await?;
         activate(&driver, &env, "second@example.com").await?;
 
         // The second account sees none of the first account's spaces.
