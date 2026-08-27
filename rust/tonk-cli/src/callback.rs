@@ -6,10 +6,12 @@
 //! the authorizing page to deliver the result directly. No remote service sits
 //! in the middle, so nothing but the two local processes ever sees the grant.
 //!
-//! The page delivers by **form POST rather than `fetch`**, which sidesteps
-//! CORS entirely: a cross-origin form submission needs no preflight and no
-//! permissive `Access-Control-Allow-Origin` on a server that exists for one
-//! request. It also lets the server answer with a page the user can read.
+//! The page navigates here with a bodyless GET and carries the result in the
+//! URL fragment, which browsers do not send over the network. A local bridge
+//! page removes that fragment from history and submits it by same-origin POST.
+//! Keeping the HTTPS-to-HTTP hop bodyless avoids browsers losing a cross-scheme
+//! form body while showing an insecure-navigation warning; keeping the POST on
+//! loopback avoids CORS entirely.
 //!
 //! This is the transport only. What the delegation must satisfy — audience,
 //! subject, expiry — belongs to the caller, which knows what it asked for.
@@ -22,7 +24,7 @@ use anyhow::{Context, Result, bail};
 use axum::Router;
 use axum::extract::{Form, State};
 use axum::response::Html;
-use axum::routing::post;
+use axum::routing::get;
 use base64::Engine as _;
 use serde::Deserialize;
 use tokio::sync::{Notify, oneshot};
@@ -103,7 +105,9 @@ impl Callback {
             sender: Arc::new(std::sync::Mutex::new(Some(sender))),
             redirect_origin,
         };
-        let app = Router::new().route("/", post(deliver)).with_state(state);
+        let app = Router::new()
+            .route("/", get(bridge).post(deliver))
+            .with_state(state);
         let server = axum::serve(self.listener, app).with_graceful_shutdown(async move {
             shutdown.notified().await;
         });
@@ -120,6 +124,53 @@ impl Callback {
             Err(_) => bail!("timed out waiting for authorization in the browser"),
         }
     }
+}
+
+/// Land a bodyless cross-scheme GET, then deliver its fragment on loopback.
+///
+/// Fragments never reach this server. The browser reads the fragment locally,
+/// removes it from history before creating any DOM fields, and submits those
+/// fields back to this same origin. A GET without an outcome does not consume
+/// the callback, so a prefetch or accidental visit cannot deny the request.
+async fn bridge() -> Html<&'static str> {
+    Html(
+        r##"<!doctype html>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>Tonk</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0;
+         min-height: 100vh; display: grid; place-items: center; }
+  main { text-align: center; padding: 2rem; }
+</style>
+<main>
+  <p id="status">Returning authorization to Tonk…</p>
+  <noscript>JavaScript is required to return authorization to Tonk.</noscript>
+</main>
+<script>
+  const fields = new URLSearchParams(window.location.hash.slice(1));
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  if (!fields.has("authorize") && !fields.has("deny")) {
+    document.querySelector("#status").textContent =
+      "No authorization was provided. You can close this window.";
+  } else {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = window.location.pathname + window.location.search;
+    form.hidden = true;
+    for (const [name, value] of fields) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = value;
+      form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    form.submit();
+  }
+</script>
+"##,
+    )
 }
 
 /// The page the browser lands on once the terminal has its answer.
@@ -219,6 +270,64 @@ async fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Crossing from HTTPS to loopback HTTP must not carry the grant in the
+    /// request body: Safari can discard that POST while showing its insecure
+    /// navigation warning. The first request therefore lands on a bridge page;
+    /// the bridge keeps the listener alive for its same-origin POST.
+    #[tokio::test]
+    async fn it_bridges_a_fragment_grant_through_a_loopback_get() {
+        let callback = Callback::bind().await.unwrap();
+        let url = callback.url().to_owned();
+
+        let posting = tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let response = client
+                .get(&url)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok()),
+                Some("text/html; charset=utf-8")
+            );
+            let page = response.text().await.unwrap();
+            assert!(
+                page.contains("location.hash"),
+                "bridge must read the fragment"
+            );
+            assert!(
+                page.contains("history.replaceState"),
+                "bridge must remove the grant from browser history"
+            );
+            assert!(
+                page.contains("form.method = \"post\""),
+                "bridge must deliver by same-origin POST"
+            );
+
+            let body = base64::engine::general_purpose::STANDARD.encode(b"fragment-grant");
+            client
+                .post(&url)
+                .form(&[("authorize", body)])
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        });
+
+        let authorization = callback.receive(None).await.unwrap();
+        posting.await.unwrap();
+        match authorization {
+            Authorization::Granted(bytes) => assert_eq!(bytes, b"fragment-grant"),
+            Authorization::Denied(reason) => panic!("expected a grant, got denial: {reason}"),
+        }
+    }
 
     /// The page delivers a grant by form POST and the CLI receives it.
     ///
