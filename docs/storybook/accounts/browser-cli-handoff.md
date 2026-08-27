@@ -6,8 +6,8 @@ The handoff authorizes a native CLI profile through an account passkey in a
 browser. It begins with `tonk account login`, which binds a loopback callback
 and prints an approval URL, and continues at `/settings/link` in a browser. The
 browser registers the CLI as a device, mints account-to-device authority, and
-posts the result directly to the callback. The CLI validates and persists the
-result before hydrating the account.
+returns the result through a loopback bridge. The CLI validates and persists
+the result before hydrating the account.
 
 The handoff can begin from an already-linked browser or a fresh browser that
 must create or log into an account first. Approval, decline, browser closure,
@@ -22,8 +22,16 @@ DID, loopback callback, and device name and asks the OS to open it unless
 
 An already-linked browser opens an approval panel identifying the requesting
 device. The person approves and completes a passkey assertion. The page
-registers the device and posts the delegation, account repository descriptor,
-credential ID, attachment ID, and service URL to the callback.
+registers the device, then navigates to the callback with the delegation,
+account repository descriptor, credential ID, attachment ID, and service URL
+in the URL fragment. The local bridge removes the fragment from browser history
+and submits those fields to the CLI listener by same-origin POST.
+
+The cross-scheme navigation from the HTTPS account page to the HTTP loopback
+listener is deliberately a bodyless GET. Safari may discard a cross-scheme
+form POST while warning about the insecure navigation; the bridge postpones
+the POST until the browser is already on the loopback origin. The CLI accepts
+only its exact `http://127.0.0.1:<port>/` callback shape.
 
 The CLI validates the grant, persists the account authority and provider,
 activates its local session, hydrates the account repository, retains both
@@ -102,12 +110,14 @@ While waiting, only the loopback callback and Ctrl-C are selected. The browser
 can be opened, reloaded, closed, or used to complete an account ceremony.
 Nothing in the current CLI wait records a resumable handoff token.
 
-During browser approval, authority registration, WebAuthn, and callback POST
-are separate failure boundaries. During CLI activation, payload parsing,
-delegation validation, durable staging, credential writes, provider attachment,
-exact promotion, account hydration, authority retention, and push are separate
-boundaries. Focused tests cover pending restart, projection replay, and
-post-promotion recovery; a full process restart at every write is still open.
+During browser approval, authority registration, WebAuthn, cross-scheme
+callback navigation, bridge execution, and the same-origin callback POST are
+separate failure boundaries. During CLI activation, payload parsing, delegation
+validation, durable staging, credential writes, provider attachment, exact
+promotion, account hydration, authority retention, and push are separate
+boundaries. Focused tests cover the fragment bridge, pending restart,
+projection replay, and post-promotion recovery; a real Safari pass and a full
+process restart at every write are still open.
 
 ### Settle
 
@@ -173,7 +183,8 @@ codes, stdout URL, and stderr diagnostics need stable contracts.
 
 **Privacy and telemetry.** Callback URLs, delegation bytes, descriptors,
 credential IDs, attachment IDs, and passkey results are sensitive and must not
-be captured by telemetry or generic logs.
+be captured by telemetry or generic logs. The grant fragment must be removed
+from loopback browser history before the bridge creates or submits form fields.
 
 ## Edge cases
 
@@ -181,6 +192,10 @@ be captured by telemetry or generic logs.
   losing the original callback query.
 - The CLI dies after the browser registers it but before the callback POST.
 - The browser posts after the CLI listener has closed.
+- The browser warns before leaving HTTPS for loopback HTTP; continuing must
+  preserve the bodyless GET and allow the local bridge to deliver once.
+- The bridge loads without a delivery fragment or with JavaScript disabled; it
+  must not consume the waiting callback or invent an authorization outcome.
 - Callback payload JSON is readable but hex, descriptor, audience, proof, or
   signature is invalid.
 - Account service URL from the page differs from the CLI default; the page's
@@ -201,7 +216,8 @@ be captured by telemetry or generic logs.
   `Active` recovery are now implemented.
 - Define timeout behavior. Current callback receive has Ctrl-C but no explicit
   user-visible deadline in this path.
-- Verify callback origin constraints and browser form posting after reload.
+- Verify the fragment bridge and exact loopback-origin constraints in Safari,
+  Chrome, and Firefox, including the HTTPS-to-HTTP warning path and reload.
 - Add fault points after every post-approval write and assert restart state.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
