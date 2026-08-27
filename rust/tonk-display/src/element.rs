@@ -2011,7 +2011,7 @@ fn forward_with(host: &Element, view_el: &Element) {
     // Stamp the view root and every routing consumer inside it that lacks
     // its own `with`. `:scope, …` selects the view element too, so a view
     // that IS a single routing consumer is covered.
-    let selector = "[data-tonk-with], tonk-tree, tonk-inspector, ui-sync-status";
+    let selector = "[data-tonk-with], tonk-tree, tonk-inspector, tonk-notebook, ui-sync-status";
     if view_el
         .matches(&format!("{selector}, [with]"))
         .unwrap_or(false)

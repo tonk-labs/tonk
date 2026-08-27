@@ -113,6 +113,58 @@ concept!: &notebook/order-only
       as: text
 
 # ---------------------------------------------------------------------------
+# The space shell.
+#
+# The space route mounts `<tonk-display entity={replica} model=tonk/space>`,
+# so the model the shell renders has to resolve for the REPLICA entity, not
+# for a notebook entity. `subject` is `dialog.replica/subject` - a fact every
+# replica already carries - which is what makes this concept match.
+#
+# The notebook it shows is the pinned `id:notebook/scratch` seeded below,
+# rather than a field here: a space holds one notebook for now, and binding
+# it through the replica would need a fact nothing asserts yet.
+# ---------------------------------------------------------------------------
+
+concept!: &notebook/space
+  this: tonk:notebook/space
+  description: A notebook view of the tonk replica.
+  with:
+    subject:
+      description: The repository's subject DID (shared with tonk/replica)
+      the: dialog.replica/subject
+      as: entity
+
+# Route the space to the notebook shell, overriding core.yaml's default
+# `tonk:blank` - the same alias override wiki.yaml and board.yaml do.
+name!:
+  this: id:tonk/space
+  entity: tonk:notebook/space
+
+view!:
+  this: id:notebook/space/view
+  model: tonk:notebook/space
+  display: |
+    <div class="notebook-space">
+      <tonk-display entity="id:notebook/scratch" model="tonk:notebook"></tonk-display>
+    </div>
+
+# The block rows the element reads. A hidden <tonk-display> per model
+# renders one row per block into the DOM, which keeps the data reactive
+# (a commit re-renders the rows) without the element issuing its own
+# queries. Same shape as the wiki's `.wiki-data` pane.
+view/directory!:
+  this: id:notebook/block/rows
+  model: tonk:notebook/block
+  display: |
+    <div class="notebook-block-rows">
+      <div class="notebook-block-row"
+        subject={this}
+        data-block={this}
+        data-notebook={notebook}
+        data-source={source}></div>
+    </div>
+
+# ---------------------------------------------------------------------------
 # Command - one per changed block.
 #
 # `<tonk-notebook>` splits the edited document into blocks, diffs them against
@@ -183,8 +235,14 @@ view!:
       data-subject={this}
       order={order}
       title={title}
+      onchange=block/edit
+      onreorder=notebook/reorder
       style="display: block;"
-    ></tonk-notebook>
+    >
+      <div class="notebook-data" hidden>
+        <tonk-display model=tonk:notebook/block></tonk-display>
+      </div>
+    </tonk-notebook>
 
 # ---------------------------------------------------------------------------
 # A directory view so `tonk render notebook` (list of notebooks) resolves.
