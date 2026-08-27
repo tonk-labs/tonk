@@ -462,7 +462,7 @@ fn add(target: &Element, event: &str, store: &Closures, handler: impl FnMut(Even
     store.borrow_mut().push(closure);
 }
 
-fn reflect_string(value: &JsValue, key: &str) -> Option<String> {
+pub(crate) fn reflect_string(value: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(value, &JsValue::from_str(key))
         .ok()
         .and_then(|v| v.as_string())
