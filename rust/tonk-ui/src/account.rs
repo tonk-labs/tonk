@@ -2252,14 +2252,19 @@ fn bind(host: &HtmlElement) {
             closure.forget();
         }
     }
-    on_click(host, "#account-choose-create", |host| {
-        clear_error(&host);
-        set_mode(&host, "create");
-        focus_input(&host, "#account-email");
-    });
+    // One entry, raising the same cluster the share flow raises. It
+    // starts from the address and routes on the answer — create a
+    // passkey for an address nobody holds, sign in for one that exists
+    // — so the old up-front "create account / log in" fork asked the
+    // user a question the lookup answers on its own.
+    //
+    // Opened here there is no interrupted share to finish, so the
+    // cluster closes on "your account is ready" instead of handing over
+    // a link.
     on_click(host, "#account-choose-link", |host| {
         clear_error(&host);
-        set_mode(&host, "link");
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        crate::register_dialog::open();
     });
     for selector in ["#account-create-back", "#account-link-back"] {
         on_click(host, selector, |host| {
@@ -3109,7 +3114,14 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("log in")
+            Some("link an account"),
+            "the entry names the same act the share flow names",
+        );
+        assert!(
+            host.query_selector("#account-choose-create")
+                .unwrap()
+                .is_none(),
+            "the create/log-in fork is the lookup's to make, not the user's",
         );
         assert!(
             host.query_selector("#account-retry-local")
@@ -3205,7 +3217,6 @@ mod tests {
         set_busy(&host, true, "Creating your account…");
 
         for selector in [
-            "#account-choose-create",
             "#account-choose-link",
             "#account-create-back",
             "#account-link-back",
