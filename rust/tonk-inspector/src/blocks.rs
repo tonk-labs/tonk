@@ -80,11 +80,62 @@ pub fn project(blocks: &[String]) -> String {
         .join("\n\n")
 }
 
-/// Split an edited markdown document back into blocks.
+/// Whether a chunk is a heading (ATX `#` form — what the editor emits).
+fn is_heading(chunk: &str) -> bool {
+    let trimmed = chunk.trim_start_matches(' ');
+    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ')
+}
+
+/// Split an edited markdown document into blocks, grouping each heading with
+/// the content it introduces.
 ///
-/// Boundaries are blank lines outside a fenced region; blank lines inside a
-/// fence stay with the fence, which is what keeps a `dialog` cell whole.
+/// A heading alone is not a unit of authorship: `## Results` followed by a
+/// paragraph is one thought, and the heading exists to title what comes
+/// after. Grouping them means moving a section moves its heading with it, and
+/// editing under a heading does not make the heading look untouched while its
+/// content churns.
+///
+/// A run of consecutive headings (`# Title` immediately above `## Subtitle`)
+/// attaches to the same following content, so a title/subtitle pair plus a
+/// code fence is one block.
+///
+/// The group ends at the first chunk after the content — the next heading
+/// starts a new block.
 pub fn split(document: &str) -> Vec<String> {
+    let chunks = split_chunks(document);
+    let mut blocks: Vec<String> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+
+    for chunk in chunks {
+        if is_heading(&chunk) {
+            // A heading after content closes the previous group and opens a
+            // new one; consecutive headings accumulate into the same group.
+            if pending.iter().any(|held| !is_heading(held)) {
+                blocks.push(pending.join("\n\n"));
+                pending.clear();
+            }
+            pending.push(chunk);
+        } else if pending.iter().any(|held| is_heading(held)) {
+            // The content a pending heading was waiting for. Take it and
+            // close the group.
+            pending.push(chunk);
+            blocks.push(pending.join("\n\n"));
+            pending.clear();
+        } else {
+            blocks.push(chunk);
+        }
+    }
+
+    if !pending.is_empty() {
+        blocks.push(pending.join("\n\n"));
+    }
+    blocks
+}
+
+/// Split a document at blank lines outside fenced regions — the raw
+/// markdown block boundaries, before headings are grouped with their content.
+fn split_chunks(document: &str) -> Vec<String> {
     let mut blocks: Vec<String> = Vec::new();
     let mut current: Vec<&str> = Vec::new();
     let mut fence: Option<Fence> = None;
@@ -316,13 +367,66 @@ mod tests {
     /// exactly the blocks it was built from.
     #[dialog_common::test]
     fn it_round_trips_blocks_through_a_document() {
+        // Blocks as `split` itself would produce them: the heading is
+        // already grouped with the paragraph it introduces.
         let blocks = vec![
-            "# Title".to_owned(),
-            "A paragraph.".to_owned(),
+            "# Title\n\nA paragraph.".to_owned(),
             "```dialog\nperson:\n\n  name: ?name\n```".to_owned(),
             "- a\n- b".to_owned(),
         ];
         assert_eq!(split(&project(&blocks)), blocks);
+    }
+
+    /// A heading titles what follows it, so the two are one unit of
+    /// authorship: moving the section moves its heading with it.
+    #[dialog_common::test]
+    fn it_groups_a_heading_with_the_content_it_introduces() {
+        let blocks = split("# Title\n\nA paragraph.\n\n# Next\n\nMore.");
+        assert_eq!(blocks, vec!["# Title\n\nA paragraph.", "# Next\n\nMore."]);
+    }
+
+    /// A title/subtitle pair introduces the same content, so all three are
+    /// one block.
+    #[dialog_common::test]
+    fn it_groups_consecutive_headings_with_one_body() {
+        let blocks = split("# Title\n\n## Subtitle\n\nA paragraph.");
+        assert_eq!(blocks, vec!["# Title\n\n## Subtitle\n\nA paragraph."]);
+    }
+
+    /// The cell case: a heading above a `dialog` fence is one block, so the
+    /// heading travels with the cell it names.
+    #[dialog_common::test]
+    fn it_groups_a_heading_with_a_following_fence() {
+        let document = "## Query\n\n```dialog\nconcept:\n```\n\nAfter.";
+        let blocks = split(document);
+        assert_eq!(
+            blocks,
+            vec!["## Query\n\n```dialog\nconcept:\n```", "After."]
+        );
+    }
+
+    /// Only the FIRST chunk after a heading joins it — the rest of the
+    /// section stands alone, so editing a later paragraph does not rewrite
+    /// the heading.
+    #[dialog_common::test]
+    fn it_takes_only_the_first_chunk_under_a_heading() {
+        let blocks = split("# Title\n\nFirst.\n\nSecond.");
+        assert_eq!(blocks, vec!["# Title\n\nFirst.", "Second."]);
+    }
+
+    /// A trailing heading with nothing under it yet — the state right after
+    /// typing one — is its own block rather than vanishing.
+    #[dialog_common::test]
+    fn it_keeps_a_trailing_heading_with_no_content() {
+        let blocks = split("A paragraph.\n\n# Just typed");
+        assert_eq!(blocks, vec!["A paragraph.", "# Just typed"]);
+    }
+
+    /// `#hashtag` and `#` without a space are not headings.
+    #[dialog_common::test]
+    fn it_does_not_read_a_bare_hash_as_a_heading() {
+        let blocks = split("#hashtag\n\nA paragraph.");
+        assert_eq!(blocks, vec!["#hashtag", "A paragraph."]);
     }
 
     fn stored(pairs: &[(&str, &str)]) -> Vec<Block> {
