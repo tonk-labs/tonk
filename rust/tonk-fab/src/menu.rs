@@ -30,6 +30,13 @@ const CSS: &str = r#"
 :host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%;
   max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
   overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+/* A stack that holds a flyout cannot clip: the sub-stack is positioned
+   one gap OUTSIDE this box, so `overflow` — which a scrolling stack
+   needs, and which is what makes the height cap work — cuts it away
+   entirely. A stack with nothing flying out of it keeps the scroll; one
+   that carries a sub-stack gives it up, because a menu you cannot see is
+   worse than a menu you cannot scroll. */
+:host(:has(tonk-menu[slot=sub])){ overflow:visible; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
