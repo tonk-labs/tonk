@@ -2135,22 +2135,45 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
     });
 }
 
-/// The branch data-plane location a relayed path targets, if any:
-/// `/api/repository/{repo}/branch/{branch}/…` or
+/// The repository reach a relayed path targets, if any:
+/// `/api/repository/{repo}`, `/api/profile/repository`,
+/// `/api/repository/{repo}/branch/{branch}/…`, or
 /// `/api/profile/branch/{branch}/…`. Non-data-plane paths (assets, the
-/// guest bundle, `/api/sync`, repo metadata) return `None` and relay
-/// ungated, as before.
+/// guest bundle, `/api/sync`, and repository control routes) return `None`.
 ///
 /// The profile endpoint is singular and its URL carries no name, so a
 /// profile path canonicalizes to the portal's own profile name when the
 /// portal is profile-pinned, else the worker's default (`tonk`).
 fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<Location> {
     use tonk_host::location::Repo;
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    if path == "/api/profile/repository" {
+        let name = state
+            .borrow()
+            .with
+            .as_ref()
+            .and_then(|own| match &own.repo {
+                Repo::Profile(name) => Some(name.clone()),
+                Repo::Named(_) => None,
+            })
+            .unwrap_or_else(|| "tonk".to_owned());
+        return Some(Location {
+            repo: Repo::Profile(name),
+            branch: Some("main".to_owned()),
+        });
+    }
     if let Some(rest) = path.strip_prefix("/api/repository/") {
         let mut segments = rest.split('/');
         let repo = segments.next().filter(|s| !s.is_empty())?;
-        if segments.next() != Some("branch") {
-            return None;
+        match segments.next() {
+            None => {
+                return Some(Location {
+                    repo: Repo::Named(repo.to_owned()),
+                    branch: Some("main".to_owned()),
+                });
+            }
+            Some("branch") => {}
+            _ => return None,
         }
         let branch = segments.next().filter(|s| !s.is_empty())?;
         return Some(Location {
@@ -2937,6 +2960,34 @@ mod tests {
             let _ = Reflect::set(&data, &"with".into(), &JsValue::from_str(with));
         }
         data.into()
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_repository_metadata_under_the_portal_reach() {
+        let named = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        assert_eq!(
+            data_plane_location("/api/repository/did:key:zSpace", &named),
+            Some("main@did:key:zSpace".parse().unwrap()),
+        );
+
+        let profile = routed_state(Some("main@profile:tonk"), "main@profile:tonk");
+        assert_eq!(
+            data_plane_location("/api/profile/repository", &profile),
+            Some("main@profile:tonk".parse().unwrap()),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_misclassify_repository_control_routes() {
+        let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        assert_eq!(
+            data_plane_location("/api/repository/did:key:zSpace/remote", &state),
+            None,
+        );
+        assert_eq!(
+            data_plane_location("/api/repository/did:key:zSpace/invite", &state),
+            None,
+        );
     }
 
     #[dialog_common::test]

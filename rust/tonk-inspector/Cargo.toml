@@ -24,6 +24,7 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
+    "Clipboard",
     "CustomElementRegistry",
     "CustomEvent",
     "CustomEventInit",
@@ -35,6 +36,7 @@ web-sys = { workspace = true, features = [
     "Headers",
     "HtmlElement",
     "Location",
+    "Navigator",
     "Node",
     "Request",
     "RequestInit",

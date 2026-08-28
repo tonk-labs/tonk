@@ -10,6 +10,8 @@
 //! See [`render`] for the result rendering (an HTML-string port of the former
 //! Leptos `view!` tree) and [`response`] for the engine-free wire types.
 
+pub mod debug;
+
 // `render` and `response` are pure logic (string building + serde) but their only
 // consumer is the wasm-gated `element`, so they are gated to match — otherwise a
 // native `-D warnings` build flags them as dead code. Public so the
