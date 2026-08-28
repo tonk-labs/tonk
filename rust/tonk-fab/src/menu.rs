@@ -27,19 +27,11 @@ use web_sys::{Element, HtmlElement, ResizeObserver, window};
 use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
-:host{ display:block; max-width:100%; }
-/* Height and scrolling live on the WRAPPER, not the host. On the host
-   they clip the flyout, which is positioned outside this box on
-   purpose — and an `overflow` on the host is what
-   `aim_flyout` reads as the clipping boundary, so it measured the
-   216px menu instead of the window and never flipped. The wrapper
-   scrolls its own rows without any of that. */
-.w{ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
-  overflow-y:auto; overscroll-behavior:contain; }
+:host{ display:block; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
-  width:var(--fabb-menu-w, 216px); max-width:100%; }
+  width:var(--fabb-menu-w, 216px); }
 .w::before{ content:""; position:absolute; inset:0; z-index:-1;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
@@ -220,35 +212,37 @@ pub(crate) fn register() {
 mod tests {
     use super::CSS;
 
-    /// The WRAPPER owns the width, and the host stays a plain block.
-    ///
-    /// Width, height and overflow on the host all clip the flyout — it
-    /// is positioned one gap outside this box on purpose — and an
-    /// `overflow` there is what `aim_flyout` reads as the clipping
-    /// boundary, so it measured the menu instead of the window and
-    /// never flipped the stack away from the screen edge.
+    /// The WRAPPER owns the width, and the host stays a plain block —
+    /// exactly the study's shape.
     #[test]
     fn the_wrapper_owns_the_requested_menu_width() {
-        assert!(CSS.contains(":host{ display:block; max-width:100%; }"));
-        assert!(CSS.contains("width:var(--fabb-menu-w, 216px); max-width:100%"));
+        assert!(CSS.contains(":host{ display:block; }"));
+        assert!(CSS.contains("width:var(--fabb-menu-w, 216px);"));
         assert!(!CSS.contains("width:min(var(--fabb-menu-w"));
     }
 
-    /// Nothing on the host may clip: the flyout lives outside it.
+    /// The stack never becomes a scroll container, and that is
+    /// load-bearing twice over.
+    ///
+    /// `overflow` clips the flyout, which sits outside this box on
+    /// purpose — and once it flips LEFT it lands before the container's
+    /// start edge, where scrolling cannot even reach it: it just
+    /// disappears. A scroll container is also its own paint context, and
+    /// the glass underlay is a `z-index:-1` child — inside one it paints
+    /// behind the container rather than showing through, so every row
+    /// loses its ring and the stack renders as one flat block. Both were
+    /// shipped, and both were plainly visible on screen. A long stack
+    /// running off the edge is the lesser problem: seat the stack, do not
+    /// clip it.
     #[test]
-    fn the_host_does_not_clip_its_flyout() {
-        let host = &CSS[CSS.find(":host{").expect("a host rule")..];
-        let host = &host[..host.find('}').expect("a closed host rule")];
-        assert!(!host.contains("overflow"), "host must not clip: {host}");
-        assert!(!host.contains("max-height"), "host must not cap: {host}");
-    }
-
-    #[test]
-    fn tall_menus_scroll_inside_the_available_viewport() {
-        // On the wrapper, which scrolls its own rows without clipping
-        // what the row flies out.
-        assert!(CSS.contains(".w{ max-height:var(--fabb-menu-max-h"));
-        assert!(CSS.contains("overflow-y:auto"));
-        assert!(CSS.contains("overscroll-behavior:contain"));
+    fn the_stack_never_becomes_a_scroll_container() {
+        assert!(
+            !CSS.contains("overflow"),
+            "an overflow here costs the flyout AND every row's ring"
+        );
+        assert!(
+            !CSS.contains("max-height"),
+            "a cap brings the overflow with it"
+        );
     }
 }
