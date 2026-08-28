@@ -297,6 +297,25 @@ rule!:
         notebook: ?this
         key: ?block/key
 
+# The block's own facts go too. Retracting only the entry leaves the block
+# behind with its source, and a block that has a source but no entry is
+# exactly the shape the element treats as "placement never landed" — so it
+# renders at the end and is re-keyed on the next commit. A deleted block
+# would come straight back.
+rule!:
+  description: Retract a removed block's own facts.
+  retract!: notebook/block
+  when:
+    - assert: block/remove
+      where:
+        subject: ?this
+        notebook: ?notebook
+    - assert: notebook/block
+      where:
+        this: ?this
+        notebook: ?notebook
+        source: ?source
+
 # ---------------------------------------------------------------------------
 # Seed
 # ---------------------------------------------------------------------------
