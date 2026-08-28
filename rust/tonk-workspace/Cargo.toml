@@ -70,6 +70,7 @@ web-sys = { workspace = true, features = [
 dialog-common = { workspace = true, features = ["helpers"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+tonk-fab = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 
 [lints.rust]

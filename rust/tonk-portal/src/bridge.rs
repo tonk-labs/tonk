@@ -179,7 +179,7 @@ impl PortalState {
 /// Posting to `"*"` is unavoidable from a null origin; the parent
 /// authenticates by `event.source`, not `event.origin`.
 const BOOTSTRAP_JS: &str = r#"(function(){
-  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map();
+  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map(), registerFocus=new Map();
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
@@ -280,7 +280,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // the service worker both lack. The guest posts the refusal class so
     // the host can word the prompt. Fire-and-forget (no response).
     register:function(reason){
-      ready.then(function(){port.postMessage({v:1,type:"register",reason:reason});});
+      var opener=document.activeElement;
+      var token=(opener&&opener!==document.body)?mint():"";
+      if(token){ registerFocus.set(token,opener); }
+      ready.then(function(){port.postMessage({v:1,type:"register",reason:reason,focusToken:token});});
     },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
@@ -328,6 +331,18 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       case "delegate-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve(env.delegation); return;
+      }
+      case "register-focus": {
+        var opener=registerFocus.get(env.focusToken);
+        registerFocus.delete(env.focusToken);
+        if(opener&&opener.isConnected&&!opener.matches(":disabled")){
+          window.focus();
+          opener.focus({preventScroll:true});
+        }
+        return;
+      }
+      case "register-focus-discard": {
+        registerFocus.delete(env.focusToken); return;
       }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
@@ -1608,7 +1623,7 @@ fn make_dispatcher(
             "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
-            "register" => handle_register(&data),
+            "register" => handle_register(&state, &port, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
             _ => {}
@@ -1911,19 +1926,66 @@ fn is_top_level_route(rest: &str) -> bool {
 /// handler at boot instead — the same shape as the other page effects,
 /// where this crate carries the transport and the shell supplies the
 /// behaviour.
-fn handle_register(data: &JsValue) {
-    let Some(reason) = register_reason(data) else {
+fn handle_register(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &JsValue) {
+    let Some((reason, token)) = register_request(data) else {
         return;
     };
+    let focus_return = token.map(|token| RegisterFocusReturn {
+        port: port.clone(),
+        frame: state.borrow().iframe.clone(),
+        token,
+        handled: false,
+    });
     REGISTER_HANDLER.with(|handler| {
         if let Some(handler) = handler.borrow().as_ref() {
-            handler(&reason);
+            handler(&reason, focus_return);
         }
     });
 }
 
+/// A one-shot return path to the exact control in a sealed guest that asked
+/// the top page to open registration.
+pub struct RegisterFocusReturn {
+    port: MessagePort,
+    frame: Option<HtmlIFrameElement>,
+    token: String,
+    handled: bool,
+}
+
+impl RegisterFocusReturn {
+    /// Return focus to the still-connected guest opener and consume its token.
+    pub fn restore(mut self) {
+        if let Some(frame) = self.frame.as_ref()
+            && frame.is_connected()
+        {
+            let _ = frame.focus();
+        }
+        self.post("register-focus");
+        self.handled = true;
+    }
+
+    fn post(&self, kind: &str) {
+        let envelope = Object::new();
+        set_v1(&envelope, kind);
+        let _ = Reflect::set(
+            &envelope,
+            &"focusToken".into(),
+            &JsValue::from_str(&self.token),
+        );
+        let _ = self.port.post_message(&envelope);
+    }
+}
+
+impl Drop for RegisterFocusReturn {
+    fn drop(&mut self) {
+        if !self.handled {
+            self.post("register-focus-discard");
+        }
+    }
+}
+
 /// What a page does when a guest asks it to raise registration.
-type RegisterHandler = Box<dyn Fn(&str)>;
+type RegisterHandler = Box<dyn Fn(&str, Option<RegisterFocusReturn>)>;
 
 thread_local! {
     /// What to do when a guest asks for registration. `None` until the
@@ -1937,7 +1999,7 @@ thread_local! {
 ///
 /// Called once by the shell at boot. Later calls replace the handler,
 /// which keeps a hot reload from stacking dialogs.
-pub fn on_register(handler: impl Fn(&str) + 'static) {
+pub fn on_register(handler: impl Fn(&str, Option<RegisterFocusReturn>) + 'static) {
     REGISTER_HANDLER.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(handler));
     });
@@ -1946,11 +2008,13 @@ pub fn on_register(handler: impl Fn(&str) + 'static) {
 /// Read `reason` out of a `{ type: "register", reason }` message, or
 /// `None` when the message is not one. Split out so the parse is
 /// testable on its own, the way [`title_text`] is.
-fn register_reason(data: &JsValue) -> Option<String> {
+fn register_request(data: &JsValue) -> Option<(String, Option<String>)> {
     if get_str(data, "type")? != "register" {
         return None;
     }
-    get_str(data, "reason").filter(|reason| !reason.is_empty())
+    let reason = get_str(data, "reason").filter(|reason| !reason.is_empty())?;
+    let token = get_str(data, "focusToken").filter(|token| !token.is_empty());
+    Some((reason, token))
 }
 
 fn handle_title(data: &JsValue) {
@@ -4125,6 +4189,53 @@ mod tests {
             None,
             "a non-object payload should yield None"
         );
+    }
+
+    #[dialog_common::test]
+    async fn it_parses_only_non_empty_registration_focus_tokens() {
+        let message = Object::new();
+        let _ = Reflect::set(&message, &"type".into(), &"register".into());
+        let _ = Reflect::set(&message, &"reason".into(), &"needs-account".into());
+        let _ = Reflect::set(&message, &"focusToken".into(), &"focus-1".into());
+        assert_eq!(
+            register_request(&message.clone().into()),
+            Some(("needs-account".into(), Some("focus-1".into())))
+        );
+
+        let _ = Reflect::set(&message, &"focusToken".into(), &"".into());
+        assert_eq!(
+            register_request(&message.clone().into()),
+            Some(("needs-account".into(), None)),
+            "an empty token must never create a guest focus handle"
+        );
+        let _ = Reflect::set(&message, &"reason".into(), &"".into());
+        assert_eq!(register_request(&message.into()), None);
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_registration_focus_through_the_request_port() {
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let held = Rc::new(RefCell::new(None));
+        let captured = held.clone();
+        on_register(move |reason, focus_return| {
+            assert_eq!(reason, "needs-account");
+            *captured.borrow_mut() = focus_return;
+        });
+
+        let request = Object::new();
+        let _ = Reflect::set(&request, &"type".into(), &"register".into());
+        let _ = Reflect::set(&request, &"reason".into(), &"needs-account".into());
+        let _ = Reflect::set(&request, &"focusToken".into(), &"focus-2".into());
+        handle_register(&state, &channel.port1(), &request.into());
+        held.borrow_mut()
+            .take()
+            .expect("focus return handle")
+            .restore();
+
+        let returned = listener.wait_for("register-focus").await;
+        assert_eq!(get_str(&returned, "focusToken").as_deref(), Some("focus-2"));
     }
 
     /// `open_href` accepts only a well-formed `{type:"open", href}`. The

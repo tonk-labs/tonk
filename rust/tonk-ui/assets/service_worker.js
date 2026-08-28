@@ -403,7 +403,8 @@ function failurePage() {
 <title>Tonk failed to start</title>
 <style>
   body { font: 16px/1.5 system-ui, sans-serif; margin: 0; display: grid;
-         place-items: center; min-height: 100vh; background: #111; color: #eee; }
+         place-items: center; min-height: 100vh; min-height: 100dvh;
+         background: #111; color: #eee; }
   main { max-width: 42rem; padding: 2rem; }
   h1 { font-size: 1.3rem; }
   pre { background: #1d1d1f; border: 1px solid #333; border-radius: 8px;

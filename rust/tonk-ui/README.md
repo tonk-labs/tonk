@@ -99,8 +99,8 @@ routes because the router matches in definition order.
 Build the app with Trunk (driven through the flake):
 
 ```sh
-nix run .#build:web     # nix build .#tonk-ui
-nix run .#dev:web       # trunk serve, proxying /ucan/ to the access service
+nix develop . -c build:web     # nix build .#tonk-ui
+nix develop . -c dev:web       # trunk serve, proxying /ucan/ to the access service
 ```
 
 `Trunk.toml` disables Trunk's autoreload (the dev-only `hot-swap.js` taps Trunk's

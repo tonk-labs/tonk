@@ -183,6 +183,34 @@ fn it_describes_space_removal_as_device_local() {
 }
 
 #[test]
+fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
+    for contract in [
+        "<ui-space-remove>",
+        "data-space-remove-open",
+        "<tonk-dialog data-space-remove-dialog",
+        "data-dialog=\"close\"",
+        "type=\"submit\" form=\"remove-{subject}\"",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "Hub removal must preserve the shared dialog contract `{contract}`"
+        );
+    }
+    for rejected in [
+        ".rm-radio",
+        "class=\"rm-radio\"",
+        "class=\"mscrim\"",
+        "role=\"alertdialog\"",
+        "for=\"rm-",
+    ] {
+        assert!(
+            !PROFILE_LIBRARY.contains(rejected),
+            "Hub removal must not retain `{rejected}`"
+        );
+    }
+}
+
+#[test]
 fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     assert!(
         PROFILE_LIBRARY
@@ -342,5 +370,43 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
         );
         assert!(wall.1.contains("start a new space"));
         assert!(wall.1.contains("join this space"));
+    }
+}
+
+#[test]
+fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
+    let route = PROFILE_LIBRARY
+        .split("view!: &join/route-view")
+        .nth(1)
+        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .expect("join route view");
+    let join_view = css_rule(route, ".join-view {");
+    let fallback = join_view
+        .find("min-height:100vh")
+        .expect("join route must retain the legacy viewport fallback");
+    let dynamic = join_view
+        .find("min-height:100dvh")
+        .expect("join route must use the dynamic mobile viewport");
+    assert!(
+        fallback < dynamic,
+        "the dynamic viewport declaration must follow and override the fallback"
+    );
+}
+
+#[test]
+fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
+    for contract in [
+        ".hubbar, .hcell, .hub-page .mode-cap { height:44px; min-height:44px; }",
+        ".account-menu__row, .sempty, .srow, .snew { min-height:44px; }",
+        ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
+        ".edge-field, .ebtn, .ebtn.solid button { min-height:44px; }",
+        ".edge-field { height:44px; padding-bottom:0; align-items:stretch; }",
+        ".edge-input { min-height:44px; font-size:16px; }",
+        ".edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "mobile Hub/join CSS must contain `{contract}`"
+        );
     }
 }

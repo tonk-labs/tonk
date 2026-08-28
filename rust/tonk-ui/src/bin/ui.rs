@@ -54,8 +54,13 @@ async fn main() {
     tonk_ui::custody_relay::install();
     // A guest asking to register raises the dialog here, in the only
     // document that can run the ceremony.
-    tonk_portal::on_register(|reason| {
-        tonk_ui::register_dialog::open();
+    tonk_portal::on_register(|reason, return_focus| {
+        match return_focus {
+            Some(return_focus) => tonk_ui::register_dialog::open_with_return_focus(move || {
+                return_focus.restore();
+            }),
+            None => tonk_ui::register_dialog::open(),
+        }
         tonk_ui::register_dialog::describe(reason);
     });
     tonk_ui::account::register();
