@@ -324,7 +324,7 @@ mod failure_vocabulary {
         assert_eq!(
             messages,
             vec![
-                "This invite link is invalid.",
+                "This share link is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
                 "Tonk could not reach this spot. Try again.",
@@ -1296,13 +1296,13 @@ fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
         AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
             JoinFailure::unavailable(format!("remote answered: {authorization}"))
         }
-        // The chain proved out and the remote evaluated it; a policy
-        // predicate on the delegation said no (an unprovisioned subject
-        // is the common one). Nothing on this device is wrong, so
-        // `claim-failed` — which says the local claim broke, and reads
-        // as "Tonk could not join this spot" — pointed the user at the
-        // wrong thing entirely.
-        AuthorizeError::PolicyViolation { .. } => {
+        // The chain proved out and the remote evaluated it; either a
+        // policy predicate on the delegation said no, or the remote
+        // declined to serve the subject at all. Nothing on this device
+        // is wrong, so `claim-failed` — which says the local claim
+        // broke, and reads as "Tonk could not join this spot" — pointed
+        // the user at the wrong thing entirely.
+        AuthorizeError::PolicyViolation { .. } | AuthorizeError::Declined { .. } => {
             JoinFailure::refused(format!("remote refused: {authorization}"))
         }
         _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
@@ -3012,6 +3012,14 @@ pub(crate) mod tests {
             .this();
         let after = snapshot(&state, &key).await;
         assert!(after.authority, "the accepted authority proves");
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let session_expires_at = state.read().await.session_expires_at;
+        assert_eq!(
+            proof_window(&state, &subject).await,
+            Some(session_expires_at),
+            "only the renewable browser session bounds a pre-account join; \
+             there is no one-hour guest hop",
+        );
         let memberships = content_memberships(&state, &key).await;
         assert!(
             memberships.iter().any(|row| row.member.0 == onboarding),

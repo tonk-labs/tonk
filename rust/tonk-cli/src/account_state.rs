@@ -30,14 +30,14 @@ const ACCOUNT_OPERATOR_CONTEXT: &[u8] = b"tonk/account-state/v1";
 /// Remote name for the account's access branch in the profile repository.
 const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
 
-/// Result of an ensure attempt. Remote failures are a durable Unhydrated
-/// status plus diagnostics, not a failure of the already-persisted account
-/// link.
+/// Result of an ensure attempt. Remote failures preserve the durable local
+/// lifecycle status and return diagnostics rather than changing account-link
+/// state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnsureOutcome {
     /// Durable lifecycle status after the attempt.
     pub status: AccountStateStatus,
-    /// Remote/local diagnostic when readiness was not acquired.
+    /// Ordered remote/local diagnostics from the latest ensure attempt.
     pub warning: Option<String>,
 }
 
@@ -119,10 +119,19 @@ pub async fn status_in(
     store: &crate::space::SpaceStore,
 ) -> Result<AccountStateStatus> {
     let operator = credential_operator_for_store(profile, store).await?;
-    let Some(descriptor) = descriptor_in(profile, &operator, store).await? else {
+    status_with_operator_in(profile, &operator, store).await
+}
+
+/// Read durable account state through an already-mounted local operator.
+pub(crate) async fn status_with_operator_in(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+) -> Result<AccountStateStatus> {
+    let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
         return Ok(AccountStateStatus::Unconfigured);
     };
-    if marker_matches(marker(profile, &operator).await?.as_deref(), &descriptor) {
+    if marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
         Ok(AccountStateStatus::Ready)
     } else {
         Ok(AccountStateStatus::Unhydrated)
@@ -432,6 +441,25 @@ pub async fn migrate_delegations(
     Ok(outcome)
 }
 
+/// The account-state operator, remounting the profile by explicit name
+/// and directory. Buildable before any account attachment — which the
+/// onboarding path needs, since an unlinked device writes its custody
+/// rows into the account branch that does not have an account yet.
+pub(crate) async fn store_operator_with_config(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    profile_name: &str,
+    profile_directory: Directory,
+) -> Result<Operator<NativeSpace>> {
+    operator_with_profile(
+        profile,
+        &store.account_dir(),
+        profile_name,
+        profile_directory,
+    )
+    .await
+}
+
 async fn operator_with_profile(
     profile: &Profile,
     root: &Path,
@@ -662,13 +690,9 @@ async fn mount(
 
 async fn hydrate(
     repository: &Repository<dialog_credentials::SignerCredential>,
+    branch: &dialog_repository::Branch,
     operator: &crate::account_authority::AccountBoundOperator,
 ) -> Result<()> {
-    let branch = repository
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(operator)
-        .await?;
     let remote = repository
         .remote(tonk_account::ORIGIN_REMOTE)
         .load()
@@ -690,7 +714,7 @@ async fn hydrate(
         Ok(RemotePresence::Absent) => {
             branch.transaction().commit().perform(operator).await?;
             if let CreateGenesis::Loser(_) =
-                publish_genesis_if_absent(&branch, &remote, operator).await?
+                publish_genesis_if_absent(branch, &remote, operator).await?
             {
                 // Adopt the winner by pulling: the pull integrates the
                 // established head AND records it as this branch's sync
@@ -704,6 +728,78 @@ async fn hydrate(
         Err(error) => return Err(error.into()),
     }
     Ok(())
+}
+
+/// Retain both directions of the durable account/profile authority union.
+///
+/// The browser grant is stable and can be retained on every ensure. The
+/// return edge is not: Dialog gives every newly minted delegation a random
+/// nonce, so prove the semantic capability before minting to keep retries
+/// idempotent.
+async fn converge_account_union(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    descriptor: &AccountRepositoryDescriptorV1,
+    branch: &dialog_repository::Branch,
+) -> Result<bool> {
+    let local_root = crate::identity::local_root_with_operator(profile, operator)
+        .await?
+        .context("account link has no local root")?;
+    let root_did: dialog_varsig::Did = local_root
+        .root_did
+        .parse()
+        .context("stored account root DID is invalid")?;
+    if &root_did != descriptor.account_subject() {
+        bail!(
+            "stored account root {} does not match repository {}",
+            root_did,
+            descriptor.account_subject()
+        );
+    }
+    let grant_bytes = hex::decode(&local_root.delegation_hex)
+        .context("stored account-to-profile grant is not hex")?;
+    let inbound = crate::account::validate_account_grant(profile, &grant_bytes)
+        .await
+        .context("stored account-to-profile grant is invalid")?;
+    if inbound.issuer() != descriptor.account_subject()
+        || inbound.proof_cids()[0].to_string() != local_root.delegation_cid
+    {
+        bail!("stored account-to-profile grant does not match the local root");
+    }
+
+    trace("ensure: retaining account-to-profile edge");
+    let mut changed =
+        tonk_account::delegations::retain_space_delegation(branch, &inbound, operator)
+            .await
+            .context("failed to retain account-to-profile grant")?;
+    trace("ensure: retained account-to-profile edge");
+
+    let return_scope = dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Specific(profile.did()),
+        command: dialog_ucan_core::command::Command::parse("/")
+            .expect("the root command always parses"),
+        parameters: dialog_ucan::Parameters::default(),
+    };
+    if branch
+        .delegations()
+        .prove(root_did.clone(), return_scope)
+        .perform(operator)
+        .await
+        .is_err()
+    {
+        let signer = profile.signer().signer().clone();
+        let returning = tonk_account::delegations::mint_account_union(&signer, &root_did)
+            .await
+            .context("failed to mint profile-to-account return edge")?;
+        trace("ensure: retaining profile-to-account edge");
+        changed |= tonk_account::delegations::retain_space_delegation(branch, &returning, operator)
+            .await
+            .context("failed to retain profile-to-account return edge")?;
+        trace("ensure: retained profile-to-account edge");
+    } else {
+        trace("ensure: profile-to-account edge already proves");
+    }
+    Ok(changed)
 }
 
 /// Ensure the native account repository after linking or on demand.
@@ -764,71 +860,79 @@ pub async fn ensure_with_operator_and_store(
     let operator =
         crate::account_authority::wrap(operator, profile.clone(), store.clone(), true).await?;
     trace("ensure: operator wrapped");
-
-    if marker_matches(
+    let branch = repository
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(&operator)
+        .await
+        .context("failed to open account main branch")?;
+    let already_ready = marker_matches(
         marker(profile, operator.local()).await?.as_deref(),
         &descriptor,
-    ) {
-        trace("ensure: marker matches, syncing");
+    );
+    let mut warnings = Vec::new();
+    let (status, may_push) = if already_ready {
+        trace("ensure: marker matches, pulling");
         // Ready remains ready offline. A best-effort normal sync catches up
         // without clearing the durable trust marker on failure.
-        let branch = repository
-            .branch(tonk_account::MAIN_BRANCH)
-            .open()
-            .perform(&operator)
-            .await?;
-        trace("ensure: branch open, pulling");
-        let warning = match branch.pull().download().perform(&operator).await {
+        let may_push = match branch.pull().download().perform(&operator).await {
             Ok(_) => {
-                trace("ensure: pulled, pushing");
-                branch
-                    .push()
-                    .perform(&operator)
-                    .await
-                    .err()
-                    .map(|error| error.to_string())
+                trace("ensure: pulled");
+                true
             }
-            Err(error) => Some(error.to_string()),
+            Err(error) => {
+                warnings.push(format!("account pull failed: {error}"));
+                false
+            }
         };
-        trace(&format!("ensure: sync done ({warning:?}), adopting"));
-        // Adopting the account as the access branch's upstream is what makes
-        // recovered authority usable: the operator proves from the access
-        // branch, not the account's. Best-effort, like the sync above — a
-        // device that cannot reach the account is still ready with whatever
-        // it already holds.
-        let warning = match adopt_account_access_in(profile, operator.local(), &store).await {
-            Ok(_) => warning,
-            Err(error) => warning.or_else(|| Some(error.to_string())),
-        };
-        trace("ensure: adopted");
-        return Ok(EnsureOutcome {
-            status: AccountStateStatus::Ready,
-            warning,
-        });
+        (AccountStateStatus::Ready, may_push)
+    } else {
+        trace("ensure: first hydration starting");
+        match hydrate(&repository, &branch, &operator).await {
+            Ok(()) => {
+                trace("ensure: first hydration finished");
+                save_marker(profile, operator.local(), &descriptor).await?;
+                trace("ensure: trusted-base marker saved");
+                (AccountStateStatus::Ready, true)
+            }
+            Err(error) => {
+                warnings.push(format!("account hydration failed: {error}"));
+                trace("ensure: first hydration failed");
+                (AccountStateStatus::Unhydrated, false)
+            }
+        }
+    };
+
+    // Adopting the account as the access branch's upstream is what makes
+    // recovered authority usable: the operator proves from the access
+    // branch, not the account's. It remains best-effort so durable Ready
+    // state survives an offline retry.
+    trace("ensure: account-access adoption starting");
+    if let Err(error) = adopt_account_access_in(profile, operator.local(), &store).await {
+        warnings.push(format!("account access adoption failed: {error}"));
+    }
+    trace("ensure: account-access adoption finished");
+
+    if let Err(error) =
+        converge_account_union(profile, operator.local(), &descriptor, &branch).await
+    {
+        warnings.push(format!("account authority convergence failed: {error:#}"));
     }
 
-    match hydrate(&repository, &operator).await {
-        Ok(()) => {
-            save_marker(profile, operator.local(), &descriptor).await?;
-            // A device reaching Ready for the FIRST time needs the access
-            // upstream just as much as one that was already ready — more so,
-            // since this is the path a fresh link takes. Adopting only in the
-            // marker-matched branch above left exactly that device unable to
-            // use the authority it had just been granted.
-            let warning = adopt_account_access_in(profile, operator.local(), &store)
-                .await
-                .err()
-                .map(|error| error.to_string());
-            Ok(EnsureOutcome {
-                status: AccountStateStatus::Ready,
-                warning,
-            })
+    if may_push {
+        trace("ensure: final push starting");
+        if let Err(error) = branch.push().perform(&operator).await {
+            warnings.push(format!("account push failed: {error}"));
         }
-        Err(error) => Ok(EnsureOutcome {
-            status: AccountStateStatus::Unhydrated,
-            warning: Some(error.to_string()),
-        }),
+        trace("ensure: final push finished");
+    } else {
+        trace("ensure: final push skipped after remote failure");
     }
+
+    Ok(EnsureOutcome {
+        status,
+        warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+    })
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::Result;
 use dialog_credentials::Ed25519Signer;
+use dialog_credentials::secret::{Context as SecretContext, SealedSecret};
 use hkdf::Hkdf;
 use sha2_0_10::Sha256;
 use std::marker::PhantomData;
@@ -39,19 +40,29 @@ pub const CUSTODY_KEY_CONTEXT: &[u8] = b"tonk/custody/key/v1";
 /// (or fed to the phrase KDF).
 pub const CUSTODY_KEK_CONTEXT: &[u8] = b"tonk/custody/kek/v1";
 
-/// The fixed message a custodian signs to produce KEK input.
+/// The fixed message a custodian signed to produce KEK input, under the
+/// legacy [`KekMethod::Local`].
 ///
 /// A custodian is a signing keypair, because a non-extractable keypair
 /// is the only shape browser storage can hold whose private material
-/// never exists as bytes. Its signature over this message is
-/// deterministic (RFC 8032), so the same custodian reproduces the same
-/// KEK on every boot without the KEK ever being stored. This is the
-/// local stand-in for a passkey's PRF output.
+/// never exists as bytes. RFC 8032 makes an Ed25519 signature over this
+/// message deterministic, which let the same custodian reproduce the
+/// same KEK on every boot without the KEK ever being stored. WebCrypto
+/// does not promise that, though: Safari randomizes its Ed25519
+/// signatures, so there a KEK derived this way differs on every boot
+/// and the envelope never opens again. New envelopes use
+/// [`KekMethod::Custodian`] instead; this context only opens old ones.
 ///
 /// The signature is the *input*; the clearance level supplies the HKDF
 /// info, so one custodian keypair yields unrelated keys per level. See
 /// [`Kek::from_custodian`].
 pub const CUSTODIAN_KEK_CONTEXT: &[u8] = b"tonk/custodian/kek/v1";
+
+/// The sealing context a custodian's KEK is concealed under
+/// ([`KekMethod::Custodian`]). Versioned with the meaning of the sealed
+/// bytes: a 32-byte KEK at the clearance the envelope names.
+pub const CUSTODIAN_KEK_SEAL_CONTEXT: SecretContext =
+    SecretContext::new("tonk/custodian/kek/sealed/v1");
 
 /// The well-known memory-cell address of the wrapped secret inside a
 /// custody space: space `custody`, cell `secret`.
@@ -99,7 +110,10 @@ impl AccountSecret {
     /// rotates this key, so accreditation must re-wrap every seed under
     /// the new one.
     pub fn account_kek(&self) -> Kek<Account> {
-        Kek(expand(&self.0, Account::CONTEXT), PhantomData)
+        Kek(
+            Material::Bytes(expand(&self.0, Account::CONTEXT)),
+            PhantomData,
+        )
     }
 
     /// The account's X25519 encryption key, via [`ENCRYPTION_CONTEXT`].
@@ -139,7 +153,10 @@ pub async fn custody_signer(entry_output: &[u8; 32]) -> Result<Ed25519Signer> {
 /// Derive the key-encryption key from the entry function's output at
 /// [`CUSTODY_KEK_CONTEXT`].
 pub fn custody_kek(entry_output: &[u8; 32]) -> Kek<Recovery> {
-    Kek(expand(entry_output, CUSTODY_KEK_CONTEXT), PhantomData)
+    Kek(
+        Material::Bytes(expand(entry_output, CUSTODY_KEK_CONTEXT)),
+        PhantomData,
+    )
 }
 
 /// How an envelope's KEK is reached. Recorded in the envelope header
@@ -147,15 +164,22 @@ pub fn custody_kek(entry_output: &[u8; 32]) -> Kek<Recovery> {
 /// which entry function to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KekMethod {
-    /// A this-device wrapping under a locally held custodian keypair:
-    /// the pre-passkey stand-in used during onboarding. No KEK is
-    /// stored — it is re-derived from the custodian's signature on
-    /// every boot.
+    /// A this-device wrapping under a locally held custodian keypair,
+    /// the KEK re-derived from the custodian's signature over
+    /// [`CUSTODIAN_KEK_CONTEXT`] on every boot. Legacy: reproducible
+    /// only where signing is deterministic, which WebCrypto does not
+    /// guarantee. Opened, never written anew; see [`Self::Custodian`].
     Local,
     /// WebAuthn PRF evaluated at the two custody salts.
     Passkey,
     /// Recovery phrase through Argon2id, split the same two ways.
     Phrase,
+    /// A this-device wrapping under a locally held custodian keypair,
+    /// the KEK random and sealed to the custodian's `did:key` (a
+    /// [`SealedSecret`] stored beside the envelope). Reproducible by
+    /// construction: revealing is an X25519 agreement only the
+    /// custodian's agreement key completes. Replaces [`Self::Local`].
+    Custodian,
 }
 
 impl KekMethod {
@@ -164,6 +188,7 @@ impl KekMethod {
             KekMethod::Local => 0,
             KekMethod::Passkey => 1,
             KekMethod::Phrase => 2,
+            KekMethod::Custodian => 3,
         }
     }
 
@@ -172,6 +197,7 @@ impl KekMethod {
             0 => Ok(KekMethod::Local),
             1 => Ok(KekMethod::Passkey),
             2 => Ok(KekMethod::Phrase),
+            3 => Ok(KekMethod::Custodian),
             other => Err(EnvelopeError::UnknownMethod(other)),
         }
     }
@@ -179,7 +205,7 @@ impl KekMethod {
 
 const VERSION: u8 = 2;
 const ALGORITHM_AES_256_GCM: u8 = 0;
-const NONCE_LEN: usize = 12;
+pub(crate) const NONCE_LEN: usize = 12;
 /// version + generation + method + algorithm + clearance.
 const HEADER_LEN: usize = 1 + 4 + 1 + 1 + 1;
 
@@ -273,6 +299,50 @@ impl<C: Clearance> Envelope<C> {
         header
     }
 
+    /// The associated-data header for a given generation and method,
+    /// for a sealer that is not [`Kek::seal_bytes`].
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn header_for(generation: u32, method: KekMethod) -> [u8; HEADER_LEN] {
+        Self::header(generation, method)
+    }
+
+    /// Assemble an envelope from parts a non-`aes_gcm` sealer produced.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn from_parts(
+        generation: u32,
+        method: KekMethod,
+        nonce: [u8; NONCE_LEN],
+        ciphertext: Vec<u8>,
+    ) -> Self {
+        Self {
+            generation,
+            method,
+            nonce,
+            ciphertext,
+            clearance: PhantomData,
+        }
+    }
+
+    /// The AEAD nonce, for an opener that is not [`Kek::open_bytes`].
+    ///
+    /// Exposed so the WebCrypto path (which decrypts from a
+    /// non-extractable key handle rather than raw KEK bytes) can pass
+    /// the same three inputs the `aes_gcm` path uses.
+    pub fn nonce(&self) -> &[u8; NONCE_LEN] {
+        &self.nonce
+    }
+
+    /// The sealed bytes.
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+
+    /// The associated data this envelope is bound to. Must be passed as
+    /// `additionalData` by any opener, or the tag check fails.
+    pub fn aad(&self) -> [u8; HEADER_LEN] {
+        Self::header(self.generation, self.method)
+    }
+
     /// The wire form of this envelope.
     pub fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(HEADER_LEN + NONCE_LEN + self.ciphertext.len());
@@ -317,16 +387,72 @@ impl<C: Clearance> Envelope<C> {
     }
 }
 
-/// A key-encryption key at clearance `C`: 32 bytes reached through one
-/// entry function. Seals and opens envelopes at its own level and no
-/// other; never referenced by other wrappings.
+/// What a KEK is allowed to do, at the type level.
 ///
-/// The level is a type parameter, so `Kek<Profile>` cannot wrap a space
-/// seed and `Kek<Account>` cannot wrap the account secret. See
-/// [`crate::clearance`] for what sits at each level and why.
-pub struct Kek<C: Clearance>(Zeroizing<[u8; 32]>, PhantomData<C>);
+/// A KEK backed by a browser `CryptoKey` carries WebCrypto usages, and
+/// a decrypt-only handle physically cannot seal. Encoding that in the
+/// type means a caller that tries gets a compile error rather than a
+/// rejected promise — and, more usefully, it makes "this key can only
+/// open" a property a function signature can *require*.
+pub mod capability {
+    /// Can open envelopes and seal new ones.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Sealing;
+    /// Can open envelopes only.
+    ///
+    /// What a page hands the worker: a leaked opener cannot forge a
+    /// wrapping, so the blast radius of the handle is strictly smaller
+    /// than the bytes it stands for.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Opening;
 
-impl<C: Clearance> Kek<C> {
+    /// Implemented by both markers; `SEALS` reports which this is.
+    pub trait Capability {
+        /// Whether this capability includes sealing.
+        const SEALS: bool;
+    }
+    impl Capability for Sealing {
+        const SEALS: bool = true;
+    }
+    impl Capability for Opening {
+        const SEALS: bool = false;
+    }
+}
+
+use capability::{Capability, Opening, Sealing};
+
+/// How a KEK's key material is held.
+///
+/// Same shape as `dialog_credentials::Ed25519SigningKey`: one type, a
+/// `Bytes` arm that exists everywhere, and a browser arm behind a cfg.
+/// Callers stay single — nothing outside this module branches on target.
+enum Material {
+    /// Raw 32 bytes, used through `aes_gcm`. The only form on native.
+    Bytes(Zeroizing<[u8; 32]>),
+    /// A WebCrypto key handle. Non-extractable, so there are no bytes
+    /// to read; it is used by reference and can cross `postMessage`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    Handle(web_sys::CryptoKey),
+}
+
+/// A key-encryption key at clearance `C`, able to do `K`.
+///
+/// 32 bytes (or a handle standing for them) reached through one entry
+/// function. Seals and opens envelopes at its own level and no other;
+/// never referenced by other wrappings.
+///
+/// Two type parameters, both making a mistake unrepresentable rather
+/// than merely wrong:
+///
+/// - **`C`, the clearance.** `Kek<Profile>` cannot wrap a space seed
+///   and `Kek<Account>` cannot wrap the account secret. See
+///   [`crate::clearance`].
+/// - **`K`, the capability.** [`capability::Opening`] has no `seal`
+///   method at all, so handing a decrypt-only handle where a sealer is
+///   wanted fails to compile.
+pub struct Kek<C: Clearance, K: Capability = Sealing>(Material, PhantomData<(C, K)>);
+
+impl<C: Clearance, K: Capability> Kek<C, K> {
     /// Adopt KEK bytes at this clearance, taking ownership of their
     /// guard.
     ///
@@ -335,17 +461,19 @@ impl<C: Clearance> Kek<C> {
     /// [`AccountSecret::account_kek`], [`Kek::from_custodian`] — and
     /// keep this for bytes that arrived already bound to a level.
     pub fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
-        Self(bytes, PhantomData)
+        Self(Material::Bytes(bytes), PhantomData)
     }
 
-    /// Derive a KEK from a custodian's signature.
+    /// Derive a KEK from a custodian's signature ([`KekMethod::Local`]).
     ///
     /// The caller signs [`CUSTODIAN_KEK_CONTEXT`] with a non-extractable
     /// keypair and passes the raw signature here. Expanding it through
     /// HKDF gives a KEK that is reproducible for whoever holds the key
-    /// and unreachable for anyone who does not, which is what a
-    /// passkey's PRF output provides. The KEK is never stored: it is
-    /// recomputed from a fresh signature on every boot.
+    /// and unreachable for anyone who does not, provided the signature
+    /// itself is reproducible. Safari's WebCrypto randomizes Ed25519
+    /// signatures, so this only opens envelopes written before
+    /// [`Self::seal_to_custodian`] existed, on platforms that sign
+    /// deterministically.
     ///
     /// The level is mixed into the expansion, so one custodian keypair
     /// yields unrelated keys at each level it is used for.
@@ -354,24 +482,90 @@ impl<C: Clearance> Kek<C> {
         let mut okm = Zeroizing::new([0u8; 32]);
         hkdf.expand(C::CONTEXT, okm.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
-        Self(okm, PhantomData)
+        Self(Material::Bytes(okm), PhantomData)
     }
 
-    fn cipher(&self) -> Aes256Gcm {
-        Aes256Gcm::new_from_slice(self.0.as_ref()).expect("32 bytes is the AES-256 key length")
-    }
-
-    /// Wrap a 32-byte seed this KEK custodies at its own clearance.
+    /// The KEK a custodian sealed with [`Self::seal_to_custodian`],
+    /// revealed by that same custodian.
     ///
-    /// Same envelope format as a wrapped account secret, so the two are
-    /// indistinguishable on the wire; what separates them is the
-    /// clearance tag in the header and the type of the KEK.
-    pub fn seal_seed(&self, seed: &Zeroizing<[u8; 32]>, method: KekMethod) -> Result<Envelope<C>> {
-        self.seal_bytes(seed, method)
+    /// # Errors
+    ///
+    /// Fails as [`EnvelopeError::Sealed`] for another custodian, a
+    /// tampered blob, and a revealed value that is not a KEK alike.
+    pub async fn from_custodian_sealed(
+        custodian: &Ed25519Signer,
+        sealed: &SealedSecret,
+    ) -> Result<Self, EnvelopeError> {
+        let revealed = Zeroizing::new(
+            custodian
+                .secret(CUSTODIAN_KEK_SEAL_CONTEXT)
+                .reveal(sealed)
+                .await
+                .map_err(|_| EnvelopeError::Sealed)?,
+        );
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        if revealed.len() != bytes.len() {
+            return Err(EnvelopeError::Sealed);
+        }
+        bytes.copy_from_slice(&revealed);
+        Ok(Self(Material::Bytes(bytes), PhantomData))
+    }
+
+    /// The `aes_gcm` cipher, for KEKs backed by real bytes.
+    ///
+    /// `None` for a handle-backed KEK: a non-extractable `CryptoKey` has
+    /// no bytes to build one from, which is the whole point of it. Those
+    /// go through [`crate::webcrypto_kek::open_with_handle`] instead.
+    fn cipher(&self) -> Option<Aes256Gcm> {
+        match &self.0 {
+            Material::Bytes(bytes) => Some(
+                Aes256Gcm::new_from_slice(bytes.as_ref())
+                    .expect("32 bytes is the AES-256 key length"),
+            ),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Material::Handle(_) => None,
+        }
+    }
+
+    /// The raw bytes, for tests that pin a derivation.
+    ///
+    /// Test-only: production code must not copy KEK material out, which
+    /// is the whole reason the handle form exists.
+    #[cfg(test)]
+    pub(crate) fn expose_bytes(&self) -> Option<&[u8; 32]> {
+        match &self.0 {
+            Material::Bytes(bytes) => Some(bytes),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Material::Handle(_) => None,
+        }
+    }
+
+    /// The WebCrypto handle, when this KEK is backed by one.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn handle(&self) -> Option<&web_sys::CryptoKey> {
+        match &self.0 {
+            Material::Bytes(_) => None,
+            Material::Handle(key) => Some(key),
+        }
     }
 
     /// Unwrap a seed sealed by [`Self::seal_seed`].
+    ///
+    /// Bytes-backed only. A handle-backed KEK has no bytes to build a
+    /// cipher from and returns [`EnvelopeError::Sealed`]; on wasm, call
+    /// [`crate::webcrypto_kek::open_seed`], which dispatches on how the
+    /// key is held.
     pub fn open_seed(&self, envelope: &Envelope<C>) -> Result<Zeroizing<[u8; 32]>, EnvelopeError> {
+        self.open_bytes(envelope)
+    }
+
+    /// [`Self::open_seed`] under a name the wasm dispatcher can call
+    /// without shadowing itself.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn open_seed_bytes(
+        &self,
+        envelope: &Envelope<C>,
+    ) -> Result<Zeroizing<[u8; 32]>, EnvelopeError> {
         self.open_bytes(envelope)
     }
 
@@ -386,6 +580,7 @@ impl<C: Clearance> Kek<C> {
             .map_err(|error| anyhow::anyhow!("no entropy for an envelope nonce: {error}"))?;
         let ciphertext = self
             .cipher()
+            .ok_or_else(|| anyhow::anyhow!("a handle-backed KEK cannot seal"))?
             .encrypt(
                 &Nonce::from(nonce),
                 Payload {
@@ -406,6 +601,7 @@ impl<C: Clearance> Kek<C> {
     fn open_bytes(&self, envelope: &Envelope<C>) -> Result<Zeroizing<[u8; 32]>, EnvelopeError> {
         let plaintext = self
             .cipher()
+            .ok_or(EnvelopeError::Sealed)?
             .decrypt(
                 &Nonce::from(envelope.nonce),
                 Payload {
@@ -424,7 +620,83 @@ impl<C: Clearance> Kek<C> {
     }
 }
 
-impl Kek<Recovery> {
+impl<C: Clearance> Kek<C, Opening> {
+    /// Adopt a non-extractable WebCrypto key handle as an opener.
+    ///
+    /// The handle carries only the `decrypt` usage, so this is the one
+    /// capability it can have. Built by the page from a passkey's PRF
+    /// output (see [`crate::webcrypto_kek::derive_custody_kek_handle`])
+    /// and posted to the worker, which can open envelopes with it and
+    /// cannot read it.
+    ///
+    /// The caller asserts the clearance, as with [`Kek::from_bytes`]:
+    /// nothing about a key handle carries one.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn from_handle(handle: web_sys::CryptoKey) -> Self {
+        Self(Material::Handle(handle), PhantomData)
+    }
+}
+
+impl<C: Clearance> Kek<C, Sealing> {
+    /// Adopt a non-extractable WebCrypto key handle as a sealer.
+    ///
+    /// The counterpart to [`Kek::from_handle`]: same derived key, but
+    /// the handle carries `encrypt` rather than `decrypt`, so this one
+    /// can wrap. Built by
+    /// [`crate::webcrypto_kek::derive_custody_sealing_handle`].
+    ///
+    /// Sealing through a handle is not about transport — it happens in
+    /// the page that ran the ceremony — but about the raw KEK never
+    /// existing: `deriveKey` yields a key that was never readable,
+    /// where `custody_kek` yields 32 bytes a caller must be trusted to
+    /// zero.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn from_sealing_handle(handle: web_sys::CryptoKey) -> Self {
+        Self(Material::Handle(handle), PhantomData)
+    }
+
+    /// A fresh random KEK, sealed to `custodian` so only it can produce
+    /// the KEK again ([`KekMethod::Custodian`]).
+    ///
+    /// Store the returned [`SealedSecret`] beside the envelope; a later
+    /// boot gets the KEK back with [`Self::from_custodian_sealed`]. The
+    /// seal adds no secrecy the custodian did not already provide, since
+    /// whoever can use its agreement key can reveal it; what it adds is
+    /// reproducibility. Revealing is an X25519 agreement, so unlike
+    /// [`Self::from_custodian`] it does not depend on how the platform
+    /// signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the platform has no entropy for the KEK, or
+    /// the custodian's identity yields no agreement key to seal to.
+    pub async fn seal_to_custodian(custodian: &Ed25519Signer) -> Result<(Self, SealedSecret)> {
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        getrandom::fill(bytes.as_mut())
+            .map_err(|error| anyhow::anyhow!("no entropy for a custodian KEK: {error}"))?;
+        let sealed = custodian
+            .secret(CUSTODIAN_KEK_SEAL_CONTEXT)
+            .conceal(bytes.as_ref())
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to seal the KEK to the custodian: {error}"))?;
+        Ok((Self(Material::Bytes(bytes), PhantomData), sealed))
+    }
+
+    /// Wrap a 32-byte seed this KEK custodies at its own clearance.
+    ///
+    /// Same envelope format as a wrapped account secret, so the two are
+    /// indistinguishable on the wire; what separates them is the
+    /// clearance tag in the header and the type of the KEK.
+    ///
+    /// Only on a [`Sealing`] KEK: an [`Opening`] one is a decrypt-only
+    /// handle, and asking it to seal is a compile error rather than a
+    /// rejected promise at runtime.
+    pub fn seal_seed(&self, seed: &Zeroizing<[u8; 32]>, method: KekMethod) -> Result<Envelope<C>> {
+        self.seal_bytes(seed, method)
+    }
+}
+
+impl Kek<Recovery, Sealing> {
     /// Wrap the account secret.
     ///
     /// Only a recovery-clearance key can do this: the account secret is
@@ -432,9 +704,14 @@ impl Kek<Recovery> {
     pub fn seal(&self, secret: &AccountSecret, method: KekMethod) -> Result<Envelope<Recovery>> {
         self.seal_bytes(&secret.0, method)
     }
+}
 
+impl<K: Capability> Kek<Recovery, K> {
     /// Unwrap the account secret. Fails as [`EnvelopeError::Sealed`]
     /// for a wrong KEK and a tampered blob alike.
+    ///
+    /// Available at both capabilities: opening is what an [`Opening`]
+    /// KEK is for.
     pub fn open(&self, envelope: &Envelope<Recovery>) -> Result<AccountSecret, EnvelopeError> {
         self.open_bytes(envelope).map(AccountSecret)
     }
@@ -464,6 +741,46 @@ mod tests {
         let second = Kek::<Recovery>::from_custodian(b"a signature");
         let envelope = first.seal(&secret(3), KekMethod::Local).unwrap();
         assert!(second.open(&envelope).is_ok());
+    }
+
+    #[dialog_common::test]
+    async fn it_reopens_a_kek_sealed_to_its_custodian() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let (kek, sealed) = Kek::<Recovery>::seal_to_custodian(&custodian)
+            .await
+            .unwrap();
+        let envelope = kek.seal(&secret(5), KekMethod::Custodian).unwrap();
+
+        // The sealed KEK reaches the next boot as bytes.
+        let sealed = SealedSecret::from_bytes(&sealed.to_bytes()).unwrap();
+        let reopened = Kek::<Recovery>::from_custodian_sealed(&custodian, &sealed)
+            .await
+            .expect("the custodian reveals its own KEK")
+            .open(&envelope)
+            .expect("the revealed KEK opens the envelope");
+        assert_eq!(reopened.0.as_ref(), &[5u8; 32]);
+    }
+
+    #[dialog_common::test]
+    async fn a_stranger_cannot_reveal_a_custodian_sealed_kek() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let (_, sealed) = Kek::<Recovery>::seal_to_custodian(&custodian)
+            .await
+            .unwrap();
+
+        let stranger = Ed25519Signer::generate().await.unwrap();
+        assert!(matches!(
+            Kek::<Recovery>::from_custodian_sealed(&stranger, &sealed).await,
+            Err(EnvelopeError::Sealed)
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_round_trips_the_custodian_method() {
+        let envelope = kek(1).seal(&secret(2), KekMethod::Custodian).unwrap();
+        let decoded = Envelope::<Recovery>::decode(&envelope.encode()).unwrap();
+        assert_eq!(decoded.method, KekMethod::Custodian);
+        assert!(kek(1).open(&decoded).is_ok());
     }
 
     #[dialog_common::test]
@@ -541,7 +858,7 @@ mod tests {
             "d73a675d9ceb2804c84e81b12ed5b095ff02a3d540fa0b0a964f0c0ae4e0f079",
         );
         assert_eq!(
-            hex::encode(custody_kek(&[7u8; 32]).0.as_ref()),
+            hex::encode(custody_kek(&[7u8; 32]).expose_bytes().unwrap()),
             "cea30eb8b352a68b974218eaf03c408d1ef0482dd683db02eb0dbb6a700ac53e",
         );
     }
@@ -552,8 +869,8 @@ mod tests {
         let custody = custody_seed(&[7u8; 32]);
         let kek = custody_kek(&[7u8; 32]);
         assert_ne!(signing.as_ref(), custody.as_ref());
-        assert_ne!(signing.as_ref(), kek.0.as_ref());
-        assert_ne!(custody.as_ref(), kek.0.as_ref());
+        assert_ne!(signing.as_ref(), kek.expose_bytes().unwrap().as_ref());
+        assert_ne!(custody.as_ref(), kek.expose_bytes().unwrap().as_ref());
     }
 
     #[dialog_common::test]

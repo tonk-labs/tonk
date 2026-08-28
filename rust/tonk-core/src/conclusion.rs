@@ -47,6 +47,25 @@ pub fn project(conclusion: &ConceptConclusion, terms: &Parameters) -> Conclusion
             fields.insert(name.clone(), value);
         }
     }
+    // A keyed-collection entry arrives as two terms, the field and its
+    // key operand (`block`, `block/key`). On the wire the field holds
+    // the entry as a one-key map, `{key: value}`, so the fold across
+    // rows merges entries by key and a sequence's map comes out in
+    // position order.
+    let keys: Vec<String> = fields
+        .keys()
+        .filter(|name| name.ends_with("/key"))
+        .cloned()
+        .collect();
+    for key_operand in keys {
+        let field = key_operand.trim_end_matches("/key").to_owned();
+        let Some(Ipld::String(key)) = fields.remove(&key_operand) else {
+            continue;
+        };
+        if let Some(value) = fields.remove(&field) {
+            fields.insert(field, Ipld::Map(BTreeMap::from([(key, value)])));
+        }
+    }
     Conclusion {
         this: conclusion.entity().to_string(),
         fields,

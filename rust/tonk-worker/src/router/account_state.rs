@@ -504,13 +504,92 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
-    session
-        .handle()
-        .push()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| format!("account push failed: {error}"))?;
+    let pushed = session.handle().push().perform(&tonk.operator).await;
+    // Whether this push was served is the registration state, said by
+    // the only party that knows. Nothing polls for it: an unactivated
+    // account is refused here on every drain, and activation is that
+    // refusal turning into a success.
+    //
+    // The refusal is read out here, before any await: an `&dyn Error` is
+    // not `Send`, and holding one across a suspension point would make
+    // every caller's future non-`Send` — which natively is every axum
+    // handler that reaches this.
+    let declined = pushed
+        .as_ref()
+        .err()
+        .and_then(|error| super::sync::authorization_reason(error))
+        .cloned();
+    observe_registration(tonk, declined).await;
+    pushed.map_err(|error| format!("account push failed: {error}"))?;
     Ok(())
+}
+
+/// What a push outcome says about registration, if anything.
+///
+/// `None` means it said nothing and no fact should be written. That is
+/// the common answer: most pushes succeed for reasons unrelated to
+/// registration, and most failures are offline or a lapsed session.
+///
+/// Success only means activation for an account that had been told it
+/// was waiting. Writing `Active` from every successful push would
+/// fabricate a registration for accounts that never had one.
+fn observed_status(
+    declined: Option<&dialog_capability::access::AuthorizeError>,
+    was_awaiting: bool,
+) -> Option<tonk_account::customer::CustomerStatus> {
+    use dialog_capability::access::{AuthorizeError, Recourse};
+    use tonk_account::customer::CustomerStatus;
+
+    match declined {
+        None => was_awaiting.then_some(CustomerStatus::Active),
+        Some(AuthorizeError::Declined { recourse, .. }) => Some(match recourse {
+            // Still waiting on the email. Worth writing even when this
+            // device already believed it: another device may have
+            // enrolled, and this is how that reaches here.
+            Recourse::Retry => CustomerStatus::Registered,
+            Recourse::None => CustomerStatus::Suspended,
+        }),
+        // Every other refusal is about the proof, not the registration.
+        Some(_) => None,
+    }
+}
+
+/// Record what the remote just said about this account's registration.
+///
+/// Reads both directions, not only the clearing one: an account
+/// suspended after it was active is refused where it used to be served,
+/// and a status that only ever moved forward would leave every device
+/// believing it still syncs.
+///
+/// Best-effort throughout. This is an observation ridden along on a sync
+/// that has already done its job, so a failure to record must not turn a
+/// successful push into a failed one.
+async fn observe_registration(
+    tonk: &TonkState,
+    declined: Option<dialog_capability::access::AuthorizeError>,
+) {
+    let was_awaiting = matches!(
+        super::customer::registration(tonk).await,
+        super::customer::Registration::AwaitingActivation { .. }
+    );
+    let Some(observed) = observed_status(declined.as_ref(), was_awaiting) else {
+        return;
+    };
+
+    // The address rides along because `record_customer_status` writes
+    // the whole fact; it is not being changed here. No recorded address
+    // means no enrollment on this device, and nothing to complete.
+    let email = match super::customer::registration(tonk).await {
+        super::customer::Registration::AwaitingActivation { email } => email,
+        _ => match super::customer::account_customer(tonk).await {
+            Some(customer) => customer.email.0.clone(),
+            None => return,
+        },
+    };
+    if let Err(error) = super::customer::record_customer_status(tonk, observed, &email, None).await
+    {
+        log!("registration observation not recorded: {error}");
+    }
 }
 
 async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
@@ -2114,5 +2193,82 @@ mod tests {
         );
 
         discard(state, &ready.key);
+    }
+
+    mod observing_registration {
+        use super::super::observed_status;
+        use dialog_capability::access::{AuthorizeError, Recourse};
+        use tonk_account::customer::CustomerStatus;
+
+        fn declined(recourse: Recourse) -> AuthorizeError {
+            AuthorizeError::Declined {
+                recourse,
+                reason: "the subject's own registration awaits email activation".into(),
+            }
+        }
+
+        /// Activation is the refusal clearing, which is the whole reason
+        /// nothing polls: the sync that was being refused starts working
+        /// and that IS the signal.
+        #[dialog_common::test]
+        fn it_reads_a_served_push_as_activation_when_one_was_pending() {
+            assert_eq!(
+                observed_status(None, true),
+                Some(CustomerStatus::Active),
+                "a push that succeeds after a wait means the email was confirmed"
+            );
+        }
+
+        /// A push succeeds constantly for accounts that never registered
+        /// anything. Writing `Active` from those would invent a
+        /// registration and, worse, tell the UI an unregistered account
+        /// syncs.
+        #[dialog_common::test]
+        fn it_reads_nothing_from_a_push_that_was_never_being_refused() {
+            assert_eq!(observed_status(None, false), None);
+        }
+
+        /// Both directions, not only the clearing one. An account
+        /// suspended after it was active is refused where it used to be
+        /// served, and a status that only moved forward would leave
+        /// every device believing it still syncs.
+        #[dialog_common::test]
+        fn it_reads_a_refusal_in_either_direction() {
+            assert_eq!(
+                observed_status(Some(&declined(Recourse::Retry)), false),
+                Some(CustomerStatus::Registered)
+            );
+            assert_eq!(
+                observed_status(Some(&declined(Recourse::None)), true),
+                Some(CustomerStatus::Suspended)
+            );
+        }
+
+        /// A refusal about the proof says nothing about registration.
+        /// Recording one would overwrite a real status with a guess
+        /// drawn from an unrelated failure.
+        #[dialog_common::test]
+        fn it_reads_nothing_from_a_refusal_about_the_proof() {
+            for unrelated in [
+                AuthorizeError::Revoked {
+                    subject: "did:key:z6MkrCD1csqtgdj8sRHYRPGLYcMFXAoDhkgvHNq2FML2xqCX"
+                        .parse()
+                        .expect("a valid did"),
+                },
+                AuthorizeError::Expired {
+                    expiration: 1,
+                    at: 2,
+                },
+                AuthorizeError::Unavailable {
+                    detail: "offline".into(),
+                },
+            ] {
+                assert_eq!(
+                    observed_status(Some(&unrelated), true),
+                    None,
+                    "{unrelated} must not be read as a registration state"
+                );
+            }
+        }
     }
 }

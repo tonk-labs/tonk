@@ -1,9 +1,13 @@
 //! The account creation ceremony: check the presented descriptor and
-//! `root → device` delegation, consume the verified email code, then
-//! register the account and its first device.
+//! `root → device` delegation, then register the account and its first
+//! device.
+//!
+//! Nothing here proves control of the email address. That proof is the
+//! activation link the access service emails, which the customer opens
+//! afterwards, so an account exists before its address is confirmed and
+//! the registration state says which.
 
 use crate::core::CeremonyError;
-use crate::core::codes::check_code;
 use crate::core::delegation::check_device_delegation;
 use crate::core::descriptor::validate_descriptor;
 use crate::store::{NewAccount, NewDevice, PasskeyMetadata, Store, StoreError};
@@ -15,37 +19,10 @@ pub const EMAIL_TAKEN: &str = "an account already exists for this email address"
 /// Returned when the calling root DID already has an account.
 pub const ROOT_TAKEN: &str = "an account already exists for this passkey";
 
-/// Prove control of an email address and reject a known uniqueness conflict
-/// before the browser creates or evaluates a passkey.
-///
-/// A correct code is deliberately not consumed when the address is available:
-/// [`create_account`] remains the authoritative boundary that consumes it and
-/// atomically inserts the account and first device. A known conflict consumes
-/// the code because no account can be created from that attempt.
-pub async fn preflight_account<S: Store>(
-    store: &S,
-    email: &str,
-    code: &str,
-    now: u64,
-) -> Result<(), CeremonyError> {
-    check_code(store, email, code, now).await?;
-    let email = email.to_lowercase();
-    if store.account_by_email(&email).await?.is_some() {
-        store.delete_code(&email).await?;
-        return Err(CeremonyError::Conflict(EMAIL_TAKEN.to_string()));
-    }
-    Ok(())
-}
-
 /// A request to create a new account and register its first device.
 pub struct CreateAccount {
     /// The account's verified email address.
     pub email: String,
-    /// The verification code sent to `email`, when the caller went
-    /// through the code ceremony. New clients omit it: control of the
-    /// address is proven by customer activation at the access service
-    /// instead.
-    pub code: Option<String>,
     /// The account's root DID.
     pub root_did: String,
     /// Opaque identifier for the passkey credential backing the root.
@@ -64,11 +41,10 @@ pub struct CreateAccount {
 
 /// Create a new account and register its first device.
 ///
-/// Checks the presented descriptor and delegation before consuming
-/// `request.code`. Both checks are purely local, and [`verify_code`] is
-/// one-shot: validating after it would let a malformed request burn the
-/// user's code and leave them waiting out the resend cooldown for a new
-/// one. The email address is lowercased before being stored. The account
+/// Checks the presented descriptor and delegation, both purely local,
+/// before touching the registry. Nothing here proves control of the
+/// address: that proof is the activation link the access service emails
+/// afterwards. The email address is lowercased before being stored. The account
 /// and its first device are created atomically, so an insertion failure
 /// cannot strand a zero-device account that has permanently burned the
 /// email and root DID. Device registrations are account-scoped: one local
@@ -86,10 +62,6 @@ pub async fn create_account<S: Store>(
         &request.device_did,
     )
     .await?;
-    if let Some(code) = &request.code {
-        check_code(store, &request.email, code, now).await?;
-    }
-
     let email = request.email.to_lowercase();
     let account = NewAccount {
         email: &email,
@@ -121,13 +93,12 @@ pub async fn create_account<S: Store>(
 /// [`Store::create_account_with_device`] into a message the caller can
 /// act on, by asking which account column is already taken.
 ///
-/// Naming the taken column is safe here and only here: reaching this
-/// point means the caller both verified an emailed code (proving control
-/// of the address) and signed the invocation with the root key (proving
-/// possession of the passkey), so nothing is disclosed that they did not
-/// already supply. The registry is never consulted *before* those
-/// proofs, which is what keeps `POST /accounts` from answering "is this
-/// email registered?" for an arbitrary address.
+/// Naming the taken column is safe here: reaching this point means the
+/// caller signed the invocation with the root key, so the passkey exists
+/// and the address is one they submitted. It is no longer the only place
+/// that would answer -- the access service resolves an address to its
+/// account by design, so a client asks that before running a ceremony
+/// rather than learning it from a conflict afterwards.
 ///
 /// A lookup that itself fails degrades to the generic message rather
 /// than masking the conflict as an internal error: the request conflicted
@@ -155,8 +126,6 @@ async fn explain_conflict<S: Store>(
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::core::codes::{request_code, verify_code};
-    use crate::email::CapturedEmail;
     use crate::store::sqlite::SqliteStore;
     use crate::store::{Device, DeviceStatus};
 
@@ -203,14 +172,9 @@ mod tests {
     #[dialog_common::test]
     async fn it_creates_an_account_with_a_valid_code_and_delegation() {
         let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
-            code: Some("123456".into()),
             root_did: root_did.clone(),
             credential_id: "cred".into(),
             device_did,
@@ -234,50 +198,10 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_preflights_only_after_email_control_and_preserves_an_available_code() {
-        let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        store
-            .create_account("taken@x.com", "did:key:zTaken", "credential", 1)
-            .await
-            .unwrap();
-
-        request_code(&store, &sender, "taken@x.com", "123456", 100)
-            .await
-            .unwrap();
-        let conflict = preflight_account(&store, "TAKEN@x.com", "123456", 200).await;
-        assert!(
-            matches!(&conflict, Err(CeremonyError::Conflict(message)) if message == EMAIL_TAKEN)
-        );
-        assert!(matches!(
-            verify_code(&store, "taken@x.com", "123456", 200).await,
-            Err(CeremonyError::CodeInvalid)
-        ));
-
-        request_code(&store, &sender, "available@x.com", "654321", 100)
-            .await
-            .unwrap();
-        assert!(matches!(
-            preflight_account(&store, "available@x.com", "000000", 200).await,
-            Err(CeremonyError::CodeInvalid)
-        ));
-        preflight_account(&store, "AVAILABLE@x.com", "654321", 200)
-            .await
-            .unwrap();
-        verify_code(&store, "available@x.com", "654321", 200)
-            .await
-            .unwrap();
-    }
-
-    #[dialog_common::test]
     async fn it_rejects_a_delegation_issued_by_a_different_root() {
         // fixture delegation, but the request claims a different root DID:
         // possession of the claimed root is not proven, so creation fails.
         let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
         let (_, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let other_root = {
             use dialog_varsig::Principal;
@@ -289,7 +213,6 @@ mod tests {
         };
         let request = CreateAccount {
             email: "a@x.com".into(),
-            code: Some("123456".into()),
             root_did: other_root,
             credential_id: "cred".into(),
             device_did,
@@ -305,110 +228,11 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_rejects_a_bad_code_before_touching_the_registry() {
-        let store = SqliteStore::in_memory().unwrap();
-        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
-        let request = CreateAccount {
-            email: "a@x.com".into(),
-            code: Some("000000".into()),
-            root_did: root_did.clone(),
-            credential_id: "cred".into(),
-            device_did,
-            device_name: "laptop".into(),
-            delegation_hex,
-            repository_descriptor_hex,
-            passkey: None,
-        };
-        assert!(matches!(
-            create_account(&store, &request, 200).await,
-            Err(CeremonyError::CodeInvalid)
-        ));
-        assert!(store.account_by_root(&root_did).await.unwrap().is_none());
-    }
-
-    #[dialog_common::test]
-    async fn it_keeps_the_code_usable_after_a_malformed_descriptor() {
-        // The code is one-shot and rate limited behind a resend cooldown, so a
-        // locally detectable descriptor fault must not consume it.
-        let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
-        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
-        let mut request = CreateAccount {
-            email: "a@x.com".into(),
-            code: Some("123456".into()),
-            root_did: root_did.clone(),
-            credential_id: "cred".into(),
-            device_did,
-            device_name: "laptop".into(),
-            delegation_hex,
-            repository_descriptor_hex,
-            passkey: None,
-        };
-        let good_descriptor = request.repository_descriptor_hex.clone();
-        request.repository_descriptor_hex = "not hex".into();
-        assert!(matches!(
-            create_account(&store, &request, 200).await,
-            Err(CeremonyError::Invalid(_))
-        ));
-
-        request.repository_descriptor_hex = good_descriptor;
-        create_account(&store, &request, 200).await.unwrap();
-        assert!(store.account_by_root(&root_did).await.unwrap().is_some());
-    }
-
-    #[dialog_common::test]
-    async fn it_keeps_the_code_usable_after_a_mismatched_delegation() {
-        // Same one-shot reasoning as the descriptor: the delegation check is
-        // local, so it runs before the code is spent.
-        let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
-        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
-        let mut request = CreateAccount {
-            email: "a@x.com".into(),
-            code: Some("123456".into()),
-            root_did: root_did.clone(),
-            credential_id: "cred".into(),
-            device_did: device_did.clone(),
-            device_name: "laptop".into(),
-            delegation_hex,
-            repository_descriptor_hex,
-            passkey: None,
-        };
-        request.device_did = {
-            use dialog_varsig::Principal;
-            dialog_credentials::Ed25519Signer::import(&[13u8; 32])
-                .await
-                .unwrap()
-                .did()
-                .to_string()
-        };
-        assert!(matches!(
-            create_account(&store, &request, 200).await,
-            Err(CeremonyError::Invalid(_))
-        ));
-
-        request.device_did = device_did;
-        create_account(&store, &request, 200).await.unwrap();
-        assert!(store.account_by_root(&root_did).await.unwrap().is_some());
-    }
-
-    #[dialog_common::test]
     async fn it_rejects_a_second_account_for_the_same_email() {
         let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let first = CreateAccount {
             email: "a@x.com".into(),
-            code: Some("123456".into()),
             root_did,
             credential_id: "cred".into(),
             device_did,
@@ -444,12 +268,8 @@ mod tests {
                 .await
                 .unwrap()
         };
-        request_code(&store, &sender, "a@x.com", "654321", 400)
-            .await
-            .unwrap();
         let second = CreateAccount {
             email: "a@x.com".into(),
-            code: Some("654321".into()),
             root_did: root2_did,
             credential_id: "cred2".into(),
             device_did: device2_did,
@@ -470,16 +290,11 @@ mod tests {
         // whenever the root collides, even if the email collides too, so
         // this case must not be explained as a taken email address.
         let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
         let (root_did, device_did, delegation_hex, descriptor_hex) = fixture().await;
         create_account(
             &store,
             &CreateAccount {
                 email: "a@x.com".into(),
-                code: Some("123456".into()),
                 root_did: root_did.clone(),
                 credential_id: "cred".into(),
                 device_did: device_did.clone(),
@@ -493,12 +308,8 @@ mod tests {
         .await
         .unwrap();
 
-        request_code(&store, &sender, "b@x.com", "654321", 400)
-            .await
-            .unwrap();
         let again = CreateAccount {
             email: "b@x.com".into(),
-            code: Some("654321".into()),
             root_did,
             credential_id: "cred".into(),
             device_did,
@@ -509,10 +320,6 @@ mod tests {
         };
         let error = create_account(&store, &again, 500).await;
         assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == ROOT_TAKEN));
-
-        verify_code(&store, "b@x.com", "654321", 500)
-            .await
-            .expect("a rejected account transaction must not consume the email code");
     }
 
     #[dialog_common::test]
@@ -521,14 +328,9 @@ mod tests {
         // under D1, carries a JS stack trace). No conflict message from
         // this ceremony may contain any of it.
         let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
         let (root_did, device_did, delegation_hex, descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
-            code: Some("123456".into()),
             root_did,
             credential_id: "cred".into(),
             device_did,
@@ -539,13 +341,7 @@ mod tests {
         };
         create_account(&store, &request, 200).await.unwrap();
 
-        request_code(&store, &sender, "a@x.com", "654321", 400)
-            .await
-            .unwrap();
-        let request = CreateAccount {
-            code: Some("654321".into()),
-            ..request
-        };
+        let request = CreateAccount { ..request };
         let Err(CeremonyError::Conflict(message)) = create_account(&store, &request, 500).await
         else {
             panic!("expected a conflict");
@@ -568,10 +364,6 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_account_creation_while_the_device_is_active_elsewhere() {
         let store = SqliteStore::in_memory().unwrap();
-        let sender = CapturedEmail::default();
-        request_code(&store, &sender, "a@x.com", "123456", 100)
-            .await
-            .unwrap();
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
 
         let other_id = store
@@ -597,7 +389,6 @@ mod tests {
             &store,
             &CreateAccount {
                 email: "a@x.com".into(),
-                code: Some("123456".into()),
                 root_did,
                 credential_id: "cred".into(),
                 device_did,

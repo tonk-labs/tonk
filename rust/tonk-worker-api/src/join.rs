@@ -43,7 +43,7 @@ impl JoinFailureKind {
     /// Fixed recipient-facing message.
     pub const fn message(self) -> &'static str {
         match self {
-            Self::Malformed => "This invite link is invalid.",
+            Self::Malformed => "This share link is invalid.",
             Self::AudienceMismatch => "This invite was issued to a different identity.",
             Self::Revoked => "This invite has been revoked.",
             Self::Unavailable => "Tonk could not reach this spot. Try again.",

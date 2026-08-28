@@ -1,0 +1,18 @@
+$ tonk blob -h
+
+Store and inspect content-addressed blobs (images, files)
+
+Usage: tonk blob [OPTIONS] [COMMAND]
+
+Commands:
+  add  Ingest a file and print its blob:<hash> reference
+  cat  Write a blob's bytes to stdout
+
+Options:
+      --json          Emit versioned camelCase JSON when listing
+      --space <NAME>  Operate on this space instead of the active directory binding. Precedence: --space > TONK_SPACE > `tonk space use` in the nearest ancestor directory
+  -v, --verbose       Print full error chains: every layer of context down to the root cause, not just the outermost message
+  -h, --help          Print help
+  -V, --version       Print version
+
+[exit 0]

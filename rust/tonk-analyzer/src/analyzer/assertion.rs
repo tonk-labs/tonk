@@ -11,9 +11,12 @@ use tonk_notation::{
 };
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
+use super::field::{
+    collection_entry_terms, field_value_to_term, is_meta_field, validate_claim_attribute,
+};
 use super::scope::Scope;
 use crate::analyzer::Working;
+use dialog_query::attribute::Relation;
 use tonk_core::claim::ValueMap;
 use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
@@ -160,6 +163,49 @@ pub(crate) fn build_assertion_application(
             let mut any_retract = false;
 
             for (field_name, attr) in descriptor.with().iter() {
+                // A keyed collection is written one entry at a time:
+                // `{key: value}` asserts the entry, `{key: _}`
+                // retracts it. The key must be literal — it is the
+                // name half of the fact's attribute.
+                if attr.the().attribute().is_none() {
+                    let Some((value, value_range)) = user_fields.remove(field_name) else {
+                        continue;
+                    };
+                    let (key, value) = collection_entry_terms(
+                        field_name,
+                        value,
+                        value_range,
+                        scope,
+                        analysis,
+                        attr.content_type(),
+                    )?;
+                    if !matches!(key, Term::Constant(_)) {
+                        return Err(AnalyzeError::at(
+                            AnalyzeErrorKind::UnsupportedFieldValue {
+                                field: field_name.into(),
+                                form: "a collection entry is written under a literal \
+                                       key: `{key: value}` asserts it, `{key: _}` \
+                                       retracts it",
+                            },
+                            value_range,
+                        ));
+                    }
+                    let key_operand = Relation::key_operand(field_name);
+                    if value.is_blank() {
+                        retract_terms.insert(key_operand.clone(), key);
+                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                        assert_terms.insert(key_operand, Term::<dialog_query::Any>::blank());
+                        assert_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                        any_retract = true;
+                    } else {
+                        assert_terms.insert(key_operand.clone(), key);
+                        assert_terms.insert(field_name.into(), value);
+                        retract_terms.insert(key_operand, Term::<dialog_query::Any>::blank());
+                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                        any_assert = true;
+                    }
+                    continue;
+                }
                 match user_fields.remove(field_name) {
                     Some((FieldValue::Blank, _)) => {
                         // Per-field retraction: planner walks the

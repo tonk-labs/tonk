@@ -296,71 +296,6 @@ pub async fn put_repository(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
-/// Create a durable root-first space through the replayable API.
-#[wasm_compat]
-pub async fn post_space(
-    State(state): State<AppState>,
-    Json(request): Json<tonk_worker_api::CreateSpaceRequest>,
-) -> Result<(StatusCode, Json<tonk_worker_api::CreateSpaceResponse>), TonkWorkerError> {
-    let name = request.name.trim();
-    if name.is_empty() {
-        return Err(TonkWorkerError::Router(
-            "space name must not be empty".to_string(),
-        ));
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let key = create_space_inner(&state, name).await?;
-
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let key = {
-        let configuration =
-            RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
-        let tonk = state.write().await;
-        create_repository(&tonk, name, &configuration)
-            .await?
-            .did()
-            .repo_key()
-            .to_owned()
-    };
-
-    // Where the space syncs is resolved exactly as it is on the command
-    // path: an explicit remote wins, otherwise the account's own
-    // provider, and nothing at all without an active customer.
-    //
-    // Both paths resolving it the same way is the point. This endpoint
-    // is the account-gate replay, which runs immediately after the
-    // signup ceremony — a window where the customer may still be
-    // `Registered`, and attaching anything would wire an upstream the
-    // access service refuses. It used to honour only the remote its
-    // request carried, so a replay that named none produced a space the
-    // FAB path would have synced, which is the two-creation-paths-
-    // disagree bug this change exists to remove.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        let remote = match request.remote.filter(|remote| !remote.trim().is_empty()) {
-            Some(remote) => Some(remote),
-            None => {
-                let tonk = state.read().await;
-                account_sync_remote(&tonk).await
-            }
-        };
-        let active = {
-            let tonk = state.read().await;
-            super::customer::is_active(&tonk).await
-        };
-        match remote {
-            Some(remote) if active => enable_sync_inner(&state, &key, &remote).await?,
-            _ => log!("space '{key}' created local-only: no active provider to attach it to"),
-        }
-    }
-
-    Ok((
-        StatusCode::CREATED,
-        Json(tonk_worker_api::CreateSpaceResponse { key }),
-    ))
-}
-
 /// The form-event attribute carrying the optional sync URL — the
 /// `remote` input on the `space/create` and `space/enable-sync` forms.
 /// Kept in sync with those notation commands' `remote` field `the:`.
@@ -843,7 +778,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
             }
             log!("command Invite repo={}", repo_name);
 
-            if let Err(error) = run_invite(&env, &repo_name, time).await {
+            // A pass that attached a remote leaves the space ready but
+            // unminted, so run once more. Bounded to a single retry: the
+            // second pass either mints or refuses for a reason attaching
+            // cannot fix.
+            let outcome = run_invite(&env, &repo_name, time).await;
+            if let Ok(RunInvite::Attached) = outcome
+                && let Err(error) = run_invite(&env, &repo_name, time).await
+            {
+                log!(
+                    "Invite for repo '{}' failed after attaching: {}",
+                    repo_name,
+                    error
+                );
+            }
+            if let Err(error) = outcome {
                 log!("Invite for repo '{}' failed: {}", repo_name, error);
             }
         })
@@ -910,9 +859,28 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
         Box::pin(async move {
             use dialog_artifacts::Entity;
 
-            let (Some(space), Some(remote)) = (space, remote) else {
-                log!("EnableSync: missing space or remote, skipping");
+            let Some(space) = space else {
+                log!("EnableSync: missing space, skipping");
                 return;
+            };
+            // An absent remote means "wherever this account syncs" — the
+            // page no longer derives an endpoint from its own origin,
+            // which it could not even do reliably: a sealed guest's
+            // document is `about:srcdoc`, so it had to be told its own
+            // origin by the portal bridge first, and a share before that
+            // arrived did nothing at all.
+            let remote = match remote {
+                Some(remote) => remote,
+                None => {
+                    let tonk = env.state().read().await;
+                    match account_sync_remote(&tonk).await {
+                        Some(remote) => remote,
+                        None => {
+                            log!("EnableSync: no remote given and the account names no provider");
+                            return;
+                        }
+                    }
+                }
             };
             let Ok(did) = space.parse::<dialog_varsig::Did>() else {
                 log!("EnableSync: '{}' is not a DID", space);
@@ -962,12 +930,23 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
 ///
 /// Split out from [`InviteHandler::run`] so the `?` early-return funnels
 /// into the single `log!` there — the command future itself returns `()`.
+/// What one pass of [`run_invite`] settled.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+enum RunInvite {
+    /// Minted, refused, or otherwise finished — nothing more to do.
+    Settled,
+    /// The space had no remote and one was just attached, so a second
+    /// pass can now mint. Returned rather than recursing: re-entering
+    /// an async fn from inside itself needs boxing for no gain.
+    Attached,
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_invite(
     env: &crate::router::CommandEnv,
     repo_name: &str,
     time: f64,
-) -> Result<(), TonkWorkerError> {
+) -> Result<RunInvite, TonkWorkerError> {
     use dialog_artifacts::Entity;
     use dialog_varsig::Principal as _;
     use tonk_schema::command::{Authorization, Credential};
@@ -1011,31 +990,86 @@ async fn run_invite(
             time,
         )
         .await;
-        return Ok(());
+        return Ok(RunInvite::Settled);
     }
 
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
     // remote lands its recipient in a spot that can never fill, so there is
     // nothing worth generating key material for. Refusing here also means a
     // refusal costs no delegation and rotates no credential.
-    let remote_execution =
-        match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
-            super::create_invite::RemoteRequirement::Ready(execution) => execution,
-            super::create_invite::RemoteRequirement::Refused(reason) => {
-                log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
-                drop(tonk);
-                publish_share_blocked(
-                    env.state(),
-                    repo_name,
-                    subject_entity,
-                    reason.code(),
-                    reason.detail(),
-                    time,
-                )
-                .await;
-                return Ok(());
+    let remote_execution = match super::create_invite::resolve_remote_url(&tonk, &repository)
+        .await?
+    {
+        super::create_invite::RemoteRequirement::Ready(execution) => execution,
+        super::create_invite::RemoteRequirement::Refused(reason) => {
+            // Say WHY there is no remote. "Attach one" is the right
+            // offer only when a provider exists to attach to.
+            let reason = super::create_invite::explain_refusal(&tonk, reason).await;
+            log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
+            let subject = repository.did().to_string();
+            drop(tonk);
+
+            // Whether to issue a link or get an account first is the
+            // worker's call, not the caller's. A share that needs an
+            // account is not a failure the control should interpret
+            // and repair — it is this handler's next step, so it
+            // asks for the account itself and the share resumes when
+            // the account facts land.
+            //
+            // Not awaited: registration may take a ceremony, an
+            // email round trip, or never finish, and a handler held
+            // open across that is held open forever.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                && let Some(client) = env.client()
+                && let Err(error) = super::navigate::request_account_link(client, &subject).await
+            {
+                log!("Invite: could not ask the page to link an account: {error}");
             }
-        };
+
+            // `not-synced` is not a refusal either: the account has a
+            // provider, this space simply has no remote yet, and
+            // attaching one is this handler's next step rather than a
+            // question for the caller. Sharing a local-only spot is
+            // exactly the moment it earns its remote.
+            //
+            // Without this the click had nowhere to go. The control's
+            // own prompt for this case was removed when the worker took
+            // the decision over, so the share refused, nothing attached,
+            // and the button span until it timed out.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NOT_SYNCED {
+                let provider = {
+                    let tonk = env.state().read().await;
+                    super::customer::provider_address(&tonk).await
+                };
+                match provider {
+                    Some(remote) => {
+                        log!("Invite for repo '{repo_name}': attaching {remote} before minting");
+                        match enable_sync_inner(env.state(), repo_name, &remote).await {
+                            // Attached. Report it and let the caller mint:
+                            // re-entering `run_invite` here would be async
+                            // recursion, which needs boxing for no gain.
+                            Ok(()) => return Ok(RunInvite::Attached),
+                            Err(error) => {
+                                log!("Invite for repo '{repo_name}': attach failed: {error}")
+                            }
+                        }
+                    }
+                    None => log!("Invite for repo '{repo_name}': the account names no provider"),
+                }
+            }
+
+            publish_share_blocked(
+                env.state(),
+                repo_name,
+                subject_entity,
+                reason.code(),
+                reason.detail(),
+                time,
+            )
+            .await;
+            return Ok(RunInvite::Settled);
+        }
+    };
 
     // A share is a promise the recipient can actually pull, and an
     // upstream can outlive its provisioning (a space created before the
@@ -1125,10 +1159,19 @@ async fn run_invite(
         .branch(CONTENT_BRANCH)
         .overlay()
         .assert(Credential {
-            this: subject_entity,
+            this: subject_entity.clone(),
             seed: Seed(seed),
-            link: Link(link),
+            link: Link(link.clone()),
         })
+        // The same answer in the shape the share control subscribes to:
+        // one row per space whose `status` says where the invite has got
+        // to, carrying the url once there is one. `Credential` keeps the
+        // seed beside it for readers that need both; this is what a view
+        // renders. See `plan/share-intent.md`.
+        .assert(tonk_schema::command::InviteState::granted(
+            subject_entity,
+            link,
+        ))
         .write()
         .perform(&tonk.operator)
         .await
@@ -1181,7 +1224,7 @@ async fn run_invite(
     super::create_invite::retain_invite_authority(&tonk, repo_name, &chain).await?;
 
     log!("Minted invitation for repo '{}'", repo_name);
-    Ok(())
+    Ok(RunInvite::Settled)
 }
 
 /// Record why a share click could not mint, on the spot's content-branch
@@ -1197,6 +1240,26 @@ async fn run_invite(
 /// on the subject, so it lingers and replays on every resubscribe; the echo is
 /// what lets the control tell this refusal from a replay of an older one, which
 /// is why the fact never needs retracting.
+/// The `invite:*` status a refusal code becomes.
+///
+/// Pinned by `it_keeps_a_repairable_refusal_open`.
+///
+/// Only reasons nothing can repair are terminal. `not-synced` and
+/// `needs-account` are answered by attaching a remote or making an
+/// account, so the request stays open rather than reporting a failure
+/// the user is in the middle of fixing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn invite_status_for(code: &str) -> &'static str {
+    use tonk_schema::command::InviteState;
+    use tonk_worker_api::share;
+    match code {
+        share::BLOCKED_SUSPENDED => InviteState::SUSPENDED,
+        share::BLOCKED_UNSHAREABLE_REMOTE => InviteState::UNSHAREABLE,
+        // Repairable, or an attach that can be retried.
+        _ => InviteState::REQUESTED,
+    }
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn publish_share_blocked(
     state: &AppState,
@@ -1216,11 +1279,20 @@ async fn publish_share_blocked(
         .branch(CONTENT_BRANCH)
         .overlay()
         .assert(ShareBlocked {
-            this: subject,
+            this: subject.clone(),
             blocked: share::Blocked(code.to_owned()),
             detail: share::Detail(detail.to_owned()),
             time: share::Time(time),
         })
+        // The same refusal in the shape the share control subscribes to.
+        // Only a terminal reason becomes a terminal status: a refusal
+        // the user can repair (no account yet, no remote yet) leaves the
+        // request open, because the click has not finished failing — it
+        // is waiting on something. See `plan/share-intent.md`.
+        .assert(tonk_schema::command::InviteState::denied(
+            subject,
+            invite_status_for(code),
+        ))
         .write()
         .perform(&tonk.operator)
         .await
@@ -4471,12 +4543,28 @@ mod form_attribute_tests {
     /// a `cargo nextest archive`, which carries no sibling data files.
     const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
+    /// The create form carries no remote, and the handler is fine with
+    /// that.
+    ///
+    /// It used to: the Hub filled a hidden input from
+    /// `<tonk-default-remote auto>`, and this test pinned the two
+    /// spellings together. Then a spot stopped earning its remote at
+    /// creation — the worker resolves where a space syncs from the
+    /// account's own registration, so a spot made before anyone
+    /// registers stays local until it is shared. A form that names a
+    /// remote would wire one anyway, which is the behaviour
+    /// `it_creates_a_local_only_spot_from_the_hub_wizard` refuses.
+    ///
+    /// `REMOTE_ATTR` stays readable so a frozen older descriptor that
+    /// still declares the field keeps working; it is simply no longer
+    /// where the answer comes from.
     #[test]
-    fn it_reads_the_attribute_the_create_form_declares() {
+    fn it_declares_no_remote_on_the_create_form() {
         assert!(
-            PROFILE_LIBRARY.contains(REMOTE_ATTR),
-            "profile.yaml declares no `the: {REMOTE_ATTR}` — the handler \
-             would read this field as absent on every submit",
+            !PROFILE_LIBRARY.contains(REMOTE_ATTR),
+            "profile.yaml declares `the: {REMOTE_ATTR}` again — a spot \
+             would wire a remote at creation instead of earning one when \
+             it is shared",
         );
     }
 }
@@ -4756,6 +4844,39 @@ mod rename_outcome_tests {
 mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
+
+    /// A refusal the user is in the middle of fixing keeps the request
+    /// open.
+    ///
+    /// `needs-account` and `not-synced` both end in a link once the
+    /// thing they name arrives, so reporting them as terminal would stop
+    /// the control on `failed` while the share is still going.
+    #[dialog_common::test]
+    fn it_keeps_a_repairable_refusal_open() {
+        use super::invite_status_for;
+        use tonk_schema::command::InviteState;
+        use tonk_worker_api::share;
+
+        assert_eq!(
+            invite_status_for(share::BLOCKED_NEEDS_ACCOUNT),
+            InviteState::REQUESTED,
+            "the worker is off getting an account; the share has not failed",
+        );
+        assert_eq!(
+            invite_status_for(share::BLOCKED_NOT_SYNCED),
+            InviteState::REQUESTED,
+            "attaching a remote still ends in a link",
+        );
+        // Terminal: nothing the user or the worker does next helps.
+        assert_eq!(
+            invite_status_for(share::BLOCKED_SUSPENDED),
+            InviteState::SUSPENDED,
+        );
+        assert_eq!(
+            invite_status_for(share::BLOCKED_UNSHAREABLE_REMOTE),
+            InviteState::UNSHAREABLE,
+        );
+    }
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -6028,8 +6149,65 @@ mod tests {
         );
     }
 
+    /// The refusal class follows the account's registration state.
+    ///
+    /// Same spot, same missing upstream, three different remedies: an
+    /// account that is served can attach one, an enrolled account is
+    /// waiting on its email, and an unregistered one has to register.
+    #[dialog_common::test]
+    async fn it_names_the_refusal_by_registration_state() {
+        use crate::router::create_invite::{RemoteRefusal, explain_refusal};
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-refusal-by-state").await;
+        let tonk = state.read().await;
+
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "needs-account",
+            "nothing registered, so the remedy is to register",
+        );
+
+        crate::router::customer::record_test_customer(&tonk, CustomerStatus::Registered)
+            .await
+            .expect("the customer records");
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "needs-activation",
+            "enrolled but unconfirmed: the remedy is in the inbox",
+        );
+
+        crate::router::customer::record_test_customer(&tonk, CustomerStatus::Active)
+            .await
+            .expect("the customer records");
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "not-synced",
+            "served, so attaching a remote is the remedy after all",
+        );
+
+        // A refusal that already knows its cause is left alone.
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::UnshareableRemote)
+                .await
+                .code(),
+            "unshareable-remote",
+        );
+    }
+
     /// A share click on a spot with no upstream mints nothing and leaves a
     /// refusal on the overlay instead.
+    ///
+    /// The class says WHY there is no upstream. This profile has never
+    /// registered, so there is no provider to attach one to and the
+    /// remedy is to register — not "turn on sync", which would offer an
+    /// attach with nothing to attach to.
     #[dialog_common::test]
     async fn it_refuses_to_mint_without_a_remote() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -6039,8 +6217,7 @@ mod tests {
 
         let blocked = share_blocked_rows(&state, &key).await;
         assert_eq!(blocked.len(), 1, "one refusal recorded");
-        assert_eq!(blocked[0].0, "not-synced");
-        assert_eq!(blocked[0].1, "This spot only exists on this device.");
+        assert_eq!(blocked[0].0, "needs-account");
         assert_eq!(blocked[0].2, 1234.0, "echoes the command's timestamp");
 
         let invitations = content_invitations(&state, &key).await;

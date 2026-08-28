@@ -26,12 +26,16 @@
 use std::sync::OnceLock;
 
 use dialog_query::formula::Formula;
+use dialog_query::formula::attribute::AttributeParts;
 use dialog_query::formula::cell::Cells;
 use dialog_query::formula::conversions::{
     ParseFloat, ParseSignedInteger, ParseUnsignedInteger, ToString as ToStringFormula,
 };
+use dialog_query::formula::key::{KeyPart, SeparatorPart};
 use dialog_query::formula::logic::{And, Not, Or};
 use dialog_query::formula::math::{Difference, Modulo, Product, Quotient, Sum};
+use dialog_query::formula::position::{Position, PositionParts};
+use dialog_query::formula::revision::{Revision, RevisionParent};
 use dialog_query::formula::string::{Concatenate, Length, Like, Lowercase, Uppercase};
 
 /// One built-in formula: its formal name plus its operand schema.
@@ -126,5 +130,77 @@ fn build_registry() -> Vec<FormulaInfo> {
         info::<ParseUnsignedInteger>("unsigned-integer/parse"),
         info::<ParseSignedInteger>("signed-integer/parse"),
         info::<ParseFloat>("float/parse"),
+        info::<Revision>("dialog/revision"),
+        info::<RevisionParent>("dialog/revision-parent"),
+        info::<KeyPart>("dialog/key-part"),
+        info::<SeparatorPart>("dialog/separator-part"),
+        info::<Position>("dialog/position"),
+        info::<PositionParts>("dialog/position-parts"),
+        info::<AttributeParts>("dialog/attribute-parts"),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The registry must list every formula dialog-query's
+    /// `define_formulas!` table defines, under the same names. There
+    /// is no enumerable list on dialog's side to diff against
+    /// (`FormulaQuery::name` is per-instance), so this pins the
+    /// expected set explicitly: when dialog adds a formula, this test
+    /// fails and names what to add.
+    #[test]
+    fn it_lists_every_dialog_query_formula() {
+        let mut names: Vec<&str> = registry().iter().map(|f| f.name).collect();
+        names.sort_unstable();
+
+        let mut expected = vec![
+            "boolean/and",
+            "boolean/not",
+            "boolean/or",
+            "dialog/attribute-parts",
+            "dialog/key-part",
+            "dialog/position",
+            "dialog/position-parts",
+            "dialog/revision",
+            "dialog/revision-parent",
+            "dialog/separator-part",
+            "float/parse",
+            "math/difference",
+            "math/modulo",
+            "math/product",
+            "math/quotient",
+            "math/sum",
+            "signed-integer/parse",
+            "text/concatenate",
+            "text/from",
+            "text/length",
+            "text/like",
+            "text/lower-case",
+            "text/upper-case",
+            "unsigned-integer/parse",
+        ];
+        expected.sort_unstable();
+
+        assert_eq!(names, expected, "registry drifted from dialog-query");
+    }
+
+    /// The position formulas carry the operands the ordered-relation
+    /// work needs: `dialog/position` derives a key from its
+    /// neighbours, `dialog/position-parts` splits an attribute into
+    /// namespace and position.
+    #[test]
+    fn it_exposes_position_formula_operands() {
+        let derive = lookup_formula("dialog/position").expect("dialog/position is registered");
+        let mut operands: Vec<&str> = derive.operands().collect();
+        operands.sort_unstable();
+        assert_eq!(operands, ["after", "before", "is", "member"]);
+
+        let parts =
+            lookup_formula("dialog/position-parts").expect("dialog/position-parts is registered");
+        let mut operands: Vec<&str> = parts.operands().collect();
+        operands.sort_unstable();
+        assert_eq!(operands, ["namespace", "of", "position"]);
+    }
 }

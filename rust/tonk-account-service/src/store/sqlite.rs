@@ -7,12 +7,12 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    Account, BUMP_ATTEMPTS, CodeRow, DELETE_ACCOUNT, DELETE_ACCOUNT_DEVICES, DELETE_CODE,
-    DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
-    INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL,
-    SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE,
-    SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT, SELECT_REPOSITORY_DESCRIPTOR, Store,
-    StoreError, UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    Account, DELETE_ACCOUNT, DELETE_ACCOUNT_DEVICES, DetachStoreOutcome, Device, DeviceStatus,
+    ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE,
+    NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
+    SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_DEVICE_FOR_ACCOUNT,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
+    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -53,6 +53,8 @@ impl SqliteStore {
         ))
         .map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0007_passkey_metadata.sql"))
+            .map_err(map_err)?;
+        conn.execute_batch(include_str!("../../migrations/0008_drop_email_codes.sql"))
             .map_err(map_err)?;
         Ok(Self(Mutex::new(conn)))
     }
@@ -128,49 +130,6 @@ fn device_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
 }
 
 impl Store for SqliteStore {
-    async fn code(&self, email: &str) -> Result<Option<CodeRow>, StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        conn.query_row(SELECT_CODE, params![email], |row| {
-            Ok(CodeRow {
-                email: row.get(0)?,
-                code_hash: row.get(1)?,
-                created_at: row.get::<_, i64>(2)? as u64,
-                expires_at: row.get::<_, i64>(3)? as u64,
-                attempts: row.get::<_, i64>(4)? as u32,
-            })
-        })
-        .optional()
-        .map_err(map_err)
-    }
-
-    async fn put_code(&self, row: &CodeRow) -> Result<(), StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        conn.execute(
-            UPSERT_CODE,
-            params![
-                row.email,
-                row.code_hash,
-                row.created_at as i64,
-                row.expires_at as i64
-            ],
-        )
-        .map_err(map_err)?;
-        Ok(())
-    }
-
-    async fn bump_attempts(&self, email: &str) -> Result<(), StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        conn.execute(BUMP_ATTEMPTS, params![email])
-            .map_err(map_err)?;
-        Ok(())
-    }
-
-    async fn delete_code(&self, email: &str) -> Result<(), StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        conn.execute(DELETE_CODE, params![email]).map_err(map_err)?;
-        Ok(())
-    }
-
     async fn create_account(
         &self,
         email: &str,
@@ -222,8 +181,6 @@ impl Store for SqliteStore {
             ],
         )
         .map_err(map_err)?;
-        tx.execute(DELETE_CODE, params![account.email])
-            .map_err(map_err)?;
         tx.commit().map_err(map_err)?;
         Ok(account_id)
     }
@@ -269,7 +226,6 @@ impl Store for SqliteStore {
         let tx = conn.transaction().map_err(map_err)?;
         tx.execute(DELETE_ACCOUNT_DEVICES, params![account_id])
             .map_err(map_err)?;
-        tx.execute(DELETE_CODE, params![email]).map_err(map_err)?;
         let changed = tx
             .execute(DELETE_ACCOUNT, params![account_id, email])
             .map_err(map_err)?;
@@ -431,7 +387,7 @@ mod tests {
     use rusqlite::Connection;
 
     use crate::store::sqlite::SqliteStore;
-    use crate::store::{CodeRow, Device, DeviceStatus, Store, StoreError};
+    use crate::store::{Device, DeviceStatus, Store, StoreError};
 
     #[dialog_common::test]
     async fn it_enforces_unique_email_and_root_did() {
@@ -545,31 +501,6 @@ mod tests {
         let device = store.devices(id).await.unwrap().pop().unwrap();
         assert!(device.delegation_hex.is_empty());
         assert_eq!(DeviceView::from(device).delegation_hex, None);
-    }
-
-    #[dialog_common::test]
-    async fn it_upserts_and_consumes_email_codes() {
-        let store = SqliteStore::in_memory().unwrap();
-        let row = CodeRow {
-            email: "a@x.com".into(),
-            code_hash: "h1".into(),
-            created_at: 1,
-            expires_at: 601,
-            attempts: 0,
-        };
-        store.put_code(&row).await.unwrap();
-        store
-            .put_code(&CodeRow {
-                code_hash: "h2".into(),
-                ..row.clone()
-            })
-            .await
-            .unwrap();
-        store.bump_attempts("a@x.com").await.unwrap();
-        let read = store.code("a@x.com").await.unwrap().unwrap();
-        assert_eq!((read.code_hash.as_str(), read.attempts), ("h2", 1));
-        store.delete_code("a@x.com").await.unwrap();
-        assert!(store.code("a@x.com").await.unwrap().is_none());
     }
 
     #[dialog_common::test]

@@ -34,12 +34,13 @@ use tonk_notation::{
 
 use super::constraint::{ConstraintInfo, lookup_constraint};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::field::field_value_to_term;
+use super::field::{collection_entry_terms, field_value_to_term};
 use super::formula::{FormulaInfo, lookup_formula};
 use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
+use dialog_query::attribute::Relation;
 use dialog_query::rule::inductive::Polarity;
 use tonk_schema::rule::Rule as StoredRule;
 
@@ -795,6 +796,32 @@ fn lift_premise(
             continue;
         }
         let user_binding = premise.bindings.iter().find(|f| f.name == *field_name);
+        // A keyed collection binds an entry, `{?key: ?value}`: the
+        // value under the field, the key under its key operand. A
+        // blank key constrains nothing, as a blank value does.
+        if attr.the().attribute().is_none() {
+            let (key, value) = match user_binding {
+                Some(field) if matches!(field.value, FieldValue::Blank) => (
+                    Term::<dialog_query::Any>::blank(),
+                    Term::<dialog_query::Any>::blank(),
+                ),
+                Some(field) => collection_entry_terms(
+                    field_name,
+                    &field.value,
+                    field.value_range,
+                    scope,
+                    analysis,
+                    attr.content_type(),
+                )?,
+                None => (
+                    Term::<dialog_query::Any>::blank(),
+                    Term::<dialog_query::Any>::blank(),
+                ),
+            };
+            terms.insert(Relation::key_operand(field_name), key);
+            terms.insert(field_name.to_string(), value);
+            continue;
+        }
         let term = match user_binding {
             Some(field) if matches!(field.value, FieldValue::Blank) => {
                 Term::<dialog_query::Any>::blank()
@@ -1150,11 +1177,11 @@ mod tests {
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_else(|| "String".to_owned());
                 txn = txn
-                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
-                        "{}/{}",
-                        attr.domain(),
-                        attr.name()
-                    )))
+                    .assert(
+                        the!("db.attribute/id")
+                            .of(attr_entity.clone())
+                            .is(attr.the().to_string()),
+                    )
                     .assert(
                         the!("db.attribute/type")
                             .of(attr_entity.clone())
@@ -1878,6 +1905,43 @@ rule!:
       where: { this: ?this, by: 1 }
     - assert: math/sum
       where: { of: ?value, with: 1, is: ?count }
+"#;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("analyze should succeed");
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            Polarity::Assert
+        );
+    }
+
+    /// A `rule!:` body can use `dialog/position` to derive an
+    /// ordering key from its neighbours. Until the registry carried
+    /// dialog's `dialog/*` formulas, this failed to resolve — the
+    /// analyzer fell through to concept resolution and reported an
+    /// unknown concept, so no ordered-relation rule could be written.
+    #[dialog_common::test]
+    async fn it_lifts_a_rule_using_the_position_formula() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("block", one_text_field("io.gozala.block", "order"))
+            .await;
+
+        let doc = r#"rule!:
+  assert!: block
+  when:
+    - assert: block
+      where: { this: ?this, order: ?prior }
+    - assert: dialog/position
+      where: { member: ?this, after: ?prior, before: "", is: ?order }
 "#;
         let parsed = parse(doc);
         assert!(

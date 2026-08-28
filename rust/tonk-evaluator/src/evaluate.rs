@@ -60,6 +60,7 @@ use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::{Publish, Resolve};
+use dialog_query::attribute::Relation;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
 use dialog_repository::{RemoteSite, Transaction};
@@ -718,9 +719,23 @@ async fn resolve_retraction_targets<Env: EvaluateEnv>(
         if !matches!(term, Term::Variable { name: None, .. }) {
             continue;
         }
-        let the_term: dialog_query::attribute::The = attribute.the().clone();
+        // A collection entry's attribute is `domain/key`, the key
+        // being the literal the assertion named; without one there
+        // is no single fact to retract.
+        let the = match attribute.the().attribute() {
+            Some(the) => the,
+            None => {
+                let key = plan.statement.terms.get(&Relation::key_operand(field_name));
+                let Some(Term::Constant(Value::String(key))) = key else {
+                    continue;
+                };
+                attribute.the().entry(key).map_err(|e| {
+                    EvaluateError::Query(format!("retraction target for {field_name}: {e}"))
+                })?
+            }
+        };
         let query = dialog_query::AttributeQuery::new(
-            Term::from(the_term),
+            Term::Constant(Value::Symbol(the)),
             Term::from(this_entity.clone()),
             Term::<dialog_query::Any>::var("v"),
             Term::<dialog_query::attribute::Cause>::blank(),
@@ -1140,11 +1155,11 @@ mod tests {
             let attr_entity: dialog_artifacts::Entity =
                 attr.to_uri().parse().expect("attribute URI");
             txn = txn
-                .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
-                    "{}/{}",
-                    attr.domain(),
-                    attr.name()
-                )))
+                .assert(
+                    the!("db.attribute/id")
+                        .of(attr_entity.clone())
+                        .is(attr.the().to_string()),
+                )
                 .assert(
                     the!("db.attribute/type")
                         .of(attr_entity.clone())
@@ -1323,6 +1338,94 @@ attribute!: &foo/title
             claims.len(),
             2,
             "a cardinality-many attribute accumulates through a domain head; stored: {edges:?}"
+        );
+        Ok(())
+    }
+
+    /// A keyed-collection field, end to end through notation: the
+    /// concept declares `block` as every position-named entry of a
+    /// domain, an assertion writes one entry under a literal key,
+    /// and the facts land under `domain/key`.
+    #[dialog_common::test]
+    async fn it_writes_collection_entries_under_their_keys() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let docs = [
+            r#"concept!: &notebook
+  description: "A notebook of ordered blocks"
+  with:
+    title:
+      description: "The notebook's title"
+      the: xyz.test.notebook/title
+      as: text
+    block:
+      description: "The notebook's blocks, in document order"
+      the: xyz.test.notebook
+      as: {[position]: entity}
+"#,
+            r#"notebook!:
+  this: id:nb
+  title: "Scratch"
+  block: {N: id:block/1}
+"#,
+            r#"notebook!:
+  this: id:nb
+  block: {N5: id:block/2}
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics for {doc:?}: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("syntax");
+            syntax
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+
+        let nb: dialog_artifacts::Entity = "id:nb".parse()?;
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for key in ["N", "N5"] {
+            // A position-named attribute is not a `The` (those are the
+            // symbol-named half), so the lookup pins the raw attribute.
+            let the: dialog_artifacts::Attribute = format!("xyz.test.notebook/{key}").parse()?;
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::new(
+                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
+                    Term::<dialog_artifacts::Entity>::from(nb.clone()),
+                    Term::<dialog_query::Any>::var("block"),
+                    Term::blank(),
+                    None,
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            for claim in claims {
+                let dialog_artifacts::Value::Entity(block) = claim.is else {
+                    anyhow::bail!("a block is an entity");
+                };
+                entries.push((key.to_owned(), block.to_string()));
+            }
+        }
+        assert_eq!(
+            entries,
+            vec![
+                ("N".to_owned(), "id:block/1".to_owned()),
+                ("N5".to_owned(), "id:block/2".to_owned()),
+            ],
+            "each entry is a fact under domain/key"
         );
         Ok(())
     }

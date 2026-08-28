@@ -27,17 +27,36 @@ use web_sys::{Element, HtmlElement, ResizeObserver, window};
 use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
-:host{ display:block; max-width:100%; }
+/* The host carries the width so its border box matches the rung that
+   opened it -- a bare block would stretch to the bar instead. Width alone
+   is safe: it neither clips the flyout nor creates a stacking context.
+   `overflow` is the property that does both, and it stays gated below. */
+:host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
+/* A long stack scrolls rather than running off the screen, but only when no
+   row of it flies a sub-stack out: an `overflow` clips the flyout, and once
+   the flyout has flipped LEFT it lands before the scrollport's start edge
+   where scrolling cannot reach it at all. `mark_scrollable` sets `scrolls`.
+   The scrollport is its own element so `.w` stays a plain block. */
+.port{ display:block; }
+:host([scrolls]) .port{ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
+  overflow-y:auto; overscroll-behavior:contain; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
-  width:min(var(--fabb-menu-w, 216px), 100%); max-width:100%; }
-.w::before{ content:""; position:absolute; inset:0; z-index:-1;
+  width:100%; max-width:100%; }
+/* The underlay sits at z-index 0 and the rows are lifted above it, rather
+   than the underlay being pushed below at `z-index:-1`. A negative-z child
+   paints behind its stacking context, and any `overflow` on an ancestor
+   creates one -- so the underlay would vanish behind the scroller and every
+   row would lose the ring it paints over the glass. Staying at 0 keeps the
+   pair in the same context, so the stack looks the same scrolled or not. */
+.w::before{ content:""; position:absolute; inset:0; z-index:0;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
+::slotted(*){ position:relative; z-index:1; }
 "#;
 
-const HTML: &str = r#"<div class="w"><slot></slot></div>"#;
+const HTML: &str = r#"<div class="port"><div class="w"><slot></slot></div></div>"#;
 
 /// Per-element state.
 #[derive(Default)]
@@ -128,6 +147,24 @@ impl CustomElement for TonkMenu {
     }
 }
 
+/// Cap the stack only when no row of it flies a sub-stack out.
+///
+/// The cap brings `overflow`, and `overflow` clips the flyout -- which sits
+/// outside this box, and once flipped sits before its start edge, where
+/// scrolling cannot reach it. The stacks that actually grow (a member
+/// roster, a space list) carry no flyout, so the two needs never collide on
+/// one stack.
+fn mark_scrollable(this: &HtmlElement) {
+    let carries_flyout = rows(this)
+        .iter()
+        .any(|row| matches!(row.query_selector("tonk-menu[slot=sub]"), Ok(Some(_))));
+    if carries_flyout {
+        let _ = this.remove_attribute("scrolls");
+    } else {
+        let _ = this.set_attribute("scrolls", "");
+    }
+}
+
 /// Pass the resolved mode to every row, then re-cut — a mode change can
 /// change a row's height (nothing does today, but the mask is cheap and a
 /// stale mask is a visible seam).
@@ -161,6 +198,7 @@ fn rows(this: &HtmlElement) -> Vec<Element> {
 /// opens — the observer fires on its own schedule, and a stack that paints
 /// one frame with a stale mask shows glass across its gaps.
 pub(crate) fn recut_mask(this: &HtmlElement) {
+    mark_scrollable(this);
     let Some(root) = this.shadow_root() else {
         return;
     };
@@ -205,5 +243,60 @@ pub(crate) fn register() {
     let Some(win) = window() else { return };
     if win.custom_elements().get("tonk-menu").is_undefined() {
         TonkMenu::define("tonk-menu");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CSS, HTML};
+
+    /// The HOST carries the width, so its border box matches the rung that
+    /// opened the stack. A bare block stretches to the bar instead, and
+    /// `the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster`
+    /// measures the host, not the wrapper.
+    ///
+    /// Width is safe here in a way `overflow` is not: it neither clips the
+    /// flyout nor creates a stacking context that kills the glass.
+    #[test]
+    fn the_host_carries_the_requested_menu_width() {
+        assert!(
+            CSS.contains(
+                ":host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%; }"
+            )
+        );
+        assert!(CSS.contains("width:100%; max-width:100%;"));
+    }
+
+    /// A stack with no flyout to lose scrolls, so a long roster or space
+    /// list stays on screen. Gated behind `scrolls`, which
+    /// `mark_scrollable` sets only when no row carries a sub-stack.
+    #[test]
+    fn a_stack_without_a_flyout_scrolls_instead_of_overrunning() {
+        assert!(CSS.contains(":host([scrolls]) .port{ max-height:var(--fabb-menu-max-h"));
+        assert!(CSS.contains("overflow-y:auto"));
+        assert!(CSS.contains("overscroll-behavior:contain"));
+    }
+
+    /// The scroll is gated, never unconditional.
+    ///
+    /// `overflow` kills the underlay's `backdrop-filter` outright: the glass
+    /// stops painting and every row loses the ring it draws over it, so the
+    /// stack reads as one flat block. Measured in Chrome 152 -- removing
+    /// only `overflow-y` restores the borders, while the port element, the
+    /// `max-height`, `isolation` and the z-order change nothing. It also
+    /// clips the flyout. So a stack that flies a sub-stack out never scrolls.
+    #[test]
+    fn only_a_flyout_free_stack_ever_scrolls() {
+        assert!(HTML.contains(r#"<div class="port"><div class="w">"#));
+        assert!(CSS.contains(":host([scrolls]) .port{"));
+        for rule in [":host{", ".w{", ".port{"] {
+            let at = CSS.find(rule).expect("the rule");
+            let body = &CSS[at..];
+            let body = &body[..body.find('}').expect("a closed rule")];
+            assert!(
+                !body.contains("overflow"),
+                "{rule} must not scroll ungated: {body}"
+            );
+        }
     }
 }

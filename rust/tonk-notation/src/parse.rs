@@ -822,8 +822,11 @@ fn walk_field(
     rule_body: bool,
     out: &mut Vec<Diagnostic>,
 ) -> Option<Field> {
-    let Some(name) = string_of(key) else {
-        out.push(error(range_of(key), "Field name must be a string."));
+    let Some(name) = field_name_of(key) else {
+        out.push(error(
+            range_of(key),
+            "Field name must be a string, or a bracketed key kind like `[position]`.",
+        ));
         return None;
     };
     let value_range = range_of(value);
@@ -833,7 +836,7 @@ fn walk_field(
         walk_field_value(value, rule_body, out)
     }?;
     Some(Field {
-        name: name.to_owned(),
+        name,
         name_range: range_of(key),
         value: field_value,
         value_range,
@@ -1177,6 +1180,24 @@ fn extend_range(start: Range, end: Range) -> Range {
     }
 }
 
+/// A field's name: a string key, or a one-element flow sequence
+/// holding a string — `[position]` — which names a key *kind*
+/// rather than a field. YAML reads `{[position]: entity}` as a
+/// sequence-valued key; the analyzer reads the bracketed name as a
+/// keyed-collection declaration.
+fn field_name_of(node: &MarkedYaml<'_>) -> Option<String> {
+    if let Some(name) = string_of(node) {
+        return Some(name.to_owned());
+    }
+    if let YamlData::Sequence(items) = &node.data
+        && let [item] = items.as_slice()
+        && let Some(kind) = string_of(item)
+    {
+        return Some(format!("[{kind}]"));
+    }
+    None
+}
+
 fn string_of<'a>(node: &'a MarkedYaml<'_>) -> Option<&'a str> {
     match &node.data {
         YamlData::Value(SaphyrScalar::String(s)) => Some(s.as_ref()),
@@ -1219,6 +1240,21 @@ mod tests {
             parsed.diagnostics
         );
         parsed.syntax.expect("syntax should be Some on clean parse")
+    }
+
+    /// `{[position]: entity}` is a mapping whose key is a one-element
+    /// flow sequence; it parses as a field named `[position]`, the
+    /// keyed-collection declaration the analyzer reads.
+    #[dialog_common::test]
+    fn it_parses_a_bracketed_key_kind() {
+        let syntax = parse_clean(
+            "concept!: &x\n  with:\n    block:\n      the: xyz.test\n      as: {[position]: entity}\n",
+        );
+        let text = format!("{syntax:?}");
+        assert!(
+            text.contains("\"[position]\""),
+            "the bracketed key survives as a field name: {text}"
+        );
     }
 
     #[dialog_common::test]

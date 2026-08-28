@@ -672,6 +672,36 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
 }
 
 #[dialog_common::test]
+async fn it_renders_each_replica_once_when_a_reset_repeats_a_conclusion() {
+    let el = mount_switcher();
+
+    deliver_switcher(
+        &el,
+        "reset",
+        &switcher_reset_payload(&[
+            (
+                "replica:other",
+                OTHER_SPACE,
+                "tonk:repository",
+                "tonk:active",
+            ),
+            (
+                "replica:other",
+                OTHER_SPACE,
+                "tonk:repository",
+                "tonk:active",
+            ),
+        ]),
+    );
+
+    assert_eq!(
+        rendered_row_subjects(&el),
+        vec![OTHER_SPACE.to_string()],
+        "a reset may repeat a query conclusion, but the switcher must render one row per replica"
+    );
+}
+
+#[dialog_common::test]
 async fn it_inserts_rows_before_the_authored_more_action() {
     let el = mount_switcher();
     deliver_switcher(

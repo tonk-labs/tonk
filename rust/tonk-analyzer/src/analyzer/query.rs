@@ -9,10 +9,13 @@ use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 
 use super::assertion::derive_head_intent;
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
+use super::field::{
+    collection_entry_terms, field_value_to_term, is_meta_field, validate_claim_attribute,
+};
 use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
+use dialog_query::attribute::Relation;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) fn build_query_application(
@@ -48,13 +51,43 @@ pub(crate) fn build_query_application(
             let mut terms = Parameters::new();
             terms.insert("this".into(), this_term_for_query(&this));
             for (field_name, attr) in descriptor.with().iter() {
+                let user_field = query.fields.iter().find(|f| f.name == *field_name);
+                // A keyed collection binds an entry: the value under
+                // the field, the key under the field's key operand.
+                // A key the user left blank (or a field they omitted)
+                // still surfaces, under an auto-named variable, the
+                // same way `_` does for a value.
+                if attr.the().attribute().is_none() {
+                    let (key, value) = match user_field {
+                        Some(field) => collection_entry_terms(
+                            field_name,
+                            &field.value,
+                            field.value_range,
+                            scope,
+                            analysis,
+                            attr.content_type(),
+                        )?,
+                        None => (
+                            Term::<dialog_query::Any>::blank(),
+                            Term::<dialog_query::Any>::var(field_name),
+                        ),
+                    };
+                    let key = if key.is_blank() {
+                        Term::<dialog_query::Any>::unique()
+                    } else {
+                        key
+                    };
+                    terms.insert(Relation::key_operand(field_name), key);
+                    terms.insert(field_name.into(), value);
+                    continue;
+                }
                 // Fields the user mentioned use whatever they
                 // wrote (literal, variable, blank, etc.). Fields
                 // they *omitted* default to a named variable so
                 // matches surface the value in the response —
                 // `person:` reads the same as
                 // `person:\n  name: ?name\n  age: ?age`.
-                let term = match query.fields.iter().find(|f| f.name == *field_name) {
+                let term = match user_field {
                     Some(field) => field_value_to_term(
                         field_name,
                         &field.value,
