@@ -75,9 +75,9 @@ async fn render_at_depth<B: QueryBackend>(
         None => None,
     };
 
-    // 3. Resolve the view: pick the view predicate (explicit concept,
-    //    or built-in detail/directory), query it by model, and read
-    //    the `display` template + optional `type`.
+    // 3. Resolve the views: pick the view predicate (explicit concept,
+    //    or built-in detail/directory), query it by model, and read every
+    //    renderable `display` template + optional `type` in entity order.
     let view_descriptor = match &route.view {
         Some(view_name) => {
             let (_, view_desc_json) = resolve_model(backend, view_name).await?;
@@ -90,14 +90,18 @@ async fn render_at_depth<B: QueryBackend>(
         None if entity_uri.is_some() => view_predicate(),
         None => directory_view_predicate(),
     };
-    let view = resolve_view(backend, &view_descriptor, &model_entity).await?;
-    let Some(view) = view else {
+    let views = resolve_views(backend, &view_descriptor, &model_entity).await?;
+    if views.is_empty() {
         return Err(RenderError::NoView(route.model.clone()));
-    };
+    }
 
-    // 4. Portal views (type=text/html) render as an isolated iframe.
-    if view.is_portal {
-        return Ok(render_portal(&view.display));
+    // 4. Portal mode is frame-wide in the browser: if any matched row is a
+    //    portal, every matched display becomes an isolated portal sibling.
+    if views.iter().any(|view| view.is_portal) {
+        return Ok(views
+            .iter()
+            .map(|view| render_portal(&view.display))
+            .collect());
     }
 
     // 5. Query the entity (detail) or all instances (directory), then
@@ -109,28 +113,33 @@ async fn render_at_depth<B: QueryBackend>(
     };
     let folded = select_rows(rows);
 
-    // 6. Parse the template, collect bindings, plan, and render. Inject
-    //    the host attributes (model/entity/view) as `dom.host/*` fields
-    //    so a nested `<tonk-display model={dom.host/model}>` resolves,
-    //    matching the browser's `with_host_attributes`.
-    let mut roots = crate::parse_fragment(&view.display);
-    let bindings = crate::collect_bindings(&mut roots);
+    // 6. Parse, plan, and render each sibling against the same entity query.
+    //    Inject the host attributes (model/entity/view) as `dom.host/*`
+    //    fields so nested displays resolve like the browser's
+    //    `with_host_attributes` path.
     // Scalar (`cardinality: one`) fields are plain substitutions, not iteration
     // axes — so an absent optional scalar field renders its host once (blank)
     // instead of cloning it zero times and dropping it. Mirrors the browser
     // renderer's `data-scalar-fields` threading.
     let scalar_fields = scalar_field_names(&descriptor_json);
-    let repeat_root = this_repeat_root(&bindings);
-    let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
     let host_fields = host_fields(route);
     let conclusions: Vec<crate::Conclusion> = folded
         .iter()
         .map(|c| to_render_conclusion(c, &host_fields))
         .collect();
-    let html = crate::render(&roots, &plan, &conclusions);
+    let mut siblings = String::new();
+    for view in views {
+        let mut roots = crate::parse_fragment(&view.display);
+        let bindings = crate::collect_bindings(&mut roots);
+        let repeat_root = this_repeat_root(&bindings);
+        let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
+        let html = crate::render(&roots, &plan, &conclusions);
 
-    // 7. Recursively render any nested <tonk-display> in the output.
-    expand_nested(backend, html, depth, visited).await
+        // 7. Recursively render nested <tonk-display> elements within each
+        //    sibling before concatenating them without a wrapper.
+        siblings.push_str(&expand_nested(backend, html, depth, visited).await?);
+    }
+    Ok(siblings)
 }
 
 /// The host attributes a `<tonk-display>` would carry, as
@@ -151,9 +160,10 @@ fn host_fields(route: &RenderRoute) -> BTreeMap<String, Ipld> {
     fields
 }
 
-/// View resolution result: the `display` template and whether the
-/// view is a portal (`type == "text/html"`).
+/// One renderable view row, retaining its entity identity for browser-equivalent
+/// sibling ordering.
 struct ResolvedView {
+    entity: String,
     display: String,
     is_portal: bool,
 }
@@ -211,38 +221,45 @@ async fn resolve_name<B: QueryBackend>(backend: &B, name: &str) -> Result<String
 /// is the wildcard-model entity seeded by core.yaml.
 const DEFAULT_MODEL: &str = "tonk:_";
 
-/// Resolve the view template by querying the view concept constrained
-/// to the model. Falls back to the `tonk:_` default-model view when
-/// the model has no specific one, matching the browser's
-/// `spawn_default_view`. Returns `None` only when neither exists.
-async fn resolve_view<B: QueryBackend>(
+/// Resolve every renderable view by querying the view concept constrained to
+/// the model. Fall back to `tonk:_` only when no model-specific row has a
+/// `display`, matching the browser's empty-frame fallback boundary.
+async fn resolve_views<B: QueryBackend>(
     backend: &B,
     view_descriptor: &serde_json::Value,
     model_entity: &str,
-) -> Result<Option<ResolvedView>, RenderError> {
-    if let Some(view) = query_view(backend, view_descriptor, model_entity).await? {
-        return Ok(Some(view));
+) -> Result<Vec<ResolvedView>, RenderError> {
+    let views = query_views(backend, view_descriptor, model_entity).await?;
+    if !views.is_empty() {
+        return Ok(views);
     }
-    // No model-specific view: try the `tonk:_` default.
-    query_view(backend, view_descriptor, DEFAULT_MODEL).await
+    query_views(backend, view_descriptor, DEFAULT_MODEL).await
 }
 
-/// Run the view-by-model query for one model value and read the first
-/// row's `display` + `type`.
-async fn query_view<B: QueryBackend>(
+/// Run the view-by-model query for one model value, drop rows without a
+/// `display`, and return all remaining rows in view-entity order.
+async fn query_views<B: QueryBackend>(
     backend: &B,
     view_descriptor: &serde_json::Value,
     model_entity: &str,
-) -> Result<Option<ResolvedView>, RenderError> {
+) -> Result<Vec<ResolvedView>, RenderError> {
     let query = view_by_model_query(view_descriptor, model_entity)
         .map_err(|e| RenderError::QueryConstruction(format!("view query: {e}")))?;
     let rows = run_query(backend, query).await?;
-    let Some(row) = rows.into_iter().next() else {
-        return Ok(None);
-    };
-    let display = ipld_string(row.fields.get("display")).unwrap_or_default();
-    let is_portal = ipld_string(row.fields.get("type")).as_deref() == Some("text/html");
-    Ok(Some(ResolvedView { display, is_portal }))
+    let mut views: Vec<ResolvedView> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let display = ipld_string(row.fields.get("display"))?;
+            let is_portal = ipld_string(row.fields.get("type")).as_deref() == Some("text/html");
+            Some(ResolvedView {
+                entity: row.this,
+                display,
+                is_portal,
+            })
+        })
+        .collect();
+    views.sort_by(|a, b| a.entity.cmp(&b.entity));
+    Ok(views)
 }
 
 /// Lower a `tonk_schema::query::Query` to a concept query and run it

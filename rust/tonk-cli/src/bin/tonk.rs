@@ -904,7 +904,7 @@ enum ViewCommand {
     /// A first detail or directory view is auto-surfaced when the home is
     /// blank. --home explicitly replaces an existing home.
     #[command(
-        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --name habit-card\n  tonk view add habit --kind directory --template-file habit.html --home"
+        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --anchor habit-card\n  tonk view add habit --kind directory --template-file habit.html --home"
     )]
     Add {
         /// The concept this view renders.
@@ -921,9 +921,9 @@ enum ViewCommand {
         /// Read the template from a file instead.
         #[arg(long, value_name = "PATH")]
         template_file: Option<PathBuf>,
-        /// Anchor name (default depends on --kind).
-        #[arg(long, value_name = "NAME")]
-        name: Option<String>,
+        /// Stable anchor used to derive the view entity id:<ANCHOR> (default depends on --kind).
+        #[arg(long, value_name = "ANCHOR")]
+        anchor: Option<String>,
         /// Which standard view concept to author.
         #[arg(long, value_enum, default_value_t = ViewKindArg::Detail)]
         kind: ViewKindArg,
@@ -3734,7 +3734,7 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
             model,
             template,
             template_file,
-            name,
+            anchor,
             kind,
             home,
             notation,
@@ -3761,7 +3761,7 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
                 &site,
                 &model,
                 kind.into(),
-                name.as_deref(),
+                anchor.as_deref(),
                 &template,
                 home,
                 write.options(notation),
@@ -4275,7 +4275,7 @@ mod account_spaces_parser_tests {
                 "view",
                 "add",
                 "note",
-                "--name",
+                "--anchor",
                 "note-card",
                 "--template",
                 "<p>{title}</p>",
@@ -4374,6 +4374,76 @@ mod account_spaces_parser_tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn view_add_uses_anchor_instead_of_name() {
+        let cli = Cli::try_parse_from([
+            "tonk",
+            "view",
+            "add",
+            "note",
+            "--anchor",
+            "note-card",
+            "--template",
+            "<p>{title}</p>",
+        ])
+        .expect("view anchor parses");
+        let Some(Command::View {
+            command: Some(ViewCommand::Add { anchor, .. }),
+            ..
+        }) = cli.command
+        else {
+            panic!("expected view add command");
+        };
+        assert_eq!(anchor.as_deref(), Some("note-card"));
+
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--name",
+                "note-card",
+                "--template",
+                "<p>{title}</p>",
+            ])
+            .is_err(),
+            "the removed view-specific --name spelling must be rejected"
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "join",
+                "https://example/#invite",
+                "--name",
+                "shared"
+            ])
+            .is_ok(),
+            "unrelated --name flags remain available"
+        );
+    }
+
+    #[test]
+    fn view_add_help_keeps_anchor_guidance_concise() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("view")
+            .expect("view command")
+            .find_subcommand_mut("add")
+            .expect("view add command")
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("--anchor <ANCHOR>"), "{help}");
+        assert!(
+            help.contains("derive the view entity id:<ANCHOR>"),
+            "{help}"
+        );
+        assert!(!help.contains("arbitrary entity"), "{help}");
+        assert!(!help.contains("tonk assert"), "{help}");
     }
 
     #[test]

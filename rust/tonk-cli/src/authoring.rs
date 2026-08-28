@@ -106,6 +106,15 @@ pub enum AuthoringError {
     /// template source and found it empty.
     #[error("the view template is empty; pass --template <html> or --template-file <path>")]
     EmptyTemplate,
+    /// A view anchor was already entity-like, so deriving an `id:` URI
+    /// would silently target an unintended entity.
+    #[error(
+        "view anchor '{anchor}' contains ':' and would derive the unintended entity id:{anchor}; to update an arbitrary entity, use `tonk assert view <entity> ...`"
+    )]
+    EntityLikeViewAnchor {
+        /// The entity-like anchor supplied by the caller.
+        anchor: String,
+    },
 }
 
 /// Canonical `as:` type spellings the analyzer accepts, matching
@@ -327,6 +336,16 @@ pub fn build_view_decl(kind: ViewKind, anchor: &str, model: &str, template: &str
     out
 }
 
+/// Reject anchors that already look entity-like before `id:` is derived.
+pub fn validate_view_anchor(anchor: &str) -> Result<(), AuthoringError> {
+    if anchor.contains(':') {
+        return Err(AuthoringError::EntityLikeViewAnchor {
+            anchor: anchor.to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Build the space-home recipe: the origin-keyed root concept, its
 /// view (one `<tonk-display model=X />` per model — wrapped in a
 /// `<section>` with an `<h2>` heading when there are 2+ models, a
@@ -476,6 +495,20 @@ mod tests {
             assert!(doc.contains("this: id:custom-card"), "{doc}");
         }
     }
+
+    #[test]
+    fn it_rejects_entity_like_view_anchors_but_accepts_paths_and_defaults() {
+        let message = validate_view_anchor("tonk:vault/shell")
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("id:tonk:vault/shell"), "{message}");
+        assert!(message.contains("tonk assert"), "{message}");
+
+        validate_view_anchor("vault/frame-view").expect("slash-containing anchor is valid");
+        validate_view_anchor(&ViewKind::Detail.default_anchor("note"))
+            .expect("generated default anchor is valid");
+    }
+
     fn fields(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
     }

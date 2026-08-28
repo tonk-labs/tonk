@@ -69,9 +69,10 @@ The anchor publishes the view name; `this: id:counter-basic` pins its
 entity so re-asserting a different `display` updates the same view.
 `<tonk-display>` does not select this anchor directly: it resolves a
 view concept (normally `tonk:view`) and queries that concept for the
-view whose `model` is `counter`. Keep one view per model in each view
-concept. `tonk view add --name counter-basic` authors this stable shape
-for you.
+views whose `model` is `counter`. Every matching view entry renders in
+view-entity order. `tonk view add --anchor counter-basic` authors this stable
+shape for you by deriving `this: id:counter-basic`; omitting `--anchor`
+generates the stable default for the selected view kind.
 
 A click on the button asserts an `increment` whose `subject`
 reads from the bound button's `data-subject` (which the template
