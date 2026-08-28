@@ -36,7 +36,7 @@ const CSS: &str = r#"
    entirely. A stack with nothing flying out of it keeps the scroll; one
    that carries a sub-stack gives it up, because a menu you cannot see is
    worse than a menu you cannot scroll. */
-:host(:has(tonk-menu[slot=sub])){ overflow:visible; }
+:host([has-sub]){ overflow-x:visible; overflow-y:visible; max-height:none; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
@@ -101,6 +101,7 @@ impl CustomElement for TonkMenu {
                 }));
         }
 
+        mark_sub(this);
         self.listeners.push(shadow::install_visibility_pause(this));
         if let Some(listener) = shadow::install_system_mode(this) {
             self.listeners.push(listener);
@@ -169,6 +170,20 @@ fn rows(this: &HtmlElement) -> Vec<Element> {
 /// Public to the crate because the bar cuts it manually the moment a stack
 /// opens — the observer fires on its own schedule, and a stack that paints
 /// one frame with a stale mask shows glass across its gaps.
+/// Say whether this stack carries a flyout, for CSS that must not clip.
+///
+/// An attribute rather than `:host(:has(...))`: that selector matches in
+/// `Element::matches` and does NOT apply at style time here, so the
+/// stack went on clipping while every check said it should not.
+fn mark_sub(this: &HtmlElement) {
+    let has_sub = matches!(this.query_selector("tonk-menu[slot=sub]"), Ok(Some(_)));
+    if has_sub {
+        let _ = this.set_attribute("has-sub", "");
+    } else {
+        let _ = this.remove_attribute("has-sub");
+    }
+}
+
 pub(crate) fn recut_mask(this: &HtmlElement) {
     let Some(root) = this.shadow_root() else {
         return;
