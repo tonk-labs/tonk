@@ -89,7 +89,7 @@ async fn request_and_wait(client: &ClientId) -> Result<(), TonkWorkerError> {
     // Registered before the request goes out, so an answer that arrives
     // faster than this task resumes is not missed.
     let receiver = wait_for_key();
-    super::navigate::request_webauthn(client, tonk_worker_api::ENCRYPTION_KEY_REQUEST).await?;
+    super::navigate::request_webauthn(client, tonk_worker_api::WebAuthnKind::EncryptionKey).await?;
     await_key(receiver, ASSERTION_TIMEOUT).await.map(|_| ())
 }
 

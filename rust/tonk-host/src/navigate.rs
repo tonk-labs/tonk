@@ -87,6 +87,23 @@ fn dispatch_committed() {
     }
 }
 
+/// Ask the host page to raise its registration dialog.
+///
+/// Sharing needs an account and only the top page can run the ceremony,
+/// so a guest that hits a `needs-account` refusal forwards the ask
+/// rather than trying to register where it cannot. A page with no
+/// bridge (the shell itself) does nothing: it would already have raised
+/// the dialog directly.
+///
+/// `payload` is `{"reason": <refusal class>, "space": <did>}` as JSON.
+/// The reason words the prompt; the space is what the dialog shares once
+/// an account exists, so the click that was interrupted still ends in a
+/// link. A single string because [`crate::page_effect::forward`] carries
+/// one argument for every effect.
+pub fn request_registration(payload: &str) {
+    crate::page_effect::forward("register", payload);
+}
+
 /// Navigate to `href` WITHOUT reloading: push it onto history and fire
 /// `popstate` so the top-level `<tonk-site>` re-resolves. The path change then
 /// updates the tab's site in the overlay, whose subscription re-renders the

@@ -1394,6 +1394,30 @@
       "result": "—"
     },
     {
+      "claim": "Activation confirmed in another browser reaches the waiting one without a reload (Remain in flight).",
+      "device": "two-actor + second-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-24",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "The settings panel reflects an account the registration cluster created, in place (Settle).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-25",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "The cluster answers about an address it has already been told about (Resolve).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-26",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Registered customer sees pending notice and resend recovery (Remain in flight).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -1922,6 +1946,14 @@
       "result": "—"
     },
     {
+      "claim": "Sharing a spot with no account raises registration in place and finishes the interrupted share (Cross a boundary).",
+      "device": "fresh-browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-00",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Invite remote/base/shortening variants produce the intended URL without leaking authority (Resolve).",
       "device": "cli + offline",
       "file": "verification/cli-spaces-ui.md",
@@ -2135,7 +2167,7 @@
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 103
+    "unrun": 107
   },
   "visualCommit": "49a873a23"
 }

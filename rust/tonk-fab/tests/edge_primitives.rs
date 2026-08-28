@@ -276,13 +276,22 @@ async fn local_only_bar_opens_the_shared_connect_ceremony() {
         .expect("connect ceremony");
     assert!(!cluster.has_attribute("hidden"));
     assert!(banner.has_attribute("hidden"));
+    // The field stands but names nothing. The bar used to derive the
+    // sync endpoint itself and prefill it here, which asked a sealed
+    // guest for an origin it does not have — its document is
+    // `about:srcdoc`, so `location.origin` is the opaque "null" until
+    // the bridge injects the real one, and a share dispatched before
+    // that arrived returned having done nothing. The worker resolves
+    // where a space syncs from the account's own registration now, so
+    // there is no address for the page to fill in.
     let field = cluster
         .query_selector("[data-enable-sync-remote]")
         .expect("remote selector")
         .expect("remote field");
     assert_eq!(
         field.get_attribute("value").as_deref(),
-        Some("https://local.tonk.test/ucan/")
+        Some(""),
+        "the page names no endpoint; the worker resolves it",
     );
 
     shadow(

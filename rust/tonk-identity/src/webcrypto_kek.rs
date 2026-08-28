@@ -1,0 +1,613 @@
+//! Opening an envelope from a **non-extractable** KEK handle.
+//!
+//! The KEK is a 32-byte symmetric AES-256 key. The `aes_gcm` path in
+//! [`crate::envelope`] needs those bytes
+//! (`Aes256Gcm::new_from_slice`), which is exactly what a hardened
+//! custody flow must not hand around: a page that derives the KEK from
+//! a passkey's PRF output would have to materialise it, post it, and
+//! hope both sides zeroize.
+//!
+//! WebCrypto offers a better shape. `deriveKey` produces a `CryptoKey`
+//! that is born non-extractable — no raw copy is ever materialised —
+//! and a `CryptoKey` is structured-cloneable, so it crosses
+//! `postMessage` as an opaque **handle**. The receiver can decrypt with
+//! it and cannot read it. Restricted to `["decrypt"]`, a leaked handle
+//! cannot even seal something new under that KEK.
+//!
+//! This module is the receiving half: given such a handle and an
+//! envelope, unseal.
+//!
+//! ## Both operations, two capabilities
+//!
+//! Sealing gets a handle too, and for a reason independent of
+//! transport: a KEK that is never materialised cannot leak. Deriving
+//! bytes with `custody_kek(&prf)` puts 32 bytes in a buffer someone has
+//! to be trusted to zero; `deriveKey` yields a key that was never
+//! readable in the first place. That holds even where sealing happens
+//! in the same document that ran the ceremony, with no boundary to
+//! cross.
+//!
+//! | Operation | Usage | Derived by |
+//! |---|---|---|
+//! | seal (account creation, enrolling a passkey) | `["encrypt"]` | [`derive_custody_sealing_handle`] |
+//! | open (unlock, in the worker) | `["decrypt"]` | [`derive_custody_kek_handle`] |
+//!
+//! Two handles rather than one key with both usages. An opener that
+//! cannot forge is the entire value of what the worker receives, and a
+//! key carrying `encrypt` is not that. The capability is a type
+//! parameter on [`Kek`], so the two cannot be confused: `Kek<C,
+//! Opening>` has no `seal_seed` method at all.
+//!
+//! Both produce the ordinary wire format, so a handle-sealed envelope
+//! opens through `aes_gcm` like any other — pinned by
+//! `it_seals_through_a_handle_into_the_ordinary_wire_format`.
+//!
+//! ## Why the byte path stays
+//!
+//! Native targets (the CLI, native tests) have no `crypto.subtle` at
+//! all, and `KekMethod::Phrase` derives from a recovery phrase through
+//! Argon2id rather than from a passkey — reserved today, but not a
+//! passkey ceremony when it lands.
+//!
+//! So this is an addition, never a migration.
+//!
+//! ## Deriving the handle (the page's half)
+//!
+//! ```js
+//! const prfKey = await crypto.subtle.importKey(
+//!   "raw", prfOutput, "HKDF", false, ["deriveKey"],
+//! );
+//! const kek = await crypto.subtle.deriveKey(
+//!   { name: "HKDF", hash: "SHA-256",
+//!     salt: new Uint8Array(32),      // or an empty array; see below
+//!     info: CUSTODY_KEK_CONTEXT },
+//!   prfKey,
+//!   { name: "AES-GCM", length: 256 },
+//!   false,                            // non-extractable
+//!   ["decrypt"],                      // open only, never seal
+//! );
+//! ```
+//!
+//! **On the salt.** Rust derives with `Hkdf::new(None, ikm)`. RFC 5869
+//! says an absent salt is set to `HashLen` zeros, and WebCrypto — which
+//! has no `None` — normalises an empty salt to the same thing. So an
+//! empty array and `new Uint8Array(32)` both reproduce the Rust key.
+//! Pinned by `it_matches_hkdf_with_no_salt`, because a mismatch here
+//! would show up only as an envelope that refuses to open.
+
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{AesGcmParams, CryptoKey};
+use zeroize::Zeroizing;
+
+use crate::clearance::Clearance;
+use crate::envelope::capability::Capability;
+use crate::envelope::capability::Sealing;
+use crate::envelope::{Envelope, EnvelopeError, Kek, KekMethod};
+
+/// Unseal `envelope` using a non-extractable AES-GCM key handle.
+///
+/// The handle must carry the `decrypt` usage and be the same KEK the
+/// envelope was sealed under; anything else fails the AEAD tag check
+/// and comes back as [`EnvelopeError::Sealed`], which is deliberately
+/// indistinguishable from a wrong key.
+pub async fn open_with_handle<C: Clearance>(
+    kek: &CryptoKey,
+    envelope: &Envelope<C>,
+) -> Result<Zeroizing<[u8; 32]>, EnvelopeError> {
+    let subtle = subtle().map_err(|_| EnvelopeError::Sealed)?;
+
+    // `additionalData` is not optional: the header is bound into the
+    // AEAD, so omitting it fails the tag check exactly as a wrong key
+    // would.
+    let nonce = js_sys::Uint8Array::from(&envelope.nonce()[..]);
+    let params = AesGcmParams::new("AES-GCM", &nonce);
+    let aad = js_sys::Uint8Array::from(&envelope.aad()[..]);
+    params.set_additional_data(&aad);
+
+    let ciphertext = js_sys::Uint8Array::from(envelope.ciphertext());
+    let promise = subtle
+        .decrypt_with_object_and_buffer_source(&params, kek, &ciphertext)
+        .map_err(|_| EnvelopeError::Sealed)?;
+    let plaintext: JsValue = JsFuture::from(promise)
+        .await
+        .map_err(|_| EnvelopeError::Sealed)?;
+
+    let plaintext = js_sys::Uint8Array::new(&plaintext);
+    if plaintext.length() != 32 {
+        return Err(EnvelopeError::Sealed);
+    }
+    let mut opened = Zeroizing::new([0u8; 32]);
+    plaintext.copy_to(opened.as_mut());
+    Ok(opened)
+}
+
+/// Seal a 32-byte seed with a KEK, whichever way its key is held.
+///
+/// The sealing counterpart to [`open_seed`]. A bytes-backed KEK goes
+/// through `aes_gcm`; a handle-backed one through WebCrypto, so no raw
+/// KEK is materialised at any point.
+pub async fn seal_seed<C: Clearance>(
+    kek: &Kek<C, Sealing>,
+    seed: &Zeroizing<[u8; 32]>,
+    method: KekMethod,
+) -> anyhow::Result<Envelope<C>> {
+    match kek.handle() {
+        Some(handle) => seal_with_handle(handle, seed, method).await,
+        None => kek.seal_seed(seed, method),
+    }
+}
+
+/// Seal with a non-extractable AES-GCM key handle carrying `encrypt`.
+///
+/// Produces the same wire format the `aes_gcm` path does — same header
+/// as associated data, same 12-byte nonce — so an envelope sealed here
+/// opens through either path.
+pub async fn seal_with_handle<C: Clearance>(
+    kek: &CryptoKey,
+    seed: &Zeroizing<[u8; 32]>,
+    method: KekMethod,
+) -> anyhow::Result<Envelope<C>> {
+    let subtle = subtle().map_err(|_| anyhow::anyhow!("no crypto.subtle in this scope"))?;
+
+    let mut nonce = [0u8; crate::envelope::NONCE_LEN];
+    getrandom::fill(&mut nonce)
+        .map_err(|error| anyhow::anyhow!("no entropy for an envelope nonce: {error}"))?;
+
+    let generation = 0;
+    let aad = Envelope::<C>::header_for(generation, method);
+    let params = AesGcmParams::new("AES-GCM", &js_sys::Uint8Array::from(&nonce[..]));
+    params.set_additional_data(&js_sys::Uint8Array::from(&aad[..]));
+
+    let plaintext = js_sys::Uint8Array::from(&seed[..]);
+    let promise = subtle
+        .encrypt_with_object_and_buffer_source(&params, kek, &plaintext)
+        .map_err(|_| anyhow::anyhow!("the sealing handle refused to encrypt"))?;
+    let sealed = JsFuture::from(promise)
+        .await
+        .map_err(|_| anyhow::anyhow!("sealing did not complete"))?;
+
+    let sealed = js_sys::Uint8Array::new(&sealed);
+    let mut ciphertext = vec![0u8; sealed.length() as usize];
+    sealed.copy_to(&mut ciphertext);
+    Ok(Envelope::from_parts(generation, method, nonce, ciphertext))
+}
+
+/// Open an envelope with a KEK, whichever way its key is held.
+///
+/// The single entry point callers should reach for on wasm: a
+/// bytes-backed KEK goes through `aes_gcm` synchronously, a
+/// handle-backed one through WebCrypto. Nothing outside this module
+/// branches on which.
+pub async fn open_seed<C: Clearance, K: Capability>(
+    kek: &Kek<C, K>,
+    envelope: &Envelope<C>,
+) -> Result<Zeroizing<[u8; 32]>, EnvelopeError> {
+    match kek.handle() {
+        Some(handle) => open_with_handle(handle, envelope).await,
+        None => kek.open_seed_bytes(envelope),
+    }
+}
+
+/// Derive the custody KEK from a PRF output as a **non-extractable**
+/// WebCrypto key.
+///
+/// The page's half. Mirrors [`crate::envelope::custody_kek`] exactly —
+/// HKDF-SHA256, no salt, expanded at
+/// [`crate::envelope::CUSTODY_KEK_CONTEXT`] — but the result is a
+/// `CryptoKey` rather than 32 bytes, so:
+///
+/// - no raw KEK is ever materialised in JS or Rust to be zeroized;
+///   `deriveKey` (not `deriveBits`) produces it already sealed
+/// - it is structured-cloneable, so it crosses `postMessage` to the
+///   service worker as an opaque handle the worker can use and cannot
+///   read
+/// - it carries only the `decrypt` usage, so a leaked handle can open
+///   envelopes and can never seal a new one under this KEK
+///
+/// The caller still holds the PRF output that produced it. That is
+/// unavoidable — the ceremony returns bytes — but its lifetime ends
+/// here, and nothing downstream needs it.
+pub async fn derive_custody_kek_handle(prf_output: &[u8; 32]) -> Result<CryptoKey, JsValue> {
+    derive_custody_kek_for(prf_output, "decrypt").await
+}
+
+/// Derive the custody KEK as a **sealing** handle.
+///
+/// The same key, with `["encrypt"]` instead of `["decrypt"]`. Used
+/// where an account secret is wrapped under a new passkey — account
+/// creation, and enrolling another passkey.
+///
+/// Worth having even though sealing happens in the page that ran the
+/// ceremony, with no boundary to cross: the point is not transport but
+/// that **no raw KEK is ever materialised**. `custody_kek(&prf)`
+/// produces 32 bytes in a buffer that must be trusted to zero;
+/// `deriveKey` produces a key that was never readable to begin with.
+///
+/// Kept separate from [`derive_custody_kek_handle`] rather than
+/// deriving one key with both usages: an opener that cannot forge is
+/// the entire value of the handle the worker receives, and a key with
+/// `encrypt` in its usages is not that.
+pub async fn derive_custody_sealing_handle(prf_output: &[u8; 32]) -> Result<CryptoKey, JsValue> {
+    derive_custody_kek_for(prf_output, "encrypt").await
+}
+
+/// Shared derivation: HKDF-SHA256 at [`CUSTODY_KEK_CONTEXT`], with one
+/// usage. Both entry points differ only in that usage.
+///
+/// [`CUSTODY_KEK_CONTEXT`]: crate::envelope::CUSTODY_KEK_CONTEXT
+async fn derive_custody_kek_for(prf_output: &[u8; 32], usage: &str) -> Result<CryptoKey, JsValue> {
+    let subtle = subtle()?;
+
+    // The PRF output enters as HKDF key material and is immediately
+    // unreachable: imported non-extractable, usable only to derive.
+    let material = js_sys::Uint8Array::from(&prf_output[..]);
+    let derive_only = js_sys::Array::new();
+    derive_only.push(&JsValue::from_str("deriveKey"));
+    let base: CryptoKey = JsFuture::from(subtle.import_key_with_str(
+        "raw",
+        &material,
+        "HKDF",
+        false,
+        &derive_only,
+    )?)
+    .await?
+    .dyn_into()?;
+
+    // RFC 5869: an absent salt is `HashLen` zeros. Rust says that with
+    // `Hkdf::new(None, ..)`; WebCrypto has no `None`, and normalises an
+    // empty salt to the same thing. Either spelling reproduces the Rust
+    // key — pinned by `it_matches_hkdf_with_no_salt`.
+    let params = js_sys::Object::new();
+    let set = |key: &str, value: &JsValue| {
+        js_sys::Reflect::set(&params, &JsValue::from_str(key), value)
+            .expect("setting a property on a fresh object cannot fail");
+    };
+    set("name", &JsValue::from_str("HKDF"));
+    set("hash", &JsValue::from_str("SHA-256"));
+    set("salt", js_sys::Uint8Array::new_with_length(32).as_ref());
+    set(
+        "info",
+        js_sys::Uint8Array::from(crate::envelope::CUSTODY_KEK_CONTEXT).as_ref(),
+    );
+
+    let derived = js_sys::Object::new();
+    js_sys::Reflect::set(&derived, &"name".into(), &"AES-GCM".into())?;
+    js_sys::Reflect::set(&derived, &"length".into(), &JsValue::from_f64(256.0))?;
+
+    let usages = js_sys::Array::new();
+    usages.push(&JsValue::from_str(usage));
+
+    JsFuture::from(
+        subtle.derive_key_with_object_and_object(&params, &base, &derived, false, &usages)?,
+    )
+    .await?
+    .dyn_into()
+}
+
+/// `crypto.subtle` from either a window or a service worker.
+fn subtle() -> Result<web_sys::SubtleCrypto, JsValue> {
+    web_sys::window()
+        .map(|window| window.crypto())
+        .or_else(|| {
+            js_sys::global()
+                .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+                .ok()
+                .map(|scope| scope.crypto())
+        })
+        .and_then(Result::ok)
+        .map(|crypto| crypto.subtle())
+        .ok_or_else(|| JsValue::from_str("no crypto.subtle in this scope"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clearance::Recovery;
+    use crate::envelope::capability::Opening;
+    use crate::envelope::{Kek, KekMethod};
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Import raw bytes as a non-extractable AES-GCM decrypt-only key,
+    /// standing in for what the page's `deriveKey` produces.
+    async fn handle_for(bytes: &[u8; 32]) -> CryptoKey {
+        let subtle = web_sys::window().unwrap().crypto().unwrap().subtle();
+        let raw = js_sys::Uint8Array::from(&bytes[..]);
+        let usages = js_sys::Array::new();
+        usages.push(&JsValue::from_str("decrypt"));
+        let promise = subtle
+            .import_key_with_str("raw", &raw, "AES-GCM", false, &usages)
+            .expect("import starts");
+        JsFuture::from(promise)
+            .await
+            .expect("import resolves")
+            .dyn_into()
+            .expect("a CryptoKey")
+    }
+
+    /// The whole point: something sealed by the `aes_gcm` path opens
+    /// from a key handle that cannot be read.
+    #[dialog_common::test]
+    async fn it_opens_an_envelope_sealed_by_the_byte_path() {
+        let bytes = Zeroizing::new([7u8; 32]);
+        let kek = Kek::<Recovery>::from_bytes(bytes.clone());
+        let secret = Zeroizing::new([42u8; 32]);
+        let envelope = kek
+            .seal_seed(&secret, KekMethod::Passkey)
+            .expect("sealing works");
+
+        let handle = handle_for(&bytes).await;
+        let opened = open_with_handle(&handle, &envelope)
+            .await
+            .expect("the handle opens what the bytes sealed");
+        assert_eq!(&*opened, &*secret, "the same secret comes back");
+    }
+
+    /// A different key fails the tag check rather than returning
+    /// something wrong.
+    #[dialog_common::test]
+    async fn it_refuses_a_handle_for_another_key() {
+        let kek = Kek::<Recovery>::from_bytes(Zeroizing::new([7u8; 32]));
+        let envelope = kek
+            .seal_seed(&Zeroizing::new([42u8; 32]), KekMethod::Passkey)
+            .expect("sealing works");
+
+        let wrong = handle_for(&[8u8; 32]).await;
+        assert!(
+            open_with_handle(&wrong, &envelope).await.is_err(),
+            "a wrong key must fail, not decrypt to garbage",
+        );
+    }
+
+    /// The two halves meet: a KEK handle derived in the page from a PRF
+    /// output opens an envelope sealed by `custody_kek` from the same
+    /// output.
+    ///
+    /// This is the end-to-end claim. `derive_custody_kek_handle` must
+    /// reproduce `custody_kek` bit for bit — same HKDF, same absent
+    /// salt, same context — or the envelope simply will not open, with
+    /// no other symptom to debug from.
+    #[dialog_common::test]
+    async fn it_derives_a_handle_that_opens_what_custody_kek_sealed() {
+        use crate::envelope::custody_kek;
+
+        let prf = [11u8; 32];
+        let sealed = custody_kek(&prf)
+            .seal_seed(&Zeroizing::new([99u8; 32]), KekMethod::Passkey)
+            .expect("sealing works");
+
+        let handle = super::derive_custody_kek_handle(&prf)
+            .await
+            .expect("the page derives a handle");
+        let opened = open_with_handle(&handle, &sealed)
+            .await
+            .expect("the derived handle opens the custody envelope");
+        assert_eq!(&*opened, &[99u8; 32], "the sealed seed comes back");
+    }
+
+    /// The handle cannot be read, and cannot seal.
+    ///
+    /// Both are what make it safe to post to the worker: the bytes
+    /// never cross, and a leaked handle is an opener rather than a
+    /// forger.
+    #[dialog_common::test]
+    async fn it_derives_a_handle_that_is_neither_readable_nor_a_sealer() {
+        let handle = super::derive_custody_kek_handle(&[11u8; 32])
+            .await
+            .expect("the page derives a handle");
+
+        assert!(!handle.extractable(), "the KEK must not be readable");
+
+        let usages = js_sys::Array::from(&handle.usages());
+        let usages: Vec<String> = usages.iter().filter_map(|u| u.as_string()).collect();
+        assert_eq!(
+            usages,
+            vec!["decrypt".to_owned()],
+            "decrypt only: a leaked handle must not be able to seal",
+        );
+
+        // And the browser enforces it.
+        let subtle = web_sys::window().unwrap().crypto().unwrap().subtle();
+        let raw = js_sys::Uint8Array::new_with_length(32);
+        assert!(
+            subtle.export_key("raw", &handle).is_err()
+                || JsFuture::from(subtle.export_key("raw", &handle).unwrap())
+                    .await
+                    .is_err(),
+            "exporting a non-extractable key must fail",
+        );
+        // `encrypt` rejects its promise rather than throwing, so the
+        // refusal only shows up once awaited.
+        let nonce = js_sys::Uint8Array::new_with_length(12);
+        let params = AesGcmParams::new("AES-GCM", &nonce);
+        let refused = match subtle.encrypt_with_object_and_buffer_source(&params, &handle, &raw) {
+            Err(_) => true,
+            Ok(promise) => JsFuture::from(promise).await.is_err(),
+        };
+        assert!(refused, "a decrypt-only key must not encrypt");
+    }
+
+    /// A handle-sealed envelope is indistinguishable from a
+    /// bytes-sealed one.
+    ///
+    /// The point of sealing through a handle is that no raw KEK is ever
+    /// materialised — not a different wire format. So an envelope
+    /// sealed by the handle must open through the ordinary `aes_gcm`
+    /// path, which is what every other reader (native, the CLI) uses.
+    #[dialog_common::test]
+    async fn it_seals_through_a_handle_into_the_ordinary_wire_format() {
+        use crate::envelope::custody_kek;
+
+        let prf = [17u8; 32];
+        let seed = Zeroizing::new([88u8; 32]);
+
+        let sealing = super::derive_custody_sealing_handle(&prf)
+            .await
+            .expect("the page derives a sealing handle");
+        let sealer =
+            Kek::<Recovery, crate::envelope::capability::Sealing>::from_sealing_handle(sealing);
+        let envelope = super::seal_seed(&sealer, &seed, KekMethod::Passkey)
+            .await
+            .expect("the handle seals");
+
+        // Opened by the byte path, which knows nothing about handles.
+        let opened = custody_kek(&prf)
+            .open_seed(&envelope)
+            .expect("the ordinary path opens what the handle sealed");
+        assert_eq!(&*opened, &*seed, "same seed, same wire format");
+    }
+
+    /// And the reverse: a sealing handle cannot open.
+    ///
+    /// `encrypt` and `decrypt` are separate usages, so the sealer is
+    /// not quietly a general-purpose key.
+    #[dialog_common::test]
+    async fn it_derives_a_sealer_that_cannot_open() {
+        let handle = super::derive_custody_sealing_handle(&[17u8; 32])
+            .await
+            .expect("the page derives a sealing handle");
+
+        let usages = js_sys::Array::from(&handle.usages());
+        let usages: Vec<String> = usages.iter().filter_map(|u| u.as_string()).collect();
+        assert_eq!(
+            usages,
+            vec!["encrypt".to_owned()],
+            "encrypt only: sealing and opening stay separate capabilities",
+        );
+        assert!(!handle.extractable(), "the sealer must not be readable");
+    }
+
+    /// The unified opener works whichever way the key is held.
+    ///
+    /// Callers get one function; the dispatch on `Material` stays
+    /// inside. This is the point of the enum — the same code path
+    /// serves a native-shaped bytes KEK and a browser handle.
+    #[dialog_common::test]
+    async fn it_opens_through_one_entry_point_for_both_backings() {
+        use crate::envelope::custody_kek;
+
+        let prf = [13u8; 32];
+        let sealed = custody_kek(&prf)
+            .seal_seed(&Zeroizing::new([77u8; 32]), KekMethod::Passkey)
+            .expect("sealing works");
+
+        // Bytes-backed.
+        let from_bytes = super::open_seed(&custody_kek(&prf), &sealed)
+            .await
+            .expect("bytes open");
+
+        // Handle-backed, same envelope.
+        let handle = super::derive_custody_kek_handle(&prf).await.unwrap();
+        let opener = Kek::<Recovery, Opening>::from_handle(handle);
+        let from_handle = super::open_seed(&opener, &sealed)
+            .await
+            .expect("the handle opens");
+
+        assert_eq!(&*from_bytes, &*from_handle, "both reach the same seed");
+    }
+
+    /// An opener has no `seal_seed` at all.
+    ///
+    /// Compile-tested rather than asserted: the lines below do not
+    /// compile if the capability parameter stops gating sealing, which
+    /// is the guarantee worth keeping.
+    ///
+    /// ```compile_fail
+    /// # use tonk_identity::clearance::Recovery;
+    /// # use tonk_identity::envelope::{Kek, KekMethod, capability::Opening};
+    /// # use zeroize::Zeroizing;
+    /// fn wants_a_sealer(kek: &Kek<Recovery, Opening>) {
+    ///     // no such method on an opener
+    ///     let _ = kek.seal_seed(&Zeroizing::new([0u8; 32]), KekMethod::Passkey);
+    /// }
+    /// ```
+    #[dialog_common::test]
+    async fn it_gates_sealing_at_the_type_level() {
+        // The positive half runs: a sealer seals.
+        let sealer = Kek::<Recovery, crate::envelope::capability::Sealing>::from_bytes(
+            Zeroizing::new([5u8; 32]),
+        );
+        assert!(
+            sealer
+                .seal_seed(&Zeroizing::new([6u8; 32]), KekMethod::Passkey)
+                .is_ok(),
+            "a sealing KEK seals",
+        );
+    }
+
+    /// WebCrypto's HKDF agrees with `Hkdf::new(None, ikm)`, under
+    /// either spelling of "no salt".
+    ///
+    /// RFC 5869: an absent salt is set to `HashLen` zeros. Rust says
+    /// that with `None`; WebCrypto has no `None`, and normalises an
+    /// EMPTY salt to the same thing. So both an empty array and 32 zero
+    /// bytes derive the key Rust derives — worth pinning, because it is
+    /// the one place a silent mismatch would produce an envelope that
+    /// simply refuses to open with no other symptom.
+    #[dialog_common::test]
+    async fn it_matches_hkdf_with_no_salt() {
+        let subtle = web_sys::window().unwrap().crypto().unwrap().subtle();
+        let ikm = [3u8; 32];
+        let info = b"tonk/kek/recovery/v1";
+
+        let derive = |salt: Vec<u8>| {
+            let subtle = subtle.clone();
+            let info = info.to_vec();
+            async move {
+                let raw = js_sys::Uint8Array::from(&ikm[..]);
+                let usages = js_sys::Array::new();
+                usages.push(&JsValue::from_str("deriveBits"));
+                let base: CryptoKey = JsFuture::from(
+                    subtle
+                        .import_key_with_str("raw", &raw, "HKDF", false, &usages)
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+                // `web_sys` has no HkdfParams binding here, so build
+                // the dictionary directly.
+                let params = js_sys::Object::new();
+                let set = |k: &str, v: &JsValue| {
+                    js_sys::Reflect::set(&params, &JsValue::from_str(k), v).unwrap();
+                };
+                set("name", &JsValue::from_str("HKDF"));
+                set("hash", &JsValue::from_str("SHA-256"));
+                set("info", js_sys::Uint8Array::from(&info[..]).as_ref());
+                set("salt", js_sys::Uint8Array::from(&salt[..]).as_ref());
+                let bits =
+                    JsFuture::from(subtle.derive_bits_with_object(&params, &base, 256).unwrap())
+                        .await
+                        .unwrap();
+                let out = js_sys::Uint8Array::new(&bits);
+                let mut bytes = [0u8; 32];
+                out.copy_to(&mut bytes);
+                bytes
+            }
+        };
+
+        // What Rust produces, via a KEK derived the same way.
+        let expected = {
+            use hkdf::Hkdf;
+            use sha2_0_10::Sha256;
+            let hkdf = Hkdf::<Sha256>::new(None, &ikm);
+            let mut okm = [0u8; 32];
+            hkdf.expand(info, &mut okm).unwrap();
+            okm
+        };
+
+        assert_eq!(
+            derive(vec![0u8; 32]).await,
+            expected,
+            "a 32-byte zero salt is what `Hkdf::new(None, ..)` means",
+        );
+        assert_eq!(
+            derive(Vec::new()).await,
+            expected,
+            "and WebCrypto normalises an empty salt to the same zeros",
+        );
+    }
+}

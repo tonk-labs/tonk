@@ -67,13 +67,18 @@ impl CustomElement for TonkAccount {
         bind(this);
         load_status(this.clone());
         // The panel's state is a function of the URL — /settings,
-        // /settings?add=1, /settings/link — and Add account moves
-        // between those with a client-side navigation (a history push
-        // plus a synthetic popstate), never a reload. The top-document
-        // router keeps this element mounted across account routes, so
-        // nothing else re-reads the location: the panel re-derives its
-        // own state whenever history changes under it.
-        {
+        // /settings?add=1, /settings/link — and of whether this browser
+        // has an account. Neither reaches it as a reload.
+        //
+        // Add account moves between those routes with a client-side
+        // navigation (a history push plus a synthetic popstate), and the
+        // top-document router keeps this element mounted across account
+        // routes, so nothing else re-reads the location. The ceremony
+        // that creates or links the account runs in the registration
+        // cluster, which says so with `ACCOUNT_CHANGED` rather than
+        // reaching in here. Both are the same answer: re-derive from
+        // what the worker reports now.
+        for event in ["popstate", crate::register_dialog::ACCOUNT_CHANGED] {
             let host = this.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
                 if host.is_connected() {
@@ -82,7 +87,7 @@ impl CustomElement for TonkAccount {
             });
             if let Some(window) = window() {
                 let _ = window
-                    .add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref());
+                    .add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());
             }
             closure.forget();
         }
@@ -498,6 +503,16 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
         _ => "Not registered",
     };
     set_text(host, "#account-registration-value", label);
+    // The load found the state unsynchronized and left the generic
+    // reason up. This is the first point that knows whether the emailed
+    // link is what it is waiting on, so it is where that is said —
+    // once, since the marker comes off with it.
+    if host.has_attribute(UNHYDRATED_ON_LOAD) {
+        let _ = host.remove_attribute(UNHYDRATED_ON_LOAD);
+        if state["status"].as_str() == Some("Registered") {
+            show_error(host, VERIFY_EMAIL);
+        }
+    }
     // The worker drains the queued backup itself once activation
     // lands — the ceremony pre-signed the publish. Nothing to raise;
     // just say so while it is still on its way. Detached: the watch is
@@ -1415,6 +1430,26 @@ fn landing(
     }
 }
 
+/// Re-read the account and repaint the panel.
+///
+/// The ceremony runs in the registration cluster now, which sits over
+/// this panel and finishes without telling it anything — so a panel
+/// that was showing "link an account" when the cluster opened is still
+/// showing it when the cluster closes, over an account that now exists.
+/// The cluster calls this on its way out. It is the same read the panel
+/// does when it boots, which is what decides which face to show.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn resettle() {
+    let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector("tonk-account").ok().flatten())
+        .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+    else {
+        return;
+    };
+    load_status(host);
+}
+
 fn load_status(host: HtmlElement) {
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
@@ -1495,13 +1530,23 @@ fn load_status(host: HtmlElement) {
                 ) {
                     Landing::Devices => show_success(&host),
                     Landing::Success => {
+                        // Marked BEFORE settling, because settling starts
+                        // the customer probe and that probe's answer is
+                        // what decides which message this state deserves.
+                        // Asking a second time from here instead would
+                        // put two probes in flight at once — and the
+                        // probe is not a read: it replays the work
+                        // deferred while the account was unserved, the
+                        // account backup among it.
+                        if account_state == Some(AccountStateStatus::Unhydrated) {
+                            let _ = host.set_attribute(UNHYDRATED_ON_LOAD, "true");
+                        } else {
+                            let _ = host.remove_attribute(UNHYDRATED_ON_LOAD);
+                        }
                         settle_on_load(&host);
                         apply_link_outcome(&host, link_outcome.as_ref());
                         if account_state == Some(AccountStateStatus::Unhydrated) {
-                            show_error(
-                                &host,
-                                "Account state is not synchronized yet. Reload /settings to retry before changing your account name.",
-                            );
+                            show_error(&host, UNSYNCHRONIZED);
                         }
                     }
                     Landing::Choice { revoke_hint } => {
@@ -1764,6 +1809,152 @@ fn is_unhydrated(status: &AccountStatus) -> bool {
     )
 }
 
+/// Sign in with an existing passkey, with no panel to report into.
+///
+/// The counterpart to [`run_account_ceremony`], and the reason the
+/// address is looked up before either runs: sending someone who already
+/// has an account through creation leaves an orphan passkey in their
+/// authenticator and fails at the end — which it did, with
+/// `409 a different account is already signed in on this profile`,
+/// because saving a new root over an existing one is what creation does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), String> {
+    narrate("Waiting for your passkey…");
+    let device_did = crate::api::identify()
+        .await
+        .map_err(|error| error.to_string())?
+        .did;
+
+    // One assertion derives the custody keypair, one presigned GET
+    // fetches the sealed envelope, and the unwrapped secret self-issues
+    // this device's delegation.
+    let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
+        device_did,
+        device_name: crate::device_name::current(),
+        endpoint: proposed_remote()?,
+        service_did: deployment_service_did().await,
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+
+    narrate("Linking this browser…");
+    let provider = crate::deployment::get()
+        .await?
+        .account_service_url
+        .to_string();
+    let response =
+        crate::api::submit_account_ceremony(&provider, "/devices/link", &ceremony.invocation_hex)
+            .await
+            .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
+    // Through `persist`, not a direct `save_account_link`.
+    //
+    // `persist` reconciles the ceremony against the root already stored
+    // (`root_for_link`): when the DIDs match it keeps the persisted one
+    // and skips re-saving. Sending the ceremony's own values instead
+    // makes `persist_link` compare them with what is stored and refuse —
+    // `403 provider ceremony does not match the persisted local root` —
+    // even when the user presented the very same passkey.
+    persist(&provider, &ceremony, descriptor_hex(&response)?, false).await?;
+    Ok(())
+}
+
+/// Run the account-creation ceremony, with no panel to report into.
+///
+/// The same work `/account`'s create button does, lifted out of its
+/// click handler so the registration cluster can run it too. Progress
+/// goes to `narrate` rather than to `set_busy`, and the service is
+/// resolved from the deployment rather than from a host element's
+/// `service` attribute — the two callers differ in nothing else.
+///
+/// Extracted rather than duplicated: two copies of a passkey ceremony
+/// would drift, and the half that drifted would leave an orphan
+/// credential in someone's authenticator.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn run_account_ceremony(
+    email: &str,
+    narrate: impl Fn(&str),
+) -> Result<(), String> {
+    prepare_added_profile().await?;
+    narrate("Waiting for your passkey…");
+
+    // One ceremony: the secret is generated, sealed under the new
+    // passkey's KEK, published as the custody cell, and the creation
+    // request signed. No key material is ever stored — every later
+    // custody operation derives its keys inside a fresh assertion.
+    let device_did = crate::api::identify()
+        .await
+        .map_err(|error| error.to_string())?
+        .did;
+    let created = create_account(CreateAccountInput {
+        email: email.to_owned(),
+        device_did,
+        device_name: crate::device_name::current(),
+        remote: proposed_remote()?,
+        created_on: Some(crate::device_name::current()),
+        service_did: deployment_service_did().await,
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+
+    crate::api::save_root(
+        created.credential_id.clone(),
+        created.delegation_hex.clone(),
+        created.passkey.clone(),
+        created.encryption_key.clone(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    narrate("Creating your account…");
+    let provider = crate::deployment::get()
+        .await?
+        .account_service_url
+        .to_string();
+    let response =
+        crate::api::submit_account_ceremony(&provider, "/accounts", &created.invocation_hex)
+            .await
+            .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
+    let ceremony = CeremonyOutput {
+        root_did: created.root_did.clone(),
+        credential_id: created.credential_id.clone(),
+        delegation_hex: created.delegation_hex.clone(),
+        invocation_hex: created.invocation_hex.clone(),
+        deposits_hex: created.deposits_hex.clone(),
+        encryption_key: created.encryption_key.clone(),
+    };
+    persist(&provider, &ceremony, descriptor_hex(&response)?, true).await?;
+
+    if wants_enrollment().await {
+        narrate("Registering with the sync service…");
+        if let Err(error) = crate::api::enroll_customer(Some(email), &created.deposits_hex).await {
+            web_sys::console::warn_1(&format!("customer enrollment failed: {error}").into());
+        }
+    }
+
+    // Neither of these can land before the emailed link is clicked: the
+    // service provisions nothing, and serves nothing, for a customer
+    // that has not confirmed its email. Both queue instead, and replay
+    // on activation.
+    if let Err(error) =
+        crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
+    {
+        web_sys::console::warn_1(&format!("custody provisioning deferred: {error}").into());
+    }
+    if let Err(error) = crate::api::queue_custody_publish(
+        &created.custody_did,
+        &created.sealed_hex,
+        &created.publish_invocation_hex,
+    )
+    .await
+    {
+        // The sealed secret is only in this page's memory until it is
+        // recorded, so failing to queue it is the one loss worth
+        // surfacing.
+        return Err(format!("could not record the account secret: {error}"));
+    }
+    Ok(())
+}
+
 /// The custody rows a creation ceremony must record before the panel
 /// settles: the consent that provisions the custody space, and the
 /// sealed cell with its pre-signed publish.
@@ -1873,10 +2064,7 @@ async fn complete_remote(
     // the failure unexpected, and then the notice says so instead.
     if initialize_name && is_unhydrated(&status) {
         if activation_pending().await {
-            show_error(
-                host,
-                "Your account was created. Check your email and open the verification link to verify your email address.",
-            );
+            show_error(host, VERIFY_EMAIL);
         } else {
             show_error(
                 host,
@@ -1886,6 +2074,22 @@ async fn complete_remote(
     }
     Ok(())
 }
+
+/// Marks a load that found the account state unsynchronized, so the
+/// customer probe's answer can say which of the two reasons it was.
+const UNHYDRATED_ON_LOAD: &str = "data-unhydrated-on-load";
+
+/// An account whose state has not synchronized, reason unknown.
+const UNSYNCHRONIZED: &str = "Account state is not synchronized yet. Reload /settings to retry before changing your account name.";
+
+/// The same state, when the emailed link is what it is waiting on.
+///
+/// Before that link is opened the access service refuses the pull, so a
+/// freshly enrolled account is ALWAYS unsynchronized — expected, and not
+/// something a reload can change. Naming the mechanism there and asking
+/// for a retry that cannot succeed buries the one step that does.
+const VERIFY_EMAIL: &str =
+    "Check your email and open the verification link to verify your email address.";
 
 /// Whether the customer is registered but not yet email-activated.
 async fn activation_pending() -> bool {
@@ -2106,14 +2310,19 @@ fn bind(host: &HtmlElement) {
             closure.forget();
         }
     }
-    on_click(host, "#account-choose-create", |host| {
-        clear_error(&host);
-        set_mode(&host, "create");
-        focus_input(&host, "#account-email");
-    });
+    // One entry, raising the same cluster the share flow raises. It
+    // starts from the address and routes on the answer — create a
+    // passkey for an address nobody holds, sign in for one that exists
+    // — so the old up-front "create account / log in" fork asked the
+    // user a question the lookup answers on its own.
+    //
+    // Opened here there is no interrupted share to finish, so the
+    // cluster closes on "your account is ready" instead of handing over
+    // a link.
     on_click(host, "#account-choose-link", |host| {
         clear_error(&host);
-        set_mode(&host, "link");
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        crate::register_dialog::open();
     });
     for selector in ["#account-create-back", "#account-link-back"] {
         on_click(host, selector, |host| {
@@ -2963,7 +3172,14 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("log in")
+            Some("link an account"),
+            "the entry names the same act the share flow names",
+        );
+        assert!(
+            host.query_selector("#account-choose-create")
+                .unwrap()
+                .is_none(),
+            "the create/log-in fork is the lookup's to make, not the user's",
         );
         assert!(
             host.query_selector("#account-retry-local")
@@ -3059,7 +3275,6 @@ mod tests {
         set_busy(&host, true, "Creating your account…");
 
         for selector in [
-            "#account-choose-create",
             "#account-choose-link",
             "#account-create-back",
             "#account-link-back",
