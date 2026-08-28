@@ -68,14 +68,24 @@ pub(crate) fn collection_entry_terms(
             None => Term::Constant(Value::String(name.to_owned())),
         },
     };
-    let value = field_value_to_term(
-        field_name,
-        &entry.value,
-        entry.value_range,
-        scope,
-        analysis,
-        expected,
-    )?;
+    // `{key: _}` RETRACTS the entry, so the value must stay a true
+    // blank. `field_value_to_term` mints an auto-named variable for a
+    // blank instead — right for a query, where `_` means "match
+    // anything and project it back", but here it makes the caller's
+    // `is_blank()` check false, so the entry compiles as an assertion
+    // of an unbound variable and the mutation is rejected outright.
+    let value = if matches!(entry.value, FieldValue::Blank) {
+        Term::<dialog_query::Any>::blank()
+    } else {
+        field_value_to_term(
+            field_name,
+            &entry.value,
+            entry.value_range,
+            scope,
+            analysis,
+            expected,
+        )?
+    };
     Ok((key, value))
 }
 

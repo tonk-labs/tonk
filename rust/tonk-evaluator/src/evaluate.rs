@@ -1430,6 +1430,92 @@ attribute!: &foo/title
         Ok(())
     }
 
+    /// `{key: _}` retracts one entry of a keyed collection.
+    ///
+    /// The blank has to survive as a TRUE blank: a query's `_` mints an
+    /// auto-named variable so the matched value projects back, but a
+    /// retraction's `_` is the marker that says "dissociate whatever is
+    /// here". Minting a variable instead makes the mutation reference
+    /// an unbound one, the commit is refused, and the entry stays —
+    /// which is a deleted notebook block reappearing on the next
+    /// render.
+    #[dialog_common::test]
+    async fn it_retracts_a_collection_entry_by_key() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let docs = [
+            r#"concept!: &notebook
+  description: "A notebook of ordered blocks"
+  with:
+    title:
+      description: "The notebook's title"
+      the: xyz.test.notebook/title
+      as: text
+    block:
+      description: "The notebook's blocks, in document order"
+      the: xyz.test.notebook
+      as: {[position]: entity}
+"#,
+            r#"notebook!:
+  this: id:nb
+  title: "Scratch"
+  block: {N: id:block/1}
+"#,
+            r#"notebook!:
+  this: id:nb
+  block: {N5: id:block/2}
+"#,
+            // The retraction under test.
+            r#"notebook!:
+  this: id:nb
+  block: {N: _}
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics for {doc:?}: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("syntax");
+            syntax
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+
+        let nb: dialog_artifacts::Entity = "id:nb".parse()?;
+        let mut counts = Vec::new();
+        for key in ["N", "N5"] {
+            let the: dialog_artifacts::Attribute = format!("xyz.test.notebook/{key}").parse()?;
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::new(
+                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
+                    Term::<dialog_artifacts::Entity>::from(nb.clone()),
+                    Term::<dialog_query::Any>::var("block"),
+                    Term::blank(),
+                    None,
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            counts.push(claims.len());
+        }
+
+        assert_eq!(counts[0], 0, "the retracted entry is gone");
+        assert_eq!(counts[1], 1, "its neighbour is untouched");
+        Ok(())
+    }
+
     /// End-to-end: install concepts + attributes on the branch,
     /// then submit a notation document that declares a `rule!:`
     /// plus a transient `ping!:` assertion. The analyzer lifts
