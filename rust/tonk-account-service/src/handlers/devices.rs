@@ -7,12 +7,10 @@ use crate::auth::{
     authorize, authorize_root, optional_revocation, required_string, string_argument,
 };
 use crate::core::devices::{
-    DeviceView, detach_device, list_devices, register_device, revoke_device,
+    DeviceView, detach_device, link_device, list_devices, register_device, revoke_device,
 };
 use crate::error::{ErrorCode, ServiceError};
-use crate::handlers::{
-    build_revocations, build_store, ceremony_error, read_body, with_cors_headers,
-};
+use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
 use crate::store::Store;
 
 /// A device row as serialized to API callers.
@@ -124,7 +122,7 @@ async fn handle_link_inner(
     let descriptor_hex = hex::encode(descriptor);
     let now = Date::now().as_millis() / 1000;
 
-    let attachment_id = register_device(
+    let attachment_id = link_device(
         &store,
         &account,
         &device_did,
@@ -184,7 +182,7 @@ pub async fn handle_detach(mut req: Request, ctx: RouteContext<()>) -> Result<Re
                 )
             })?;
         let store = build_store(&ctx)?;
-        let outcome = detach_device(&store, &intent, Date::now().as_millis() / 1000)
+        let outcome = detach_device(&store, &intent)
             .await
             .map_err(ceremony_error)?;
         Response::from_json(&serde_json::json!({ "outcome": outcome }))
@@ -212,7 +210,6 @@ async fn handle_revoke_inner(
     ctx: &RouteContext<()>,
 ) -> std::result::Result<Response, ServiceError> {
     let store = build_store(ctx)?;
-    let revocations = build_revocations(ctx)?;
     let body = read_body(req).await?;
     let caller = authorize(&store, &body, &["account", "device", "revoke"])
         .await
@@ -230,7 +227,6 @@ async fn handle_revoke_inner(
         })?;
     let outcome = revoke_device(
         &store,
-        &revocations,
         &caller.account,
         &caller.device.device_did,
         &attachment_id,
@@ -247,7 +243,6 @@ async fn handle_revoke_inner(
         "targetCid": outcome.target_cid,
         "artifactCid": outcome.artifact_cid,
         "published": true,
-        "stored": outcome.stored,
     }))
     .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
 }

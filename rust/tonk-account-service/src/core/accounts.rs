@@ -165,7 +165,7 @@ mod tests {
 
     async fn fixture() -> (String, String, String, String) {
         // (root_did, device_did, delegation_hex, descriptor_hex)
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = dialog_credentials::Ed25519Signer::import(&DEVICE_SEED)
@@ -281,7 +281,7 @@ mod tests {
         let (_, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let other_root = {
             use dialog_varsig::Principal;
-            tonk_identity::derive::derive_root_signer(&[9u8; 32])
+            dialog_credentials::Ed25519Signer::import(&[9u8; 32])
                 .await
                 .unwrap()
                 .did()
@@ -422,7 +422,7 @@ mod tests {
         // Same email, different root: build a second fixture from PRF
         // [10u8; 32] and device seed [12u8; 32], mint its delegation as
         // in fixture(), request a fresh code past the cooldown.
-        let root2 = tonk_identity::derive::derive_root_signer(&[10u8; 32])
+        let root2 = dialog_credentials::Ed25519Signer::import(&[10u8; 32])
             .await
             .unwrap();
         let device2 = dialog_credentials::Ed25519Signer::import(&[12u8; 32])

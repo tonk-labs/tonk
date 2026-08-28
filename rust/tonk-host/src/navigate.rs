@@ -87,6 +87,23 @@ fn dispatch_committed() {
     }
 }
 
+/// Ask the host page to raise its registration dialog.
+///
+/// Sharing needs an account and only the top page can run the ceremony,
+/// so a guest that hits a `needs-account` refusal forwards the ask
+/// rather than trying to register where it cannot. A page with no
+/// bridge (the shell itself) does nothing: it would already have raised
+/// the dialog directly.
+///
+/// `payload` is `{"reason": <refusal class>, "space": <did>}` as JSON.
+/// The reason words the prompt; the space is what the dialog shares once
+/// an account exists, so the click that was interrupted still ends in a
+/// link. A single string because [`crate::page_effect::forward`] carries
+/// one argument for every effect.
+pub fn request_registration(payload: &str) {
+    crate::page_effect::forward("register", payload);
+}
+
 /// Navigate to `href` WITHOUT reloading: push it onto history and fire
 /// `popstate` so the top-level `<tonk-site>` re-resolves. The path change then
 /// updates the tab's site in the overlay, whose subscription re-renders the
@@ -138,6 +155,20 @@ pub fn navigate_to(href: &str) {
     } else {
         // No history access — fall back to a real (reloading) navigation.
         let _ = win.location().assign(href);
+    }
+}
+
+/// Reload the top page, forwarding through every sealed guest boundary.
+///
+/// Unlike [`navigate_to`], this deliberately refreshes an unchanged route.
+/// Account-profile activation swaps the service worker's entire active state;
+/// rebuilding the page is what drops subscriptions owned by the old profile.
+pub fn reload_page() {
+    if crate::page_effect::forward("reload", "") {
+        return;
+    }
+    if let Some(win) = window() {
+        let _ = win.location().reload();
     }
 }
 
@@ -231,10 +262,10 @@ mod tests {
         );
     }
 
-    /// Install a stub `window.tonk.navigate` recording its argument. See the
+    /// Install a stub `window.tonk[method]` recording its argument. See the
     /// note in `page_effect.rs`: `window` is shared across the whole wasm
     /// test module, so this MUST be cleared before the test returns.
-    fn install_navigate_stub() -> Array {
+    fn install_effect_stub(method: &str) -> Array {
         let calls = Array::new();
         let recorder = {
             let calls = calls.clone();
@@ -245,7 +276,7 @@ mod tests {
         let tonk = Object::new();
         let _ = Reflect::set(
             &tonk,
-            &JsValue::from_str("navigate"),
+            &JsValue::from_str(method),
             recorder.as_ref().unchecked_ref::<Function>(),
         );
         recorder.forget();
@@ -269,7 +300,7 @@ mod tests {
             .location()
             .href()
             .expect("a location href");
-        let calls = install_navigate_stub();
+        let calls = install_effect_stub("navigate");
 
         navigate_to("/space/forwarded");
 
@@ -295,5 +326,30 @@ mod tests {
             before, after,
             "a forwarded navigation must not move this document"
         );
+    }
+
+    /// A profile switch initiated inside a sealed Hub must reload the top
+    /// page, not the opaque guest document that requested it.
+    #[dialog_common::test]
+    async fn it_forwards_a_reload_from_a_guest_instead_of_reloading_it() {
+        let before = window()
+            .expect("a window in the test harness")
+            .location()
+            .href()
+            .expect("a location href");
+        let calls = install_effect_stub("reload");
+
+        reload_page();
+
+        let after = window()
+            .expect("a window in the test harness")
+            .location()
+            .href()
+            .expect("a location href");
+        clear_tonk();
+
+        assert_eq!(calls.length(), 1, "the parent should be called once");
+        assert_eq!(calls.get(0).as_string().as_deref(), Some(""));
+        assert_eq!(before, after, "a forwarded reload must spare this guest");
     }
 }

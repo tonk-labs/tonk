@@ -7,12 +7,11 @@
 //! that entity using the `tonk:blob` concept's attributes
 //! (`xyz.tonk.blob/content-type`, `xyz.tonk.blob/name`) from the
 //! standard library. `cat` reads a blob's bytes back out by
-//! reference. `ls` is deferred: the current dialog-db pin exposes no
-//! blob-enumeration API (see [`ls`]).
+//! reference. `ls` enumerates those same metadata facts (see [`ls`]).
 
 use std::path::Path;
 
-use dialog_artifacts::{ArtifactSelector, Entity};
+use dialog_artifacts::Entity;
 use dialog_effects::blob::BlobError as UpstreamBlobError;
 use dialog_query::Attribute;
 use dialog_reactor::BranchSession;
@@ -21,7 +20,7 @@ use thiserror::Error;
 
 use crate::site::TonkSite;
 
-/// Failure modes for [`add`] (and, later, `cat`/`ls`).
+/// Failure modes shared by [`add`], [`attach`], [`cat`], and [`ls`].
 #[derive(Debug, Error)]
 pub enum BlobError {
     /// Reading the source file failed.
@@ -35,19 +34,15 @@ pub enum BlobError {
     /// remote.
     #[error("blob not available locally or from the remote: {0}")]
     NotFound(String),
-    /// The subcommand isn't available on the current dialog-db pin.
-    #[error("{0}")]
-    Unsupported(String),
 }
 
-impl BlobError {
+impl crate::Coded for BlobError {
     /// Map to a process exit code.
-    pub fn exit_code(&self) -> crate::ExitCode {
+    fn exit_code(&self) -> crate::ExitCode {
         match self {
             BlobError::Io(_) => crate::ExitCode::IoError,
             BlobError::Site(_) => crate::ExitCode::CommitError,
             BlobError::NotFound(_) => crate::ExitCode::IoError,
-            BlobError::Unsupported(_) => crate::ExitCode::CommitError,
         }
     }
 }
@@ -121,6 +116,55 @@ fn mime_for_extension(ext: &str) -> String {
     }
 }
 
+/// What an add would write, without writing any of it.
+///
+/// The `--dry-run` counterpart to [`add`]. It deliberately carries no
+/// `blob:<hash>`: the hash is a property of the imported bytes, and the
+/// import is the write. Reporting one would mean writing the blob and
+/// then declining to commit the metadata that makes it findable, which
+/// leaves an orphan in the store — the opposite of what a dry run
+/// promises.
+#[derive(Debug, Clone)]
+pub struct AddPlan {
+    /// Size in bytes of the file that would be imported.
+    pub size: u64,
+    /// The MIME type that would be asserted.
+    pub content_type: String,
+    /// The name that would be asserted.
+    pub name: String,
+}
+
+/// Resolve what [`add`] would do to `path`, touching neither the blob
+/// store nor the branch.
+///
+/// Still opens the file, so an unreadable path fails here as it would
+/// in a real add rather than being reported as a successful preview.
+pub async fn plan(path: &Path, content_type: Option<String>) -> Result<AddPlan, BlobError> {
+    let content_type = resolve_content_type(path, content_type);
+    let file = tokio::fs::File::open(path).await?;
+    Ok(AddPlan {
+        size: file.metadata().await?.len(),
+        content_type,
+        name: file_name(path).unwrap_or_else(|| path.display().to_string()),
+    })
+}
+
+/// The MIME type to assert: the override if given, else inferred from
+/// the extension, else a generic binary type.
+fn resolve_content_type(path: &Path, content_type: Option<String>) -> String {
+    content_type.unwrap_or_else(|| {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(mime_for_extension)
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    })
+}
+
+/// The file name to assert, absent for a path that has none (`.`, `..`).
+fn file_name(path: &Path) -> Option<String> {
+    path.file_name().and_then(|n| n.to_str()).map(str::to_owned)
+}
+
 /// Ingest `path` into the site's blob store, returning its
 /// content-addressed reference. Idempotent: adding the same bytes
 /// twice yields the same `blob:<hash>` entity both times.
@@ -129,18 +173,17 @@ fn mime_for_extension(ext: &str) -> String {
 /// Asserts `xyz.tonk.blob/content-type` (always) and
 /// `xyz.tonk.blob/name` (always; defaults to the entity string when
 /// `path` has no file name) on the blob entity in one transaction.
+///
+/// Commits but does not sync. Callers that want the pull-before /
+/// push-after every other write verb performs wrap this in
+/// [`crate::auto_sync::around_commit`], which is what the CLI does.
 pub async fn add(
     site: &TonkSite,
     path: &Path,
     content_type: Option<String>,
 ) -> Result<AddOutcome, BlobError> {
-    let content_type = content_type.unwrap_or_else(|| {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(mime_for_extension)
-            .unwrap_or_else(|| "application/octet-stream".to_string())
-    });
-    let name = path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+    let content_type = resolve_content_type(path, content_type);
+    let name = file_name(path);
 
     let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
@@ -250,86 +293,105 @@ pub async fn cat(
     Ok(written)
 }
 
-/// One row of [`ls`]: a blob's entity, size, and content type (if
-/// the `xyz.tonk.blob/content-type` fact was ever asserted on it).
+/// One row of [`ls`]: a blob's entity, plus the metadata facts
+/// [`add`] asserted alongside it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LsRow {
     /// The blob's `blob:<hash>` entity.
     pub entity: Entity,
-    /// Size in bytes, from the branch's blob index.
-    pub size: u64,
     /// Asserted MIME type, if any.
     pub content_type: Option<String>,
+    /// Asserted file name, if any.
+    pub name: Option<String>,
 }
 
-/// Enumerate every blob referenced by the branch's current tree,
-/// paired with its size and (best-effort) content type.
+/// Enumerate the branch's blobs from their metadata facts, sorted by
+/// entity.
 ///
-/// Deferred: the current dialog-db pin's blob API is entity-keyed
-/// (read/write/size by `blob:<hash>`) and exposes no way to
-/// enumerate the blobs a branch holds. `ls` returns an
-/// [`BlobError::Unsupported`] until the pin advances to a dialog-db
-/// that offers a blob-enumeration API (at which point the
-/// [`query_content_type`] helper below wires the per-blob content
-/// type back in).
-pub async fn ls(_site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
-    Err(BlobError::Unsupported(
-        "tonk blob ls is not supported on the current dialog-db pin \
-         (no blob-enumeration API)"
-            .to_string(),
-    ))
-}
-
-/// Look up the `xyz.tonk.blob/content-type` fact for `entity`,
-/// returning `None` if it was never asserted.
+/// Fact-driven, not index-driven. The dialog-db pin's blob API is
+/// entity-keyed (read and write by `blob:<hash>`) and exposes no way
+/// to walk the blobs a branch holds, so this reads the other half of
+/// what [`add`] wrote: the `xyz.tonk.blob/content-type` and
+/// `xyz.tonk.blob/name` claims on the blob entity. Every ingest path
+/// that means a blob to be found again asserts them — [`add`] here,
+/// and the worker's upload route in the browser.
 ///
-/// Goes straight at the branch's raw claims index
-/// (`Branch::claims().select(ArtifactSelector)`) rather than the
-/// `Query::<Concept>`-and-`try_vec` surface `remote.rs` uses for
-/// `RemoteConcept`: that surface exists to bind several attributes
-/// of a whole concept at once via a `#[derive(Concept)]` struct,
-/// which would mean inventing a one-field concept type just to ask
-/// "what's the value of this single attribute on this single
-/// entity". `ArtifactSelector::new().the(..).of(..)` expresses
-/// exactly that constraint directly, with no extra type needed.
+/// Two consequences worth knowing. Bytes attached without metadata
+/// (see [`attach`], which deployment uses) are invisible to this
+/// listing; and a row proves a fact was asserted, not that the bytes
+/// are on this device — a blob whose claims synced ahead of its
+/// content still lists, and [`cat`] is what reports it missing.
 ///
-/// Retained for the deferred [`ls`]: it's the per-blob content-type
-/// lookup that a future blob-enumeration API will pair with each
-/// listed entity.
-#[allow(dead_code)]
-async fn query_content_type(
-    session: &BranchSession,
-    operator: &dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
-    entity: &Entity,
-) -> Result<Option<String>, BlobError> {
-    use futures_util::StreamExt as _;
-
-    let selector = ArtifactSelector::new()
-        .the(ContentType::the().into())
-        .of(entity.clone());
-
-    let artifacts = session
-        .handle()
-        .claims()
-        .select(selector)
-        .perform(operator)
+/// Size is absent for the same reason the index is: the pin offers no
+/// size effect, and reading each blob through to its end to count
+/// bytes would make listing cost as much as downloading.
+pub async fn ls(site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
+    let session = site
+        .branch()
         .await
-        .map_err(|e| BlobError::Site(format!("content-type query: {e}")))?;
-    let mut artifacts = Box::pin(artifacts);
+        .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
+    let content_types = claims_by_entity(site, &session, ContentType::the())
+        .await
+        .map_err(|e| BlobError::Site(format!("content-type enumeration: {e}")))?;
+    let names = claims_by_entity(site, &session, Name::the())
+        .await
+        .map_err(|e| BlobError::Site(format!("name enumeration: {e}")))?;
 
-    match artifacts.next().await {
-        Some(Ok(artifact)) => {
-            let value = artifact
-                .value()
-                .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))
-                .and_then(|value| {
-                    String::try_from(value)
-                        .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))
-                })?;
-            Ok(Some(value))
-        }
-        Some(Err(e)) => Err(BlobError::Site(format!("content-type query: {e}"))),
-        None => Ok(None),
-    }
+    // A blob is listed if it carries either fact: `add` writes both,
+    // but a hand-authored claim need not, and a half-described blob is
+    // still one the author can `cat`.
+    let mut entities: Vec<Entity> = content_types
+        .keys()
+        .chain(names.keys())
+        .filter(|entity| entity.blob_hash().is_some())
+        .cloned()
+        .collect();
+    entities.sort_by_key(|entity| entity.to_string());
+    entities.dedup();
+
+    Ok(entities
+        .into_iter()
+        .map(|entity| LsRow {
+            content_type: content_types.get(&entity).cloned(),
+            name: names.get(&entity).cloned(),
+            entity,
+        })
+        .collect())
+}
+
+/// Select every current claim under `the` and index it by subject.
+/// Both blob metadata attributes are cardinality-one, so the last
+/// value for an entity is its only value.
+async fn claims_by_entity(
+    site: &TonkSite,
+    session: &BranchSession,
+    the: dialog_query::attribute::The,
+) -> Result<std::collections::HashMap<Entity, String>, String> {
+    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+
+    let claims: Vec<dialog_query::Claim> = session
+        .handle()
+        .query()
+        .select(AttributeQuery::new(
+            Term::from(the),
+            Term::<Entity>::var("of"),
+            Term::<dialog_query::Any>::var("is"),
+            Term::<attribute::Cause>::blank(),
+            None,
+        ))
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+
+    Ok(claims
+        .into_iter()
+        .filter_map(|claim| match claim.is {
+            dialog_artifacts::Value::String(value) => Some((claim.of, value)),
+            _ => None,
+        })
+        .collect())
 }
 
 /// MIME type of a blob's content. Matches the standard library's

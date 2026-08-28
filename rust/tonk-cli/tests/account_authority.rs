@@ -1,10 +1,10 @@
-//! Live coverage for authorizing a spot's remote under an account.
+//! Live coverage for authorizing a space's remote under an account.
 
 mod common;
 
 use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
-use tonk_account::backup::space_root_site;
+use tonk_account::prefix::space_root_site;
 use tonk_cli::site::{SiteConfig, TonkSite};
 
 /// Open sites the way a real install does, with the account boundary in
@@ -24,14 +24,18 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
 }
 
 /// Releases before the account-root prefix existed stored no such
-/// credential, so upgrading left every spot they created with nothing under
+/// credential, so upgrading left every space they created with nothing under
 /// that key. Authorization has to rebuild the prefix from the certificates
-/// the profile already holds instead of reporting the spot as undelegated.
+/// the profile already holds instead of reporting the space as undelegated.
 #[dialog_common::test]
-async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
+async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     env: AccessServiceAddress,
 ) -> Result<()> {
-    let fixture = common::AccountFixture::new().await?;
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("upgraded"),
         account_config(&fixture),
@@ -46,6 +50,10 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
         .perform(&site.operator)
         .await?;
     configure_upstream(&site, &env.access_service_url).await?;
+    // What is under test is push authority, not provisioning; the space
+    // still has to be someone's to serve.
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
 
     tonk_cli::sync::push(&site).await?;
 
@@ -63,15 +71,36 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
     Ok(())
 }
 
-/// Creating a spot retains its authority into the account space.
+/// Creating a space retains its authority into the account space.
 ///
 /// The retain itself is `tonk_account::delegations`, shared with the worker so
 /// the two adapters cannot drift into retaining different things. This pins
 /// the CLI's half of that wiring; `it_recovers_space_access_on_a_second_device`
 /// proves the retained facts actually travel.
 #[dialog_common::test]
-async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
-    let fixture = common::AccountFixture::new().await?;
+async fn it_retains_a_created_space_into_the_account_space(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    assert_eq!(
+        tonk_cli::account_state::status_in(&fixture.profile, &fixture.config.account_store).await?,
+        tonk_account::AccountStateStatus::Ready
+    );
+    let account_operator = tonk_cli::account_state::credential_operator_for_store(
+        &fixture.profile,
+        &fixture.config.account_store,
+    )
+    .await?;
+    assert!(
+        tonk_cli::account_state::open_account_branch_in(
+            &fixture.profile,
+            &account_operator,
+            &fixture.config.account_store,
+        )
+        .await?
+        .is_some()
+    );
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("retained"),
         account_config(&fixture),
@@ -79,16 +108,12 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
     .await?;
     assert!(
         !site.repository.did().to_string().is_empty(),
-        "spot creation must succeed"
+        "space creation must succeed"
     );
 
     let operator = fixture.pre_account_site.operator.inner();
-    assert!(
-        tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fixture.link)
-            .await?,
-        "a hydrated account must retain the grant"
-    );
-    // Content-addressed, so a second retain of the same chain writes nothing.
+    // The fixture already put the root → device link into provable
+    // reach, so retaining it reports already-present.
     assert!(
         !tonk_cli::account_state::retain_space_delegation(
             &fixture.profile,
@@ -96,7 +121,91 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
             &fixture.link
         )
         .await?,
+        "the fixture's link is already retained"
+    );
+    // A chain the account has never seen retains once, and the
+    // content-addressed store dedupes the replay.
+    let (_, fresh) = fixture.space_chain(77).await?;
+    assert!(
+        tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fresh)
+            .await?,
+        "a hydrated account must retain a novel grant"
+    );
+    assert!(
+        !tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fresh)
+            .await?,
         "re-retaining an identical chain must not write again"
+    );
+    Ok(())
+}
+
+/// Every account ensure repairs both halves of the account/profile union.
+///
+/// Login can be cancelled after its durable handoff but before these edges
+/// are retained. Keeping convergence in ensure means `account status` and
+/// `account sync` repair that interrupted work without minting another
+/// semantically identical return edge on every retry.
+#[dialog_common::test]
+async fn it_converges_the_linked_account_union_during_every_ensure(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let operator = fixture.operator().await?;
+    let account = fixture.account_branch().await?;
+    let root = fixture.link.issuer().clone();
+    let return_scope = dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Specific(fixture.profile.did()),
+        command: dialog_ucan_core::command::Command::parse("/")?,
+        parameters: dialog_ucan::Parameters::default(),
+    };
+
+    assert!(
+        account
+            .delegations()
+            .prove(root.clone(), return_scope.clone())
+            .perform(&operator)
+            .await
+            .is_err(),
+        "the fixture must begin without the profile return edge"
+    );
+
+    let outcome = tonk_cli::account_state::ensure_with_operator_and_store(
+        &fixture.profile,
+        operator.clone(),
+        fixture.store.clone(),
+    )
+    .await?;
+    assert_eq!(outcome.status, tonk_account::AccountStateStatus::Ready);
+    let account = fixture.account_branch().await?;
+    assert!(
+        !tonk_account::delegations::retain_space_delegation(&account, &fixture.link, &operator)
+            .await?,
+        "ensure must already have retained the exact account-to-profile grant"
+    );
+    assert!(
+        account
+            .delegations()
+            .prove(root, return_scope)
+            .perform(&operator)
+            .await
+            .is_ok(),
+        "ensure must retain a profile-to-account return edge"
+    );
+
+    let revision = account.revision();
+    tonk_cli::account_state::ensure_with_operator_and_store(
+        &fixture.profile,
+        operator,
+        fixture.store.clone(),
+    )
+    .await?;
+    let account = fixture.account_branch().await?;
+    assert_eq!(
+        account.revision(),
+        revision,
+        "a repeated ensure must not mint a duplicate return edge"
     );
     Ok(())
 }
@@ -118,11 +227,14 @@ async fn it_installs_authority_from_a_callback_authorization(
 
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
     let operator = fixture.pre_account_site.operator.inner();
 
     // Exactly what the page mints: the account's powerline to this profile,
     // plus the descriptor that says where the account repository lives.
-    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let root = dialog_credentials::Ed25519Signer::import(&[77; 32]).await?;
     let authorized =
         tonk_identity::ceremony::authorize_device(root.clone(), fixture.profile.did(), &remote)
             .await?;
@@ -130,6 +242,7 @@ async fn it_installs_authority_from_a_callback_authorization(
         "delegationHex": authorized.delegation_hex,
         "descriptorHex": authorized.descriptor_hex,
         "credentialId": authorized.root_did,
+        "attachmentId": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
     })
     .to_string();
     let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
@@ -221,14 +334,97 @@ async fn it_installs_authority_from_a_callback_authorization(
     // what the browser e2e covers — it authorizes a CLI profile that never
     // linked.
     let site = TonkSite::init_at_with(
-        &fixture.tmp.path().join("authorized-spot"),
+        &fixture.tmp.path().join("authorized-space"),
         account_config(&fixture),
     )
     .await?;
     configure_upstream(&site, &env.access_service_url).await?;
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
     tonk_cli::sync::push(&site)
         .await
-        .context("a spot must push under authority that reaches the account root")?;
+        .context("a space must push under authority that reaches the account root")?;
+
+    Ok(())
+}
+
+/// A profile can accept space authority before it has an account. Linking
+/// later adds the profile-to-account half of the union, so the same local
+/// space can authorize account-bound sync without being re-claimed or moved.
+#[dialog_common::test]
+async fn it_syncs_a_claimed_space_after_linking_an_account(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let account_owner = common::AccountFixture::with_account_remote(&remote).await?;
+    account_owner.activate_with(&env).await?;
+    let owner_operator = account_owner.pre_account_site.operator.inner();
+    let owner_account =
+        tonk_cli::account_state::open_account_branch(&account_owner.profile, owner_operator)
+            .await?
+            .expect("the account owner is hydrated");
+    owner_account.push().perform(owner_operator).await?;
+
+    let inviter = common::TestSite::new().await?;
+    let invitation = tonk_cli::invite::mint(&inviter.site, None, None).await?;
+    let claimer_tmp = tempfile::tempdir()?;
+    let claimer_parent = claimer_tmp.path().canonicalize()?;
+    let claimer_config = common::isolated_config(&claimer_parent)?;
+    let joined_root = claimer_parent.join("claimed-before-link");
+    let mut production_config = claimer_config.clone();
+    production_config.require_account = true;
+    let claimed =
+        tonk_cli::invite::claim(&joined_root, &invitation.url, production_config.clone()).await?;
+
+    let joined = TonkSite::open_with(&joined_root, production_config.clone()).await?;
+    assert_eq!(
+        tonk_cli::site::member_did(&joined).await?,
+        joined.profile.did(),
+        "the pre-link invite must terminate at the persistent profile"
+    );
+    let page = common::authorizing_page(account_owner.root_signer().await?, remote.clone()).await?;
+    let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+    let approving = tokio::spawn(async move {
+        if let Some(url) = announced.recv().await {
+            let _ = reqwest::Client::new().get(&url).send().await;
+        }
+    });
+    let linked = tonk_cli::account::link_with_operator(
+        &joined.profile,
+        joined.operator.inner(),
+        &tonk_cli::account::LinkOptions {
+            service_url: remote,
+            device_name: "pre-link-claimer".to_owned(),
+            open_browser: false,
+            via: Some(page.url.clone()),
+            announce: Some(announce),
+            store: Some(claimer_config.account_store.clone()),
+        },
+    )
+    .await?;
+    approving.await?;
+    assert_eq!(
+        linked.account_state,
+        tonk_account::AccountStateStatus::Ready,
+        "linking must hydrate the account: {:?}",
+        linked.warning
+    );
+    let account_root: dialog_varsig::Did = linked.root_did.parse()?;
+    tonk_cli::site::load_account_root_prefix_for(
+        &joined.profile,
+        joined.operator.inner(),
+        &claimed.subject,
+        &account_root,
+    )
+    .await
+    .context("linking must make the profile-ending invite chain reach the account root")?;
+
+    let joined = TonkSite::open_with(&joined_root, production_config).await?;
+    configure_upstream(&joined, &env.access_service_url).await?;
+    env.provision_subject(claimed.subject.as_str()).await?;
+    tonk_cli::sync::push(&joined)
+        .await
+        .context("the linked account must authorize the profile's pre-link invite")?;
 
     Ok(())
 }
@@ -248,6 +444,9 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
 
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let owner = common::AccountFixture::with_account_remote(&remote).await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    owner.activate_with(&env).await?;
     let owner_operator = owner.pre_account_site.operator.inner();
     let account_root = owner.link.issuer().clone();
 
@@ -270,9 +469,9 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         .await?
         .expect("the owner's account is hydrated");
     assert!(
-        tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
+        !tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
             .await?,
-        "the space authority must reach the account"
+        "creation already retained the space authority into the account"
     );
     account.push().perform(owner_operator).await?;
 
@@ -310,7 +509,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     // does — mint the grant, post it to the callback. Everything after that
     // is the command's own dance: install, persist, mount, adopt, pull,
     // retain both union halves, push.
-    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let root = dialog_credentials::Ed25519Signer::import(&[77; 32]).await?;
     let page = common::authorizing_page(root.clone(), remote.clone()).await?;
     // Nothing opens a browser in a test, so take the approval URL off the
     // announce channel and visit it — the URL carries the callback address
@@ -328,10 +527,9 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
             service_url: remote.clone(),
             device_name: "test-device".to_owned(),
             open_browser: false,
-            abandon_detach: false,
             via: Some(page.url.clone()),
             announce: Some(announce),
-            store: Some(tonk_cli::spot::SpotStore::at(
+            store: Some(tonk_cli::space::SpaceStore::at(
                 joiner.parent.join("account-state"),
             )),
         },
@@ -382,7 +580,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     let joiner_account = tonk_cli::account_state::open_account_branch_in(
         &joiner_profile,
         joiner_operator,
-        &tonk_cli::spot::SpotStore::at(joiner.parent.join("account-state")),
+        &tonk_cli::space::SpaceStore::at(joiner.parent.join("account-state")),
     )
     .await?
     .expect("linking hydrates the joiner's account");
@@ -443,9 +641,12 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     use dialog_ucan_core::command::Command;
     use dialog_ucan_core::subject::Subject as UcanSubject;
 
-    // Device one: an account, and a spot whose authority it retains there.
+    // Device one: an account, and a space whose authority it retains there.
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let first = common::AccountFixture::with_account_remote(&remote).await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    first.activate_with(&env).await?;
     let site = TonkSite::init_at_with(&first.tmp.path().join("device-one"), account_config(&first))
         .await?;
     configure_upstream(&site, &env.access_service_url).await?;
@@ -462,8 +663,8 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
         tonk_cli::site::account_root_prefix_for(&first.profile, operator, &subject, &account_root)
             .await?;
     assert!(
-        tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
-        "device one retains its space authority into the account"
+        !tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
+        "creation already retained device one's space authority into the account"
     );
     account.push().perform(operator).await?;
 
@@ -541,7 +742,7 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
 ///
 /// The command exists for profiles that predate delegations being facts: it
 /// drains the legacy certificate store into the access branch and retains
-/// each spot into the account space. A fresh profile has neither, so the run
+/// each space into the account space. A fresh profile has neither, so the run
 /// must succeed and report zero rather than erroring — which is what makes it
 /// safe to re-run.
 #[dialog_common::test]
@@ -549,7 +750,7 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     use dialog_storage::provider::storage::{NativeSpace, Storage};
 
     let fixture = common::AccountFixture::new().await?;
-    let store = tonk_cli::spot::SpotStore::at(fixture.tmp.path().join("registry"));
+    let store = tonk_cli::space::SpaceStore::at(fixture.tmp.path().join("registry"));
     // Mount the fixture's profile so migration has a provider for its
     // subject: it commits as the profile, and an unmounted one errors.
     let storage = Storage::<NativeSpace>::default();
@@ -580,26 +781,179 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
         "a drained certificate store has nothing left to migrate; first pass moved {}",
         first.certificates
     );
-    assert_eq!(second.spots, 0, "no spot may be retained twice");
+    assert_eq!(second.spaces, 0, "no space may be retained twice");
     Ok(())
 }
 
-/// A spot created before the account existed chains to the device root this
-/// profile held at the time and reaches no account root at all. Linking an
-/// account must adopt it rather than strand it offline.
+/// A space created before the account existed reaches no account root.
+/// Ordinary sync must not silently turn account linking into ownership
+/// adoption; `tonk space move` is the explicit boundary that does so.
 #[dialog_common::test]
-async fn it_pushes_a_spot_created_before_the_account_existed(
+async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
     let path = fixture.pre_account_site.root.clone();
     let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
     configure_upstream(&site, &env.access_service_url).await?;
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
 
-    tonk_cli::sync::push(&site).await?;
+    let error = tonk_cli::sync::push(&site)
+        .await
+        .expect_err("ordinary sync cannot adopt a local-only space");
+    assert!(
+        error.to_string().contains("No delegation chain proves"),
+        "{error}"
+    );
+    Ok(())
+}
 
-    let prefix = tonk_cli::site::account_root_prefix(&site, fixture.link.issuer()).await?;
-    assert_eq!(prefix.subject(), Some(&site.repository.did()));
-    assert_eq!(prefix.audience(), fixture.link.issuer());
+/// An account-backed create seals the space's seed to the account's
+/// published encryption key and records it on the account branch — the
+/// copy any of the account's devices recovers the space from after a
+/// ceremony opens it.
+#[dialog_common::test]
+async fn it_custodies_the_created_space_seed() -> Result<()> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
+
+    let fixture = common::AccountFixture::new().await?;
+    let site = TonkSite::init_at_with(
+        &fixture.tmp.path().join("custodied"),
+        account_config(&fixture),
+    )
+    .await?;
+    let subject = site.repository.did();
+
+    let account_operator =
+        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
+            .await?;
+    let account = tonk_cli::account_state::open_account_branch_in(
+        &fixture.profile,
+        &account_operator,
+        &fixture.store,
+    )
+    .await?
+    .context("the fixture account branch mounts")?;
+    let rows: Vec<CustodiedSeed> = account
+        .query()
+        .select(Query::<CustodiedSeed> {
+            this: Term::var("this"),
+            subject: Term::from(subject.this()),
+            kind: Term::var("kind"),
+            recipient: Term::var("recipient"),
+            sealed: Term::var("sealed"),
+        })
+        .perform(&account_operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("read custodied seeds: {error:?}"))?;
+    assert_eq!(rows.len(), 1, "the created space's seed is custodied");
+    assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
+
+    // The account secret opens the row and derives the space itself.
+    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+        fixture.root_prf,
+    ));
+    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let seed = secret
+        .encryption_key()
+        .open(&sealed, &subject)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
+    use dialog_varsig::Principal as _;
+    assert_eq!(
+        signer.did(),
+        subject,
+        "the custodied seed derives the space"
+    );
+    Ok(())
+}
+
+/// A space created before the account existed moves under the account's
+/// custody at sign-in: authority reaches the root and the seed is
+/// sealed to the account's key. Hosting does not move — that stays
+/// `tonk space link`'s boundary.
+#[dialog_common::test]
+async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_cli::custody::{Accreditation, accredit_local_spaces};
+    use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
+
+    let fixture = common::AccountFixture::new().await?;
+    // What `tonk account login` records once the ceremony succeeds.
+    let root_did_string = fixture.link.issuer().to_string();
+    fixture
+        .store
+        .set_account(Some(tonk_cli::space::AccountRecord::new(root_did_string)))?;
+    let mut local_config = fixture.config.clone();
+    local_config.require_account = false;
+    let created =
+        tonk_cli::space::create(&fixture.store, "premade", None, None, local_config).await?;
+    let subject: dialog_varsig::Did = created.did.parse()?;
+
+    let outcomes = accredit_local_spaces(&fixture.store, &fixture.config).await?;
+    assert!(
+        outcomes
+            .iter()
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Moved)),
+        "sign-in moves the local space's custody: {outcomes:?}"
+    );
+
+    let account_operator =
+        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
+            .await?;
+    let account = tonk_cli::account_state::open_account_branch_in(
+        &fixture.profile,
+        &account_operator,
+        &fixture.store,
+    )
+    .await?
+    .context("the fixture account branch mounts")?;
+    let rows: Vec<CustodiedSeed> = account
+        .query()
+        .select(Query::<CustodiedSeed> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            kind: Term::var("kind"),
+            recipient: Term::var("recipient"),
+            sealed: Term::var("sealed"),
+        })
+        .perform(&account_operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("read custodied seeds: {error:?}"))?;
+    assert_eq!(rows.len(), 1, "the moved space's seed is custodied");
+
+    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+        fixture.root_prf,
+    ));
+    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let seed = secret
+        .encryption_key()
+        .open(&sealed, &subject)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
+    use dialog_varsig::Principal as _;
+    assert_eq!(
+        signer.did(),
+        subject,
+        "the custodied seed derives the space"
+    );
+
+    // Running again converges: nothing is moved twice.
+    let again = accredit_local_spaces(&fixture.store, &fixture.config).await?;
+    assert!(
+        again
+            .iter()
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Already)),
+        "a second sign-in finds custody already moved: {again:?}"
+    );
     Ok(())
 }

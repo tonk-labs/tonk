@@ -2,6 +2,66 @@ import init, { activate } from "./worker.js";
 
 const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 
+// ---- Introspection -------------------------------------------------
+//
+// Everything the worker logs is captured into a bounded ring, and
+// `GET /api/health` answers from this glue WITHOUT the wasm worker —
+// so a worker that fails to initialize is still diagnosable with one
+// fetch from any page, instead of spelunking serviceworker-internals.
+const LOG_RING_CAPACITY = 400;
+const logRing = [];
+const ringify = level => {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+        const message = args
+            .map(arg => {
+                if (typeof arg === "string") return arg;
+                try {
+                    return arg instanceof Error ? (arg.stack || String(arg)) : JSON.stringify(arg);
+                } catch {
+                    return String(arg);
+                }
+            })
+            .join(" ");
+        logRing.push({ t: Date.now(), level, message: message.slice(0, 2000) });
+        if (logRing.length > LOG_RING_CAPACITY) logRing.shift();
+        original(...args);
+    };
+};
+["log", "warn", "error"].forEach(ringify);
+self.addEventListener("unhandledrejection", event => {
+    logRing.push({
+        t: Date.now(),
+        level: "error",
+        message: `unhandledrejection: ${event.reason?.stack || event.reason}`.slice(0, 2000),
+    });
+    if (logRing.length > LOG_RING_CAPACITY) logRing.shift();
+});
+
+// Worker-init observability: state, the last failure, and how many
+// times initialization has been attempted.
+const workerHealth = {
+    state: "idle", // idle | initializing | ok | failed
+    error: null,
+    attempts: 0,
+    lastAttemptAt: null,
+    startedAt: Date.now(),
+};
+
+function healthResponse() {
+    return new Response(
+        JSON.stringify({
+            worker: workerHealth.state,
+            error: workerHealth.error,
+            attempts: workerHealth.attempts,
+            lastAttemptAt: workerHealth.lastAttemptAt,
+            startedAt: workerHealth.startedAt,
+            log: logRing.slice(-200),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+    );
+}
+
 // Shell cache name. Kept in step with `cache.rs`'s `SHELL_CACHE`.
 // Declared up here (not beside `serveNavigation`) because
 // `oninstall` precaches the shell into it.
@@ -14,9 +74,42 @@ let tonkServiceWorkerResolves;
 // spec, and `importScripts()` is incompatible with module SWs.
 // So the worker bundle costs ~1 s of `workerStart` time on cold
 // navigations until we find a better way to defer it.
+// How long a failed initialization parks further attempts. A failed
+// init used to be memoized forever (the rejected promise was cached),
+// so one transient failure — storage still settling, a race at boot —
+// bricked the worker until the browser discarded it. Now a failure is
+// recorded for `/api/health`, and the next fetch after the hold-off
+// retries from scratch.
+const INIT_RETRY_HOLDOFF_MS = 5000;
+
 async function activateWorker() {
     if (tonkServiceWorkerResolves == null) {
-        tonkServiceWorkerResolves = init().then(() => activate());
+        const now = Date.now();
+        if (
+            workerHealth.state === "failed" &&
+            now - workerHealth.lastAttemptAt < INIT_RETRY_HOLDOFF_MS
+        ) {
+            throw new Error(`worker initialization failed: ${workerHealth.error}`);
+        }
+        workerHealth.state = "initializing";
+        workerHealth.attempts += 1;
+        workerHealth.lastAttemptAt = now;
+        tonkServiceWorkerResolves = init()
+            .then(() => activate())
+            .then(worker => {
+                workerHealth.state = "ok";
+                workerHealth.error = null;
+                return worker;
+            })
+            .catch(error => {
+                workerHealth.state = "failed";
+                workerHealth.error = String(error?.message || error).slice(0, 2000);
+                // Un-memoize so a later fetch retries instead of
+                // replaying this rejection for the worker's lifetime.
+                tonkServiceWorkerResolves = null;
+                log("Worker initialization failed:", error);
+                throw error;
+            });
         log("Worker initialized");
     }
 
@@ -50,15 +143,21 @@ self.oninstall = event => {
 };
 
 self.onactivate = event => {
-    event.waitUntil((async () => {
-        await self.clients.claim();
+    // Claim clients and finish activating. The wasm worker is poked
+    // outside the waitUntil: activateWorker() waits for the
+    // active-worker lock, and gating ACTIVATION on that lock deadlocks
+    // the swap — the outgoing worker cannot die while its in-flight
+    // fetches hang, the lock never frees, and this worker pins in
+    // `activating` while every page waits on it.
+    event.waitUntil(self.clients.claim());
+    (async () => {
         try {
             const worker = await activateWorker();
             await worker.onactivate?.();
         } catch (err) {
             log("onactivate dispatch failed:", err);
         }
-    })());
+    })();
     log("Activated");
 };
 
@@ -89,10 +188,16 @@ self.registration.addEventListener?.("updatefound", async () => {
         log("Update found — that is us installing; staying live");
         return;
     }
-    log("Update found — forwarding to wasm worker");
+    log("Update found — stopping background work; the successor runs independently");
     try {
       const worker = await activateWorker();
-      // let worker know there is an update
+      // Stop the sync loop and release long-lived streams so this
+      // instance winds down. Serving continues until the successor
+      // claims the pages — the two may overlap briefly, which storage
+      // is designed to tolerate (CAS commits over content-addressed
+      // blocks; transaction settling is race-armed). Nothing here may
+      // couple the successor's startup to this worker's death: worker
+      // lifecycles belong to the browser.
       await worker.onupdatefound?.();
     } catch (err) {
         log("Failed to forward updatefound:", err);
@@ -273,8 +378,85 @@ async function serveAsset(event) {
 // Cache API directly (also bypassing the boot); everything else —
 // `/api/*` and cache-missed assets — goes through the Rust worker,
 // which owns the guest rewrite and the resource cache.
+// ---- Graceful upgrade -----------------------------------------------
+//
+// A deploy must never brick a page, and worker lifecycles belong to
+// the browser: nothing here may couple the successor's startup to the
+// outgoing worker's death. On updatefound the outgoing worker stops
+// background work and releases streams; it keeps serving until the
+// successor activates and claims the pages (a brief overlap storage
+// tolerates by design: CAS commits over content-addressed blocks,
+// race-armed transaction settling). Teardown is then the browser's
+// default path — it works because every response is fast or bounded
+// by the storage settle watchdog, so activation always finds a quiet
+// gap and the reaped worker never has a reason to linger.
+
+/// A real error page for a worker that cannot start: the actual error,
+/// a retry, and a pointer at /api/health — never an endless spinner.
+function failurePage() {
+    const detail = String(workerHealth.error || "unknown error");
+    const escaped = detail
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return new Response(
+        `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tonk failed to start</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; display: grid;
+         place-items: center; min-height: 100vh; background: #111; color: #eee; }
+  main { max-width: 42rem; padding: 2rem; }
+  h1 { font-size: 1.3rem; }
+  pre { background: #1d1d1f; border: 1px solid #333; border-radius: 8px;
+        padding: 1rem; white-space: pre-wrap; word-break: break-word;
+        color: #f0b0b0; font-size: 0.85rem; }
+  button { font: inherit; padding: 0.5rem 1.25rem; border-radius: 8px;
+           border: 1px solid #555; background: #2a2a2e; color: #eee;
+           cursor: pointer; }
+  p.hint { color: #999; font-size: 0.85rem; }
+</style></head><body><main>
+<h1>Tonk failed to start</h1>
+<p>The storage worker could not initialize. Attempt ${workerHealth.attempts}.</p>
+<pre>${escaped}</pre>
+<button onclick="location.reload()">Try again</button>
+<p class="hint">Diagnostics: <code>/api/health</code> has the full log ring.</p>
+</main></body></html>`,
+        { status: 503, headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+}
+
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    // Answered from this glue, never the wasm worker: health must be
+    // readable precisely when the worker cannot answer for itself.
+    if (path === "/api/health") {
+        event.respondWith(healthResponse());
+        return;
+    }
+    // A failed worker must fail LOUD: navigations get an error page with
+    // the actual reason and a retry; data-plane requests get a clean 503
+    // carrying the error. An endless spinner is never acceptable. The
+    // init-retry holdoff still applies — a later reload attempts a fresh
+    // initialization, and success clears this state.
+    if (workerHealth.state === "failed") {
+        if (event.request.mode === "navigate" && !path.startsWith("/api/")) {
+            // Kick a background re-initialization (the holdoff inside
+            // activateWorker paces it) so "Try again" can actually
+            // succeed once the cause has healed.
+            activateWorker().catch(() => {});
+            event.respondWith(failurePage());
+            return;
+        }
+        if (path.startsWith("/api/")) {
+            event.respondWith(new Response(
+                JSON.stringify({ error: {
+                    kind: "worker-failed",
+                    message: workerHealth.error || "worker initialization failed",
+                } }),
+                { status: 503, headers: { "content-type": "application/json" } },
+            ));
+            return;
+        }
+    }
     // Shortcut-service routes (`PUT /@`, `GET /@/{hash}`) belong to
     // the edge worker, not this one. Not intercepting at all is the
     // point: the edge answers `GET /@/{hash}` with a relative 301

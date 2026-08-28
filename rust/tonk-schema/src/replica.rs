@@ -15,6 +15,7 @@ use crate::Branch;
 use crate::Remote;
 use crate::domain::remote::Address;
 use crate::domain::replica::{Kind, Name, Profile, Status, Subject};
+use crate::domain::space::{Status as SpaceDirStatus, Subject as SpaceDirSubject};
 use crate::domain::sync::{Enabled, Status as SyncStatusAttr};
 use crate::prelude::*;
 
@@ -82,6 +83,121 @@ pub struct Replica {
     /// Hub picker) without re-deriving the self-replica from the
     /// profile entity.
     pub kind: Kind,
+}
+
+/// The account-level directory entry for a space — what the Hub lists.
+///
+/// Keyed on the repository's OWN entity (`subject.this()`), not a
+/// `(profile, subject)` hash, so every device on the account asserts
+/// the same entry and they converge to one row per space. The
+/// per-device [`Replica`] records keep existing alongside — they
+/// carry this device's mount, its sync stamps, and dialog's own
+/// replica facts — but the directory is account state: removing an
+/// entry removes the space from the whole account's Hub.
+///
+/// `status` mirrors the replica's seeding status so the Hub's install
+/// animation works; a later assert supersedes (cardinality one). The
+/// display name is deliberately absent — the card renders it live
+/// from the space's own branch.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Space {
+    /// The repository's own entity.
+    pub this: Entity,
+    /// The repository's DID as an entity, for URL binding in views.
+    pub subject: SpaceDirSubject,
+    /// Seeding status — the same `tonk:blank` / `tonk:initialized`
+    /// markers [`Replica`] uses.
+    pub status: SpaceDirStatus,
+}
+
+impl Space {
+    /// A directory entry for `subject` with the given seeding status.
+    pub fn new(subject: &Did, status: Status) -> Self {
+        Self {
+            this: subject.this(),
+            subject: SpaceDirSubject(subject.this()),
+            status: SpaceDirStatus(status.0),
+        }
+    }
+}
+
+/// The device-local "replicated here" marker for a directory row —
+/// overlay-only (see [`domain::space::Local`]).
+///
+/// [`domain::space::Local`]: crate::domain::space::Local
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceLocal {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// Whether a local replica exists on this device.
+    pub local: crate::domain::space::Local,
+}
+
+impl SpaceLocal {
+    /// A locality stamp for `subject`.
+    pub fn new(subject: &Did, local: bool) -> Self {
+        Self {
+            this: subject.this(),
+            local: crate::domain::space::Local(local),
+        }
+    }
+}
+
+/// The account-directory copy of a space's display name, on the
+/// directory entity. The space's own content branch remains the
+/// editable source of truth (`tonk/repository`); this mirror exists so
+/// a device that has not replicated the space can still label it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceName {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// The mirrored display name.
+    pub name: crate::domain::space::Name,
+}
+
+impl SpaceName {
+    /// A name mirror for `subject`.
+    pub fn new(subject: &Did, name: impl Into<String>) -> Self {
+        Self {
+            this: subject.this(),
+            name: crate::domain::space::Name(name.into()),
+        }
+    }
+}
+
+/// Who founded a space and when, on the directory entity.
+///
+/// Founding is distinct from mounting: [`record_space_mount`] runs for
+/// both created and joined spaces, so this is asserted only on the
+/// creation path. A directory row without it is a space this account
+/// joined rather than made, which is what lets the Hub tell "spaces I
+/// created" from "spaces shared with me" without consulting delegations.
+///
+/// Deliberately NOT on the ownership delegation's entity. The delegation
+/// is authoritative for *authority*; this is description, and it belongs
+/// on the entity the Hub already renders — otherwise every row query
+/// would join through `dialog.ucan/subject` to show a creation date.
+///
+/// [`record_space_mount`]: https://docs.rs/tonk-worker
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceFounded {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// When the space was created, unix seconds.
+    pub founded_at: crate::domain::space::FoundedAt,
+    /// The profile that created it.
+    pub founded_by: crate::domain::space::FoundedBy,
+}
+
+impl SpaceFounded {
+    /// A founding stamp for `subject`, created by `profile` at `at`.
+    pub fn new(subject: &Did, profile: &Did, at: u64) -> Self {
+        Self {
+            this: subject.this(),
+            founded_at: crate::domain::space::FoundedAt(at),
+            founded_by: crate::domain::space::FoundedBy(profile.this()),
+        }
+    }
 }
 
 /// A [`Replica`] as it was written before the [`Kind`] field

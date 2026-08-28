@@ -64,6 +64,16 @@ async fn handle_inner(
         .and_then(|value| value.to_string().parse().ok())
         .unwrap_or(DEFAULT_EMAIL_TOKEN_TTL);
 
+    // Bound per request, like the presign path's: the index wraps a KV
+    // handle taken from this request's `Env`, which is not ours to keep.
+    let revocations = {
+        use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+        let kv = env
+            .kv("REVOCATIONS_KV")
+            .map_err(|err| internal(format!("REVOCATIONS_KV: {err}")))?;
+        IndexedRevocations(KvRevocationIndex::new(kv))
+    };
+
     let registration = Registration {
         store: &store,
         email: &email,
@@ -72,6 +82,7 @@ async fn handle_inner(
         activation_ttl,
         now: Date::now().as_millis() / 1_000,
         container: body,
+        revocations: &revocations,
     };
     registration.handle().await
 }
@@ -106,8 +117,8 @@ pub async fn handle_customer(_req: Request, _ctx: RouteContext<()>) -> worker::R
 /// GET `/customer/:did` → the customer's registration state (worker
 /// body; see the native twin above).
 #[cfg(target_arch = "wasm32")]
-pub async fn handle_customer(_req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
-    use tonk_account::customer::Receipt;
+pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    use tonk_account::customer::{CustomerStatus, Receipt};
 
     use crate::store::Store;
     use crate::store::d1::D1Store;
@@ -129,6 +140,18 @@ pub async fn handle_customer(_req: Request, ctx: RouteContext<()>) -> worker::Re
                     worker::Error::RustError(format!("stored customer did is malformed: {err:?}"))
                 })?,
                 status: customer.status,
+                // Only for a customer this service actually serves. The
+                // probe is what notices activation, so it must answer
+                // the address then — but naming one for a customer
+                // still awaiting email confirmation would let a client
+                // record an endpoint that refuses every presign.
+                provider: (customer.status == CustomerStatus::Active)
+                    .then(|| {
+                        req.url()
+                            .ok()
+                            .map(|url| format!("{}/ucan/", url.origin().ascii_serialization()))
+                    })
+                    .flatten(),
             };
             Response::from_json(&receipt)
         }

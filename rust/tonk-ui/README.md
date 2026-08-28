@@ -20,7 +20,7 @@ serialized gate queues concurrent requests, restores focus after cancel or
 failure, and replays a successful operation exactly once.
 
 Opening an audience-open invite first installs only bounded guest authority.
-“Join this spot” explicitly claims to the root. Targeted invites go directly
+“Join this space” explicitly claims to the root. Targeted invites go directly
 through the durable root gate. A remote-backed join stages its authority and
 content first; the replica becomes visible, guest state is cleared, backup is
 started, and navigation occurs only after that stage is usable. Failed,
@@ -28,15 +28,15 @@ revoked, wrong-recipient, and unavailable joins leave no visible replica.
 
 ## Account route
 
-`/account` is mounted directly in the top document rather than inside a sealed
-`<tonk-site>` guest. WebAuthn must run on the `tonk.spot` RP-ID origin, so
+`/settings` is mounted directly in the top document rather than inside a sealed
+`<tonk-site>` guest. WebAuthn must run on the `tonk.network` RP-ID origin, so
 `<tonk-account>` owns account creation and passkey self-link there. It reads the
 local profile DID from `/api/identify`, sends root-signed ceremony bytes to the
 configured account service, then attaches provider metadata through
 `/api/account/attach`; it does not replace or own the local root.
 
 The page fetches `GET /.well-known/tonk` once and uses its typed
-`accountServiceUrl` and `revocationRelayUrl`. It never infers services from a
+`accountServiceUrl`. It never infers services from a
 hostname or falls back to production for an unknown origin. A `service`
 attribute remains an explicit local-test/operator override. Once attached,
 background account operations use the persisted provider URL.

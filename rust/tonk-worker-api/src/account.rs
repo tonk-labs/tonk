@@ -17,6 +17,74 @@ pub struct AccountSummary {
     pub passkey: Option<PasskeyMetadata>,
 }
 
+/// One hosted space associated with an account deletion review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionSpace {
+    /// Repository subject to be permanently purged from Tonk services.
+    pub subject: String,
+    /// Display name from the account directory, when recorded.
+    pub name: Option<String>,
+    /// Access-service lifecycle state.
+    pub state: String,
+}
+
+/// Reviewable destructive scope loaded before asking for a passkey.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionPlan {
+    /// Account root the finalization ceremony must sign for.
+    pub root_did: String,
+    /// Verified email the user must type exactly.
+    pub email: String,
+    /// Hosted spaces originally provided by this account.
+    pub spaces: Vec<AccountDeletionSpace>,
+    /// Directory spaces absent from the owned service inventory; these
+    /// are joined spaces and are not deleted.
+    pub joined_spaces: usize,
+}
+
+/// One reviewed hosted-space deprovision. The worker signs the
+/// `/provider/remove` invocation itself — deletion is the account
+/// ending its hosting relationship, and any linked device holds that
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSpaceDeletionRequest {
+    /// Reviewed repository subject.
+    pub subject: String,
+}
+
+/// The reviewed destructive scope. The worker signs every deletion
+/// invocation itself with the device's delegated authority; the UI's
+/// passkey assertion is a user-verification gate, not a signing key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionRequest {
+    /// Every reviewed owned hosted space, deprovisioned by the worker.
+    pub spaces: Vec<AccountSpaceDeletionRequest>,
+    /// The account email the person retyped to confirm the deletion.
+    pub confirmed_email: String,
+}
+
+/// Completed service-account deletion result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletionResult {
+    /// Number of owned hosted spaces whose purge was confirmed.
+    pub deleted_spaces: usize,
+    /// Joined spaces deliberately left intact locally and on their owners' services.
+    pub retained_joined_spaces: usize,
+}
+
+/// Receipt for deleting one owned hosted space without deleting its account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedSpaceDeletionResult {
+    /// Repository subject removed from Tonk services.
+    pub subject: String,
+}
+
 /// Attach provider services to an already persisted local root, naming the
 /// account repository this root owns.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,16 +103,6 @@ pub struct AccountLinkRequest {
     /// Seed the current profile name only for a new-account creation winner.
     #[serde(default)]
     pub initialize_name: bool,
-}
-
-/// Persist the service-selected descriptor for a legacy account link.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountRepositoryEstablishRequest {
-    /// Exact descriptor winner returned by the account service.
-    pub descriptor_hex: String,
-    /// Whether this ceremony created the service-side descriptor winner.
-    pub created: bool,
 }
 
 /// Local identity and provider attachment state.
@@ -88,72 +146,38 @@ pub struct AccountDisplayNameRequest {
     pub name: String,
 }
 
-/// Durable projections changed by account-state convergence.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountConvergenceReport {
-    /// Whether the device-local profile name cache changed.
-    pub profile_changed: bool,
-    /// Real-space routing keys whose durable roster changed.
-    pub changed_keys: Vec<String>,
-    /// Real-space routing keys that could not be checked or updated.
-    pub failed_keys: Vec<String>,
-}
-
 /// Result of an authoritative account display-name write.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDisplayNameResponse {
     /// Name committed to the account repository.
     pub name: String,
-    /// Idempotent projection work completed after the account commit.
-    pub convergence: AccountConvergenceReport,
 }
 
-/// One device registered under the attached provider account.
+/// One device authorized under this profile's account, read from the
+/// account space's own facts.
+///
+/// Deliberately carries no "this device" flag: the rows are a projection
+/// of shared facts and are identical on every device. Which row is the
+/// caller is presentation, answered by asking who the caller is and
+/// comparing DIDs — the way an active tab is marked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDevice {
-    /// Exact attachment generation.
-    pub attachment_id: String,
     /// The device's DID.
     pub did: String,
-    /// Display name registered at link time.
+    /// Display name described at link time.
     pub name: String,
-    /// Registry status: `active` or `revoked`.
-    pub status: String,
-    /// Registration time, seconds since the epoch.
+    /// Link time, seconds since the epoch.
     pub created_at: u64,
-    /// CID of the root → device delegation.
-    pub delegation_cid: String,
-    /// Public path bytes needed to witness a revocation. Absent for devices
-    /// registered before providers retained this evidence.
-    pub delegation_hex: Option<String>,
-    /// Whether this row is the profile making the request.
-    pub this_device: bool,
 }
 
-/// Revoke one device under the attached provider account.
+/// Revoke one device authorized under this profile's account.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeDeviceRequest {
-    /// Exact attachment generation selected by the user.
-    pub attachment_id: String,
     /// DID of the device to revoke.
     pub did: String,
-    /// Hex-encoded signed revocation artifact.
-    pub revocation: String,
-}
-
-/// Whether the account service's device-list projection caught up with a
-/// published revocation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RevocationProjection {
-    /// The mutable device row now reflects the revocation.
-    Updated,
-    /// The immutable revocation was published, but the device row is stale.
-    Stale,
 }
 
 /// Canonical acknowledgement returned after revoking an account device.
@@ -166,8 +190,6 @@ pub struct RevokeDeviceAcknowledgement {
     pub target_cid: String,
     /// Whether the immutable revocation was accepted by canonical storage.
     pub published: bool,
-    /// Best-effort state of the account-service device-list projection.
-    pub projection: RevocationProjection,
 }
 
 #[cfg(test)]
@@ -218,14 +240,6 @@ mod tests {
         assert_eq!(link["delegationHex"], "aa");
         assert_eq!(link["descriptorHex"], "bb");
         assert_eq!(link["initializeName"], true);
-
-        let establish = serde_json::to_value(AccountRepositoryEstablishRequest {
-            descriptor_hex: "cc".into(),
-            created: false,
-        })
-        .unwrap();
-        assert_eq!(establish["descriptorHex"], "cc");
-        assert_eq!(establish["created"], false);
     }
 
     #[dialog_common::test]
@@ -248,53 +262,23 @@ mod tests {
     fn it_serializes_display_name_results_in_camel_case() {
         let value = serde_json::to_value(AccountDisplayNameResponse {
             name: "Alice".into(),
-            convergence: AccountConvergenceReport {
-                profile_changed: true,
-                changed_keys: vec!["one".into()],
-                failed_keys: vec!["two".into()],
-            },
         })
         .unwrap();
         assert_eq!(value["name"], "Alice");
-        assert_eq!(value["convergence"]["profileChanged"], true);
-        assert_eq!(value["convergence"]["changedKeys"][0], "one");
-        assert_eq!(value["convergence"]["failedKeys"][0], "two");
+        assert!(value.get("convergence").is_none());
     }
 
     #[dialog_common::test]
     fn it_serializes_account_devices_in_camel_case() {
         let json = serde_json::to_value(AccountDevice {
-            attachment_id: "generation".into(),
             did: "did:key:device".into(),
             name: "laptop".into(),
-            status: "active".into(),
             created_at: 1_753_300_000,
-            delegation_cid: "bafycid".into(),
-            delegation_hex: Some("beef".into()),
-            this_device: true,
         })
         .unwrap();
-        assert_eq!(json["attachmentId"], "generation");
+        assert_eq!(json["did"], "did:key:device");
+        assert_eq!(json["name"], "laptop");
         assert_eq!(json["createdAt"], 1_753_300_000u64);
-        assert_eq!(json["thisDevice"], true);
-        assert_eq!(json["delegationCid"], "bafycid");
-        assert_eq!(json["delegationHex"], "beef");
-    }
-
-    #[dialog_common::test]
-    fn it_represents_legacy_device_path_evidence_as_absent() {
-        let json = serde_json::to_value(AccountDevice {
-            attachment_id: "legacy-generation".into(),
-            did: "did:key:legacy".into(),
-            name: "old laptop".into(),
-            status: "active".into(),
-            created_at: 1_753_300_000,
-            delegation_cid: "bafycid".into(),
-            delegation_hex: None,
-            this_device: false,
-        })
-        .unwrap();
-        assert!(json["delegationHex"].is_null());
     }
 
     #[dialog_common::test]
@@ -303,12 +287,10 @@ mod tests {
             target_did: "did:key:device".into(),
             target_cid: "bafycid".into(),
             published: true,
-            projection: RevocationProjection::Stale,
         })
         .unwrap();
         assert_eq!(json["targetDid"], "did:key:device");
         assert_eq!(json["targetCid"], "bafycid");
         assert_eq!(json["published"], true);
-        assert_eq!(json["projection"], "stale");
     }
 }

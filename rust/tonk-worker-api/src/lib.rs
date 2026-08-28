@@ -29,9 +29,10 @@ pub mod share;
 mod sync;
 
 pub use account::{
-    AccountConvergenceReport, AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse,
-    AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus, AccountSummary,
-    RevocationProjection, RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+    AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDeletionSpace,
+    AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest,
+    AccountSpaceDeletionRequest, AccountStatus, AccountSummary, HostedSpaceDeletionResult,
+    RevokeDeviceAcknowledgement, RevokeDeviceRequest,
 };
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
@@ -39,16 +40,14 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    ACCOUNT_REQUIRED, AccountRequired, CreateSpaceRequest, CreateSpaceResponse, PasskeyMetadata,
-    PendingIntent, RootStatus, SaveRootRequest,
+    CREATE_ACCOUNT_REQUEST, ENCRYPTION_KEY_REQUEST, LINK_ACCOUNT, LinkAccountRequest,
+    PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
     RevokeInvitationAcknowledgement,
 };
-pub use join::{
-    JoinFailureKind, JoinRequest, JoinResponse, MembershipResponse, VisitRequest, VisitResponse,
-};
+pub use join::{JoinFailureKind, JoinRequest, JoinResponse};
 pub use profile::{ProfileInfo, SpaceEntry};
 pub use profiles::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 pub use query::Query;
@@ -56,6 +55,44 @@ pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration,
 };
+use serde_json::{Value, json};
 pub use sync::{
     Comparison, SyncDisposition, SyncResponse, SyncState, SyncStatusResponse, classify,
 };
+
+/// The `space/create` claim, in the shape the seeded descriptor decodes.
+///
+/// Defined here so every dispatcher builds the same transient: the Hub's
+/// form, the FAB's `new` row, and the browser tests that drive creation
+/// the way the app does.
+///
+/// `name` alone. No `remote`: where a space syncs is resolved worker-side
+/// from the account's own registration, and a page that supplied one made
+/// every create look like a deliberate choice of this server — which wired
+/// spots created before anyone registered to a service that refuses to
+/// serve them. No `template` either: template seeding went with the
+/// template libraries, and a field the form does not carry fails to
+/// resolve and aborts the whole command.
+///
+/// The inline `with:` block must stay identical to the descriptor in
+/// `profile.yaml`, or the transient mints a different entity and no
+/// handler fires.
+pub fn create_space_claim_json(name: &str) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "A request to create a new space.",
+                        "with": {
+                            "name": { "the": "dom.event.current-target.elements.name/value", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": { "name": name }
+            }
+        }]
+    })
+}

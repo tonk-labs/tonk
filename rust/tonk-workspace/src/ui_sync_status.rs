@@ -252,6 +252,34 @@ fn on_delta(host: &HtmlElement, payload: JsValue) {
 /// component carries no inline color. Idempotent: reuses the nodes, only
 /// swapping the modifier class, so a frame doesn't rebuild the DOM.
 fn paint(host: &HtmlElement, status: &str) {
+    // Headless: render nothing and report onto the parent instead, which is
+    // how a host that draws its own disc (the FAB bar's circle) consumes this
+    // subscription. Deliberately addressed to the PARENT rather than a named
+    // tag, so this element stays ignorant of who is using it.
+    if host.has_attribute("headless") {
+        if let Some(parent) = host.parent_element() {
+            // Only when it CHANGES.
+            //
+            // `state` is one of the parent bar's observed attributes, so
+            // writing it re-enters that element's
+            // `attributeChangedCallback` — and paint runs from inside a
+            // callback that already holds the element's lock, which
+            // panics with `cannot recursively acquire mutex`. The panic
+            // kills the guest frame, the frame reloads, the bar
+            // re-mounts and paints again: a crash loop that shows up as
+            // endless commits in the worker log.
+            //
+            // A write that changes nothing has nothing to notify about,
+            // so skipping it costs no correctness.
+            set_if_changed(parent.as_ref(), "state", disc_state(status));
+            // The disc has three shapes but sync has eight states, so the
+            // precise one travels alongside it for the accessible name —
+            // "revoked" and "conflict" both draw a hollow ring, and losing
+            // the distinction from the label would make them unreportable.
+            set_if_changed(parent.as_ref(), "data-sync-status", status);
+        }
+        return;
+    }
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
@@ -288,6 +316,33 @@ fn modifier_class(status: &str) -> &'static str {
         "sync:unavailable" => "sync--unavailable",
         "sync:offline" => "sync--offline",
         _ => "sync--unknown",
+    }
+}
+
+/// Map a `sync:*` status entity to one of the disc's three shapes: filled
+/// (online and syncing), the 135° half-fill (deliberately paused), or the
+/// hollow ring (everything else — not syncing, for whatever reason).
+///
+/// Lossy on purpose. The drawn vocabulary is three shapes, and inventing a
+/// fourth for `revoked` or `conflict` would be an illustration, not a mark.
+/// The precise status rides alongside as `data-sync-status` so nothing that
+/// needs the distinction — the accessible name above all — has to lose it.
+/// Write `attribute` only when its value differs.
+///
+/// Re-entrancy guard: several of these land on elements that observe
+/// the attribute, and a redundant write still fires their callback.
+fn set_if_changed(element: &web_sys::Element, attribute: &str, value: &str) {
+    if element.get_attribute(attribute).as_deref() == Some(value) {
+        return;
+    }
+    let _ = element.set_attribute(attribute, value);
+}
+
+fn disc_state(status: &str) -> &'static str {
+    match status {
+        "sync:idle" | "sync:pending" => "synced",
+        "sync:paused" => "paused",
+        _ => "offline",
     }
 }
 

@@ -13,6 +13,8 @@ use dialog_varsig::Principal;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 
+use crate::store::Customer;
+
 /// Build the service signer from its hex-encoded 32-byte seed.
 pub fn signer_from_hex(seed_hex: &str) -> Result<Ed25519Signer, String> {
     let bytes = hex::decode(seed_hex.trim())
@@ -23,33 +25,76 @@ pub fn signer_from_hex(seed_hex: &str) -> Result<Ed25519Signer, String> {
     Ok(Ed25519Signer::from(SigningKey::from_bytes(&seed)))
 }
 
-/// The DID document for `did:web:{host}`, carrying the service's ed25519
-/// key as a `Multikey` verification method. The multibase key is the
-/// `did:key` identifier's method-specific part, so the two names verify
-/// against the same key.
-pub fn did_document(host: &str, signer: &Ed25519Signer) -> Value {
-    let id = format!("did:web:{host}");
-    let did_key = signer.did().to_string();
-    let multibase = did_key
-        .strip_prefix("did:key:")
-        .unwrap_or(&did_key)
-        .to_string();
-    let method = format!("{id}#{multibase}");
+/// The multibase key of a `did:key`, which is its method-specific part.
+/// A DID that is not a `did:key` has none.
+fn multibase_of(did_key: &str) -> Option<&str> {
+    did_key.strip_prefix("did:key:")
+}
+
+/// A DID document for `id`, carrying every `did:key` in `keys` as a
+/// `Multikey` verification method under that name.
+///
+/// Keys are embedded rather than referenced: each method is identified by
+/// `{id}#{multibase}` and controlled by `id`, so the document verifies
+/// standalone without a resolver having to dereference a second DID. The
+/// multibase is the `did:key` identifier's method-specific part, so a
+/// name here and the `did:key` it came from verify against one key.
+///
+/// A key that is not a `did:key` is skipped: there is no multibase to
+/// publish, and emitting a method without key material would produce a
+/// document that resolves but cannot verify anything.
+fn document(id: &str, keys: impl IntoIterator<Item = String>) -> Value {
+    let methods: Vec<Value> = keys
+        .into_iter()
+        .filter_map(|did_key| {
+            let multibase = multibase_of(&did_key)?;
+            Some(json!({
+                "id": format!("{id}#{multibase}"),
+                "type": "Multikey",
+                "controller": id,
+                "publicKeyMultibase": multibase
+            }))
+        })
+        .collect();
+    let references: Vec<Value> = methods.iter().map(|method| method["id"].clone()).collect();
     json!({
         "@context": [
             "https://www.w3.org/ns/did/v1",
             "https://w3id.org/security/multikey/v1"
         ],
         "id": id,
-        "verificationMethod": [{
-            "id": method,
-            "type": "Multikey",
-            "controller": id,
-            "publicKeyMultibase": multibase
-        }],
-        "authentication": [method],
-        "assertionMethod": [method]
+        "verificationMethod": methods,
+        "authentication": references,
+        "assertionMethod": references
     })
+}
+
+/// The DID document for `did:web:{host}`, carrying the service's ed25519
+/// key.
+pub fn did_document(host: &str, signer: &Ed25519Signer) -> Value {
+    let id = format!("did:web:{host}");
+    document(&id, [signer.did().to_string()])
+}
+
+/// The DID document for an email address, carrying the `did:key` of the
+/// customer registered under it.
+///
+/// The key is embedded under the `did:web` name rather than referenced,
+/// so the document verifies standalone. `alsoKnownAs` names the same key
+/// as a `did:key`, which is the form the rest of the system uses, so a
+/// caller need not rebuild it from the multibase.
+///
+/// `deactivated` marks a suspended customer. The key stays in the
+/// document: a suspension is reversible, and dropping the mapping would
+/// make a resumed customer unresolvable to anyone holding the old answer.
+pub fn customer_document(id: &str, customer: &Customer, deactivated: bool) -> Value {
+    let mut document = document(id, [customer.did.clone()]);
+    document["alsoKnownAs"] = json!([customer.did]);
+    document["status"] = json!(customer.status.as_str());
+    if deactivated {
+        document["deactivated"] = Value::Bool(true);
+    }
+    document
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -73,8 +118,8 @@ mod tests {
     #[dialog_common::test]
     fn it_documents_the_key_under_the_web_did() {
         let signer = signer_from_hex(&"11".repeat(32)).unwrap();
-        let document = did_document("hub.tonk.xyz", &signer);
-        assert_eq!(document["id"], "did:web:hub.tonk.xyz");
+        let document = did_document("tonk.network", &signer);
+        assert_eq!(document["id"], "did:web:tonk.network");
         let multibase = document["verificationMethod"][0]["publicKeyMultibase"]
             .as_str()
             .unwrap();

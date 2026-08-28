@@ -12,9 +12,10 @@ The model has three pieces:
    concept a DOM event produces.
 2. A **command** (`command!:`) describes the shape of that event-
    derived fact and where each field reads from. A command is a
-   transient concept — `command!:` is the keyword `tonk schema`
-   shows and is equivalent to `concept!:` with `transient: true`;
-   both write a fact that lives one cycle and is never persisted.
+   transient concept — `command!:` is equivalent to `concept!:` with
+   `transient: true`. The command descriptor is durable schema; each
+   event-derived instance of it lives one reactor cycle and is never
+   persisted.
 3. A **rule** (`rule!:`) watches for the transient and asserts
    downstream state. The transient is the trigger; its one-cycle
    lifetime makes the rule fire exactly once per event.
@@ -26,8 +27,9 @@ call.
 
 ### Wiring a click
 
-```yaml
+```yaml tonk=eval
 attribute!: &count
+  description: The counter's current value
   the: xyz.tonk.counter/count
   as:  unsigned-integer
 
@@ -40,6 +42,7 @@ concept!: &counter
 command!: &increment
   with:
     subject:
+      description: The counter entity to increment
       the: dom.event.current-target.dataset/subject
       as:  entity
 
@@ -54,6 +57,7 @@ rule!:
       where: { of: ?old, with: 1, is: ?count }
 
 view!: &counter-basic
+  this: id:counter-basic
   model: counter
   display: !text/html |
     <p>{count}
@@ -61,13 +65,13 @@ view!: &counter-basic
     </p>
 ```
 
-A view is identified by its **anchor name** (`&counter-basic`
-publishes it under `id:counter-basic`). It declares the `model`
-it renders and the `display` template; `<tonk-display>` resolves
-the view by that name. Re-asserting the same anchor with a
-different `display` re-points the name to the new entity — edits
-replace in place, so there are never stale duplicates to pick
-between.
+The anchor publishes the view name; `this: id:counter-basic` pins its
+entity so re-asserting a different `display` updates the same view.
+`<tonk-display>` does not select this anchor directly: it resolves a
+view concept (normally `tonk:view`) and queries that concept for the
+view whose `model` is `counter`. Keep one view per model in each view
+concept. `tonk view add --name counter-basic` authors this stable shape
+for you.
 
 A click on the button asserts an `increment` whose `subject`
 reads from the bound button's `data-subject` (which the template
@@ -157,28 +161,30 @@ Commands are matched **structurally**: a rule premise `assert:
 <command>` matches ANY transient carrying all of that command's
 attributes — not just transients posted under that command's name. So
 two commands that read the same event attributes are the same shape,
-and one event fires both rules:
+and one event fires both rules. The analyzer rejects different named
+transient commands used as positive rule triggers when their required
+descriptor sets are equal or one is a subset of the other:
 
-```yaml
+```yaml tonk=illustrative-overlap
 # WRONG: same shape — a "navigate" event also fires the delete rule.
 command!: &activate-page
   with:
-    page: { the: dom.event.detail/page, as: entity }
+    page: { description: The page to activate, the: dom.event.detail/page, as: entity }
 command!: &delete-page
   with:
-    page: { the: dom.event.detail/page, as: entity }
+    page: { description: The page to delete, the: dom.event.detail/page, as: entity }
 ```
 
 Give each command verb-specific attributes, and make sure no
 command's attribute set is a subset of what another event carries:
 
-```yaml
+```yaml tonk=eval
 command!: &activate-page
   with:
-    page: { the: dom.event.detail/activate, as: entity }
+    page: { description: The page to activate, the: dom.event.detail/activate, as: entity }
 command!: &delete-page
   with:
-    page: { the: dom.event.detail/delete, as: entity }
+    page: { description: The page to delete, the: dom.event.detail/delete, as: entity }
 ```
 
 (The event *detail* keys follow: `detail: { activate: <uri> }` vs
@@ -192,8 +198,9 @@ A click handler doesn't implicitly know the row it was rendered
 for. Surface what you need on the element with `data-*` and
 read it back through `dom.event.current-target.dataset/<name>`:
 
-```yaml
+```yaml tonk=parse
 view!: &todo-row
+  this: id:todo-row
   model: todo
   display: !text/html |
     <li>
@@ -204,6 +211,7 @@ view!: &todo-row
 command!: &complete
   with:
     todo:
+      description: The todo to complete
       the: dom.event.current-target.dataset/todo
       as:  entity
 ```
@@ -235,18 +243,21 @@ signal — no value, no `as:` (there's nothing to read). The
 runtime sees a `the:` under `dom.event.do` and calls the method
 before the handler returns.
 
-```yaml
+```yaml tonk=eval
 command!: &save
   with:
     body:
+      description: The note body to save
       the: dom.event.current-target.elements.body/value
       as:  text
     prevent-default:
+      description: Prevent the form's native submission
       the: dom.event.do/prevent-default
 ```
 
-```yaml
+```yaml tonk=parse
 view!: &save-form
+  this: id:save-form
   model: note
   display: !text/html |
     <form onsubmit=save>
@@ -281,7 +292,7 @@ via `dom.event.current-target.form.elements.<name>/value`.
 
 A rule has a head with one polarity and a body of premises:
 
-```yaml
+```yaml tonk=illustrative-placeholders
 rule!:
   assert!: <head-concept>      # or `retract!: <head-concept>`
   when:
@@ -318,10 +329,11 @@ between bindings.
 
 To remove a fact in response to a transient, use `retract!:`:
 
-```yaml
+```yaml tonk=parse
 command!: &complete
   with:
     todo:
+      description: The todo to complete
       the: dom.event.current-target.dataset/todo
       as:  entity
 
@@ -346,10 +358,10 @@ from a plain `type="button"` (NOT a form submit — see the
 prevent-default trap below) and reach the form controls through
 `current-target.form`:
 
-```yaml
+```yaml tonk=parse
 command!: &publish
   with:
-    body: { the: dom.event.current-target.form.elements.body/value, as: text }
+    body: { description: The post body to publish, the: dom.event.current-target.form.elements.body/value, as: text }
 
 rule!:
   assert!: post
@@ -358,8 +370,9 @@ rule!:
       where: { this: ?this, body: ?body }   # the transient's own entity
 ```
 
-```yaml
+```yaml tonk=parse
 view!: &composer
+  this: id:composer
   model: board
   display: !text/html |
     <form>
@@ -421,9 +434,13 @@ cases 2 and 3 are exactly that false positive.
 Events fire in the live shell, not in a standalone page, so open the
 view in the space: `/space/<space>/<model>` for the model's directory,
 `/space/<space>/<entity>@<model>!<view>` for one entity through a
-named view. `tonk render` is no substitute here — it prints the HTML
-with nothing behind it, so a click reaches no command. Use it to check
-the markup, the shell to check the wiring.
+named view concept. `tonk render` is no substitute here — it prints the
+HTML with nothing behind it, so a click reaches no command. Use it to
+check the markup, the shell to check the wiring.
+
+For a raw first build, `tonk eval interactive.notation --home todo`
+installs the rules and views and replaces the home with `todo` in one
+transaction. Use `tonk space home todo` when repointing the home later.
 
 To put a collaborator in front of the same view, hand them the repo
 with `tonk invite`.
@@ -436,7 +453,7 @@ dispatches `CustomEvent`s consumed by commands via
 `dom.event.detail/*`, exactly like the built-in
 `<tonk-sheet-binder>`. Components are authored as branch data
 (the `component` concept) and stay inside the concept-and-rule
-pipeline; see `tonk guide views`.
+pipeline; see `tonk help views`.
 
 Anything that instead needs a whole isolated page — third-party
 embeds, self-contained canvas apps — belongs in a sandboxed
@@ -444,5 +461,6 @@ iframe view (`<tonk-portal>`), outside the scope of this guide.
 
 ---
 
-Don't memorize built-ins — run `tonk schema` to see the concepts,
-rules, and transient commands already on the branch.
+Don't memorize concept fields — use `tonk concept` and
+`tonk show <concept>`. Rules themselves remain notation documents;
+keep the source that installed them under version control.

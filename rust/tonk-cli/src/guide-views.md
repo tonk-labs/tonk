@@ -1,17 +1,19 @@
 # Views: rendering data
 
 A **view** is an HTML template bound to a concept. The tonk-ui host
-ships two custom elements that render live branch data into views;
-neither needs a framework or a `<script>`. Author views by asserting
-the `view` concept — there is no separate write path.
+renders live branch data through `<tonk-display>` and `<tonk-view>`;
+neither needs a framework or a `<script>`. `tonk view add` is the
+convenient authoring path and expands to an assertion of the `view`
+concept; use `--notation` to inspect that document.
 
 ## The `view` concept
 
 `view` is `{model, display}`: the concept it renders and the HTML
 template. Assert one per presentation:
 
-```yaml
+```yaml tonk=parse
 view!: &person-card
+  this: id:person-card
   model: person
   display: !text/html |
     <article>
@@ -21,10 +23,27 @@ view!: &person-card
 ```
 
 `{field}` placeholders interpolate the rendered entity's fields, drawn
-from the `model` concept's shape. A view is identified by its **anchor
-name** (`&person-card` publishes `id:person-card`); re-asserting the
-same anchor with a new `display` re-points the name, so edits replace
-in place and never leave duplicate rows.
+from the `model` concept's shape. `&person-card` publishes the anchor
+name; the explicit `this: id:person-card` pins the view entity so a
+later assertion supersedes its cardinality-one `display` instead of
+leaving the old view entity queryable. `tonk view add --name person-card`
+adds this stable `this:` automatically.
+
+## Authoring detail, directory, label, and title views
+
+`tonk view add` authors a detail view by default. Select any standard view
+concept explicitly with `--kind detail|directory|label|title`; each kind gets a
+stable default anchor (`<model>-view`, `<model>-directory`, `<model>-label`, or
+`<model>-title`). A supplied `--name` is preserved unchanged.
+
+```text
+tonk view add todo --kind directory --template-file todo.html --home
+```
+
+A first detail or directory view automatically surfaces its model while the
+home is blank. Label and title views do not. `--home` explicitly replaces an
+existing home with this one concept's directory and commits the view plus home
+change atomically. Without it, an existing home is always preserved.
 
 ## `<tonk-display>` — one entity through a view
 
@@ -46,7 +65,7 @@ renders a single entity. The resolution that trips people up:
 So you author the instance with a `model` (above) and point callers at
 the concept:
 
-```yaml
+```yaml tonk=illustrative-view-config
 # Correct: the sheet/host references the view CONCEPT.
 view: tonk:view
 # Wrong: referencing a view instance (id:person-card) makes the
@@ -63,8 +82,8 @@ section) takes the same three:
 
 - `/space/<space>/<model>` — the model's directory.
 - `/space/<space>/<entity>@<model>` — one entity, model's own view.
-- `/space/<space>/<entity>@<model>!<view>` — one entity through a
-  named view concept.
+- `/space/<space>/<entity>@<model>!<view>` — one entity through an
+  explicit view concept.
 
 Handing the repo to someone else is a separate act: `tonk invite`.
 
@@ -76,22 +95,18 @@ browser, no service worker. The route is the shorthand:
 
 - `tonk render person` — directory: every instance of `person`.
 - `tonk render alice@person` — one entity (`{entity}@{model}`).
-- `tonk render alice@person!card` — one entity through an explicit
-  view concept (`{entity}@{model}!{view}`).
+- `tonk render alice@person!tonk:view/label` — one entity through an
+  explicit view concept (`{entity}@{model}!{view}`).
 
 It writes HTML to stdout, or to a file with `--out`. It resolves
 `{dom.host/model}`, falls back to the `_:_` default view when a model
 has no specific one, and renders nested `<tonk-display>` recursively.
 
-A `type: text/html` (portal) view is **not** a template: its `display`
-is an author-written HTML document that runs its own JS against the
-`window.tonk` bridge to query whatever it needs. The browser loads it
-verbatim in a sandboxed iframe (placeholders like `{name}` are left
-untouched — they are not interpolated). `tonk render` mirrors this by
-emitting the `display` verbatim inside `<iframe srcdoc>`; it does not
-prepend the `window.tonk` bridge bootstrap, which can't function
-headlessly (no service worker, no message channel), so a portal's own
-data queries don't run under SSR.
+Headless rendering resolves templates and nested `<tonk-display>` elements,
+but it does not run custom elements or their JavaScript. In particular, the
+seeded `portal` model (below) prints a `<tonk-portal>` element headlessly; only
+the browser runtime turns that element into its sandboxed iframe and installs
+the `window.tonk` bridge.
 
 ## Rendering a reference by name (cross-concept join)
 
@@ -105,9 +120,10 @@ Render the reference through a small **label view** — a `view/label`
 instance. It lives under the built-in `tonk:view/label` concept, so it
 doesn't collide with the model's default `tonk:view`:
 
-```yaml
+```yaml tonk=parse
 # A comment points at its author (a person).
 view!: &comment-card
+  this: id:comment-card
   model: comment
   display: !text/html |
     <article>
@@ -117,6 +133,7 @@ view!: &comment-card
 
 # The label view the line above resolves: just the person's name.
 view/label!: &person-label
+  this: id:person-label
   model: person
   display: !text/html |
     {name}
@@ -134,7 +151,7 @@ card).
 ## Built-in view elements
 
 Ready-made custom elements a view can drop in, no script needed. Each
-has a full page: **`tonk guide views <element>`**.
+has a full page: **`tonk help <element>`**.
 
 | Element | What it is | Bind by |
 |---------|-----------|---------|
@@ -144,14 +161,14 @@ has a full page: **`tonk guide views <element>`**.
 | `<tonk-table>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. | text (CSV) or `subject` + `<tonk-display>` rows |
 
 ```
-tonk guide views tonk-table     # full docs for one element
-tonk guide views tonk-prose
+tonk help tonk-table     # full docs for one element
+tonk help tonk-prose
 ```
 
 The editors persist the same way: bind the store's value in (as element
 text or an attribute), fire a command on the element's `change` event
 (read `dom.event.detail/…`), and a rule writes it back — the loop in
-`tonk guide events`. `<tonk-table>` also offers a store-native *claims*
+`tonk help events`. `<tonk-table>` also offers a store-native *claims*
 mode (one claim per cell). Your own components (below) are peers of
 these.
 
@@ -168,7 +185,7 @@ interactions) is packaged as a **web component** instead.
 A component is branch data: a `component` row whose `module` field is
 a JS module that defines your element.
 
-```yaml
+```yaml tonk=eval
 component!: &tally-widget
   module: |
     customElements.get('tally-widget') || customElements.define('tally-widget',
@@ -199,7 +216,7 @@ view renders it. Rules of the road:
   count={count}>`) and through child rows the view renders inside the
   element; **actions flow out** as bubbling `CustomEvent`s, wired
   exactly like clicks — `onbump=<command>` on the element plus
-  `dom.event.detail/amount` fields on the command (see `tonk guide
+  `dom.event.detail/amount` fields on the command (see `tonk help
   events`). The built-in `<tonk-sheet-binder>` works this way; your
   components are peers of it.
 - **One-off inline form**: inside a view's `display`, a
@@ -211,37 +228,34 @@ view renders it. Rules of the road:
   that is the point (they compose with bindings and events). For a
   fully isolated third-party page, use a portal (below) instead.
 
-## Escape hatch: raw `text/html` views
+## Escape hatch: the `portal` model
 
-For a one-off HTML page (no live binding), assert a `text/html` claim
-and serve it through the iframe viewer:
+For an imperative HTML document, assert the always-seeded `portal` concept.
+Its `content` may contain scripts and query through `window.tonk` in the live
+browser:
 
-```yaml
-attribute!: &html-body
-  description: "HTML body of a one-off page"
-  the:         "text/html"
-  as:          text
-  cardinality: many
-
-concept!: &page
-  with: { body: html-body }
-
-page!: &about
-  body: |
+```yaml tonk=eval
+portal!: &about
+  this: id:about
+  content: |
     <h1>About</h1>
+    <script>
+      window.tonk.query().then(console.log)
+    </script>
 ```
 
-`tonk view ls` lists every entity carrying a `text/html` claim. It is
-claim-driven, so a plain concept like this `page` shows up next to
-real views — but no route serves a bare claim. The page reaches a
-browser through `<tonk-portal>`, the sandboxed iframe the display
-stack mounts for a view whose projected `type` is `text/html`; the
-worker serves the body behind it. So you reach it the way you reach
-any view: `/space/<space>/<entity>@<model>!<view>`, or
-`tonk render <entity>@<model>!<view>` headlessly.
+Open it at `/space/<space>/about@portal`. `tonk render about@portal` verifies
+the outer declarative markup, but cannot execute `<tonk-portal>` or the script.
+The live element prepends the bridge bootstrap and mounts the document in an
+opaque-origin sandboxed iframe.
+
+`tonk view` is a lower-level, claim-driven inventory: it lists entities carrying
+one of the four view-template attributes, plus legacy bare `text/html` claims
+served by the worker's guest-host endpoint. A bare `text/html` claim is not a
+`tonk render` route and is distinct from the seeded `portal` concept above.
 
 ---
 
-For interactivity (clicks, forms) see `tonk guide events`. Don't
-memorize built-ins — run `tonk schema` / `tonk concept ls` /
-`tonk view ls` to see what's on the branch.
+For interactivity (clicks, forms) see `tonk help events`. Don't
+memorize built-ins — run `tonk show` / `tonk concept` /
+`tonk view` to see what's on the branch.

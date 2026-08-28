@@ -26,6 +26,7 @@ tonk-common = { workspace = true }
 tonk-host = { workspace = true }
 tonk-worker-api = { workspace = true }
 reqwest = { workspace = true }
+gloo-timers = { version = "0.3", features = ["futures"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
@@ -38,13 +39,16 @@ web-sys = { workspace = true, features = [
   "DomTokenList",
   "Element",
   "Event",
+  "EventInit",
   "Clipboard",
   "ClipboardItem",
   "Headers",
   "HtmlElement",
   "HtmlInputElement",
   "KeyboardEvent",
+  "KeyboardEventInit",
   "Location",
+  "MediaQueryList",
   "Navigator",
   "MutationObserver",
   "MutationObserverInit",

@@ -78,40 +78,82 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
     });
 }
 
-/// Ask the originating top document to sign the user in and replay an intent.
-/// The intent is never formatted or logged because durable-join intents may contain
-/// an authority-bearing invite URL.
+/// Ask the originating document to run a WebAuthn ceremony the worker
+/// cannot: it has no `window`. The page answers through the ordinary API
+/// (`POST /api/identity/root`), which is what the worker then waits on.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn notify_account_required(
-    client: Option<&crate::router::ClientId>,
-    intent: tonk_worker_api::PendingIntent,
-) {
+/// Ask the page to link an account, on behalf of `space`.
+///
+/// Sent when a share cannot proceed because nothing is registered. The
+/// worker owns that judgement — the page is told what to do, not why —
+/// and does not wait: the registration UI may take a ceremony, an email
+/// round trip, or never finish, and a handler held open across that is
+/// held open forever. The share resumes when the account facts land.
+pub(crate) async fn request_account_link(
+    client: &crate::router::ClientId,
+    space: &str,
+) -> Result<(), crate::TonkWorkerError> {
+    use crate::TonkWorkerError;
     use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::{JsFuture, spawn_local};
+    use wasm_bindgen_futures::JsFuture;
 
-    let Some(client) = client else {
-        log!("account request has no originating client");
-        return;
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service worker scope".to_string()))?;
+    let value = JsFuture::from(global.clients().get(&client.0))
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("clients.get failed: {error:?}")))?;
+    if value.is_undefined() || value.is_null() {
+        return Err(TonkWorkerError::Conflict(format!(
+            "the originating client {} is gone",
+            client.0
+        )));
+    }
+    let client: web_sys::Client = value
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("clients.get did not yield a Client".to_string()))?;
+    let message = tonk_worker_api::LinkAccountRequest {
+        message_type: tonk_worker_api::LINK_ACCOUNT.to_string(),
+        space: space.to_owned(),
     };
-    let client_id = client.0.clone();
-    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
-        Ok(global) => global,
-        Err(_) => return,
+    let message = serde_wasm_bindgen::to_value(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
+    client
+        .post_message(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn request_webauthn(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+) -> Result<(), crate::TonkWorkerError> {
+    use crate::TonkWorkerError;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service worker scope".to_string()))?;
+    let value = JsFuture::from(global.clients().get(&client.0))
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("clients.get failed: {error:?}")))?;
+    if value.is_undefined() || value.is_null() {
+        return Err(TonkWorkerError::Conflict(format!(
+            "the originating client {} is gone",
+            client.0
+        )));
+    }
+    let client: web_sys::Client = value
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("clients.get did not yield a Client".to_string()))?;
+    let message = tonk_worker_api::WebAuthnRequest {
+        message_type: tonk_worker_api::WEBAUTHN.to_string(),
+        request,
     };
-    spawn_local(async move {
-        let Ok(value) = JsFuture::from(global.clients().get(&client_id)).await else {
-            return;
-        };
-        let Ok(client) = value.dyn_into::<web_sys::Client>() else {
-            return;
-        };
-        let message = tonk_worker_api::AccountRequired {
-            message_type: tonk_worker_api::ACCOUNT_REQUIRED.to_string(),
-            intent,
-        };
-        let Ok(message) = serde_wasm_bindgen::to_value(&message) else {
-            return;
-        };
-        let _ = client.post_message(&message);
-    });
+    let message = serde_wasm_bindgen::to_value(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
+    client
+        .post_message(&message)
+        .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")))
 }

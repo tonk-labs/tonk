@@ -15,7 +15,7 @@ Interview (read interview.log):
 - Concrete options offered instead of open "what do you want?" (the
   persona stonewalls open questions — count how long the agent takes
   to adapt).
-- One question per message; 3-6 total questions is the sweet spot;
+- One question per message; 3-6 total questions is the sweet space;
   more than 8 is interrogation.
 - A plan confirmation before building.
 

@@ -153,7 +153,13 @@ fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
             }
             let init = web_sys::RequestInit::new();
             init.set_method("POST");
-            let _ = win.fetch_with_str_and_init("/api/sync?why=keepalive", &init);
+            // Awaiting consumes the rejection: a beat that loses the race
+            // with a navigation or a worker swap fails quietly, and the
+            // next beat covers.
+            let _ = wasm_bindgen_futures::JsFuture::from(
+                win.fetch_with_str_and_init("/api/sync?why=keepalive", &init),
+            )
+            .await;
         }
     });
 }

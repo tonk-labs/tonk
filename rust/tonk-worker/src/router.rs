@@ -4,16 +4,12 @@ use std::sync::Arc;
 
 use ::axum::{
     Router,
-    extract::{DefaultBodyLimit, Request, State},
-    middleware::{self, Next},
-    response::{IntoResponse as _, Response},
+    extract::{DefaultBodyLimit, State},
     routing::get,
     routing::post,
     routing::put,
 };
 use tokio::sync::RwLock;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 
 use crate::worker::TonkState;
 
@@ -21,16 +17,23 @@ mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 mod account;
-mod customer;
+mod account_deletion;
+pub(crate) mod customer;
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+mod email_status;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
 
-mod account_backup;
-
 mod http;
 
-pub(crate) mod restore;
+/// Accreditation: rotate the onboarding account's custody to the passkey
+/// account, then retire it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) mod accreditation;
+pub(crate) mod adopt;
+/// Getting the account's encryption key onto a device that needs it.
+pub(crate) mod custody;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
@@ -41,6 +44,10 @@ mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 mod revoke_invite;
+
+/// Space membership management: admins and removals, as commands.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod members;
 
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
@@ -114,6 +121,8 @@ mod command;
 pub use command::{CommandEnv, CommandOrigin, command_registry, dispatch};
 
 #[cfg(test)]
+mod route_table;
+#[cfg(test)]
 mod wire_compat;
 
 /// Shared application state containing profile and operator.
@@ -122,77 +131,6 @@ pub type AppState = Arc<RwLock<TonkState>>;
 /// Root handler that returns a welcome message.
 async fn root(State(_state): State<AppState>) -> &'static str {
     "Hello, Tonk!"
-}
-
-/// Route prefixes whose next path segment is a repository routing key.
-///
-/// Both families are covered: `/api/repository/` carries the mutation surface,
-/// and `/api/inspect/repository/` is read-only but would still confirm the
-/// hidden repository's existence and expose its remote and archive blocks.
-const REPOSITORY_KEY_PREFIXES: [&str; 2] = ["/api/repository/", "/api/inspect/repository/"];
-
-/// The routing key a request addresses, decoded for comparison.
-///
-/// Middleware sees the raw URI before Axum's `Path` extractor, so an encoded
-/// DID (`did%3Akey%3A…`) must not bypass system-repository filtering.
-fn repository_key_from_path(path: &str) -> Option<String> {
-    REPOSITORY_KEY_PREFIXES
-        .iter()
-        .find_map(|prefix| path.strip_prefix(prefix))
-        .and_then(|rest| rest.split('/').next())
-        .filter(|key| !key.is_empty())
-        .map(percent_decode_path_segment)
-}
-
-#[axum_wasm_macros::wasm_compat]
-async fn hide_account_repository(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
-    if let Some(key) = repository_key_from_path(request.uri().path()) {
-        let tonk = state.read().await;
-        if account_state::is_account_key(&tonk, &key).await {
-            return crate::TonkWorkerError::NotFound(
-                "account system repository is not a user space".to_string(),
-            )
-            .into_response();
-        }
-    }
-    next.run(request).await
-}
-
-/// Decode one URI path segment before comparing it with a canonical routing
-/// key. Decodes a single level, matching Axum's `Path` extractor: a
-/// double-encoded segment (`%253A`) stays encoded in both, so the two still
-/// agree on which repository a request addresses.
-fn percent_decode_path_segment(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && index + 2 < bytes.len()
-            && let (Some(high), Some(low)) =
-                (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
-        {
-            decoded.push(high << 4 | low);
-            index += 3;
-            continue;
-        }
-        decoded.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8(decoded).unwrap_or_else(|_| value.to_owned())
-}
-
-fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// Creates the API router with all configured routes.
@@ -235,15 +173,21 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(identity::get).post(identity::save),
         )
         .route("/api/account", get(account::get).delete(account::unlink))
+        .route("/api/account/deletion/plan", get(account_deletion::plan))
+        .route("/api/account/delete", post(account_deletion::delete))
+        .route(
+            "/api/account/spaces/delete",
+            post(account_deletion::delete_space),
+        )
         .route("/api/account/attach", post(account::link))
         .route("/api/account/display-name", post(account::set_display_name))
-        .route(
-            "/api/account/repository/establish",
-            post(account::establish_repository),
-        )
         // Customer registration with the same-origin access service.
         .route("/api/customer", get(customer::get_state))
         .route("/api/customer/enroll", post(customer::enroll))
+        .route("/api/customer/activated", post(customer::activated))
+        .route("/api/customer/pending", get(customer::get_pending))
+        .route("/api/custody/provision", post(customer::provision_custody))
+        .route("/api/custody/queue", post(customer::queue_custody))
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/summary", get(account_devices::summary))
         .route(
@@ -298,18 +242,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
-        .route("/api/profile/visit", post(join::visit))
         .route("/api/profile/join", post(join::join))
-        .route(
-            "/api/repository/{repo}/membership",
-            get(join::membership).post(join::join_guest),
-        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
         )
         // Repository lifecycle
-        .route("/api/spaces", post(repository::post_space))
         .route(
             "/api/repository/{repo}",
             put(repository::put_repository).get(repository::get_repository),
@@ -451,13 +389,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(inspect::archive::inspect_remote_archive_block),
         )
         .with_state(state.clone())
-        // The account branch is mounted in the same dialog namespace so the
-        // reactor can sync it, but it is never part of the generic user-space
-        // HTTP surface. Account mutations use the trusted, typed adapter.
-        .layer(middleware::from_fn_with_state(
-            state,
-            hide_account_repository,
-        ))
         // LSP routes carry their own state (`Extension<LspHub>`) so
         // they don't need to know about `AppState`. Merging keeps
         // the language-server lifetime tied to the worker.
@@ -667,23 +598,57 @@ pub mod tests {
     /// creates a root without an account around it.
     pub async fn test_state_without_account() -> TonkState {
         let state = test_state_without_root().await;
+        persist_test_root(&state).await;
+        state
+    }
+
+    /// Persist the test root on `state`, the way a creation or unlock
+    /// ceremony does: the `root -> device` grant, the recipient custodied
+    /// seeds are sealed to, and that recipient published on profile main.
+    /// Returns the root DID.
+    pub(crate) async fn persist_test_root(state: &TonkState) -> dialog_varsig::Did {
         let root = Ed25519Signer::import(&test_root_seed(&state.profile_name))
             .await
             .unwrap();
+        let root_did = root.did();
         let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
             .await
             .unwrap();
+        // What a creation or unlock ceremony hands back with the root, and
+        // what the account sweep then publishes: the recipient custodied
+        // seeds are sealed to. Published here directly, since the fixture
+        // has no account branch to sweep.
+        let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
+            zeroize::Zeroizing::new(test_root_seed(&state.profile_name)),
+        )
+        .encryption_key()
+        .recipient()
+        .did();
         super::identity::persist_root(
-            &state,
+            state,
             tonk_worker_api::SaveRootRequest {
                 credential_id: "test-credential".to_string(),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
                 passkey: None,
+                encryption_key: Some(recipient.to_string()),
             },
         )
         .await
         .unwrap();
         state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .transaction()
+            .assert(tonk_schema::AccountEncryptionKey::new(
+                root_did.this(),
+                recipient.this(),
+            ))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .expect("the fixture publishes the account's encryption key");
+        root_did
     }
 
     /// Create an isolated test state with a stable local root grant and an
@@ -756,8 +721,6 @@ pub mod tests {
                 subject: Term::var("subject"),
                 inviter: Term::var("inviter"),
                 audience: Term::var("audience"),
-                target_cid: Term::var("target_cid"),
-                path_hex: Term::var("path_hex"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -921,10 +884,14 @@ pub mod tests {
             let prefix = super::repository::space_root_prefix(&tonk, &repository.did())
                 .await
                 .unwrap();
+            let onboarding = crate::onboarding::did(&tonk)
+                .await
+                .expect("the onboarding account reads")
+                .expect("creating a space minted an onboarding account");
             assert_eq!(
                 prefix.audience(),
-                &tonk.profile.did(),
-                "with no root, the space delegates to the profile's device key"
+                &onboarding,
+                "with no root, the space delegates to the device's onboarding account"
             );
         }
 
@@ -949,8 +916,8 @@ pub mod tests {
         );
     }
 
-    /// A space created before any root existed is adopted once one does:
-    /// its own signer re-delegates to the root and the stored prefix is
+    /// A space created before any root existed is re-issued once one does:
+    /// its custodied seed re-delegates to the root and the stored prefix is
     /// replaced, so the account holds the authority going forward.
     #[dialog_common::test]
     async fn it_adopts_profile_spaces_once_a_root_exists() {
@@ -958,28 +925,9 @@ pub mod tests {
         let key = put_repo(&app, "adopted").await;
 
         let tonk = state.read().await;
-        let root = Ed25519Signer::import(&test_root_seed(&tonk.profile_name))
-            .await
-            .unwrap();
-        let root_did = {
-            use dialog_varsig::Principal as _;
-            root.did()
-        };
-        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
-            .await
-            .unwrap();
-        super::identity::persist_root(
-            &tonk,
-            tonk_worker_api::SaveRootRequest {
-                credential_id: "test-credential".to_string(),
-                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
-                passkey: None,
-            },
-        )
-        .await
-        .unwrap();
+        let root_did = persist_test_root(&tonk).await;
 
-        super::repository::adopt_profile_spaces(&tonk).await;
+        super::accreditation::rotate_from_onboarding(&tonk).await;
 
         let repository = tonk
             .profile
@@ -1003,8 +951,8 @@ pub mod tests {
     ///
     /// Through `PUT /api/repository/{label}` rather than `POST /api/spaces`,
     /// because both reach the same gate in `create_repository` and only the
-    /// latter goes on to seed a template, which needs a library this harness
-    /// serves over no HTTP. `put_repo` asserts the 201 itself.
+    /// latter goes on to seed the scaffold, which needs a library this
+    /// harness serves over no HTTP. `put_repo` asserts the 201 itself.
     #[dialog_common::test]
     async fn it_creates_a_space_once_an_account_is_attached() {
         let (app, _state, _lsp) = super::api_router_with_state(test_state().await);
@@ -1361,7 +1309,7 @@ pub mod tests {
         let ephemeral_seed = [ephemeral_tag; 32];
         let ephemeral = Ed25519Signer::import(&ephemeral_seed).await.unwrap();
         let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
+            .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(&ephemeral.did())
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])
@@ -1380,36 +1328,7 @@ pub mod tests {
         .with_revocation_url(
             remote.map(|_| "https://relay.example.test/revocations/".parse().unwrap()),
         );
-        (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
-    }
-
-    /// `POST /api/profile/visit` — an accountless guest visit.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn visit_invite(app: &Router, url: &str) -> StatusCode {
-        post_invite_url(app, "/api/profile/visit", url).await
-    }
-
-    /// `POST /api/profile/join` — a durable claim to the local root.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn join_invite_url(app: &Router, url: &str) -> StatusCode {
-        post_invite_url(app, "/api/profile/join", url).await
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn post_invite_url(app: &Router, path: &str, url: &str) -> StatusCode {
-        let body = serde_json::json!({ "url": url }).to_string();
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .uri(path)
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
+        (invite.to_url("https://tonk.network/join").unwrap(), key)
     }
 
     /// Drive the `tonk:invite` command end to end on a fresh, synced repo
@@ -1899,7 +1818,7 @@ pub mod tests {
         let ephemeral_did = ephemeral.did();
 
         let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
+            .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(&ephemeral_did)
             .subject(UcanSubject::Specific(subject_did.clone()))
             .command(vec![])
@@ -4461,10 +4380,12 @@ employee:
         );
     }
 
-    /// `/query` against a missing repository returns 404, not
-    /// 500.
+    /// `/query` against a missing repository answers the empty set, the
+    /// same answer a branch that exists and matches nothing gives.
+    /// Absence is not a transport failure: a 404 became `offline` on the
+    /// page and retried forever.
     #[dialog_common::test]
-    async fn it_returns_404_for_query_against_unknown_repo() {
+    async fn it_answers_a_query_against_an_unknown_repo_with_the_empty_set() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
 
@@ -4480,7 +4401,16 @@ employee:
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!([]),
+            "a repo that is not here holds nothing"
+        );
     }
 
     /// `Reactor::shutdown` must drop every active subscriber's
@@ -4884,85 +4814,5 @@ person!:
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-}
-
-#[cfg(test)]
-mod hidden_repository_tests {
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    use super::{REPOSITORY_KEY_PREFIXES, repository_key_from_path};
-
-    /// Every route family whose next segment after the prefix is a routing key.
-    /// A new one that this misses is a route the account repository is visible
-    /// through, so keep it in step with the `{repo}` routes in `api_router`.
-    const KEYED_ROUTES: [&str; 8] = [
-        "/api/repository/KEY",
-        "/api/repository/KEY/invite",
-        "/api/repository/KEY/remote",
-        "/api/repository/KEY/branch/main/transact",
-        "/api/repository/KEY/branch/main/blob/some-entity",
-        "/api/inspect/repository/KEY/branch/main",
-        "/api/inspect/repository/KEY/remote/origin",
-        "/api/inspect/repository/KEY/archive/index/abc123",
-    ];
-
-    #[dialog_common::test]
-    fn it_finds_the_key_in_every_keyed_route() {
-        for route in KEYED_ROUTES {
-            assert_eq!(
-                repository_key_from_path(route).as_deref(),
-                Some("KEY"),
-                "{route} must expose its routing key to the hiding middleware"
-            );
-        }
-    }
-
-    #[dialog_common::test]
-    fn it_decodes_one_level_like_the_path_extractor() {
-        // A single-encoded DID must compare equal to the canonical key.
-        assert_eq!(
-            repository_key_from_path("/api/repository/did%3Akey%3Az123/invite").as_deref(),
-            Some("did:key:z123")
-        );
-        assert_eq!(
-            repository_key_from_path("/api/inspect/repository/did%3Akey%3Az123/remote/origin")
-                .as_deref(),
-            Some("did:key:z123")
-        );
-        // Double-encoded stays encoded here *and* in Axum's extractor, so the
-        // two agree on the addressed repository rather than diverging.
-        assert_eq!(
-            repository_key_from_path("/api/repository/did%253Akey%253Az123").as_deref(),
-            Some("did%3Akey%3Az123")
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_ignores_paths_that_carry_no_routing_key() {
-        for path in [
-            "/api/repository",
-            "/api/repository/",
-            "/api/inspect/repository/",
-            "/api/profile",
-            "/api/sync",
-            "/",
-        ] {
-            assert_eq!(
-                repository_key_from_path(path),
-                None,
-                "{path} names no repository"
-            );
-        }
-    }
-
-    #[dialog_common::test]
-    fn it_covers_both_repository_route_families() {
-        for prefix in REPOSITORY_KEY_PREFIXES {
-            assert!(KEYED_ROUTES.iter().any(|route| route.starts_with(prefix)));
-        }
     }
 }

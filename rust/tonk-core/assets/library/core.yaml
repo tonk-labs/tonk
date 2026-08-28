@@ -142,17 +142,6 @@ view!:
         .blank-canvas__deeplink tonk-display > [slot][hidden] {
           display: none !important;
         }
-        .blank-canvas__instr {
-          display: flex;
-          flex-direction: column;
-          gap: var(--wa-space-2xs);
-          padding-left: var(--wa-space-m);
-          border-left: 2px solid var(--wa-color-brand-fill-loud);
-          font-size: var(--wa-font-size-m);
-          line-height: var(--wa-line-height-normal);
-          color: var(--wa-color-text-quiet);
-        }
-        .blank-canvas__instr p { margin: 0; }
       </style>
       <span class="blank-canvas__label">no template &middot; empty view</span>
       <h1 class="blank-canvas__title">your starting layout is in place</h1>
@@ -173,9 +162,6 @@ view!:
           </tonk-display>
         </tonk-origin>
       </section>
-      <div class="blank-canvas__instr">
-        <p>Keep building by hand, or paste this link into your agent to take it further.</p>
-      </div>
     </div>
 
 # The Enable-sync command. Submitting the sync chip's "Enable sync" form
@@ -355,7 +341,7 @@ view!: &invitation/link
       </style>
       <wa-input
         class="invite-link__url"
-        label="Invite link"
+        label="Share link"
         readonly
         value="{link}"
       >
@@ -437,25 +423,45 @@ view!:
         .local-invite-notice {
           display: flex;
           flex-direction: column;
-          gap: var(--wa-space-2xs);
-          color: var(--wa-color-text-quiet);
+          gap: 7px;
+          width: min(432px, 100%);
+          --edge-ink: #38182a;
+          --edge-soft: #5b4953;
+          --edge-panel: #f7f6f5;
+          --edge-ring: rgba(56,24,42,.28);
+          color: var(--edge-soft);
+          font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+        }
+        :root.wa-dark .local-invite-notice {
+          --edge-ink: #e2dfdd;
+          --edge-soft: #c8c3bf;
+          --edge-panel: #1b1718;
+          --edge-ring: rgba(226,223,221,.28);
         }
         .local-invite-notice__label {
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-xs);
-          letter-spacing: 0.06em;
-          text-transform: uppercase;
+          min-height: 36px;
+          padding: 9px 12px;
+          display: flex;
+          align-items: flex-end;
+          background: var(--edge-panel);
+          box-shadow: 0 0 0 1px var(--edge-ring);
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: lowercase;
         }
         .local-invite-notice p {
           margin: 0;
-          font-family: var(--wa-font-family-body);
-          font-size: var(--wa-font-size-s);
-          line-height: var(--wa-line-height-normal);
+          min-height: 36px;
+          padding: 12px 14px;
+          background: var(--edge-panel);
+          box-shadow: 0 0 0 1px var(--edge-ring);
+          font-size: 13px;
+          line-height: 1.55;
           text-wrap: pretty;
         }
       </style>
       <span class="local-invite-notice__label">local spot &middot; no sync remote</span>
-      <p>{detail} Use Share to turn on sync and create an agent link.</p>
+      <p>{detail} Use connect in the condition banner, then create the agent link again.</p>
     </div>
 
 # Derive `tonk:agent-invite` by joining the repo's `tonk:repository` name
@@ -586,6 +592,24 @@ concept!: &member
 # The role badge label comes from CSS `::after` keyed on `data-role`, so the
 # raw `tonk:founder` / `tonk:member` URI never shows; the raw {role} text is
 # kept (visually hidden) only to drive the attribute.
+# Removing a member. A single matched field, so the attribute is the
+# command's shape as well as its payload: `dataset/expel` is read by no
+# other command. Acts on the space it fires in. The worker's handler does
+# the chain work; the service refuses a removal minted under a member's
+# `/use` chain, so holding the space is what makes it take effect, not the
+# role on the roster. Promotion is not a form: the FAB dispatches it after
+# the page mints the admin hop under the passkey.
+command!: &member/expel
+  description: Remove a member from this space.
+  with:
+    member:
+      description: The DID of the member to remove, read from `data-expel`.
+      the: dom.event.current-target.dataset/expel
+      as: entity
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
 view!: &member/row
   this: id:tonk:member/row
   model: tonk:member
@@ -714,6 +738,9 @@ view/directory!:
           content: "founder";
           background: var(--wa-color-text-normal);
           color: var(--wa-color-surface-default);
+        }
+        .roster__role[data-role="tonk:admin"]::after {
+          content: "admin";
         }
         .roster__role[data-role="tonk:member"]::after {
           content: "member";
@@ -1344,9 +1371,9 @@ concept!: &space
 
 # The space's default content: the blank canvas. The space route mounts
 # `<tonk-display entity={replica} model=tonk/space>`; this alias resolves
-# `tonk/space` to `tonk:blank`. Seeding `sheets.yaml` re-asserts this
-# alias to `tonk:binder` (name! is cardinality-one), so a sheets repo
-# renders the binder instead.
+# `tonk/space` to `tonk:blank`. `name!` is cardinality-one, so anything
+# authored into a space later can re-point the alias at its own root
+# model and take over the space home.
 name!:
   this: id:tonk/space
   entity: tonk:blank
@@ -1538,8 +1565,7 @@ concept!: &workspace/shell
       as: text
 
 # The shell mounts the space's content via the `tonk/space` alias on the active
-# replica. The alias resolves to `tonk:blank` by default (lean repo, no
-# template); seeding `sheets.yaml` overrides it to `tonk:binder`. The
+# replica, which resolves to `tonk:blank` until something re-points it. The
 # `.display-view-slot` wrapper is the bare-route fill-height layout.
 #
 # The content display is scoped with `with="{branch}@{repo}"`, exactly as

@@ -1,21 +1,29 @@
 #![warn(missing_docs)]
-//! Root identity derived from a passkey.
+//! Account identity under the custody envelope.
 //!
-//! The user's root Ed25519 key is derived on demand from their passkey's
-//! PRF output and exists in memory only for the seconds a ceremony needs
-//! it. Devices act through a subject-open `root → device` UCAN
-//! delegation; day-to-day operation never touches the root key.
+//! The account is a random secret; every custody passkey is an
+//! interchangeable wrapping of it, published as a raw cell in the
+//! passkey-derived custody space. No key material is ever stored: the
+//! secret materializes only inside a ceremony, behind a fresh
+//! user-verified assertion, and is zeroized when the ceremony ends.
+//! Devices act through a subject-open `root → device` UCAN delegation;
+//! day-to-day operation never touches the root key.
 
 pub mod ceremony;
+pub mod clearance;
+pub mod custody;
 pub mod delegation;
-pub mod derive;
+pub mod envelope;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod install;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod passkey;
 pub mod request;
 pub mod revocation;
+pub mod sealed;
 pub mod session;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod webcrypto_kek;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use install::install;

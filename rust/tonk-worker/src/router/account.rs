@@ -8,8 +8,7 @@ use tokio::sync::oneshot;
 use tonk_account::{AccountProviderRecord, AccountRepositoryDescriptorV1, AccountStateStatus};
 use tonk_common::log;
 use tonk_worker_api::{
-    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest,
-    AccountRepositoryEstablishRequest, AccountStatus,
+    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest, AccountStatus,
 };
 
 use super::AppState;
@@ -117,16 +116,29 @@ pub(crate) async fn account_link(
         .map(|root| root.delegation)
 }
 
-/// The DID membership rows are keyed on: the account root when one is
-/// persisted, so a founder/member row converges across every device on
-/// the same account, else the profile's device key — the only durable
-/// key a pre-account profile has.
+/// The DID membership rows are keyed on: the account this device acts
+/// for, so a founder/member row converges across every device on the
+/// same account. See [`current_account`].
 pub(crate) async fn member_did(
     state: &crate::worker::TonkState,
 ) -> Result<dialog_varsig::Did, TonkWorkerError> {
-    match super::identity::root_did(state).await {
-        Ok(did) => Ok(did),
-        Err(TonkWorkerError::RootRequired) => Ok(state.profile.did()),
+    current_account(state).await.map(|(did, _)| did)
+}
+
+/// The account this device acts for, and its grant to the device: the
+/// passkey root and its `root -> device` delegation when one is linked,
+/// the onboarding account and its powerline otherwise, minted on first
+/// use. Every device has one of the two, so a membership or a space
+/// always terminates at an account and never at the device key.
+pub(crate) async fn current_account(
+    state: &crate::worker::TonkState,
+) -> Result<(dialog_varsig::Did, dialog_ucan_core::DelegationChain), TonkWorkerError> {
+    match super::identity::local_root(state).await {
+        Ok(root) => Ok((root.root_did, root.delegation)),
+        Err(TonkWorkerError::RootRequired) => {
+            let grant = crate::onboarding::grant_device(state).await?;
+            Ok((grant.issuer().clone(), grant))
+        }
         Err(error) => Err(error),
     }
 }
@@ -154,33 +166,10 @@ async fn linked(state: &crate::worker::TonkState) -> bool {
     }
 }
 
-/// Refuse unless this device holds an account.
-///
-/// The precondition every durable operation shares. Durable authority is only
-/// ever issued to an account: a spot created without one is local-only and
-/// un-backed-up, and a membership claimed without one has nothing revocable
-/// behind it. `Unhydrated` and `Unconfigured` accounts pass — those are
-/// synchronization states of an account that exists, and refusing on them
-/// would invent a way to be stuck with no way out.
-///
-/// [`linked`] reads the replica signal and is fail-safe through the stored
-/// attachment, so a missing root, an unreadable record and another account's
-/// descriptor all land here as "no account" rather than as an error the
-/// caller has to distinguish.
-pub(crate) async fn require_account(
-    state: &crate::worker::TonkState,
-) -> Result<(), TonkWorkerError> {
-    if linked(state).await {
-        Ok(())
-    } else {
-        Err(TonkWorkerError::AccountRequired)
-    }
-}
-
 /// Attach a descriptor-less provider record to the test profile's root.
 ///
-/// The cheapest thing that satisfies [`require_account`]: an account exists,
-/// its repository is not established yet. Signing a descriptor here would fix
+/// The cheapest thing that reads as linked: an account exists, its
+/// repository is not established yet. Signing a descriptor here would fix
 /// one, and a test that wants a specific one signs its own.
 ///
 /// The provider URL matches [`tests_matching_request`] deliberately. A test
@@ -194,6 +183,29 @@ pub(crate) async fn attach_test_account(
     let record = AccountProviderRecord::attach_unconfigured(TEST_ACCOUNT_PROVIDER, 0)
         .map_err(provider_error)?;
     save_provider(state, &record).await
+}
+
+/// Whether this profile carries ANY account-attachment history: a
+/// stored provider record (configured or not) or the sign-out
+/// tombstone. Only a profile with no history at all — a creation
+/// ceremony whose registration never completed — may have its root
+/// replaced by a retry; a signed-out profile keeps refusing a
+/// different root, because its spaces still hang off the stored one.
+pub(crate) async fn has_attachment_history(state: &crate::worker::TonkState) -> bool {
+    match state
+        .profile
+        .credential()
+        .site(ACCOUNT_PROVIDER_SITE)
+        .load::<Vec<u8>>()
+        .perform(&state.operator)
+        .await
+    {
+        Ok(_) => true,
+        Err(error) if crate::credential::is_missing(&error) => false,
+        // An unreadable record still counts as history: refusing a
+        // replacement is recoverable, silently rebinding is not.
+        Err(_) => true,
+    }
 }
 
 /// The provider both test fixtures name. See [`attach_test_account`].
@@ -282,56 +294,8 @@ pub async fn set_display_name(
         Some(response) => Ok(Json(response)),
         None => Ok(Json(AccountDisplayNameResponse {
             name: crate::router::profile_name::resolve_display_name(&tonk).await,
-            convergence: Default::default(),
         })),
     }
-}
-
-/// Persist the service-selected descriptor winner for a legacy account.
-///
-/// An account created before repository descriptors existed is attached to a
-/// provider but names no repository. The service picks one winner among the
-/// devices racing to establish it; this stores exactly the bytes it returned,
-/// never the caller's own losing candidate.
-#[wasm_compat]
-pub async fn establish_repository(
-    State(state): State<AppState>,
-    Json(request): Json<AccountRepositoryEstablishRequest>,
-) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    let tonk = state.read().await;
-    let root = super::identity::local_root(&tonk).await?;
-    let attached = load_provider(&tonk, &root.root_did)
-        .await?
-        .ok_or_else(|| TonkWorkerError::Conflict("no account provider is attached".to_string()))?;
-    let descriptor = hex::decode(&request.descriptor_hex)
-        .map_err(|error| TonkWorkerError::Router(format!("invalid descriptor hex: {error}")))?;
-    let record = attached
-        .establish(&descriptor, &root.root_did)
-        .await
-        .map_err(provider_error)?;
-    save_provider(&tonk, &record).await?;
-    // This profile now has an account routing key to hide where a moment ago
-    // it had none.
-    tonk.account_keys.invalidate();
-
-    if request.created {
-        if let Err(error) = super::account_state::initialize_display_name(&tonk).await {
-            log!("initial account display-name seed did not complete: {error}");
-        }
-    } else {
-        super::account_state::ensure_account_state(&tonk).await;
-    }
-
-    // Roster upkeep: this profile just became an account row. The email
-    // comes best-effort from the provider; a failed fetch leaves it
-    // blank until a later refresh.
-    let email = super::account_devices::account_summary(&tonk)
-        .await
-        .ok()
-        .and_then(|summary| summary.email);
-    super::profiles::upsert_active_entry(&tonk, email).await;
-
-    Ok(Json(status(&tonk).await?))
 }
 
 /// Validate that provider ceremony metadata exactly matches the local root,
@@ -402,14 +366,12 @@ pub async fn link(
     // spaces. Each account-service request is bounded by the shared HTTP
     // timeout, and awaiting the sequence keeps it inside the fetch lifetime.
     super::account_state::ensure_account_state(&state).await;
-    // Spaces created before this account existed delegate to the profile
-    // key; adopt them under the account root ahead of the backup sweep,
-    // so what gets backed up is the account-rooted authority.
+    // Everything created or joined before this account existed hangs off
+    // the onboarding account; re-issue it to the root from the custodied
+    // seeds ahead of the backup sweep, so what gets backed up is the
+    // account-rooted authority, and retire the onboarding account.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::repository::adopt_profile_spaces(&state).await;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::router::account_backup::back_up_existing_spaces(&state).await;
-    crate::router::restore::restore_spaces(&state).await;
+    super::accreditation::rotate_from_onboarding(&state).await;
 
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it
@@ -585,7 +547,11 @@ mod tests {
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
         {
             let tonk = state.read().await;
-            let roster = tonk.registry.read_roster(&tonk.storage).await.unwrap();
+            let roster = tonk
+                .registry
+                .read_roster(&tonk.storage, &tonk.operator)
+                .await
+                .unwrap();
             let entry = roster
                 .iter()
                 .find(|entry| entry.profile_name == tonk.profile_name)
@@ -597,7 +563,11 @@ mod tests {
         let _ = unlink(State(state.clone())).await.unwrap();
 
         let tonk = state.read().await;
-        let roster = tonk.registry.read_roster(&tonk.storage).await.unwrap();
+        let roster = tonk
+            .registry
+            .read_roster(&tonk.storage, &tonk.operator)
+            .await
+            .unwrap();
         let entry = roster
             .iter()
             .find(|entry| entry.profile_name == tonk.profile_name)
@@ -643,10 +613,7 @@ mod tests {
                     .unwrap();
             save_provider(&tonk, &record).await.unwrap();
 
-            assert!(matches!(
-                require_account(&tonk).await,
-                Err(TonkWorkerError::AccountRequired)
-            ));
+            assert!(!linked(&tonk).await);
         }
         let Json(status) = get(State(state)).await.unwrap();
         assert!(matches!(status, AccountStatus::Unregistered { .. }));
@@ -670,10 +637,7 @@ mod tests {
                 .is_none(),
             "unlink retracts the account replica"
         );
-        assert!(matches!(
-            require_account(&tonk).await,
-            Err(TonkWorkerError::AccountRequired)
-        ));
+        assert!(!linked(&tonk).await);
     }
 
     #[dialog_common::test]

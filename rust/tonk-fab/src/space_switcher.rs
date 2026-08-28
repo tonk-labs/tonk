@@ -1,5 +1,5 @@
-//! `<ui-space-switcher>` — the FAB's space-switcher menu: one row per space
-//! the profile knows about, plus the static "all spots" / "new" actions.
+//! `<ui-space-switcher>` — the space rows of the bar's `open ▸` flyout: one
+//! `<tonk-mi>` per space the profile knows about.
 //!
 //! Built on the shared `subscribing` scaffolding, like `<ui-space-name>` and
 //! `<ui-member-roster>` — but it is the odd one out: it reads the PROFILE
@@ -25,10 +25,9 @@
 //! surviving row stamps `data-status` from the replica's sync status so the
 //! existing CSS can dim a still-seeding spot.
 //!
-//! The static "all spots" and "new" action items render AFTER the rows,
-//! copied verbatim from the deleted view (`profile.yaml`, search
-//! `fab__menu-item--action`) — this element now owns that markup instead of
-//! depending on a per-space-seeded view for it.
+//! It renders ONLY the space rows. `new +` and `more ↖` belong to the stack
+//! that hosts this flyout (`markup::STACKS_HTML`), not here — emitting them
+//! in both places put a duplicate, unstyled pair inside the open menu.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -36,9 +35,10 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use js_sys::Reflect;
 use wasm_bindgen::prelude::*;
-use web_sys::{Document, HtmlElement, window};
+use web_sys::{HtmlElement, window};
 
-use crate::logic::space_list_query_body;
+use crate::logic::{reset_keyed_rows, space_list_query_body};
+use crate::stack_rows;
 use crate::subscribing;
 
 const SUB_TAG: &str = "ui-space-switcher";
@@ -50,6 +50,10 @@ const PROFILE_WITH: &str = "main@profile:tonk";
 /// The replica kind marking the profile's own self-replica row, hidden from
 /// the switcher (there is nothing to switch TO by navigating to yourself).
 const PROFILE_KIND: &str = "tonk:profile";
+
+/// How many spaces fly out before `more ↖` takes over. A stack is a glance,
+/// not a directory; past this the Hub is the better answer.
+const MAX_ROWS: usize = 7;
 
 /// One replica row: the fields the switcher needs to decide whether to skip
 /// it and what to render if it doesn't.
@@ -117,12 +121,13 @@ impl subscribing::Subscribing for SpaceSwitcherBehaviour {
     fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
         let conclusions = js_sys::Array::from(payload);
         let mut rows = self.rows.borrow_mut();
-        rows.clear();
+        let mut delivered = Vec::new();
         for i in 0..conclusions.length() {
             if let Some(row) = read_row(&conclusions.get(i)) {
-                rows.push(row);
+                delivered.push(row);
             }
         }
+        reset_keyed_rows(&mut rows, delivered);
         render_menu(host, &rows);
     }
 
@@ -185,75 +190,42 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
     ))
 }
 
-/// Rebuild the host's children: one `<a class="fab__menu-item">` per
-/// surviving row (the self-replica and the `exclude`d active space filtered
-/// out), each wrapping a nested `<ui-space-name>` for that space's OWN repo
-/// name, followed by the static "all spots" / "new" action items — the
-/// markup the deleted `fab-menu` view used to supply.
+/// Rebuild the host's children: one `<tonk-mi>` per surviving space, each
+/// naming that space through a nested read-only `<ui-space-name>`.
+///
+/// No action rows. The stack that hosts this flyout already carries `new +`
+/// and `more ↖` (see `markup::STACKS_HTML`); emitting them here as well is
+/// what put a second, unstyled "+new" and "all spots" inside the open menu.
+///
+/// The list is capped at [`MAX_ROWS`]: up to seven spaces fly out, and `more
+/// ↖` — the stack's own last row — is the way to the rest. The active space
+/// is already filtered out by `exclude`, so it never spends one of the seven.
 fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
-    while let Some(child) = host.first_child() {
-        let _ = host.remove_child(&child);
-    }
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
+    stack_rows::clear_rows(host, SUB_TAG);
     let exclude = host.get_attribute("exclude").unwrap_or_default();
 
-    for (_, row) in rows {
-        if row.kind == PROFILE_KIND || row.subject == exclude {
-            continue;
-        }
-        let Ok(anchor) = document.create_element("a") else {
+    for (_, row) in rows
+        .iter()
+        .filter(|(_, row)| row.kind != PROFILE_KIND && row.subject != exclude)
+        .take(MAX_ROWS)
+    {
+        let Some(item) = stack_rows::new_row(SUB_TAG) else {
             continue;
         };
-        let _ = anchor.set_attribute("class", "fab__menu-item");
-        let _ = anchor.set_attribute("href", &format!("/space/{}", row.subject));
-        let _ = anchor.set_attribute("data-status", &row.status);
+        // The space is a user word — it passes through untouched, so this row
+        // is deliberately NOT `chrome`.
+        let _ = item.set_attribute("data-space", &row.subject);
+        let _ = item.set_attribute("data-status", &row.status);
 
-        if let Ok(name_el) = document.create_element("ui-space-name") {
-            let _ = name_el.set_attribute("space", &row.subject);
-            let _ = anchor.append_child(&name_el);
+        if let Some(document) = window().and_then(|w| w.document())
+            && let Ok(name) = document.create_element("ui-space-name")
+        {
+            let _ = name.set_attribute("space", &row.subject);
+            let _ = name.set_attribute("readonly", "");
+            let _ = item.append_child(&name);
         }
-        let _ = host.append_child(&anchor);
+        stack_rows::insert_row(host, &item);
     }
-
-    append_action_items(host, &document);
-}
-
-/// The static "all spots" / "new" action items, copied verbatim (classes,
-/// glyphs, labels, `data-dialog`) from the deleted `fab-menu` view
-/// (`profile.yaml`, `fab__menu-item--action`).
-fn append_action_items(host: &HtmlElement, document: &Document) {
-    if let Ok(all_spots) = document.create_element("a") {
-        let _ = all_spots.set_attribute("class", "fab__menu-item fab__menu-item--action");
-        let _ = all_spots.set_attribute("href", "/");
-        append_glyph(document, &all_spots, "\u{21B0}");
-        let label = document.create_text_node(" all spots");
-        let _ = all_spots.append_child(&label);
-        let _ = host.append_child(&all_spots);
-    }
-
-    if let Ok(new_button) = document.create_element("button") {
-        let _ = new_button.set_attribute("class", "fab__menu-item fab__menu-item--action");
-        let _ = new_button.set_attribute("type", "button");
-        let _ = new_button.set_attribute("data-dialog", "open fab-space-create");
-        append_glyph(document, &new_button, "+");
-        let label = document.create_text_node(" new");
-        let _ = new_button.append_child(&label);
-        let _ = host.append_child(&new_button);
-    }
-}
-
-/// Append a `<span class="fab__menu-glyph" aria-hidden="true">{glyph}</span>`
-/// child to `parent`, matching the deleted view's action-item markup.
-fn append_glyph(document: &Document, parent: &web_sys::Element, glyph: &str) {
-    let Ok(span) = document.create_element("span") else {
-        return;
-    };
-    let _ = span.set_attribute("class", "fab__menu-glyph");
-    let _ = span.set_attribute("aria-hidden", "true");
-    span.set_text_content(Some(glyph));
-    let _ = parent.append_child(&span);
 }
 
 /// Register `<ui-space-switcher>`. Idempotent.

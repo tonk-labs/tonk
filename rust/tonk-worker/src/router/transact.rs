@@ -67,6 +67,7 @@ pub async fn transact(
     State(state): State<AppState>,
     Path(path): Path<TransactPath>,
     client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
@@ -122,8 +123,8 @@ pub async fn transact(
     // subscription, which the command's scheduled poll broadcasts when it lands.
     // Awaiting the dispatch here serialized the iframe boot behind the command;
     // detaching it returns the commit (~40ms) immediately and lets the command
-    // finish in the background, like an `event.waitUntil`.
-    spawn_dispatch(state, origin, transients.unwrap_or_default()).await;
+    // finish in the background under the fetch event's `waitUntil` lifetime.
+    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
     Ok(response)
 }
 
@@ -133,6 +134,7 @@ pub async fn transact_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileTransactPath>,
     client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
@@ -166,7 +168,7 @@ pub async fn transact_profile(
     // Detached like the repository-scoped `transact` above: the commit returns
     // now, the command providers + poll drain run in the background and broadcast
     // their writes to subscribers when they land.
-    spawn_dispatch(state, origin, transients.unwrap_or_default()).await;
+    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
     Ok(response)
 }
 
@@ -188,10 +190,6 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
     }
 }
 
-/// Run [`super::dispatch`] as detached background work so it never blocks the
-/// transact response. On wasm the SW keeps the spawned task alive on its event
-/// loop and the returned future is immediately ready; native builds (tests) run
-/// the dispatch inline so commands complete deterministically before assertions.
 /// A millisecond wall-clock stamp for sync-queue activity priority. `Date.now()`
 /// in the SW event context; native (tests) has no clock dependency, so 0.
 fn now_millis() -> f64 {
@@ -205,17 +203,35 @@ fn now_millis() -> f64 {
     }
 }
 
+/// Run [`super::dispatch`] as background work so it never blocks the transact
+/// response. The service worker attaches the dispatch promise to the originating
+/// fetch event; native builds run it inline so tests remain deterministic.
 async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
     transients: dialog_artifacts::Changes,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_futures::spawn_local(async move {
-        super::dispatch(&state, origin, transients).await;
-    });
+    match lifetime {
+        Some(Extension(lifetime)) => {
+            let promise = wasm_bindgen_futures::future_to_promise(async move {
+                super::dispatch(&state, origin, transients).await;
+                Ok(wasm_bindgen::JsValue::UNDEFINED)
+            });
+            if let Err(error) = lifetime.extend(&promise) {
+                log!("transact: failed to extend fetch lifetime for command dispatch: {error:?}");
+            }
+        }
+        None => wasm_bindgen_futures::spawn_local(async move {
+            super::dispatch(&state, origin, transients).await;
+        }),
+    }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    super::dispatch(&state, origin, transients).await;
+    {
+        let _ = lifetime;
+        super::dispatch(&state, origin, transients).await;
+    }
 }
 
 async fn transact_on_branch<'a>(
@@ -226,10 +242,44 @@ async fn transact_on_branch<'a>(
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
-    let session = tonk_branch
-        .acquire(&tonk_state.operator)
-        .await
-        .map_err(reactor_to_error)?;
+    // A transact carrying ONLY transients writes nothing durable — the
+    // canonical case is `tonk:load`, the site stamp, which lands in the
+    // session overlay (device-local, dies with the worker) and never
+    // touches the branch. Failing it because the repository has not been
+    // replicated yet is wrong twice over: there is no write to reject,
+    // and the page that needs the stamp is exactly the page sitting on a
+    // space it has just asked to join. Its claim was lost, so the site
+    // was never stamped and the view sat on a spinner even after the
+    // repo arrived.
+    //
+    // Durable claims still require the branch: a write to a repository
+    // this device does not hold is a genuine error, not an absence.
+    let all_transient = request
+        .claims
+        .iter()
+        .all(|claim| claim.application().is_transient());
+
+    let session = match tonk_branch.acquire(&tonk_state.operator).await {
+        Ok(session) => session,
+        Err(error) if all_transient && !request.claims.is_empty() && is_absence(&error) => {
+            // Emit the transients WITHOUT a branch: they are the payload
+            // the dispatcher needs (this is how `tonk:load` reaches its
+            // handler), and none of them writes to storage. Returning an
+            // empty `Changes` here instead would answer 200 and still
+            // drop the command, which is the same silent loss with a
+            // friendlier status code.
+            let transients = transient_changes(request.claims)?;
+            return Ok((
+                Json(TransactResponse {
+                    revision_before: None,
+                    revision_after: None,
+                    commits: CommitSummary::default(),
+                }),
+                (!transients.is_empty()).then_some(transients),
+            ));
+        }
+        Err(error) => return Err(reactor_to_error(error)),
+    };
 
     let revision_before = session.handle().revision();
     let claim_count = request.claims.len();
@@ -341,6 +391,7 @@ mod profile_write_boundary {
                 branch: "main".to_owned(),
             }),
             Some(Extension(client_id)),
+            None,
             HeaderMap::new(),
             body_bytes,
         )
@@ -355,6 +406,47 @@ mod profile_write_boundary {
     }
 }
 
+/// Bucket an all-transient claim list into a [`dialog_artifacts::Changes`]
+/// without a branch.
+///
+/// Mirrors what `TransactionBuilder::apply` does for the transient case,
+/// minus the branch it has no need for: transients are dispatched to
+/// command handlers and swept, never written to storage. This is what
+/// lets a `tonk:load` site stamp reach its handler while the repository
+/// is still absent.
+fn transient_changes(
+    claims: Vec<tonk_schema::claim::SourceClaim>,
+) -> Result<dialog_artifacts::Changes, TonkWorkerError> {
+    // `Statement` carries the `assert`/`retract` methods on the plan.
+    use dialog_artifacts::Statement as _;
+    use tonk_schema::transact::application_plan_from_predicate;
+
+    let mut changes = dialog_artifacts::Changes::new();
+    for source in claims {
+        let claim = Claim::try_from(source)
+            .map_err(|e| TonkWorkerError::Router(format!("invalid claim: {e}")))?;
+        match claim {
+            Claim::Assert(application) => {
+                application_plan_from_predicate(application).assert(&mut changes);
+            }
+            Claim::Retract(application) => {
+                application_plan_from_predicate(application).retract(&mut changes);
+            }
+        }
+    }
+    Ok(changes)
+}
+
+/// Whether this failure means "there is nothing here" rather than
+/// "something went wrong". Mirrors the query router's classifier: an
+/// unreplicated repository or an uncreated branch is an absence.
+fn is_absence(err: &ReactorError) -> bool {
+    matches!(
+        err,
+        ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. }
+    )
+}
+
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
     match err {
         ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
@@ -363,6 +455,7 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         ReactorError::QueryFailed(_)
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
+        | ReactorError::Download(_)
         | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
     }
 }

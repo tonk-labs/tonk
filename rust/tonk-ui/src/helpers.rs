@@ -14,6 +14,11 @@ pub struct TestEnvironment {
     /// Base URL of the live native access service, reached directly
     /// (unproxied) for test inspection such as captured activation emails.
     pub access_service: Url,
+    /// This harness's Caddy root certificate, for CLI children that must
+    /// trust its origin. Per-harness rather than process-wide: each run
+    /// mints its own CA, so a single `SSL_CERT_FILE` would leave
+    /// concurrent runs trusting whichever one started last.
+    pub ca_certificate: Option<std::path::PathBuf>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -79,7 +84,7 @@ mod native {
                 caps.set_headless()?;
             }
 
-            caps.add_arg("--host-resolver-rules=MAP tonk.spot 127.0.0.1")?;
+            caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
             caps.accept_insecure_certs(true)?;
             let secure_origin = format!(
                 "--unsafely-treat-insecure-origin-as-secure={}",
@@ -92,8 +97,40 @@ mod native {
             }
 
             let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
-            driver.goto(&self.tonk_web.to_string()).await?;
+            // Bound each navigation well under the suite's patience. The
+            // default page-load allowance is five minutes, so one wedged
+            // renderer would eat the whole run before `goto` below ever
+            // gets its second chance.
+            driver
+                .set_page_load_timeout(std::time::Duration::from_secs(60))
+                .await?;
+            goto(&driver, &self.tonk_web.to_string()).await?;
             Ok(driver)
+        }
+    }
+
+    /// Navigates, retrying once when the renderer wedges mid-load.
+    ///
+    /// A navigation whose renderer stops responding surfaces as
+    /// chromedriver's 'timed out receiving message from renderer' after the
+    /// page-load allowance. The page's own boot watchdog cannot act there —
+    /// a hung renderer runs no scripts — so the recovery lives on this side
+    /// of the DevTools pipe: one fresh navigation to the same URL, the same
+    /// restart a person's reload performs.
+    pub async fn goto(driver: &WebDriver, url: impl AsRef<str>) -> Result<()> {
+        use thirtyfour::error::WebDriverErrorInner;
+        let url = url.as_ref();
+        match driver.goto(url).await {
+            Err(error)
+                if matches!(
+                    error.as_inner(),
+                    WebDriverErrorInner::WebDriverTimeout(_) | WebDriverErrorInner::Timeout(_)
+                ) =>
+            {
+                eprintln!("navigation to {url} wedged ({error}); retrying once");
+                Ok(driver.goto(url).await?)
+            }
+            other => Ok(other?),
         }
     }
 
@@ -133,17 +170,47 @@ mod native {
             .as_str()
             .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator id"))?
             .to_string();
-        driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                const wait = () =>
-                    window.tonkIdentity ? done(true) : setTimeout(wait, 50);
-                wait();
-                "#,
-                vec![],
-            )
-            .await?;
+        // Polled from the test side: a single waiting script is bounded
+        // by chromedriver's script timeout, which a cold machine still
+        // compiling the app's wasm can outlast. A boot that WEDGES
+        // rather than runs slow is the page's own problem now — its
+        // watchdog (index.html) reloads a boot with no signs of life
+        // and escalates to clearing caches and workers — so this wait
+        // only has to outlast the ladder, not run it.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(150);
+        loop {
+            let ready = driver
+                .execute("return !!window.tonkIdentity;", vec![])
+                .await
+                .ok()
+                .and_then(|ret| ret.json().as_bool());
+            if ready == Some(true) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                // Say where boot stopped, not just that it did: the
+                // shell's status line distinguishes a wasm that never
+                // downloaded from one that failed from one that started
+                // and hung.
+                let state = driver
+                    .execute(
+                        r#"return {
+                            url: String(location.href),
+                            ready: document.readyState,
+                            boot: (document.querySelector("[data-boot-status]") || {}).textContent || null,
+                            controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller),
+                        };"#,
+                        vec![],
+                    )
+                    .await
+                    .map(|ret| ret.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(anyhow!(
+                    "the page never exposed tonkIdentity; page state: {state}"
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         Ok((driver, authenticator_id))
     }
 
@@ -175,14 +242,10 @@ mod native {
             let settings = AccessServiceSettings {
                 deployment: Some(DeploymentConfig {
                     account_service_url: account_service_url.clone(),
-                    revocation_relay_url: Url::parse(&format!(
-                        "{}/revocations",
-                        account_service.endpoint
-                    ))?,
                     // Filled in by the server with its own generated identity.
                     service_did: None,
                 }),
-                public_origin: Some(format!("https://tonk.spot:{web_port}")),
+                public_origin: Some(format!("https://tonk.network:{web_port}")),
                 ..Default::default()
             };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
@@ -192,6 +255,8 @@ mod native {
             let access_service_port = Url::parse(&access_service_address.access_service_url)?
                 .port()
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
+            let caddy_data = std::env::temp_dir().join(format!("tonk-e2e-caddy-{web_port}"));
+            std::fs::create_dir_all(&caddy_data)?;
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
                     .args([
@@ -201,6 +266,13 @@ mod native {
                         &format!("{web_port}"),
                         &format!("{access_service_port}"),
                     ])
+                    // Pin Caddy's data dir so its per-run internal CA
+                    // root lands at a knowable path: it rides on
+                    // `TestEnvironment::ca_certificate`, and each native
+                    // CLI child is given it as its own SSL_CERT_FILE so
+                    // it can speak TLS to the harness origin the
+                    // descriptors name.
+                    .env("XDG_DATA_HOME", &caddy_data)
                     .stdout(Stdio::piped())
                     // Nix writes build progress to stderr. Inheriting it prevents a
                     // full unread pipe from deadlocking before Caddy starts.
@@ -239,6 +311,40 @@ mod native {
                 return Err(anyhow!("test web server did not bind port {web_port}"));
             }
 
+            // Caddy mints its internal CA lazily; wait for the root and
+            // export it process-wide so every CLI child the tests spawn
+            // trusts the harness origin (reqwest is built with
+            // rustls-tls-native-roots, which honors SSL_CERT_FILE). The
+            // name half of the mapping — tonk.network resolving to
+            // loopback for NATIVE processes — comes from /etc/hosts,
+            // which the CI workflow writes; Chrome gets it via
+            // --host-resolver-rules either way.
+            let caddy_root = caddy_data
+                .join("caddy")
+                .join("pki")
+                .join("authorities")
+                .join("local")
+                .join("root.crt");
+            // Caddy mints the CA lazily, on its first TLS handshake, so
+            // this can take a moment on a cold machine.
+            for _ in 0..200 {
+                if caddy_root.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if !caddy_root.exists() {
+                return Err(anyhow!(
+                    "Caddy never minted its root certificate at {}; CLI children could not                      trust the harness origin",
+                    caddy_root.display()
+                ));
+            }
+            // Handed to CLI children individually rather than exported:
+            // each harness mints its own CA under its own port, so a
+            // process-wide `SSL_CERT_FILE` makes concurrent runs trust
+            // the wrong root and fail to connect.
+            let ca_certificate = Some(caddy_root);
+
             // Start ChromeDriver
             let chromedriver_port =
                 free_local_port().expect("Could not get a free local port for chromedriver");
@@ -274,10 +380,11 @@ mod native {
                     account_service: Some(account_service),
                 },
                 TestEnvironment {
-                    tonk_web: Url::parse(&format!("https://tonk.spot:{web_port}"))?,
+                    tonk_web: Url::parse(&format!("https://tonk.network:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                     account_service: account_service_url,
                     access_service: Url::parse(&access_service_address.access_service_url)?,
+                    ca_certificate,
                 },
             ))
         }

@@ -24,13 +24,6 @@ use crate::TonkWorkerError;
 use crate::device::RosterEntry;
 use crate::worker::{DefaultSpace, TonkState};
 
-fn now_unix() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 /// The active profile's roster entry, rebuilt from live state.
 ///
 /// The account fields all derive from the provider attachment: an
@@ -63,11 +56,7 @@ async fn refreshed_entry(
         root_did,
         provider,
         email,
-        display_name: Some(super::profile_name::resolve_display_name(tonk).await),
-        last_active_at: existing
-            .map(|entry| entry.last_active_at)
-            .filter(|&at| at > 0)
-            .unwrap_or_else(now_unix),
+        display_name: super::profile_name::resolve_display_name(tonk).await,
     }
 }
 
@@ -87,12 +76,17 @@ async fn try_upsert_active_entry(
     tonk: &TonkState,
     email: Option<String>,
 ) -> Result<(), TonkWorkerError> {
-    let roster = tonk.registry.read_roster(&tonk.storage).await?;
+    let roster = tonk
+        .registry
+        .read_roster(&tonk.storage, &tonk.operator)
+        .await?;
     let existing = roster
         .iter()
         .find(|entry| entry.profile_name == tonk.profile_name);
     let entry = refreshed_entry(tonk, existing, email).await;
-    tonk.registry.upsert_roster(&tonk.storage, entry).await
+    tonk.registry
+        .upsert_roster(&tonk.storage, &tonk.operator, entry)
+        .await
 }
 
 fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
@@ -106,8 +100,7 @@ fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
                 root_did: entry.root_did,
                 provider: entry.provider,
                 email: entry.email,
-                display_name: entry.display_name,
-                last_active_at: entry.last_active_at,
+                display_name: Some(entry.display_name),
             })
             .collect(),
     }
@@ -117,7 +110,10 @@ fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
 /// written back so the stored roster converges as a side effect.
 /// Inactive entries are served as-of their profile's last activation.
 async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWorkerError> {
-    let mut roster = tonk.registry.read_roster(&tonk.storage).await?;
+    let mut roster = tonk
+        .registry
+        .read_roster(&tonk.storage, &tonk.operator)
+        .await?;
     let existing = roster
         .iter()
         .find(|entry| entry.profile_name == tonk.profile_name)
@@ -125,7 +121,7 @@ async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWo
     let entry = refreshed_entry(tonk, existing.as_ref(), None).await;
     if existing.as_ref() != Some(&entry) {
         tonk.registry
-            .upsert_roster(&tonk.storage, entry.clone())
+            .upsert_roster(&tonk.storage, &tonk.operator, entry.clone())
             .await?;
     }
     match roster
@@ -163,7 +159,7 @@ pub async fn activate(
         if name != tonk.registry.initial_profile()
             && !tonk
                 .registry
-                .read_roster(&tonk.storage)
+                .read_roster(&tonk.storage, &tonk.operator)
                 .await?
                 .iter()
                 .any(|entry| entry.profile_name == name)
@@ -234,15 +230,16 @@ async fn finish_swap(
 ) -> Result<Json<ProfilesResponse>, TonkWorkerError> {
     let name = new_state.profile_name.clone();
     let registry = new_state.registry.clone();
-    let mut roster = registry.read_roster(&new_state.storage).await?;
+    let mut roster = registry
+        .read_roster(&new_state.storage, &new_state.operator)
+        .await?;
     let existing = roster
         .iter()
         .find(|entry| entry.profile_name == name)
         .cloned();
-    let mut entry = refreshed_entry(&new_state, existing.as_ref(), None).await;
-    entry.last_active_at = now_unix();
+    let entry = refreshed_entry(&new_state, existing.as_ref(), None).await;
     registry
-        .upsert_roster(&new_state.storage, entry.clone())
+        .upsert_roster(&new_state.storage, &new_state.operator, entry.clone())
         .await?;
     match roster
         .iter_mut()
@@ -257,15 +254,15 @@ async fn finish_swap(
 
     // Catch up on whatever account the swapped-in profile is attached
     // to, exactly as a boot would. Fire-and-forget: account-service
-    // latency must not delay the switch, and `restore_spaces` no-ops
-    // when the profile is unlinked.
+    // latency must not delay the switch. Spaces themselves need no
+    // catch-up pass — the Hub renders from the account directory and
+    // the data-plane routes mount directory spaces on first use.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let state = state.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let tonk = state.read().await;
             super::account_state::ensure_account_state(&tonk).await;
-            super::restore::restore_spaces(&tonk).await;
         });
     }
 

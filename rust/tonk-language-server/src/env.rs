@@ -23,13 +23,32 @@ use dialog_common::ConditionalSync;
 use tonk_schema::concept::QueryEnv;
 use tonk_schema::query_source::Source;
 
+/// Which repository a document's branch lives in.
+///
+/// The profile is not a repository you can name: it lives in its
+/// own namespace, reached through a distinct handle on the host
+/// (`profile_repository()` rather than `repository(name)`). A
+/// bare string can't express that, so the seam carries the
+/// distinction as a type instead — otherwise a profile document
+/// resolves to a *named* repo that does not exist, the host
+/// returns `None`, and completion silently degrades to built-ins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Repo {
+    /// The profile-as-repository, with the profile's name. The
+    /// name is carried for forward compatibility; the profile
+    /// endpoint is singular today.
+    Profile(String),
+    /// A named repository (a `did:key` or plain name).
+    Named(String),
+}
+
 /// The port the host implements so the language server can open
 /// the live `(source, env)` pair for a document.
 ///
-/// The language server parses a document URI to `(repo, branch)`
-/// and calls [`open`](Self::open) per request. Returning `None`
-/// is fine: the language server then sees only the document's
-/// own declarations.
+/// The language server parses a document URI to a [`Repo`] plus a
+/// branch and calls [`open`](Self::open) per request. Returning
+/// `None` is fine: the language server then sees only the
+/// document's own declarations.
 ///
 /// `?Send` on wasm because the host's opened value often borrows
 /// a non-`Send` reactor session.
@@ -43,7 +62,7 @@ pub trait EnvProvider {
 
     /// Open the live `(source, env)` pair for `(repo, branch)`,
     /// or `None` when the host knows no such branch.
-    async fn open(&self, repo: &str, branch: &str) -> Option<Self::Opened>;
+    async fn open(&self, repo: &Repo, branch: &str) -> Option<Self::Opened>;
 }
 
 /// A live source + env pair, held just long enough for one LSP
@@ -130,7 +149,7 @@ impl Opened for NoOpened {
 impl EnvProvider for NoEnv {
     type Opened = NoOpened;
 
-    async fn open(&self, _repo: &str, _branch: &str) -> Option<Self::Opened> {
+    async fn open(&self, _repo: &Repo, _branch: &str) -> Option<Self::Opened> {
         None
     }
 }

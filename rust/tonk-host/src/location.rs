@@ -124,15 +124,21 @@ impl FromStr for Location {
     }
 }
 
+impl fmt::Display for Repo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Repo::Profile(name) => write!(f, "{PROFILE_PREFIX}{name}"),
+            Repo::Named(name) => write!(f, "{name}"),
+        }
+    }
+}
+
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(branch) = &self.branch {
             write!(f, "{branch}@")?;
         }
-        match &self.repo {
-            Repo::Profile(name) => write!(f, "{PROFILE_PREFIX}{name}"),
-            Repo::Named(name) => write!(f, "{name}"),
-        }
+        write!(f, "{}", self.repo)
     }
 }
 

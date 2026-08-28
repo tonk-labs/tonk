@@ -17,6 +17,14 @@ use dialog_credentials::Ed25519Signer;
 use dialog_remote_s3::helpers::LocalS3;
 use dialog_remote_s3::{Address, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
+
+/// The authorizer this server runs, revocation checking included.
+type ServerAuthorizer = UcanAuthorizer<
+    dialog_remote_ucan_s3::DefaultResolver,
+    crate::revocation::checker::IndexedRevocations<
+        Arc<crate::revocation::index::MemoryRevocationIndex>,
+    >,
+>;
 use dialog_varsig::Principal;
 use hyper::body::Incoming;
 use hyper::header::{
@@ -59,6 +67,11 @@ struct RegistrationState {
     sender: AnnouncedEmail,
     service: Ed25519Signer,
     origin: String,
+    purger: crate::deletion::NativeSpacePurger,
+    /// Revocations recorded by `/ucan/revoke`. In memory, as the
+    /// worker's KV namespace is. Shared with the authorizer, which
+    /// reads it back while verifying every presented chain.
+    revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
 }
 
 /// Captures activation emails and announces them on stdout, so a human
@@ -102,7 +115,16 @@ impl AccessServer {
         let credential = S3Credential::new(access_key, secret_key);
 
         // Create UcanAuthorizer - the core of our service
-        let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(address, Some(credential))));
+        let purger = crate::deletion::NativeSpacePurger::new(address.clone(), credential.clone());
+        // The authorizer checks revocation itself, per link, during the
+        // chain walk. It reads the same index `/ucan/revoke` writes, so
+        // a revocation recorded by one request governs the next.
+        let revocations: Arc<crate::revocation::index::MemoryRevocationIndex> = Default::default();
+        let authorizer = Arc::new(RwLock::new(
+            UcanAuthorizer::new(address, Some(credential)).with_revocations(
+                crate::revocation::checker::IndexedRevocations(revocations.clone()),
+            ),
+        ));
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -142,6 +164,8 @@ impl AccessServer {
             // Activation links open on the page origin, which behind a
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
+            purger,
+            revocations,
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -189,6 +213,27 @@ impl AccessServer {
     }
 }
 
+/// The host this request was addressed to.
+///
+/// A client sends an origin-form request line, the path alone, and
+/// carries the host in the `Host` header, so the URI's own authority is
+/// absent for every real request. The worker reads `req.url()`, which
+/// reassembles the two; natively the header is the only source, and
+/// falling back to an empty authority would mint `did:web::...`.
+fn request_host(req: &Request<Incoming>) -> String {
+    req.uri()
+        .authority()
+        .map(ToString::to_string)
+        .or_else(|| {
+            req.headers()
+                .get(hyper::header::HOST)?
+                .to_str()
+                .ok()
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+}
+
 /// Handle an incoming UCAN access service request.
 ///
 /// This implements the same logic as the Cloudflare Worker handler:
@@ -196,10 +241,13 @@ impl AccessServer {
 /// - PUT /@ → Store a shortcut target, respond with its hash
 /// - GET /@/{hash} → Permanent relative redirect to the stored target
 /// - GET /.well-known/tonk → Deployment configuration, when configured
+/// - GET /.well-known/did.json → The service's own DID document
+/// - GET /customer/{domain}/{local}/did.json → The DID document for an
+///   email address
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
-    authorizer: Arc<RwLock<UcanAuthorizer>>,
+    authorizer: Arc<RwLock<ServerAuthorizer>>,
     shortcuts: Shortcuts,
     deployment: Arc<Option<tonk_worker_api::DeploymentConfig>>,
     registration: Arc<RegistrationState>,
@@ -248,12 +296,7 @@ async fn handle_request(
         return Ok(cors_response(response));
     }
     if req.method() == Method::GET && req.uri().path() == "/.well-known/did.json" {
-        let host = req
-            .uri()
-            .authority()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let document = did_document(&host, &registration.service);
+        let document = did_document(&request_host(&req), &registration.service);
         return Ok(cors_response(
             Response::builder()
                 .status(StatusCode::OK)
@@ -283,6 +326,40 @@ async fn handle_request(
                 .unwrap(),
         ));
     }
+    // Test-only shortcut past the registration ceremony: make a subject
+    // servable by provisioning it under a synthetic active customer.
+    // For tests whose subject is a repository DID they hold no signer
+    // for; anything testing registration itself drives the real
+    // endpoints.
+    if req.method() == Method::POST && req.uri().path() == "/_test/provision" {
+        use http_body_util::BodyExt;
+
+        let body = req.into_body().collect().await.map(|c| c.to_bytes());
+        let subject = body
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| value["subject"].as_str().map(str::to_owned));
+        let Some(subject) = subject else {
+            return Ok(cors_response(
+                Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Full::new(Bytes::from("a subject is required")))
+                    .unwrap(),
+            ));
+        };
+        return Ok(cors_response(
+            match provision_for_tests(&registration.store, &subject).await {
+                Ok(()) => Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+                Err(error) => Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Full::new(Bytes::from(error.to_string())))
+                    .unwrap(),
+            },
+        ));
+    }
     if req.method() == Method::GET && req.uri().path() == "/_test/ingest" {
         let count = registration.ingest.invocations().unwrap_or_default();
         return Ok(cors_response(
@@ -307,13 +384,66 @@ async fn handle_request(
                 .unwrap(),
         ));
     }
+    // Lookup by email address. Mirrors the Worker handler, and is matched
+    // before the probe below: that one strips `/customer/` and treats the
+    // whole remainder as a DID, so it would otherwise swallow this path.
+    if req.method() == Method::GET
+        && let Some(rest) = req.uri().path().strip_prefix("/customer/")
+        && let Some(segments) = rest.strip_suffix("/did.json")
+        && let Some((domain, local)) = segments.split_once('/')
+        && !local.contains('/')
+    {
+        use crate::lookup::{address_from_segments, customer_did, resolve};
+
+        let host = request_host(&req);
+        let found = match address_from_segments(domain, local) {
+            Some(address) => match customer_did(&host, &address) {
+                Some(did) => resolve(&registration.store, &did, &address).await,
+                None => Ok(None),
+            },
+            None => Ok(None),
+        };
+        let response = match found {
+            // Only a settled answer is cacheable: a 202 and a 404 are
+            // both about to change, and the change is what a caller
+            // polling an address is waiting on.
+            Ok(Some(found)) => Response::builder()
+                .status(StatusCode::from_u16(found.status).expect("lookup status is valid"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(
+                    "Cache-Control",
+                    if found.status == 200 {
+                        "public, max-age=60"
+                    } else {
+                        "no-store"
+                    },
+                )
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&found.document).expect("did document serializes"),
+                )))
+                .unwrap(),
+            Ok(None) => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CONTENT_TYPE, "application/json")
+                .header("Cache-Control", "no-store")
+                .body(Full::new(Bytes::from(
+                    r#"{"error":"no customer for this address"}"#,
+                )))
+                .unwrap(),
+            Err(_) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Full::new(Bytes::from("Customer registry is unavailable")))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     // Registration state probe, polled by enrolling clients. Mirrors the
     // Worker handler.
     if req.method() == Method::GET
         && let Some(did) = req.uri().path().strip_prefix("/customer/")
     {
         use crate::store::Store;
-        use tonk_account::customer::{Receipt, RegistrationError};
+        use tonk_account::customer::{CustomerStatus, Receipt, RegistrationError};
 
         let response = match registration.store.customer(did).await {
             Ok(Some(customer)) => match customer.did.parse() {
@@ -321,6 +451,10 @@ async fn handle_request(
                     let receipt = Receipt {
                         customer: parsed,
                         status: customer.status,
+                        // Only for a served customer; see the worker twin.
+                        provider: (customer.status == CustomerStatus::Active).then(|| {
+                            format!("{}/ucan/", registration.origin.trim_end_matches('/'))
+                        }),
                     };
                     Response::builder()
                         .status(StatusCode::OK)
@@ -393,6 +527,97 @@ async fn handle_request(
 
     // Registration commands ride the same endpoint; anything else falls
     // through to the presign path untouched. Mirrors the Worker handler.
+    if crate::deletion::is_deletion(&body_bytes) {
+        let response = match crate::deletion::delete(
+            &registration.store,
+            &registration.purger,
+            &body_bytes,
+            unix_now(),
+        )
+        .await
+        {
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("deletion receipt serializes"),
+                )))
+                .unwrap(),
+            Err(error) => Response::builder()
+                .status(error.status())
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({ "error": error }))
+                        .expect("deletion refusal serializes"),
+                )))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
+    if crate::deletion::is_customer_deletion(&body_bytes) {
+        let response = if crate::deletion::command_for_native_handler(&body_bytes)
+            == crate::deletion::CUSTOMER_PLAN_COMMAND.map(str::to_string)
+        {
+            match crate::deletion::customer_plan(&registration.store, &body_bytes, unix_now()).await
+            {
+                Ok(plan) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&plan).expect("deletion plan serializes"),
+                    )))
+                    .unwrap(),
+                Err(error) => deletion_error_response(error),
+            }
+        } else {
+            match crate::deletion::delete_customer(
+                &registration.store,
+                &registration.purger,
+                &body_bytes,
+                unix_now(),
+            )
+            .await
+            {
+                Ok(receipt) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&receipt).expect("deletion receipt serializes"),
+                    )))
+                    .unwrap(),
+                Err(error) => deletion_error_response(error),
+            }
+        };
+        return Ok(cors_response(response));
+    }
+    // Revocation writes to the index rather than reading it, so it is
+    // answered before the presign path, mirroring the worker.
+    if crate::revoke::is_revocation(&body_bytes) {
+        let response = match crate::revoke::revoke(
+            &registration.store,
+            &registration.revocations,
+            &body_bytes,
+        )
+        .await
+        {
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("revoke receipt serializes"),
+                )))
+                .unwrap(),
+            Err(error) => Response::builder()
+                .status(error.status())
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({ "error": error }))
+                        .expect("revoke refusal serializes"),
+                )))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     if registration_command(&body_bytes).is_some() {
         let env = Registration {
             store: &registration.store,
@@ -402,6 +627,11 @@ async fn handle_request(
             activation_ttl: 24 * 60 * 60,
             now: unix_now(),
             container: &body_bytes,
+            // The same index the authorizer reads, so a revocation
+            // recorded by `/ucan/revoke` governs registration too.
+            revocations: &crate::revocation::checker::IndexedRevocations(
+                registration.revocations.clone(),
+            ),
         };
         let response = match env.handle().await {
             Ok(receipt) => Response::builder()
@@ -426,6 +656,82 @@ async fn handle_request(
     // Authorize the UCAN container using UcanAuthorizer
     let authorizer = authorizer.read().await;
     let outcome = authorizer.authorize(&body_bytes).await;
+    // Test visibility: one line per permit request, so a CI job log
+    // shows whether a publish or resolve ever arrived and how it fared
+    // — the service worker's own console never reaches those logs.
+    {
+        let command = dialog_ucan_core::InvocationChain::try_from(body_bytes.as_ref())
+            .map(|chain| chain.command().0.join("/"))
+            .unwrap_or_else(|_| "?".into());
+        let subject =
+            crate::provisioning::container_subject(&body_bytes).unwrap_or_else(|| "?".into());
+        println!(
+            "ACCESS_UCAN command=/{command} subject={subject} authorized={}",
+            outcome.is_ok()
+        );
+    }
+    if outcome.is_ok()
+        && let Some(subject) = crate::deletion::subject(&body_bytes)
+    {
+        use crate::store::{ConsumerDeletionState, Store};
+        match registration.store.consumer(subject.as_str()).await {
+            Ok(Some(consumer)) if consumer.deletion_state != ConsumerDeletionState::Active => {
+                return Ok(cors_response(
+                    Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Full::new(Bytes::from(
+                            "Authorization failed: hosted space is deleting or deleted",
+                        )))
+                        .unwrap(),
+                ));
+            }
+            Err(error) => {
+                return Ok(cors_response(
+                    Response::builder()
+                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                        .body(Full::new(Bytes::from(format!(
+                            "consumer deletion state unavailable: {error}"
+                        ))))
+                        .unwrap(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    // The provisioning gate, mirroring the worker: a subject is served
+    // only while an active customer pays for it. Registration commands
+    // returned above, so enrolling and activating stay possible while
+    // this denies the data plane.
+    if outcome.is_ok() {
+        match crate::provisioning::container_subject(&body_bytes) {
+            Some(subject) => match crate::provisioning::screen(&registration.store, &subject).await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(reason)) => {
+                    println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
+                    return Ok(cors_response(authorize_error_response(
+                        StatusCode::FORBIDDEN,
+                        &reason,
+                    )));
+                }
+                Err(error) => {
+                    // Fails closed, but as our own unavailability rather
+                    // than a denial billed to the customer.
+                    eprintln!("presign refused, control store unreachable: {error}");
+                    return Ok(cors_response(authorize_error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        &unavailable_provisioning(),
+                    )));
+                }
+            },
+            None => {
+                return Ok(cors_response(authorize_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &unavailable_provisioning(),
+                )));
+            }
+        }
+    }
     // Metering mirrors the worker: permits and attributable denials are
     // recorded, infra failures and unparseable containers are not.
     let metered = match &outcome {
@@ -472,16 +778,32 @@ async fn handle_request(
                 )),
             }
         }
-        Err(e) => Ok(cors_response(
+        // The refusal travels as itself. Rendering it into prose here
+        // would undo the point of the authorizer naming what failed: a
+        // client parsing the body could no longer tell an expired proof
+        // from a revoked one, and every denial through this server
+        // would arrive unclassified.
+        Err(dialog_remote_s3::S3Error::Authorization(reason)) => Ok(cors_response(
+            authorize_error_response(authorize_status(&reason), &reason),
+        )),
+        Err(other) => Ok(cors_response(
             Response::builder()
                 .status(StatusCode::FORBIDDEN)
                 .body(Full::new(Bytes::from(format!(
-                    "Authorization failed: {}",
-                    e
+                    "Authorization failed: {other}"
                 ))))
                 .unwrap(),
         )),
     }
+}
+
+/// The status an authorization refusal answers with.
+///
+/// Shares the worker's mapping rather than restating it, so the two
+/// deployments cannot answer the same refusal differently.
+fn authorize_status(reason: &dialog_capability::access::AuthorizeError) -> StatusCode {
+    StatusCode::from_u16(crate::error::Refusal::Authorization(reason.clone()).status())
+        .unwrap_or(StatusCode::FORBIDDEN)
 }
 
 /// Current time as unix seconds.
@@ -490,6 +812,71 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock is past the epoch")
         .as_secs()
+}
+
+/// Provision `subject` under a synthetic active customer, so the
+/// provisioning gate serves it. Idempotent, and derived from the
+/// subject so two subjects never collide on one provider row.
+async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Result<()> {
+    use crate::store::{ConsumerKind, SIGNUP_PLAN, Store};
+
+    let provider = format!("did:test:provider-for-{subject}");
+    if store
+        .customer(&provider)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .is_none()
+    {
+        store
+            .enroll_customer(&provider, "tests@example.com", b"", SIGNUP_PLAN, 0)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        store
+            .activate_customer(&provider, "test", 1)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+    }
+    store
+        .add_consumer(subject, &provider, 0, ConsumerKind::Space)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(())
+}
+
+/// The refusal a gate that could not reach a verdict answers with.
+fn unavailable_provisioning() -> dialog_capability::access::AuthorizeError {
+    dialog_capability::access::AuthorizeError::Unavailable {
+        detail: "provisioning registry unavailable, retry shortly".to_string(),
+    }
+}
+
+/// Answer a refusal as the worker does: the serde-tagged
+/// [`AuthorizeError`] itself, which is what the client parses back out.
+/// A plain-text body would classify as unclassified on the other side.
+fn authorize_error_response(
+    status: StatusCode,
+    reason: &dialog_capability::access::AuthorizeError,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            serde_json::to_vec(reason).expect("authorize refusal serializes"),
+        )))
+        .unwrap()
+}
+
+fn deletion_error_response(
+    error: crate::deletion::Error,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    Response::builder()
+        .status(error.status())
+        .header(CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            serde_json::to_vec(&serde_json::json!({ "error": error }))
+                .expect("deletion refusal serializes"),
+        )))
+        .unwrap()
 }
 
 /// PUT /@ → validate and store a shortcut target, mirroring the
@@ -767,7 +1154,7 @@ mod blob_snapshot {
             if let Some(token) = &token {
                 params.push(("continuation-token".to_string(), token.clone()));
             }
-            let permit = permit(credential, address, "GET", "/", Some(params)).await?;
+            let permit = permit(credential, address, "GET", "", Some(params)).await?;
             let body = perform(permit, None).await?.text().await?;
             let (page, next) = parse_listing(&body);
             objects.extend(page);
@@ -790,7 +1177,7 @@ mod blob_snapshot {
             let path = entry?.path();
             let Some(key) = key_for(&path) else { continue };
             let body = std::fs::read(&path)?;
-            let permit = permit(credential, address, "PUT", &format!("/{key}"), None).await?;
+            let permit = permit(credential, address, "PUT", &key, None).await?;
             perform(permit, Some(body)).await?;
             restored += 1;
         }
@@ -817,8 +1204,7 @@ mod blob_snapshot {
                     continue;
                 }
                 let fetched = async {
-                    let permit =
-                        permit(&credential, &address, "GET", &format!("/{key}"), None).await?;
+                    let permit = permit(&credential, &address, "GET", key, None).await?;
                     let body = perform(permit, None).await?.bytes().await?;
                     let target = file_for(&dir, key);
                     let staged = target.with_extension("tmp");

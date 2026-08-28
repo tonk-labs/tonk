@@ -3,19 +3,13 @@
 //! surface, JSON shapes, and status codes as the Cloudflare Worker.
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
-use dialog_ucan_core::subject::Subject;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
-use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain};
-use dialog_varsig::{Did, Principal};
-use tonk_account::backup::{
-    ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABILITY_V1, AccountSpotBackup,
-    AccountSpotSummary,
-};
-use tonk_account::handoff::{ConsumedLink, LinkCreateRequest, LinkSecretRequest, ResolvedLink};
+use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_varsig::Principal;
 use tonk_account_service::helpers::AccountServer;
 
 const ROOT_PRF: [u8; 32] = [7u8; 32];
@@ -24,34 +18,13 @@ const DEVICE_SEED: [u8; 32] = [8u8; 32];
 /// Build a device-signed invocation container for the account's first
 /// device, using the production builder against the `root → device`
 /// delegation minted for account creation.
-async fn spot_backup(root: &Did, name: Option<&str>, remote: &str) -> Vec<u8> {
-    let space = Ed25519Signer::import(&[42; 32]).await.unwrap();
-    let subject = space.did();
-    let delegation = DelegationBuilder::new()
-        .issuer(space)
-        .audience(root)
-        .subject(Subject::Specific(subject))
-        .command(vec![])
-        .try_build()
-        .await
-        .unwrap();
-    let chain = DelegationChain::new(delegation);
-    serde_json::to_vec(&AccountSpotBackup {
-        chain_hex: hex::encode(chain.to_bytes().unwrap()),
-        remote_url: Some(remote.to_string()),
-        revocation_url: None,
-        name: name.map(str::to_string),
-    })
-    .unwrap()
-}
-
 async fn container_for(
     root_prf: [u8; 32],
     device_seed: [u8; 32],
     command: Vec<String>,
     args: BTreeMap<String, Promised>,
 ) -> Vec<u8> {
-    let root = tonk_identity::derive::derive_root_signer(&root_prf)
+    let root = dialog_credentials::Ed25519Signer::import(&root_prf)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&device_seed).await.unwrap();
@@ -79,7 +52,7 @@ async fn container_with_link(
 }
 
 async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) -> Vec<u8> {
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -90,7 +63,7 @@ async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) 
     let delegation = chain.proofs().last().unwrap().clone();
     let cid = delegation.to_cid();
     let invocation = InvocationBuilder::new()
-        .issuer(device)
+        .issuer(dialog_credentials::Signer::from(device))
         .audience(&root_did)
         .subject(&root_did)
         .command(command)
@@ -106,8 +79,8 @@ async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) 
     InvocationChain::new(invocation, proofs).to_bytes().unwrap()
 }
 
-async fn account_creation(email: &str) -> Vec<u8> {
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+async fn account_registration(email: &str) -> (Vec<u8>, Ed25519Signer, DelegationChain) {
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -126,7 +99,63 @@ async fn account_creation(email: &str) -> Vec<u8> {
     )
     .await
     .unwrap();
-    hex::decode(ceremony.invocation_hex).unwrap()
+    (hex::decode(ceremony.invocation_hex).unwrap(), device, grant)
+}
+
+async fn account_creation(email: &str) -> Vec<u8> {
+    account_registration(email).await.0
+}
+
+/// Deletion finalizes with the device's delegated authority — the
+/// exact `root → device` grant registered at creation — not a
+/// root-signed passkey ceremony.
+async fn account_deletion(device: &Ed25519Signer, link: &DelegationChain, email: &str) -> Vec<u8> {
+    container_with_link(
+        device,
+        link,
+        vec!["account".into(), "delete".into()],
+        BTreeMap::from([(
+            "confirmedEmail".to_string(),
+            Promised::String(email.to_string()),
+        )]),
+    )
+    .await
+}
+
+#[dialog_common::test]
+async fn it_deletes_account_state_and_releases_the_email_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let email = "delete-me@example.com";
+
+    let (creation, device, link) = account_registration(email).await;
+    client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(creation)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let deleted = client
+        .post(format!("{}/account/delete", server.endpoint))
+        .body(account_deletion(&device, &link, email).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 200);
+    let receipt: serde_json::Value = deleted.json().await.unwrap();
+    assert_eq!(receipt["email"], email);
+
+    let recreated = client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(account_creation(email).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recreated.status(), 201);
+
+    server.stop().await;
 }
 
 #[dialog_common::test]
@@ -373,7 +402,14 @@ async fn it_rejects_an_expired_invocation() {
     assert_eq!(response.status(), 401);
     let error: serde_json::Value = response.json().await.unwrap();
     assert_eq!(error["error"]["code"], "UNAUTHORIZED");
-    assert_eq!(error["error"]["message"], "invocation has expired");
+    // Expiry is dialog's finding now, judged against the verification
+    // context's clock rather than a bound compared here, so the wording is
+    // theirs. The refusal and its code are what this pins.
+    let message = error["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.to_lowercase().contains("expired"),
+        "expected an expiry refusal, got: {message}"
+    );
 
     server.stop().await;
 }
@@ -420,10 +456,7 @@ async fn it_answers_preflight_with_cors_headers() {
     assert_eq!(headers["access-control-allow-origin"], "*");
     assert_eq!(headers["access-control-allow-methods"], "POST, OPTIONS");
     assert_eq!(headers["access-control-allow-headers"], "Content-Type");
-    assert_eq!(
-        headers["access-control-expose-headers"],
-        "Content-Type, X-Tonk-Account-Spots"
-    );
+    assert_eq!(headers["access-control-expose-headers"], "Content-Type");
 
     server.stop().await;
 }
@@ -439,7 +472,7 @@ async fn it_explains_an_already_registered_email_over_http() {
     let email = "person@example.com";
 
     let create = async |client: &reqwest::Client, prf: [u8; 32], seed: [u8; 32]| {
-        let root = tonk_identity::derive::derive_root_signer(&prf)
+        let root = dialog_credentials::Ed25519Signer::import(&prf)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&seed).await.unwrap();
@@ -497,7 +530,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     // POST /accounts -> create the account from a root-signed ceremony.
     // No code ceremony: address control is proven by customer activation
     // at the access service.
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -558,19 +591,44 @@ async fn it_drives_the_full_ceremony_over_http() {
 
     // Establishment is set-if-absent: a later valid candidate receives
     // the stored creation winner, never its own bytes.
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
-    let establishment = tonk_identity::ceremony::establish_account_repository(
-        root,
-        "https://other.example/ucan/".into(),
-    )
-    .await
-    .unwrap();
-    assert_ne!(establishment.descriptor_hex, expected_descriptor);
+    // Built inline: the browser no longer carries an establish ceremony
+    // (legacy pre-descriptor accounts reset), but the server keeps the
+    // set-if-absent arbitration, so the test speaks the wire form.
+    let descriptor =
+        tonk_account::AccountRepositoryDescriptorV1::sign(&root, "https://other.example/ucan/")
+            .await
+            .unwrap();
+    let candidate_hex = hex::encode(descriptor.bytes());
+    assert_ne!(candidate_hex, expected_descriptor);
+    let root_did = root.did();
+    let invocation = InvocationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(root))
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(vec![
+            "account".into(),
+            "repository".into(),
+            "establish".into(),
+        ])
+        .arguments(BTreeMap::from([(
+            "repositoryDescriptor".to_string(),
+            Promised::String(candidate_hex),
+        )]))
+        .proofs(vec![])
+        .issue_now()
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .unwrap();
+    let body = InvocationChain::new(invocation, HashMap::new())
+        .to_bytes()
+        .unwrap();
     let response = client
         .post(format!("{base}/account/repository/establish"))
-        .body(hex::decode(establishment.invocation_hex).unwrap())
+        .body(body)
         .send()
         .await
         .unwrap();
@@ -583,7 +641,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     // ceremony; it does not need an already registered device to sign.
     let second = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
     let second_did = second.did().to_string();
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let ceremony = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
@@ -594,13 +652,34 @@ async fn it_drives_the_full_ceremony_over_http() {
         dialog_ucan_core::DelegationChain::try_from(second_grant_bytes.as_slice()).unwrap();
     let response = client
         .post(format!("{base}/devices/link"))
-        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .body(hex::decode(&ceremony.invocation_hex).unwrap())
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
     let linked: serde_json::Value = response.json().await.unwrap();
     assert_eq!(linked["descriptorHex"], expected_descriptor);
+    let second_attachment = linked["attachmentId"].as_str().unwrap();
+
+    // Browser sign-out leaves the account-service attachment active. A later
+    // login with the same passkey mints a new invocation and nonce-bearing
+    // root-to-device grant, but must recover the active generation.
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
+        .await
+        .unwrap();
+    let relink = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
+        .await
+        .unwrap();
+    assert_ne!(relink.delegation_hex, ceremony.delegation_hex);
+    let response = client
+        .post(format!("{base}/devices/link"))
+        .body(hex::decode(relink.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let relinked: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(relinked["attachmentId"], second_attachment);
 
     // POST /devices/list -> the newly registered device shows up.
     let body = container_with_link(
@@ -652,7 +731,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     // artifact only ever names its own grant.
     let second_grant_cid = second_row["delegationCid"].as_str().unwrap().to_string();
     assert_eq!(second_grant_cid, second_grant.proof_cids()[0].to_string());
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
     let revocation = tonk_identity::revocation::mint_root_revocation(
@@ -695,21 +774,6 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(revoked["targetCid"], second_grant_cid);
     assert_eq!(revoked["published"], true);
 
-    // The unauthenticated global endpoint verifies the same artifact and
-    // treats an identical publication as idempotent.
-    let response = client
-        .post(format!("{base}/revocations"))
-        .header("Content-Type", "application/cbor")
-        .body(revocation.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 202);
-    let published: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(published["targetCid"], second_grant_cid);
-    assert_eq!(published["artifactCid"], revoked["artifactCid"]);
-    assert_eq!(published["stored"], false);
-
     let body = container_with_link(
         &device,
         &first_grant,
@@ -734,134 +798,39 @@ async fn it_drives_the_full_ceremony_over_http() {
         "revoked"
     );
 
-    // A native profile creates a bearer-secret handoff. The browser
-    // resolves its metadata, completes it with the passkey root, and
-    // the native caller consumes the resulting delegation exactly once.
-    let secret = "1111111111111111111111111111111111111111111111111111111111111111";
-    let token_hash = blake3::hash(&hex::decode(secret).unwrap())
-        .to_hex()
-        .to_string();
+    // A command-line profile is registered through the same root ceremony
+    // the browser runs when it approves a `tonk account login` callback.
     let cli = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
-    let cli_did = cli.did().to_string();
-    let response = client
-        .post(format!("{base}/links"))
-        .json(&LinkCreateRequest {
-            token_hash: token_hash.clone(),
-            device_did: cli_did.clone(),
-            device_name: "terminal".to_string(),
-        })
-        .send()
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
-    assert_eq!(response.status(), 201);
-    let response = client
-        .post(format!("{base}/links/resolve"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
+    let ceremony = tonk_identity::ceremony::link_device(root, cli.did(), "terminal".into())
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let pending: ResolvedLink = response.json().await.unwrap();
-    assert_eq!(pending.token_hash, token_hash);
-    assert_eq!(pending.device_did, cli_did);
-    assert_eq!(pending.device_name, "terminal");
-
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
-        .await
-        .unwrap();
-    let ceremony = tonk_identity::ceremony::complete_link(
-        root,
-        token_hash.clone(),
-        cli.did(),
-        "terminal".into(),
-    )
-    .await
-    .unwrap();
-    let expected_delegation = ceremony.delegation_hex.clone();
+    let cli_grant_bytes = hex::decode(&ceremony.delegation_hex).unwrap();
+    let cli_grant = DelegationChain::try_from(cli_grant_bytes.as_slice()).unwrap();
     let response = client
-        .post(format!("{base}/links/complete"))
+        .post(format!("{base}/devices/link"))
         .body(hex::decode(ceremony.invocation_hex).unwrap())
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let response = client
-        .post(format!("{base}/links/consume"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let consumed: ConsumedLink = response.json().await.unwrap();
-    assert_eq!(consumed.delegation_hex, expected_delegation);
-    assert_eq!(consumed.credential_id, "cred-1");
-    assert_eq!(consumed.descriptor_hex, expected_descriptor);
-    assert_eq!(consumed.attachment_id.len(), 64);
-    let response = client
-        .post(format!("{base}/links/consume"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.json::<ConsumedLink>().await.unwrap(), consumed);
-
-    let completed_link =
-        DelegationChain::try_from(hex::decode(&consumed.delegation_hex).unwrap().as_slice())
-            .unwrap();
-    let activation = container_with_link(
-        &cli,
-        &completed_link,
-        vec!["account".into(), "link".into(), "activate".into()],
-        [
-            (
-                "tokenHash".to_string(),
-                Promised::String(token_hash.clone()),
-            ),
-            (
-                "attachmentId".to_string(),
-                Promised::String(consumed.attachment_id.clone()),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/links/activate"))
-        .body(activation)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-
-    let response = client
-        .post(format!("{base}/links/consume"))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 401);
+    let linked: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(linked["descriptorHex"], expected_descriptor);
+    let cli_attachment = linked["attachmentId"].as_str().unwrap().to_string();
 
     // Logout detaches the exact generation without presenting the reusable
     // account grant, and replay is idempotent.
-    let root_did = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+    let root_did = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap()
         .did();
     let detach = tonk_account::detach::SignedDetachIntent::sign(
         &dialog_credentials::SignerCredential::from(cli.clone()),
         &root_did,
-        &consumed.attachment_id,
-        &completed_link.proof_cids()[0].to_string(),
+        &cli_attachment,
+        &cli_grant.proof_cids()[0].to_string(),
         1,
     )
     .await
@@ -888,265 +857,4 @@ async fn it_drives_the_full_ceremony_over_http() {
         response.json::<serde_json::Value>().await.unwrap()["outcome"],
         "alreadyDetached"
     );
-
-    // POST /chains/put then POST /chains/get -> round-trip chain bytes.
-    let chain_bytes = b"a delegation chain, backed up".to_vec();
-    let mut put_args = BTreeMap::new();
-    put_args.insert(
-        "chain".to_string(),
-        Promised::String(hex::encode(&chain_bytes)),
-    );
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "chain".into(), "put".into()],
-        put_args,
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/chains/put"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let put_result: serde_json::Value = response.json().await.unwrap();
-    let key = put_result["key"].as_str().unwrap().to_string();
-
-    // POST /chains/list -> the key we just put shows up.
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "chain".into(), "list".into()],
-        BTreeMap::new(),
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/chains/list"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(
-        response
-            .headers()
-            .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some(ACCOUNT_SPOTS_CAPABILITY_V1)
-    );
-    assert!(
-        response
-            .headers()
-            .get("access-control-expose-headers")
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.split(',').any(|name| name
-                .trim()
-                .eq_ignore_ascii_case(ACCOUNT_SPOTS_CAPABILITY_HEADER))),
-        "CORS must expose the account-spots capability header"
-    );
-    let keys: Vec<String> = response.json().await.unwrap();
-    assert!(keys.contains(&key));
-
-    let mut get_args = BTreeMap::new();
-    get_args.insert("key".to_string(), Promised::String(key));
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "chain".into(), "get".into()],
-        get_args,
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/chains/get"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(
-        response.headers().get("content-type").unwrap(),
-        "application/octet-stream"
-    );
-    let round_tripped = response.bytes().await.unwrap();
-    assert_eq!(round_tripped.as_ref(), chain_bytes.as_slice());
-
-    // Semantic account-spot inventory advances one subject head while the
-    // generic list/get routes remain unchanged.
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
-        .await
-        .unwrap();
-    let named = spot_backup(&root.did(), Some("garden"), "https://one.example/ucan/").await;
-    let mut args = BTreeMap::new();
-    args.insert("chain".to_string(), Promised::String(hex::encode(&named)));
-    let response = client
-        .post(format!("{base}/chains/put"))
-        .body(
-            container_with_link(
-                &device,
-                &first_grant,
-                vec!["account".into(), "chain".into(), "put".into()],
-                args,
-            )
-            .await,
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-
-    let spots = || async {
-        let body = container_with_link(
-            &device,
-            &first_grant,
-            vec!["account".into(), "chain".into(), "spots".into()],
-            BTreeMap::new(),
-        )
-        .await;
-        client
-            .post(format!("{base}/chains/spots"))
-            .body(body)
-            .send()
-            .await
-            .unwrap()
-    };
-    let rows: Vec<AccountSpotSummary> = spots().await.json().await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].name.as_deref(), Some("garden"));
-
-    let renamed = spot_backup(&root.did(), Some("orchard"), "https://two.example/ucan/").await;
-    let mut args = BTreeMap::new();
-    args.insert("chain".to_string(), Promised::String(hex::encode(&renamed)));
-    client
-        .post(format!("{base}/chains/put"))
-        .body(
-            container_with_link(
-                &device,
-                &first_grant,
-                vec!["account".into(), "chain".into(), "put".into()],
-                args,
-            )
-            .await,
-        )
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap();
-    let rows: Vec<AccountSpotSummary> = spots().await.json().await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].name.as_deref(), Some("orchard"));
-    let selected_key = rows[0].key.clone().unwrap();
-
-    let unnamed = spot_backup(&root.did(), None, "https://three.example/ucan/").await;
-    let mut args = BTreeMap::new();
-    args.insert("chain".to_string(), Promised::String(hex::encode(&unnamed)));
-    client
-        .post(format!("{base}/chains/put"))
-        .body(
-            container_with_link(
-                &device,
-                &first_grant,
-                vec!["account".into(), "chain".into(), "put".into()],
-                args,
-            )
-            .await,
-        )
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap();
-    let rows: Vec<AccountSpotSummary> = spots().await.json().await.unwrap();
-    assert_eq!(rows[0].name.as_deref(), Some("orchard"));
-    assert_eq!(rows[0].key.as_deref(), Some(selected_key.as_str()));
-
-    // A separately registered account on the same service sees no rows from
-    // the first account's root-DID namespace.
-    let other_email = "other@example.com";
-    let other_prf = [21; 32];
-    let other_seed = [22; 32];
-    let other_root = tonk_identity::derive::derive_root_signer(&other_prf)
-        .await
-        .unwrap();
-    let other_device = Ed25519Signer::import(&other_seed).await.unwrap();
-    let other_grant =
-        tonk_identity::delegation::mint_device_delegation(other_root.clone(), &other_device.did())
-            .await
-            .unwrap();
-    let other_ceremony = tonk_identity::ceremony::create_account(
-        other_root,
-        other_email.to_string(),
-        "other-credential".to_string(),
-        other_device.did(),
-        "other-device".to_string(),
-        hex::encode(other_grant.to_bytes().unwrap()),
-        "http://127.0.0.1:8080/ucan/".to_string(),
-        None,
-    )
-    .await
-    .unwrap();
-    client
-        .post(format!("{base}/accounts"))
-        .body(hex::decode(other_ceremony.invocation_hex).unwrap())
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap();
-    let response = client
-        .post(format!("{base}/chains/spots"))
-        .body(
-            container_with_link(
-                &other_device,
-                &other_grant,
-                vec!["account".into(), "chain".into(), "spots".into()],
-                BTreeMap::new(),
-            )
-            .await,
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert!(
-        response
-            .json::<Vec<AccountSpotSummary>>()
-            .await
-            .unwrap()
-            .is_empty()
-    );
-
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "chain".into(), "get".into()],
-        [("key".to_string(), Promised::String(selected_key))]
-            .into_iter()
-            .collect(),
-    )
-    .await;
-    let fetched = client
-        .post(format!("{base}/chains/get"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(fetched.bytes().await.unwrap().as_ref(), renamed.as_slice());
-
-    let revoked_body = tonk_identity::request::build_device_invocation(
-        second,
-        &second_grant,
-        vec!["account".into(), "chain".into(), "spots".into()],
-        BTreeMap::new(),
-    )
-    .await
-    .unwrap();
-    let rejected = client
-        .post(format!("{base}/chains/spots"))
-        .body(revoked_body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(rejected.status(), 403);
 }

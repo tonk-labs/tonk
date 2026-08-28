@@ -18,6 +18,7 @@ use axum::{
 use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
+use send_wrapper::SendWrapper;
 use tokio::sync::Mutex;
 use tonk_common::log;
 use tower_service::Service;
@@ -26,6 +27,32 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
+
+/// The fetch event whose lifetime owns background work started by one of its
+/// routed handlers.
+///
+/// Axum request extensions require `Send + Sync`, while browser event handles
+/// are confined to the service-worker thread. `SendWrapper` makes that
+/// confinement explicit and lets a handler add its completion promise to the
+/// originating event before the response promise settles.
+#[derive(Clone)]
+pub(crate) struct FetchLifetime(SendWrapper<FetchEvent>);
+
+impl FetchLifetime {
+    fn new(event: FetchEvent) -> Self {
+        Self(SendWrapper::new(event))
+    }
+
+    /// Keep the originating service-worker event alive until `promise`
+    /// settles.
+    pub(crate) fn extend(&self, promise: &Promise) -> Result<(), JsValue> {
+        use wasm_bindgen::JsCast as _;
+
+        let event: &FetchEvent = &self.0;
+        let extendable: &web_sys::ExtendableEvent = event.unchecked_ref();
+        extendable.wait_until(promise)
+    }
+}
 
 // Global `self.fetch(...)` in the service-worker scope. Fetches
 // issued from an SW bypass the SW's own `onfetch` listener (per
@@ -154,6 +181,7 @@ async fn handle_via_router(
     router: Arc<Mutex<Router>>,
     browser_request: Request,
     client_id: String,
+    lifetime: FetchLifetime,
     rewritten_path: Option<String>,
 ) -> Result<JsValue, JsValue> {
     let mut request: axum::http::Request<Body> = RequestConversion::from(browser_request)
@@ -175,6 +203,7 @@ async fn handle_via_router(
     if !client_id.is_empty() {
         request.extensions_mut().insert(ClientId(client_id.clone()));
     }
+    request.extensions_mut().insert(lifetime);
 
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
@@ -1646,13 +1675,62 @@ pub(crate) async fn boot_state(
     profile: Profile,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
-    let session = crate::session::open(&profile, &storage)
-        .await
-        .map_err(|e| {
-            crate::TonkWorkerError::Internal(format!("failed to open a signing session: {e}"))
-        })?;
-
     let reactor = crate::Reactor::new(profile.clone());
+    let session = match crate::session::open(&profile, &storage).await {
+        Ok(session) => session,
+        Err(error) => {
+            // A partial access branch bricks session open: a remote
+            // profile update adopted by reference leaves the head ahead
+            // of the local blocks, and the authorization walk reads
+            // entirely locally by design (its recursion-bounding env has
+            // no network reach — hydration inside it would be circular).
+            // Hydrate the access branch with a network-capable operator
+            // and retry once; offline or truly broken states surface the
+            // original error.
+            tonk_common::log!(
+                "session open failed ({error}); hydrating the access branch and retrying"
+            );
+            use dialog_operator::DeriveOperator as _;
+            let context: [u8; 16] = rand::random();
+            let operator = profile
+                .derive(context.to_vec())
+                .build(storage.clone())
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to derive a hydration operator: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            let access = reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .acquire(&operator)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to open the access branch for hydration: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            access
+                .handle()
+                .download()
+                .perform(&operator)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to hydrate the access branch: {e} (after session open failed: {error})"
+                    ))
+                })?;
+            crate::session::open(&profile, &storage)
+                .await
+                .map_err(|e| {
+                    crate::TonkWorkerError::Internal(format!(
+                        "failed to open a signing session after hydrating the access branch: {e}"
+                    ))
+                })?
+        }
+    };
+
     let state = TonkState {
         profile,
         operator: session.operator,
@@ -1727,6 +1805,11 @@ impl TonkServiceWorker {
         // Patch IDB versionchange handling before any IDB operations.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         crate::patch_idb_versionchange();
+        // And guard handler slots against events addressed to a
+        // torn-down predecessor instance (an update swap or a stop
+        // mid-transaction) — they log quietly instead of throwing.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        crate::patch_idb_dead_shims();
 
         // 1. Create storage backend
         let storage = Storage::<DefaultSpace>::default();
@@ -1756,11 +1839,9 @@ impl TonkServiceWorker {
         let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
-        // Catch up on spaces claimed/created on other devices since last
-        // boot. Fire-and-forget: account-service latency must not delay
-        // startup. `restore_spaces` itself no-ops when unlinked, so an
-        // unconditional call here is fine whether or not this profile
-        // turns out to be linked.
+        // Fire-and-forget boot chores: remote latency must not delay
+        // startup, and each step no-ops when this profile turns out to
+        // be unlinked.
         //
         // Placed here rather than right after `bootstrap_profile` above
         // because the cloneable `AppState` handle a detached task needs to
@@ -1776,7 +1857,18 @@ impl TonkServiceWorker {
                 // already have — the grandfathering path.
                 crate::router::profiles::upsert_active_entry(&tonk, None).await;
                 crate::router::account_state::ensure_account_state(&tonk).await;
-                crate::router::restore::restore_spaces(&tonk).await;
+                // Queued work whose moment has come — above all the
+                // ceremony's pre-signed custody publish, which drains
+                // with no page once activation happened anywhere.
+                crate::router::customer::drain_pending(&tonk).await;
+                // Custody left under the onboarding account is picked
+                // back up here: the link-time rotation is best-effort,
+                // and a failure there (an unhydrated account, a closed
+                // page) must not strand seeds until the next link.
+                crate::router::accreditation::rotate_from_onboarding(&tonk).await;
+                // Overlay locality stamps for the Hub's hollow-spot
+                // styling — device-local, re-stamped every boot.
+                crate::router::adopt::stamp_local_spaces(&tonk).await;
             });
         }
 
@@ -1930,7 +2022,9 @@ impl TonkServiceWorker {
             .starts_with("/api/")
             .then(|| self.sync_scheduler.enter_loading(js_sys::Date::now()));
 
-        future_to_promise(async move {
+        let lifetime = FetchLifetime::new(event);
+        let routed_lifetime = lifetime.clone();
+        let response = future_to_promise(async move {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             let _loading_guard = loading_guard;
             // Opportunistic cleanup of stale bridge sessions and view
@@ -1940,12 +2034,25 @@ impl TonkServiceWorker {
 
             match route_for(&path, &effective_client_id, &state).await {
                 Route::Handle { rewritten_path } => {
-                    handle_via_router(router, request, effective_client_id, rewritten_path).await
+                    handle_via_router(
+                        router,
+                        request,
+                        effective_client_id,
+                        routed_lifetime,
+                        rewritten_path,
+                    )
+                    .await
                 }
                 Route::Passthrough => passthrough(request, is_navigation).await,
                 Route::Reject => reject_404(),
             }
-        })
+        });
+        // Register the response synchronously so handlers may add further
+        // lifetime promises while routing is in progress. `respondWith` keeps
+        // the response itself alive, but only `waitUntil` permits the detached
+        // command dispatch registered by `/transact` to outlive that response.
+        let _ = lifetime.extend(&response);
+        response
     }
 
     /// Handles `message` events from view clients. Routes the

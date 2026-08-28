@@ -145,73 +145,6 @@ pub struct CodeRow {
     pub attempts: u32,
 }
 
-/// A short-lived browser handoff requested by a native CLI profile.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkRequest {
-    /// BLAKE3 hash of the bearer secret; the raw secret is never stored.
-    pub token_hash: String,
-    /// CLI profile DID that will receive the root delegation.
-    pub device_did: String,
-    /// Human-readable CLI device name.
-    pub device_name: String,
-    /// Account selected by browser completion.
-    pub account_id: Option<i64>,
-    /// Service-generated attachment generation.
-    pub attachment_id: Option<String>,
-    /// CID of the completed root-to-device grant.
-    pub delegation_cid: Option<String>,
-    /// Completed root-to-device delegation.
-    pub delegation_hex: Option<String>,
-    /// Account repository descriptor copied alongside the delegation.
-    pub descriptor_hex: Option<String>,
-    /// Creation time, as unix seconds.
-    pub created_at: u64,
-    /// Expiry time, as unix seconds.
-    pub expires_at: u64,
-    /// Browser completion time.
-    pub completed_at: Option<u64>,
-    /// First consumption time. Consumption remains replayable.
-    pub consumed_at: Option<u64>,
-    /// Successful activation time.
-    pub activated_at: Option<u64>,
-    /// Signed cancellation time.
-    pub cancelled_at: Option<u64>,
-}
-
-/// Material persisted when a pending handoff is completed.
-#[derive(Debug, Clone, Copy)]
-pub struct LinkCompletion<'a> {
-    /// Hash identifying the pending handoff.
-    pub token_hash: &'a str,
-    /// Account selected by browser completion.
-    pub account_id: i64,
-    /// Service-generated attachment generation.
-    pub attachment_id: &'a str,
-    /// CID of the completed root-to-device grant.
-    pub delegation_cid: &'a str,
-    /// Completed root-to-device delegation.
-    pub delegation_hex: &'a str,
-    /// Account repository descriptor copied alongside the delegation.
-    pub descriptor_hex: &'a str,
-    /// Browser completion time, as unix seconds.
-    pub now: u64,
-}
-
-/// Result of idempotently activating a completed handoff.
-#[derive(Debug, Clone)]
-pub enum ActivateOutcome {
-    /// The attachment is active (newly inserted or replayed).
-    Active(Device),
-    /// Another active attachment owns this device DID.
-    ActiveDeviceConflict,
-    /// This delegation CID was previously revoked.
-    RevokedDelegation,
-    /// The completed attachment was cancelled by detach.
-    Cancelled,
-    /// No matching completed handoff exists.
-    Unknown,
-}
-
 /// Storage-level result of detaching one exact generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetachStoreOutcome {
@@ -219,13 +152,11 @@ pub enum DetachStoreOutcome {
     Detached,
     /// The exact row was already detached.
     AlreadyDetached,
-    /// A completed link was cancelled before activation.
-    CancelledPendingActivation,
     /// Another active generation supersedes this one.
     Superseded,
     /// The exact row is permanently revoked.
     Revoked,
-    /// Neither a device row nor completed link has this ID.
+    /// No device row has this ID.
     UnknownAttachment,
 }
 
@@ -281,6 +212,10 @@ pub trait Store {
     /// [`crate::core::accounts::create_account`].
     async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError>;
 
+    /// Atomically remove dependent devices, any pending code for the
+    /// verified email, and finally the account row itself.
+    async fn delete_account(&self, account_id: i64, email: &str) -> Result<bool, StoreError>;
+
     /// Atomically create a new account, register its first device, and consume
     /// the email's verified code.
     ///
@@ -333,44 +268,18 @@ pub trait Store {
         delegation_cid: &str,
     ) -> Result<bool, StoreError>;
 
-    /// Create a pending CLI browser handoff.
-    async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError>;
-
-    /// Look up a handoff by its secret hash.
-    async fn link(&self, token_hash: &str) -> Result<Option<LinkRequest>, StoreError>;
-
-    /// Durably complete a handoff without activating its attachment.
-    async fn complete_link(&self, completion: &LinkCompletion<'_>) -> Result<bool, StoreError>;
-
-    /// Retrieve a completed handoff, recording first consumption while
-    /// preserving the result for crash-safe replay.
-    async fn consume_link(
-        &self,
-        token_hash: &str,
-        now: u64,
-    ) -> Result<Option<LinkRequest>, StoreError>;
-
-    /// Look up a completed handoff by attachment generation.
-    async fn completed_link_by_attachment(
-        &self,
-        attachment_id: &str,
-    ) -> Result<Option<LinkRequest>, StoreError>;
-
-    /// Idempotently insert the active device row for a completed handoff.
-    async fn activate_completed_link(
-        &self,
-        token_hash: &str,
-        attachment_id: &str,
-        now: u64,
-    ) -> Result<ActivateOutcome, StoreError>;
-
-    /// Detach or cancel exactly one attachment generation.
+    /// Detach exactly one attachment generation.
     async fn detach_attachment(
         &self,
         attachment_id: &str,
-        now: u64,
     ) -> Result<DetachStoreOutcome, StoreError>;
 }
+
+/// SQL: delete every device row for this account before its row.
+pub const DELETE_ACCOUNT_DEVICES: &str = "DELETE FROM devices WHERE account_id = ?1";
+
+/// SQL: delete the account row itself, bound to its verified email.
+pub const DELETE_ACCOUNT: &str = "DELETE FROM accounts WHERE id = ?1 AND email = ?2";
 
 /// SQL: look up the pending code row for an email.
 pub const SELECT_CODE: &str =
@@ -453,26 +362,6 @@ pub const UPDATE_DEVICE_REVOKE: &str = "UPDATE devices SET status = 'revoked' WH
 /// SQL: project revocation by the exact registered delegation CID.
 pub const UPDATE_DEVICE_REVOKE_BY_CID: &str =
     "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND delegation_cid = ?2";
-
-/// SQL: create a pending browser handoff.
-pub const INSERT_LINK: &str = "INSERT INTO link_requests \
-    (token_hash, device_did, device_name, delegation_hex, descriptor_hex, created_at, expires_at, consumed_at, account_id, attachment_id, delegation_cid, completed_at, activated_at, cancelled_at) \
-    VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL)";
-
-/// SQL: common link projection.
-pub const LINK_COLUMNS: &str = "token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at";
-
-/// SQL: load a browser handoff by token hash.
-pub const SELECT_LINK: &str = "SELECT token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at FROM link_requests WHERE token_hash = ?1";
-
-/// SQL: load a completed handoff by attachment generation.
-pub const SELECT_LINK_BY_ATTACHMENT: &str = "SELECT token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at FROM link_requests WHERE attachment_id = ?1";
-
-/// SQL: attach recoverable completion material without activating a device.
-pub const COMPLETE_LINK: &str = "UPDATE link_requests SET account_id = ?1, attachment_id = ?2, delegation_cid = ?3, delegation_hex = ?4, descriptor_hex = ?5, completed_at = ?6, expires_at = ?7 WHERE token_hash = ?8 AND delegation_hex IS NULL AND descriptor_hex IS NULL AND cancelled_at IS NULL AND expires_at >= ?9";
-
-/// SQL: record first consumption while returning the replayable row.
-pub const CONSUME_LINK: &str = "UPDATE link_requests SET consumed_at = COALESCE(consumed_at, ?1) WHERE token_hash = ?2 AND delegation_hex IS NOT NULL AND descriptor_hex IS NOT NULL AND activated_at IS NULL AND cancelled_at IS NULL AND expires_at >= ?3 RETURNING token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at";
 
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod sqlite;

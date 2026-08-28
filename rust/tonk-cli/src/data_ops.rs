@@ -3,8 +3,8 @@
 //! binary maps errors to exit codes.
 
 use crate::authoring::{
-    AuthoringError, build_concept_decl, build_home_recipe, build_view_decl, lint_view_template,
-    parse_attr_spec,
+    AuthoringError, ViewKind, build_concept_decl, build_home_recipe, build_view_decl,
+    lint_view_template, parse_attr_spec,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -15,18 +15,77 @@ use crate::site::TonkSite;
 
 pub mod flags;
 
+/// How a write verb commits and reports.
+///
+/// The same three switches `tonk eval` has, on every verb that writes, so
+/// they are learned once rather than per command. Default is the plain
+/// write: commit, sync, and print the matched rows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriteOptions {
+    /// Print the notation document and stop before evaluation.
+    pub notation: bool,
+    /// Build, analyze, and plan the transaction, then drop it instead of
+    /// committing.
+    pub dry_run: bool,
+    /// Skip the automatic pull-before / push-after.
+    pub no_sync: bool,
+    /// Print the envelope without the matched rows.
+    pub quiet: bool,
+}
+
+impl WriteOptions {
+    /// The evaluator knobs these imply.
+    pub(crate) fn eval(self) -> Options {
+        Options {
+            format: Format::Notation,
+            quiet: self.quiet,
+            dry_run: self.dry_run,
+            home: None,
+        }
+    }
+
+    /// Whether to pull before and push after.
+    ///
+    /// A dry run never syncs: it has no commit to push, and pulling would
+    /// move the branch under a command whose whole promise is that it
+    /// leaves the branch alone.
+    pub(crate) fn sync(self) -> bool {
+        !self.dry_run && auto_sync::enabled(self.no_sync)
+    }
+
+    /// Label a write's summary line with what actually happened.
+    ///
+    /// A dry run's summary is otherwise word-for-word the summary of a
+    /// committed write, which is the one thing it must not be mistaken
+    /// for.
+    fn summarize(self, line: impl std::fmt::Display) -> String {
+        if self.dry_run {
+            format!(
+                "dry run — nothing committed
+would have {line}"
+            )
+        } else {
+            line.to_string()
+        }
+    }
+}
+
 /// Failure modes shared by the data verbs (`assert`, `retract`,
 /// `query`, `get`, `schema_subset`). Each maps onto a CLI exit code via
 /// [`Self::exit_code`], mirroring [`crate::eval::EvalError`] and
 /// [`crate::invite::InviteError`].
 #[derive(Debug, thiserror::Error)]
 pub enum DataOpError {
-    /// No user concept with this name; lists the known concept names.
-    #[error("no concept named '{name}'; known concepts: {}", known.join(", "))]
+    /// No concept with this name; lists the ones this space defines.
+    ///
+    /// The list is the author's vocabulary, not the branch's — the
+    /// runtime's forty-odd concepts are still addressable, but naming
+    /// them here would bury the handful an agent might have meant.
+    #[error("no concept named '{name}'; {}", describe_known(known))]
     NoConcept {
         /// The concept name that was looked up.
         name: String,
-        /// Names of every concept actually defined on the branch.
+        /// Names of the concepts this space's author defined.
         known: Vec<String>,
     },
     /// The supersede form of `assert` named an entity that doesn't
@@ -50,13 +109,13 @@ pub enum DataOpError {
     /// A field/value error from the notation builders.
     #[error(transparent)]
     Data(#[from] crate::data::DataError),
-    /// A `--attr` flag on `concept add` failed to parse (malformed
+    /// A `--field` flag on `concept add` failed to parse (malformed
     /// spec, unknown type, or bad cardinality).
     #[error(transparent)]
     Authoring(#[from] crate::authoring::AuthoringError),
     /// `concept add` named a concept that already exists on the
     /// branch.
-    #[error("concept '{name}' already exists; inspect it with `tonk schema {name}`")]
+    #[error("concept '{name}' already exists; inspect it with `tonk show {name}`")]
     ConceptExists {
         /// The concept name that was already taken.
         name: String,
@@ -85,6 +144,20 @@ pub enum DataOpError {
     Io(String),
 }
 
+/// Render the tail of [`DataOpError::NoConcept`]: the concepts this
+/// space defines, or — on a space that defines none yet — the command
+/// that defines the first one. "known concepts: " followed by nothing
+/// reads as a listing failure rather than as an empty space.
+fn describe_known(known: &[String]) -> String {
+    if known.is_empty() {
+        "this space defines no concepts yet; add one with \
+         `tonk concept add <name> --field <field>:<type>:<cardinality>`"
+            .to_string()
+    } else {
+        format!("concepts in this space: {}", known.join(", "))
+    }
+}
+
 /// Strip clap's own `"error: "` header off a rendered
 /// [`clap::Error`], leaving the usage/help body intact. Used by
 /// [`DataOpError::Flags`]'s `Display` impl — see that variant's doc
@@ -97,9 +170,9 @@ fn strip_clap_error_header(e: &clap::Error) -> String {
     }
 }
 
-impl DataOpError {
+impl crate::Coded for DataOpError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> crate::ExitCode {
+    fn exit_code(&self) -> crate::ExitCode {
         match self {
             DataOpError::NoConcept { .. }
             | DataOpError::Io(_)
@@ -146,7 +219,7 @@ pub async fn require_concept(
 }
 
 /// Render one concept's schema subset — same notation as bare
-/// `tonk schema`, filtered — or the enumerating [`DataOpError::NoConcept`].
+/// `tonk show --notation`, filtered — or the enumerating [`DataOpError::NoConcept`].
 /// The human field/type table this replaces lives in
 /// `tonk assert <concept> --help`, where the flags are.
 pub async fn schema_subset(site: &TonkSite, concept: &str) -> Result<String, DataOpError> {
@@ -279,7 +352,12 @@ pub async fn get(
 /// [`DataOpError::Flags`].
 ///
 /// Commits sync to the upstream like `tonk eval` (pull-before /
-/// push-after; `TONK_NO_SYNC` opts out).
+/// push-after; `--no-sync` or `TONK_NO_SYNC` opts out).
+///
+/// `--dry-run`, `--no-sync` and `--quiet` are parsed out of `argv` by the
+/// concept's own dynamic command rather than declared statically, because
+/// everything after `<CONCEPT>` reaches this function raw — see
+/// [`flags::parse_field_flags`].
 pub async fn assert_op(
     site: &TonkSite,
     concept: &str,
@@ -288,25 +366,28 @@ pub async fn assert_op(
 ) -> Result<String, DataOpError> {
     let info = require_concept(site, concept).await?;
     let all_required = entity.is_none();
-    let pairs = match flags::parse_field_flags(&info.descriptor, concept, argv, all_required) {
-        Ok(pairs) => pairs,
+    let parsed = match flags::parse_field_flags(&info.descriptor, concept, argv, all_required) {
+        Ok(parsed) => parsed,
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => return Ok(e.to_string()),
         Err(e) if all_required && e.kind() == clap::error::ErrorKind::MissingRequiredArgument => {
             return Err(DataOpError::MissingRequired(e));
         }
         Err(e) => return Err(DataOpError::Flags(e)),
     };
+    let (pairs, write) = (parsed.pairs, parsed.write);
     match entity {
         None => {
             let doc = build_assert(&info.descriptor, concept, &pairs)?;
-            let outcome = auto_sync::run_eval(
-                site,
-                Source::Inline(doc),
-                Options::default(),
-                auto_sync::enabled(false),
-            )
-            .await?;
-            Ok(format!("asserted {concept}\n{}", outcome.stdout))
+            if write.notation {
+                return Ok(doc);
+            }
+            let outcome =
+                auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
+            Ok(format!(
+                "{}\n{}",
+                write.summarize(format_args!("asserted {concept}")),
+                outcome.stdout
+            ))
         }
         Some(entity) => {
             if !instance_exists(site, &info.descriptor, concept, entity).await? {
@@ -319,13 +400,11 @@ pub async fn assert_op(
                 return Err(DataOpError::NoFields);
             }
             let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
-            let outcome = auto_sync::run_eval(
-                site,
-                Source::Inline(doc),
-                Options::default(),
-                auto_sync::enabled(false),
-            )
-            .await?;
+            if write.notation {
+                return Ok(doc);
+            }
+            let outcome =
+                auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
             let before = outcome
                 .response
                 .revision_before
@@ -339,7 +418,8 @@ pub async fn assert_op(
                 .map(|revision| revision.tree.to_string())
                 .unwrap_or_else(|| "none".to_string());
             let mut rendered = format!(
-                "updated {entity}\nclaims: {}\nrevision: {before} -> {after}\n",
+                "{}\nclaims: {}\nrevision: {before} -> {after}\n",
+                write.summarize(format_args!("updated {entity}")),
                 outcome.response.commits.claims
             );
             match get(site, concept, entity, false).await {
@@ -349,7 +429,7 @@ pub async fn assert_op(
                 }
                 Err(error) => {
                     rendered.push_str(&format!(
-                        "write committed, but the post-write read failed: {error}\nverify: tonk query {concept} {entity}\n"
+                        "the read-back failed: {error}\nverify: tonk show {concept} {entity}\n"
                     ));
                 }
             }
@@ -373,6 +453,7 @@ pub async fn retract(
     concept: &str,
     entity: &str,
     field: Option<&str>,
+    write: WriteOptions,
 ) -> Result<String, DataOpError> {
     let info = require_concept(site, concept).await?;
     if let Some(f) = field {
@@ -392,20 +473,19 @@ pub async fn retract(
         }
     }
     let doc = build_retract(concept, entity, field);
-    let outcome = auto_sync::run_eval(
-        site,
-        Source::Inline(doc),
-        Options::default(),
-        auto_sync::enabled(false),
-    )
-    .await?;
-    Ok(match field {
-        Some(f) => format!("retracted {f} from {entity}\n{}", outcome.stdout),
-        None => format!("retracted {entity}\n{}", outcome.stdout),
-    })
+    if write.notation {
+        return Ok(doc);
+    }
+    let outcome =
+        auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
+    let line = match field {
+        Some(f) => write.summarize(format_args!("retracted {f} from {entity}")),
+        None => write.summarize(format_args!("retracted {entity}")),
+    };
+    Ok(format!("{line}\n{}", outcome.stdout))
 }
 
-/// Author a new concept: parse every raw `--attr field:type:card`
+/// Author a new concept: parse every raw `--field field:type:card`
 /// flag ([`parse_attr_spec`]), reject a name already on the branch
 /// ([`DataOpError::ConceptExists`]), then build and commit the
 /// anchored `concept!:`/`attribute!:` declaration
@@ -418,6 +498,7 @@ pub async fn concept_add(
     name: &str,
     attrs: &[String],
     description: Option<&str>,
+    write: WriteOptions,
 ) -> Result<String, DataOpError> {
     let attrs = attrs
         .iter()
@@ -433,16 +514,17 @@ pub async fn concept_add(
         });
     }
     let doc = build_concept_decl(name, description, &attrs);
-    let outcome = auto_sync::run_eval(
-        site,
-        Source::Inline(doc),
-        Options::default(),
-        auto_sync::enabled(false),
-    )
-    .await?;
+    if write.notation {
+        return Ok(doc);
+    }
+    let outcome =
+        auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     Ok(format!(
-        "asserted concept {name} ({n} fields)\nnext: tonk assert {name} --help\n{stdout}",
-        n = attrs.len(),
+        "{line}\nnext: tonk assert {name} --help\n{stdout}",
+        line = write.summarize(format_args!(
+            "asserted concept {name} ({n} fields)",
+            n = attrs.len()
+        )),
         stdout = outcome.stdout
     ))
 }
@@ -493,22 +575,24 @@ async fn home_is_unset(site: &TonkSite) -> Result<bool, DataOpError> {
 /// ([`build_home_recipe`]) that re-points the `tonk/space` alias.
 /// Cardinality-one — safe to re-run; each call replaces the home
 /// wholesale.
-pub async fn home(site: &TonkSite, models: &[String]) -> Result<String, DataOpError> {
+pub async fn home(
+    site: &TonkSite,
+    models: &[String],
+    write: WriteOptions,
+) -> Result<String, DataOpError> {
     for model in models {
         require_concept(site, model).await?;
     }
     let doc = build_home_recipe(models);
-    let outcome = auto_sync::run_eval(
-        site,
-        Source::Inline(doc),
-        Options::default(),
-        auto_sync::enabled(false),
-    )
-    .await?;
+    if write.notation {
+        return Ok(doc);
+    }
+    let outcome =
+        auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let did = site.repository.did();
     Ok(format!(
-        "home set: {}\nlive at /space/{did}/\n{}",
-        models.join(", "),
+        "{}\nlive at /space/{did}/\n{}",
+        write.summarize(format_args!("set the home to {}", models.join(", "))),
         outcome.stdout
     ))
 }
@@ -523,8 +607,11 @@ pub async fn home(site: &TonkSite, models: &[String]) -> Result<String, DataOpEr
 pub async fn view_add(
     site: &TonkSite,
     model: &str,
+    kind: ViewKind,
     name: Option<&str>,
     template: &str,
+    set_home: bool,
+    write: WriteOptions,
 ) -> Result<String, DataOpError> {
     let info = require_concept(site, model).await?;
     if template.trim().is_empty() {
@@ -539,25 +626,58 @@ pub async fn view_add(
     let lint = lint_view_template(template, &fields);
     let anchor = name
         .map(str::to_string)
-        .unwrap_or_else(|| format!("{model}-view"));
-    let doc = build_view_decl(&anchor, model, template);
-    let outcome = auto_sync::run_eval(
-        site,
-        Source::Inline(doc),
-        Options::default(),
-        auto_sync::enabled(false),
-    )
-    .await?;
-    let mut out = format!("asserted view {anchor}\n");
+        .unwrap_or_else(|| kind.default_anchor(model));
+    let auto_surface = !set_home && kind.can_auto_surface() && home_is_unset(site).await?;
+    let surface_home = set_home || auto_surface;
+    let mut doc = build_view_decl(kind, &anchor, model, template);
+    if surface_home {
+        doc.push('\n');
+        doc.push_str(&build_home_recipe(&[model.to_string()]));
+    }
+    if write.notation {
+        return Ok(doc);
+    }
+    let outcome =
+        auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
+    let mut out = format!(
+        "{}\n",
+        write.summarize(format_args!("asserted view {anchor}"))
+    );
     for warning in &lint {
         out.push_str(&format!("warning: {warning}\n"));
     }
     out.push_str(&outcome.stdout);
-    if home_is_unset(site).await? {
-        out.push('\n');
-        out.push_str(&home(site, &[model.to_string()]).await?);
+    if surface_home {
+        let did = site.repository.did();
+        out.push_str(&format!(
+            "\n{}\nlive at /space/{did}/\n",
+            write.summarize(format_args!("set the home to {model}"))
+        ));
     } else {
-        out.push_str("home already set; re-point it explicitly with `tonk home <concept>`\n");
+        out.push_str("home unchanged; use --home or `tonk space home <concept>`\n");
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_names_the_concepts_a_space_defines() {
+        assert_eq!(
+            describe_known(&["page".to_string(), "note".to_string()]),
+            "concepts in this space: page, note"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_points_at_concept_add_when_a_space_defines_none() {
+        let described = describe_known(&[]);
+        assert!(
+            described.starts_with("this space defines no concepts yet"),
+            "{described}"
+        );
+        assert!(described.contains("tonk concept add"), "{described}");
+    }
 }

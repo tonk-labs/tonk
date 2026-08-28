@@ -3,7 +3,10 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::account::{DisplayName, PasskeyCreatedAt, PasskeyCreatedOn};
+use crate::domain::account::{
+    CustomerEmail, CustomerStatus, DisplayName, EncryptionKey, PasskeyCreatedAt, PasskeyCreatedOn,
+    ProviderAddress,
+};
 
 /// The account-wide display name, keyed by the immutable account subject.
 ///
@@ -69,6 +72,84 @@ impl AccountPasskeyCreated {
     /// Unix seconds, back in the integer form the wire DTO carries.
     pub fn seconds(&self) -> u64 {
         self.created_at.0 as u64
+    }
+}
+
+/// The account's registration with the access service, keyed by the
+/// immutable account subject.
+///
+/// This is the account's registration state as a FACT, not as a cached
+/// HTTP answer. Every device on the account reads it with an ordinary
+/// query and converges on it through sync, so a device that never ran
+/// the enrollment — and never probed the service — still knows whether
+/// the account is servable.
+///
+/// Written at two moments: when enrollment records `Registered`, and
+/// when activation is observed and promotes it to `Active`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountCustomer {
+    /// The immutable account subject, which is the customer DID.
+    pub this: Entity,
+    /// One of `Registered`, `Active`, or `Suspended`.
+    pub status: CustomerStatus,
+    /// The address enrollment named.
+    pub email: CustomerEmail,
+    /// The provider serving this account: the UCAN access-service
+    /// endpoint its spaces attach their remotes to.
+    pub provider: ProviderAddress,
+}
+
+impl AccountCustomer {
+    /// Record the account's registration state.
+    pub fn new(account: Entity, status: &str, email: String, provider: String) -> Self {
+        Self {
+            this: account,
+            status: CustomerStatus(status.to_owned()),
+            email: CustomerEmail(email),
+            provider: ProviderAddress(provider),
+        }
+    }
+
+    /// The provider serving this account, absent when registration
+    /// recorded none.
+    pub fn provider(&self) -> Option<&str> {
+        Some(self.provider.0.as_str()).filter(|address| !address.is_empty())
+    }
+
+    /// Whether the access service will serve this account's subjects.
+    ///
+    /// Only `Active` is servable: `Registered` awaits email activation
+    /// and `Suspended` was withdrawn, and the provisioning gate refuses
+    /// both. An unrecognised value — a status written by a newer build —
+    /// reads as not servable, which fails closed.
+    pub fn is_active(&self) -> bool {
+        self.status.0 == "Active"
+    }
+}
+
+/// The account's public encryption key, keyed by the immutable account
+/// subject: the recipient every device seals a [`CustodiedSeed`] to.
+///
+/// Written by the ceremony that creates the account secret and again at
+/// rotation. Any device holding the account space can read it and seal;
+/// only a ceremony, which derives the private half, can open.
+///
+/// [`CustodiedSeed`]: crate::CustodiedSeed
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountEncryptionKey {
+    /// The immutable account subject.
+    pub this: Entity,
+    /// The X25519 `did:key:z6LS…`.
+    pub key: EncryptionKey,
+}
+
+impl AccountEncryptionKey {
+    /// Publish `key` as the account's encryption key.
+    pub fn new(account: Entity, key: Entity) -> Self {
+        Self {
+            this: account,
+            key: EncryptionKey(key),
+        }
     }
 }
 
@@ -317,5 +398,130 @@ mod tests {
             "concurrent creation facts converge regardless of merge order"
         );
         Ok(())
+    }
+}
+
+/// The answer to "is this address registered?", on the profile
+/// overlay.
+///
+/// Written by the provider behind `account/check-email` and read by the
+/// registration form, which routes on it: create an account, sign in,
+/// or say why neither is on offer. Overlay-only — the form asks while
+/// the user types, and a durable row per answer would write a row per
+/// keystroke into a branch that syncs.
+///
+/// `address` is carried alongside `state` so a form that has moved on
+/// can tell an answer about what is currently typed from an answer
+/// about what was typed two characters ago.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EmailStatus {
+    /// The entity the form watches, `state:email-status`.
+    pub this: Entity,
+    /// The address this answer is about.
+    pub address: crate::domain::email_status::Address,
+    /// One of `unregistered`, `active`, `pending`, `suspended`,
+    /// `invalid`, `unavailable`.
+    pub state: crate::domain::email_status::State,
+}
+
+/// The states an answer can take.
+///
+/// Shared vocabulary: the worker writes these strings and the
+/// registration form routes on them, so they live with the concept
+/// rather than as literals duplicated on each side.
+///
+/// The first four mirror what the access service's lookup answers (404
+/// nothing registered, 200 active, 202 enrolled but unconfirmed, 410
+/// suspended); the rest are the worker's own.
+pub mod email_state {
+    /// Nothing is registered under the address: offer to create.
+    pub const UNREGISTERED: &str = "unregistered";
+    /// Registered and served: offer to sign in.
+    pub const ACTIVE: &str = "active";
+    /// Enrolled, activation link unopened: sign in, then wait.
+    pub const PENDING: &str = "pending";
+    /// Service withdrawn. Neither creating nor signing in helps.
+    pub const SUSPENDED: &str = "suspended";
+    /// Not an address this can look up.
+    pub const INVALID: &str = "invalid";
+    /// The service could not be reached, so this says nothing about the
+    /// address itself.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// A ceremony was raised for this address and has not finished.
+    pub const PENDING_CEREMONY: &str = "registering";
+    /// The lookup for this address is in flight.
+    ///
+    /// Written before the lookup rather than painted into the DOM by
+    /// the form, so the row is the whole story: whatever is on screen
+    /// is the latest answer about the latest address, and a late
+    /// answer about an address the user has edited away from is
+    /// recognisable as stale by the `address` beside it.
+    pub const CHECKING: &str = "checking";
+
+    /// Whether a state means the form should keep out of the way rather
+    /// than offer an action.
+    ///
+    /// `registering` is a ceremony already up; `unavailable` is a
+    /// service that did not answer. Neither is a fact about the
+    /// address, so neither should render as "create an account" or
+    /// "sign in".
+    pub fn is_transient(state: &str) -> bool {
+        matches!(state, PENDING_CEREMONY | UNAVAILABLE | CHECKING)
+    }
+
+    /// Whether an answer leaves the user something to do in the form.
+    ///
+    /// `suspended` is terminal and `invalid` is not an address, so
+    /// neither offers a ceremony that would fail at the end.
+    pub fn offers_action(state: &str) -> bool {
+        matches!(state, UNREGISTERED | ACTIVE | PENDING)
+    }
+}
+
+impl EmailStatus {
+    /// The entity every answer is written to. One row, replaced on each
+    /// answer: the form only ever cares about the latest one.
+    pub const ENTITY: &str = "state:email-status";
+
+    /// An answer about `address`.
+    pub fn new(this: Entity, address: String, state: &str) -> Self {
+        Self {
+            this,
+            address: crate::domain::email_status::Address(address),
+            state: crate::domain::email_status::State(state.to_owned()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod email_state_tests {
+    use super::email_state::*;
+
+    /// A state the form should not turn into an offer.
+    #[dialog_common::test]
+    fn it_knows_which_states_carry_no_offer() {
+        assert!(is_transient(PENDING_CEREMONY), "a ceremony is up");
+        assert!(is_transient(UNAVAILABLE), "nobody answered");
+        assert!(is_transient(CHECKING), "the lookup is still in flight");
+        // These are answers about the address, so each names an action.
+        assert!(!is_transient(UNREGISTERED));
+        assert!(!is_transient(ACTIVE));
+        assert!(!is_transient(PENDING));
+        assert!(!is_transient(SUSPENDED));
+    }
+
+    /// What the form may offer to act on.
+    ///
+    /// `suspended` is the one that is an answer about the address and
+    /// still carries no offer: the account exists but cannot host.
+    #[dialog_common::test]
+    fn it_offers_an_action_only_where_one_would_work() {
+        assert!(offers_action(UNREGISTERED), "create");
+        assert!(offers_action(ACTIVE), "sign in");
+        assert!(offers_action(PENDING), "sign in, then confirm");
+        assert!(!offers_action(SUSPENDED), "terminal");
+        assert!(!offers_action(INVALID), "not an address");
+        assert!(!offers_action(UNAVAILABLE), "says nothing about it");
+        assert!(!offers_action(CHECKING), "no answer yet");
     }
 }

@@ -57,6 +57,15 @@ pub async fn local_root(profile: &Profile) -> Result<Option<LocalRoot>> {
     local_root_with_operator(profile, &operator).await
 }
 
+/// Load the local root from one explicit native profile store.
+pub async fn local_root_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+) -> Result<Option<LocalRoot>> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    local_root_with_operator(profile, &operator).await
+}
+
 /// Load the local root through an already-mounted site operator.
 pub(crate) async fn local_root_with_operator(
     profile: &Profile,
@@ -114,7 +123,7 @@ pub async fn save_local_root_with_operator(
         .next()
         .context("local-root delegation is missing its proof")?;
     proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .verify_signature(&dialog_credentials::DidKeyResolver)
         .await
         .context("local-root delegation signature is invalid")?;
     let record = LocalRoot {

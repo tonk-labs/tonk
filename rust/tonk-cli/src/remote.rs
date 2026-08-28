@@ -1,4 +1,4 @@
-//! `tonk remote add` / `tonk remote list` / `tonk remote
+//! `tonk remote add` / bare `tonk remote` / `tonk remote
 //! set-upstream` — register and link UCAN-S3 access-service
 //! remotes against the local site.
 //!
@@ -33,7 +33,7 @@ pub const META_BRANCH: &str = "meta";
 /// ("origin") flows across both surfaces.
 pub const DEFAULT_REMOTE: &str = "origin";
 
-/// One row of `tonk remote list` — also the shape `find`
+/// One row of `tonk remote` — also the shape `find`
 /// returns and `tonk invite --remote` consumes when embedding
 /// a remote URL in a freshly-minted invite.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,9 +94,9 @@ pub enum RemoteError {
     Io(String),
 }
 
-impl RemoteError {
+impl crate::Coded for RemoteError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         ExitCode::IoError
     }
 }
@@ -256,6 +256,22 @@ pub async fn set_upstream(
         .perform(&site.operator)
         .await
         .map_err(|e| RemoteError::Io(format!("failed to set upstream: {e}")))?;
+
+    // Membership, roles, invitations, and replica metadata live on `meta`.
+    // Track that branch beside `main` so a verified pull cannot observe
+    // content without the signed relationship that authorizes this profile.
+    let remote_meta = remote_handle
+        .branch(META_BRANCH)
+        .open()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to open remote meta branch: {e}")))?;
+    let local_meta = open_meta(site).await?;
+    local_meta
+        .set_upstream(&remote_meta)
+        .perform(&site.operator)
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to set meta upstream: {e}")))?;
 
     // Meta side: rebuild the Remote concept (deterministic from
     // replica + name + subject + address) so we can hang a

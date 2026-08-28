@@ -1,7 +1,5 @@
 //! Provider-neutral local-root wire types.
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 
 /// Informational metadata recorded when Tonk creates a passkey.
@@ -42,6 +40,11 @@ pub enum RootStatus {
         /// Creation details when this Tonk client created the passkey.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         passkey: Option<PasskeyMetadata>,
+        /// The account's X25519 recipient, when a ceremony on this device
+        /// has recorded it. Absent means custody cannot be set up until
+        /// a passkey assertion derives it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encryption_key: Option<String>,
     },
 }
 
@@ -56,133 +59,90 @@ pub struct SaveRootRequest {
     /// Creation details when this request follows passkey creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passkey: Option<PasskeyMetadata>,
+    /// The account's X25519 recipient (`did:key:z6LS…`) when the
+    /// ceremony held the secret, for the worker to publish as
+    /// `AccountEncryptionKey`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_key: Option<String>,
 }
 
-/// Request to create a durable space through the local root.
+/// Service-worker message asking the originating document to run a
+/// WebAuthn ceremony on the worker's behalf and answer through the
+/// ordinary API. The worker has no `window`, so a passkey assertion can
+/// only happen on the page that asked for the operation needing it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSpaceRequest {
-    /// Space display name.
-    pub name: String,
-    /// Optional sync remote URL.
-    pub remote: Option<String>,
-    /// Optional immutable-artifact relay stored beside the remote.
-    pub revocation_url: Option<String>,
-    /// Optional template name.
-    pub template: Option<String>,
+pub struct WebAuthnRequest {
+    /// Fixed message discriminator: [`WEBAUTHN`].
+    #[serde(rename = "type")]
+    pub message_type: String,
+    /// What the ceremony must produce.
+    pub request: WebAuthnKind,
 }
 
-/// Created space routing key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSpaceResponse {
-    /// DID-derived repository routing key.
-    pub key: String,
+/// The ceremonies a page can be asked to run.
+///
+/// An enum rather than a bare string so the page's listener must
+/// `match` it: adding a kind then fails to compile until something
+/// handles it. It was a `String` compared with `!=` once, and
+/// [`CREATE_ACCOUNT_REQUEST`] shipped with a sender and no receiver —
+/// the worker asked, the listener returned early, and the dialog
+/// reported success with no ceremony ever run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebAuthnKind {
+    /// See [`ENCRYPTION_KEY_REQUEST`].
+    #[serde(rename = "encryption-key")]
+    EncryptionKey,
+    /// See [`CREATE_ACCOUNT_REQUEST`].
+    #[serde(rename = "create-account")]
+    CreateAccount,
 }
 
-/// Deferred durable operation that requires an account.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum PendingIntent {
-    /// Create a durable space once an account exists.
-    CreateSpace {
-        /// Space display name.
-        name: String,
-        /// Optional sync remote.
-        remote: Option<String>,
-        /// Optional immutable-artifact relay stored beside the remote.
-        revocation_url: Option<String>,
-        /// Optional template name.
-        template: Option<String>,
-    },
-    /// Turn an invite into durable membership.
-    DurableJoin {
-        /// Authority-bearing invite URL. Debug output always redacts it.
-        url: String,
-    },
-}
-
-impl fmt::Debug for PendingIntent {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl WebAuthnKind {
+    /// The wire string this kind serializes as.
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::CreateSpace {
-                name,
-                remote,
-                revocation_url,
-                template,
-            } => formatter
-                .debug_struct("CreateSpace")
-                .field("name", name)
-                .field("remote", remote)
-                .field("revocation_url", revocation_url)
-                .field("template", template)
-                .finish(),
-            Self::DurableJoin { .. } => formatter
-                .debug_struct("DurableJoin")
-                .field("url", &"<redacted>")
-                .finish(),
+            Self::EncryptionKey => ENCRYPTION_KEY_REQUEST,
+            Self::CreateAccount => CREATE_ACCOUNT_REQUEST,
         }
     }
 }
 
-/// Service-worker message asking the top document to sign the user in.
+/// Ask the page to link an account so a share can proceed.
+///
+/// Sent by the invite handler when a space cannot be shared because
+/// nothing is registered. The page raises the registration UI; the
+/// worker does not wait, and continues when the account facts land.
+///
+/// Distinct from [`WebAuthnRequest`]: that asks for one ceremony and
+/// names what it must produce, whereas this asks for a whole
+/// interaction and carries the space it is on behalf of, so the share
+/// can be finished afterwards.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccountRequired {
-    /// Fixed message discriminator.
+pub struct LinkAccountRequest {
+    /// Fixed message discriminator: [`LINK_ACCOUNT`].
     #[serde(rename = "type")]
     pub message_type: String,
-    /// Operation to replay once an account exists.
-    pub intent: PendingIntent,
+    /// The space whose share is waiting on an account.
+    pub space: String,
 }
 
-/// The `type` every [`AccountRequired`] message carries.
-pub const ACCOUNT_REQUIRED: &str = "account-required";
+/// The `type` a [`LinkAccountRequest`] carries.
+pub const LINK_ACCOUNT: &str = "link-account";
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// The `type` every [`WebAuthnRequest`] message carries.
+pub const WEBAUTHN: &str = "webauthn";
 
-    #[dialog_common::test]
-    fn it_accepts_only_known_pending_intents() {
-        assert!(
-            serde_json::from_value::<PendingIntent>(serde_json::json!({
-                "kind": "createSpace",
-                "name": "Notes",
-                "remote": null,
-                "revocationUrl": null,
-                "template": null,
-            }))
-            .is_ok()
-        );
-        assert!(
-            serde_json::from_value::<PendingIntent>(serde_json::json!({
-                "kind": "unknown"
-            }))
-            .is_err()
-        );
-    }
+/// Derive the account's encryption key from a passkey assertion and
+/// save it with the root (`POST /api/identity/root` with `encryptionKey`).
+/// The worker waits for that save before continuing.
+pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
 
-    #[dialog_common::test]
-    fn it_omits_invite_urls_from_debug_output() {
-        let secret = "https://tonk.spot/join#authority";
-        let debug = format!("{:?}", PendingIntent::DurableJoin { url: secret.into() });
-        assert!(!debug.contains(secret));
-        assert!(debug.contains("<redacted>"));
-    }
-
-    /// The page routes on this discriminator, so it is part of the contract
-    /// between the service worker and the top document, not a local string.
-    #[dialog_common::test]
-    fn it_names_the_account_required_message() {
-        let message = AccountRequired {
-            message_type: ACCOUNT_REQUIRED.to_string(),
-            intent: PendingIntent::DurableJoin {
-                url: "https://tonk.spot/join#authority".into(),
-            },
-        };
-        let value = serde_json::to_value(&message).expect("serializes");
-        assert_eq!(value["type"], "account-required");
-    }
-}
+/// Create an account: the full signup ceremony, run in the top page
+/// because WebAuthn needs a `window` and a user gesture and the service
+/// worker has neither.
+///
+/// Raised by the registration form's `account/register` command. The
+/// page runs the ceremony, saves the root, links the account and
+/// enrolls it, and the outcome reaches every reader as facts — the
+/// worker is not waiting on a response body.
+pub const CREATE_ACCOUNT_REQUEST: &str = "create-account";

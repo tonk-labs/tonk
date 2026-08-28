@@ -1,130 +1,176 @@
 <main class="account">
-  <header class="account__masthead">
-    <a class="account__brand" href="/" aria-label="Tonk home">
-      <span class="account__wordmark">tonk</span>
-      <span class="account__badge">account</span>
-    </a>
-    <a class="account__return" href="/" data-return>Back to Tonk</a>
-  </header>
+  <div class="account__logo" role="img" aria-label="tonk"></div>
 
-  <h1>Account</h1>
-
-  <section id="account-choice" class="account__panel" hidden>
-    <p class="account__lede">Create an account to keep your spots and access them on any device.</p>
-    <div class="account__actions">
-      <button id="account-choose-create" class="account__button" type="button">Create account</button>
-      <button id="account-choose-link" class="account__button account__button--secondary" type="button">Log in</button>
+  <section id="account-choice" class="account__ceremony" hidden>
+    <div class="account__stack">
+      <h1 class="account__ceremony-head">account</h1>
+      <button id="account-choose-link" class="account__run" type="button">link an account</button>
+      <button id="account-use-different-account" class="account__row account__row--action" type="button" hidden>
+        <span>another account</span><strong>use a fresh browser profile</strong>
+      </button>
+      <div id="account-choice-profiles" class="account__choice-profiles" hidden>
+        <div class="account__section-label">accounts on this browser</div>
+        <ul id="account-choice-profile-list" class="account__profiles"></ul>
+      </div>
     </div>
-    <button id="account-use-different-account" class="account__button account__button--quiet" type="button" hidden>Use a different account</button>
-    <div id="account-choice-profiles" class="account__choice-profiles" hidden>
-      <p class="account__hint">Also on this browser:</p>
-      <ul id="account-choice-profile-list" class="account__profiles"></ul>
+    <div class="account__narrator">
+      <p>Link an account to keep your spaces and reach them from any device. Start with your address: a new one creates a passkey, one you already hold signs you in.</p>
     </div>
+    <a class="account__ghost" href="/" data-return><span aria-hidden="true">&#9666;</span> back to Tonk</a>
   </section>
 
-  <section id="account-create" class="account__panel" hidden>
-    <h2>Create your account</h2>
-    <p class="account__message">You will get an activation link by email; your passkey replaces a password.</p>
+  <section id="account-create" class="account__ceremony" hidden>
     <form class="account__form">
-      <label>Email
-        <input id="account-email" name="Email" type="email" autocomplete="email" required>
-      </label>
-      <!-- The form's submit button, not an inert `type="button"`: this panel
-           has a single field, so Enter implicitly submits, and implicit
-           submission clicks the submit button — which is where the creation
-           handler hangs. As a plain button, Enter submitted the form itself,
-           reloading `/account?Email=…` with the address thrown away. -->
-      <button id="account-create-submit" class="account__button" type="submit">Create account</button>
-      <button id="account-create-back" class="account__button account__button--quiet" type="button">Back</button>
+      <div class="account__stack">
+        <h1 class="account__ceremony-head">create an account</h1>
+        <label class="account__editor-row" for="account-email">
+          <span>email</span>
+          <input id="account-email" name="Email" type="email" autocomplete="email" required>
+        </label>
+        <button id="account-create-submit" class="account__run" type="submit">create account</button>
+      </div>
+      <div class="account__narrator">
+        <p>You will get an activation link by email. A passkey replaces your password and lets you sign in anywhere.</p>
+      </div>
+      <button id="account-create-back" class="account__ghost" type="button"><span aria-hidden="true">&#9666;</span> back</button>
     </form>
   </section>
 
-  <section id="account-link" class="account__panel" hidden>
-    <h2>Log in</h2>
+  <section id="account-link" class="account__ceremony" hidden>
     <form class="account__form">
-      <button id="account-link-submit" class="account__button" type="submit">Log in</button>
-      <button id="account-link-back" class="account__button account__button--quiet" type="button">Back</button>
+      <div class="account__stack">
+        <h1 class="account__ceremony-head">log in</h1>
+        <button id="account-link-submit" class="account__run" type="submit">log in with passkey</button>
+      </div>
+      <div class="account__narrator">
+        <p>Your browser or password manager will ask you to confirm the passkey for your Tonk account.</p>
+      </div>
+      <button id="account-link-back" class="account__ghost" type="button"><span aria-hidden="true">&#9666;</span> back</button>
     </form>
-    <p class="account__hint">Your browser or password manager will ask you to confirm.</p>
   </section>
 
-  <section id="account-handoff" class="account__panel" hidden>
-    <p class="account__eyebrow">Link a command-line profile</p>
-    <dl class="account__device" aria-label="Command-line profile details">
-      <div><dt>Device</dt><dd id="account-handoff-name"></dd></div>
-      <div><dt>Profile DID</dt><dd id="account-handoff-did"></dd></div>
-    </dl>
-    <p class="account__hint">Only continue if you started this link from your own terminal.</p>
-    <div class="account__actions account__actions--inline">
-      <button id="account-handoff-submit" class="account__button" type="button">Approve with passkey</button>
-      <a id="account-handoff-cancel" class="account__button account__button--quiet" href="/account">Cancel</a>
+  <section id="account-handoff" class="account__ceremony" hidden>
+    <div class="account__stack">
+      <h1 class="account__ceremony-head">allow command-line access</h1>
+      <div class="account__row">
+        <span>device</span><strong id="account-handoff-name"></strong>
+      </div>
+      <div class="account__row">
+        <span>account and spaces</span><strong id="account-handoff-account">this browser profile</strong>
+      </div>
+      <details class="account__details">
+        <summary>technical details</summary>
+        <dl aria-label="Command-line profile details">
+          <div><dt>Profile DID</dt><dd id="account-handoff-did"></dd></div>
+        </dl>
+      </details>
+      <button id="account-handoff-submit" class="account__run" type="button">approve with passkey</button>
     </div>
+    <div class="account__narrator">
+      <p>This lets the named command-line device use this account and its available spaces. Continue only if you started this link from your own terminal.</p>
+    </div>
+    <a id="account-handoff-cancel" class="account__ghost" href="/settings"><span aria-hidden="true">&#9666;</span> cancel</a>
   </section>
 
-  <section id="account-setup" class="account__panel" hidden>
-    <h2>Finish account setup</h2>
-    <p class="account__message">This account predates synchronized account state. Confirm once with your passkey to establish its shared repository.</p>
-    <button id="account-setup-submit" class="account__button" type="button">Finish account setup</button>
-    <p class="account__hint">The first accepted setup chooses one repository location for every device. Retries always recover that same choice.</p>
+  <section id="account-success" class="account__success" hidden>
+    <div class="account__settings">
+      <nav class="account__rail" aria-label="settings sections" role="tablist">
+        <button id="account-tab-account" type="button" data-account-tab="account" role="tab" aria-selected="true" aria-controls="account-pane-account">account</button>
+        <button id="account-tab-devices" type="button" data-account-tab="devices" role="tab" aria-selected="false" aria-controls="account-pane-devices" tabindex="-1">devices</button>
+      </nav>
+
+      <div class="account__settings-body">
+        <section id="account-pane-account" class="account__pane" data-account-pane="account" role="tabpanel" aria-labelledby="account-tab-account">
+          <label class="account__row account__row--field" for="account-display-name">
+            <span>display name</span>
+            <input id="account-display-name" name="display-name" type="text" data-display-name autocomplete="name" aria-busy="true" disabled>
+          </label>
+          <p id="account-display-name-error" class="account__inline-error" data-display-name-error role="status" hidden></p>
+          <div class="account__row">
+            <span>account email</span><strong id="account-email-value">loading…</strong>
+          </div>
+
+          <div class="account__section-label">passkey</div>
+          <div class="account__row">
+            <strong id="account-passkey-device-value">loading…</strong>
+            <strong>created <span id="account-passkey-created-value">loading…</span></strong>
+          </div>
+          <p id="account-passkey-detail" class="account__explanation">Your passkey replaces a password and may be saved to a device, browser profile, or password manager.</p>
+
+          <div class="account__section-label">sync activation</div>
+          <div class="account__row account__row--action">
+            <span id="account-registration-value">checking…</span>
+            <button id="account-resend-activation" class="account__link" type="button" hidden>resend activation email</button>
+          </div>
+          <p id="account-activation-notice" class="account__explanation" role="status" hidden></p>
+          <p id="account-backup-notice" class="account__explanation" role="status" hidden></p>
+
+          <div class="account__section-label">accounts on this browser</div>
+          <ul id="account-profile-list" class="account__profiles"></ul>
+          <div class="account__row account__row--action">
+            <span>browser profile</span>
+            <button id="account-add-profile" class="account__link" type="button">add another account</button>
+          </div>
+
+          <div class="account__section-label">account management</div>
+          <div class="account__row account__row--action">
+            <span>passkeys</span>
+            <button id="account-add-passkey" class="account__link" type="button">add another passkey</button>
+          </div>
+          <div class="account__row account__row--action">
+            <span>this device</span>
+            <button id="account-unlink" class="account__link" type="button">sign out</button>
+          </div>
+
+          <div id="account-delete-title" class="account__section-label">delete account</div>
+          <p id="account-delete-description" class="account__explanation">Deleting this account permanently removes its hosted spaces, backups, and registrations.</p>
+          <div id="delete-account" class="account__row account__row--action account__row--end">
+            <button id="account-delete-review" class="account__link" type="button" aria-describedby="account-delete-description account-delete-boundary">delete account permanently</button>
+          </div>
+          <p id="account-delete-boundary" class="account__explanation">Spaces created by other people will not be deleted. Tonk cannot erase copies already replicated to other devices.</p>
+        </section>
+
+        <section id="account-pane-devices" class="account__pane" data-account-pane="devices" role="tabpanel" aria-labelledby="account-tab-devices" hidden>
+          <p class="account__explanation">Devices with access to this account. Remove any device you no longer use or recognise.</p>
+          <div class="account__section-label">devices</div>
+          <ul id="account-device-list" class="account__devices" aria-live="polite"></ul>
+        </section>
+      </div>
+    </div>
+    <p id="account-success-message" class="account__status" role="status" hidden></p>
+    <a class="account__ghost" href="/" data-return><span aria-hidden="true">&#9666;</span> back to Tonk</a>
   </section>
 
-  <div id="account-success" class="account__panel account__dashboard" hidden>
-    <p id="account-success-message" class="account__status">Signed in on this device.</p>
-    <p id="account-activation-notice" class="account__hint" role="status" hidden></p>
+  <p id="account-working" class="account__working" role="status" aria-live="polite">checking this browser…</p>
+  <p id="account-error" class="account__error" role="alert" tabindex="-1" hidden></p>
 
-    <section class="account__section account__passkey" aria-labelledby="account-passkey-title">
-      <div class="account__section-heading">
-        <h2 id="account-passkey-title">Account and passkey</h2>
-        <p>Your passkey replaces a password and may be saved to a device, browser profile, or password manager.</p>
+  <div id="account-confirmation" class="account__confirmation" hidden>
+    <button class="account__scrim" type="button" data-confirmation-scrim tabindex="-1" aria-label="cancel confirmation"></button>
+    <section class="account__dialog" role="alertdialog" aria-modal="true" aria-labelledby="account-confirm-title" aria-describedby="account-confirm-body">
+      <div class="account__dialog-head">
+        <h2 id="account-confirm-title">confirm</h2>
+        <button id="account-confirm-close" type="button" aria-label="close">&#215;</button>
       </div>
-      <dl class="account__facts" aria-label="Account and passkey details">
-        <div>
-          <dt>Account email</dt>
-          <dd id="account-email-value">Loading…</dd>
-        </div>
-        <div>
-          <dt>Sync service</dt>
-          <dd id="account-registration-value">Checking…</dd>
-        </div>
-        <div>
-          <dt>Passkey created</dt>
-          <dd id="account-passkey-created-value">Loading…</dd>
-        </div>
-        <div>
-          <dt>Created on</dt>
-          <dd id="account-passkey-device-value">Loading…</dd>
-        </div>
-      </dl>
-      <p id="account-passkey-detail" class="account__hint">“Created on” identifies the browser and operating system used to make this passkey. Browsers do not tell Tonk which passkey manager currently stores it.</p>
-      <p class="account__hint">Before using Tonk on another device or browser, check that the passkey is available there.</p>
-    </section>
-
-    <section class="account__section account__device-section" aria-labelledby="account-devices-title">
-      <div class="account__section-heading">
-        <h2 id="account-devices-title">Devices</h2>
-        <p>These devices can open and sync your Tonk spots. Remove any device you no longer use or recognise.</p>
+      <div id="account-confirm-body" class="account__dialog-body"></div>
+      <p id="account-confirm-error" class="account__dialog-error" role="alert" tabindex="-1" hidden></p>
+      <div id="account-delete-arming" class="account__dialog-arming" hidden>
+        <p id="account-delete-scope"></p>
+        <ul id="account-delete-spaces"></ul>
+        <p id="account-delete-blocked" class="account__inline-error" hidden></p>
+        <label class="account__confirm-field" for="account-delete-email">
+          <span>account email</span>
+          <input id="account-delete-email" name="Account email" type="email" autocomplete="off">
+        </label>
+        <label class="account__confirm-check">
+          <input id="account-delete-understood" type="checkbox">
+          <span id="account-delete-understood-label">I understand that this cannot be recovered by Tonk.</span>
+        </label>
       </div>
-      <ul id="account-device-list" class="account__devices"></ul>
-    </section>
-
-    <section class="account__section account__profiles-section" aria-labelledby="account-profiles-title">
-      <div class="account__section-heading">
-        <h2 id="account-profiles-title">Accounts on this browser</h2>
-        <p>Each account keeps its own spots. Switching swaps which one this browser shows.</p>
+      <div class="account__dialog-foot">
+        <button id="account-confirm-cancel" type="button">cancel</button>
+        <button id="account-delete-submit" class="account__dialog-go" type="button">confirm</button>
       </div>
-      <ul id="account-profile-list" class="account__profiles"></ul>
-      <button id="account-add-profile" class="account__button account__button--secondary account__button--compact" type="button">Add account</button>
-    </section>
-
-    <section class="account__signout" aria-labelledby="account-signout-title">
-      <div>
-        <h2 id="account-signout-title">Sign out on this device</h2>
-        <p>Your existing spots will stay on this device, but syncing will stop until you sign in again.</p>
-      </div>
-      <button id="account-unlink" class="account__button account__button--secondary account__button--compact" type="button">Sign out</button>
+      <button id="account-confirm-result-back" class="account__dialog-go account__dialog-result" type="button" hidden>back to settings</button>
     </section>
   </div>
-
-  <p id="account-working" class="account__hint" role="status" aria-live="polite">Checking this browser…</p>
-  <p id="account-error" class="account__error" role="alert" hidden></p>
 </main>

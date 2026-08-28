@@ -7,6 +7,9 @@
 //! share a label. The response carries the new repository's routing key
 //! (the DID suffix), which the UI routes by.
 
+use dialog_capability::Subject;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_effects::Use;
 use std::collections::HashMap;
 
 use ::axum::{
@@ -16,25 +19,28 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_credentials::{Ed25519Signer, SignerCredential};
+use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
+use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceStatus, TrackingBranch,
 };
 use url::Url;
+use zeroize::Zeroizing;
 
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
@@ -43,7 +49,7 @@ use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::T
 /// alongside its content branch. It stores local bookkeeping — the
 /// local [`Replica`] record, remotes config, and branch enumeration —
 /// that must never replicate (see [`tonk_schema`]).
-const META_BRANCH: &str = "meta";
+pub(crate) const META_BRANCH: &str = "meta";
 
 /// The single branch the *profile* repository lives on. The profile
 /// has no content/meta split (its whole state is device-local hub
@@ -290,59 +296,11 @@ pub async fn put_repository(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
-/// Create a durable root-first space through the replayable API.
-#[wasm_compat]
-pub async fn post_space(
-    State(state): State<AppState>,
-    Json(request): Json<tonk_worker_api::CreateSpaceRequest>,
-) -> Result<(StatusCode, Json<tonk_worker_api::CreateSpaceResponse>), TonkWorkerError> {
-    let name = request.name.trim();
-    if name.is_empty() {
-        return Err(TonkWorkerError::Router(
-            "space name must not be empty".to_string(),
-        ));
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let key = create_space_inner(&state, name, request.template.as_deref()).await?;
-
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let key = {
-        let configuration =
-            RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
-        let tonk = state.write().await;
-        create_repository(&tonk, name, &configuration)
-            .await?
-            .did()
-            .repo_key()
-            .to_owned()
-    };
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Some(remote) = request.remote.filter(|remote| !remote.trim().is_empty()) {
-        enable_sync_inner(&state, &key, &remote, request.revocation_url.as_deref()).await?;
-    }
-
-    Ok((
-        StatusCode::CREATED,
-        Json(tonk_worker_api::CreateSpaceResponse { key }),
-    ))
-}
-
 /// The form-event attribute carrying the optional sync URL — the
 /// `remote` input on the `space/create` and `space/enable-sync` forms.
 /// Kept in sync with those notation commands' `remote` field `the:`.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
-
-/// The form-event attribute carrying the optional revocation relay — the
-/// hidden `revocation` input beside `remote` on the `space/create` form.
-/// Same `/value` leaf as every other control read: the segment after the
-/// control name is the JS property the event layer reads, so a
-/// descriptive leaf (`revocation-url`) resolves to `undefined` and kills
-/// the submit.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const REVOCATION_URL_ATTR: &str = "dom.event.current-target.elements.revocation/value";
 
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
@@ -369,11 +327,6 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn revocation_url_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    text_fact_any_target(facts, REVOCATION_URL_ATTR)
-}
-
 /// The `tonk:enable-sync` transient's target spot, read from the raw facts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
@@ -381,8 +334,6 @@ const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 /// The `tonk:enable-sync` transient's endpoint, read from the raw facts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_REMOTE_ATTR: &str = "xyz.tonk.enable-sync/remote";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const ENABLE_SYNC_REVOCATION_URL_ATTR: &str = "xyz.tonk.enable-sync/revocation-url";
 
 /// Marker asking the handler to mint once the remote is attached.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -411,32 +362,6 @@ fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) ->
         })
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
-}
-
-/// The create form's template field — which library template the repo
-/// should seed. Read directly from the facts (like the remote), so the
-/// command keeps decoding against an older profile descriptor that lacks
-/// this field.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const TEMPLATE_ATTR: &str = "dom.event.current-target.elements.template/value";
-
-/// The chosen template name, read from the create command's facts.
-/// `None` when absent or blank (an older form, or "build with an agent" /
-/// "start blank" — both map to the lean default).
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn template_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use dialog_artifacts::Value;
-
-    facts
-        .iter()
-        .find(|artifact| artifact.the.to_string() == TEMPLATE_ATTR)
-        .and_then(|artifact| match &artifact.is {
-            Value::String(name) => Some(name.clone()),
-            Value::Entity(uri) => Some(uri.to_string()),
-            _ => None,
-        })
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
 }
 
 /// The default display label for a space created without a user-typed
@@ -628,8 +553,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
         // The optional remote is read from the facts directly (tolerating
         // the URL's `Value::Entity` representation), not via a concept.
         let remote = remote_from_facts(facts);
-        let revocation_url = revocation_url_from_facts(facts);
-        let template = template_from_facts(facts);
         let env = env.clone();
 
         Box::pin(async move {
@@ -647,30 +570,23 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             } else {
                 name
             };
-            let has_account = {
-                let tonk = env.state().read().await;
-                super::account::require_account(&tonk).await.is_ok()
-            };
-            if !has_account {
-                crate::router::navigate::notify_account_required(
-                    env.client(),
-                    tonk_worker_api::PendingIntent::CreateSpace {
-                        name,
-                        remote,
-                        revocation_url,
-                        template,
-                    },
-                );
+            log!("command CreateSpace name={} remote={:?}", name, remote);
+
+            // The space's seed is custodied under the account before the
+            // space exists. A linked device whose root record predates the
+            // encryption key asks the originating page for a passkey
+            // assertion here, outside the state lock, and resumes once the
+            // page has saved the key.
+            if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
+                log!("CreateSpace '{}' refused: {}", name, error);
                 return;
             }
-
-            log!("command CreateSpace name={} remote={:?}", name, remote);
 
             // 1. Always create local-only first, so the space appears
             //    whether or not a remote was given (and never vanishes on
             //    a remote failure). The create mints a fresh identity and
             //    returns its routing key.
-            let key = match create_space_inner(env.state(), &name, template.as_deref()).await {
+            let key = match create_space_inner(env.state(), &name).await {
                 Ok(key) => key,
                 Err(error) => {
                     log!("CreateSpace '{}' failed: {}", name, error);
@@ -691,9 +607,37 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             //    the identity just created. A failure here just leaves it
             //    local-only — retryable from the topbar's Enable sync.
             //    (`remote_from_facts` already dropped empty/blank URLs.)
+            // A blank remote used to mean local-only, which the account
+            // directory now advertises account-wide as a space no other
+            // device can ever replicate. With an ACTIVE account, the
+            // account's own sync remote is the natural default — the
+            // same access service the account DB syncs through; the
+            // relay resolves from the remote's origin as usual.
+            //
+            // Without one, no default: the access service serves only an
+            // active customer's subjects, so defaulting a remote here
+            // would wire an upstream that 403s on every presign. The
+            // space stays local until the user asks to share it, which
+            // is where provisioning belongs.
+            // The endpoint comes from the account's own registration
+            // fact, not from the signed descriptor and not from the
+            // page's `https://{origin}/ucan/` guess: registration is
+            // where the account learned which access service it is a
+            // customer of, so that is the one answer every attach path
+            // reads.
+            let remote = match remote {
+                Some(remote) => Some(remote),
+                None => {
+                    let tonk = env.state().read().await;
+                    if super::customer::is_active(&tonk).await {
+                        account_sync_remote(&tonk).await
+                    } else {
+                        None
+                    }
+                }
+            };
             if let Some(remote) = remote
-                && let Err(error) =
-                    enable_sync_inner(env.state(), &key, &remote, revocation_url.as_deref()).await
+                && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
             {
                 log!("CreateSpace '{}': remote attach failed: {}", key, error);
             }
@@ -716,7 +660,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
 const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
 
 /// Read the target space DID from a `tonk:invite` transient's facts,
-/// opportunistically — mirrors [`remote_from_facts`]/[`template_from_facts`].
+/// opportunistically — mirrors [`remote_from_facts`].
 ///
 /// `Some` when the FAB's newer profile-dispatched share claim named its
 /// target explicitly (asserted as either a `Value::Entity` DID or a
@@ -834,7 +778,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
             }
             log!("command Invite repo={}", repo_name);
 
-            if let Err(error) = run_invite(&env, &repo_name, time).await {
+            // A pass that attached a remote leaves the space ready but
+            // unminted, so run once more. Bounded to a single retry: the
+            // second pass either mints or refuses for a reason attaching
+            // cannot fix.
+            let outcome = run_invite(&env, &repo_name, time).await;
+            if let Ok(RunInvite::Attached) = outcome
+                && let Err(error) = run_invite(&env, &repo_name, time).await
+            {
+                log!(
+                    "Invite for repo '{}' failed after attaching: {}",
+                    repo_name,
+                    error
+                );
+            }
+            if let Err(error) = outcome {
                 log!("Invite for repo '{}' failed: {}", repo_name, error);
             }
         })
@@ -895,16 +853,34 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
             .unwrap_or_default();
         let space = text_fact(facts, ENABLE_SYNC_SPACE_ATTR);
         let remote = text_fact(facts, ENABLE_SYNC_REMOTE_ATTR);
-        let revocation_url = text_fact(facts, ENABLE_SYNC_REVOCATION_URL_ATTR);
         let share = text_fact(facts, ENABLE_SYNC_SHARE_ATTR).is_some();
         let env = env.clone();
 
         Box::pin(async move {
             use dialog_artifacts::Entity;
 
-            let (Some(space), Some(remote)) = (space, remote) else {
-                log!("EnableSync: missing space or remote, skipping");
+            let Some(space) = space else {
+                log!("EnableSync: missing space, skipping");
                 return;
+            };
+            // An absent remote means "wherever this account syncs" — the
+            // page no longer derives an endpoint from its own origin,
+            // which it could not even do reliably: a sealed guest's
+            // document is `about:srcdoc`, so it had to be told its own
+            // origin by the portal bridge first, and a share before that
+            // arrived did nothing at all.
+            let remote = match remote {
+                Some(remote) => remote,
+                None => {
+                    let tonk = env.state().read().await;
+                    match account_sync_remote(&tonk).await {
+                        Some(remote) => remote,
+                        None => {
+                            log!("EnableSync: no remote given and the account names no provider");
+                            return;
+                        }
+                    }
+                }
             };
             let Ok(did) = space.parse::<dialog_varsig::Did>() else {
                 log!("EnableSync: '{}' is not a DID", space);
@@ -913,9 +889,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
             let key = did.repo_key().to_owned();
             log!("command EnableSync repo={} share={}", key, share);
 
-            if let Err(error) =
-                enable_sync_inner(env.state(), &key, &remote, revocation_url.as_deref()).await
-            {
+            if let Err(error) = enable_sync_inner(env.state(), &key, &remote).await {
                 log!("EnableSync '{}' failed: {}", key, error);
                 if share {
                     let subject = match space.parse::<Entity>() {
@@ -956,12 +930,23 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
 ///
 /// Split out from [`InviteHandler::run`] so the `?` early-return funnels
 /// into the single `log!` there — the command future itself returns `()`.
+/// What one pass of [`run_invite`] settled.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+enum RunInvite {
+    /// Minted, refused, or otherwise finished — nothing more to do.
+    Settled,
+    /// The space had no remote and one was just attached, so a second
+    /// pass can now mint. Returned rather than recursing: re-entering
+    /// an async fn from inside itself needs boxing for no gain.
+    Attached,
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_invite(
     env: &crate::router::CommandEnv,
     repo_name: &str,
     time: f64,
-) -> Result<(), TonkWorkerError> {
+) -> Result<RunInvite, TonkWorkerError> {
     use dialog_artifacts::Entity;
     use dialog_varsig::Principal as _;
     use tonk_schema::command::{Authorization, Credential};
@@ -993,59 +978,128 @@ async fn run_invite(
             TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
         })?;
 
-    // A guest visit cannot mint: it installed bounded invite authority, not
-    // the durable membership a delegation is cut from. Refuse ahead of the
-    // remote check — it is the more fundamental answer, and it is cheaper —
-    // so the click spends no delegation and rotates no credential. The bar
-    // turns this code into an offer to join, which is what raises the passkey
-    // prompt.
-    if super::join::is_guest_replica(&tonk, &repository.did()).await? {
-        log!("Invite for repo '{}' refused: guest visit", repo_name);
+    if super::account::provider(&tonk).await.is_none() {
+        log!("Invite for repo '{}' refused: account required", repo_name);
         drop(tonk);
         publish_share_blocked(
             env.state(),
             repo_name,
             subject_entity,
-            tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP,
-            "You're visiting this spot as a guest. Join it to share it with others.",
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED,
+            "Create an account or log in before sharing this space.",
             time,
         )
         .await;
-        return Ok(());
+        return Ok(RunInvite::Settled);
     }
 
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
     // remote lands its recipient in a spot that can never fill, so there is
     // nothing worth generating key material for. Refusing here also means a
     // refusal costs no delegation and rotates no credential.
-    let remote_execution =
-        match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
-            super::create_invite::RemoteRequirement::Ready(execution) => execution,
-            super::create_invite::RemoteRequirement::Refused(reason) => {
-                log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
-                drop(tonk);
-                publish_share_blocked(
-                    env.state(),
-                    repo_name,
-                    subject_entity,
-                    reason.code(),
-                    reason.detail(),
-                    time,
-                )
-                .await;
-                return Ok(());
+    let remote_execution = match super::create_invite::resolve_remote_url(&tonk, &repository)
+        .await?
+    {
+        super::create_invite::RemoteRequirement::Ready(execution) => execution,
+        super::create_invite::RemoteRequirement::Refused(reason) => {
+            // Say WHY there is no remote. "Attach one" is the right
+            // offer only when a provider exists to attach to.
+            let reason = super::create_invite::explain_refusal(&tonk, reason).await;
+            log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
+            let subject = repository.did().to_string();
+            drop(tonk);
+
+            // Whether to issue a link or get an account first is the
+            // worker's call, not the caller's. A share that needs an
+            // account is not a failure the control should interpret
+            // and repair — it is this handler's next step, so it
+            // asks for the account itself and the share resumes when
+            // the account facts land.
+            //
+            // Not awaited: registration may take a ceremony, an
+            // email round trip, or never finish, and a handler held
+            // open across that is held open forever.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                && let Some(client) = env.client()
+                && let Err(error) = super::navigate::request_account_link(client, &subject).await
+            {
+                log!("Invite: could not ask the page to link an account: {error}");
             }
-        };
+
+            // `not-synced` is not a refusal either: the account has a
+            // provider, this space simply has no remote yet, and
+            // attaching one is this handler's next step rather than a
+            // question for the caller. Sharing a local-only spot is
+            // exactly the moment it earns its remote.
+            //
+            // Without this the click had nowhere to go. The control's
+            // own prompt for this case was removed when the worker took
+            // the decision over, so the share refused, nothing attached,
+            // and the button span until it timed out.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NOT_SYNCED {
+                let provider = {
+                    let tonk = env.state().read().await;
+                    super::customer::provider_address(&tonk).await
+                };
+                match provider {
+                    Some(remote) => {
+                        log!("Invite for repo '{repo_name}': attaching {remote} before minting");
+                        match enable_sync_inner(env.state(), repo_name, &remote).await {
+                            // Attached. Report it and let the caller mint:
+                            // re-entering `run_invite` here would be async
+                            // recursion, which needs boxing for no gain.
+                            Ok(()) => return Ok(RunInvite::Attached),
+                            Err(error) => {
+                                log!("Invite for repo '{repo_name}': attach failed: {error}")
+                            }
+                        }
+                    }
+                    None => log!("Invite for repo '{repo_name}': the account names no provider"),
+                }
+            }
+
+            publish_share_blocked(
+                env.state(),
+                repo_name,
+                subject_entity,
+                reason.code(),
+                reason.detail(),
+                time,
+            )
+            .await;
+            return Ok(RunInvite::Settled);
+        }
+    };
+
+    // A share is a promise the recipient can actually pull, and an
+    // upstream can outlive its provisioning (a space created before the
+    // account had an active customer keeps its remote while the service
+    // refuses every presign). Ensure the consumer row exists before any
+    // key material is minted: `/provider/add` is idempotent — an already
+    // provided consumer answers `ConsumerProvided`, treated as success —
+    // so every share self-heals that half-state. Best effort like the
+    // enable-sync attach: a foreign remote (self-hosted, a test server)
+    // is not our access service, and refusing the mint over it would
+    // make those unshareable.
+    match space_root_prefix(&tonk, &repository.did()).await {
+        Ok(prefix) => {
+            if let Err(error) =
+                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
+            {
+                log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
+            }
+        }
+        Err(error) => {
+            log!("Invite for repo '{repo_name}': no prefix to provision with: {error}");
+        }
+    }
 
     // A ready-to-append URL query suffix (`&remote=<percent-encoded-url>`).
     // The share view appends it verbatim between `?access=…` and the `#seed`.
     let encoded_access: String =
         url::form_urlencoded::byte_serialize(remote_execution.access_url.as_str().as_bytes())
             .collect();
-    let encoded_relay: String =
-        url::form_urlencoded::byte_serialize(remote_execution.revocation_url.as_str().as_bytes())
-            .collect();
-    let remote = format!("&remote={encoded_access}&revocation={encoded_relay}");
+    let remote = format!("&remote={encoded_access}");
 
     // Mint a fresh membership keypair. Its private seed becomes the invite
     // URL's `#` fragment; its public DID is the audience the repo access is
@@ -1057,7 +1111,7 @@ async fn run_invite(
     let delegation: dialog_ucan::UcanDelegation = tonk
         .profile
         .access()
-        .claim(&repository)
+        .claim(Subject::from(repository.did()).attenuate(Use))
         .delegate(membership_did)
         .perform(&tonk.operator)
         .await
@@ -1070,11 +1124,7 @@ async fn run_invite(
     let chain = delegation.into_chain();
     let invitation =
         Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
-    let execution = InvitationExecution::new(
-        &invitation,
-        "open",
-        remote_execution.revocation_url.as_str(),
-    );
+    let execution = InvitationExecution::new(&invitation, "open");
 
     // base58-encode the delegation chain — the `?access=` parameter the
     // view reads back and assembles into the final URL.
@@ -1109,10 +1159,19 @@ async fn run_invite(
         .branch(CONTENT_BRANCH)
         .overlay()
         .assert(Credential {
-            this: subject_entity,
+            this: subject_entity.clone(),
             seed: Seed(seed),
-            link: Link(link),
+            link: Link(link.clone()),
         })
+        // The same answer in the shape the share control subscribes to:
+        // one row per space whose `status` says where the invite has got
+        // to, carrying the url once there is one. `Credential` keeps the
+        // seed beside it for readers that need both; this is what a view
+        // renders. See `plan/share-intent.md`.
+        .assert(tonk_schema::command::InviteState::granted(
+            subject_entity,
+            link,
+        ))
         .write()
         .perform(&tonk.operator)
         .await
@@ -1162,8 +1221,10 @@ async fn run_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
 
+    super::create_invite::retain_invite_authority(&tonk, repo_name, &chain).await?;
+
     log!("Minted invitation for repo '{}'", repo_name);
-    Ok(())
+    Ok(RunInvite::Settled)
 }
 
 /// Record why a share click could not mint, on the spot's content-branch
@@ -1179,6 +1240,26 @@ async fn run_invite(
 /// on the subject, so it lingers and replays on every resubscribe; the echo is
 /// what lets the control tell this refusal from a replay of an older one, which
 /// is why the fact never needs retracting.
+/// The `invite:*` status a refusal code becomes.
+///
+/// Pinned by `it_keeps_a_repairable_refusal_open`.
+///
+/// Only reasons nothing can repair are terminal. `not-synced` and
+/// `needs-account` are answered by attaching a remote or making an
+/// account, so the request stays open rather than reporting a failure
+/// the user is in the middle of fixing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn invite_status_for(code: &str) -> &'static str {
+    use tonk_schema::command::InviteState;
+    use tonk_worker_api::share;
+    match code {
+        share::BLOCKED_SUSPENDED => InviteState::SUSPENDED,
+        share::BLOCKED_UNSHAREABLE_REMOTE => InviteState::UNSHAREABLE,
+        // Repairable, or an attach that can be retried.
+        _ => InviteState::REQUESTED,
+    }
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn publish_share_blocked(
     state: &AppState,
@@ -1198,11 +1279,20 @@ async fn publish_share_blocked(
         .branch(CONTENT_BRANCH)
         .overlay()
         .assert(ShareBlocked {
-            this: subject,
+            this: subject.clone(),
             blocked: share::Blocked(code.to_owned()),
             detail: share::Detail(detail.to_owned()),
             time: share::Time(time),
         })
+        // The same refusal in the shape the share control subscribes to.
+        // Only a terminal reason becomes a terminal status: a refusal
+        // the user can repair (no account yet, no remote yet) leaves the
+        // request open, because the click has not finished failing — it
+        // is waiting on something. See `plan/share-intent.md`.
+        .assert(tonk_schema::command::InviteState::denied(
+            subject,
+            invite_status_for(code),
+        ))
         .write()
         .perform(&tonk.operator)
         .await
@@ -1660,10 +1750,20 @@ async fn run_rename_repository(
         .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    // Mirror the new name into the account directory so devices that
+    // have not replicated this space still label it correctly.
     if let Ok(subject) = repo.parse::<Did>()
-        && let Err(error) = crate::router::account_backup::back_up_subject(&tonk, &subject).await
+        && let Err(error) = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .transaction()
+            .assert(tonk_schema::SpaceName::new(&subject, name))
+            .commit()
+            .perform(&tonk.operator)
+            .await
     {
-        log!("RenameRepository backup skipped: {error}");
+        log!("RenameRepository directory mirror skipped: {error}");
     }
     Ok(())
 }
@@ -1794,7 +1894,10 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 /// chrome in the Hub, and deleting the profile's own storage would take
 /// every space with it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), RepositoryError> {
+pub(crate) async fn remove_space_inner(
+    state: &AppState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
     {
         let tonk = state.write().await;
         if let Err(error) = require_real_space(&tonk, subject).await
@@ -1825,7 +1928,11 @@ async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), Repos
     // too, since sharing can't be ruled out.
     let other_profiles = {
         let tonk = state.read().await;
-        match tonk.registry.read_roster(&tonk.storage).await {
+        match tonk
+            .registry
+            .read_roster(&tonk.storage, &tonk.operator)
+            .await
+        {
             Ok(roster) => roster.len() > 1,
             Err(error) => {
                 log!("profile roster unreadable before storage delete: {error}");
@@ -1924,14 +2031,31 @@ async fn remove_replica_from_profile(
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
-    let stream = meta
+
+    // Removal is account-wide: profile main is shared account state, so
+    // EVERY device's replica row for this subject is swept, not just
+    // this device's — a surviving foreign row would resurrect the
+    // directory entry through the next sweep's backfill. This device's
+    // derived entity rides along in case its row is gone but stray
+    // stamps remain.
+    let rows: Vec<Replica> = meta
         .handle()
-        .claims()
-        .select(ArtifactSelector::new().of(entity.clone()))
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::replica::Subject(subject.this())),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
         .perform(&tonk.operator)
+        .try_vec()
         .await
-        .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
-    tokio::pin!(stream);
+        .map_err(|e| RepositoryError::Internal(format!("replica rows query: {e:?}")))?;
+    let mut entities: Vec<dialog_artifacts::Entity> =
+        rows.into_iter().map(|row| row.this).collect();
+    if !entities.contains(&entity) {
+        entities.push(entity);
+    }
 
     let mut transaction = tonk
         .reactor
@@ -1939,11 +2063,51 @@ async fn remove_replica_from_profile(
         .branch(PROFILE_BRANCH)
         .transaction();
     let mut found = false;
-    while let Some(artifact) = stream.next().await {
+    for row_entity in entities {
+        let stream = meta
+            .handle()
+            .claims()
+            .select(ArtifactSelector::new().of(row_entity))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
+        tokio::pin!(stream);
+        while let Some(artifact) = stream.next().await {
+            let artifact = artifact
+                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
+                .to_owned()
+                .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+            found = true;
+            transaction = transaction.retract(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: false,
+            });
+        }
+    }
+
+    // The account-level directory entry hangs on the repository's own
+    // entity, so it needs its own sweep — filtered to the space
+    // namespace, because other facts may key on that entity too.
+    // Removing it is what makes "delete spot" account-wide: every
+    // device's Hub lists the directory, not this device's replica row.
+    let directory = meta
+        .handle()
+        .claims()
+        .select(ArtifactSelector::new().of(subject.this()))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("select directory claims: {e}")))?;
+    tokio::pin!(directory);
+    while let Some(artifact) = directory.next().await {
         let artifact = artifact
-            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?
+            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?
             .to_owned()
-            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+            .map_err(|e| RepositoryError::Internal(format!("read directory claim: {e}")))?;
+        if !artifact.the.to_string().starts_with("xyz.tonk.space/") {
+            continue;
+        }
         found = true;
         transaction = transaction.retract(super::claim::RawClaim {
             the: artifact.the,
@@ -1955,7 +2119,7 @@ async fn remove_replica_from_profile(
     if !found {
         // Nothing recorded — a stale row or a repeated submit. Not an
         // error: the desired end state (no record) already holds.
-        log!("remove replica: no facts for {} in profile meta", entity);
+        log!("remove replica: no facts for {} in profile meta", subject);
         return Ok(());
     }
 
@@ -2013,6 +2177,14 @@ extern "C" {
     /// space's routing key. Resolves once both halves settle; never
     /// rejects.
     fn delete_space_storage(name: &str) -> js_sys::Promise;
+}
+
+/// Delete the storage a legacy hidden account repository left behind.
+/// Its content synced with the same remote profile main now follows, so
+/// everything it held is recoverable by pulling.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn delete_legacy_storage(key: &str) {
+    let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(key)).await;
 }
 
 /// Toggle the durable `enabled` preference on the replica and publish the
@@ -2104,10 +2276,7 @@ async fn run_pause_sync(
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn space_config(
-    remote: &str,
-    revocation_url: Option<&str>,
-) -> Result<RepositoryConfiguration, RepositoryError> {
+fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
     use dialog_remote_ucan_s3::UcanAddress;
 
     let remote = remote.trim();
@@ -2117,19 +2286,34 @@ fn space_config(
         );
     }
     let address = SiteAddress::from(UcanAddress::new(remote));
-    let mut remote_configuration = RemoteConfiguration::new(address);
-    if let Some(revocation_url) = revocation_url.filter(|url| !url.trim().is_empty()) {
-        let url = Url::parse(revocation_url).map_err(|error| {
-            RepositoryError::InvalidConfiguration(format!("invalid revocation relay URL: {error}"))
-        })?;
-        remote_configuration = remote_configuration.revocation_url(url);
-    }
     Ok(RepositoryConfiguration::default()
-        .remote("origin", remote_configuration)
+        .remote("origin", RemoteConfiguration::new(address))
         .branch(
             "main",
             BranchConfiguration::default().upstream("origin", "main"),
         ))
+}
+
+/// Where a space on this account syncs, when nothing named a remote.
+///
+/// The account's recorded provider is the authority — the access service
+/// names it in the registration receipt. It is written by whatever last
+/// talked to the service, though, and a space created in the moment
+/// after activation can beat that write; the account descriptor names
+/// the same deployment and is recorded at link time, so it answers while
+/// the fact catches up rather than leaving the space local-only on a
+/// race.
+///
+/// Shared by both creation paths so they cannot disagree about where a
+/// space syncs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
+    match super::customer::provider_address(tonk).await {
+        Some(provider) => Some(provider),
+        None => super::account::descriptor(tonk)
+            .await
+            .map(|descriptor| descriptor.remote().to_string()),
+    }
 }
 
 /// Create a space local-only, split out so its `?` errors are logged
@@ -2142,11 +2326,7 @@ fn space_config(
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn create_space_inner(
-    state: &AppState,
-    name: &str,
-    template: Option<&str>,
-) -> Result<String, RepositoryError> {
+async fn create_space_inner(state: &AppState, name: &str) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
     let configuration =
@@ -2166,49 +2346,8 @@ async fn create_space_inner(
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
-    seed_and_initialize(state, name, &key, &subject, &branches, template).await?;
+    seed_and_initialize(state, name, &key, &subject, &branches).await?;
     Ok(key)
-}
-
-/// The relay the access service behind `remote` publishes revocations to,
-/// read from its `/.well-known/tonk`.
-///
-/// The fallback for a caller that named a remote but no relay. Resolved
-/// against the *remote's* origin rather than this worker's, because the
-/// relay belongs to the access service the spot actually syncs through —
-/// which is not necessarily the deployment serving this page.
-///
-/// Best-effort: `None` on any failure, so a blip leaves the spot synced
-/// but unshareable rather than not synced at all. That state is no longer
-/// a dead end — the share prompt offers to attach a relay to an existing
-/// remote (see [`RemoteRefusal::MissingRevocationRelay`]).
-///
-/// [`RemoteRefusal::MissingRevocationRelay`]: super::create_invite::RemoteRefusal::MissingRevocationRelay
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn deployment_revocation_url(remote: &str) -> Option<String> {
-    use wasm_bindgen::JsCast as _;
-    use wasm_bindgen_futures::JsFuture;
-
-    let endpoint = Url::parse(remote).ok()?.join("/.well-known/tonk").ok()?;
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global().dyn_into().ok()?;
-    let response: web_sys::Response = JsFuture::from(global.fetch_with_str(endpoint.as_str()))
-        .await
-        .and_then(|value| value.dyn_into())
-        .ok()?;
-    if !response.ok() {
-        log!(
-            "deployment config at {} returned HTTP {}",
-            endpoint,
-            response.status()
-        );
-        return None;
-    }
-    let body = JsFuture::from(response.text().ok()?)
-        .await
-        .ok()?
-        .as_string()?;
-    let config: tonk_worker_api::DeploymentConfig = serde_json::from_str(&body).ok()?;
-    Some(config.revocation_relay_url.to_string())
 }
 
 /// Attach a sync remote to a space, idempotently, via
@@ -2220,38 +2359,18 @@ async fn deployment_revocation_url(remote: &str) -> Option<String> {
 /// sync" forms. A missing repository or empty URL is a no-op (logged),
 /// not an error.
 ///
-/// A caller that names no relay gets the remote's own
-/// ([`deployment_revocation_url`]) rather than a remote with none. The
-/// create wizard is exactly that caller: its hidden `revocation` input is
-/// filled by an async fetch that a fast submit can beat, and an omitted
-/// relay used to produce a spot that could sync but never be shared.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enable_sync_inner(
     state: &AppState,
     key: &str,
     remote: &str,
-    revocation_url: Option<&str>,
 ) -> Result<(), RepositoryError> {
     if remote.trim().is_empty() {
         // Submitted with no URL — nothing to attach.
         log!("enable sync '{}': empty remote, nothing to attach", key);
         return Ok(());
     }
-    let relay = match revocation_url.filter(|url| !url.trim().is_empty()) {
-        Some(url) => Some(url.to_owned()),
-        None => {
-            let resolved = deployment_revocation_url(remote).await;
-            if resolved.is_none() {
-                log!(
-                    "enable sync '{}': no relay given and none advertised by {}",
-                    key,
-                    remote
-                );
-            }
-            resolved
-        }
-    };
-    let configuration = space_config(remote, relay.as_deref())?;
+    let configuration = space_config(remote)?;
 
     let tonk = state.write().await;
     // A missing repository is a no-op, not an error — defensive against a
@@ -2276,17 +2395,42 @@ async fn enable_sync_inner(
         }
     };
 
-    ensure_remote_config(&tonk, &repository, key, &configuration).await?;
-
-    // Escrow this owned space's delegation so the account's other devices
-    // can restore it. Resolve the address back through the configuration:
-    // `ensure_remote_config` deliberately preserves an existing upstream,
-    // which may differ from the form-supplied repair URL.
-    if let Err(error) =
-        crate::router::account_backup::back_up_subject(&tonk, &repository.did()).await
-    {
-        log!("enable sync '{}': account backup skipped ({})", key, error);
+    // Provision before attaching. Creation only provisions when there is
+    // an active customer to provision under, so a space created during
+    // onboarding has no consumer row — and an upstream attached without
+    // one syncs to `subject is provisioned by an active customer (the
+    // subject is not provisioned)` on every presign. This is where a
+    // local-only space earns its remote, so it is where the consumer row
+    // has to be created.
+    //
+    // Best effort, not fatal. A remote is not necessarily OUR access
+    // service — a self-hosted endpoint or a test server is attached the
+    // same way, and `/provider/add` against our own service is beside
+    // the point there. Refusing the attach on a failed provision would
+    // make those unreachable, so the attach proceeds and a space that
+    // does need provisioning surfaces it as a refused presign rather
+    // than a refused attach.
+    match space_root_prefix(&tonk, &repository.did()).await {
+        Ok(prefix) => {
+            if let Err(error) =
+                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
+            {
+                log!("enable sync '{key}': provisioning skipped: {error}");
+            }
+        }
+        Err(error) => {
+            log!("enable sync '{key}': no root delegation to consent with: {error}")
+        }
     }
+
+    let effective = ensure_remote_config(&tonk, &repository, key, &configuration).await?;
+
+    // Mirror the EFFECTIVE mount configuration into the account
+    // directory so other devices adopt what this device actually
+    // syncs against: an already-configured upstream is preserved, so
+    // the request's (possibly repair-supplied) address must not
+    // overwrite it there.
+    record_space_mount(&tonk, &repository.did(), &effective, None).await;
 
     Ok(())
 }
@@ -2306,8 +2450,7 @@ fn spawn_seed(
     branches: Vec<String>,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) =
-            seed_and_initialize(&state, &display_name, &key, &subject, &branches, None).await
+        if let Err(e) = seed_and_initialize(&state, &display_name, &key, &subject, &branches).await
         {
             log!("Background seed for '{}' failed: {}", key, e);
         }
@@ -2398,7 +2541,6 @@ async fn seed_and_initialize(
     key: &str,
     subject: &Did,
     branches: &[String],
-    template: Option<&str>,
 ) -> Result<(), RepositoryError> {
     // The seed can run long after the replica record was asserted (the
     // detached `spawn_seed` path, or just a slow library fetch on the
@@ -2416,31 +2558,24 @@ async fn seed_and_initialize(
     }
 
     if !branches.is_empty() {
-        // Fetch every library document this repo seeds — core, then the
-        // chosen template. Concatenated and evaluated in ONE commit per
-        // branch so the rule engine saturates over the whole document at
-        // once (the name flash fix).
-        let urls = seed_library_urls(template);
-        let mut documents: Vec<String> = Vec::with_capacity(urls.len());
-        for url in &urls {
-            let document = fetch_standard_library(url)
-                .await
-                .map_err(|e| RepositoryError::Internal(format!("fetch '{url}': {e}")))?;
-            documents.push(document);
-        }
+        // The scaffold and the repository's name go in as ONE body, so the
+        // rule engine saturates over the whole document in a single commit
+        // per branch (the name flash fix).
+        let scaffold = fetch_standard_library(STANDARD_LIBRARY_URL)
+            .await
+            .map_err(|e| {
+                RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}"))
+            })?;
 
         let name_body = repository_name_body(subject, display_name)?;
         let tonk = state.read().await;
         for branch_name in branches {
-            let mut body = documents.join("\n");
-            body.push('\n');
-            body.push_str(&name_body);
+            let body = format!("{scaffold}\n{name_body}");
             seed_standard_library(&tonk, key, branch_name, &body)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
             log!(
-                "Seeded {} doc(s) + name on '{}' branch '{}'",
-                urls.len(),
+                "Seeded scaffold + name on '{}' branch '{}'",
                 key,
                 branch_name
             );
@@ -2465,42 +2600,10 @@ async fn seed_and_initialize(
 /// URL of the served standard-library notation asset, copied into
 /// the dist from `tonk-core/assets/library/core.yaml` by trunk. Seeded
 /// onto each space's content branch. Only referenced from the
-/// SW-scoped background seed path.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+/// SW-scoped background seed path, so it is wasm-only: the native tests
+/// that also read it went with the template libraries.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
-
-/// URL of the served sheets-template asset, appended on top of the
-/// scaffold when the `sheets` template is chosen.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const SHEETS_LIBRARY_URL: &str = "/library/sheets.yaml";
-
-/// URL of the served wiki-template asset, appended on top of the
-/// scaffold when the `wiki` template is chosen.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const WIKI_LIBRARY_URL: &str = "/library/wiki.yaml";
-
-/// URL of the served board-template asset, appended on top of the
-/// scaffold when the `board` template is chosen.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const BOARD_LIBRARY_URL: &str = "/library/board.yaml";
-
-/// The ordered list of library documents to concatenate and seed for a
-/// new repo. Core is always first. The `sheets` template appends the
-/// sheets workspace (which overrides the `tonk/space` alias to the
-/// binder); the `wiki` template appends the wiki (tree + block canvas,
-/// same alias override); the `board` template appends the card canvas
-/// (columns of text/checklist/table cards, same alias override). Every
-/// other template value (including `blank`, `agent`, or an unknown one)
-/// is core alone — the lean default that renders the blank canvas.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn seed_library_urls(template: Option<&str>) -> Vec<&'static str> {
-    match template {
-        Some("sheets") => vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL],
-        Some("wiki") => vec![STANDARD_LIBRARY_URL, WIKI_LIBRARY_URL],
-        Some("board") => vec![STANDARD_LIBRARY_URL, BOARD_LIBRARY_URL],
-        _ => vec![STANDARD_LIBRARY_URL],
-    }
-}
 
 /// URL of the lean profile library — only the `space` concept and the
 /// Hub directory view. Seeded onto the profile's meta branch, which
@@ -2630,16 +2733,42 @@ pub async fn create_repository(
     tonk: &TonkState,
     display_name: &str,
     configuration: &RepositoryConfiguration,
-) -> Result<Repository<SignerCredential>, RepositoryError> {
-    // A space can be created before any account exists: it delegates to
-    // the most durable key the client holds — the passkey-derived root
-    // when one is persisted, else the profile's own device key
-    // (plan/Account model.md §2). Such a space is local-only and
-    // un-backed-up until linking redelegates it to the account and
-    // provisions it; see [`adopt_profile_spaces`].
+) -> Result<Repository, RepositoryError> {
+    // A space always delegates to an ACCOUNT: the passkey-derived root
+    // once one is persisted, else this device's onboarding account,
+    // which is a real account custodied locally rather than by WebAuthn
+    // (`plan/onboarding-accreditation.md`).
+    //
+    // It used to fall back to the profile's own device key, which made a
+    // pre-account space differ in shape from every other one and left
+    // `adopt_profile_spaces` to reconcile the difference at sign-in.
+    // Delegating to an account from the start means enrolling a passkey
+    // is an account key ROTATION, the same operation a compromised
+    // passkey needs, rather than a bespoke migration.
     let owner = match super::identity::local_root(tonk).await {
         Ok(root) => root.root_did,
-        Err(TonkWorkerError::RootRequired) => tonk.profile.did(),
+        Err(TonkWorkerError::RootRequired) => {
+            // Minting the grant here as well as the account: the device
+            // signs on the account's behalf, so a space delegated to an
+            // account this device cannot prove for would be unusable.
+            crate::onboarding::grant_device(tonk)
+                .await
+                .map_err(|error| {
+                    RepositoryError::Internal(format!("failed to grant the device: {error}"))
+                })?;
+            crate::onboarding::did(tonk)
+                .await
+                .map_err(|error| {
+                    RepositoryError::Internal(format!(
+                        "failed to open the onboarding account: {error}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    RepositoryError::Internal(
+                        "the onboarding account did not materialise".to_string(),
+                    )
+                })?
+        }
         Err(error) => {
             return Err(RepositoryError::Internal(format!(
                 "failed to load local root: {error}"
@@ -2654,29 +2783,52 @@ pub async fn create_repository(
     // repository's own `tonk/repository` concept. Generating the signer
     // first (rather than letting `.create()` mint one) is what lets the
     // name derive from the DID instead of the other way around.
-    let signer = Ed25519Signer::generate()
+    // The seed is drawn here rather than inside `generate`, so it can be
+    // sealed to the account below; the signer imports from it the same
+    // way an account root does (non-extractable on the web target), so
+    // the credential the repository stores is the shape it always was.
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut())
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    let signer = Ed25519Signer::import(&*seed)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
     let did = signer.did();
     let key = did.repo_key();
 
-    let repository = tonk
-        .profile
-        .repository(key)
-        .create()
-        .with_credential(signer)
+    // The seed sealed to the account is the ONLY copy of the space secret
+    // that outlives this function: the repository stores the verifier, and
+    // every later act on the space proves through `space -> account ->
+    // device`, the way a joined replica does. So the custody row lands
+    // before anything else does, and a seed that cannot be custodied is a
+    // space that is not created.
+    if !super::account_state::custody_seed(tonk, &did, SeedKind::Space, seed).await {
+        return Err(RepositoryError::Internal(
+            "the space seed could not be custodied under the account".to_string(),
+        ));
+    }
+
+    let verifier: Ed25519Verifier = did.to_string().parse().map_err(|e| {
+        RepositoryError::Internal(format!("space DID is not a valid Ed25519 did:key: {e:?}"))
+    })?;
+    let space_credential = Subject::from(tonk.profile.did())
+        .attenuate(Space::new(key))
+        .create(Credential::from(verifier))
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             RepositoryError::Internal(format!("Failed to create repository '{}': {}", key, e))
         })?;
+    let repository = Repository::from(space_credential);
     log!("Repository created. DID: {}", repository.did());
 
-    // 2. Delegate subject-specific authority to the owner key.
-    let delegation = repository
+    // 2. Delegate subject-specific authority to the owner key, from the
+    //    signer this function still holds.
+    let minter = Repository::from(signer);
+    let delegation = minter
         .access()
-        .claim(&repository)
-        .delegate(owner)
+        .claim(&minter)
+        .delegate(owner.clone())
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -2684,6 +2836,7 @@ pub async fn create_repository(
         })?;
 
     let prefix = delegation.into_chain();
+
     tonk.profile
         .access()
         .save(UcanDelegation(prefix.clone()))
@@ -2700,9 +2853,25 @@ pub async fn create_repository(
     // consumer of the access service, depositing the powerline as its
     // consent. Best effort for the same reason retain is — a space is
     // usable the moment its delegations exist locally.
-    if let Err(error) = super::customer::provision_consumer(tonk, &repository.did(), &prefix).await
-    {
-        log!("consumer provisioning skipped: {error}");
+    //
+    // Only for an ACTIVE customer. A device has an account from first
+    // boot (the onboarding account), so "an account exists" says nothing
+    // about whether the access service will serve this subject: until
+    // the user enrols an email and confirms it, `/provider/add` refuses
+    // and the space would be left wired to a remote that answers 403 on
+    // every presign. A space created in that window is local-only by
+    // design, and the share button provisions it on demand.
+    if super::customer::is_active(tonk).await {
+        if let Err(error) =
+            super::customer::provision_or_defer(tonk, &repository.did(), &prefix, None).await
+        {
+            log!("consumer provisioning skipped: {error}");
+        }
+    } else {
+        log!(
+            "space '{}' created local-only: no active customer to provision it under",
+            repository.did()
+        );
     }
 
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
@@ -2739,6 +2908,7 @@ pub async fn create_repository(
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -2762,102 +2932,6 @@ pub(crate) async fn space_root_prefix(
     DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
         TonkWorkerError::Internal(format!("stored space root delegation is invalid: {error}"))
     })
-}
-
-/// Bring pre-account spaces under the account after linking.
-///
-/// A space created before any account existed delegates to the profile's
-/// device key, the only durable key the client had. Once a root is
-/// persisted, each such space re-delegates from its own signer to the
-/// account root: the stored prefix is replaced, the new authority lands
-/// in the profile's access branch, is retained into the account space,
-/// and the space is provisioned as a consumer under the account's
-/// customer. Spaces already rooted at the account — created while signed
-/// out, or adopted by an earlier pass — skip the redelegation but still
-/// get the retain and the provisioning, both idempotent. Joined replicas
-/// (whose prefix reaches this profile through someone else's chain) are
-/// left alone. Best effort per space: adoption failing must never fail
-/// the link that triggered it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
-    let Ok(root) = super::identity::local_root(tonk).await else {
-        return;
-    };
-    let profile_did = tonk.profile.did();
-    for key in super::profile_name::real_space_keys(tonk).await {
-        let Ok(repository) = tonk
-            .profile
-            .repository(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-        else {
-            continue;
-        };
-        let subject = repository.did();
-        let Ok(prefix) = space_root_prefix(tonk, &subject).await else {
-            continue;
-        };
-        let chain = if prefix.audience() == &profile_did {
-            // Joined replicas carry a verifier-only credential: nothing
-            // to redelegate from, their authority is the inviter's.
-            let Some(access) = repository.try_access() else {
-                continue;
-            };
-            let delegation = match access
-                .claim(&repository)
-                .delegate(root.root_did.clone())
-                .perform(&tonk.operator)
-                .await
-            {
-                Ok(delegation) => delegation,
-                Err(error) => {
-                    log!("space '{subject}' was not adopted by the account: {error}");
-                    continue;
-                }
-            };
-            let chain = delegation.into_chain();
-            if let Err(error) = tonk
-                .profile
-                .access()
-                .save(UcanDelegation(chain.clone()))
-                .perform(&tonk.operator)
-                .await
-            {
-                log!("adopted space '{subject}' delegation did not save: {error}");
-                continue;
-            }
-            match chain.to_bytes() {
-                Ok(bytes) => {
-                    if let Err(error) = tonk
-                        .profile
-                        .credential()
-                        .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
-                        .save(bytes)
-                        .perform(&tonk.operator)
-                        .await
-                    {
-                        log!("adopted space '{subject}' prefix did not persist: {error}");
-                        continue;
-                    }
-                }
-                Err(error) => {
-                    log!("adopted space '{subject}' prefix did not serialize: {error}");
-                    continue;
-                }
-            }
-            log!("space '{subject}' adopted by the account");
-            chain
-        } else if prefix.audience() == &root.root_did {
-            prefix
-        } else {
-            continue;
-        };
-        super::account_state::retain_space_delegation(tonk, &chain).await;
-        if let Err(error) = super::customer::provision_consumer(tonk, &subject, &chain).await {
-            log!("adopted space '{subject}' provisioning skipped: {error}");
-        }
-    }
 }
 
 /// Lay down the meta-branch facts and profile-side index for an
@@ -3108,7 +3182,110 @@ where
         &repository.did(),
         Replica::blank_status(),
     )
-    .await
+    .await?;
+    record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
+    // Only on the creation path: `record_space_mount` also runs for
+    // joined spaces, and a founding stamp there would claim this
+    // account made a space it was merely invited to.
+    record_space_founded(tonk, &repository.did()).await;
+    super::adopt::stamp_space_locality(tonk, &repository.did()).await;
+    Ok(())
+}
+
+/// Stamp who founded a space and when, onto its directory entity.
+///
+/// Best effort, like the mount record beside it: a space is usable the
+/// moment its delegations exist, and a missing founding stamp costs a
+/// Hub label rather than access.
+async fn record_space_founded(tonk: &TonkState, subject: &Did) {
+    let at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .assert(tonk_schema::SpaceFounded::new(
+            subject,
+            &tonk.profile.did(),
+            at,
+        ));
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("stamp space founding for '{subject}': {error}");
+    }
+}
+
+/// Anchor wrapper so branch/remote concepts can hang off the space's
+/// directory entity (`subject.this()`), giving every device the same
+/// derived entities — the account-level mirror of the per-replica meta
+/// records.
+struct DirectoryAnchor(dialog_artifacts::Entity);
+
+impl AsRef<dialog_artifacts::Entity> for DirectoryAnchor {
+    fn as_ref(&self) -> &dialog_artifacts::Entity {
+        &self.0
+    }
+}
+
+/// Mirror a space's remote/branch configuration — and optionally its
+/// display name — into the account directory as plain facts on
+/// directory-anchored entities, so any device can rebuild the full
+/// [`RepositoryConfiguration`] from the account DB and mount the space
+/// identically, non-default setups included. Individually updatable
+/// like all facts; no serialized blob.
+pub(crate) async fn record_space_mount(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: &RepositoryConfiguration,
+    display_name: Option<&str>,
+) {
+    use tonk_schema::domain::remote::Address as RemoteAddress;
+
+    let anchor_entity = subject.this();
+    let anchor = DirectoryAnchor(anchor_entity.clone());
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction();
+    if let Some(name) = display_name {
+        transaction = transaction.assert(tonk_schema::SpaceName::new(subject, name));
+    }
+    let mut remote_concepts: HashMap<String, Remote> = HashMap::new();
+    for (name, remote_config) in &configuration.remote {
+        let target = remote_config
+            .subject
+            .clone()
+            .unwrap_or_else(|| subject.clone());
+        let concept = Remote::at(
+            &anchor_entity,
+            target,
+            RemoteAddress::encode(&remote_config.address),
+            name.as_str(),
+        );
+        transaction = transaction.assert(concept.clone());
+        if let Some(relay) = &remote_config.revocation_url {
+            transaction = transaction.assert(RemoteExecution::new(&concept, relay.as_str()));
+        }
+        remote_concepts.insert(name.clone(), concept);
+    }
+    for (branch_name, settings) in &configuration.branch {
+        let local = MetaBranch::new(&anchor, branch_name.as_str());
+        transaction = transaction.assert(local.clone());
+        if let Some(upstream) = &settings.upstream
+            && let Some(remote_concept) = remote_concepts.get(&upstream.remote)
+        {
+            let remote_branch = MetaBranch::new(remote_concept, upstream.branch.as_str());
+            transaction = transaction
+                .assert(remote_branch.clone())
+                .assert(TrackingBranch::new(&local, &remote_branch));
+        }
+    }
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("record space mount for '{subject}': {error}");
+    }
 }
 
 /// Expose a fully prepared replica and its initialized status in one profile
@@ -3233,6 +3410,10 @@ async fn record_replica_visibility(
     status: tonk_schema::domain::replica::Status,
 ) -> Result<(), RepositoryError> {
     let replica = Replica::new(tonk.profile.did(), subject.clone());
+    // The account-level directory entry rides the same commit: the
+    // replica row is this device's mount, the `Space` entry is the one
+    // row per space every device's Hub lists.
+    let directory = tonk_schema::Space::new(subject, status.clone());
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
@@ -3250,6 +3431,7 @@ async fn record_replica_visibility(
         .transaction()
         .assert(replica)
         .assert(status)
+        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -3294,6 +3476,7 @@ async fn set_replica_status(
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
         .clone();
+    let directory = tonk_schema::Space::new(subject, status.clone());
     let stamp = SpaceStatus::new(entity, status);
 
     let revision = tonk
@@ -3302,6 +3485,7 @@ async fn set_replica_status(
         .branch(PROFILE_BRANCH)
         .transaction()
         .assert(stamp)
+        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -3419,6 +3603,22 @@ pub async fn get_repository(
 
     let tonk = state.read().await;
 
+    // First use of a directory-listed space this device has not
+    // replicated mounts it on demand — same lazy adoption the query
+    // route performs, so a second device can address a spot straight
+    // from the synced account directory. A no-op for mounted repos.
+    // The outcome rides the not-found error: a swallowed mount failure
+    // turns an explainable miss into a bare 404.
+    let mount = match super::adopt::ensure_space_mounted(&tonk, &name).await {
+        Ok(true) => None,
+        Ok(false) => Some("the account directory holds no mountable record for it".to_string()),
+        Err(error) => {
+            log!("on-demand mount of '{}' failed: {error}", name);
+            Some(format!(
+                "mounting it from the account directory failed: {error}"
+            ))
+        }
+    };
     let repository = tonk
         .profile
         .repository(&name)
@@ -3426,7 +3626,11 @@ pub async fn get_repository(
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", name, e))
+            let mount = mount
+                .as_deref()
+                .map(|note| format!(" ({note})"))
+                .unwrap_or_default();
+            TonkWorkerError::NotFound(format!("Repository '{}' not found{}: {}", name, mount, e))
         })?;
 
     let info = build_repository_info(&tonk, &name, &repository).await;
@@ -3871,8 +4075,6 @@ where
                     subject: Term::from(repository.did().this()),
                     inviter: Term::var("inviter"),
                     audience: Term::var("audience"),
-                    target_cid: Term::var("target_cid"),
-                    path_hex: Term::var("path_hex"),
                 })
                 .perform(&tonk.operator)
                 .try_vec()
@@ -3966,12 +4168,16 @@ async fn ensure_remote_config<C>(
     repository: &Repository<C>,
     name: &str,
     configuration: &RepositoryConfiguration,
-) -> Result<(), RepositoryError>
+) -> Result<RepositoryConfiguration, RepositoryError>
 where
     C: Principal + Clone,
 {
+    // What actually took effect: existing remotes are preserved rather
+    // than rewritten, so the caller must mirror THIS into the account
+    // directory, not the request.
+    let mut effective = configuration.clone();
     if configuration.remote.is_empty() && configuration.branch.is_empty() {
-        return Ok(());
+        return Ok(effective);
     }
 
     let meta = repository
@@ -4030,6 +4236,10 @@ where
             }
         };
 
+        if let Some(effective_remote) = effective.remote.get_mut(remote_name) {
+            effective_remote.address = address.clone();
+            effective_remote.subject = Some(subject.clone());
+        }
         let concept = replica.remote(remote_name.as_str(), subject, &address);
         transaction = transaction.assert(concept.clone());
         if let Some(revocation_url) = &remote_config.revocation_url {
@@ -4176,7 +4386,7 @@ where
         }
     }
 
-    Ok(())
+    Ok(effective)
 }
 
 /// Attach remotes (and branch upstreams) to an **existing**
@@ -4232,16 +4442,39 @@ pub async fn attach_remote(
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", name, e))
         })?;
 
+    // Provision before attaching, for the same reason
+    // [`enable_sync_inner`] does: a space created without an active
+    // customer has no consumer row, and an upstream without one syncs to
+    // a refused presign. Best effort here rather than fatal — this route
+    // is also how a space is pointed at a remote that is not the
+    // account's access service (a self-hosted endpoint, a test server),
+    // where `/provider/add` against our own service is beside the point.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if !configuration.remote.is_empty() {
+        match space_root_prefix(&tonk, &repository.did()).await {
+            Ok(prefix) => {
+                if let Err(error) =
+                    super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None)
+                        .await
+                {
+                    log!("attach remote '{name}': provisioning skipped: {error}");
+                }
+            }
+            Err(error) => {
+                log!("attach remote '{name}': no root delegation to consent with: {error}")
+            }
+        }
+    }
+
     ensure_remote_config(&tonk, &repository, &name, &configuration).await?;
 
     let info = build_repository_info(&tonk, &name, &repository).await;
     Ok(Json(info))
 }
 
-/// Seed-split regression tests: the scaffold (`core.yaml`) makes a
-/// repository renderable but seeds zero instances, and a template
-/// (`sheets.yaml`, …) layers its workspace on top, resolving its bare
-/// concept references against the committed scaffold.
+/// Scaffold regression tests: `core.yaml` makes a repository renderable
+/// but seeds zero instances, so a fresh space opens on the blank canvas
+/// and everything else is authored into it afterwards.
 ///
 /// These embed the real assets via `include_str!` and seed them
 /// through [`evaluate_body`] — the same `parse → analyze → commit`
@@ -4257,7 +4490,7 @@ mod space_config_tests {
 
     #[test]
     fn it_builds_a_local_only_config_for_an_empty_remote() {
-        let config = space_config("", None).unwrap();
+        let config = space_config("").unwrap();
         assert!(
             config.remote.is_empty(),
             "an empty remote must leave the space local-only"
@@ -4271,18 +4504,14 @@ mod space_config_tests {
 
     #[test]
     fn it_treats_a_whitespace_remote_as_local_only() {
-        let config = space_config("   ", None).unwrap();
+        let config = space_config("   ").unwrap();
         assert!(config.remote.is_empty());
         assert!(config.branch.get("main").unwrap().upstream.is_none());
     }
 
     #[test]
     fn it_wires_origin_and_tracks_main_for_a_remote_url() {
-        let config = space_config(
-            "https://example.test/ucan/",
-            Some("https://relay.example.test/revocations"),
-        )
-        .unwrap();
+        let config = space_config("https://example.test/ucan/").unwrap();
         assert!(
             config.remote.contains_key("origin"),
             "a remote URL must register the origin remote"
@@ -4295,41 +4524,48 @@ mod space_config_tests {
         assert_eq!(upstream.remote, "origin");
         assert_eq!(upstream.branch, "main");
     }
-
-    #[test]
-    fn it_rejects_an_invalid_revocation_relay() {
-        let error = space_config("https://example.test/ucan/", Some("not a URL"))
-            .expect_err("invalid relay must not be silently discarded");
-        assert!(error.to_string().contains("invalid revocation relay URL"));
-    }
 }
 
-/// The create form and this handler must name one attribute per control.
+/// The create form and this handler must name the same remote attribute.
 ///
-/// The handler reads these raw (not through the typed `CreateSpace`
+/// The handler reads it raw (not through the typed `CreateSpace`
 /// decode) so an older, frozen profile descriptor still triggers it. That
 /// tolerance cuts both ways: a renamed attribute on either side doesn't
 /// fail — the fact simply never matches, the field reads as absent, and
-/// the spot is created missing the remote or the relay with nothing
-/// logged. Pin both sides against the seeded document. Native.
+/// the spot is created missing the remote with nothing logged. Pin both
+/// sides against the seeded document. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod form_attribute_tests {
-    use super::{REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR};
+    use super::REMOTE_ATTR;
 
     /// The document the worker seeds onto a profile branch, embedded for
     /// the same reason `tests/standard_library.rs` embeds it: CI runs from
     /// a `cargo nextest archive`, which carries no sibling data files.
     const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
+    /// The create form carries no remote, and the handler is fine with
+    /// that.
+    ///
+    /// It used to: the Hub filled a hidden input from
+    /// `<tonk-default-remote auto>`, and this test pinned the two
+    /// spellings together. Then a spot stopped earning its remote at
+    /// creation — the worker resolves where a space syncs from the
+    /// account's own registration, so a spot made before anyone
+    /// registers stays local until it is shared. A form that names a
+    /// remote would wire one anyway, which is the behaviour
+    /// `it_creates_a_local_only_spot_from_the_hub_wizard` refuses.
+    ///
+    /// `REMOTE_ATTR` stays readable so a frozen older descriptor that
+    /// still declares the field keeps working; it is simply no longer
+    /// where the answer comes from.
     #[test]
-    fn it_reads_the_attributes_the_create_form_declares() {
-        for attribute in [REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR] {
-            assert!(
-                PROFILE_LIBRARY.contains(attribute),
-                "profile.yaml declares no `the: {attribute}` — the handler \
-                 would read this field as absent on every submit",
-            );
-        }
+    fn it_declares_no_remote_on_the_create_form() {
+        assert!(
+            !PROFILE_LIBRARY.contains(REMOTE_ATTR),
+            "profile.yaml declares `the: {REMOTE_ATTR}` again — a spot \
+             would wire a remote at creation instead of earning one when \
+             it is shared",
+        );
     }
 }
 
@@ -4414,62 +4650,6 @@ mod remote_from_facts_tests {
             .is("   ".to_string())
             .assert(&mut changes);
         assert!(remote_from_facts(&artifacts(changes)).is_none());
-    }
-}
-
-/// The optional-template reader the create handler uses. Native.
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
-mod template_from_facts_tests {
-    use super::template_from_facts;
-    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement};
-    use dialog_query::the;
-
-    fn artifacts(changes: Changes) -> Vec<Artifact> {
-        changes
-            .into_instructions()
-            .into_iter()
-            .map(|instruction| match instruction {
-                Instruction::Assert(artifact)
-                | Instruction::Replace(artifact)
-                | Instruction::Retract(artifact) => artifact,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn it_reads_the_chosen_template() {
-        let of: Entity = "did:key:zTemplate".parse().expect("entity");
-        let mut changes = Changes::new();
-        the!("dom.event.current-target.elements.template/value")
-            .of(of)
-            .is("sheets".to_string())
-            .assert(&mut changes);
-        assert_eq!(
-            template_from_facts(&artifacts(changes)).as_deref(),
-            Some("sheets"),
-        );
-    }
-
-    #[test]
-    fn it_returns_none_without_a_template_fact() {
-        let of: Entity = "did:key:zNoTemplate".parse().expect("entity");
-        let mut changes = Changes::new();
-        the!("dom.event.current-target.elements.name/value")
-            .of(of)
-            .is("test".to_string())
-            .assert(&mut changes);
-        assert!(template_from_facts(&artifacts(changes)).is_none());
-    }
-
-    #[test]
-    fn it_treats_a_blank_template_as_none() {
-        let of: Entity = "did:key:zBlankTemplate".parse().expect("entity");
-        let mut changes = Changes::new();
-        the!("dom.event.current-target.elements.template/value")
-            .of(of)
-            .is("   ".to_string())
-            .assert(&mut changes);
-        assert!(template_from_facts(&artifacts(changes)).is_none());
     }
 }
 
@@ -4635,48 +4815,6 @@ mod next_untitled_label_tests {
 }
 
 /// The pure library-URL selector. Native.
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
-mod seed_library_urls_tests {
-    use super::seed_library_urls;
-
-    #[test]
-    fn it_seeds_core_only_for_a_blank_repo() {
-        assert_eq!(seed_library_urls(None), vec!["/library/core.yaml"],);
-    }
-
-    #[test]
-    fn it_appends_sheets_for_the_sheets_template() {
-        assert_eq!(
-            seed_library_urls(Some("sheets")),
-            vec!["/library/core.yaml", "/library/sheets.yaml"],
-        );
-    }
-
-    #[test]
-    fn it_appends_wiki_for_the_wiki_template() {
-        assert_eq!(
-            seed_library_urls(Some("wiki")),
-            vec!["/library/core.yaml", "/library/wiki.yaml"],
-        );
-    }
-
-    #[test]
-    fn it_appends_board_for_the_board_template() {
-        assert_eq!(
-            seed_library_urls(Some("board")),
-            vec!["/library/core.yaml", "/library/board.yaml"],
-        );
-    }
-
-    #[test]
-    fn it_seeds_core_for_an_unknown_template() {
-        assert_eq!(
-            seed_library_urls(Some("garden")),
-            vec!["/library/core.yaml"],
-        );
-    }
-}
-
 /// The rename result → outcome mapping. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod rename_outcome_tests {
@@ -4707,6 +4845,39 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
+    /// A refusal the user is in the middle of fixing keeps the request
+    /// open.
+    ///
+    /// `needs-account` and `not-synced` both end in a link once the
+    /// thing they name arrives, so reporting them as terminal would stop
+    /// the control on `failed` while the share is still going.
+    #[dialog_common::test]
+    fn it_keeps_a_repairable_refusal_open() {
+        use super::invite_status_for;
+        use tonk_schema::command::InviteState;
+        use tonk_worker_api::share;
+
+        assert_eq!(
+            invite_status_for(share::BLOCKED_NEEDS_ACCOUNT),
+            InviteState::REQUESTED,
+            "the worker is off getting an account; the share has not failed",
+        );
+        assert_eq!(
+            invite_status_for(share::BLOCKED_NOT_SYNCED),
+            InviteState::REQUESTED,
+            "attaching a remote still ends in a link",
+        );
+        // Terminal: nothing the user or the worker does next helps.
+        assert_eq!(
+            invite_status_for(share::BLOCKED_SUSPENDED),
+            InviteState::SUSPENDED,
+        );
+        assert_eq!(
+            invite_status_for(share::BLOCKED_UNSHAREABLE_REMOTE),
+            InviteState::UNSHAREABLE,
+        );
+    }
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -4720,12 +4891,86 @@ mod tests {
         existing_space_labels,
     };
     use crate::router::evaluate::evaluate_body;
-    use crate::router::tests::{attach_remote, content_invitations, put_repo, put_repo_info};
+    use crate::router::tests::{content_invitations, put_repo, put_repo_info};
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
+
+    /// The seed sealed to the account is the only copy of a created
+    /// space's secret: the repository stores the verifier, the space still
+    /// proves for the operator through `space -> account -> device`, and
+    /// opening the custodied seed with the account key re-derives exactly
+    /// the space's signer.
+    #[dialog_common::test]
+    async fn it_creates_a_space_with_a_public_key_and_custodies_its_seed() {
+        use dialog_capability::Subject;
+        use dialog_effects::Use;
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::RepositoryExt as _;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "public-key-space").await;
+        let tonk = state.read().await;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(
+            repository.try_access().is_none(),
+            "the repository stores only the verifier",
+        );
+        let subject = repository.did();
+
+        tonk.profile
+            .access()
+            .prove(Subject::from(subject.clone()).attenuate(Use))
+            .audience(&tonk.operator)
+            .perform(&tonk.operator)
+            .await
+            .expect("the space proves through the account without its own key");
+
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::CustodiedSeed> {
+                this: Term::var("this"),
+                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+                kind: Term::var("kind"),
+                recipient: Term::var("recipient"),
+                sealed: Term::var("sealed"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one custodied space seed");
+        assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
+            crate::router::tests::test_root_seed(&tonk.profile_name),
+        ));
+        let opened = account
+            .encryption_key()
+            .open(&sealed, &subject)
+            .expect("the account key opens the custodied seed");
+        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
+            .await
+            .unwrap();
+        assert_eq!(reissued.did(), subject, "the seed derives the space's key");
+    }
 
     /// The scaffold notation, embedded at compile time.
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-    const SHEETS: &str = include_str!("../../../tonk-core/assets/library/sheets.yaml");
 
     /// Create a fresh repo and return its router, wrapped state, and
     /// minted routing key. PUTs a branchless `{}` so the worker seeds
@@ -4766,97 +5011,106 @@ mod tests {
     /// out is how a device reaches it while still holding spaces — creating
     /// them without an account is what the account gate refuses.
     #[dialog_common::test]
-    async fn rename_refreshes_the_named_root_ending_account_artifact() {
-        use wasm_bindgen::JsValue;
+    async fn rename_mirrors_the_name_into_the_account_directory() {
+        use dialog_query::{Output as _, Query, Term};
 
-        let (app, state, key) = fresh_repo("rename-backup-artifact").await;
+        let (app, state, key) = fresh_repo("rename-directory-mirror").await;
         attach(
             &app,
             &key,
             &origin_config("https://sync.example.test/ucan/"),
         )
         .await;
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
 
         let env = crate::router::CommandEnv::new(state.clone(), Default::default());
         super::run_rename_repository(&env, &key, "renamed-garden")
             .await
             .unwrap();
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("renamed backup artifact was produced");
-        assert_eq!(artifact.name.as_deref(), Some("renamed-garden"));
-        let root = {
-            let tonk = state.read().await;
-            crate::router::identity::root_did(&tonk).await.unwrap()
-        };
-        let validated = artifact.validate_for(&root).await.unwrap();
-        assert_eq!(validated.subject.to_string(), key);
-        assert_eq!(validated.chain.audience(), &root);
+
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let names: Vec<tonk_schema::SpaceName> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceName> {
+                this: Term::from(tonk_schema::prelude::DidExt::this(&subject)),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            names.first().map(|row| row.name.0.as_str()),
+            Some("renamed-garden"),
+            "the rename lands in the account directory so unreplicated \
+             devices can label the space"
+        );
     }
 
     #[dialog_common::test]
-    async fn enable_sync_backup_uses_the_preserved_configured_upstream() {
-        use wasm_bindgen::JsValue;
+    async fn enable_sync_records_the_preserved_upstream_in_the_directory() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::domain::remote::Origin as RemoteOrigin;
 
-        let (app, state, key) = fresh_repo("preserved-backup-upstream").await;
+        let (app, state, key) = fresh_repo("preserved-directory-upstream").await;
         attach(
             &app,
             &key,
             &origin_config("https://actual-sync.example.test/ucan/"),
         )
         .await;
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
 
-        super::enable_sync_inner(
-            &state,
-            &key,
-            "https://form-repair.example.test/ucan/",
-            Some("https://relay.example.test/revocations"),
-        )
-        .await
-        .unwrap();
+        super::enable_sync_inner(&state, &key, "https://form-repair.example.test/ucan/")
+            .await
+            .unwrap();
 
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("enable-sync backup artifact was produced");
-        assert_eq!(
-            artifact.remote_url.as_deref(),
-            Some("https://actual-sync.example.test/ucan/")
+        let tonk = state.read().await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let remotes: Vec<super::Remote> = main
+            .handle()
+            .query()
+            .select(Query::<super::Remote> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(RemoteOrigin::from(tonk_schema::prelude::DidExt::this(
+                    &subject,
+                ))),
+                subject: Term::var("subject"),
+                address: Term::var("address"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let addresses: Vec<String> = remotes
+            .iter()
+            .filter_map(|row| {
+                tonk_schema::domain::remote::Address::decode(&row.address)
+                    .ok()
+                    .map(|address| format!("{address:?}"))
+            })
+            .collect();
+        assert!(
+            addresses
+                .iter()
+                .any(|address| address.contains("actual-sync.example.test")),
+            "the directory records the PRESERVED configured upstream, not \
+             the form-supplied repair URL: {addresses:?}"
         );
     }
 
@@ -5390,28 +5644,27 @@ mod tests {
         );
     }
 
-    /// Both empty-state canvases keep the pending label only while the invite
+    /// The empty-state canvas keeps the pending label only while the invite
     /// request is unanswered. A refusal resolves the nested model and renders
     /// the explicit local-only notice instead of spinning forever.
     #[dialog_common::test]
     fn it_routes_refused_agent_links_to_the_local_only_notice() {
-        for document in [CORE, SHEETS] {
-            assert!(
-                document.contains("slot=\"no-entity\"")
-                    && document.contains("model=tonk:share/blocked"),
-                "agent-link fallback should query the share refusal",
-            );
-            assert!(
-                !document.contains("agent link &middot; paste into your agent"),
-                "the rendered state should provide its own single label",
-            );
-            assert!(
-                document.contains("tonk-display > [slot][hidden]"),
-                "inactive pending and refusal slots should not survive a ready result",
-            );
-        }
+        assert!(
+            CORE.contains("slot=\"no-entity\"") && CORE.contains("model=tonk:share/blocked"),
+            "agent-link fallback should query the share refusal",
+        );
+        assert!(
+            !CORE.contains("agent link &middot; paste into your agent"),
+            "the rendered state should provide its own single label",
+        );
+        assert!(
+            CORE.contains("tonk-display > [slot][hidden]"),
+            "inactive pending and refusal slots should not survive a ready result",
+        );
         assert!(CORE.contains("local spot &middot; no sync remote"));
-        assert!(CORE.contains("Use Share to turn on sync and create an agent link."));
+        assert!(
+            CORE.contains("Use connect in the condition banner, then create the agent link again.")
+        );
     }
 
     /// Regression guard for the dialog-injected replica identity fact the
@@ -5724,6 +5977,48 @@ mod tests {
         assert_eq!(role.role.0.to_string(), tonk_schema::MemberRole::FOUNDER);
     }
 
+    /// Creating a space stamps who founded it and when, onto the
+    /// account-directory entity the Hub renders.
+    #[dialog_common::test]
+    async fn it_stamps_space_founding_on_create() {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Did;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, key) = fresh_repo("test-space-founding").await;
+
+        let guard = state.read().await;
+        let subject: Did = key.parse().expect("the repository is named by its DID");
+        let profile_entity = guard.profile.did().this();
+
+        let branch = guard
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&guard.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<tonk_schema::SpaceFounded> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceFounded> {
+                this: Term::from(subject.this()),
+                founded_at: Term::var("founded_at"),
+                founded_by: Term::var("founded_by"),
+            })
+            .perform(&guard.operator)
+            .try_vec()
+            .await
+            .expect("founding query runs");
+
+        assert_eq!(rows.len(), 1, "exactly one founding stamp");
+        assert_eq!(
+            rows[0].founded_by.0, profile_entity,
+            "the founding device is recorded, not just the account",
+        );
+        assert!(rows[0].founded_at.0 > 0, "a real timestamp");
+    }
+
     /// Creating a repository names the creator on the content branch.
     #[dialog_common::test]
     async fn it_records_the_founder_name_on_create() {
@@ -5854,8 +6149,65 @@ mod tests {
         );
     }
 
+    /// The refusal class follows the account's registration state.
+    ///
+    /// Same spot, same missing upstream, three different remedies: an
+    /// account that is served can attach one, an enrolled account is
+    /// waiting on its email, and an unregistered one has to register.
+    #[dialog_common::test]
+    async fn it_names_the_refusal_by_registration_state() {
+        use crate::router::create_invite::{RemoteRefusal, explain_refusal};
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-refusal-by-state").await;
+        let tonk = state.read().await;
+
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "needs-account",
+            "nothing registered, so the remedy is to register",
+        );
+
+        crate::router::customer::record_test_customer(&tonk, CustomerStatus::Registered)
+            .await
+            .expect("the customer records");
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "needs-activation",
+            "enrolled but unconfirmed: the remedy is in the inbox",
+        );
+
+        crate::router::customer::record_test_customer(&tonk, CustomerStatus::Active)
+            .await
+            .expect("the customer records");
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::NotSynced)
+                .await
+                .code(),
+            "not-synced",
+            "served, so attaching a remote is the remedy after all",
+        );
+
+        // A refusal that already knows its cause is left alone.
+        assert_eq!(
+            explain_refusal(&tonk, RemoteRefusal::UnshareableRemote)
+                .await
+                .code(),
+            "unshareable-remote",
+        );
+    }
+
     /// A share click on a spot with no upstream mints nothing and leaves a
     /// refusal on the overlay instead.
+    ///
+    /// The class says WHY there is no upstream. This profile has never
+    /// registered, so there is no provider to attach one to and the
+    /// remedy is to register — not "turn on sync", which would offer an
+    /// attach with nothing to attach to.
     #[dialog_common::test]
     async fn it_refuses_to_mint_without_a_remote() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -5865,14 +6217,39 @@ mod tests {
 
         let blocked = share_blocked_rows(&state, &key).await;
         assert_eq!(blocked.len(), 1, "one refusal recorded");
-        assert_eq!(blocked[0].0, "not-synced");
-        assert_eq!(blocked[0].1, "This spot only exists on this device.");
+        assert_eq!(blocked[0].0, "needs-account");
         assert_eq!(blocked[0].2, 1234.0, "echoes the command's timestamp");
 
         let invitations = content_invitations(&state, &key).await;
         assert!(
             invitations.is_empty(),
             "a refused mint records no invitation"
+        );
+    }
+
+    /// The command path is what the FABB drives. It must answer a raced or
+    /// stale share click with an account refusal and mint no authority.
+    #[dialog_common::test]
+    async fn it_refuses_to_mint_without_an_attached_account() {
+        let (app, state, key) = fresh_repo_signed_out("test-account-required-mint").await;
+        let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
+
+        run_invite_with_time(&state, &key, 4321.0).await;
+
+        let blocked = share_blocked_rows(&state, &key).await;
+        assert_eq!(blocked.len(), 1, "one refusal recorded");
+        assert_eq!(
+            blocked[0].0,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
+        );
+        assert_eq!(
+            blocked[0].1,
+            "Create an account or log in before sharing this space."
+        );
+        assert_eq!(blocked[0].2, 4321.0, "echoes the command's timestamp");
+        assert!(
+            content_invitations(&state, &key).await.is_empty(),
+            "an unattached profile records no invitation"
         );
     }
 
@@ -5917,108 +6294,48 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
-    /// A synced spot whose remote carries no relay refuses the mint, and a
-    /// second attach naming the relay repairs it — the path the share
-    /// prompt's confirm drives for every spot created before in-band
-    /// revocation landed.
+    /// A second attach does not repoint a remote that is already there.
     ///
-    /// The repair names a DIFFERENT endpoint on purpose. The prompt builds it
-    /// from the page's origin, which need not be the origin the spot actually
-    /// syncs through, and an existing remote is left as-is at the dialog
-    /// layer — so the meta mirror has to keep describing the remote that is
-    /// really there rather than adopting the caller's.
+    /// The share prompt builds its endpoint from the page's origin, which
+    /// need not be the origin the spot actually syncs through, and dialog
+    /// leaves an existing remote as-is — so the meta mirror has to keep
+    /// describing the remote that is really there rather than adopting the
+    /// caller's.
+    ///
+    /// This used to also assert that a remote carrying no revocation relay
+    /// refused the mint. Revocations travel in-band on `/ucan/` now, so
+    /// there is no relay to be missing and nothing produces that refusal;
+    /// minting without one is the ordinary case, asserted here.
     #[dialog_common::test]
-    async fn it_repairs_a_remote_that_carries_no_revocation_relay() {
+    async fn it_does_not_repoint_a_remote_that_is_already_attached() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let key = put_repo(&app, "test-relay-repair").await;
         let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
 
         run_invite_with_time(&state, &key, 11.0).await;
 
-        let blocked = share_blocked_rows(&state, &key).await;
-        assert_eq!(blocked.len(), 1, "one refusal recorded");
-        assert_eq!(blocked[0].0, "missing-revocation-relay");
         assert!(
-            content_invitations(&state, &key).await.is_empty(),
-            "a refused mint records no invitation",
+            share_blocked_rows(&state, &key).await.is_empty(),
+            "a remote without a relay is no longer a refusal",
+        );
+        assert_eq!(
+            content_invitations(&state, &key).await.len(),
+            1,
+            "so the mint records its invitation",
         );
 
         let info = post_remote(
             &app,
             &key,
             "https://a-different-origin.example.test/ucan/",
-            Some("https://relay.example.test/revocations"),
+            None,
         )
         .await;
-
-        run_invite_with_time(&state, &key, 12.0).await;
-
-        assert_eq!(
-            content_invitations(&state, &key).await.len(),
-            1,
-            "the repaired spot mints",
-        );
 
         let address = serde_json::to_string(&info.remote["origin"].address).unwrap();
         assert!(
             address.contains("https://access.example.test/ucan/"),
-            "the repair must not repoint the remote, got {address}",
-        );
-    }
-
-    /// A guest visit holds bounded invite authority, not the durable
-    /// membership a mint delegates from, so the click cannot succeed. Refusing
-    /// before minting means it costs no delegation and rotates no credential —
-    /// and the code is what lets the bar offer to join rather than just
-    /// reporting a failure.
-    ///
-    /// The remote is attached first so guest-ness is the only thing left to
-    /// refuse over: without it this would pass on `not-synced` alone.
-    #[dialog_common::test]
-    async fn it_refuses_to_mint_for_a_guest_visit() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-refuse-guest").await;
-        attach_remote(&app, &key, "https://access.example.test/ucan/").await;
-
-        // Marked a guest through the record writer itself, so the fixture
-        // states no opinion about how guest state is stored beyond the
-        // metadata every retained record carries.
-        {
-            use dialog_repository::{Repository, RepositoryExt as _};
-            let tonk = state.read().await;
-            let repository: Repository = tonk
-                .profile
-                .repository(&key)
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .expect("repo loads");
-            let audience = tonk.operator.did();
-            crate::router::join::store_guest_record(
-                &tonk,
-                &repository.did(),
-                "https://staging.example.test/join?access=fixture",
-                &audience,
-                crate::session::now() + 3600,
-            )
-            .await
-            .expect("guest record stores");
-        }
-
-        run_invite_with_time(&state, &key, 4242.0).await;
-
-        let blocked = share_blocked_rows(&state, &key).await;
-        assert_eq!(blocked.len(), 1, "one refusal recorded");
-        assert_eq!(
-            blocked[0].0,
-            tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP,
-        );
-        assert_eq!(blocked[0].2, 4242.0, "echoes the command's timestamp");
-
-        let invitations = content_invitations(&state, &key).await;
-        assert!(
-            invitations.is_empty(),
-            "a guest's refused mint records no invitation",
+            "a second attach must not repoint the remote, got {address}",
         );
     }
 
@@ -6081,6 +6398,288 @@ mod tests {
         assert!(
             has_remote_upstream(&state, &key).await,
             "the existing spot now tracks origin/main"
+        );
+    }
+
+    /// A space created while the customer is not `Active` wires no
+    /// remote, even though an account exists.
+    ///
+    /// A device has an account from first boot (the onboarding account),
+    /// so "an account exists" says nothing about whether the access
+    /// service will serve this subject. Until the user enrols and
+    /// confirms an email, `/provider/add` refuses and a wired upstream
+    /// would answer `subject is provisioned by an active customer (the
+    /// subject is not provisioned)` on every presign. The space is
+    /// local-only by design; the share button attaches sync later.
+    #[dialog_common::test]
+    async fn it_creates_a_space_local_only_before_the_customer_is_active() {
+        let (app, state, key) = fresh_repo("test-inactive-no-remote").await;
+        {
+            let tonk = state.read().await;
+            crate::router::customer::record_test_customer(
+                &tonk,
+                tonk_account::customer::CustomerStatus::Registered,
+            )
+            .await
+            .expect("the customer record saves");
+        }
+        let _ = &app;
+
+        assert!(
+            !has_remote_upstream(&state, &key).await,
+            "a space created before activation must track no upstream",
+        );
+    }
+
+    /// The gate reads the customer's status, not merely whether an
+    /// account exists: `Registered` (enrolled, email unconfirmed) is as
+    /// unservable as no registration at all.
+    #[dialog_common::test]
+    async fn it_treats_an_enrolled_but_unconfirmed_customer_as_inactive() {
+        let (_app, state, _key) = fresh_repo("test-registered-inactive").await;
+
+        let tonk = state.read().await;
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Registered,
+        )
+        .await
+        .expect("the customer record saves");
+        assert!(
+            !crate::router::customer::is_active(&tonk).await,
+            "a Registered customer awaits email activation and is not servable",
+        );
+
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Suspended,
+        )
+        .await
+        .expect("the customer record saves");
+        assert!(
+            !crate::router::customer::is_active(&tonk).await,
+            "a Suspended customer is not servable",
+        );
+
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Active,
+        )
+        .await
+        .expect("the customer record saves");
+        assert!(
+            crate::router::customer::is_active(&tonk).await,
+            "an Active customer is the one state the service serves",
+        );
+    }
+
+    /// The account's provider is read from the registration fact, so
+    /// every device on the account attaches spaces to the same one.
+    ///
+    /// It used to be re-derived per call site — from the signed account
+    /// descriptor in the worker, and from `https://{origin}/ucan/` in the
+    /// page's hidden form field — so two paths could disagree about
+    /// where a space syncs. Recording it where registration happens is
+    /// what makes that one answer.
+    #[dialog_common::test]
+    async fn it_reads_the_provider_from_the_registration_fact() {
+        let (_app, state, _key) = fresh_repo("test-recorded-remote").await;
+
+        let tonk = state.read().await;
+        assert!(
+            crate::router::customer::provider_address(&tonk)
+                .await
+                .is_none(),
+            "an account that never registered records no provider",
+        );
+
+        crate::router::customer::record_test_customer(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Active,
+        )
+        .await
+        .expect("the customer record saves");
+
+        assert_eq!(
+            crate::router::customer::provider_address(&tonk)
+                .await
+                .as_deref(),
+            Some("https://example.test/ucan/"),
+            "the provider registration recorded is what attach paths read",
+        );
+    }
+
+    /// Recording an enrollment with no provider must not make the
+    /// registration fact unreadable.
+    ///
+    /// A concept resolves only when every field is present, so writing
+    /// `provider` as an empty string risks asserting nothing for it and
+    /// dropping the whole row — which reads back as "never registered"
+    /// however many times the status is written afterwards.
+    #[dialog_common::test]
+    async fn it_reads_a_registration_recorded_without_a_provider() {
+        use crate::router::customer::{Registration, record_customer_status, registration};
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-empty-provider-row").await;
+        let tonk = state.read().await;
+
+        record_customer_status(&tonk, CustomerStatus::Registered, "who@example.test", None)
+            .await
+            .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::AwaitingActivation {
+                email: "who@example.test".to_owned(),
+            },
+            "a registration recorded before activation must still read back",
+        );
+
+        // And the later activation write must be visible through it.
+        record_customer_status(
+            &tonk,
+            CustomerStatus::Active,
+            "who@example.test",
+            Some("https://hub.test/ucan/"),
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Served {
+                provider: "https://hub.test/ucan/".to_owned(),
+            },
+            "activation must promote the row a provider-less write created",
+        );
+    }
+
+    /// An `Active` account whose provider write has not landed yet
+    /// still reads as served.
+    ///
+    /// Activation writes the status and the address, and a space created
+    /// in the moment between them must not come up local-only. Reading
+    /// this as `AwaitingActivation` would tell an activated user to go
+    /// confirm an email they already confirmed.
+    #[dialog_common::test]
+    async fn it_treats_an_active_account_without_a_recorded_provider_as_served() {
+        use crate::router::customer::{
+            Registration, is_active, record_customer_status, registration,
+        };
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-active-no-provider").await;
+        let tonk = state.read().await;
+
+        record_customer_status(&tonk, CustomerStatus::Active, "who@example.test", None)
+            .await
+            .expect("the status records");
+
+        assert!(
+            matches!(registration(&tonk).await, Registration::Served { .. }),
+            "an Active account is served whether or not its address landed yet",
+        );
+        assert!(
+            is_active(&tonk).await,
+            "the create gate must not withhold a remote from an activated account",
+        );
+    }
+
+    /// Registration reads as one of four states, and the provider
+    /// address is what separates them.
+    ///
+    /// The service names a provider only once it serves the customer, so
+    /// "has an address" IS "finished registering". That is what lets the
+    /// share flow tell "confirm your email" from "register from
+    /// scratch" without asking the service.
+    #[dialog_common::test]
+    async fn it_reads_how_far_registration_got() {
+        use crate::router::customer::{Registration, registration};
+        use tonk_account::customer::CustomerStatus;
+
+        let (_app, state, _key) = fresh_repo("test-registration-states").await;
+        let tonk = state.read().await;
+
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Unregistered,
+            "an account that never enrolled has registered nothing",
+        );
+
+        // Enrollment records the address but no provider: the service
+        // withholds one until the emailed link is confirmed.
+        crate::router::customer::record_customer_status(
+            &tonk,
+            CustomerStatus::Registered,
+            "customer@example.test",
+            None,
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::AwaitingActivation {
+                email: "customer@example.test".to_owned(),
+            },
+            "an enrolled account with no provider is still awaiting its email",
+        );
+        assert!(
+            !crate::router::customer::is_active(&tonk).await,
+            "awaiting activation is not served, so nothing may attach a remote",
+        );
+
+        // Activation is where the provider lands.
+        crate::router::customer::record_customer_status(
+            &tonk,
+            CustomerStatus::Active,
+            "customer@example.test",
+            Some("https://hub.test/ucan/"),
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Served {
+                provider: "https://hub.test/ucan/".to_owned(),
+            },
+            "an activated account names the provider its spaces attach to",
+        );
+        assert!(crate::router::customer::is_active(&tonk).await);
+
+        // Suspension is terminal, and outranks a recorded provider: no
+        // email confirms it away.
+        crate::router::customer::record_customer_status(
+            &tonk,
+            CustomerStatus::Suspended,
+            "customer@example.test",
+            Some("https://hub.test/ucan/"),
+        )
+        .await
+        .expect("the status records");
+        assert_eq!(
+            registration(&tonk).await,
+            Registration::Suspended,
+            "a suspended account is refused regardless of its recorded provider",
+        );
+        assert!(!crate::router::customer::is_active(&tonk).await);
+    }
+
+    /// Enable-sync still attaches when provisioning cannot run.
+    ///
+    /// A remote is not necessarily our access service, and the service
+    /// may simply be unreachable. Refusing the attach on a failed
+    /// provision would make a self-hosted endpoint unattachable, so the
+    /// attach proceeds regardless — the gate is on the CREATE default,
+    /// not on an explicit request to sync.
+    #[dialog_common::test]
+    async fn it_attaches_sync_even_when_provisioning_cannot_run() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (key, subject) = put_repo_info(&app, "test-attach-without-provision").await;
+
+        dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
+
+        assert!(
+            has_remote_upstream(&state, &key).await,
+            "an explicit enable-sync attaches even with no reachable service to provision against",
         );
     }
 

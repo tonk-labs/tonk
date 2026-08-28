@@ -10,6 +10,10 @@
 #![cfg(feature = "integration-tests")]
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
+use tonk_access_service::revocation::checker::IndexedRevocations;
+use tonk_access_service::revocation::index::MemoryRevocationIndex;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -20,7 +24,7 @@ use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
 use dialog_ucan_core::{
     Container, Delegation, DelegationBuilder, InvocationBuilder, InvocationChain,
 };
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use tonk_access_service::email::CapturedEmail;
 use tonk_access_service::helpers::AccessServiceAddress;
@@ -47,6 +51,9 @@ fn at(seconds: u64) -> Timestamp {
 /// production.
 struct Fixture {
     store: SqliteStore,
+    /// Revocations this fixture enforces. Registration consults it per
+    /// link, so a revoked delegation cannot enroll or activate.
+    revocations: IndexedRevocations<Arc<MemoryRevocationIndex>>,
     emails: CapturedEmail,
     service: Ed25519Signer,
     origin: String,
@@ -59,13 +66,15 @@ impl Fixture {
             emails: CapturedEmail::default(),
             service: Ed25519Signer::generate().await.expect("service signer"),
             origin: "https://hub.test".to_string(),
+            revocations: IndexedRevocations(Default::default()),
         }
     }
 
     fn registration<'a>(
         &'a self,
         container: &'a [u8],
-    ) -> Registration<'a, SqliteStore, CapturedEmail> {
+    ) -> Registration<'a, SqliteStore, CapturedEmail, IndexedRevocations<Arc<MemoryRevocationIndex>>>
+    {
         Registration {
             store: &self.store,
             email: &self.emails,
@@ -74,7 +83,25 @@ impl Fixture {
             activation_ttl: 60 * 60,
             now: unix_now(),
             container,
+            revocations: &self.revocations,
         }
+    }
+
+    /// Enroll `customer` and finalize it by presenting the emailed
+    /// activation invocation, leaving it `Active`. Provisioning requires
+    /// activation, so most consumer tests need a customer past this
+    /// point rather than a freshly enrolled one.
+    async fn enroll_and_activate(&self, customer: &Ed25519Signer, email: &str) {
+        let container = enroll_container(customer, &self.service.did(), email).await;
+        self.registration(&container)
+            .handle()
+            .await
+            .expect("enrollment succeeds");
+        let container = link_container(&self.last_email().1);
+        self.registration(&container)
+            .handle()
+            .await
+            .expect("activation succeeds");
     }
 
     fn last_email(&self) -> (String, String) {
@@ -102,12 +129,12 @@ async fn scoped_deposits(
     customer: &Ed25519Signer,
     service: &Did,
     audience: &Did,
-) -> Vec<Delegation<Ed25519Signature>> {
+) -> Vec<Delegation<AnySignature>> {
     let mut deposits = Vec::new();
     for scope in deposit_scopes(&customer.did(), service) {
         deposits.push(
             DelegationBuilder::new()
-                .issuer(customer.clone())
+                .issuer(dialog_credentials::Signer::from(customer.clone()))
                 .audience(audience)
                 .subject(scope.subject.clone())
                 .command(scope.command.segments().clone())
@@ -132,11 +159,11 @@ async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) 
 async fn enroll_container_with_deposits(
     customer: &Ed25519Signer,
     email: &str,
-    deposits: &[Delegation<Ed25519Signature>],
+    deposits: &[Delegation<AnySignature>],
     carry_deposits: bool,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
         .subject(&customer.did())
         .command(vec!["customer".to_string(), "enroll".to_string()])
@@ -188,7 +215,7 @@ async fn activation_invocation(
     expiration: Timestamp,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
-        .issuer(issuer.clone())
+        .issuer(dialog_credentials::Signer::from(issuer.clone()))
         .audience(subject)
         .subject(subject)
         .command(vec!["customer".to_string(), "activate".to_string()])
@@ -225,6 +252,47 @@ async fn it_enrolls_a_customer_and_emails_an_activation_link() -> anyhow::Result
     let (address, link) = fixture.last_email();
     assert_eq!(address, "alice@example.com");
     assert!(link.starts_with("https://hub.test/activate?ucan="));
+    Ok(())
+}
+
+/// Activation names the provider; enrollment does not.
+///
+/// The service decides which provider serves its customers and says so
+/// in the receipt, so a client records one authoritative address instead
+/// of deriving `https://{origin}/ucan/` from whichever origin its
+/// request happened to reach.
+///
+/// Only at activation, though. The address is what says "this service
+/// serves you", and for an unactivated customer it does not — it gets
+/// neither service nor provisioning. Withholding it until activation is
+/// what lets a client tell "enrolled, awaiting the email" from "ready to
+/// sync" by looking at the recorded address alone.
+#[dialog_common::test]
+async fn it_answers_the_provider_only_once_the_customer_activates() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+
+    let enrolled = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(
+        enrolled.provider, None,
+        "enrollment must name no provider: this customer is not served yet",
+    );
+    // Absent from the wire, not present-and-null: a client reading the
+    // JSON must see no key at all rather than an explicit empty value.
+    let wire = serde_json::to_value(&enrolled)?;
+    assert!(
+        wire.get("provider").is_none(),
+        "an unserved receipt must omit the provider key entirely, got {wire}",
+    );
+
+    let container = link_container(&fixture.last_email().1);
+    let activated = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(
+        activated.provider.as_deref(),
+        Some("https://hub.test/ucan/"),
+        "activation names the provider this customer's spaces attach to",
+    );
     Ok(())
 }
 
@@ -381,7 +449,7 @@ async fn it_refuses_a_deposit_broader_than_the_scopes() -> anyhow::Result<()> {
     // The old shape of the deposit: an unscoped grant of `/` over the
     // whole account space. Enrollment must refuse it rather than hold it.
     let unscoped = DelegationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&service)
         .subject(DelegatedSubject::Specific(customer.did()))
         .command(vec![])
@@ -458,25 +526,26 @@ async fn add_container(
     consent_to: &Did,
 ) -> Vec<u8> {
     let consent = DelegationBuilder::new()
-        .issuer(space.clone())
+        .issuer(dialog_credentials::Signer::from(space.clone()))
         .audience(consent_to)
         .subject(DelegatedSubject::Specific(space.did()))
         .command(vec![])
         .try_build()
         .await
         .expect("consent delegation");
+    let arguments = BTreeMap::from([
+        (
+            "consumer".to_string(),
+            Promised::String(space.did().to_string()),
+        ),
+        ("consent".to_string(), Promised::Link(consent.to_cid())),
+    ]);
     let invocation = InvocationBuilder::new()
-        .issuer(customer.clone())
+        .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
         .subject(&customer.did())
         .command(vec!["provider".to_string(), "add".to_string()])
-        .arguments(BTreeMap::from([
-            (
-                "consumer".to_string(),
-                Promised::String(space.did().to_string()),
-            ),
-            ("consent".to_string(), Promised::Link(consent.to_cid())),
-        ]))
+        .arguments(arguments)
         .proofs(vec![])
         .expiration(Timestamp::five_minutes_from_now())
         .try_build()
@@ -496,11 +565,10 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;
     let space = Ed25519Signer::generate().await?;
-    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
-    fixture.registration(&container).handle().await.unwrap();
+    fixture
+        .enroll_and_activate(&customer, "alice@example.com")
+        .await;
 
-    // Activation is not required to add, only to serve: the customer is
-    // still Registered here.
     let container = add_container(&customer, &space, &customer.did()).await;
     let Answer::Consumer(receipt) = fixture.registration(&container).handle().await.unwrap() else {
         panic!("expected a consumer receipt");
@@ -516,7 +584,57 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .expect("the consumer row exists");
     assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
 
-    // Re-provisioning under the same customer is a no-op success.
+    // Re-provisioning under the same customer succeeds and changes
+    // nothing: clients retry provisioning freely (a queued entry
+    // replayed twice, two devices racing), so it must be idempotent
+    // rather than a conflict.
+    let registered_at = consumer.registered;
+    let container = add_container(&customer, &space, &customer.did()).await;
+    let Answer::Consumer(receipt) = fixture.registration(&container).handle().await.unwrap() else {
+        panic!("expected a consumer receipt");
+    };
+    assert_eq!(receipt.provider, customer.did());
+    let again = fixture
+        .store
+        .consumer(space.did().as_str())
+        .await
+        .unwrap()
+        .expect("the consumer row still exists");
+    assert_eq!(again.provider.as_deref(), Some(customer.did().as_str()));
+    assert_eq!(
+        again.registered, registered_at,
+        "re-provisioning must not re-register the consumer"
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_provisioning_until_the_customer_confirms_their_email() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    // Enrolled but not activated: nothing may be provisioned yet, and
+    // the refusal names the cause so the client can say so.
+    let container = add_container(&customer, &space, &customer.did()).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::CustomerInactive));
+    assert!(
+        fixture
+            .store
+            .consumer(space.did().as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused add writes no consumer row"
+    );
+
+    // The same add replays successfully once the email is confirmed,
+    // which is what the client's pending-work queue relies on.
+    let container = link_container(&fixture.last_email().1);
+    fixture.registration(&container).handle().await.unwrap();
     let container = add_container(&customer, &space, &customer.did()).await;
     assert!(fixture.registration(&container).handle().await.is_ok());
     Ok(())
@@ -528,21 +646,33 @@ async fn it_refuses_provisioning_someone_elses_consumer() -> anyhow::Result<()> 
     let alice = Ed25519Signer::generate().await?;
     let mallory = Ed25519Signer::generate().await?;
     let space = Ed25519Signer::generate().await?;
-    let service = fixture.service.did();
     for (customer, email) in [
         (&alice, "alice@example.com"),
         (&mallory, "mallory@example.com"),
     ] {
-        let container = enroll_container(customer, &service, email).await;
-        fixture.registration(&container).handle().await.unwrap();
+        fixture.enroll_and_activate(customer, email).await;
     }
 
     let container = add_container(&alice, &space, &alice.did()).await;
     fixture.registration(&container).handle().await.unwrap();
 
+    // Mallory holds the space's consent to herself, and is active in her
+    // own right; what stops her is that the space already has a
+    // provider. A consumer has exactly one.
     let container = add_container(&mallory, &space, &mallory.did()).await;
     let refusal = fixture.registration(&container).handle().await.unwrap_err();
     assert!(matches!(refusal, RegistrationError::ConsumerProvided));
+    let consumer = fixture
+        .store
+        .consumer(space.did().as_str())
+        .await
+        .unwrap()
+        .expect("the consumer row exists");
+    assert_eq!(
+        consumer.provider.as_deref(),
+        Some(alice.did().as_str()),
+        "a refused takeover must leave the original provider paying"
+    );
     Ok(())
 }
 
@@ -552,9 +682,9 @@ async fn it_refuses_a_consent_issued_to_another_customer() -> anyhow::Result<()>
     let alice = Ed25519Signer::generate().await?;
     let mallory = Ed25519Signer::generate().await?;
     let space = Ed25519Signer::generate().await?;
-    let service = fixture.service.did();
-    let container = enroll_container(&mallory, &service, "mallory@example.com").await;
-    fixture.registration(&container).handle().await.unwrap();
+    fixture
+        .enroll_and_activate(&mallory, "mallory@example.com")
+        .await;
 
     // The space consented to Alice; Mallory presenting that consent must
     // not become its provider.
@@ -664,5 +794,339 @@ async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::
         .as_str()
         .expect("a multikey verification method");
     assert_eq!(format!("did:key:{multibase}"), service_did.to_string());
+    Ok(())
+}
+
+/// The presign gate: a subject is served only while an active customer
+/// pays for it, and confirming the email is what lifts the denial for
+/// every consumer that customer funds at once.
+#[dialog_common::test]
+async fn it_denies_presign_until_the_customer_confirms_their_email(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use tonk_identity::custody;
+
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+    let custody_key = custody_signer_for(&[31u8; 32]).await?;
+
+    // A subject nobody pays for is never served.
+    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve.clone())
+        .send()
+        .await?;
+    assert_eq!(response.status(), 403, "an unprovisioned subject is served");
+    let reason: serde_json::Value = response.json().await?;
+    assert_eq!(reason["kind"], "PolicyViolation");
+    assert!(
+        reason["predicate"]
+            .as_str()
+            .expect("the refusal names its predicate")
+            .contains("not provisioned"),
+        "the refusal must say why: {reason}"
+    );
+
+    // Enrolled but unactivated: the customer's own account subject is
+    // refused, and the refusal points at the unopened email.
+    let account = Ed25519Signer::generate().await?;
+    let container = enroll_container(&account, &service_did, "gate@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "enrollment refused");
+
+    let account_resolve = custody::build_resolve_invocation(account.clone()).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(account_resolve.clone())
+        .send()
+        .await?;
+    assert_eq!(response.status(), 403, "a Registered customer is served");
+    let reason: serde_json::Value = response.json().await?;
+    assert!(
+        reason["predicate"]
+            .as_str()
+            .expect("the refusal names its predicate")
+            .contains("awaits email activation"),
+        "the refusal must name the unopened email: {reason}"
+    );
+
+    // Confirming the email lifts it, without any further provisioning
+    // call: enrollment already wrote the account's own consumer row
+    // self-provided, so activation alone makes the account space
+    // servable — along with everything else this customer funds.
+    activate_over_http(&client, &base).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(account_resolve)
+        .send()
+        .await?;
+    assert_ne!(
+        response.status(),
+        403,
+        "activation did not lift the provisioning denial"
+    );
+    Ok(())
+}
+
+/// A custody signer at a fixed entry-function output, standing in for
+/// what a PRF assertion would produce.
+async fn custody_signer_for(key: &[u8; 32]) -> anyhow::Result<Ed25519Signer> {
+    tonk_identity::envelope::custody_signer(key).await
+}
+
+/// Activate the customer the last captured email was sent to, over
+/// HTTP. Provisioning and presign both require an `Active` customer, so
+/// a test driving the real endpoints enrolls and then comes through
+/// here before it can do anything else.
+async fn activate_over_http(client: &reqwest::Client, base: &str) -> anyhow::Result<()> {
+    let emails: Vec<(String, String)> = client
+        .get(format!("{base}/_test/emails"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let (_, link) = emails.last().cloned().expect("an activation email");
+    let response = client
+        .post(format!("{base}/ucan/"))
+        .header("Content-Type", "application/cbor")
+        .body(link_container(&link))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "activation refused");
+    Ok(())
+}
+
+/// The custody protocol end to end (`plan/Account custody.md`): an
+/// activated account provisions the custody DID as a consumer, the
+/// custody key publishes the wrapped account secret as a raw memory
+/// cell, and a fresh resolve reads the same bytes back holding nothing
+/// but the custody key. No repository exists anywhere in this flow.
+#[dialog_common::test]
+async fn it_publishes_and_resolves_the_custody_cell(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_remote_s3::Permit;
+    use tonk_identity::envelope::{
+        AccountSecret, Envelope, KekMethod, custody_kek, custody_signer,
+    };
+    use tonk_identity::{custody, delegation};
+
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+
+    // The account enrolls as a customer.
+    let account = Ed25519Signer::generate().await?;
+    let container = enroll_container(&account, &service_did, "custody@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "enrollment refused");
+
+    // Confirming the email is what unlocks everything below: an
+    // unactivated customer provisions nothing and is served nothing.
+    activate_over_http(&client, &base).await?;
+
+    // The entry function's two outputs; a PRF would produce these
+    // inside one assertion, at the two custody salts.
+    let custody_key = custody_signer(&[21u8; 32]).await?;
+    let kek = custody_kek(&[22u8; 32]);
+
+    // The account provisions the custody DID, depositing the consent
+    // the custody key minted — the ordinary provisioning contract.
+    let device = Ed25519Signer::generate().await?;
+    let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
+    let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
+    let add = tonk_identity::request::build_provider_add_invocation(
+        device,
+        &link,
+        &custody_key.did(),
+        &consent,
+        Some("custody"),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "provisioning refused");
+
+    // Seal the secret and publish the cell: permit, then presigned PUT.
+    let secret = AccountSecret::generate()?;
+    let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
+    let publish = custody::build_publish_invocation(
+        custody_key.clone(),
+        &sealed,
+        None,
+        dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(publish)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "publish permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let stored = permit.upload(sealed.clone()).await?;
+    assert!(
+        stored.status().is_success(),
+        "storage PUT failed: {}",
+        stored.status(),
+    );
+
+    // A fresh device resolves with nothing but the custody key.
+    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "resolve permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let fetched = permit.send().await?;
+    assert!(
+        fetched.status().is_success(),
+        "storage GET failed: {}",
+        fetched.status(),
+    );
+    let bytes = fetched.bytes().await?.to_vec();
+    assert_eq!(bytes, sealed, "the resolved cell is the sealed envelope");
+
+    // The envelope opens back to the same account.
+    let opened = custody_kek(&[22u8; 32]).open(&Envelope::decode(&bytes)?)?;
+    assert_eq!(
+        opened.signing_seed().as_ref(),
+        secret.signing_seed().as_ref(),
+        "the unwrapped secret derives the same account",
+    );
+    Ok(())
+}
+
+/// The deferred variant of the custody publish: the invocation is
+/// pre-signed with the month-long expiration a queued-at-creation
+/// publish carries, and must still redeem — the service bounds
+/// registration ceremonies, not the memory permit an owner signs for
+/// its own cell.
+#[dialog_common::test]
+async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> anyhow::Result<()> {
+    use dialog_remote_s3::Permit;
+    use tonk_identity::envelope::{
+        AccountSecret, Envelope, KekMethod, custody_kek, custody_signer,
+    };
+    use tonk_identity::{custody, delegation};
+
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+
+    // The account enrolls as a customer.
+    let account = Ed25519Signer::generate().await?;
+    let container = enroll_container(&account, &service_did, "custody@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "enrollment refused");
+
+    // Confirming the email is what unlocks everything below: an
+    // unactivated customer provisions nothing and is served nothing.
+    activate_over_http(&client, &base).await?;
+
+    // The entry function's two outputs; a PRF would produce these
+    // inside one assertion, at the two custody salts.
+    let custody_key = custody_signer(&[21u8; 32]).await?;
+    let kek = custody_kek(&[22u8; 32]);
+
+    // The account provisions the custody DID, depositing the consent
+    // the custody key minted — the ordinary provisioning contract.
+    let device = Ed25519Signer::generate().await?;
+    let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
+    let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
+    let add = tonk_identity::request::build_provider_add_invocation(
+        device,
+        &link,
+        &custody_key.did(),
+        &consent,
+        Some("custody"),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "provisioning refused");
+
+    // Seal the secret and publish the cell: permit, then presigned PUT.
+    let secret = AccountSecret::generate()?;
+    let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
+    // The ceremony's pre-signed shape: bounded to a month, redeemed
+    // long after signing — what the worker drains once activation lands.
+    let publish = custody::build_deferred_publish_invocation(custody_key.clone(), &sealed).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(publish)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "publish permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let stored = permit.upload(sealed.clone()).await?;
+    assert!(
+        stored.status().is_success(),
+        "storage PUT failed: {}",
+        stored.status(),
+    );
+
+    // A fresh device resolves with nothing but the custody key.
+    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "resolve permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let fetched = permit.send().await?;
+    assert!(
+        fetched.status().is_success(),
+        "storage GET failed: {}",
+        fetched.status(),
+    );
+    let bytes = fetched.bytes().await?.to_vec();
+    assert_eq!(bytes, sealed, "the resolved cell is the sealed envelope");
+
+    // The envelope opens back to the same account.
+    let opened = custody_kek(&[22u8; 32]).open(&Envelope::decode(&bytes)?)?;
+    assert_eq!(
+        opened.signing_seed().as_ref(),
+        secret.signing_seed().as_ref(),
+        "the unwrapped secret derives the same account",
+    );
     Ok(())
 }

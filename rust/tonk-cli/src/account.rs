@@ -7,28 +7,101 @@ use dialog_operator::Profile;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
-use dialog_ucan_core::promise::Promised;
 use dialog_varsig::Did;
-use serde::Deserialize;
 use tonk_account::{AccountProviderRecord, AccountStateStatus};
 use url::Url;
 
 /// Production account API used unless explicitly overridden.
 pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
 /// Production account page, where the revoke ceremony runs.
-pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
+pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/settings";
 /// Production link ceremony page: it reads `?audience=` and `?callback=`
 /// and posts the grant back to the waiting CLI.
-pub const DEFAULT_LINK_PAGE: &str = "https://tonk.spot/account/link";
+pub const DEFAULT_LINK_PAGE: &str = "https://tonk.network/settings/link";
+
+/// Open the browser's passkey-protected, review-first account deletion flow.
+pub async fn open_deletion(
+    profile: &Profile,
+    account_url: &str,
+    open_browser: bool,
+) -> Result<String> {
+    let status = status(profile).await?;
+    if !matches!(status, AccountStatus::Registered { .. }) {
+        bail!("no account is linked to this profile");
+    }
+    let url = format!("{}#delete-account", account_url.trim_end_matches('/'));
+    if open_browser && webbrowser::open(&url).is_err() {
+        bail!("could not open the account deletion page; open {url}");
+    }
+    Ok(url)
+}
+
+/// Open the browser's passkey-protected review for deleting one owned space.
+pub async fn open_space_deletion(
+    profile: &Profile,
+    account_url: &str,
+    subject: &str,
+    open_browser: bool,
+) -> Result<String> {
+    let status = status(profile).await?;
+    if !matches!(status, AccountStatus::Registered { .. }) {
+        bail!("no account is linked to this profile");
+    }
+    subject
+        .parse::<Did>()
+        .context("space subject is not a valid DID")?;
+    let mut url = Url::parse(account_url).context("account page URL is invalid")?;
+    url.query_pairs_mut().append_pair("delete-space", subject);
+    url.set_fragment(Some("delete-account"));
+    let url = url.to_string();
+    if open_browser && webbrowser::open(&url).is_err() {
+        bail!("could not open the space deletion page; open {url}");
+    }
+    Ok(url)
+}
 /// Credential-store key for optional provider attachment metadata.
 pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
 // Linking is complete once credentials are durable; repository hydration is
 // best-effort and must not leave the link command waiting indefinitely.
 
-/// How long the post-link hydration phase may run before the command
-/// reports "waiting for first sync" and returns.
-const HYDRATION_DEADLINE: Duration = Duration::from_secs(10);
+/// How long retryable post-link account synchronization may run before the
+/// command reports the durable local lifecycle state and returns.
+const POST_LINK_SYNC_DEADLINE: Duration = Duration::from_secs(10);
+
+async fn ensure_after_link(
+    profile: &Profile,
+    operator: dialog_operator::Operator<NativeSpace>,
+    store: crate::space::SpaceStore,
+    deadline: Duration,
+) -> Result<crate::account_state::EnsureOutcome> {
+    let status_operator = operator.clone();
+    match tokio::time::timeout(
+        deadline,
+        crate::account_state::ensure_with_operator_and_store(profile, operator, store.clone()),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            let status =
+                crate::account_state::status_with_operator_in(profile, &status_operator, &store)
+                    .await?;
+            let warning = match status {
+                AccountStateStatus::Ready => {
+                    "latest account synchronization did not finish within 10 seconds; committed changes will retry"
+                }
+                AccountStateStatus::Unconfigured | AccountStateStatus::Unhydrated => {
+                    "the account repository did not answer within 10 seconds; first sync will retry"
+                }
+            };
+            Ok(crate::account_state::EnsureOutcome {
+                status,
+                warning: Some(warning.to_string()),
+            })
+        }
+    }
+}
 
 /// Descriptive registration name for a native CLI device.
 pub fn default_device_name() -> String {
@@ -85,6 +158,18 @@ pub enum AccountStatus {
     },
 }
 
+/// Local sign-in phase, readable without opening a Dialog profile.
+pub use crate::account_session::LocalPhase as SignInPhase;
+
+/// Inspect one store's sign-in phase without creating profile state.
+///
+/// Cheap enough for read-only commands: it reads the session sidecar and
+/// nothing else, so bare `tonk space` can say whether an account is signed in
+/// without provisioning an identity for an installation that has none.
+pub fn sign_in_phase(store: &crate::space::SpaceStore) -> Result<SignInPhase> {
+    crate::account_session::inspect_local(store)
+}
+
 /// Inputs controlling a browser handoff.
 #[derive(Debug, Clone)]
 pub struct LinkOptions {
@@ -94,11 +179,9 @@ pub struct LinkOptions {
     pub device_name: String,
     /// Whether to ask the OS to open the handoff URL.
     pub open_browser: bool,
-    /// Whether to drop undeliverable detach intents and link anyway.
-    pub abandon_detach: bool,
     /// Where account state lives. Defaults to the install's own store when
     /// absent; a caller running outside an install supplies its own.
-    pub store: Option<crate::spot::SpotStore>,
+    pub store: Option<crate::space::SpaceStore>,
     /// Send the approval URL here instead of relying on the OS to open it.
     ///
     /// `webbrowser::open` is the product path; this exists for callers that
@@ -128,6 +211,13 @@ pub struct LinkOutcome {
     pub account_state: AccountStateStatus,
     /// Diagnostic when the persisted link remains unhydrated.
     pub warning: Option<String>,
+    /// Account service this device attached to.
+    ///
+    /// The page's own deployment when it named one, and only otherwise the
+    /// flag — the same precedence the attachment itself was recorded under,
+    /// so a caller matching endpoints against a provider matches the one
+    /// this device actually uses.
+    pub service_url: String,
 }
 
 async fn decode_provider(
@@ -144,20 +234,12 @@ async fn decode_provider(
         .context("stored account provider is unusable")
 }
 
-/// Load the provider attachment through an already-mounted site operator.
-pub(crate) async fn stored_provider_with_operator(
-    profile: &Profile,
-    operator: &dialog_operator::Operator<NativeSpace>,
-) -> Result<Option<AccountProviderRecord>> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
-    stored_provider_for_store(profile, operator, &store).await
-}
-
-/// [`stored_provider_with_operator`] against a caller-supplied store.
+/// Load the provider attachment through an already-mounted site operator and
+/// caller-supplied profile store.
 pub(crate) async fn stored_provider_in(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountProviderRecord>> {
     stored_provider_for_store(profile, operator, store).await
 }
@@ -165,7 +247,7 @@ pub(crate) async fn stored_provider_in(
 async fn stored_provider_for_store(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
-    store: &crate::spot::SpotStore,
+    store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountProviderRecord>> {
     {
         let guard = crate::account_session::exclusive_transition_guard(store)?;
@@ -194,55 +276,58 @@ async fn stored_provider_for_store(
 /// What to tell a device that has no account when it asks for durable
 /// authority. Names the one command that provisions both the root and the
 /// account it belongs to.
-const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account link`";
+const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account login`";
 
-/// Refuse unless this profile holds an account.
-///
-/// The precondition every durable operation shares, in the shape the browser
-/// worker uses it (`router::account::require_account`): durable authority is
-/// only ever issued to an account, so what it mints stays revocable and what
-/// it creates gets backed up. `Unhydrated` and `Unconfigured` accounts pass —
-/// an account that exists but has not synchronized is still an account.
-pub(crate) async fn require_account_with_operator(
+/// Refuse unless one explicit profile store holds an account attachment.
+pub(crate) async fn require_account_with_operator_in(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
 ) -> Result<()> {
-    match stored_provider_with_operator(profile, operator).await? {
+    match stored_provider_in(profile, operator, store).await? {
         Some(_) => Ok(()),
         None => bail!(ACCOUNT_REQUIRED),
     }
 }
 
-pub(crate) async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderRecord>> {
-    let operator = crate::account_state::credential_operator(profile).await?;
-    stored_provider_with_operator(profile, &operator).await
-}
-
-async fn retry_pending_detaches(profile: &Profile) -> Result<crate::account_session::FlushOutcome> {
-    let operator = crate::account_state::credential_operator(profile).await?;
-    crate::account_session::flush_pending(profile, &operator).await
-}
-
 /// Disconnect provider services while preserving this profile's root,
-/// delegations, account repository, and spots.
+/// delegations, account repository, and spaces.
 pub async fn logout(profile: &Profile) -> Result<()> {
     let operator = crate::account_state::credential_operator(profile).await?;
     logout_with_operator(profile, &operator).await
+}
+
+/// Disconnect only the account session owned by `store`.
+pub async fn logout_in(profile: &Profile, store: &crate::space::SpaceStore) -> Result<()> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    logout_with_operator_in(profile, &operator, store).await
 }
 
 async fn logout_with_operator(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
 ) -> Result<()> {
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
+    logout_with_operator_in(profile, operator, &store).await
+}
+
+async fn logout_with_operator_in(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    crate::account_session::logout_transition(profile, operator, now).await?;
-    if let Ok(outcome) = crate::account_session::flush_pending(profile, operator).await
-        && let Some(warning) = outcome.warning
+    for account in
+        crate::account_session::logout_transition_for_store(profile, operator, store).await?
     {
-        eprintln!("warning: logged out locally; {warning}");
+        if let Err(error) = crate::account_session::deliver_detach(profile, &account, now).await {
+            eprintln!(
+                "warning: logged out locally; the provider was not notified                  and may list this device until it is revoked: {error:#}"
+            );
+        }
     }
     Ok(())
 }
@@ -259,23 +344,28 @@ fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
 /// command. Hydration is [`crate::account_state::ensure`]'s job, and the
 /// paths that need it call it directly.
 pub async fn status(profile: &Profile) -> Result<AccountStatus> {
-    if let Ok(outcome) = retry_pending_detaches(profile).await
-        && let Some(warning) = outcome.warning
-    {
-        eprintln!("warning: {warning}");
-    }
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
+    status_in(profile, &store).await
+}
+
+/// Read account status from one explicit native profile store.
+pub async fn status_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+) -> Result<AccountStatus> {
     let device_did = profile.did().to_string();
-    let Some(root) = crate::identity::local_root(profile).await? else {
+    let Some(root) = crate::identity::local_root_in(profile, store).await? else {
         return Ok(AccountStatus::MissingRoot { device_did });
     };
-    match stored_provider(profile).await? {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    match stored_provider_in(profile, &operator, store).await? {
         None => Ok(AccountStatus::Unregistered {
             root_did: root.root_did,
             device_did,
         }),
         Some(provider) => {
             let account_state = if provider.descriptor().is_some() {
-                crate::account_state::status(profile).await?
+                crate::account_state::status_in(profile, store).await?
             } else {
                 AccountStateStatus::Unconfigured
             };
@@ -315,48 +405,163 @@ pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<D
         .proofs()
         .next()
         .context("authorization is missing its proof")?
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .verify_signature(&dialog_credentials::DidKeyResolver)
         .await
         .context("authorization signature is invalid")?;
     Ok(chain)
 }
 
-/// Deliver queued detach intents before a handoff opens on `provider`.
-///
-/// Only an undelivered detach at the same provider can block a handoff:
-/// the service's one-active-generation rule rejects activation while an
-/// earlier generation of this device is still active there. A detach
-/// queued for a different provider says nothing about this one, and one
-/// the provider can never accept is dropped by the flush itself.
-async fn clear_detach_for(
+/// Turn one validated browser response into the immutable generation that is
+/// checkpointed and replayed after a crash. This performs no local writes.
+async fn account_from_callback(
+    profile: &Profile,
+    options: &LinkOptions,
+    authorization: CallbackAuthorization,
+) -> Result<crate::account_session::ActiveAccount> {
+    let grant_bytes = hex::decode(&authorization.delegation_hex)
+        .context("authorization delegation is not hex")?;
+    let chain = validate_account_grant(profile, &grant_bytes).await?;
+    let account_did = chain.issuer().clone();
+    let attachment_id = authorization.attachment_id.trim();
+    if attachment_id.is_empty() {
+        bail!("authorization is missing its service attachment generation");
+    }
+    let provider_url = Some(authorization.service_url.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&options.service_url);
+    let descriptor = hex::decode(&authorization.descriptor_hex)
+        .context("authorization descriptor is not hex")?;
+    let attached_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let provider =
+        AccountProviderRecord::attach(provider_url, &descriptor, &account_did, attached_at)
+            .await
+            .context("authorization returned an unusable repository descriptor")?;
+    Ok(crate::account_session::ActiveAccount {
+        provider: provider.provider().to_owned(),
+        credential_id: authorization.credential_id,
+        root_did: account_did.to_string(),
+        delegation_cid: chain.proof_cids()[0].to_string(),
+        delegation_hex: hex::encode(grant_bytes),
+        descriptor_hex: Some(hex::encode(descriptor)),
+        attachment_id: attachment_id.to_owned(),
+        attached_at,
+    })
+}
+
+async fn recorded_account_grant(
+    profile: &Profile,
+    account: &crate::account_session::ActiveAccount,
+) -> Result<(Vec<u8>, DelegationChain)> {
+    let grant_bytes =
+        hex::decode(&account.delegation_hex).context("recorded account delegation is not hex")?;
+    let chain = validate_account_grant(profile, &grant_bytes).await?;
+    if chain.issuer().as_ref() != account.root_did
+        || chain.proof_cids()[0].to_string() != account.delegation_cid
+    {
+        bail!("recorded account delegation does not match its recorded generation");
+    }
+    Ok((grant_bytes, chain))
+}
+
+/// Validate and project one exact staged generation into the compatibility
+/// credential records. Replaying the same values is idempotent.
+async fn project_staged_account(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
-    provider: &str,
-    abandon: bool,
+    account: &crate::account_session::ActiveAccount,
 ) -> Result<()> {
-    let flushed = crate::account_session::flush_pending(profile, operator).await?;
-    if !flushed.retains(provider) {
-        if let Some(warning) = flushed.warning {
-            eprintln!("warning: {warning}");
-        }
-        return Ok(());
+    if account.attachment_id.trim().is_empty() {
+        bail!("staged account activation has no service attachment generation");
     }
-    if abandon {
-        let abandoned = crate::account_session::abandon_pending(profile, operator).await?;
-        eprintln!(
-            "warning: abandoned {abandoned} undelivered detach intent(s); \
-             earlier devices may still be listed on the account page"
-        );
-        return Ok(());
+    let (_, chain) = recorded_account_grant(profile, account).await?;
+    let root_did: Did = account
+        .root_did
+        .parse()
+        .context("staged account root DID is invalid")?;
+    let descriptor_hex = account
+        .descriptor_hex
+        .as_deref()
+        .context("staged account activation has no repository descriptor")?;
+    let descriptor =
+        hex::decode(descriptor_hex).context("staged account repository descriptor is not hex")?;
+    let provider = AccountProviderRecord::attach(
+        &account.provider,
+        &descriptor,
+        &root_did,
+        account.attached_at,
+    )
+    .await
+    .context("staged account repository descriptor is unusable")?;
+    if provider.provider() != account.provider {
+        bail!("staged account provider is not canonical");
     }
-    bail!(
-        "cannot link while a detach for {provider} is undelivered: {}\n\
-         retry once the account service is reachable, or run \
-         `tonk account link --abandon-detach` to link anyway",
-        flushed
-            .warning
-            .unwrap_or_else(|| "provider retry required".to_string())
-    );
+
+    profile
+        .access()
+        .save(UcanDelegation(chain))
+        .perform(operator)
+        .await
+        .context("failed to install the account grant")?;
+    crate::identity::save_local_root_with_operator(
+        profile,
+        operator,
+        account.credential_id.clone(),
+        account.delegation_hex.clone(),
+    )
+    .await?;
+    profile
+        .credential()
+        .site(ACCOUNT_LINK_SITE)
+        .save(provider.encode()?)
+        .perform(operator)
+        .await
+        .context("failed to persist the account link")?;
+    Ok(())
+}
+
+/// Resume or complete one exact staged generation. The activation guard keeps
+/// logout and other login attempts behind projection and final promotion.
+async fn complete_staged_account(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    account: &crate::account_session::ActiveAccount,
+) -> Result<()> {
+    let guard =
+        crate::account_session::stage_activation(profile, operator, store, account.clone()).await?;
+    project_staged_account(profile, operator, account).await?;
+    crate::account_session::finalize_activation(profile, operator, guard, account).await?;
+    Ok(())
+}
+
+/// Hydrate and converge authority after the canonical account is already active.
+/// Failure here never reopens the browser ceremony.
+async fn hydrate_activated_account(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    account: &crate::account_session::ActiveAccount,
+    url: String,
+) -> Result<LinkOutcome> {
+    let ensured = ensure_after_link(
+        profile,
+        operator.clone(),
+        store.clone(),
+        POST_LINK_SYNC_DEADLINE,
+    )
+    .await?;
+
+    Ok(LinkOutcome {
+        url,
+        root_did: account.root_did.clone(),
+        device_did: profile.did().to_string(),
+        account_state: ensured.status,
+        warning: ensured.warning,
+        service_url: account.provider.clone(),
+    })
 }
 
 /// Authorize this device through a loopback callback.
@@ -369,6 +574,7 @@ async fn clear_detach_for(
 async fn link_via_callback(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
     options: &LinkOptions,
     page: &str,
 ) -> Result<LinkOutcome> {
@@ -402,7 +608,7 @@ async fn link_via_callback(
         result = callback.receive(redirect_origin) => result?,
         signal = &mut ctrl_c => {
             signal.context("failed to listen for Ctrl-C")?;
-            bail!("account link cancelled");
+            bail!("account login cancelled");
         }
     };
     let bytes = match received {
@@ -413,129 +619,9 @@ async fn link_via_callback(
     };
     let authorization: CallbackAuthorization =
         serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
-    let grant_bytes = hex::decode(&authorization.delegation_hex)
-        .context("authorization delegation is not hex")?;
-    let chain = validate_account_grant(profile, &grant_bytes).await?;
-    let account_did = chain.issuer().clone();
-    let root_did = account_did.to_string();
-
-    // Install the inbound half so this device can act, and record the root
-    // the way a linked device does.
-    profile
-        .access()
-        .save(UcanDelegation(chain))
-        .perform(operator)
-        .await
-        .context("failed to install the account grant")?;
-    crate::identity::save_local_root_with_operator(
-        profile,
-        operator,
-        authorization.credential_id.clone(),
-        authorization.delegation_hex.clone(),
-    )
-    .await?;
-
-    // The descriptor tells this device WHERE the account repository lives; a
-    // delegation only says who may act. Persisting it is what lets the
-    // account mount and sync at all. The provider URL prefers what the
-    // page delivered — the page knows its deployment — over the flag,
-    // whose default names production regardless of where the ceremony ran.
-    let provider_url = Some(authorization.service_url.trim())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&options.service_url)
-        .to_owned();
-    let provider = AccountProviderRecord::attach(
-        &provider_url,
-        &hex::decode(&authorization.descriptor_hex)
-            .context("authorization descriptor is not hex")?,
-        &account_did,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    )
-    .await
-    .context("authorization returned an unusable repository descriptor")?;
-    profile
-        .credential()
-        .site(ACCOUNT_LINK_SITE)
-        .save(provider.encode()?)
-        .perform(operator)
-        .await
-        .context("failed to persist the account link")?;
-
-    let store = match options.store.clone() {
-        Some(store) => store,
-        None => crate::spot::SpotStore::open().context("failed to locate account state")?,
-    };
-    // The canonical session was initialized empty before the ceremony ran,
-    // so the persisted root and record must be projected into an active
-    // session explicitly — everything account-bound reads through it.
-    let attachment_id = Some(authorization.attachment_id.clone()).filter(|id| !id.is_empty());
-    crate::account_session::activate_link(profile, operator, &store, attachment_id).await?;
-
-    // Mount the account, then retain BOTH halves of the union into it and
-    // push. The page mints only the inbound grant; storing both ends here
-    // keeps the writes where the account repository is already mounted, and
-    // means a later device pulling the account inherits what this profile
-    // holds rather than only what the account issued.
-    // `ensure` mounts the account, adopts it as the access upstream, and
-    // syncs — the dance that turns a grant into usable, shared authority.
-    // The whole phase runs under a hard deadline: the link is complete
-    // once credentials are durable, and a slow or unreachable remote must
-    // degrade to "waiting for first sync" rather than hang the command.
-    let hydration = tokio::time::timeout(HYDRATION_DEADLINE, async {
-        let account_state = match crate::account_state::ensure_with_operator_and_store(
-            profile,
-            operator.clone(),
-            store,
-        )
-        .await
-        {
-            Ok(outcome) => outcome.status,
-            Err(_) => AccountStateStatus::Unhydrated,
-        };
-        let mut warning = None;
-        if let Some(branch) = crate::account_state::open_account_branch(profile, operator).await? {
-            let signer = profile.signer().signer().clone();
-            let union =
-                tonk_account::delegations::mint_account_union(&signer, &account_did).await?;
-            let inbound = DelegationChain::try_from(grant_bytes.as_slice())
-                .context("account grant is not a delegation container")?;
-            for (label, chain) in [("account grant", inbound), ("profile union", union)] {
-                if let Err(error) =
-                    tonk_account::delegations::retain_space_delegation(&branch, &chain, operator)
-                        .await
-                {
-                    warning = Some(format!(
-                        "{label} was not retained into the account: {error}"
-                    ));
-                }
-            }
-            if warning.is_none()
-                && let Err(error) = branch.push().perform(operator).await
-            {
-                warning = Some(format!("account was authorized but not pushed: {error}"));
-            }
-        }
-        Ok::<_, anyhow::Error>((account_state, warning))
-    })
-    .await;
-    let (account_state, warning) = match hydration {
-        Ok(result) => result?,
-        Err(_) => (
-            AccountStateStatus::Unhydrated,
-            Some("the account repository did not answer in time; sync will retry".to_string()),
-        ),
-    };
-
-    Ok(LinkOutcome {
-        url,
-        root_did,
-        device_did: profile.did().to_string(),
-        account_state,
-        warning,
-    })
+    let account = account_from_callback(profile, options, authorization).await?;
+    complete_staged_account(profile, operator, store, &account).await?;
+    hydrate_activated_account(profile, operator, store, &account, url).await
 }
 
 /// What the authorizing page posts back to the waiting CLI.
@@ -551,8 +637,8 @@ struct CallbackAuthorization {
     #[serde(default)]
     credential_id: String,
     /// The service-issued attachment generation the approving page
-    /// registered this device under. Absent from pages that predate
-    /// registration-at-approval; the delegation CID stands in then.
+    /// registered this device under. Required so recovery and detach target
+    /// the exact service row rather than guessing from the delegation CID.
     #[serde(default)]
     attachment_id: String,
     /// The account service the approving page's deployment uses. Absent
@@ -568,6 +654,18 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
     link_with_operator(profile, &operator, options).await
 }
 
+/// Start or resume linking against one explicit native profile store.
+pub async fn link_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    options: &LinkOptions,
+) -> Result<LinkOutcome> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let mut options = options.clone();
+    options.store = Some(store.clone());
+    link_with_operator(profile, &operator, &options).await
+}
+
 /// [`link`] against a caller-supplied operator.
 ///
 /// [`link`] resolves one from the global install, mounting the profile by
@@ -578,7 +676,10 @@ pub async fn link_with_operator(
     operator: &dialog_operator::Operator<NativeSpace>,
     options: &LinkOptions,
 ) -> Result<LinkOutcome> {
-    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    let store = match options.store.clone() {
+        Some(store) => store,
+        None => crate::space::SpaceStore::open().context("failed to locate account state")?,
+    };
     {
         let guard = crate::account_session::exclusive_transition_guard(&store)?;
         crate::account_session::ensure_initialized(profile, operator, &guard).await?;
@@ -587,36 +688,36 @@ pub async fn link_with_operator(
         let guard = crate::account_session::shared_remote_guard(&store)?;
         crate::account_session::load_guarded(profile, operator, &guard).await?
     };
-    if state.active.is_some() {
-        bail!("an account is already active; run `tonk account logout` before linking another");
+    if let Some(account) = state.active {
+        recorded_account_grant(profile, &account).await?;
+        return hydrate_activated_account(profile, operator, &store, &account, String::new()).await;
     }
-    clear_detach_for(
-        profile,
-        operator,
-        options.service_url.trim_end_matches('/'),
-        options.abandon_detach,
-    )
-    .await?;
-    let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
-    link_via_callback(profile, operator, options, page).await
+    match state.pending_login {
+        Some(crate::account_session::PendingLogin::Activating { account }) => {
+            complete_staged_account(profile, operator, &store, &account).await?;
+            hydrate_activated_account(profile, operator, &store, &account, String::new()).await
+        }
+        Some(crate::account_session::PendingLogin::Waiting { .. }) => {
+            bail!(
+                "an older account login is pending but cannot be resumed; run `tonk account logout` and try again"
+            )
+        }
+        None => {
+            let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
+            link_via_callback(profile, operator, &store, options, page).await
+        }
+    }
 }
 
-/// One registry row from `POST /devices/list`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// One device row, from the account space's own facts.
+#[derive(Debug, Clone)]
 pub struct DeviceRow {
-    /// Exact attachment generation.
-    pub attachment_id: String,
     /// The device's DID.
     pub did: String,
-    /// Display name registered at link time.
+    /// Display name described at link time.
     pub name: String,
-    /// Registry status: `active` or `revoked`.
-    pub status: String,
-    /// Registration time, seconds since the epoch.
+    /// Link time, seconds since the epoch.
     pub created_at: u64,
-    /// CID of the `root → device` delegation a revocation must name.
-    pub delegation_cid: String,
 }
 
 /// Authenticated provider attachment used by account-scoped CLI modules.
@@ -624,15 +725,15 @@ pub(crate) struct AccountConnection {
     pub(crate) service_url: String,
     pub(crate) root_did: Did,
     pub(crate) link: DelegationChain,
-    store: crate::spot::SpotStore,
 }
 
 async fn connection_from_provider(
     profile: &Profile,
     provider: AccountProviderRecord,
+    store: &crate::space::SpaceStore,
 ) -> Result<AccountConnection> {
     let service_url = provider.provider().to_string();
-    let root = crate::identity::local_root(profile)
+    let root = crate::identity::local_root_in(profile, store)
         .await?
         .context("the provider attachment has no local root")?;
     let bytes = hex::decode(root.delegation_hex).context("stored local-root hex is invalid")?;
@@ -643,52 +744,13 @@ async fn connection_from_provider(
         service_url,
         root_did,
         link,
-        store: crate::spot::SpotStore::open().context("failed to locate account state")?,
     })
 }
 
-/// Load an attachment through the account directory owned by an explicit
-/// spot store. Account-spots tests and isolated consumers use this without
-/// changing process-global profile paths.
-pub(crate) async fn connection_for_store(
+pub(crate) async fn optional_connection_in(
     profile: &Profile,
-    store: &crate::spot::SpotStore,
-) -> Result<AccountConnection> {
-    #[cfg(feature = "integration-tests")]
-    if let Some((service_url, link, _)) = integration_connections()
-        .lock()
-        .expect("integration connection registry")
-        .get(profile.did().as_ref())
-        .cloned()
-    {
-        return Ok(AccountConnection {
-            service_url,
-            root_did: link.issuer().clone(),
-            link,
-            store: store.clone(),
-        });
-    }
-    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    let _ = crate::account_session::flush_pending_for_store(profile, &operator, store).await;
-    let provider = stored_provider_for_store(profile, &operator, store)
-        .await?
-        .context("no account provider is attached; run `tonk account link`")?;
-    let root = crate::identity::local_root_with_operator(profile, &operator)
-        .await?
-        .context("the provider attachment has no local root")?;
-    let bytes = hex::decode(root.delegation_hex).context("stored local-root hex is invalid")?;
-    let link = DelegationChain::try_from(bytes.as_slice())
-        .context("stored local-root delegation is invalid")?;
-    Ok(AccountConnection {
-        service_url: provider.provider().to_string(),
-        root_did: link.issuer().clone(),
-        link,
-        store: store.clone(),
-    })
-}
-
-/// Load the attached provider and exact `root → device` link when present.
-pub(crate) async fn optional_connection(profile: &Profile) -> Result<Option<AccountConnection>> {
+    store: &crate::space::SpaceStore,
+) -> Result<Option<AccountConnection>> {
     #[cfg(feature = "integration-tests")]
     if let Some((service_url, link, _)) = integration_connections()
         .lock()
@@ -700,13 +762,15 @@ pub(crate) async fn optional_connection(profile: &Profile) -> Result<Option<Acco
             service_url,
             root_did: link.issuer().clone(),
             link,
-            store: crate::spot::SpotStore::open().context("failed to locate account state")?,
         }));
     }
-    let Some(provider) = stored_provider(profile).await? else {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let Some(provider) = stored_provider_in(profile, &operator, store).await? else {
         return Ok(None);
     };
-    Ok(Some(connection_from_provider(profile, provider).await?))
+    Ok(Some(
+        connection_from_provider(profile, provider, store).await?,
+    ))
 }
 
 #[cfg(feature = "integration-tests")]
@@ -794,7 +858,6 @@ pub async fn attach_for_integration_test(
                 .as_secs(),
         }),
         pending_login: None,
-        pending_detaches: Vec::new(),
     };
     crate::account_session::install_for_integration_test(profile, operator, &session).await?;
     integration_connections()
@@ -807,133 +870,232 @@ pub async fn attach_for_integration_test(
     Ok(())
 }
 
-impl AccountConnection {
-    /// Sign and POST one account invocation, preserving the raw HTTP status
-    /// so callers can implement rolling-deployment fallbacks.
-    pub(crate) async fn signed_post(
-        &self,
-        profile: &Profile,
-        path: &str,
-        command: Vec<String>,
-        arguments: std::collections::BTreeMap<String, Promised>,
-    ) -> Result<reqwest::Response> {
-        #[cfg(feature = "integration-tests")]
-        if integration_connections()
-            .lock()
-            .expect("integration connection registry")
-            .contains_key(profile.did().as_ref())
-        {
-            let body = tonk_identity::request::build_device_invocation(
-                profile.signer().signer().clone(),
-                &self.link,
-                command,
-                arguments,
-            )
-            .await
-            .context("failed to sign the account-service request")?;
-            return post_invocation_raw(&self.service_url, path, body).await;
-        }
-
-        let operator =
-            crate::account_state::credential_operator_for_store(profile, &self.store).await?;
-        let _ =
-            crate::account_session::flush_pending_for_store(profile, &operator, &self.store).await;
-        let store = self.store.clone();
-        {
-            let guard = crate::account_session::exclusive_transition_guard(&store)?;
-            crate::account_session::ensure_initialized(profile, &operator, &guard).await?;
-        }
-        let guard = crate::account_session::shared_remote_guard(&store)?;
-        let active = crate::account_session::active_guarded(profile, &operator, &guard)
-            .await?
-            .context("no active account; run `tonk account link`")?;
-        if active.provider.trim_end_matches('/') != self.service_url.trim_end_matches('/')
-            || active.root_did != self.root_did.to_string()
-        {
-            bail!("account connection does not match the active attachment");
-        }
-        let bytes =
-            hex::decode(&active.delegation_hex).context("active account grant hex is invalid")?;
-        let link = DelegationChain::try_from(bytes.as_slice())
-            .context("active account grant is invalid")?;
-        if link.proof_cids().len() != 1 || link.proof_cids()[0].to_string() != active.delegation_cid
-        {
-            bail!("active account grant does not match canonical session state");
-        }
-        let body = tonk_identity::request::build_device_invocation(
-            profile.signer().signer().clone(),
-            &link,
-            command,
-            arguments,
-        )
-        .await
-        .context("failed to sign the account-service request")?;
-        let response = post_invocation_raw(&self.service_url, path, body).await;
-        drop(guard);
-        response
-    }
-}
-
-async fn post_invocation_raw(
-    service_url: &str,
-    path: &str,
-    body: Vec<u8>,
-) -> Result<reqwest::Response> {
-    reqwest::Client::new()
-        .post(format!(
-            "{}/{}",
-            service_url.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        ))
-        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
-        .body(body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .with_context(|| format!("failed to reach the account service at {path}"))
-}
-
-/// List the devices registered under this profile's account. The
-/// recorded provider is authoritative; a `service_url` names one only
-/// to cross-check it against the active account.
+/// List the devices authorized under this profile's account, from the
+/// account branch's own facts. The recorded provider is authoritative; a
+/// `service_url` names one only to cross-check it against the active
+/// account.
+///
+/// Fresh by default, never hostage to the remote: a tightly bounded
+/// account pull runs first, and a remote that is slow or unanswering
+/// degrades to a stderr note over local facts rather than a hang. Set
+/// `TONK_OFFLINE=1` to skip the pull entirely. One row per device — a
+/// device described more than once keeps its earliest link time.
 pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
-    let _ = retry_pending_detaches(profile).await;
-    let connection = optional_connection(profile)
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
+    devices_in(profile, &store, service_url).await
+}
+
+/// List devices through one explicit account profile store.
+pub async fn devices_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    service_url: Option<&str>,
+) -> Result<Vec<DeviceRow>> {
+    let connection = optional_connection_in(profile, store)
         .await?
-        .context("no active account; run `tonk account link`")?;
+        .context("no active account; run `tonk account login`")?;
     if let Some(service_url) = service_url
         && connection.service_url.trim_end_matches('/') != service_url.trim_end_matches('/')
     {
         bail!("requested provider does not match the active account");
     }
-    let response = connection
-        .signed_post(
-            profile,
-            "devices/list",
-            vec!["account".into(), "device".into(), "list".into()],
-            std::collections::BTreeMap::new(),
-        )
-        .await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        bail!("account service rejected devices/list ({status}): {text}");
-    }
-    response
-        .json()
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    freshen_account(profile, &operator, store, "listing local facts").await;
+    let branch = account_branch(profile, &operator, store).await?;
+    let links = tonk_schema::device_link::device_links(&branch, &operator)
         .await
-        .context("account service returned an invalid device list")
+        .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?;
+    let mut rows: std::collections::BTreeMap<String, DeviceRow> = Default::default();
+    for (link, did) in links {
+        let row = DeviceRow {
+            did,
+            name: link.title.0,
+            created_at: link.created_at.0,
+        };
+        match rows.get_mut(&row.did) {
+            Some(existing) if existing.created_at <= row.created_at => {}
+            Some(existing) => *existing = row,
+            None => {
+                rows.insert(row.did.clone(), row);
+            }
+        }
+    }
+    let mut devices: Vec<DeviceRow> = rows.into_values().collect();
+    devices.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    Ok(devices)
 }
 
-/// The browser URL that runs the revoke ceremony for `did`.
+/// Explicitly pull the account so every local view reads current facts.
 ///
-/// A query parameter, not a fragment: the fragment carries bearer
-/// secrets in the link handoff, and a device DID is neither secret nor
-/// sensitive to leak into a browser history. The DID needs no escaping —
-/// `:` is a legal query character and the rest is base58.
+/// The read verbs (`devices`, `status`, `spaces`) deliberately never
+/// touch the remote — local answers stay instant and a sick remote
+/// cannot hang them. This is the verb that freshens what they read,
+/// bounded and honest: a remote that does not answer is an error naming
+/// it, not a wait.
+pub async fn sync(profile: &Profile) -> Result<crate::account_state::EnsureOutcome> {
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
+    sync_in(profile, &store).await
+}
+
+/// [`sync`] through one explicit account profile store.
+pub async fn sync_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+) -> Result<crate::account_state::EnsureOutcome> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        crate::account_state::ensure_with_operator_and_store(profile, operator, store.clone()),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the account remote did not answer in time"))?
+}
+
+/// Sync the account best-effort, under the same hard deadline the link
+/// flow uses: reads that follow serve local facts either way, so a slow
+/// or unreachable remote must degrade to slightly stale rather than
+/// hang the command. Reachable remotes answer well inside the bound.
+///
+/// `TONK_OFFLINE=1` skips the attempt: the opt-out for air-gapped work
+/// and scripts that want local answers with no network at all.
+async fn freshen_account(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    doing: &str,
+) {
+    if std::env::var_os("TONK_OFFLINE").is_some_and(|value| !value.is_empty() && value != "0") {
+        return;
+    }
+    match tokio::time::timeout(
+        POST_LINK_SYNC_DEADLINE,
+        crate::account_state::ensure_with_operator_and_store(
+            profile,
+            operator.clone(),
+            store.clone(),
+        ),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => eprintln!("warning: account sync failed; {doing}: {error:#}"),
+        Err(_) => eprintln!("warning: the account remote did not answer in time; {doing}"),
+    }
+}
+
+/// The mounted account branch, or what to run when there is none.
+///
+/// Bounded: mounting resolves the remote head, and dialog's remote
+/// transport has no client deadline of its own, so a socket that
+/// accepts and never answers would park the command forever — sampled
+/// exactly there when `tonk account devices` hung the e2e suite. A
+/// deadline turns that into an error naming the remote.
+async fn account_branch(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+) -> Result<dialog_repository::Branch> {
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        crate::account_state::open_account_branch_in(profile, operator, store),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the account remote did not answer while mounting"))??
+    .context("the account repository is not mounted; run `tonk account login`")
+}
+
+/// Publish a revocation everywhere it could still be honoured — the
+/// account's own access service plus every service a directory space
+/// syncs through. Every endpoint must accept it: a partial publication
+/// is the dangerous outcome, so a refusal anywhere is reported rather
+/// than swallowed.
+async fn publish_revocation(
+    profile: &Profile,
+    branch: &dialog_repository::Branch,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    artifact: &[u8],
+) -> Result<()> {
+    use dialog_remote_ucan_s3::UcanAddress;
+
+    let mut endpoints = std::collections::BTreeSet::new();
+    if let Some(provider) = stored_provider_in(profile, operator, store).await?
+        && let Some(descriptor) = provider.descriptor()
+    {
+        endpoints.insert(
+            UcanAddress::new(descriptor.remote().as_str())
+                .endpoint()
+                .to_string(),
+        );
+    }
+    endpoints.extend(
+        tonk_schema::directory::access_endpoints(branch, operator)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot enumerate the services this revocation must reach: {error:?}"
+                )
+            })?,
+    );
+    if endpoints.is_empty() {
+        bail!("this profile has no access service to publish a revocation to");
+    }
+    let client = reqwest::Client::new();
+    for endpoint in &endpoints {
+        let response = client
+            .post(endpoint)
+            .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+            .body(artifact.to_vec())
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .with_context(|| format!("failed to reach the access service at {endpoint}"))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            bail!("access service {endpoint} rejected the revocation ({status}): {text}");
+        }
+        let receipt: tonk_account::customer::RevokeReceipt = response
+            .json()
+            .await
+            .with_context(|| format!("{endpoint} returned an unreadable revoke receipt"))?;
+        let _ = receipt.revoked;
+    }
+    Ok(())
+}
+
+/// Retract a revoked device's link rows from the account space, so the
+/// row leaves every device's list the way the authority left the chain.
+/// Returns whether anything was retracted.
+async fn retract_device_rows(
+    branch: &dialog_repository::Branch,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    target: &str,
+) -> Result<bool> {
+    let links = tonk_schema::device_link::device_links(branch, operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?;
+    let mut transaction = branch.transaction();
+    let mut retracting = false;
+    for (link, did) in links {
+        if did == target {
+            transaction = transaction.retract(link);
+            retracting = true;
+        }
+    }
+    if retracting {
+        transaction
+            .commit()
+            .perform(operator)
+            .await
+            .context("failed to retract the revoked device's rows")?;
+    }
+    Ok(retracting)
+}
+
 /// The browser URL that asks the account to delegate to this CLI profile.
 ///
-/// The same page `account link` opens, with two query parameters instead of a
+/// The same page `account login` opens, with two query parameters instead of a
 /// fragment secret: `audience` is the profile the account should delegate to,
 /// and `callback` is the loopback URL the page posts the grant back to. Both
 /// are percent-encoded — a callback URL contains `:` and `/`, and an
@@ -953,44 +1115,64 @@ fn login_url(base: &str, audience: &str, callback: &str, name: &str) -> String {
     )
 }
 
-fn revoke_url(base: &str, did: &str) -> String {
-    format!(
-        "{}?revoke={did}",
-        base.trim_end_matches('#').trim_end_matches('/')
-    )
-}
-
-/// Inputs for a browser-assisted revocation.
+/// Inputs for revoking a device.
 pub struct RevokeOptions {
-    /// Account service base URL.
+    /// Account service base URL, cross-checked against the active account.
     pub service_url: String,
-    /// Browser page that runs the ceremony.
-    pub account_url: String,
-    /// Whether to ask the OS to open the ceremony URL.
-    pub open_browser: bool,
 }
 
 /// How a revocation request resolved. The caller owns the messaging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevokeOutcome {
-    /// The registry now shows the device revoked.
+    /// The revocation was published and the device's rows retracted.
     Revoked,
-    /// The registry already showed the device revoked; nothing to do.
+    /// The device has no rows left to retract; its grant was already
+    /// withdrawn.
     AlreadyRevoked,
 }
 
-/// Revoke a device. The current device self-signs immediately; another device
-/// requires the browser/passkey ceremony, then the CLI watches projection.
+/// Revoke a device under this profile's own account grant.
+///
+/// No browser and no passkey: a device link is a powerline, so this
+/// device can prove for the account subject — which is exactly the
+/// authority revoking an account-issued grant requires. The artifact is
+/// published to every access service that honours it, then the device's
+/// rows are retracted from the account space so the list converges on
+/// every device.
+///
+/// The order encodes what each failure costs. For another device the
+/// publication comes first, because enforcement lives in the revocation
+/// index and a row that disappears over a device still reaching storage
+/// would be a lie. For this device itself the retraction and its push
+/// come first, because a device that has just revoked itself can no
+/// longer push anything.
 pub async fn revoke(
     profile: &Profile,
     options: &RevokeOptions,
     did: &str,
 ) -> Result<RevokeOutcome> {
+    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
+    revoke_in(profile, &store, options, did).await
+}
+
+/// Revoke a device through one explicit account profile store.
+pub async fn revoke_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    options: &RevokeOptions,
+    did: &str,
+) -> Result<RevokeOutcome> {
+    let connection = optional_connection_in(profile, store)
+        .await?
+        .context("no active account; run `tonk account login`")?;
+    if connection.service_url.trim_end_matches('/') != options.service_url.trim_end_matches('/') {
+        bail!("requested provider does not match the active account");
+    }
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let link = connection.link.clone();
+
     if profile.did().as_ref() == did {
-        let connection = optional_connection(profile)
-            .await?
-            .context("no active account; run `tonk account link`")?;
-        let link = connection.link.clone();
+        let branch = account_branch(profile, &operator, store).await?;
         let target = link.proof_cids()[0];
         let artifact = tonk_identity::revocation::mint_self_revocation(
             profile.signer().signer().clone(),
@@ -999,122 +1181,217 @@ pub async fn revoke(
         )
         .await
         .context("failed to sign self-revocation")?;
-        let rows = devices(profile, Some(&options.service_url)).await?;
-        let row = rows
-            .iter()
-            .find(|row| row.did == did && row.delegation_cid == target.to_string())
-            .context("the active self attachment is missing from the device list")?;
-        let arguments = [
-            (
-                "attachmentId".to_owned(),
-                dialog_ucan_core::promise::Promised::String(row.attachment_id.clone()),
-            ),
-            (
-                "did".to_owned(),
-                dialog_ucan_core::promise::Promised::String(did.to_string()),
-            ),
-            (
-                "revocation".to_owned(),
-                dialog_ucan_core::promise::Promised::String(hex::encode(artifact)),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let response = connection
-            .signed_post(
-                profile,
-                "devices/revoke",
-                vec!["account".into(), "device".into(), "revoke".into()],
-                arguments,
-            )
-            .await?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            bail!("account service rejected devices/revoke ({status}): {text}");
+        match retract_device_rows(&branch, &operator, did).await {
+            Ok(true) => {
+                if let Err(error) = branch.push().perform(&operator).await {
+                    eprintln!("warning: this device's rows were retracted but not pushed: {error}");
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("warning: this device's rows were not retracted: {error:#}"),
         }
+        publish_revocation(profile, &branch, &operator, store, &artifact).await?;
         return Ok(RevokeOutcome::Revoked);
     }
 
-    let rows = devices(profile, Some(&options.service_url)).await?;
-    let target = rows
-        .iter()
-        .find(|row| row.did == did)
-        .with_context(|| format!("no device {did} under this account"))?;
-    if target.status == "revoked" {
+    // Sync first: revoking another device needs its grant retained here,
+    // to rebuild the path that says why it may be revoked.
+    freshen_account(profile, &operator, store, "revoking from local facts").await;
+    let branch = account_branch(profile, &operator, store).await?;
+    let target: Did = did.parse().context("device DID is invalid")?;
+    let listed = tonk_schema::device_link::device_links(&branch, &operator)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?
+        .into_iter()
+        .any(|(_, audience)| audience == did);
+    let proof = branch
+        .delegations()
+        .prove(target, tonk_account::delegations::account_scope(&link))
+        .perform(&operator)
+        .await;
+    let proof = match proof {
+        Ok(proof) => proof,
+        Err(error) if listed => {
+            bail!("no retained grant reaches {did}: {error}");
+        }
+        Err(_) => bail!("no device {did} under this account"),
+    };
+    if !listed {
+        // The grant is retained but its rows are gone — a prior
+        // revocation already took them.
         return Ok(RevokeOutcome::AlreadyRevoked);
     }
-
-    let target_attachment = target.attachment_id.clone();
-    let url = format!(
-        "{}&attachment={}",
-        revoke_url(&options.account_url, did),
-        target_attachment
-    );
-    println!("Approve this revocation with your passkey:\n{url}");
-    if options.open_browser && webbrowser::open(&url).is_err() {
-        eprintln!("Could not open a browser; use the URL above.");
+    let mut certificates = proof.proofs.into_iter();
+    let first = certificates
+        .next()
+        .with_context(|| format!("the grant for {did} is empty"))?;
+    let mut path = DelegationChain::new(first.0);
+    for certificate in certificates {
+        path = path
+            .push(certificate.0)
+            .context("proved certificates do not chain")?;
     }
-
-    // One pinned listener for the whole wait. Tokio replaces the
-    // process's default SIGINT handling the first time this is polled
-    // and never restores it, so a fresh `ctrl_c()` per iteration would
-    // swallow any Ctrl-C that lands between polls.
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-
-    // A failed poll is not a failed revocation — the user may be
-    // mid-passkey while the service hiccups — so polling tolerates
-    // errors until the deadline and reports the last one then.
-    let mut last_error: Option<anyhow::Error> = None;
-    let mut delay = Duration::from_millis(500);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5 * 60);
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            match last_error {
-                Some(error) => bail!(
-                    "revocation was not approved in time (last poll failed: {error:#}); \
-                     run `tonk account revoke` again"
-                ),
-                None => {
-                    bail!("revocation was not approved in time; run `tonk account revoke` again")
-                }
+    let target_cid = path.proof_cids()[0];
+    let artifact = tonk_identity::revocation::mint_delegated_revocation(
+        profile.signer().signer().clone(),
+        &path,
+        &target_cid,
+        &link,
+    )
+    .await
+    .with_context(|| format!("cannot revoke {did}"))?;
+    publish_revocation(profile, &branch, &operator, store, &artifact).await?;
+    match retract_device_rows(&branch, &operator, did).await {
+        Ok(true) => {
+            if let Err(error) = branch.push().perform(&operator).await {
+                eprintln!("warning: the revoked device's retraction was not pushed: {error}");
             }
         }
-        tokio::select! {
-            rows = devices(profile, Some(&options.service_url)) => match rows {
-                Ok(rows) => {
-                    last_error = None;
-                    if rows.iter().any(|row| {
-                        row.did == did
-                            && row.attachment_id == target_attachment
-                            && row.status == "revoked"
-                    }) {
-                        return Ok(RevokeOutcome::Revoked);
-                    }
-                }
-                Err(error) => last_error = Some(error),
-            },
-            signal = &mut ctrl_c => {
-                signal.context("failed to listen for Ctrl-C")?;
-                bail!("revocation cancelled");
-            }
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => {}
-            signal = &mut ctrl_c => {
-                signal.context("failed to listen for Ctrl-C")?;
-                bail!("revocation cancelled");
-            }
-        }
-        delay = (delay * 2).min(Duration::from_secs(5));
+        Ok(false) => {}
+        Err(error) => eprintln!("warning: the revoked device's rows were not retracted: {error:#}"),
     }
+    Ok(RevokeOutcome::Revoked)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use dialog_operator::DeriveOperator as _;
+
+    async fn account_state_fixture(
+        ready: bool,
+    ) -> (
+        tempfile::TempDir,
+        Profile,
+        dialog_operator::Operator<NativeSpace>,
+        crate::space::SpaceStore,
+    ) {
+        use dialog_capability::Subject;
+        use dialog_effects::storage::Directory;
+        use dialog_storage::provider::storage::Storage;
+        use dialog_varsig::Principal as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = crate::space::SpaceStore::at(temp.path().join("state"));
+        let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
+        let profile_name = format!("cli-account-timeout-test-{}", rand::random::<u64>());
+        let storage = Storage::<NativeSpace>::default();
+        let profile = Profile::open(&profile_name)
+            .at(profile_dir)
+            .perform(&storage)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(store.account_dir()).unwrap();
+        let account_dir = store.account_dir().canonicalize().unwrap();
+        let operator = profile
+            .derive(b"tonk/account-state/v1")
+            .allow(Subject::any())
+            .base(Directory::At(account_dir.to_string_lossy().into()))
+            .build(storage)
+            .await
+            .unwrap();
+        let root = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let root_did = root.did();
+        let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did())
+            .await
+            .unwrap();
+        let delegation_cid = link.proof_cids()[0].to_string();
+        let delegation_hex = hex::encode(link.to_bytes().unwrap());
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(
+            &root,
+            "https://content.example/ucan/",
+        )
+        .await
+        .unwrap();
+        let provider = AccountProviderRecord::attach(
+            "https://accounts.example",
+            descriptor.bytes(),
+            &root_did,
+            1,
+        )
+        .await
+        .unwrap();
+        let account = crate::account_session::ActiveAccount {
+            provider: provider.provider().to_owned(),
+            credential_id: "credential".to_owned(),
+            root_did: root_did.to_string(),
+            delegation_cid,
+            delegation_hex,
+            descriptor_hex: Some(hex::encode(descriptor.bytes())),
+            attachment_id: "attachment".to_owned(),
+            attached_at: 1,
+        };
+        let guard =
+            crate::account_session::stage_activation(&profile, &operator, &store, account.clone())
+                .await
+                .unwrap();
+        crate::identity::save_local_root_with_operator(
+            &profile,
+            &operator,
+            "credential".to_string(),
+            account.delegation_hex.clone(),
+        )
+        .await
+        .unwrap();
+        profile
+            .access()
+            .save(dialog_ucan::UcanDelegation(link))
+            .perform(&operator)
+            .await
+            .unwrap();
+        profile
+            .credential()
+            .site(ACCOUNT_LINK_SITE)
+            .save(provider.encode().unwrap())
+            .perform(&operator)
+            .await
+            .unwrap();
+        crate::account_session::finalize_activation(&profile, &operator, guard, &account)
+            .await
+            .unwrap();
+        if ready {
+            profile
+                .credential()
+                .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+                .save(descriptor.content_hash().to_vec())
+                .perform(&operator)
+                .await
+                .unwrap();
+        }
+        (temp, profile, operator, store)
+    }
+
+    #[dialog_common::test]
+    async fn it_preserves_ready_when_post_link_sync_times_out() {
+        let (_temp, profile, operator, store) = account_state_fixture(true).await;
+
+        let outcome = ensure_after_link(&profile, operator, store, Duration::ZERO)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status, AccountStateStatus::Ready);
+        assert_eq!(
+            outcome.warning.as_deref(),
+            Some(
+                "latest account synchronization did not finish within 10 seconds; committed changes will retry"
+            )
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_unhydrated_when_first_sync_times_out() {
+        let (_temp, profile, operator, store) = account_state_fixture(false).await;
+
+        let outcome = ensure_after_link(&profile, operator, store, Duration::ZERO)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status, AccountStateStatus::Unhydrated);
+        assert_eq!(
+            outcome.warning.as_deref(),
+            Some("the account repository did not answer within 10 seconds; first sync will retry")
+        );
+    }
 
     #[test]
     fn it_formats_the_cli_device_name_with_os_version() {
@@ -1162,7 +1439,7 @@ mod tests {
         use dialog_storage::provider::storage::Storage;
 
         let temp = tempfile::tempdir().unwrap();
-        let store = crate::spot::SpotStore::at(temp.path().join("state"));
+        let store = crate::space::SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let profile_name = format!("cli-account-logout-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
@@ -1218,22 +1495,26 @@ mod tests {
         std::fs::write(&sentinel, b"keep").unwrap();
 
         assert!(
-            stored_provider_with_operator(&profile, &operator)
+            stored_provider_in(&profile, &operator, &store)
                 .await
                 .unwrap()
                 .is_some()
         );
 
-        logout_with_operator(&profile, &operator).await.unwrap();
+        logout_with_operator_in(&profile, &operator, &store)
+            .await
+            .unwrap();
 
         assert!(
-            stored_provider_with_operator(&profile, &operator)
+            stored_provider_in(&profile, &operator, &store)
                 .await
                 .unwrap()
                 .is_none()
         );
 
-        logout_with_operator(&profile, &operator).await.unwrap();
+        logout_with_operator_in(&profile, &operator, &store)
+            .await
+            .unwrap();
 
         assert_eq!(
             profile
@@ -1282,7 +1563,7 @@ mod tests {
         );
         assert_eq!(
             url,
-            "https://tonk.spot/account/link\
+            "https://tonk.network/settings/link\
              ?audience=did%3Akey%3AzProfile\
              &callback=http%3A%2F%2F127.0.0.1%3A54321\
              &name=Kitchen%20laptop"
@@ -1306,7 +1587,7 @@ mod tests {
         let account = Ed25519Signer::generate().await.unwrap();
         let elsewhere = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
-            .issuer(account)
+            .issuer(dialog_credentials::Signer::from(account))
             .audience(&elsewhere.did())
             .subject(UcanSubject::Any)
             .command(vec![])
@@ -1342,7 +1623,7 @@ mod tests {
         let account = Ed25519Signer::generate().await.unwrap();
         let space = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
-            .issuer(account)
+            .issuer(dialog_credentials::Signer::from(account))
             .audience(&profile.did())
             .subject(UcanSubject::Specific(space.did()))
             .command(vec![])
@@ -1360,22 +1641,304 @@ mod tests {
         );
     }
 
-    #[test]
-    fn it_points_the_revoke_ceremony_at_the_named_device() {
-        assert_eq!(
-            revoke_url(DEFAULT_ACCOUNT_PAGE, "did:key:zDevice"),
-            "https://tonk.spot/account?revoke=did:key:zDevice"
+    /// A modern callback must name the exact service generation. Without it,
+    /// restart recovery and logout would have to guess which row to target.
+    #[dialog_common::test]
+    async fn it_refuses_a_callback_without_an_attachment_generation() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_effects::storage::Directory;
+
+        let temp = tempfile::tempdir().unwrap();
+        let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
+        let profile = Profile::open(format!("link-generation-test-{}", rand::random::<u64>()))
+            .at(Directory::At(
+                temp.path().join("profiles").to_string_lossy().into(),
+            ))
+            .perform(&storage)
+            .await
+            .unwrap();
+        let service_url = "https://accounts.example/ucan/".to_string();
+        let account = Ed25519Signer::generate().await.unwrap();
+        let authorized =
+            tonk_identity::ceremony::authorize_device(account, profile.did(), &service_url)
+                .await
+                .unwrap();
+
+        let error = account_from_callback(
+            &profile,
+            &LinkOptions {
+                service_url: service_url.clone(),
+                device_name: "generation test".to_owned(),
+                open_browser: false,
+                store: None,
+                announce: None,
+                via: None,
+            },
+            CallbackAuthorization {
+                delegation_hex: authorized.delegation_hex,
+                descriptor_hex: authorized.descriptor_hex,
+                credential_id: authorized.root_did,
+                attachment_id: "  ".to_owned(),
+                service_url,
+            },
+        )
+        .await
+        .expect_err("a callback without an exact generation must be refused");
+
+        assert!(
+            error.to_string().contains("attachment generation"),
+            "unexpected missing-generation error: {error:#}"
         );
     }
 
-    #[test]
-    fn it_parses_a_service_device_row() {
-        let rows: Vec<DeviceRow> = serde_json::from_str(
-            r#"[{"attachmentId":"generation","did":"did:key:z1","name":"laptop","status":"active",
-                 "delegationCid":"bafy","createdAt":1753300000}]"#,
+    struct RecoveryFixture {
+        _temp: tempfile::TempDir,
+        store: crate::space::SpaceStore,
+        profile_dir: dialog_effects::storage::Directory,
+        profile_name: String,
+        account_dir: std::path::PathBuf,
+        service_url: String,
+        account: crate::account_session::ActiveAccount,
+    }
+
+    impl RecoveryFixture {
+        async fn new() -> (Self, Profile, dialog_operator::Operator<NativeSpace>) {
+            use dialog_capability::Subject;
+            use dialog_credentials::Ed25519Signer;
+            use dialog_effects::storage::Directory;
+            use dialog_storage::provider::storage::Storage;
+
+            let temp = tempfile::tempdir().unwrap();
+            let store = crate::space::SpaceStore::at(temp.path().join("state"));
+            let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
+            let profile_name = format!("cli-account-recovery-test-{}", rand::random::<u64>());
+            let storage = Storage::<NativeSpace>::default();
+            let profile = Profile::open(&profile_name)
+                .at(profile_dir.clone())
+                .perform(&storage)
+                .await
+                .unwrap();
+            std::fs::create_dir_all(store.account_dir()).unwrap();
+            let account_dir = store.account_dir().canonicalize().unwrap();
+            let operator = profile
+                .derive(b"tonk/account-state/v1")
+                .allow(Subject::any())
+                .base(Directory::At(account_dir.to_string_lossy().into()))
+                .build(storage)
+                .await
+                .unwrap();
+            let service_url = "http://127.0.0.1:9/ucan/".to_string();
+            let signer = Ed25519Signer::generate().await.unwrap();
+            let authorized =
+                tonk_identity::ceremony::authorize_device(signer, profile.did(), &service_url)
+                    .await
+                    .unwrap();
+            let grant_bytes = hex::decode(&authorized.delegation_hex).unwrap();
+            let grant = validate_account_grant(&profile, &grant_bytes)
+                .await
+                .unwrap();
+            let account = crate::account_session::ActiveAccount {
+                provider: service_url.trim_end_matches('/').to_owned(),
+                credential_id: authorized.root_did,
+                root_did: grant.issuer().to_string(),
+                delegation_cid: grant.proof_cids()[0].to_string(),
+                delegation_hex: hex::encode(grant_bytes),
+                descriptor_hex: Some(authorized.descriptor_hex),
+                attachment_id: "service-generation-7".to_owned(),
+                attached_at: 7,
+            };
+            (
+                Self {
+                    _temp: temp,
+                    store,
+                    profile_dir,
+                    profile_name,
+                    account_dir,
+                    service_url,
+                    account,
+                },
+                profile,
+                operator,
+            )
+        }
+
+        async fn reopen(&self) -> (Profile, dialog_operator::Operator<NativeSpace>) {
+            use dialog_capability::Subject;
+            use dialog_effects::storage::Directory;
+            use dialog_storage::provider::storage::Storage;
+
+            let storage = Storage::<NativeSpace>::default();
+            let profile = Profile::open(&self.profile_name)
+                .at(self.profile_dir.clone())
+                .perform(&storage)
+                .await
+                .unwrap();
+            let operator = profile
+                .derive(b"tonk/account-state/v1")
+                .allow(Subject::any())
+                .base(Directory::At(self.account_dir.to_string_lossy().into()))
+                .build(storage)
+                .await
+                .unwrap();
+            (profile, operator)
+        }
+
+        fn options(
+            &self,
+            announce: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        ) -> LinkOptions {
+            LinkOptions {
+                service_url: self.service_url.clone(),
+                device_name: "recovery test".to_owned(),
+                open_browser: false,
+                store: Some(self.store.clone()),
+                announce,
+                via: Some("http://127.0.0.1:3000/link".to_owned()),
+            }
+        }
+    }
+
+    fn assert_no_browser_announcement(
+        announced: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        assert!(
+            matches!(
+                announced.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ),
+            "recovery must not announce a new browser handoff"
+        );
+    }
+
+    /// A process reopening after the browser callback finishes the exact
+    /// durable generation instead of starting another handoff.
+    #[dialog_common::test]
+    async fn it_resumes_the_exact_pending_attachment_after_reopen() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        let staged = crate::account_session::stage_activation(
+            &profile,
+            &operator,
+            &fixture.store,
+            fixture.account.clone(),
         )
+        .await
         .unwrap();
-        assert_eq!(rows[0].did, "did:key:z1");
-        assert_eq!(rows[0].created_at, 1_753_300_000);
+        drop(staged);
+        drop(operator);
+        drop(profile);
+
+        let (profile, operator) = fixture.reopen().await;
+        let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            link_with_operator(&profile, &operator, &fixture.options(Some(announce))),
+        )
+        .await
+        .expect("pending recovery must not wait for a browser")
+        .unwrap();
+
+        assert_eq!(outcome.root_did, fixture.account.root_did);
+        assert_no_browser_announcement(&mut announced);
+        let guard = crate::account_session::shared_remote_guard(&fixture.store).unwrap();
+        let state = crate::account_session::load_guarded(&profile, &operator, &guard)
+            .await
+            .unwrap();
+        assert_eq!(state.active, Some(fixture.account.clone()));
+        assert!(state.pending_login.is_none());
+    }
+
+    /// Replaying all compatibility writes after a failed final commit must be
+    /// idempotent and must preserve the exact staged generation.
+    #[dialog_common::test]
+    async fn it_replays_projection_after_a_pre_commit_finalization_failure() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        let staged = crate::account_session::stage_activation(
+            &profile,
+            &operator,
+            &fixture.store,
+            fixture.account.clone(),
+        )
+        .await
+        .unwrap();
+        drop(staged);
+        let state_file = std::fs::read_dir(fixture.store.account_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".json"))
+            })
+            .unwrap();
+        let tmp = state_file.with_extension("json.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+
+        let error = link_with_operator(&profile, &operator, &fixture.options(None))
+            .await
+            .expect_err("the obstructed final commit must fail after projection");
+        assert!(error.to_string().contains("account-session temp file"));
+        assert!(
+            crate::identity::local_root_with_operator(&profile, &operator)
+                .await
+                .unwrap()
+                .is_some(),
+            "the projection reached the local-root write before finalization"
+        );
+        std::fs::remove_dir(&tmp).unwrap();
+        drop(operator);
+        drop(profile);
+
+        let (profile, operator) = fixture.reopen().await;
+        let outcome = link_with_operator(&profile, &operator, &fixture.options(None))
+            .await
+            .expect("replaying the completed projection must converge");
+        assert_eq!(outcome.root_did, fixture.account.root_did);
+    }
+
+    /// A crash after Active but before the outer command's registry write
+    /// reconciles from the canonical generation without another browser.
+    #[dialog_common::test]
+    async fn it_reconciles_an_active_generation_after_outer_command_restart() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+            .await
+            .unwrap();
+        drop(operator);
+        drop(profile);
+
+        let (profile, operator) = fixture.reopen().await;
+        let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = link_with_operator(&profile, &operator, &fixture.options(Some(announce)))
+            .await
+            .expect("active recovery must finish the interrupted outer command");
+        assert_eq!(outcome.root_did, fixture.account.root_did);
+        assert_no_browser_announcement(&mut announced);
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_active_state_whose_grant_names_another_root() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        let mut corrupt = fixture.account.clone();
+        corrupt.root_did = profile.did().to_string();
+        let guard = crate::account_session::stage_activation(
+            &profile,
+            &operator,
+            &fixture.store,
+            corrupt.clone(),
+        )
+        .await
+        .unwrap();
+        crate::account_session::finalize_activation(&profile, &operator, guard, &corrupt)
+            .await
+            .unwrap();
+
+        let error = link_with_operator(&profile, &operator, &fixture.options(None))
+            .await
+            .expect_err("active recovery must bind its grant to the recorded root");
+        assert!(
+            error.to_string().contains("recorded generation"),
+            "unexpected corrupt-active error: {error:#}"
+        );
     }
 }

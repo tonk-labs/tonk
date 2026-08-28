@@ -21,10 +21,10 @@ use tonk_access_service::shortcut::{
 
 #[dialog_common::test]
 fn it_accepts_a_rooted_path_with_query() {
-    let shortcut = Shortcut::new(b"/join?access=abc&remote=https%3A%2F%2Fhub.tonk.xyz").unwrap();
+    let shortcut = Shortcut::new(b"/join?access=abc&remote=https%3A%2F%2Ftonk.network").unwrap();
     assert_eq!(
         shortcut.target,
-        "/join?access=abc&remote=https%3A%2F%2Fhub.tonk.xyz"
+        "/join?access=abc&remote=https%3A%2F%2Ftonk.network"
     );
     assert!(shortcut.object_key().starts_with(KEY_PREFIX));
     assert_eq!(
@@ -108,7 +108,7 @@ mod http {
 
     #[dialog_common::test]
     async fn it_stores_and_redirects(env: AccessServiceAddress) -> anyhow::Result<()> {
-        let target = "/join?access=abc123&remote=https%3A%2F%2Fhub.tonk.xyz%2Fucan%2F";
+        let target = "/join?access=abc123&remote=https%3A%2F%2Ftonk.network%2Fucan%2F";
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
@@ -236,7 +236,7 @@ mod http {
         );
         let body = response.text().await?;
         assert!(
-            body.contains("This invite link is no longer available"),
+            body.contains("This share link is no longer available"),
             "unexpected expired-link page: {body}",
         );
         assert!(

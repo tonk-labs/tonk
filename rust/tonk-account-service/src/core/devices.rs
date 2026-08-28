@@ -1,10 +1,9 @@
-//! Device registry operations: list, register, and publish revocations.
+//! Device registry operations: list, register, and record revocations.
 
-use tonk_identity::revocation::{RevocationAuthority, VerifyError};
+use tonk_identity::revocation::{VerifyError, verify};
 
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
-use crate::revocations::{PublishError, RevocationStore, publish};
 use crate::store::{Account, DetachStoreOutcome, Device, DeviceStatus, Store, StoreError};
 
 /// A device row as surfaced to API callers.
@@ -54,10 +53,45 @@ pub async fn list_devices<S: Store>(
         .collect())
 }
 
-/// Register a new device under an account.
+/// Reuse the active generation after a root-authorized browser re-login.
+fn reuse_linked_device(existing: Device, account: &Account) -> Result<String, CeremonyError> {
+    if existing.account_id != account.id {
+        return Err(CeremonyError::Conflict(
+            "this device is already active on another account".to_string(),
+        ));
+    }
+    Ok(existing.attachment_id)
+}
+
 /// Generate a random 32-byte lowercase hex attachment identifier.
 pub fn random_attachment_id() -> String {
     hex::encode(rand::random::<[u8; 32]>())
+}
+
+async fn insert_device_registration<S: Store>(
+    store: &S,
+    account: &Account,
+    device_did: &str,
+    device_name: &str,
+    delegation_cid: String,
+    delegation_hex: String,
+    now: u64,
+) -> Result<String, StoreError> {
+    let attachment_id = random_attachment_id();
+    store
+        .insert_device(&Device {
+            id: 0,
+            account_id: account.id,
+            device_did: device_did.to_string(),
+            attachment_id: attachment_id.clone(),
+            delegation_cid,
+            delegation_hex,
+            name: device_name.to_string(),
+            status: DeviceStatus::Active,
+            created_at: now,
+        })
+        .await?;
+    Ok(attachment_id)
 }
 
 /// Register a fresh globally active attachment generation.
@@ -71,21 +105,60 @@ pub async fn register_device<S: Store>(
 ) -> Result<String, CeremonyError> {
     let delegation_cid =
         check_device_delegation(delegation_hex, &account.root_did, device_did).await?;
-    let attachment_id = random_attachment_id();
-    store
-        .insert_device(&Device {
-            id: 0,
-            account_id: account.id,
-            device_did: device_did.to_string(),
-            attachment_id: attachment_id.clone(),
-            delegation_cid,
-            delegation_hex: delegation_hex.to_string(),
-            name: device_name.to_string(),
-            status: DeviceStatus::Active,
-            created_at: now,
-        })
-        .await?;
-    Ok(attachment_id)
+    insert_device_registration(
+        store,
+        account,
+        device_did,
+        device_name,
+        delegation_cid,
+        delegation_hex.to_string(),
+        now,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+/// Link a browser after a root-authorized passkey ceremony.
+///
+/// Browser sign-out is intentionally local-only. If the same account root
+/// later links the same device DID, its earlier server attachment is still
+/// active and is recovered instead of replaced. The fresh ceremony grant is
+/// still validated, but the browser continues using its preserved local grant.
+pub async fn link_device<S: Store>(
+    store: &S,
+    account: &Account,
+    device_did: &str,
+    device_name: &str,
+    delegation_hex: &str,
+    now: u64,
+) -> Result<String, CeremonyError> {
+    let delegation_cid =
+        check_device_delegation(delegation_hex, &account.root_did, device_did).await?;
+    if let Some(existing) = store.active_device_by_did(device_did).await? {
+        return reuse_linked_device(existing, account);
+    }
+    match insert_device_registration(
+        store,
+        account,
+        device_did,
+        device_name,
+        delegation_cid,
+        delegation_hex.to_string(),
+        now,
+    )
+    .await
+    {
+        Ok(attachment_id) => Ok(attachment_id),
+        // Close the check-then-insert race for concurrent re-login requests.
+        Err(StoreError::Conflict(detail)) => {
+            if let Some(existing) = store.active_device_by_did(device_did).await? {
+                reuse_linked_device(existing, account)
+            } else {
+                Err(StoreError::Conflict(detail).into())
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Terminal result of processing a signed generation-bound detach intent.
@@ -96,8 +169,6 @@ pub enum DetachOutcome {
     Detached,
     /// This exact generation had already been detached.
     AlreadyDetached,
-    /// A completed handoff was cancelled before activation.
-    CancelledPendingActivation,
     /// A newer generation supersedes this one.
     Superseded,
     /// The exact generation is permanently revoked.
@@ -108,7 +179,6 @@ pub enum DetachOutcome {
 pub async fn detach_device<S: Store>(
     store: &S,
     intent: &tonk_account::detach::SignedDetachIntent,
-    now: u64,
 ) -> Result<DetachOutcome, CeremonyError> {
     let payload = intent.validate().await.map_err(|error| match error {
         tonk_account::detach::DetachIntentError::Signature => {
@@ -116,49 +186,27 @@ pub async fn detach_device<S: Store>(
         }
         _ => CeremonyError::Invalid(error.to_string()),
     })?;
-    let device = store.attachment(&payload.attachment_id).await?;
-    let link = if device.is_none() {
-        store
-            .completed_link_by_attachment(&payload.attachment_id)
-            .await?
-    } else {
-        None
-    };
-    if device.is_none() && link.is_none() {
-        return Err(CeremonyError::NotFound(
-            "unknown attachment generation".to_string(),
-        ));
-    }
+    let device = store
+        .attachment(&payload.attachment_id)
+        .await?
+        .ok_or_else(|| CeremonyError::NotFound("unknown attachment generation".to_string()))?;
     let account = store
         .account_by_root(&payload.account_root)
         .await?
         .ok_or_else(|| CeremonyError::Conflict("detach account root does not match".to_string()))?;
 
-    if let Some(device) = device {
-        if device.account_id != account.id
-            || device.device_did != payload.device_did
-            || device.delegation_cid != payload.delegation_cid
-        {
-            return Err(CeremonyError::Conflict(
-                "detach payload does not match the stored attachment".to_string(),
-            ));
-        }
-    } else if let Some(link) = link
-        && (link.account_id != Some(account.id)
-            || link.device_did != payload.device_did
-            || link.delegation_cid.as_deref() != Some(payload.delegation_cid.as_str()))
+    if device.account_id != account.id
+        || device.device_did != payload.device_did
+        || device.delegation_cid != payload.delegation_cid
     {
         return Err(CeremonyError::Conflict(
-            "detach payload does not match the completed attachment".to_string(),
+            "detach payload does not match the stored attachment".to_string(),
         ));
     }
 
-    match store.detach_attachment(&payload.attachment_id, now).await? {
+    match store.detach_attachment(&payload.attachment_id).await? {
         DetachStoreOutcome::Detached => Ok(DetachOutcome::Detached),
         DetachStoreOutcome::AlreadyDetached => Ok(DetachOutcome::AlreadyDetached),
-        DetachStoreOutcome::CancelledPendingActivation => {
-            Ok(DetachOutcome::CancelledPendingActivation)
-        }
         DetachStoreOutcome::Superseded => Ok(DetachOutcome::Superseded),
         DetachStoreOutcome::Revoked => Ok(DetachOutcome::Revoked),
         DetachStoreOutcome::UnknownAttachment => Err(CeremonyError::NotFound(
@@ -191,7 +239,7 @@ impl Attestation {
 pub enum Projection {
     /// The matching D1 row now says revoked.
     Updated,
-    /// R2 accepted the artifact but the D1 projection failed.
+    /// The artifact verified but the D1 projection failed.
     Stale,
 }
 
@@ -205,7 +253,7 @@ impl Projection {
     }
 }
 
-/// Result of publishing a device revocation and attempting its UI projection.
+/// Result of verifying a device revocation and attempting its UI projection.
 pub struct RevokeOutcome {
     /// Product-level authority used.
     pub attestation: Attestation,
@@ -215,8 +263,6 @@ pub struct RevokeOutcome {
     pub target_cid: String,
     /// Canonical artifact CID.
     pub artifact_cid: String,
-    /// Whether this call created the immutable R2 object.
-    pub stored: bool,
 }
 
 /// Focused device lookup/projection seam used by revocation publication.
@@ -257,22 +303,21 @@ impl<S: Store> DeviceRevocationProjection for S {
     }
 }
 
-fn publication_error(error: PublishError) -> CeremonyError {
+fn verification_error(error: VerifyError) -> CeremonyError {
     match error {
-        PublishError::Verification(VerifyError::Malformed(message)) => {
-            CeremonyError::Invalid(message)
-        }
-        PublishError::Verification(VerifyError::Unauthorized(message)) => {
-            CeremonyError::Unauthorized(message)
-        }
-        PublishError::Store(error) => CeremonyError::Internal(error.to_string()),
+        VerifyError::Malformed(message) => CeremonyError::Invalid(message),
+        VerifyError::Unauthorized(message) => CeremonyError::Unauthorized(message),
     }
 }
 
-/// Publish a verified device revocation before projecting its D1 status.
-pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
+/// Verify a device revocation and project its D1 status.
+///
+/// The artifact itself is durably recorded by the access service's
+/// revocation index, which is what enforcement reads. This path only
+/// establishes that the caller may revoke the named device and mirrors
+/// the outcome onto the device list the account panel renders.
+pub async fn revoke_device<S: DeviceRevocationProjection>(
     store: &S,
-    revocations: &R,
     account: &Account,
     caller_did: &str,
     attachment_id: &str,
@@ -284,30 +329,26 @@ pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
         .await?
         .ok_or_else(|| CeremonyError::Invalid("unknown device".to_string()))?;
 
-    let published = publish(revocations, artifact)
-        .await
-        .map_err(publication_error)?;
+    let verified = verify(artifact).await.map_err(verification_error)?;
     if device.device_did != target_did || device.attachment_id != attachment_id {
         return Err(CeremonyError::Invalid(
             "revocation target does not match the selected attachment".to_string(),
         ));
     }
-    if published.verified.target_cid != device.delegation_cid {
+    if verified.target_cid != device.delegation_cid {
         return Err(CeremonyError::Invalid(
             "revocation names a delegation other than the target device's".to_string(),
         ));
     }
 
     let revoking_self = caller_did == target_did;
-    let attestation = if revoking_self
-        && published.verified.issuer.to_string() == device.device_did
-        && published.verified.authority == RevocationAuthority::Delegated
-    {
+    // Who signed is the whole question: the device itself for a
+    // self-revocation, the account root otherwise. `verify` has already
+    // established that the signer was entitled to withdraw the delegation it
+    // names, so the shape of that entitlement adds nothing here.
+    let attestation = if revoking_self {
         Attestation::Device
-    } else if !revoking_self
-        && published.verified.issuer.to_string() == account.root_did
-        && published.verified.authority == RevocationAuthority::PathIssuer
-    {
+    } else if !revoking_self && verified.issuer.to_string() == account.root_did {
         Attestation::Root
     } else {
         return Err(CeremonyError::Forbidden(if revoking_self {
@@ -336,22 +377,19 @@ pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
     Ok(RevokeOutcome {
         attestation,
         projection,
-        target_cid: published.verified.target_cid,
-        artifact_cid: published.verified.artifact_cid,
-        stored: published.stored,
+        target_cid: verified.target_cid,
+        artifact_cid: verified.artifact_cid,
     })
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal;
 
     use super::*;
-    use crate::revocations::{PutOutcome, RevocationStoreError, object_key};
     use crate::store::sqlite::SqliteStore;
 
     const ROOT_PRF: [u8; 32] = [7u8; 32];
@@ -364,7 +402,7 @@ mod tests {
         Ed25519Signer,
         dialog_ucan_core::DelegationChain,
     ) {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device_signer = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -429,11 +467,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            detach_device(&store, &intent, 11).await.unwrap(),
+            detach_device(&store, &intent).await.unwrap(),
             DetachOutcome::Detached
         );
         assert_eq!(
-            detach_device(&store, &intent, 12).await.unwrap(),
+            detach_device(&store, &intent).await.unwrap(),
             DetachOutcome::AlreadyDetached
         );
         assert!(list_devices(&store, &account).await.unwrap().is_empty());
@@ -441,7 +479,7 @@ mod tests {
         let mut forged = intent;
         forged.signature[0] ^= 1;
         assert!(matches!(
-            detach_device(&store, &forged, 13).await,
+            detach_device(&store, &forged).await,
             Err(CeremonyError::Forbidden(_))
         ));
     }
@@ -474,6 +512,124 @@ mod tests {
         let listed = list_devices(&store, &account).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].delegation_cid, device.delegation_cid);
+    }
+
+    /// Browser sign-out is local-only, so signing back in with the same
+    /// passkey presents the same account and device with a freshly minted
+    /// grant while the first attachment is still active. That root-authorized
+    /// re-login recovers the existing generation.
+    #[dialog_common::test]
+    async fn it_reuses_an_active_device_when_the_same_account_links_again() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (mut account, device, root, first_grant) = fixture().await;
+        account.id = store
+            .create_account(
+                &account.email,
+                &account.root_did,
+                &account.credential_id,
+                account.created_at,
+            )
+            .await
+            .unwrap();
+        let device_did = device.device_did.parse().unwrap();
+        let second_grant = tonk_identity::delegation::mint_device_delegation(root, &device_did)
+            .await
+            .unwrap();
+        assert_ne!(
+            second_grant.proof_cids()[0],
+            first_grant.proof_cids()[0],
+            "each passkey login proposes a fresh grant"
+        );
+
+        let first = link_device(
+            &store,
+            &account,
+            &device.device_did,
+            &device.name,
+            &hex::encode(first_grant.to_bytes().unwrap()),
+            device.created_at,
+        )
+        .await
+        .unwrap();
+        let second = link_device(
+            &store,
+            &account,
+            &device.device_did,
+            &device.name,
+            &hex::encode(second_grant.to_bytes().unwrap()),
+            device.created_at + 1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second, first, "the same active generation is recovered");
+        let listed = store.devices(account.id).await.unwrap();
+        assert_eq!(listed.len(), 1, "re-login adds no device history");
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_reuse_an_active_device_for_another_account() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (mut first_account, device, _, first_grant) = fixture().await;
+        first_account.id = store
+            .create_account(
+                &first_account.email,
+                &first_account.root_did,
+                &first_account.credential_id,
+                first_account.created_at,
+            )
+            .await
+            .unwrap();
+        link_device(
+            &store,
+            &first_account,
+            &device.device_did,
+            &device.name,
+            &hex::encode(first_grant.to_bytes().unwrap()),
+            device.created_at,
+        )
+        .await
+        .unwrap();
+
+        let second_root = Ed25519Signer::import(&[13u8; 32]).await.unwrap();
+        let mut second_account = Account {
+            id: 0,
+            email: "b@x.com".into(),
+            root_did: second_root.did().to_string(),
+            credential_id: "other-cred".into(),
+            repository_descriptor: None,
+            passkey_created_at: None,
+            passkey_created_on: None,
+            created_at: 3,
+        };
+        second_account.id = store
+            .create_account(
+                &second_account.email,
+                &second_account.root_did,
+                &second_account.credential_id,
+                second_account.created_at,
+            )
+            .await
+            .unwrap();
+        let device_did = device.device_did.parse().unwrap();
+        let second_grant =
+            tonk_identity::delegation::mint_device_delegation(second_root, &device_did)
+                .await
+                .unwrap();
+
+        assert!(matches!(
+            link_device(
+                &store,
+                &second_account,
+                &device.device_did,
+                &device.name,
+                &hex::encode(second_grant.to_bytes().unwrap()),
+                4,
+            )
+            .await,
+            Err(CeremonyError::Conflict(detail))
+                if detail == "this device is already active on another account"
+        ));
     }
 
     struct SpyProjection {
@@ -509,26 +665,6 @@ mod tests {
         }
     }
 
-    struct SpyRevocations {
-        objects: Mutex<HashMap<String, Vec<u8>>>,
-        events: Arc<Mutex<Vec<&'static str>>>,
-    }
-
-    impl RevocationStore for SpyRevocations {
-        async fn put(
-            &self,
-            verified: &tonk_identity::revocation::VerifiedRevocation,
-            bytes: &[u8],
-        ) -> Result<PutOutcome, RevocationStoreError> {
-            self.events.lock().unwrap().push("r2");
-            self.objects
-                .lock()
-                .unwrap()
-                .insert(object_key(verified), bytes.to_vec());
-            Ok(PutOutcome::Stored)
-        }
-    }
-
     async fn spies(
         fail_projection: bool,
     ) -> (
@@ -537,7 +673,6 @@ mod tests {
         Ed25519Signer,
         dialog_ucan_core::DelegationChain,
         SpyProjection,
-        SpyRevocations,
         Arc<Mutex<Vec<&'static str>>>,
     ) {
         let (account, device, root, grant) = fixture().await;
@@ -547,24 +682,12 @@ mod tests {
             events: events.clone(),
             fail: fail_projection,
         };
-        let revocations = SpyRevocations {
-            objects: Mutex::new(HashMap::new()),
-            events: events.clone(),
-        };
-        (
-            account,
-            device,
-            root,
-            grant,
-            projection,
-            revocations,
-            events,
-        )
+        (account, device, root, grant, projection, events)
     }
 
     #[dialog_common::test]
-    async fn it_writes_r2_before_projecting_device_status() {
-        let (account, device, root, grant, projection, revocations, events) = spies(false).await;
+    async fn it_projects_device_status_for_a_verified_revocation() {
+        let (account, device, root, grant, projection, events) = spies(false).await;
         let artifact =
             tonk_identity::revocation::mint_root_revocation(root, &grant, &grant.proof_cids()[0])
                 .await
@@ -572,7 +695,6 @@ mod tests {
 
         let outcome = revoke_device(
             &projection,
-            &revocations,
             &account,
             CALLER_DID,
             &device.attachment_id,
@@ -582,13 +704,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(events.lock().unwrap().as_slice(), ["r2", "d1"]);
+        assert_eq!(events.lock().unwrap().as_slice(), ["d1"]);
         assert_eq!(outcome.projection, Projection::Updated);
     }
 
     #[dialog_common::test]
     async fn it_accepts_a_revocation_when_the_projection_fails() {
-        let (account, device, root, grant, projection, revocations, events) = spies(true).await;
+        let (account, device, root, grant, projection, events) = spies(true).await;
         let artifact =
             tonk_identity::revocation::mint_root_revocation(root, &grant, &grant.proof_cids()[0])
                 .await
@@ -596,7 +718,6 @@ mod tests {
 
         let outcome = revoke_device(
             &projection,
-            &revocations,
             &account,
             CALLER_DID,
             &device.attachment_id,
@@ -607,17 +728,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.projection, Projection::Stale);
-        assert_eq!(events.lock().unwrap().as_slice(), ["r2", "d1"]);
+        assert_eq!(events.lock().unwrap().as_slice(), ["d1"]);
     }
 
     #[dialog_common::test]
     async fn it_never_projects_an_artifact_that_failed_verification() {
-        let (account, device, _, _, projection, revocations, events) = spies(false).await;
+        let (account, device, _, _, projection, events) = spies(false).await;
 
         assert!(
             revoke_device(
                 &projection,
-                &revocations,
                 &account,
                 CALLER_DID,
                 &device.attachment_id,

@@ -11,7 +11,9 @@
 
 #![cfg(feature = "integration-tests")]
 
+use anyhow::Context as _;
 use dialog_artifacts::{ArtifactSelector, Entity};
+use dialog_capability::access::AuthorizeError;
 use dialog_operator::helpers::{test_operator_with_profile, unique_name};
 use dialog_query::Attribute;
 use dialog_remote_ucan_s3::UcanAddress;
@@ -45,6 +47,9 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
         .perform(&operator)
         .await?;
     profile.access().save(ownership).perform(&operator).await?;
+    // The gate serves a subject only while an active customer pays
+    // for it; these tests are about sync, not registration.
+    env.provision_subject(repo.did().as_str()).await?;
 
     // Set up UCAN remote pointing at our access service
     let address = UcanAddress::new(&env.access_service_url);
@@ -129,6 +134,9 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
         .save(ownership)
         .perform(&alice_op)
         .await?;
+    // Bob syncs Alice's repository, so it is Alice's subject that must
+    // be paid for; Bob's own repo is never pushed.
+    env.provision_subject(alice_repo.did().as_str()).await?;
 
     // Alice sets up UCAN remote
     let address = UcanAddress::new(&env.access_service_url);
@@ -254,6 +262,9 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
         .perform(&operator)
         .await?;
     profile.access().save(ownership).perform(&operator).await?;
+    // The gate serves a subject only while an active customer pays
+    // for it; these tests are about sync, not registration.
+    env.provision_subject(repo.did().as_str()).await?;
 
     let address = UcanAddress::new(&env.access_service_url);
     let origin = repo
@@ -368,6 +379,464 @@ async fn it_caches_the_ucan_preflight(env: AccessServiceAddress) -> anyhow::Resu
         Some("86400"),
         "the preflight must carry a cache lifetime",
     );
+
+    Ok(())
+}
+
+/// A refused presign answers with the reason itself, not prose.
+///
+/// The chain walk knows exactly which question failed, and the worker
+/// has always answered with that. The native server rendered every
+/// denial into `Authorization failed: {e}`, which no client can parse,
+/// so a caller talking to it could not tell an expired proof from a
+/// revoked one — the distinction its retry logic turns on.
+///
+/// Expiry is the case used here because it is the one a client is
+/// expected to act on: fetch a fresh delegation rather than give up.
+#[dialog_common::test]
+async fn it_answers_a_refusal_with_its_typed_reason(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::time::Timestamp;
+    use dialog_ucan_core::{Container, DelegationBuilder, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+
+    let space = Ed25519Signer::generate().await.expect("space key");
+    let device = Ed25519Signer::generate().await.expect("device key");
+    env.provision_subject(space.did().as_str()).await?;
+
+    let expired_at =
+        Timestamp::new(std::time::SystemTime::now() - std::time::Duration::from_secs(3_600))
+            .expect("a representable timestamp");
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(space.clone()))
+        .audience(&device.did())
+        .subject(Subject::Specific(space.did()))
+        .command(vec![])
+        .expiration(expired_at)
+        .try_build()
+        .await
+        .expect("a delegation");
+
+    let invocation = InvocationBuilder::new()
+        .issuer(Signer::from(device.clone()))
+        .audience(&space.did())
+        .subject(&space.did())
+        .command(vec!["archive".to_string(), "get".to_string()])
+        .arguments(std::collections::BTreeMap::new())
+        .proofs(vec![grant.to_cid()])
+        .try_build()
+        .await
+        .expect("an invocation");
+
+    let container = Container::new(vec![
+        serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes"),
+        grant.encoded().to_vec(),
+    ])
+    .into_bytes()
+    .expect("a container");
+
+    let response = reqwest::Client::new()
+        .post(env.ucan_endpoint())
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "an expired proof is an authentication-shaped refusal, not a bad request"
+    );
+    // Asserted through the client's own parser rather than on the JSON
+    // shape: `read_rejection` deserializes `AuthorizeError` straight from
+    // the body, so this is what a real caller sees. A body it cannot read
+    // falls through to `Unclassified`, which is what every denial through
+    // this server used to become.
+    let body = response.bytes().await?;
+    let reason: AuthorizeError = serde_json::from_slice(&body)
+        .with_context(|| format!("a client must be able to read the refusal: {body:?}"))?;
+    match reason {
+        AuthorizeError::Expired { expiration, at } => {
+            assert_eq!(
+                expiration,
+                expired_at.to_unix(),
+                "the refusal must carry the bound that lapsed"
+            );
+            assert!(at >= expiration, "and the instant it was judged at");
+        }
+        other => panic!("expected an expiry refusal, got: {other:?}"),
+    }
+
+    Ok(())
+}
+
+/// Revocation end to end through the running service: a delegated
+/// holder reaches storage, the grant is withdrawn, and the same holder
+/// no longer does.
+///
+/// The browser e2e covers this from the user's side, but only in CI —
+/// it needs a matched Chrome and ChromeDriver. This asserts the same
+/// property against the real service, so the enforcement path is
+/// checked wherever the tests run.
+///
+/// Both halves matter. Without the first, a refusal afterwards could
+/// mean the holder never had access at all; without the second, nothing
+/// distinguishes revocation from any other denial.
+#[dialog_common::test]
+async fn it_cuts_off_a_holder_whose_grant_was_revoked(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+
+    let space = Ed25519Signer::generate().await.expect("space key");
+    let guest = Ed25519Signer::generate().await.expect("guest key");
+    env.provision_subject(space.did().as_str()).await?;
+
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(space.clone()))
+        .audience(&guest.did())
+        .subject(Subject::Specific(space.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("a delegation");
+    let chain = DelegationChain::new(grant.clone());
+
+    // What the guest presents on every request.
+    let presented = |chain: &DelegationChain| {
+        let chain = chain.clone();
+        let guest = guest.clone();
+        let space = space.clone();
+        async move {
+            let mut arguments = std::collections::BTreeMap::new();
+            arguments.insert(
+                "catalog".to_string(),
+                dialog_ucan_core::promise::Promised::String("blobs".to_string()),
+            );
+            arguments.insert(
+                "digest".to_string(),
+                // Any well-formed digest: the presign is refused for the
+                // authority, not for what it points at.
+                dialog_ucan_core::promise::Promised::Bytes(vec![7u8; 32]),
+            );
+            let invocation = InvocationBuilder::new()
+                .issuer(Signer::from(guest))
+                .audience(&space.did())
+                .subject(&space.did())
+                .command(vec!["archive".to_string(), "get".to_string()])
+                .arguments(arguments)
+                .proofs(chain.proof_cids().to_vec())
+                .try_build()
+                .await
+                .expect("an invocation");
+            let mut tokens =
+                vec![serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes")];
+            for (_, delegation) in chain.export() {
+                tokens.push(delegation.encoded().to_vec());
+            }
+            Container::new(tokens).into_bytes().expect("a container")
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let post = |body: Vec<u8>| {
+        client
+            .post(env.ucan_endpoint())
+            .header("Content-Type", "application/cbor")
+            .body(body)
+            .send()
+    };
+
+    // The positive control: the grant works before it is withdrawn.
+    let before = post(presented(&chain).await).await?;
+    assert!(
+        before.status().is_success(),
+        "the guest must reach storage before revocation, got {}: {}",
+        before.status(),
+        before.text().await.unwrap_or_default()
+    );
+
+    // The space withdraws the grant it issued.
+    let revocation =
+        tonk_identity::revocation::mint_root_revocation(space.clone(), &chain, &grant.to_cid())
+            .await?;
+    let recorded = post(revocation).await?;
+    assert!(
+        recorded.status().is_success(),
+        "the revocation must be accepted, got {}: {}",
+        recorded.status(),
+        recorded.text().await.unwrap_or_default()
+    );
+
+    // And the same chain no longer authorizes, named as a revocation
+    // rather than as some other refusal.
+    let after = post(presented(&chain).await).await?;
+    assert_eq!(
+        after.status().as_u16(),
+        403,
+        "a revoked grant must be refused"
+    );
+    let body = after.bytes().await?;
+    let reason: AuthorizeError = serde_json::from_slice(&body)
+        .with_context(|| format!("a client must be able to read the refusal: {body:?}"))?;
+    assert!(
+        matches!(reason, AuthorizeError::Revoked { .. }),
+        "the refusal must say the authority was withdrawn, got: {reason:?}"
+    );
+
+    Ok(())
+}
+
+/// A device that revokes its own grant loses storage access.
+///
+/// This is the shape the account panel produces: a device signs a
+/// revocation of the `root -> device` grant it holds, which is what
+/// "revoke this device" means to a user looking at their device list.
+///
+/// Worth asserting here rather than only in the account service, whose
+/// device list is a projection: it records that a device was revoked but
+/// is never consulted when a presign is authorized. Only the artifact
+/// reaching this index withdraws anything, so a revocation that stops at
+/// the device list leaves the revoked device fully able to read and write.
+#[dialog_common::test]
+async fn it_cuts_off_a_device_that_revoked_its_own_grant(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+
+    let root = Ed25519Signer::generate().await.expect("root key");
+    let device = Ed25519Signer::generate().await.expect("device key");
+    env.provision_subject(root.did().as_str()).await?;
+
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(root.clone()))
+        .audience(&device.did())
+        .subject(Subject::Specific(root.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("a grant");
+    let chain = DelegationChain::new(grant.clone());
+
+    let presented = || {
+        let chain = chain.clone();
+        let device = device.clone();
+        let root = root.clone();
+        async move {
+            let mut arguments = std::collections::BTreeMap::new();
+            arguments.insert(
+                "catalog".to_string(),
+                dialog_ucan_core::promise::Promised::String("blobs".to_string()),
+            );
+            arguments.insert(
+                "digest".to_string(),
+                dialog_ucan_core::promise::Promised::Bytes(vec![9u8; 32]),
+            );
+            let invocation = InvocationBuilder::new()
+                .issuer(Signer::from(device))
+                .audience(&root.did())
+                .subject(&root.did())
+                .command(vec!["archive".to_string(), "get".to_string()])
+                .arguments(arguments)
+                .proofs(chain.proof_cids().to_vec())
+                .try_build()
+                .await
+                .expect("an invocation");
+            let mut tokens =
+                vec![serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes")];
+            for (_, delegation) in chain.export() {
+                tokens.push(delegation.encoded().to_vec());
+            }
+            Container::new(tokens).into_bytes().expect("a container")
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let post = |body: Vec<u8>| {
+        client
+            .post(env.ucan_endpoint())
+            .header("Content-Type", "application/cbor")
+            .body(body)
+            .send()
+    };
+
+    let before = post(presented().await).await?;
+    assert!(
+        before.status().is_success(),
+        "the device must reach storage before revoking itself, got {}: {}",
+        before.status(),
+        before.text().await.unwrap_or_default()
+    );
+
+    // The device withdraws its own grant, exactly as the panel does.
+    let artifact =
+        tonk_identity::revocation::mint_self_revocation(device.clone(), &chain, &grant.to_cid())
+            .await?;
+    let recorded = post(artifact).await?;
+    assert!(
+        recorded.status().is_success(),
+        "the self-revocation must be accepted, got {}: {}",
+        recorded.status(),
+        recorded.text().await.unwrap_or_default()
+    );
+
+    let after = post(presented().await).await?;
+    assert_eq!(
+        after.status().as_u16(),
+        403,
+        "a device that revoked its own grant must lose storage access"
+    );
+    let body = after.bytes().await?;
+    let reason: AuthorizeError = serde_json::from_slice(&body)
+        .with_context(|| format!("a client must be able to read the refusal: {body:?}"))?;
+    assert!(
+        matches!(reason, AuthorizeError::Revoked { .. }),
+        "the refusal must say the authority was withdrawn, got: {reason:?}"
+    );
+
+    Ok(())
+}
+
+/// Two spaces on two different access services, one revocation, both
+/// deny.
+///
+/// A device grant is `Subject::Any`: it is not scoped to a space, so it
+/// is not scoped to one access service either. Each service keeps its
+/// own revocation index and knows nothing of the others, so an artifact
+/// published to one leaves every other still serving the withdrawn
+/// device.
+///
+/// The failure this pins is a partial revocation, which is worse than an
+/// obvious one: the user is told the device is gone while a space synced
+/// elsewhere keeps answering it. So both services are checked working
+/// first, then told, then checked denying.
+#[dialog_common::test]
+async fn it_denies_a_revoked_device_at_every_service_it_reaches(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+    use tonk_access_service::helpers::{AccessServiceSettings, access_service};
+
+    // A second, wholly independent service: its own S3, its own
+    // revocation index.
+    let elsewhere = access_service(AccessServiceSettings::default()).await?;
+    let second = elsewhere.address.clone();
+    assert_ne!(
+        env.access_service_url, second.access_service_url,
+        "the two services must be distinct for this to prove anything"
+    );
+
+    let root = Ed25519Signer::generate().await.expect("root key");
+    let device = Ed25519Signer::generate().await.expect("device key");
+    env.provision_subject(root.did().as_str()).await?;
+    second.provision_subject(root.did().as_str()).await?;
+
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(root.clone()))
+        .audience(&device.did())
+        .subject(Subject::Specific(root.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("a grant");
+    let chain = DelegationChain::new(grant.clone());
+
+    let presented = || {
+        let chain = chain.clone();
+        let device = device.clone();
+        let root = root.clone();
+        async move {
+            let mut arguments = std::collections::BTreeMap::new();
+            arguments.insert(
+                "catalog".to_string(),
+                dialog_ucan_core::promise::Promised::String("blobs".to_string()),
+            );
+            arguments.insert(
+                "digest".to_string(),
+                dialog_ucan_core::promise::Promised::Bytes(vec![11u8; 32]),
+            );
+            let invocation = InvocationBuilder::new()
+                .issuer(Signer::from(device))
+                .audience(&root.did())
+                .subject(&root.did())
+                .command(vec!["archive".to_string(), "get".to_string()])
+                .arguments(arguments)
+                .proofs(chain.proof_cids().to_vec())
+                .try_build()
+                .await
+                .expect("an invocation");
+            let mut tokens =
+                vec![serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes")];
+            for (_, delegation) in chain.export() {
+                tokens.push(delegation.encoded().to_vec());
+            }
+            Container::new(tokens).into_bytes().expect("a container")
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let post = |endpoint: String, body: Vec<u8>| {
+        client
+            .post(endpoint)
+            .header("Content-Type", "application/cbor")
+            .body(body)
+            .send()
+    };
+
+    // Both serve the device to begin with, or a later refusal proves
+    // nothing about revocation.
+    for endpoint in [env.ucan_endpoint(), second.ucan_endpoint()] {
+        let response = post(endpoint.clone(), presented().await).await?;
+        assert!(
+            response.status().is_success(),
+            "{endpoint} must serve the device before revocation, got {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        );
+    }
+
+    // One artifact, published to every service the device could reach.
+    let artifact =
+        tonk_identity::revocation::mint_self_revocation(device.clone(), &chain, &grant.to_cid())
+            .await?;
+    for endpoint in [env.ucan_endpoint(), second.ucan_endpoint()] {
+        let recorded = post(endpoint.clone(), artifact.clone()).await?;
+        assert!(
+            recorded.status().is_success(),
+            "{endpoint} must accept the revocation, got {}: {}",
+            recorded.status(),
+            recorded.text().await.unwrap_or_default()
+        );
+    }
+
+    // And now neither serves it.
+    for endpoint in [env.ucan_endpoint(), second.ucan_endpoint()] {
+        let response = post(endpoint.clone(), presented().await).await?;
+        assert_eq!(
+            response.status().as_u16(),
+            403,
+            "{endpoint} still serves a revoked device"
+        );
+        let body = response.bytes().await?;
+        let reason: AuthorizeError = serde_json::from_slice(&body)
+            .with_context(|| format!("{endpoint} sent an unreadable refusal: {body:?}"))?;
+        assert!(
+            matches!(reason, AuthorizeError::Revoked { .. }),
+            "{endpoint} must say the authority was withdrawn, got: {reason:?}"
+        );
+    }
 
     Ok(())
 }

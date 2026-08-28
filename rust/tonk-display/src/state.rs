@@ -25,8 +25,9 @@ use web_sys::{Element, window};
 /// a neutral, informative callout for the recoverable absences
 /// ([`State::NoModel`] / [`State::NoView`] / [`State::NoEntity`], via
 /// [`set_absence`]) and a loud danger callout for the broken states
-/// ([`State::Malformed`] / [`State::Offline`] / [`State::Unauthorized`],
-/// via [`set_error`]). See `plan/tonk-display-states.md`.
+/// ([`State::Malformed`] / [`State::Offline`] / [`State::Unauthorized`] /
+/// [`State::Unknown`], via [`set_error`]). See
+/// `plan/tonk-display-states.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     /// A resolve query is in flight; nothing known yet.
@@ -51,6 +52,11 @@ pub enum State {
     Empty,
     /// A query returned 403 — no access to this repo/branch.
     Unauthorized,
+    /// A query returned 404 — this device holds no such repository or
+    /// branch. Terminal, unlike [`State::Offline`]: the transport gave
+    /// its final answer, so nothing retries and nothing recovers on its
+    /// own. Reached by landing on a space you have never joined.
+    Unknown,
     /// Transport failure / the service worker is unreachable.
     Offline,
     /// Author/protocol error — a bad `model`/`entity` attribute or a
@@ -71,6 +77,7 @@ impl State {
             State::NoEntity => "no-entity",
             State::Empty => "empty",
             State::Unauthorized => "unauthorized",
+            State::Unknown => "unknown",
             State::Offline => "offline",
             State::Malformed => "malformed",
         }
@@ -86,8 +93,22 @@ impl State {
     pub(crate) fn is_loud(self) -> bool {
         matches!(
             self,
-            State::Unauthorized | State::Offline | State::Malformed
+            State::Unauthorized | State::Offline | State::Malformed | State::Unknown
         )
+    }
+}
+
+/// Short label for the error callout's `<strong>` heading, chosen from
+/// the classified [`State`] where the state is more specific than the
+/// [`ErrorKind`] behind it. A `404` and a dropped connection are both
+/// `ErrorKind::Network`, but only one of them is a connection problem,
+/// so titling on `kind` alone told users their network was down when
+/// the repository simply was not here.
+pub fn state_title(state: State, kind: ErrorKind) -> &'static str {
+    match state {
+        State::Unknown => "Not here",
+        State::Unauthorized => "No access",
+        _ => error_title(kind),
     }
 }
 
@@ -551,23 +572,28 @@ pub fn update_slot_children(host: &Element, current: Option<State>) -> bool {
     matched
 }
 
+/// Every lifecycle state, so the slot vocabulary and the `data-state`
+/// vocabulary cannot drift apart: a new [`State`] that is not listed
+/// here is a state authors silently cannot skin.
+pub(crate) const ALL: &[State] = &[
+    State::Loading,
+    State::Ready,
+    State::DefaultView,
+    State::NoModel,
+    State::NoView,
+    State::NoEntity,
+    State::Empty,
+    State::Unauthorized,
+    State::Unknown,
+    State::Offline,
+    State::Malformed,
+];
+
 /// True if `slot` names a lifecycle [`State`] (so it is a slot
 /// `<tonk-display>` manages, not a view template's own slot).
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 fn is_state_slot(slot: &str) -> bool {
-    matches!(
-        slot,
-        "loading"
-            | "ready"
-            | "default-view"
-            | "no-model"
-            | "no-view"
-            | "no-entity"
-            | "empty"
-            | "unauthorized"
-            | "offline"
-            | "malformed"
-    )
+    ALL.iter().any(|state| state.as_str() == slot)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -956,5 +982,59 @@ mod tests {
         // The callout is gone now that we're no longer in a loud state.
         assert!(host.query_selector("wa-callout").unwrap().is_none());
         assert_eq!(host.get_attribute("data-state").as_deref(), Some("loading"));
+    }
+
+    /// The callout heading follows the classified state where the state
+    /// knows more than the kind: a `404` and a dropped connection are
+    /// both `Network`, but only one is a connection problem.
+    #[dialog_common::test]
+    fn it_titles_an_unknown_repository_without_blaming_the_connection() {
+        assert_eq!(state_title(State::Unknown, ErrorKind::Network), "Not here");
+        assert_eq!(
+            state_title(State::Unauthorized, ErrorKind::Network),
+            "No access"
+        );
+        assert_eq!(
+            state_title(State::Offline, ErrorKind::Network),
+            "Connection failed"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_names_the_unknown_state_for_css_authors() {
+        assert_eq!(State::Unknown.as_str(), "unknown");
+        assert!(State::Unknown.is_loud());
+    }
+
+    /// `ALL` drives the slot vocabulary, so a state missing from it is
+    /// one authors cannot skin. The `match` is exhaustive: adding a
+    /// variant fails to compile here until it is listed, which is the
+    /// point — the previous hand-written slot list had silently fallen
+    /// behind the enum.
+    #[dialog_common::test]
+    fn it_lists_every_state_for_slot_projection() {
+        for state in ALL {
+            // Exhaustive by construction — a new variant breaks this arm.
+            match state {
+                State::Loading
+                | State::Ready
+                | State::DefaultView
+                | State::NoModel
+                | State::NoView
+                | State::NoEntity
+                | State::Empty
+                | State::Unauthorized
+                | State::Unknown
+                | State::Offline
+                | State::Malformed => {}
+            }
+        }
+        let mut names: Vec<&str> = ALL.iter().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "every state needs a distinct slot name");
+        assert!(is_state_slot("unknown"), "unknown must be skinnable");
+        assert!(!is_state_slot("icon"), "a view's own slot is left alone");
     }
 }

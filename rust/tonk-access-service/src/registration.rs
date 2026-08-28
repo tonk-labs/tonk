@@ -21,12 +21,12 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_capability::{Capability, Provider, Subject};
 use dialog_common::ConditionalSync;
-use dialog_credentials::{Ed25519KeyResolver, Ed25519Signer};
+use dialog_credentials::{DidKeyResolver, Ed25519Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as DelegatedSubject;
 use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
 use dialog_ucan_core::{Container, Delegation, Invocation, InvocationBuilder, InvocationChain};
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use ipld_core::cid::Cid;
 use ipld_core::ipld::Ipld;
@@ -38,8 +38,10 @@ use tonk_account::customer::{
     Receipt, RegistrationError, deposit_scopes,
 };
 
-use crate::email::EmailSender;
+use crate::email::{EmailSender, normalize_email};
 use crate::store::{SIGNUP_PLAN, Store, StoreError};
+use dialog_ucan_core::revocation::RevocationChecker;
+use dialog_ucan_core::{Environment, VerificationContext};
 
 /// The command path segments of [`Enroll`], as they appear in an
 /// invocation. Pinned to the capability-derived ability by a test.
@@ -81,7 +83,7 @@ pub enum RegistrationCommand {
 /// falls through to the presign path and its own error mapping.
 pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationCommand> {
     let tokens = Container::from_bytes(container_bytes).ok()?.into_tokens();
-    let invocation: Invocation<Ed25519Signature> =
+    let invocation: Invocation<AnySignature> =
         serde_ipld_dagcbor::from_slice(tokens.first()?).ok()?;
     let segments: Vec<&str> = invocation.command().0.iter().map(String::as_str).collect();
     match segments.as_slice() {
@@ -106,14 +108,14 @@ pub enum Answer {
 /// The environment a registration invocation executes against: storage,
 /// email delivery, the service's signing identity, and the request's
 /// origin, clock, and container.
-pub struct Registration<'a, S, E> {
+pub struct Registration<'a, S, E, R> {
     /// Control-state storage.
     pub store: &'a S,
     /// Activation email delivery.
     pub email: &'a E,
     /// The service's signing identity, issuer of activation delegations.
     pub service: &'a Ed25519Signer,
-    /// Origin the activation link points at, e.g. `https://hub.tonk.xyz`.
+    /// Origin the activation link points at, e.g. `https://tonk.network`.
     pub origin: &'a str,
     /// Lifetime of the emailed activation delegation, in seconds.
     pub activation_ttl: u64,
@@ -121,9 +123,18 @@ pub struct Registration<'a, S, E> {
     pub now: u64,
     /// The exact container bytes of the invocation being handled.
     pub container: &'a [u8],
+    /// Revocation lookup, consulted per link by the chain walk.
+    ///
+    /// Registration and activation are as revocable as any other
+    /// invocation: a device whose delegation was revoked must not be
+    /// able to enroll or activate a customer. Dialog asks this per
+    /// proof, so passing a no-op checker here would silently accept a
+    /// revoked chain — see [`UnverifiedRevocations`], whose `query`
+    /// answers "not revoked" to everything.
+    pub revocations: &'a R,
 }
 
-impl<S: Store, E: EmailSender> Registration<'_, S, E> {
+impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registration<'_, S, E, R> {
     /// Verify the container, decode its capability, and perform it
     /// against this environment.
     pub async fn handle(&self) -> Result<Answer, RegistrationError>
@@ -200,7 +211,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     ) -> Result<Receipt, RegistrationError> {
         let customer = capability.subject().clone();
         let effect = capability.into_effect();
-        let address = effect.email.trim().to_string();
+        let address = normalize_email(&effect.email);
         if !address.contains('@') || address.len() > 254 {
             return Err(RegistrationError::Invalid {
                 message: "email must be a plausible address".to_string(),
@@ -260,6 +271,16 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         Ok(Receipt {
             customer,
             status: CustomerStatus::Registered,
+            // Enrollment names no provider. The address is what says
+            // "this service serves you", and it does not yet: an
+            // unactivated customer gets neither service nor
+            // provisioning. Naming it here would let a client record an
+            // endpoint it cannot use, and erase the difference between
+            // "enrolled, email unconfirmed" and "ready to sync" — which
+            // is exactly the distinction the share flow needs in order
+            // to say "check your email" rather than "turn on sync".
+            // Activation is where it lands.
+            provider: None,
         })
     }
 
@@ -284,6 +305,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             return Ok(Receipt {
                 customer,
                 status: CustomerStatus::Active,
+                provider: Some(self.provider_address()),
             });
         }
         match self
@@ -295,6 +317,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             Some(existing) if existing.status == CustomerStatus::Active => Ok(Receipt {
                 customer,
                 status: CustomerStatus::Active,
+                provider: Some(self.provider_address()),
             }),
             Some(_) => Err(RegistrationError::CustomerSuspended),
             None => Err(RegistrationError::UnknownCustomer),
@@ -304,9 +327,9 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// Execute a verified `/provider/add`: validate the deposited consent
     /// and provision the consumer under the invoking customer.
     /// Re-provisioning under the same customer is a no-op success; a
-    /// consumer another customer provides is refused. Activation is not
-    /// required to add, only to serve: consumers added while the provider
-    /// is `Registered` go live with its activation.
+    /// consumer another customer provides is refused. The customer must
+    /// be `Active`: an unactivated customer provisions nothing, so the
+    /// same email confirmation gates adding and serving alike.
     pub async fn add(
         &self,
         capability: Capability<Add>,
@@ -320,17 +343,31 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             .map_err(internal)?
         {
             None => return Err(RegistrationError::UnknownCustomer),
-            Some(customer) if customer.status == CustomerStatus::Suspended => {
-                return Err(RegistrationError::CustomerSuspended);
-            }
-            Some(_) => {}
+            Some(customer) => match customer.status {
+                CustomerStatus::Active => {}
+                // An unactivated customer gets nothing: not service, and
+                // not provisioning either. The client holds the add as
+                // pending work and replays it once the email is
+                // confirmed; re-enrolling resends that email.
+                CustomerStatus::Registered => return Err(RegistrationError::CustomerInactive),
+                CustomerStatus::Suspended => return Err(RegistrationError::CustomerSuspended),
+            },
         }
         let consent = self.deposited_delegation(&effect.consent.to_string())?;
         self.verify_consent(&consent.delegation, &effect.consumer, &provider)
             .await?;
+        let kind = match effect.kind.as_deref() {
+            None | Some("space") => crate::store::ConsumerKind::Space,
+            Some("custody") => crate::store::ConsumerKind::Custody,
+            Some(other) => {
+                return Err(RegistrationError::Forbidden {
+                    message: format!("unknown consumer kind: {other}"),
+                });
+            }
+        };
         if !self
             .store
-            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now)
+            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now, kind)
             .await
             .map_err(internal)?
         {
@@ -349,7 +386,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// one; a powerline delegation from the space satisfies it as-is.
     async fn verify_consent(
         &self,
-        consent: &Delegation<Ed25519Signature>,
+        consent: &Delegation<AnySignature>,
         consumer: &Did,
         provider: &Did,
     ) -> Result<(), RegistrationError> {
@@ -392,11 +429,23 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         }
         self.check_window(consent)?;
         consent
-            .verify_signature(&Ed25519KeyResolver)
+            .verify_signature(&DidKeyResolver)
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("consent failed to verify: {err}"),
             })
+    }
+
+    /// This service's own address as a provider — the UCAN endpoint its
+    /// customers' spaces attach their remotes to.
+    ///
+    /// Derived from the origin the service is configured with, not from
+    /// the origin a request arrived on: the service decides which
+    /// provider serves its customers, and answers every receipt with it,
+    /// so a client records one authoritative address rather than
+    /// deriving its own.
+    fn provider_address(&self) -> String {
+        format!("{}/ucan/", self.origin.trim_end_matches('/'))
     }
 
     /// Mint the activation invocation and wrap it into a link. The
@@ -407,7 +456,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         let expiration = timestamp(self.now + self.activation_ttl)?;
         let service = self.service.did();
         let invocation = InvocationBuilder::new()
-            .issuer(self.service.clone())
+            .issuer(dialog_credentials::Signer::from(self.service.clone()))
             .audience(&service)
             .subject(&service)
             .command(ACTIVATE_COMMAND.iter().map(ToString::to_string).collect())
@@ -444,14 +493,18 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         &self,
         expected_command: &[&str],
         window: Option<u64>,
-    ) -> Result<InvocationChain<Ed25519Signature>, RegistrationError> {
+    ) -> Result<InvocationChain<AnySignature>, RegistrationError> {
         let chain = InvocationChain::try_from(self.container).map_err(|err| {
             RegistrationError::Invalid {
                 message: format!("bad invocation container: {err}"),
             }
         })?;
         chain
-            .verify(&Ed25519KeyResolver)
+            .verify(&VerificationContext::new(&Environment::new(
+                chain.proof_store(),
+                DidKeyResolver,
+                self.revocations,
+            )))
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("invocation failed to verify: {err}"),
@@ -501,12 +554,12 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             .skip(1)
             .enumerate()
             .map(|(index, bytes)| {
-                let delegation: Delegation<Ed25519Signature> =
-                    serde_ipld_dagcbor::from_slice(&bytes).map_err(|err| {
-                        RegistrationError::Invalid {
-                            message: format!("failed to decode delegation {index}: {err}"),
-                        }
-                    })?;
+                let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(&bytes)
+                    .map_err(|err| {
+                    RegistrationError::Invalid {
+                        message: format!("failed to decode delegation {index}: {err}"),
+                    }
+                })?;
                 Ok(DelegationToken { delegation, bytes })
             })
             .collect()
@@ -576,7 +629,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// the customer through those links.
     async fn verify_deposit(
         &self,
-        deposit: &Delegation<Ed25519Signature>,
+        deposit: &Delegation<AnySignature>,
         customer: &Did,
     ) -> Result<(), RegistrationError> {
         let service = self.service.did();
@@ -620,7 +673,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// its issuer's.
     async fn check_deposit_link(
         &self,
-        delegation: &Delegation<Ed25519Signature>,
+        delegation: &Delegation<AnySignature>,
         customer: &Did,
     ) -> Result<(), RegistrationError> {
         if let DelegatedSubject::Specific(subject) = delegation.subject()
@@ -634,7 +687,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         }
         self.check_window(delegation)?;
         delegation
-            .verify_signature(&Ed25519KeyResolver)
+            .verify_signature(&DidKeyResolver)
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("access delegation failed to verify: {err}"),
@@ -643,10 +696,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
 
     /// Refuse a delegation whose time window does not contain the
     /// present.
-    fn check_window(
-        &self,
-        delegation: &Delegation<Ed25519Signature>,
-    ) -> Result<(), RegistrationError> {
+    fn check_window(&self, delegation: &Delegation<AnySignature>) -> Result<(), RegistrationError> {
         if let Some(expiration) = delegation.expiration()
             && expiration.to_unix() < self.now
         {
@@ -672,10 +722,11 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E> Provider<Enroll> for Registration<'_, S, E>
+impl<S, E, R> Provider<Enroll> for Registration<'_, S, E, R>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
+    R: RevocationChecker + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Enroll>) -> Result<Receipt, RegistrationError> {
         self.enroll(input).await
@@ -684,10 +735,11 @@ where
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E> Provider<Activate> for Registration<'_, S, E>
+impl<S, E, R> Provider<Activate> for Registration<'_, S, E, R>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
+    R: RevocationChecker + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
         self.activate(input).await
@@ -696,10 +748,11 @@ where
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E> Provider<Add> for Registration<'_, S, E>
+impl<S, E, R> Provider<Add> for Registration<'_, S, E, R>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
+    R: RevocationChecker + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Add>) -> Result<ConsumerReceipt, RegistrationError> {
         self.add(input).await
@@ -709,7 +762,7 @@ where
 /// A delegation token as it appeared in the container: the decoded
 /// delegation together with its exact bytes.
 struct DelegationToken {
-    delegation: Delegation<Ed25519Signature>,
+    delegation: Delegation<AnySignature>,
     bytes: Vec<u8>,
 }
 

@@ -7,17 +7,24 @@ license.workspace = true
 description = "Root identity derived from a passkey: PRF-derived root key and the root-to-device delegation."
 
 [dependencies]
+aes-gcm = { workspace = true }
 anyhow = { workspace = true }
+blake3 = { workspace = true }
+bs58 = { workspace = true }
+base64 = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+getrandom = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true }
 ipld-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_ipld_dagcbor = { workspace = true }
 sha2_0_10 = { workspace = true }
 thiserror = { workspace = true }
 tonk-account = { workspace = true }
+x25519-dalek = { workspace = true }
 zeroize = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
@@ -25,10 +32,19 @@ getrandom_0_3 = { workspace = true }
 js-sys = { workspace = true }
 rand = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
+serde = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
+    "AesGcmParams",
+    "AesKeyGenParams",
     "AuthenticationExtensionsClientInputs",
+    "Crypto",
+    "CryptoKey",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "Response",
     "AuthenticationExtensionsClientOutputs",
     "AuthenticationExtensionsPrfInputs",
     "AuthenticationExtensionsPrfOutputs",
@@ -40,11 +56,14 @@ web-sys = { workspace = true, features = [
     "Navigator",
     "PublicKeyCredential",
     "PublicKeyCredentialCreationOptions",
+    "PublicKeyCredentialDescriptor",
     "PublicKeyCredentialParameters",
     "PublicKeyCredentialRequestOptions",
     "PublicKeyCredentialRpEntity",
     "PublicKeyCredentialType",
     "PublicKeyCredentialUserEntity",
+    "StorageManager",
+    "SubtleCrypto",
     "UserVerificationRequirement",
     "Window",
 ] }

@@ -18,6 +18,8 @@
 //! transient-trigger check runs separately at the evaluator's
 //! commit step where a branch is available.
 
+use std::collections::{BTreeSet, HashSet};
+
 use dialog_query::concept::query::ConceptQuery;
 use dialog_query::constraint::Constraint;
 use dialog_query::formula::query::FormulaQuery;
@@ -26,7 +28,8 @@ use dialog_query::{
     DeductiveRule as CompiledDeductiveRule, InductiveRule, Negation, Parameters, Proposition, Term,
 };
 use tonk_notation::{
-    Application as SyntaxApplication, FieldValue, Premise as NotationPremise, Scalar,
+    Application as SyntaxApplication, Expression, FieldValue, Premise as NotationPremise, Scalar,
+    Syntax,
 };
 
 use super::constraint::{ConstraintInfo, lookup_constraint};
@@ -39,6 +42,94 @@ use crate::analyzer::Working;
 use dialog_artifacts::Entity;
 use dialog_query::rule::inductive::Polarity;
 use tonk_schema::rule::Rule as StoredRule;
+
+struct TransientTriggerShape {
+    name: String,
+    attributes: BTreeSet<String>,
+}
+
+/// Reject differently named transient commands whose required descriptor
+/// shapes are equal or subsets when both are positive inductive-rule triggers
+/// in this document.
+pub(crate) fn check_overlapping_transient_rule_triggers(
+    syntax: &Syntax,
+    scope: &Scope,
+) -> Result<(), AnalyzeError> {
+    let mut triggers: Vec<TransientTriggerShape> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for expression in &syntax.expressions {
+        let Expression::Claim(effectful) = expression else {
+            continue;
+        };
+        let application = &effectful.inner;
+        if !super::is_rule_claim(application) || is_rule_retract_body(application) {
+            continue;
+        }
+        let body = parse_rule_body(application)?;
+        if !matches!(body.head, RuleHead::Inductive(_)) {
+            continue;
+        }
+
+        for premise in body.when {
+            let name = premise.concept.value.as_str();
+            if seen.contains(name) {
+                continue;
+            }
+            let Some(concept) = scope.concept(name) else {
+                continue;
+            };
+            let tonk_core::claim::ConceptDescriptor::Transient(descriptor) = concept.descriptor
+            else {
+                continue;
+            };
+            seen.insert(name.to_owned());
+
+            let attributes: BTreeSet<String> = descriptor
+                .with()
+                .iter()
+                .filter(|(field, attribute)| *field != "this" && !attribute.is_optional())
+                .map(|(_, attribute)| attribute.the().to_string())
+                .collect();
+
+            for prior in &triggers {
+                if !attributes.is_subset(&prior.attributes)
+                    && !prior.attributes.is_subset(&attributes)
+                {
+                    continue;
+                }
+
+                let (event_command, also_matches) = if attributes == prior.attributes
+                    || attributes.is_superset(&prior.attributes)
+                {
+                    (name.to_owned(), prior.name.clone())
+                } else {
+                    (prior.name.clone(), name.to_owned())
+                };
+                let shared_attributes = attributes
+                    .intersection(&prior.attributes)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::OverlappingTransientCommands {
+                        event_command,
+                        also_matches,
+                        shared_attributes,
+                    },
+                    premise.range,
+                ));
+            }
+
+            triggers.push(TransientTriggerShape {
+                name: name.to_owned(),
+                attributes,
+            });
+        }
+    }
+
+    Ok(())
+}
 
 /// Outcome of inspecting a `rule!:` claim body — install (build a
 /// fresh compiled rule) or retract (resolve an existing rule from
@@ -1218,6 +1309,134 @@ mod tests {
             on_uris.iter().any(|u| u == "on:io.gozala.ping/tag"),
             "expected on:io.gozala.ping/tag in {on_uris:?}"
         );
+    }
+
+    const OVERLAPPING_TRANSIENT_RULES: &str = r#"concept!: &toggle-result
+  with:
+    todo:
+      description: The todo that was toggled
+      the: xyz.tonk.result/todo
+      as: entity
+    checked:
+      description: The resulting checked state
+      the: xyz.tonk.result/checked
+      as: boolean
+
+concept!: &remove-result
+  with:
+    todo:
+      description: The todo that was removed
+      the: xyz.tonk.result/todo
+      as: entity
+
+command!: &toggle-todo
+  with:
+    todo:
+      description: The todo targeted by the event
+      the: dom.event.current-target.dataset/todo
+      as: entity
+    checked:
+      description: The checkbox state
+      the: dom.event.current-target/checked
+      as: boolean
+
+command!: &remove-todo
+  with:
+    todo:
+      description: The todo targeted by the event
+      the: dom.event.current-target.dataset/todo
+      as: entity
+
+rule!:
+  assert!: toggle-result
+  when:
+    - assert: toggle-todo
+      where: { this: ?this, todo: ?todo, checked: ?checked }
+
+rule!:
+  assert!: remove-result
+  when:
+    - assert: remove-todo
+      where: { this: ?this, todo: ?todo }
+"#;
+
+    /// A DOM event that satisfies a narrower transient command also satisfies
+    /// any broader command whose required descriptor set is a subset. Reject
+    /// that document before either rule can be installed.
+    #[test]
+    fn it_rejects_a_strict_subset_of_another_transient_trigger() {
+        let doc = OVERLAPPING_TRANSIENT_RULES;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let error = crate::analyzer::analyze_local(&syntax)
+            .expect_err("overlapping transient triggers must be rejected");
+        let AnalyzeErrorKind::OverlappingTransientCommands {
+            event_command,
+            also_matches,
+            shared_attributes,
+        } = &error.kind
+        else {
+            panic!("expected overlap error, got {error:?}");
+        };
+        assert_eq!(event_command, "toggle-todo");
+        assert_eq!(also_matches, "remove-todo");
+        assert_eq!(shared_attributes, "dom.event.current-target.dataset/todo");
+        assert_eq!(error.code(), "E_OVERLAPPING_TRANSIENT_COMMANDS");
+    }
+
+    #[test]
+    fn it_accepts_verb_specific_transient_trigger_paths() {
+        let doc = OVERLAPPING_TRANSIENT_RULES
+            .replacen(
+                "dom.event.current-target.dataset/todo",
+                "dom.event.current-target.dataset/toggle",
+                1,
+            )
+            .replacen(
+                "dom.event.current-target.dataset/todo",
+                "dom.event.current-target.dataset/remove",
+                1,
+            );
+        let syntax = parse(&doc).syntax.expect("parsed syntax");
+        crate::analyzer::analyze_local(&syntax)
+            .expect("verb-specific transient shapes must not overlap");
+    }
+
+    #[test]
+    fn it_accepts_overlapping_durable_rule_premises() {
+        let doc = OVERLAPPING_TRANSIENT_RULES.replace("command!:", "concept!:");
+        let syntax = parse(&doc).syntax.expect("parsed syntax");
+        crate::analyzer::analyze_local(&syntax)
+            .expect("durable concepts are not event command triggers");
+    }
+
+    #[test]
+    fn it_accepts_two_rules_driven_by_the_same_command() {
+        let doc = OVERLAPPING_TRANSIENT_RULES
+            .replace("command!: &remove-todo", "concept!: &remove-todo")
+            .replace("assert: remove-todo", "assert: toggle-todo")
+            .replace(
+                "where: { this: ?this, todo: ?todo }",
+                "where: { this: ?this, todo: ?todo, checked: ?checked }",
+            );
+        let syntax = parse(&doc).syntax.expect("parsed syntax");
+        crate::analyzer::analyze_local(&syntax)
+            .expect("reusing one command name across rules is safe");
+    }
+
+    #[test]
+    fn it_ignores_transient_commands_used_only_under_unless() {
+        let doc = OVERLAPPING_TRANSIENT_RULES.replace(
+            "  when:\n    - assert: remove-todo\n      where: { this: ?this, todo: ?todo }",
+            "  when:\n    - assert: toggle-todo\n      where: { this: ?this, todo: ?todo, checked: ?checked }\n  unless:\n    - assert: remove-todo\n      where: { this: ?this, todo: ?todo }",
+        );
+        let syntax = parse(&doc).syntax.expect("parsed syntax");
+        crate::analyzer::analyze_local(&syntax).expect("negative premises are not event triggers");
     }
 
     /// A `rule!:` with an `assert:` (no-bang) head lifts to a

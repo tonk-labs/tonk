@@ -6,6 +6,7 @@ automerge-repo-data
 result
 .carry
 .tonk
+.wt
 
 # Node dependencies
 node_modules
@@ -38,6 +39,10 @@ report.*.json
 
 # Act secrets (local GitHub Actions)
 .secrets
+
+# Apple signing credentials
+AuthKey_*.p8
+*.p12
 
 # Personal files
 *.local.*

@@ -12,6 +12,8 @@
 //! locally, ready for `tonk push` / `tonk pull` once a remote
 //! is configured.
 
+use dialog_capability::Subject;
+use dialog_effects::Use;
 use std::path::{Path, PathBuf};
 
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
@@ -20,7 +22,7 @@ use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
-use tonk_schema::{Invitation, InvitationExecution, InvitedVia, Membership};
+use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership};
 use url::Url;
 
 use crate::ExitCode;
@@ -105,18 +107,18 @@ pub enum InviteError {
     InvalidInvite(String),
     /// `claim` was asked to bootstrap a site directory that
     /// already exists. The join must never clobber existing site
-    /// storage; the user removes it (or picks another spot name)
+    /// storage; the user removes it (or picks another space name)
     /// first.
     ///
     /// The likeliest way to reach this without having noticed is
-    /// `tonk spot rm --keep-data` under the same name, which leaves
+    /// `tonk space rm --keep-data` under the same name, which leaves
     /// data here that no registry entry mentions — so the message
     /// names both ways out rather than just "remove it".
     #[error(
         "a site already exists at {0}\n\
-         it belongs to no registered spot; adopt it with \
-         `tonk spot new <name> --site {0}`,\n\
-         delete the directory, or join under another spot name"
+         it belongs to no registered space; adopt it with \
+         `tonk space new <name> --site {0}`,\n\
+         delete the directory, or join under another space name"
     )]
     SiteAlreadyExists(PathBuf),
     /// Anything else — key generation, delegation building,
@@ -125,9 +127,9 @@ pub enum InviteError {
     Io(String),
 }
 
-impl InviteError {
+impl crate::Coded for InviteError {
     /// CLI exit code for this failure mode.
-    pub fn exit_code(&self) -> ExitCode {
+    fn exit_code(&self) -> ExitCode {
         ExitCode::IoError
     }
 }
@@ -194,7 +196,7 @@ async fn mint_for(
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
-    // `tonk spot new` committed before any upstream existed. No-op
+    // `tonk space new` committed before any upstream existed. No-op
     // when the branch has no upstream (a local-only invite).
     // Pull-before-push reconciles a possibly advanced upstream,
     // best-effort; the push error is authoritative.
@@ -229,7 +231,7 @@ async fn mint_for(
     let delegation: UcanDelegation = site
         .profile
         .access()
-        .claim(&site.repository)
+        .claim(Subject::from(site.repository.did()).attenuate(Use))
         .delegate(audience.clone())
         .perform(&site.operator)
         .await
@@ -243,17 +245,15 @@ async fn mint_for(
         None => None,
     };
 
+    // A remote with no relay configured is no longer a reason to refuse: a
+    // revocation is an ordinary `ucan/revoke` invocation, so it goes to the
+    // access service like everything else, and a separate relay is something
+    // a deployment may still name but no longer has to.
     let relay = match revocation_url {
         Some(raw) => Some(
             Url::parse(raw)
                 .map_err(|error| InviteError::Io(format!("invalid revocation URL: {error}")))?,
         ),
-        None if parsed_remote.is_some() => {
-            return Err(InviteError::Io(
-                "the selected remote has no revocation relay; configure it with `tonk remote add --revocation-url <URL>`"
-                    .to_string(),
-            ));
-        }
         None => None,
     };
     let invite = Invite::new(delegation.into_chain(), invite_audience, parsed_remote)
@@ -269,17 +269,14 @@ async fn mint_for(
     // secret-free half of the invite (the seed stays in the URL).
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
-    let execution = invite.revocation_url.as_ref().map(|relay| {
-        InvitationExecution::new(
-            &invitation,
-            if matches!(&invite.audience, InviteAudience::Open { .. }) {
-                "open"
-            } else {
-                "scoped"
-            },
-            relay.as_str(),
-        )
-    });
+    let execution = InvitationExecution::new(
+        &invitation,
+        if matches!(&invite.audience, InviteAudience::Open { .. }) {
+            "open"
+        } else {
+            "scoped"
+        },
+    );
     let meta = site
         .repository
         .branch(META_BRANCH)
@@ -287,11 +284,9 @@ async fn mint_for(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
-    let mut transaction = meta.transaction().assert(invitation);
-    if let Some(execution) = execution {
-        transaction = transaction.assert(execution);
-    }
-    transaction
+    meta.transaction()
+        .assert(invitation)
+        .assert(execution)
         .commit()
         .perform(&site.operator)
         .await
@@ -341,7 +336,7 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
 
 /// Claim an invite, bootstrapping a fresh site at `root` (the
 /// site directory itself — the caller picks it, typically the
-/// canonical `spots/<name>/` dir) whose repository targets the
+/// canonical `spaces/<name>/` dir) whose repository targets the
 /// invited subject DID.
 ///
 /// Steps:
@@ -358,8 +353,8 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
 ///    subsequent push/pull operations.
 /// 5. Mint a verifier-only credential keyed to the invited
 ///    subject DID and create a local space at `name == "main"`,
-///    matching the layout `tonk spot new` produces (so all the
-///    later read paths work uniformly across spot-new- and
+///    matching the layout `tonk space new` produces (so all the
+///    later read paths work uniformly across space-new- and
 ///    join-bootstrapped sites).
 /// 6. If the invite carried a `remote=` URL, register it, set it
 ///    as the local `main`'s upstream, and pull once — a clean
@@ -391,17 +386,14 @@ pub async fn claim(
         .map_err(|e| InviteError::InvalidInvite(e.to_string()))?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
-    let invitation_execution = invite.revocation_url.as_ref().map(|relay| {
-        InvitationExecution::new(
-            &invitation,
-            if matches!(&invite.audience, InviteAudience::Open { .. }) {
-                "open"
-            } else {
-                "scoped"
-            },
-            relay.as_str(),
-        )
-    });
+    let invitation_execution = InvitationExecution::new(
+        &invitation,
+        if matches!(&invite.audience, InviteAudience::Open { .. }) {
+            "open"
+        } else {
+            "scoped"
+        },
+    );
 
     std::fs::create_dir_all(root)
         .map_err(|e| InviteError::Io(format!("failed to create {}: {e}", root.display())))?;
@@ -413,24 +405,20 @@ pub async fn claim(
         .await
         .map_err(|e| InviteError::Io(e.to_string()))?;
 
-    let local_root = crate::identity::local_root_with_operator(&profile, &operator)
+    // An invite already carries the authority needed to join. A linked
+    // profile claims to its durable account root; before linking, the
+    // persistent profile DID is the stable identity available on this device.
+    // The later profile↔account union carries profile-held spaces forward.
+    let member = match crate::identity::local_root_with_operator(&profile, &operator)
         .await
-        .map_err(|e| InviteError::Io(e.to_string()))?;
-    // Claiming an invite is what makes this device a member, and a member is
-    // what a later `tonk invite` delegates from. Rooting that chain in an
-    // anonymous key leaves it with no owner and nothing able to revoke it.
-    if config.require_account {
-        crate::account::require_account_with_operator(&profile, &operator)
-            .await
-            .map_err(|e| InviteError::Io(e.to_string()))?;
-    }
-    let member = local_root
-        .ok_or_else(|| {
-            InviteError::Io("local root provisioning did not produce a record".to_string())
-        })?
-        .root_did
-        .parse()
-        .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?;
+        .map_err(|e| InviteError::Io(e.to_string()))?
+    {
+        Some(root) => root
+            .root_did
+            .parse()
+            .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?,
+        None => profile.did(),
+    };
     let claimed = invite
         .claim(&member)
         .await
@@ -442,49 +430,11 @@ pub async fn claim(
 
     // Install only the reusable root-ending authority and verifier-backed
     // repository. Invite-specific roster/provenance writes remain below.
+    let chain = claimed.chain.clone();
     let joined = site::mount_delegated_with(&root, profile, operator, claimed.chain, config)
         .await
         .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
-
-    // Roster facts on the joined repo's meta branch: the invitation
-    // (idempotent if the minter recorded it; self-healing otherwise),
-    // this profile's membership, and — unless this is a self-claim —
-    // the provenance stamp. A fresh site has no prior stamp, so no
-    // first-wins check is needed; but the tonk profile is shared
-    // across this machine's sites, so a member claiming their own
-    // invite would otherwise stamp their own founder membership.
-    // Mirror the worker's self-invite skip: provenance answers "how
-    // did this member first get in", and that is meaningless when the
-    // inviter is the claimer.
-    use tonk_schema::prelude::DidExt as _;
-    let membership = Membership::new(member.clone(), subject.clone());
-    let invitation_entity = invitation.this().clone();
-    let self_invite = invitation.inviter.0 == member.this();
-    let meta = joined
-        .repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&joined.operator)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
-    let mut transaction = meta
-        .transaction()
-        .assert(invitation)
-        .assert(membership.clone());
-    if let Some(execution) = invitation_execution {
-        transaction = transaction.assert(execution);
-    }
-    if !self_invite {
-        transaction = transaction.assert(InvitedVia::new(
-            membership.this().clone(),
-            invitation_entity,
-        ));
-    }
-    transaction
-        .commit()
-        .perform(&joined.operator)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to record membership: {e}")))?;
+    retain_claim_authority(&joined, chain).await;
 
     // Wire the embedded remote (if any) onto the freshly
     // bootstrapped site. Match the worker's `DEFAULT_REMOTE` so
@@ -524,12 +474,135 @@ pub async fn claim(
         }
     }
 
+    record_claim_roster(&joined, &member, &subject, invitation, invitation_execution).await?;
+
+    // A roster row that never leaves this device converges with nobody, so
+    // the join is only finished once it is published. Best-effort for the
+    // same reason the pull is: an unreachable remote must not fail a join
+    // that otherwise completed, and the next `tonk push` carries the row.
+    // Only when the pull succeeded — pushing onto an upstream this replica
+    // never reconciled with is how a joiner diverges.
+    if synced && let Err(e) = sync::push(&joined).await {
+        eprintln!(
+            "warning: joined, but publishing this device's roster row failed: {e}\n\
+             run `tonk push` so the space's other members can see you"
+        );
+    }
+
     Ok(ClaimOutcome {
         subject,
         remote_url,
         auto_configured_remote,
         synced,
     })
+}
+
+/// Record the claim on the joined space's content branch: the invitation it
+/// came through, this member's roster row, and the provenance stamp.
+///
+/// The content branch, not `meta`. Only upstreamed branches sync, so a
+/// membership written to `meta` never reaches the space's owner or its other
+/// members — and, since the roster is now what names a space's owner and this
+/// device's role in it, would leave `tonk space` showing a space this
+/// device legitimately joined as one whose roster holds no row of ours. The
+/// worker's claim path writes the same facts to the same branch.
+///
+/// Runs after the initial pull, never before: the join provisions `main`
+/// deliberately empty so that pull is a clean fast-forward, and a row
+/// committed ahead of it would make the joiner's first sync a merge. The
+/// caller publishes the commit afterwards.
+///
+/// Both stamps are first-wins, mirroring the worker. The role is the one that
+/// matters: `MemberRole` is cardinality-one on the membership entity, so
+/// asserting `member` over a row the pull just brought down would demote
+/// Retain the claimed chain into the space's content branch, so the hop
+/// that admits this member is provable from the space itself and an admin
+/// can revoke it without touching the invite everyone else used. Best
+/// effort: the join is complete once the authority is saved locally.
+async fn retain_claim_authority(joined: &TonkSite, chain: dialog_ucan_core::DelegationChain) {
+    let session = match joined.branch().await {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("warning: claimed chain not retained on the space: {error}");
+            return;
+        }
+    };
+    if let Err(error) = session
+        .handle()
+        .delegations()
+        .retain(UcanDelegation(chain))
+        .perform(&joined.operator)
+        .await
+    {
+        eprintln!("warning: claimed chain not retained on the space: {error}");
+    }
+}
+
+/// whoever it names — including a founder claiming an invite to their own
+/// space, whose profile is shared with every other site on this machine.
+async fn record_claim_roster(
+    joined: &TonkSite,
+    member: &Did,
+    subject: &Did,
+    invitation: Invitation,
+    invitation_execution: InvitationExecution,
+) -> Result<(), InviteError> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::prelude::DidExt as _;
+
+    let membership = Membership::new(member.clone(), subject.clone());
+    let session = joined
+        .branch()
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to open the roster branch: {e}")))?;
+    let branch = session.handle();
+
+    let roles: Vec<MemberRole> = branch
+        .query()
+        .select(Query::<MemberRole> {
+            this: Term::from(membership.this().clone()),
+            role: Term::var("role"),
+        })
+        .perform(&joined.operator)
+        .try_vec()
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to read membership roles: {e:?}")))?;
+    let stamps: Vec<InvitedVia> = branch
+        .query()
+        .select(Query::<InvitedVia> {
+            this: Term::from(membership.this().clone()),
+            invitation: Term::var("invitation"),
+        })
+        .perform(&joined.operator)
+        .try_vec()
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to read membership provenance: {e:?}")))?;
+
+    // A member claiming their own invite is not provenance: it answers "how
+    // did this member first get in", which is meaningless when the inviter is
+    // the claimer.
+    let self_invite = invitation.inviter.0 == member.this();
+    let invitation_entity = invitation.this().clone();
+    let mut transaction = branch
+        .transaction()
+        .assert(invitation)
+        .assert(invitation_execution)
+        .assert(membership.clone());
+    if roles.is_empty() {
+        transaction = transaction.assert(MemberRole::member(membership.this().clone()));
+    }
+    if stamps.is_empty() && !self_invite {
+        transaction = transaction.assert(InvitedVia::new(
+            membership.this().clone(),
+            invitation_entity,
+        ));
+    }
+    transaction
+        .commit()
+        .perform(&joined.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to record membership: {e}")))?;
+    Ok(())
 }
 
 /// Shorten a minted invite URL via the shortcut service on its own

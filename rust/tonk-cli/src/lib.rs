@@ -7,13 +7,13 @@
 //! the binary) and a future SDK consumer can drive the same code
 //! paths the CLI does.
 //!
-//! - [`site`] — repo+branch open/init; resolved via the spot registry.
-//! - [`spot`] — spot registry: named spots, canonical storage, selection.
-//! - [`account_spots`] — account inventory, pull, and backup reconciliation.
-//! - [`recovery`] — whether a spot's data exists anywhere but this
+//! - [`site`] — repo+branch open/init; resolved via the space registry.
+//! - [`space`] — space registry: named spaces, canonical storage, selection.
+//! - [`account_spaces`] — account inventory, pull, and backup reconciliation.
+//! - [`recovery`] — whether a space's data exists anywhere but this
 //!   disk, so deleting it can say what it costs.
 //! - [`identity`] — local profile management.
-//! - [`agents`] — claim-backed spot context and `AGENTS.md` projection data.
+//! - [`agents`] — claim-backed space context and `AGENTS.md` projection data.
 //! - [`authoring`] — pure notation builders (concept, view, and the
 //!   space-home recipe) consumed by the noun-first authoring verbs.
 //! - [`data`] — pure notation builders (value rendering + doc
@@ -35,7 +35,7 @@
 pub mod account;
 mod account_authority;
 mod account_session;
-pub mod account_spots;
+pub mod account_spaces;
 pub mod account_state;
 pub mod agents;
 pub mod authoring;
@@ -44,15 +44,17 @@ pub mod blob;
 /// A loopback callback server for browser authorization ceremonies.
 pub mod callback;
 pub mod context;
+pub mod custody;
 pub mod customer;
 pub mod data;
 pub mod data_ops;
+pub mod deployment;
 pub mod eval;
 pub mod guide;
 pub mod identity;
+pub mod inventory;
 pub mod invite;
-/// Migrating a CSV export written by a pre-dialog-upgrade build.
-pub mod legacy;
+pub mod listing;
 pub mod migrate;
 pub mod output;
 pub mod recovery;
@@ -60,7 +62,8 @@ pub mod remote;
 pub mod render;
 pub mod schema;
 pub mod site;
-pub mod spot;
+pub mod space;
+pub mod space_link;
 pub mod sync;
 pub mod telemetry;
 pub mod transfer;
@@ -92,4 +95,47 @@ impl ExitCode {
     pub fn into_raw(self) -> i32 {
         self as i32
     }
+}
+
+/// The envelope every `--json` listing carries.
+///
+/// There used to be two conventions. `tonk status --json` carries a
+/// top-level string `schemaVersion`; every listing emitted a bare array
+/// whose rows each repeated a numeric `version: 1`. Both were versioned
+/// and neither could be recognised from the other, and the per-row form
+/// spent a field on every row to say something true of the whole
+/// response.
+///
+/// One shape, named for the command that produced it, so a reader can
+/// tell what it is holding from the document alone.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rows<T> {
+    /// `tonk.<command>.v<n>`.
+    pub schema_version: &'static str,
+    /// The listed rows, empty rather than absent when there are none.
+    pub rows: Vec<T>,
+}
+
+impl<T> Rows<T> {
+    /// Wrap `rows` in the envelope for `schema_version`.
+    pub fn new(schema_version: &'static str, rows: Vec<T>) -> Self {
+        Self {
+            schema_version,
+            rows,
+        }
+    }
+}
+
+/// An error that knows which [`ExitCode`] it should produce.
+///
+/// One trait rather than an inherent method per error enum, so the binary
+/// can have a single printer that both renders the error the way
+/// `--verbose` calls for and returns the code the error carries. It used to
+/// have to choose: the helper that honoured `--verbose` flattened every
+/// failure to [`ExitCode::IoError`], and the two dozen call sites that
+/// needed a real code printed the error directly and ignored `--verbose`.
+pub trait Coded: std::error::Error + Send + Sync + 'static {
+    /// The exit code this failure should produce.
+    fn exit_code(&self) -> ExitCode;
 }

@@ -19,7 +19,9 @@ use crate::prelude::*;
 /// joins) converges on the same entity. The repository's creator
 /// asserts a bare membership at create time; invite claimers assert
 /// one alongside an [`InvitedVia`] stamp. Lives on the repository's
-/// meta branch.
+/// content branch alongside [`MemberRole`], so the roster replicates
+/// to every member: only upstreamed branches sync, and the meta branch
+/// is local-only.
 ///
 /// `subject` and `member` repeat the hash inputs as queryable
 /// attributes — same redundant-by-design rationale as
@@ -100,28 +102,42 @@ impl InvitedVia {
 /// query stays uniform across all members.
 ///
 /// The creator is stamped [`MemberRole::FOUNDER`] at space creation;
-/// invite claimers are stamped [`MemberRole::MEMBER`] on join. Lives on
+/// invite claimers are stamped [`MemberRole::MEMBER`] on join; a member
+/// promoted to run the space is stamped [`MemberRole::ADMIN`]. Lives on
 /// the repository's content branch alongside [`Membership`], so the
 /// roster replicates to every member.
+///
+/// The role describes the roster; it does not grant anything. What a
+/// member may do is decided by the delegation chain they hold for the
+/// space subject, and an admin's chain is what lets them revoke other
+/// members' chains (see `plan/space-admins.md`).
 ///
 /// [`SpaceStatus`]: crate::SpaceStatus
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MemberRole {
     /// The membership entity being stamped.
     pub this: Entity,
-    /// The member's role — `tonk:founder` or `tonk:member`.
+    /// The member's role — `tonk:founder`, `tonk:admin`, or `tonk:member`.
     pub role: Role,
 }
 
 impl MemberRole {
     /// The space creator's role URI.
     pub const FOUNDER: &'static str = "tonk:founder";
+    /// A member who holds full authority for the space and can remove
+    /// other members.
+    pub const ADMIN: &'static str = "tonk:admin";
     /// An invite claimer's role URI.
     pub const MEMBER: &'static str = "tonk:member";
 
     /// Stamp `membership` with the founder role.
     pub fn founder(membership: Entity) -> Self {
         Self::stamp(membership, Self::FOUNDER)
+    }
+
+    /// Stamp `membership` with the admin role.
+    pub fn admin(membership: Entity) -> Self {
+        Self::stamp(membership, Self::ADMIN)
     }
 
     /// Stamp `membership` with the member role.

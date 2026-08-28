@@ -44,7 +44,7 @@ async fn account_device(root: &Ed25519Signer, endpoint: &str) -> anyhow::Result<
     let root_did = root.did();
     let (operator, profile) = test_operator_with_profile().await;
     let link = DelegationBuilder::new()
-        .issuer(root.clone())
+        .issuer(dialog_credentials::Signer::from(root.clone()))
         .audience(&profile.did())
         .subject(UcanSubject::Any)
         .command(vec![])
@@ -127,6 +127,9 @@ async fn it_reports_a_never_published_authorized_branch_as_absent() -> anyhow::R
         .perform(&operator)
         .await?;
     profile.access().save(ownership).perform(&operator).await?;
+    // The gate serves a subject only while an active customer pays for
+    // it; this test is about absence probing, not registration.
+    env.provision_subject(repository.did().as_str()).await?;
 
     let origin = repository
         .remote("origin")
@@ -160,6 +163,7 @@ async fn it_never_classifies_remote_failures_as_absence() -> anyhow::Result<()> 
         .perform(&operator)
         .await?;
     profile.access().save(ownership).perform(&operator).await?;
+    env.provision_subject(repository.did().as_str()).await?;
 
     let forbidden = static_access_endpoint(StatusCode::FORBIDDEN, b"forbidden").await;
     let unauthorized = static_access_endpoint(StatusCode::UNAUTHORIZED, b"unauthorized").await;
@@ -207,6 +211,12 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
     let endpoint = service.address.access_service_url.clone();
     let root = Ed25519Signer::generate().await?;
     let root_did = root.did();
+    // The account space is servable only once its customer confirms the
+    // emailed activation link.
+    service
+        .address
+        .activate_customer(&root, "genesis@example.com")
+        .await?;
 
     let device_a = account_device(&root, &endpoint).await?;
     let device_b = account_device(&root, &endpoint).await?;
@@ -333,6 +343,10 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
     let service = AccessServiceAddress::start(Default::default()).await?;
     let endpoint = service.address.access_service_url.clone();
     let root = Ed25519Signer::generate().await?;
+    service
+        .address
+        .activate_customer(&root, "adopt@example.com")
+        .await?;
 
     let winner = account_device(&root, &endpoint).await?;
     let loser = account_device(&root, &endpoint).await?;

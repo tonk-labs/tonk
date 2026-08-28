@@ -14,20 +14,13 @@ database_name = "tonk-accounts"
 database_id = "a0c6698d-25e6-414b-8986-4fbeb1b5f992"
 migrations_dir = "rust/tonk-account-service/migrations"
 
-[[r2_buckets]]
-binding = "CHAINS"
-bucket_name = "tonk-account-chains"
-
-[[r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations"
 
 [vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Staging. Disjoint from production in every dimension that holds state:
 # its own worker, route, database, and bucket. The route stays off the
-# tonk.spot apex so staging mints its own passkey credentials rather than
+# tonk.network apex so staging mints its own passkey credentials rather than
 # production ones (see the RP ID invariants in the crate README).
 [env.staging]
 routes = [{ pattern = "accounts-staging.tonk.xyz", custom_domain = true }]
@@ -41,13 +34,6 @@ database_name = "tonk-accounts-staging"
 database_id = "e1f11539-c01c-4c48-a27b-988609ad3fe1"
 migrations_dir = "rust/tonk-account-service/migrations"
 
-[[env.staging.r2_buckets]]
-binding = "CHAINS"
-bucket_name = "tonk-account-chains-staging"
-
-[[env.staging.r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations-staging"
 
 [env.staging.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
@@ -76,13 +62,6 @@ database_name = "tonk-accounts-preview"
 database_id = "323cb440-c356-4d1d-b238-2ffd11abedcc"
 migrations_dir = "rust/tonk-account-service/migrations"
 
-[[env.preview.r2_buckets]]
-binding = "CHAINS"
-bucket_name = "tonk-account-chains-preview"
-
-[[env.preview.r2_buckets]]
-binding = "REVOCATIONS"
-bucket_name = "tonk-revocations-preview"
 
 [env.preview.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"

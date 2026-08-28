@@ -39,14 +39,18 @@ the element, and each mutation event maps to a command.
   <div hidden>
     <tonk-display model=tonk:table/sheet></tonk-display>
     <tonk-display model=tonk:table/cell></tonk-display>
+    <tonk-display model=tonk:table/column></tonk-display>
+    <tonk-display model=tonk:table/row></tonk-display>
   </div>
 </tonk-table>
 ```
 
 The full concept/command/rule set is the `table` library module — seed
 it with `tonk eval` from `rust/tonk-core/assets/library/table.yaml`, then
-`tonk query table/cell` lists cells and `tonk assert table/cell --at B2
---content '=A1*2'` edits one from the CLI.
+`tonk query table/cell --json` lists cells. Update one by copying its entity
+and running `tonk assert table/cell <ENTITY> --content '=A1*2'`; create one
+with `tonk assert table/cell --sheet <SHEET_ENTITY> --at B2 --content
+'=A1*2'`.
 
 ## Attributes
 
@@ -54,6 +58,7 @@ it with `tonk eval` from `rust/tonk-core/assets/library/table.yaml`, then
 |------|---------|
 | `subject` | Workbook entity → **claims mode**. Absent → standalone. |
 | `content` / text | Standalone workbook: CSV, or the versioned envelope. |
+| `value` | Standalone convenience channel: CSV for the active sheet. |
 | `readonly` | Lock the grid (selection + copy still work). |
 | `min-rows`, `min-cols` | Minimum rendered extent (default 100×26). |
 | `auto-focus` | Focus the grid on mount. |
@@ -70,10 +75,11 @@ it with `tonk eval` from `rust/tonk-core/assets/library/table.yaml`, then
 ## Programmatic control (`el.grid`, null until `ready`)
 
 `setCell(at, content)` · `getCell(at)` · `addSheet(name?)` ·
-`setColumnWidth(col, px)` · `setRowHeight(row, px)` ·
+`deleteSheet(name?)` (standalone only) · `setColumnWidth(col, px)` ·
+`getColumnWidth(col)` · `setRowHeight(row, px)` · `getRowHeight(row)` ·
 `insertRows`/`deleteRows`/`insertColumns`/`deleteColumns` · `select(at,
 to?)` · `selection` · `toCsv()` · `serialize()` · `model` (raw IronCalc).
-Every method routes through the same commit path as typing, so it
+Every mutating method routes through the same commit path as typing, so it
 repaints, emits events, and persists identically.
 
 ## Restyling

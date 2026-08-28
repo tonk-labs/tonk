@@ -52,6 +52,115 @@ pub mod replica {
     pub struct Status(pub Entity);
 }
 
+/// Attributes for the account-level space directory — one entry per
+/// space, shared by every device on the account.
+///
+/// Distinct from the `xyz.tonk.replica` namespace on purpose: replica
+/// rows are per-device (their entity hashes the device profile in),
+/// and now that profile main syncs through the account every device's
+/// rows land everywhere. A directory that queried replica attributes
+/// would list one row per device per space. These attributes hang on
+/// the repository's own entity instead, so all devices converge on
+/// one entry.
+pub mod space {
+    use super::{Attribute, Entity};
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Subject(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Status(pub Entity);
+
+    /// Whether this device holds a local replica of the space. Written
+    /// to the profile-main OVERLAY only — device-local, never
+    /// replicated — so the Hub can style a directory row it cannot
+    /// open locally (the hollow, replicate-on-first-visit space).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct Local(pub bool);
+
+    /// The space's display name, mirrored into the account directory
+    /// (the content-branch copy stays the editable source of truth) so
+    /// every device can label a space it has not replicated yet.
+    /// Written at create and updated by the rename command.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Name(pub String);
+
+    /// When this space was founded, unix seconds.
+    ///
+    /// Written once at creation and never updated, so it records the
+    /// founding rather than the most recent mount. A space that arrived
+    /// by invite has none: joining is not founding, and the absence is
+    /// what distinguishes the two.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct FoundedAt(pub u64);
+
+    /// The profile that founded the space.
+    ///
+    /// The account is already implied — the directory belongs to it —
+    /// so this records WHICH DEVICE created the space, which is
+    /// otherwise lost: the ownership delegation's audience is the
+    /// account, and the founding device leaves no other trace.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct FoundedBy(pub Entity);
+}
+
+/// Attributes describing a device authorization — an
+/// `account -> profile` powerline as a device list presents it.
+///
+/// These hang off the DELEGATION's own entity (its blob hash), not a
+/// separate record: the delegation IS the authorization, so a parallel
+/// row could disagree with the proof it describes. Dialog already
+/// decomposes issuer/audience/subject/expiration onto that entity;
+/// these are the fields it does not carry.
+///
+/// Namespaced `xyz.tonk.device` rather than `xyz.tonk.authorization`,
+/// which already means an invite's access proof. One namespace holding
+/// both would make "authorization" ambiguous between a device link and
+/// a share link.
+pub mod device {
+    use super::Attribute;
+
+    /// When the device was linked, unix seconds.
+    ///
+    /// Distinct from the delegation's `notBefore`: that bounds validity,
+    /// this records the act. A re-issued link with the same validity
+    /// window still gets a new creation time.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.device")]
+    #[cardinality(one)]
+    pub struct CreatedAt(pub u64);
+
+    /// Human label for the device, e.g. "Chrome on macOS".
+    ///
+    /// The same string the account ceremony sends onward as
+    /// `deviceName`, kept here so a device list renders offline instead
+    /// of requiring a round trip to the account service.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.device")]
+    #[cardinality(one)]
+    pub struct Title(pub String);
+
+    /// Why the delegation exists, e.g. `device-link`.
+    ///
+    /// Duplicated from the delegation's signed `meta` because `meta` is
+    /// NOT decomposed into facts — it rides inside the envelope and
+    /// cannot be queried. The signed copy stays authoritative; this one
+    /// exists so a device list can filter without opening envelopes.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.device")]
+    #[cardinality(one)]
+    pub struct Reason(pub String);
+}
+
 /// Attributes for the `tonk/sync` concept — a replica's sync state.
 ///
 /// Two orthogonal entity-valued fields, both keyed on the replica entity
@@ -191,6 +300,42 @@ pub mod command {
     #[domain("dom.event.current-target.elements.name")]
     pub struct Value(pub String);
 
+    /// The address read from the registration form's submit event:
+    /// `event.currentTarget.elements.email.value` (the `<wa-input
+    /// name="email">` inside `<form onsubmit=account/register>`).
+    ///
+    /// Same read-path convention as [`Value`]: one word, so the input's
+    /// `name` and the attribute segment agree without kebab→camel
+    /// conversion getting in the way.
+    /// Marks a transient as an account registration, and not the
+    /// address lookup that shares its shape.
+    ///
+    /// `CheckEmail` and `RegisterAccount` were both `{this, email}`, and
+    /// decode does not consider concept identity — so every keystroke's
+    /// lookup ALSO decoded as a registration, and the worker asked the
+    /// page to run a passkey ceremony while the user was still typing.
+    ///
+    /// An `Entity`, not a `String`: the value (`tonk:register-account`)
+    /// has a `:`, and the worker's untagged `Value` decode reads any
+    /// `:`-bearing string as an `Entity`.
+    pub mod register {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The marker only a registration carries.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct RegisterAccount(pub Entity);
+    }
+
+    pub mod email {
+        use super::Attribute;
+
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.elements.email")]
+        pub struct Value(pub String);
+    }
+
     /// The remote URL read from a space form's submit event:
     /// `event.currentTarget.elements.remote.value` (the `<wa-input
     /// name="remote">` inside the create / enable-sync forms).
@@ -312,7 +457,7 @@ pub mod command {
     /// Attributes the `tonk:enable-sync` command carries.
     ///
     /// The share control dispatches this routelessly when a user accepts the
-    /// offer to turn sync on, so the target spot and the endpoint both travel
+    /// offer to turn sync on, so the target space and the endpoint both travel
     /// on the transient rather than being inferred from a dispatch origin.
     pub mod enable_sync {
         use super::super::Entity;
@@ -337,7 +482,7 @@ pub mod command {
         #[domain("dom.event.current-target.dataset")]
         pub struct EnableSync(pub Entity);
 
-        /// The spot to attach the remote to.
+        /// The space to attach the remote to.
         ///
         /// An `Entity` for the same reason as [`EnableSync`]: the value is a
         /// `did:key:…`, and the worker's untagged `Value` decode reads any
@@ -485,6 +630,45 @@ pub mod command {
         pub struct Remove(pub Entity);
     }
 
+    /// Attributes of the `member/promote` command, dispatched by the FAB's
+    /// roster once the page has minted the admin hop.
+    pub mod promote {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The DID the member's membership is keyed on. Derived attribute:
+        /// `xyz.tonk.promote/member`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.promote")]
+        pub struct Member(pub Entity);
+
+        /// The space the promotion is in: dispatched routeless from the FAB,
+        /// the command names its target rather than firing on it.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.promote")]
+        pub struct Space(pub Entity);
+
+        /// The hop the page minted under the passkey, `promoter-account ->
+        /// member` over the space at `/`, as base58 of the serialized chain.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.promote")]
+        pub struct Chain(pub String);
+    }
+
+    /// Attributes of the `member/expel` command.
+    pub mod expel {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The DID of the member to remove, read from the roster row's
+        /// `data-expel`. Distinct from `dataset/remove`, which removes a
+        /// space from this device. Derived attribute:
+        /// `dom.event.current-target.dataset/expel`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Expel(pub Entity);
+    }
+
     /// Attributes the `tonk:join` command reads from `<tonk-page>`'s
     /// `mount` event. The page delivers the complete URL because the
     /// service worker cannot observe its fragment.
@@ -496,6 +680,34 @@ pub mod command {
         #[domain("dom.event.detail")]
         pub struct Href(pub String);
     }
+}
+
+/// Attributes on the transient overlay row answering "is this address
+/// registered?" for the registration form.
+///
+/// Overlay-only, deliberately. The form asks as the user types, so a
+/// durable fact per answer would write a row per keystroke into a branch
+/// that syncs. The overlay is per-session and unreplicated, which is
+/// what a question about a half-typed address deserves.
+pub mod email_status {
+    use super::Attribute;
+
+    /// The address the answer is about, so a stale answer for an
+    /// address the user has since edited is recognisable as stale.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-status")]
+    #[cardinality(one)]
+    pub struct Address(pub String);
+
+    /// What the access service said: `unregistered` (create an
+    /// account), `active` (sign in), `pending` (sign in, then the
+    /// waiting screen), `suspended` (terminal), `invalid` (not an
+    /// address at all), or `unavailable` (the service could not be
+    /// reached, which is not an answer about the address).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-status")]
+    #[cardinality(one)]
+    pub struct State(pub String);
 }
 
 /// Attributes on the transient self-identity overlay the topbar chip
@@ -532,9 +744,43 @@ pub mod profile {
     pub struct DisplayName(pub String);
 }
 
+/// Attributes on the device-local roster of profiles this browser knows,
+/// kept in the registry profile's repository on a branch that never syncs.
+/// One entity per profile storage name; the account, provider, and email
+/// stamps are absent for a local workspace.
+pub mod roster {
+    use super::{Attribute, Entity};
+
+    /// The storage name the profile opens under: the activation handle.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Name(pub String);
+
+    /// The display label as of the last refresh: the profile's display
+    /// name, cached so a closed profile can be rendered without opening it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Label(pub String);
+
+    /// The account root the profile is attached to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Account(pub Entity);
+
+    /// The attached provider base URL.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Provider(pub String);
+
+    /// The account email, captured best-effort at link time.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    pub struct Email(pub String);
+}
+
 /// Root-owned account state replicated through the hidden account repository.
 pub mod account {
-    use super::Attribute;
+    use super::{Attribute, Entity};
 
     /// The account-wide display name. Cardinality-one merge semantics choose a
     /// deterministic winner when linked devices write concurrently.
@@ -561,6 +807,110 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct PasskeyCreatedOn(pub String);
+
+    /// The account's registration state with the access service, as one
+    /// of `Registered`, `Active`, or `Suspended`.
+    ///
+    /// A fact rather than a locally cached HTTP answer, so every device
+    /// on the account reads the same status through an ordinary query
+    /// and converges on it through sync. Cardinality-one: an account has
+    /// one registration state, and concurrent linked-device writes
+    /// converge deterministically rather than accumulating.
+    ///
+    /// A string rather than a typed enum because the value system stores
+    /// scalars; [`tonk_account::customer::CustomerStatus`] round-trips
+    /// through `as_str`/`parse`, so an unrecognised value read from a
+    /// newer build parses as absent rather than as a wrong status.
+    ///
+    /// [`tonk_account::customer::CustomerStatus`]: https://docs.rs/tonk-account
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct CustomerStatus(pub String);
+
+    /// The email address the account enrolled with.
+    ///
+    /// Recorded alongside the status so a device that never ran the
+    /// enrollment still knows which address the activation link went to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct CustomerEmail(pub String);
+
+    /// The account's provider: the UCAN access-service endpoint this
+    /// account is a customer of.
+    ///
+    /// Named for the account's relationship, not the space's plumbing. A
+    /// space has a *remote* (an `origin` its `main` tracks); the account
+    /// has a *provider*, which is who serves those remotes and who
+    /// `/provider/add` provisions consumers under. A space's remote
+    /// normally points at this address, but the two are different facts
+    /// about different subjects.
+    ///
+    /// A fact rather than a value re-derived per call site: the address
+    /// used to come from the page (`https://{origin}/ucan/`, filled into
+    /// a hidden form field) and from the signed account descriptor, so
+    /// two paths could disagree about where a space syncs. The service
+    /// names it in the registration receipt, so every attach path reads
+    /// one answer, and a device that never ran the registration reads
+    /// the same one through sync.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct ProviderAddress(pub String);
+    /// The account's X25519 public key as a `did:key:z6LS…` entity: the
+    /// recipient every device seals custodied seeds to. Derived from the
+    /// account secret, so rotation publishes a new one; cardinality-one
+    /// because sealed rows name their own recipient and need no history
+    /// here.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct EncryptionKey(pub Entity);
+}
+
+/// Attributes of a seed sealed to an account, in the account space. One
+/// row per `(subject, recipient)`; see [`crate::CustodiedSeed`].
+pub mod custody {
+    use super::{Attribute, Entity};
+
+    /// The DID the seed derives: a space's, or an invite principal's.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Subject(pub Entity);
+
+    /// What the subject is: `tonk:space` or `tonk:invite`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Kind(pub Entity);
+
+    /// The X25519 `did:key` the seed is sealed to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Recipient(pub Entity);
+
+    /// The sealed envelope bytes (`tonk_identity::sealed::Sealed`).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Sealed(pub Vec<u8>);
+
+    /// The account a custody cell recovers.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Account(pub Entity);
+
+    /// A custody cell's envelope bytes
+    /// (`tonk_identity::envelope::Envelope`, sealed under a passkey's
+    /// KEK).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.custody")]
+    #[cardinality(one)]
+    pub struct Cell(pub Vec<u8>);
 }
 
 /// Attributes that describe a repository on its content branch, keyed by the
@@ -601,7 +951,7 @@ pub mod authorization {
     /// The UCAN access-service endpoint for sync — the `&remote=` parameter
     /// suffix. Never empty: `run_invite` refuses to mint an invite (and so
     /// never asserts this) for a repository with no shareable remote, since
-    /// one that carried no remote would strand its recipient in a spot that
+    /// one that carried no remote would strand its recipient in a space that
     /// can never fill.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.authorization")]
@@ -637,12 +987,50 @@ pub mod credential {
 }
 
 /// Attributes on the overlay-only `tonk:share/blocked` fact — why a share
-/// click could not mint an invite. Keyed on the spot's subject entity, the
+/// click could not mint an invite. Keyed on the space's subject entity, the
 /// same entity [`crate::command::Credential`] is keyed by, so the share
 /// control reads both off one subject.
 ///
 /// Overlay-only, so it is session-scoped and never replicated: a refusal is
-/// this device's answer to this click, not a property of the spot.
+/// this device's answer to this click, not a property of the space.
+/// Attributes on the per-space invite state the share control renders.
+///
+/// One row per space, replaced as the state moves. Overlay-only: the
+/// url carries a secret seed in its fragment, and the row is a
+/// per-session view of an in-flight request rather than a durable
+/// record. The durable record of a *minted* invite is
+/// [`crate::Invitation`], keyed on the delegation CID — a different
+/// thing that happens to share the noun.
+pub mod invite {
+    use super::Attribute;
+    use dialog_artifacts::Entity;
+
+    /// Where this space's invite has got to.
+    ///
+    /// An entity, not a string: a string is a poor discriminator, and
+    /// this follows [`crate::domain::replica::Status`]
+    /// (`tonk:blank` / `tonk:initialized`). One of
+    /// `invite:requested`, `invite:granted`, `invite:suspended`,
+    /// `invite:unshareable`.
+    ///
+    /// A denial IS a status — there is no separate reason field. Two
+    /// fields would encode one fact and make illegal states
+    /// representable (granted-with-a-reason, denied-without-one).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invite")]
+    #[cardinality(one)]
+    pub struct Status(pub Entity);
+
+    /// The finished invite URL, present only once granted.
+    ///
+    /// Optional, so one row covers every state without a sentinel: a
+    /// request in flight simply has no url yet.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invite")]
+    #[cardinality(one)]
+    pub struct Url(pub String);
+}
+
 pub mod share {
     use super::Attribute;
 
@@ -785,14 +1173,6 @@ pub mod invitation {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation")]
     pub struct Audience(pub Entity);
-
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.invitation")]
-    pub struct TargetCid(pub String);
-
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.invitation")]
-    pub struct PathHex(pub String);
 }
 
 /// Operational metadata attached to an [`Invitation`](crate::Invitation)
@@ -804,11 +1184,6 @@ pub mod invitation_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation-execution")]
     pub struct Kind(pub String);
-
-    /// Explicit endpoint that accepts immutable revocation artifacts.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.invitation-execution")]
-    pub struct RevocationUrl(pub String);
 }
 
 /// Attributes that live on [`Remote`] entities only.

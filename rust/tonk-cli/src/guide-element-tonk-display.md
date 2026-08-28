@@ -12,8 +12,8 @@ you render ultimately hangs off a `<tonk-display>`.
 <!-- every instance, the directory view -->
 <tonk-display model="task"></tonk-display>
 
-<!-- a named view concept -->
-<tonk-display model="task" view="board"></tonk-display>
+<!-- one entity through the built-in label-view concept -->
+<tonk-display model="person" entity="did:key:z6Mk…" view="tonk:view/label"></tonk-display>
 ```
 
 ## Attributes
@@ -50,4 +50,4 @@ the pattern the interactive elements use to feed themselves (a hidden
 row's `subject={this}` marks the repeat root.
 
 Full resolution pipeline, the `<tonk-view>` binding model, and repeat/fold
-semantics: `rust/tonk-display/README.md`. See also `tonk guide views`.
+semantics: `rust/tonk-display/README.md`. See also `tonk help views`.

@@ -15,7 +15,6 @@ use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::AuthorizeError;
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
-use dialog_varsig::Did;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -27,7 +26,6 @@ pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};
 use super::{AppState, BranchConfiguration};
 use crate::TonkWorkerError;
 use crate::broadcast::{Notification, broadcast};
-use crate::router::join::GuestLease;
 
 /// Announce on the branch's broadcast channel that its head may have
 /// moved, so subscribed UIs refresh their revision and sync-state
@@ -629,17 +627,34 @@ pub async fn pull(
         }));
     }
 
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .pull()
-        .perform(&tonk_state.operator)
-        .await
-    {
+    // Authorization-bearing branches (the account, and through it the
+    // profile's access branch) must never be left partial: the session
+    // open at the next boot walks them with no network reach, and a
+    // head adopted by reference with blocks still remote bricks that
+    // boot with "Blob not found". Content spaces stay lazy.
+    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
+    let pulled = if hydrate {
+        tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .download()
+            .perform(&tonk_state.operator)
+            .await
+    } else {
+        tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .perform(&tonk_state.operator)
+            .await
+    };
+    match pulled {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
-            if super::account_state::is_account_key(&tonk_state, &params.repo).await
+            if hydrate
                 && let Err(error) = super::account_state::converge_account_state(&tonk_state).await
             {
                 log!("account-state convergence after pull failed: {error}");
@@ -955,18 +970,31 @@ pub async fn sync(
     // Pull with bounded refresh-and-retry on a head that moved under us.
     let mut after_pull = None;
     let mut pull_error: Option<TonkWorkerError> = None;
+    // See the pull handler: authorization-bearing branches hydrate.
+    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
     for attempt in 0..SYNC_RETRY_LIMIT {
-        match tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .pull()
-            .perform(&tonk_state.operator)
-            .await
-        {
+        let pulled = if hydrate {
+            tonk_state
+                .reactor
+                .repository(&params.repo)
+                .branch(&params.branch)
+                .pull()
+                .download()
+                .perform(&tonk_state.operator)
+                .await
+        } else {
+            tonk_state
+                .reactor
+                .repository(&params.repo)
+                .branch(&params.branch)
+                .pull()
+                .perform(&tonk_state.operator)
+                .await
+        };
+        match pulled {
             Ok(after) => {
                 log!("Pull succeeded: {}@{}", params.branch, params.repo);
-                if super::account_state::is_account_key(&tonk_state, &params.repo).await
+                if hydrate
                     && let Err(error) =
                         super::account_state::converge_account_state(&tonk_state).await
                 {
@@ -1175,6 +1203,17 @@ impl SyncQueue {
 /// Branches are synced per-repo; repos run sequentially here (the reactor
 /// serializes branch state anyway), priority-ordered by activity.
 pub async fn drain_sync(state: &AppState) {
+    // One drain at a time, and concurrent triggers coalesce instead of
+    // queueing: a keepalive beat arriving while a transact-triggered
+    // drain runs would only repeat the same sweep, and letting them
+    // interleave is how branch commits tear (session rotation and the
+    // account ensure both write without a per-branch lock in dialog).
+    // Whatever this beat would have pushed, the next one covers.
+    static DRAIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let Ok(_serialized) = DRAIN.try_lock() else {
+        return;
+    };
+
     // Before anything presigns: the operator's delegation expires, and a
     // drain is the regular beat this worker has to notice that on.
     // Best-effort here — a failed rotation must not take the drain down.
@@ -1209,46 +1248,40 @@ pub async fn drain_sync(state: &AppState) {
         .filter(|repo| seen.insert(repo.clone()))
         .collect();
 
-    for repo in order {
-        if let Err(e) = sync_repository(state, &repo).await {
+    for repo in &order {
+        if let Err(e) = sync_repository(state, repo).await {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
             let tonk = state.read().await;
-            tonk.sync_queue.requeue(&repo, now);
+            tonk.sync_queue.requeue(repo, now);
         }
     }
-}
 
-/// How long before a guest delegation lapses it is replayed.
-///
-/// Much tighter than the session's own margin, because the two are
-/// bounded differently: a session lasts
-/// [`SESSION_TTL_SECONDS`](crate::session::SESSION_TTL_SECONDS) and can
-/// afford to rotate an hour early, while a guest hop is capped at
-/// [`VISIT_TTL_SECONDS`](tonk_invite::VISIT_TTL_SECONDS) — one hour
-/// total. An hour-wide margin there would mean every guest is due from
-/// the moment it is minted. Five minutes is wide enough to cover a sync
-/// that starts just under the wire and reaches the remote just over it.
-pub(crate) const GUEST_RENEWAL_MARGIN_SECONDS: u64 = 5 * 60;
-
-/// Whether the guest delegation `lease` describes has to be replayed
-/// before it is used again.
-///
-/// Three ways to be due, and the first two are not about the clock:
-///
-/// - Legacy metadata. A version 1 record kept only the URL, so nothing
-///   is known about the chain standing on it. Refresh once and it
-///   rewrites itself in the current shape.
-/// - A different audience. Every worker restart derives a new operator,
-///   and a guest chain is addressed to the operator it was minted for.
-///   A record naming any other one describes a chain that can no longer
-///   be proved to, whatever its recorded expiry says.
-/// - Inside the margin, inclusive of the boundary.
-pub(crate) fn guest_needs_renewal(lease: &GuestLease, current_audience: &Did, now: u64) -> bool {
-    let (Some(audience), Some(expires_at)) = (&lease.audience, lease.expires_at) else {
-        return true;
+    // The account rides profile main, which no repository — and so no
+    // reactor entry — represents in the pull population above. Sweep it
+    // explicitly each drain, unless a dirty mark already routed it
+    // through `sync_repository` — sweeping twice per heartbeat is the
+    // exact duplication the dedicated path exists to avoid.
+    let account_already_swept = {
+        let tonk = state.read().await;
+        let mut swept = false;
+        for repo in &order {
+            if super::account_state::is_account_key(&tonk, repo).await {
+                swept = true;
+                break;
+            }
+        }
+        swept
     };
-    audience != current_audience || now.saturating_add(GUEST_RENEWAL_MARGIN_SECONDS) >= expires_at
+    if !account_already_swept {
+        let tonk = state.read().await;
+        let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
+        if status != tonk_account::AccountStateStatus::Unconfigured
+            && let Err(error) = swept
+        {
+            log!("drain_sync: account state did not fully reconcile: {error}");
+        }
+    }
 }
 
 /// Make sure every credential this worker is about to sign with is still
@@ -1280,26 +1313,23 @@ pub(crate) fn guest_needs_renewal(lease: &GuestLease, current_audience: &Did, no
 /// previous operator reads as due on the next attempt.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
     let now = crate::session::now();
-    let (profile, storage, expires_at, audience, leases) = {
+    let (profile, storage, expires_at) = {
         let tonk = state.read().await;
         (
             tonk.profile.clone(),
             tonk.storage.clone(),
             tonk.session_expires_at,
-            tonk.operator.did(),
-            crate::router::join::guest_leases(&tonk).await?,
         )
     };
 
-    if !crate::session::needs_renewal(expires_at, now)
-        && !any_guest_renewable(&leases, &audience, now).await?
-    {
+    if !crate::session::needs_renewal(expires_at, now) {
         return Ok(());
     }
 
     // Mint outside the lock — nothing else may proceed while a write
-    // lock is held, and this signs.
-    let session = crate::session::open(&profile, &storage).await?;
+    // lock is held, and this signs. The operator KEY is stable, so this
+    // replaces the delegation authorizing it, not the audience.
+    let session = crate::session::rotate(&profile, &storage).await?;
 
     let mut tonk = state.write().await;
     // A concurrent drain may have rotated while this one was minting.
@@ -1309,58 +1339,13 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
         return Ok(());
     }
 
-    // Re-read under the exclusive lock: a visit that committed after the
-    // check above holds a chain for the operator we are about to retire,
-    // and would silently lose its access if the batch were built from
-    // the earlier snapshot.
-    let leases = crate::router::join::guest_leases(&tonk).await?;
-    let candidate = session.operator.did();
-    let mut grants = Vec::with_capacity(leases.len());
-    for lease in &leases {
-        let Some(invite) = crate::router::join::renewable_invite(lease, now).await? else {
-            continue;
-        };
-        grants.push((
-            lease,
-            crate::router::join::mint_guest_grant(invite, &candidate).await?,
-        ));
-    }
-
-    for (_, grant) in &grants {
-        crate::router::join::retain_guest_grant(&tonk, &tonk.operator, grant).await?;
-    }
-    for (lease, grant) in &grants {
-        crate::router::join::save_guest(&tonk, &tonk.operator, &lease.subject, &lease.url, grant)
-            .await?;
-    }
-
+    // No guest replay: a guest's chain is addressed to the operator, and
+    // the operator's DID no longer moves, so a renewed delegation leaves
+    // every guest chain exactly as valid as it was. Replaying invites
+    // here was the only consumer of a guest's retained invite URL.
     tonk.operator = session.operator;
     tonk.session_expires_at = session.expires_at;
     Ok(())
-}
-
-/// Whether any guest is both due and still replayable.
-///
-/// Being due is not enough on its own: a guest whose invite has itself
-/// expired can never be renewed, and rotating for it would only produce
-/// another dead chain — on every sync boundary, forever, since the
-/// record would stay inside the margin. So the decision to rotate needs
-/// the invite, not just the record.
-async fn any_guest_renewable(
-    leases: &[GuestLease],
-    audience: &Did,
-    now: u64,
-) -> Result<bool, TonkWorkerError> {
-    for lease in leases {
-        if guest_needs_renewal(lease, audience, now)
-            && crate::router::join::renewable_invite(lease, now)
-                .await?
-                .is_some()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// `POST /api/sync` — an external sync poke.
@@ -1579,86 +1564,6 @@ mod tests {
         );
     }
 
-    /// A synthetic lease. The subject is irrelevant to the predicate —
-    /// only the recorded audience and expiry decide whether the chain
-    /// standing on it is still usable.
-    async fn lease(audience: Option<&Did>, expires_at: Option<u64>) -> GuestLease {
-        GuestLease {
-            subject: signer(&[3u8; 32]).await,
-            url: "https://hub.tonk.xyz/join?access=x#seed".to_string(),
-            audience: audience.cloned(),
-            expires_at,
-        }
-    }
-
-    async fn signer(seed: &[u8; 32]) -> Did {
-        use dialog_credentials::ed25519::Ed25519Signer;
-        use dialog_varsig::Principal as _;
-        Ed25519Signer::import(seed).await.unwrap().did()
-    }
-
-    #[dialog_common::test]
-    async fn it_keeps_a_guest_outside_the_five_minute_margin() {
-        let operator = signer(&[1u8; 32]).await;
-        let expires_at = 1_000_000;
-        let lease = lease(Some(&operator), Some(expires_at)).await;
-
-        assert!(!guest_needs_renewal(
-            &lease,
-            &operator,
-            expires_at - GUEST_RENEWAL_MARGIN_SECONDS - 1
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn it_renews_a_guest_inside_the_margin() {
-        let operator = signer(&[1u8; 32]).await;
-        let expires_at = 1_000_000;
-        let lease = lease(Some(&operator), Some(expires_at)).await;
-
-        assert!(
-            guest_needs_renewal(&lease, &operator, expires_at - GUEST_RENEWAL_MARGIN_SECONDS),
-            "the boundary is inclusive: a guest exactly one margin out is due",
-        );
-        assert!(
-            guest_needs_renewal(&lease, &operator, expires_at + 1),
-            "a lapsed guest must replay rather than keep presenting a dead chain",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_renews_legacy_guest_metadata() {
-        let operator = signer(&[1u8; 32]).await;
-
-        assert!(
-            guest_needs_renewal(&lease(None, None).await, &operator, 0),
-            "a v1 record says nothing about the live delegation, so it is \
-             due once and rewrites itself in the current shape",
-        );
-        assert!(
-            guest_needs_renewal(&lease(Some(&operator), None).await, &operator, 0),
-            "half the metadata is no better than none",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_renews_an_audience_mismatch_after_worker_restart() {
-        let recorded = signer(&[1u8; 32]).await;
-        let current = signer(&[2u8; 32]).await;
-        let expires_at = 1_000_000;
-        let lease = lease(Some(&recorded), Some(expires_at)).await;
-
-        assert!(
-            guest_needs_renewal(
-                &lease,
-                &current,
-                expires_at - GUEST_RENEWAL_MARGIN_SECONDS * 10
-            ),
-            "a restart derives a new operator, and a chain addressed to the \
-             old one cannot be proved to however long it has left",
-        );
-    }
-
     // `forget` is service-worker scoped (wasm-gated), so this one is too.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
@@ -1731,228 +1636,33 @@ mod overlay_tests {
     }
 }
 
-/// Renewal tests — wasm-only, because they need real credential storage
-/// and a real certificate store to rotate against.
-///
-/// None of them sleep. A guest hop lasts an hour, so waiting for one to
-/// approach its margin is not a test; instead the stored metadata is
-/// rewritten into the margin, which is exactly the state renewal reads.
+/// Session renewal tests — wasm-only, because they need a real
+/// certificate store to mint against.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod renewal_tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use dialog_varsig::Did;
+    use super::ensure_session_authority;
+    use crate::router::tests::test_state;
+    use crate::router::{AppState, api_router_with_state};
 
-    use super::{GUEST_RENEWAL_MARGIN_SECONDS, ensure_session_authority};
-    use crate::router::AppState;
-    use crate::router::join::{guest_lease, guest_record_bytes, store_guest_record};
-    use crate::router::{
-        api_router_with_state,
-        tests::{join_invite_url, open_invite_url, test_state, visit_invite},
-    };
-
-    /// Visit an open invite and return the subject it mounted.
-    async fn guest(app: &axum::Router, subject_tag: u8, ephemeral_tag: u8) -> Did {
-        let (url, key) = open_invite_url(subject_tag, ephemeral_tag, None).await;
-        assert_eq!(
-            visit_invite(app, &url).await,
-            axum::http::StatusCode::CREATED
-        );
-        key.parse().expect("the routing key is the subject DID")
+    async fn operator_did(state: &AppState) -> String {
+        use dialog_varsig::Principal as _;
+        state.read().await.operator.did().to_string()
     }
 
-    async fn operator_did(state: &AppState) -> Did {
-        state.read().await.operator.did()
-    }
-
-    /// Move a guest's recorded expiry into the renewal margin, leaving
-    /// its retained URL and audience alone.
-    async fn expire_into_margin(state: &AppState, subject: &Did) -> u64 {
-        let tonk = state.write().await;
-        let lease = guest_lease(&tonk, subject)
-            .await
-            .expect("the record reads")
-            .expect("a visit retains one");
-        let due_at = crate::session::now() + GUEST_RENEWAL_MARGIN_SECONDS - 1;
-        store_guest_record(
-            &tonk,
-            subject,
-            &lease.url,
-            &lease.audience.expect("a fresh record names its audience"),
-            due_at,
-        )
-        .await
-        .expect("the record rewrites");
-        due_at
-    }
-
-    /// Whether the worker can currently prove `subject` to its own
-    /// operator — the walk every presign runs — and what bounds it.
-    async fn proof_expiry(state: &AppState, subject: &Did) -> Option<u64> {
-        let tonk = state.read().await;
-        tonk.profile
-            .access()
-            .prove(dialog_capability::Subject::from(subject.clone()))
-            .audience(&tonk.operator)
-            .perform(&tonk.operator)
-            .await
-            .expect("the subject must still be provable")
-            .duration
-            .expiration
-    }
-
+    /// The operator key derives from a CONSTANT context, so renewal
+    /// replaces the delegation authorizing it and never the key itself.
+    ///
+    /// This is what lets a chain addressed to the operator, such as a
+    /// guest's invite hop, survive renewal. Deriving a fresh key each
+    /// time invalidated those chains twice a day, which made a retained
+    /// bearer secret the only way to mint replacements.
     #[dialog_common::test]
-    async fn it_rotates_and_rebinds_a_guest_before_expiry() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let subject = guest(&app, 130, 131).await;
+    async fn it_keeps_the_operator_did_across_renewal() {
+        let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let before = operator_did(&state).await;
-        let due_at = expire_into_margin(&state, &subject).await;
-
-        ensure_session_authority(&state)
-            .await
-            .expect("renewal runs");
-
-        let after = operator_did(&state).await;
-        assert_ne!(
-            before, after,
-            "a replacement guest chain needs its own audience, or the store \
-             keeps the lapsed one beside it and proves either one",
-        );
-
-        let lease = {
-            let tonk = state.read().await;
-            guest_lease(&tonk, &subject)
-                .await
-                .expect("the record reads")
-                .expect("the guest is still a guest")
-        };
-        assert_eq!(
-            lease.audience.as_ref(),
-            Some(&after),
-            "the record must follow the operator it was replayed onto",
-        );
-        assert!(
-            lease.expires_at.expect("v2 metadata") > due_at,
-            "renewal is only renewal if the expiry actually moves out",
-        );
-        assert_eq!(
-            proof_expiry(&state, &subject).await,
-            lease.expires_at,
-            "the chain the presign walk finds is the one the record describes",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_rebinds_a_fresh_guest_after_operator_restart() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let subject = guest(&app, 132, 133).await;
-        let recorded = {
-            let tonk = state.read().await;
-            guest_lease(&tonk, &subject)
-                .await
-                .unwrap()
-                .unwrap()
-                .expires_at
-                .unwrap()
-        };
-
-        // What a service-worker restart leaves behind: a new operator
-        // over the same profile and storage, and a guest record still
-        // naming the old one with an hour left on it.
-        let restarted = {
-            let mut tonk = state.write().await;
-            let session = crate::session::open(&tonk.profile, &tonk.storage)
-                .await
-                .expect("a replacement session opens");
-            let did = session.operator.did();
-            tonk.operator = session.operator;
-            tonk.session_expires_at = session.expires_at;
-            did
-        };
-        assert!(
-            recorded > crate::session::now() + GUEST_RENEWAL_MARGIN_SECONDS,
-            "the recorded expiry is deliberately far away, so only the \
-             audience mismatch can be what forces the replay",
-        );
-
-        ensure_session_authority(&state)
-            .await
-            .expect("renewal runs");
-
-        let after = operator_did(&state).await;
-        assert_ne!(restarted, after, "the mismatch forces a rotation");
-        let lease = {
-            let tonk = state.read().await;
-            guest_lease(&tonk, &subject).await.unwrap().unwrap()
-        };
-        assert_eq!(lease.audience.as_ref(), Some(&after));
-        assert_eq!(proof_expiry(&state, &subject).await, lease.expires_at);
-    }
-
-    #[dialog_common::test]
-    async fn it_rebinds_every_guest_when_one_guest_forces_rotation() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let first = guest(&app, 134, 135).await;
-        let second = guest(&app, 136, 137).await;
-        let (durable_url, durable_key) = open_invite_url(138, 139, None).await;
-        assert_eq!(
-            join_invite_url(&app, &durable_url).await,
-            axum::http::StatusCode::CREATED
-        );
-        let durable: Did = durable_key.parse().unwrap();
-
-        // Only the first guest is due. The operator is shared, so the
-        // rotation it forces has to carry the second one with it.
-        expire_into_margin(&state, &first).await;
-        let before = operator_did(&state).await;
-
-        ensure_session_authority(&state)
-            .await
-            .expect("renewal runs");
-
-        let after = operator_did(&state).await;
-        assert_ne!(before, after);
-        for subject in [&first, &second] {
-            let lease = {
-                let tonk = state.read().await;
-                guest_lease(&tonk, subject).await.unwrap().unwrap()
-            };
-            assert_eq!(
-                lease.audience.as_ref(),
-                Some(&after),
-                "a guest that was not itself due still loses its chain to the \
-                 rotation, so it has to be replayed too",
-            );
-            assert_eq!(proof_expiry(&state, subject).await, lease.expires_at);
-        }
-        assert!(
-            proof_expiry(&state, &durable).await.is_some(),
-            "a durable space reaches the new operator through the re-minted \
-             session hop, so it must survive the rotation as well",
-        );
-
-        // One rotation for the whole set, not one per guest.
-        let settled = operator_did(&state).await;
-        ensure_session_authority(&state)
-            .await
-            .expect("a settled set renews nothing");
-        assert_eq!(
-            settled,
-            operator_did(&state).await,
-            "with every guest rebound there is nothing left to be due for",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_does_not_rotate_a_healthy_operator_or_guest() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let subject = guest(&app, 140, 141).await;
-        let before = operator_did(&state).await;
-        let bytes = {
-            let tonk = state.read().await;
-            guest_record_bytes(&tonk, &subject).await.unwrap()
-        };
 
         ensure_session_authority(&state).await.unwrap();
         ensure_session_authority(&state).await.unwrap();
@@ -1960,60 +1670,7 @@ mod renewal_tests {
         assert_eq!(
             before,
             operator_did(&state).await,
-            "a session and a guest both well inside their margins must not \
-             churn the operator on every sync boundary",
-        );
-        let tonk = state.read().await;
-        assert_eq!(
-            guest_record_bytes(&tonk, &subject).await.unwrap(),
-            bytes,
-            "and nothing about the retained record is rewritten",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_keeps_the_current_operator_when_guest_replay_fails() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let subject = guest(&app, 142, 143).await;
-
-        // Local corruption: a record that no longer holds an invite. It
-        // is due, so renewal has to try it, and it cannot succeed.
-        {
-            let tonk = state.write().await;
-            let audience = tonk.operator.did();
-            store_guest_record(
-                &tonk,
-                &subject,
-                "not-an-invite",
-                &audience,
-                crate::session::now() + GUEST_RENEWAL_MARGIN_SECONDS - 1,
-            )
-            .await
-            .expect("the record rewrites");
-        }
-        let (before, expires_at, bytes) = {
-            let tonk = state.read().await;
-            (
-                tonk.operator.did(),
-                tonk.session_expires_at,
-                guest_record_bytes(&tonk, &subject).await.unwrap(),
-            )
-        };
-
-        let result = ensure_session_authority(&state).await;
-
-        assert!(
-            result.is_err(),
-            "a guest that cannot be replayed is reported, not skipped past \
-             into a rotation that would strand it",
-        );
-        let tonk = state.read().await;
-        assert_eq!(tonk.operator.did(), before, "the operator is untouched");
-        assert_eq!(tonk.session_expires_at, expires_at);
-        assert_eq!(
-            guest_record_bytes(&tonk, &subject).await.unwrap(),
-            bytes,
-            "the malformed record is preserved for diagnosis, not deleted",
+            "renewal re-mints the delegation, not the operator key",
         );
     }
 }

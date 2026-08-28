@@ -15,17 +15,32 @@
 /// that can never fill. Repairable: the bar offers to attach this server.
 pub const BLOCKED_NOT_SYNCED: &str = "not-synced";
 
+/// The active profile is not attached to an account. An invite derives its
+/// durable authority from that account, so the bar hands off to login rather
+/// than minting from a transient local profile.
+pub const BLOCKED_ACCOUNT_REQUIRED: &str = "account-required";
+
 /// The spot's sync server cannot be shared (a local-only or non-UCAN remote).
 /// Terminal: nothing the user can do from the bar.
 pub const BLOCKED_UNSHAREABLE_REMOTE: &str = "unshareable-remote";
 
-/// The remote carries no revocation relay, so a minted invite would have
-/// nowhere to publish its revocation. Repairable: the bar offers to attach
-/// the relay the spot's own sync server advertises, which is an upsert onto
-/// the existing remote rather than a second one.
-pub const BLOCKED_MISSING_REVOCATION_RELAY: &str = "missing-revocation-relay";
+/// The spot has no upstream and this device has no account registered
+/// with a provider, so there is nothing to attach it to. Repairable, but
+/// not by attaching a remote: the bar asks the user to register.
+///
+/// Distinct from [`BLOCKED_NOT_SYNCED`] because the remedy differs. A
+/// device has an account from first boot, so "no provider" here means
+/// nobody has signed up yet, not that something failed.
+pub const BLOCKED_NEEDS_ACCOUNT: &str = "needs-account";
 
-/// This replica is a guest visit: it holds bounded invite authority, not the
-/// durable membership a mint delegates from. Repairable: the bar offers to
-/// join the spot, which is what raises the passkey prompt.
-pub const BLOCKED_NEEDS_MEMBERSHIP: &str = "needs-membership";
+/// The account enrolled but has not confirmed the emailed activation
+/// link, so the access service serves it nothing yet. Repairable by the
+/// user, in their inbox rather than in the bar.
+///
+/// Offering "turn on sync" here would attach a remote the service
+/// refuses, which is the failure this class exists to name instead.
+pub const BLOCKED_NEEDS_ACTIVATION: &str = "needs-activation";
+
+/// The account's service was withdrawn. Terminal: no email confirms this
+/// away and nothing in the bar repairs it.
+pub const BLOCKED_SUSPENDED: &str = "suspended";

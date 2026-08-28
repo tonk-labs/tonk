@@ -9,11 +9,13 @@
 
 use std::collections::BTreeMap;
 
-use dialog_credentials::Ed25519KeyResolver;
+use dialog_credentials::DidKeyResolver;
 use dialog_ucan_core::InvocationChain;
 use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::revocation::UnverifiedRevocations;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use dialog_ucan_core::verification::{Environment, VerificationContext};
+use dialog_varsig::AnySignature;
 
 use crate::core::CeremonyError;
 use crate::store::{Account, Device, PasskeyMetadata, Store};
@@ -37,28 +39,23 @@ pub struct RootCaller {
     pub arguments: BTreeMap<String, Promised>,
 }
 
-/// Cryptographically verified activation caller before an active row exists.
-pub struct ActivationCaller {
-    /// Account root subject of the returned grant.
-    pub root_did: String,
-    /// Persistent device DID signing activation.
-    pub device_did: String,
-    /// CID of the invocation's sole root-to-device proof.
-    pub delegation_cid: String,
-    /// Signed activation arguments.
-    pub arguments: BTreeMap<String, Promised>,
-}
-
 async fn verified_chain(
     body: &[u8],
     expected_command: &[&str],
-) -> Result<InvocationChain<Ed25519Signature>, CeremonyError> {
+) -> Result<InvocationChain<AnySignature>, CeremonyError> {
     let chain = InvocationChain::try_from(body)
         .map_err(|err| CeremonyError::Invalid(format!("bad invocation container: {err}")))?;
 
-    chain.verify(&Ed25519KeyResolver).await.map_err(|err| {
-        CeremonyError::Unauthorized(format!("invocation failed to verify: {err}"))
-    })?;
+    chain
+        .verify(&VerificationContext::new(&Environment::new(
+            chain.proof_store(),
+            DidKeyResolver,
+            UnverifiedRevocations,
+        )))
+        .await
+        .map_err(|err| {
+            CeremonyError::Unauthorized(format!("invocation failed to verify: {err}"))
+        })?;
 
     let command_segments: Vec<&str> = chain.command().0.iter().map(String::as_str).collect();
     if command_segments.as_slice() != expected_command {
@@ -93,9 +90,7 @@ const CEREMONY_SKEW_ALLOWANCE: Duration = Duration::from_secs(60);
 /// five-minute ceremony window every account-service request uses,
 /// plus a one-minute allowance for clock skew on the upper bound. The
 /// lower bound (already expired) carries no such allowance.
-fn require_ceremony_expiration(
-    chain: &InvocationChain<Ed25519Signature>,
-) -> Result<(), CeremonyError> {
+fn require_ceremony_expiration(chain: &InvocationChain<AnySignature>) -> Result<(), CeremonyError> {
     let expiration = chain.invocation.expiration().ok_or_else(|| {
         CeremonyError::Unauthorized("invocation must carry an expiration".to_string())
     })?;
@@ -172,25 +167,6 @@ pub async fn authorize_root(
 
     Ok(RootCaller {
         root_did: chain.subject().to_string(),
-        arguments: chain.arguments().clone(),
-    })
-}
-
-/// Verify a completed-link activation without consulting normal active-device
-/// authorization, which cannot exist until this call succeeds.
-pub async fn authorize_link_activation(body: &[u8]) -> Result<ActivationCaller, CeremonyError> {
-    let chain = verified_chain(body, &["account", "link", "activate"]).await?;
-    require_ceremony_expiration(&chain)?;
-    let proofs = chain.proofs();
-    if proofs.len() != 1 {
-        return Err(CeremonyError::Unauthorized(
-            "link activation must carry exactly one account grant".to_string(),
-        ));
-    }
-    Ok(ActivationCaller {
-        root_did: chain.subject().to_string(),
-        device_did: chain.issuer().to_string(),
-        delegation_cid: proofs[0].to_string(),
         arguments: chain.arguments().clone(),
     })
 }
@@ -327,7 +303,7 @@ mod tests {
         args: BTreeMap<String, Promised>,
         expiration: Option<Timestamp>,
     ) -> (String, String, Vec<u8>) {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -338,7 +314,7 @@ mod tests {
         let delegation = chain.proofs().last().unwrap().clone();
         let cid = delegation.to_cid();
         let mut builder = InvocationBuilder::new()
-            .issuer(device.clone())
+            .issuer(dialog_credentials::Signer::from(device.clone()))
             .audience(&root_did)
             .subject(&root_did)
             .command(command)
@@ -372,7 +348,7 @@ mod tests {
             .create_account("a@x.com", root_did, "cred", 0)
             .await
             .unwrap();
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -402,7 +378,7 @@ mod tests {
         device_did: &str,
         status: DeviceStatus,
     ) -> i64 {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -420,7 +396,7 @@ mod tests {
     }
 
     fn invocation_proof_cid(bytes: &[u8]) -> String {
-        InvocationChain::<Ed25519Signature>::try_from(bytes)
+        InvocationChain::<AnySignature>::try_from(bytes)
             .unwrap()
             .proofs()[0]
             .to_string()
@@ -502,10 +478,10 @@ mod tests {
     async fn it_rejects_a_device_of_a_different_account() {
         let store = SqliteStore::in_memory().unwrap();
 
-        let root_a = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root_a = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
-        let root_b = tonk_identity::derive::derive_root_signer(&[9u8; 32])
+        let root_b = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
             .await
             .unwrap();
         let device_b = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -546,7 +522,7 @@ mod tests {
         let delegation = chain.proofs().last().unwrap().clone();
         let cid = delegation.to_cid();
         let invocation = InvocationBuilder::new()
-            .issuer(device_b.clone())
+            .issuer(dialog_credentials::Signer::from(device_b.clone()))
             .audience(&root_a_did)
             .subject(&root_a_did)
             .command(vec!["account".into(), "device".into(), "list".into()])
@@ -570,7 +546,7 @@ mod tests {
         let store = SqliteStore::in_memory().unwrap();
 
         // The device is registered under account A…
-        let root_a = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root_a = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let root_a_did = root_a.did();
@@ -586,7 +562,7 @@ mod tests {
 
         // …but invokes as a delegate of account B, with a chain that
         // verifies: root B really did delegate to this device key.
-        let root_b = tonk_identity::derive::derive_root_signer(&[9u8; 32])
+        let root_b = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
             .await
             .unwrap();
         let root_b_did = root_b.did();
@@ -601,7 +577,7 @@ mod tests {
         let delegation = chain.proofs().last().unwrap().clone();
         let cid = delegation.to_cid();
         let invocation = InvocationBuilder::new()
-            .issuer(device)
+            .issuer(dialog_credentials::Signer::from(device))
             .audience(&root_b_did)
             .subject(&root_b_did)
             .command(vec!["account".into(), "device".into(), "list".into()])
@@ -660,7 +636,12 @@ mod tests {
 
         match authorize(&store, &bytes, &["account", "device", "list"]).await {
             Err(CeremonyError::Unauthorized(msg)) => {
-                assert!(msg.contains("has expired"), "unexpected message: {msg}");
+                // Expiry is dialog's finding now, judged against the
+                // context's clock rather than a bound we compared here.
+                assert!(
+                    msg.to_lowercase().contains("expired"),
+                    "unexpected message: {msg}"
+                );
             }
             Err(other) => panic!("expected Unauthorized, got a different error: {other:?}"),
             Ok(_) => panic!("expected Unauthorized, got Ok"),
@@ -695,7 +676,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_authorizes_a_request_signed_directly_by_the_root() {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let expected_root = root.did().to_string();
@@ -717,7 +698,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_a_root_command_mismatch() {
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
@@ -736,13 +717,13 @@ mod tests {
     async fn it_rejects_an_expired_root_invocation() {
         use std::time::{Duration, UNIX_EPOCH};
 
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
             .await
             .unwrap();
         let root_did = root.did();
         let expiration = Timestamp::new(UNIX_EPOCH + Duration::from_secs(1)).unwrap();
         let invocation = InvocationBuilder::new()
-            .issuer(root)
+            .issuer(dialog_credentials::Signer::from(root))
             .audience(&root_did)
             .subject(&root_did)
             .command(vec!["account".into(), "device".into(), "link".into()])

@@ -9,7 +9,7 @@
 //! ```text
 //! parse -> verify audience -> build candidate chain -> stage proof/repository
 //!       -> authorize remote -> pull, mutate, and validate staged content
-//!       -> install staged content -> commit authority/profile/guest state
+//!       -> install staged content -> commit authority/profile state
 //!       -> backup -> navigate
 //! ```
 //!
@@ -55,11 +55,7 @@
 
 mod staging;
 
-use ::axum::{
-    Json,
-    extract::{Path, Request, State},
-    http::StatusCode,
-};
+use ::axum::{Json, extract::State, http::StatusCode};
 use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Attribute, Changes, Entity, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
@@ -82,14 +78,15 @@ use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience};
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
-    RepositoryName, prelude::DidExt as _,
+    RepositoryName, SeedKind, prelude::DidExt as _,
 };
 use tonk_worker_api::JoinFailureKind;
+use zeroize::Zeroizing;
 
 use self::staging::Staging;
 use super::AppState;
@@ -98,10 +95,7 @@ use super::repository::{
     UpstreamConfiguration, build_repository_info, record_initialized_replica_in_profile,
     record_replica_local_meta,
 };
-use crate::{
-    TonkWorkerError,
-    worker::{DefaultOperator, TonkState},
-};
+use crate::{TonkWorkerError, worker::TonkState};
 
 /// The single branch the profile repository lives on (`main`; the
 /// profile has no content/meta split).
@@ -211,45 +205,6 @@ pub enum JoinResponse {
     },
 }
 
-/// Which authority a join installs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum JoinMode {
-    /// Bounded guest authority from an audience-open invite. Creates no
-    /// durable membership and leaves a guest credential behind, so a
-    /// later promotion knows what to replay.
-    GuestVisit,
-    /// Durable membership terminating at the recipient's root.
-    Durable,
-}
-
-/// Why a join stopped short of committing.
-///
-/// A missing account is not a failure — it is a request for the account
-/// the join needs, and the same URL is replayed once the user has one.
-/// A guest visit never reaches it: reading and writing through an open
-/// invite needs neither an account nor a root.
-pub(crate) enum JoinRejection {
-    /// A durable join was asked for before the device had an account.
-    AccountRequired,
-    /// The join reached a terminal classification.
-    Failed(JoinFailure),
-}
-
-impl From<JoinFailure> for JoinRejection {
-    fn from(failure: JoinFailure) -> Self {
-        Self::Failed(failure)
-    }
-}
-
-impl From<JoinRejection> for TonkWorkerError {
-    fn from(rejection: JoinRejection) -> Self {
-        match rejection {
-            JoinRejection::AccountRequired => TonkWorkerError::AccountRequired,
-            JoinRejection::Failed(failure) => failure.into(),
-        }
-    }
-}
-
 /// A terminal join classification plus operator-facing context.
 ///
 /// `detail` is assembled from typed error variants, HTTP statuses, and
@@ -275,10 +230,14 @@ impl std::fmt::Debug for JoinFailure {
 
 impl JoinFailure {
     fn new(kind: JoinFailureKind, detail: impl Into<String>) -> Self {
-        Self {
-            kind,
-            detail: detail.into(),
-        }
+        let detail = detail.into();
+        // The only place the detail is ever emitted. Every recipient-facing
+        // surface shows the kind's fixed copy so an upstream body cannot
+        // leak, which leaves a failed join otherwise undiagnosable: one
+        // sentence on screen standing for any of a dozen causes. Logged at
+        // construction so every constructor is covered by one line.
+        log!("join failed ({}): {detail}", kind.as_str());
+        Self { kind, detail }
     }
 
     /// The classification, for the caller that renders a terminal state.
@@ -300,6 +259,10 @@ impl JoinFailure {
 
     fn unavailable(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::Unavailable, detail)
+    }
+
+    fn refused(detail: impl Into<String>) -> Self {
+        Self::new(JoinFailureKind::Refused, detail)
     }
 
     pub(crate) fn claim_failed(detail: impl Into<String>) -> Self {
@@ -324,6 +287,11 @@ impl From<JoinFailure> for TonkWorkerError {
                 code: Some("JOIN_UNAVAILABLE".to_string()),
                 message,
             },
+            JoinFailureKind::Refused => TonkWorkerError::Upstream {
+                status: 403,
+                code: Some("JOIN_REFUSED".to_string()),
+                message,
+            },
             JoinFailureKind::ClaimFailed => TonkWorkerError::Internal(message),
         }
     }
@@ -338,14 +306,15 @@ mod failure_vocabulary {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use super::{JoinFailure, JoinFailureKind, JoinRejection};
+    use super::{AuthorizeError, JoinFailure, JoinFailureKind};
     use crate::TonkWorkerError;
 
-    const KINDS: [JoinFailureKind; 5] = [
+    const KINDS: [JoinFailureKind; 6] = [
         JoinFailureKind::Malformed,
         JoinFailureKind::AudienceMismatch,
         JoinFailureKind::Revoked,
         JoinFailureKind::Unavailable,
+        JoinFailureKind::Refused,
         JoinFailureKind::ClaimFailed,
     ];
 
@@ -355,10 +324,11 @@ mod failure_vocabulary {
         assert_eq!(
             messages,
             vec![
-                "This invite link is invalid.",
+                "This share link is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
                 "Tonk could not reach this spot. Try again.",
+                "This spot's host declined the invite. Its owner needs to check the spot's plan.",
                 "Tonk could not join this spot.",
             ],
         );
@@ -374,6 +344,7 @@ mod failure_vocabulary {
                 "audience-mismatch",
                 "revoked",
                 "unavailable",
+                "refused",
                 "claim-failed",
             ],
         );
@@ -421,6 +392,31 @@ mod failure_vocabulary {
         assert_eq!(code.as_deref(), Some("JOIN_UNAVAILABLE"));
     }
 
+    /// A policy refusal is the REMOTE's verdict on a chain that proved
+    /// out, not a local breakage. It landed in the `_` catch-all and was
+    /// reported as `claim-failed` ("Tonk could not join this spot"),
+    /// which blames this device for a decision taken on the server —
+    /// the real one being an unprovisioned subject, which no amount of
+    /// retrying or re-inviting fixes.
+    #[dialog_common::test]
+    fn it_reports_a_policy_refusal_as_the_remotes_verdict() {
+        let failure = super::classify_authorization(&AuthorizeError::PolicyViolation {
+            predicate: "subject is provisioned by an active customer".to_string(),
+        });
+
+        assert_eq!(failure.kind(), JoinFailureKind::Refused);
+        assert!(
+            !failure.kind().retryable(),
+            "the same request will be refused again until the owner acts"
+        );
+
+        let TonkWorkerError::Upstream { status, code, .. } = TonkWorkerError::from(failure) else {
+            panic!("a refusal is the upstream's answer, not an internal fault");
+        };
+        assert_eq!(status, 403);
+        assert_eq!(code.as_deref(), Some("JOIN_REFUSED"));
+    }
+
     #[dialog_common::test]
     fn it_separates_a_wrong_recipient_from_a_bad_link() {
         assert!(matches!(
@@ -432,60 +428,45 @@ mod failure_vocabulary {
             TonkWorkerError::Router(_)
         ));
     }
-
-    /// A missing account is a request to sign in, not a terminal failure —
-    /// the route has to keep answering `ACCOUNT_REQUIRED` so the gate opens.
-    #[dialog_common::test]
-    fn it_keeps_a_missing_account_out_of_the_failure_vocabulary() {
-        assert!(matches!(
-            TonkWorkerError::from(JoinRejection::AccountRequired),
-            TonkWorkerError::AccountRequired
-        ));
-    }
 }
 
 /// A parsed, audience-verified invite and everything the later stages
 /// need to decide what this join has to prove.
 ///
-/// Holds the invite and the URL a guest promotion replays, so it
+/// Holds the invite, whose open form carries a bearer seed, so it
 /// deliberately has no derived `Debug`.
 pub(crate) struct PreparedJoin {
-    mode: JoinMode,
-    /// The URL as supplied. Retained only so a guest visit can store it
-    /// for its own later promotion; never logged, asserted, or returned.
-    url: String,
     invite: Invite,
     /// Derived from the chain *as parsed*, before any redelegation
     /// changes the leaf.
     invitation: Invitation,
-    /// Explicit relay metadata carried by modern invites.
-    invitation_execution: Option<InvitationExecution>,
+    /// Audience metadata recorded beside the invitation.
+    invitation_execution: InvitationExecution,
     subject: Did,
     key: String,
-    /// The durable member the chain terminates at. `None` for a guest
-    /// visit, whose audience is minted per attempt.
-    member: Option<Did>,
-    /// The candidate chain, already built for a durable claim. A guest
-    /// visit mints one per audience, so it is built during staging.
-    chain: Option<DelegationChain>,
+    /// The account the chain terminates at: the passkey root when one is
+    /// linked, the onboarding account otherwise.
+    member: Did,
+    /// The candidate chain, ending at `member`.
+    chain: DelegationChain,
+    /// The account's grant to this device, which the staged proof walk
+    /// composes the candidate chain onto.
+    device_grant: DelegationChain,
     /// Access service the invite carried, if any.
     remote_url: Option<String>,
     /// Explicit revocation relay the invite carried, if any.
     revocation_url: Option<String>,
     /// A replica for this subject is already recorded in the profile.
     existing: bool,
-    /// A guest credential is retained for this subject.
-    guest: bool,
 }
 
 impl std::fmt::Debug for PreparedJoin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PreparedJoin")
-            .field("mode", &self.mode)
             .field("subject", &self.subject)
+            .field("member", &self.member)
             .field("existing", &self.existing)
-            .field("guest", &self.guest)
             .finish_non_exhaustive()
     }
 }
@@ -509,9 +490,7 @@ impl PreparedJoin {
     /// usable local content, so redeeming its own link adds no candidate
     /// authority for the remote to authorize.
     fn is_self_claim(&self) -> bool {
-        self.member
-            .as_ref()
-            .is_some_and(|member| self.invitation.inviter.0 == member.this())
+        self.invitation.inviter.0 == self.member.this()
     }
 
     /// Whether this attempt has to produce usable initial content.
@@ -532,14 +511,10 @@ impl PreparedJoin {
 pub(crate) struct StagedJoin {
     prepared: PreparedJoin,
     staging: Staging,
-    /// The candidate chain staging accepted. For a guest visit this
-    /// terminates at the staged operator and is re-minted at commit time
-    /// for the real one.
+    /// The candidate chain staging accepted.
     chain: DelegationChain,
     /// Staged content to publish, when the attempt produced a head.
     installable: Option<StagedContent>,
-    /// The same member has already claimed this exact invitation.
-    repeated_claim: bool,
 }
 
 /// The staged head to publish locally, and how much of it the durable
@@ -579,25 +554,14 @@ impl std::fmt::Debug for StagedJoin {
     }
 }
 
-/// Visit an audience-open invite without creating durable membership.
-#[wasm_compat]
-pub async fn visit(
-    State(state): State<AppState>,
-    Json(body): Json<JoinRequest>,
-) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let tonk = state.write().await;
-    let outcome = join_invite(&tonk, &body.url, JoinMode::GuestVisit).await?;
-    joined_response(&tonk, outcome).await
-}
-
-/// Redeem an invite URL durably to the local root.
+/// Redeem an invite URL to this device's account.
 #[wasm_compat]
 pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
     let tonk = state.write().await;
-    let outcome = join_invite(&tonk, &body.url, JoinMode::Durable).await?;
+    let outcome = join_invite(&tonk, &body.url).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
         outcome.subject,
@@ -649,611 +613,28 @@ pub(crate) struct JoinOutcome {
     pub renewed: bool,
 }
 
-/// The record shape written today: the retained bearer URL plus which
-/// operator the live guest delegation was minted for and when it lapses.
+/// The one join operation: the HTTP join and the `tonk:join` command
+/// both run through it.
 ///
-/// Version 1 carried the URL alone. That was enough to replay an invite
-/// on demand, but not to tell whether the delegation currently in the
-/// certificate store is still usable — which is what renewal has to
-/// decide before every remote operation. A v1 record is therefore read
-/// as "metadata unknown", which forces one refresh and rewrites it in
-/// this shape.
-const GUEST_RECORD_VERSION: u8 = 2;
-
-/// The on-disk form. Both metadata fields are absent in version 1 and
-/// required in version 2; [`decode_guest_record`] is what enforces that,
-/// so nothing downstream has to re-check the pairing.
-#[derive(Serialize, Deserialize)]
-struct GuestRecord {
-    version: u8,
-    url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    audience: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    expires_at: Option<u64>,
-}
-
-/// A retained guest record, decoded.
-///
-/// `audience` and `expires_at` are `None` only for a legacy version 1
-/// record. They are read together or not at all: an audience without an
-/// expiry says nothing about whether the delegation is still good, and an
-/// expiry without an audience says nothing about which chain it describes.
-pub(crate) struct GuestLease {
-    /// The subject whose replica this guest holds.
-    pub subject: Did,
-    /// The retained open-invite URL. Bearer authority — never logged.
-    pub url: String,
-    /// Operator the live delegation was minted for.
-    pub audience: Option<Did>,
-    /// Effective expiry of that delegation, unix seconds.
-    pub expires_at: Option<u64>,
-}
-
-impl std::fmt::Debug for GuestLease {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("GuestLease")
-            .field("subject", &self.subject)
-            .field("audience", &self.audience)
-            .field("expires_at", &self.expires_at)
-            .finish_non_exhaustive()
-    }
-}
-
-/// A freshly minted guest delegation, with the two facts the retained
-/// record has to agree with: who it is addressed to, and when it lapses.
-///
-/// The expiry is read off the chain rather than computed as `now + TTL`,
-/// so an invite that expires sooner than the guest hop would carries
-/// through instead of being overstated.
-pub(crate) struct GuestGrant {
-    /// The bounded `subject -> ... -> operator` chain.
-    pub chain: DelegationChain,
-    /// The operator the chain terminates at.
-    pub audience: Did,
-    /// Effective expiration of the chain, unix seconds.
-    pub expires_at: u64,
-}
-
-fn guest_site(subject: &Did) -> String {
-    format!("tonk-guest-invite-v1:{}", subject.repo_key())
-}
-
-/// Decode a stored guest record into its URL and, when the record
-/// carries them, the audience and expiry of the delegation it describes.
-///
-/// A record this cannot read is local corruption, not authority to
-/// invent: it comes back as an error and the caller preserves the bytes.
-fn decode_guest_record(
-    subject: &Did,
-    bytes: &[u8],
-) -> Result<(String, Option<Did>, Option<u64>), TonkWorkerError> {
-    let record: GuestRecord = serde_json::from_slice(bytes).map_err(|error| {
-        TonkWorkerError::Internal(format!("stored guest record is invalid: {error}"))
-    })?;
-    match record.version {
-        // Legacy: the URL is all it kept. Treated as "metadata unknown",
-        // which reads as due on the next check.
-        1 => Ok((record.url, None, None)),
-        GUEST_RECORD_VERSION => {
-            let (Some(audience), Some(expires_at)) = (record.audience, record.expires_at) else {
-                return Err(TonkWorkerError::Internal(format!(
-                    "stored guest record for {subject} is missing its delegation metadata"
-                )));
-            };
-            let audience = audience.parse::<Did>().map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "stored guest record for {subject} names an unparseable audience: {error}"
-                ))
-            })?;
-            Ok((record.url, Some(audience), Some(expires_at)))
-        }
-        version => Err(TonkWorkerError::Internal(format!(
-            "stored guest record for {subject} has unsupported version {version}"
-        ))),
-    }
-}
-
-/// Read the retained guest record for `subject`, if there is one.
-///
-/// An absent or cleared site is not a guest — promotion clears by
-/// writing empty bytes, which has to read the same as never having
-/// visited.
-pub(crate) async fn guest_lease(
-    tonk: &TonkState,
-    subject: &Did,
-) -> Result<Option<GuestLease>, TonkWorkerError> {
-    let bytes = match tonk
-        .profile
-        .credential()
-        .site(guest_site(subject))
-        .load::<Vec<u8>>()
-        .perform(&tonk.operator)
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
-        Err(error) => {
-            return Err(TonkWorkerError::Internal(format!(
-                "failed to load guest record: {error}"
-            )));
-        }
-    };
-    if bytes.is_empty() {
-        return Ok(None);
-    }
-    let (url, audience, expires_at) = decode_guest_record(subject, &bytes)?;
-    Ok(Some(GuestLease {
-        subject: subject.clone(),
-        url,
-        audience,
-        expires_at,
-    }))
-}
-
-/// Every guest this profile currently holds, in subject order.
-///
-/// The operator is shared by all mounted repositories, so rotating it
-/// invalidates every guest delegation at once — which makes the whole
-/// set, not the one guest that triggered a rotation, the unit renewal
-/// works on. Sorted so that batch behaves the same on every pass.
-pub(crate) async fn guest_leases(tonk: &TonkState) -> Result<Vec<GuestLease>, TonkWorkerError> {
-    let profile_meta = tonk
-        .reactor
-        .profile_repository()
-        .branch(PROFILE_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to open profile meta branch: {error}"))
-        })?;
-
-    let rows: Vec<Replica> = profile_meta
-        .handle()
-        .query()
-        .select(Query::<Replica> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            profile: Term::from(tonk_schema::domain::replica::Profile(
-                tonk.profile.did().this(),
-            )),
-            kind: Term::from(Replica::repository_kind()),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("replica query on profile meta failed: {error:?}"))
-        })?;
-
-    let mut subjects: Vec<Did> = Vec::with_capacity(rows.len());
-    for row in rows {
-        match row.subject.0.to_string().parse::<Did>() {
-            Ok(subject) => subjects.push(subject),
-            // A single unreadable index row is not a reason to refuse to
-            // renew every other guest; the profile route skips it the
-            // same way.
-            Err(error) => log!(
-                "replica subject {:?} is unparseable: {error:?}",
-                row.subject.0
-            ),
-        }
-    }
-    subjects.sort_by_key(|subject| subject.to_string());
-    subjects.dedup();
-
-    let mut leases = Vec::new();
-    for subject in subjects {
-        if let Some(lease) = guest_lease(tonk, &subject).await? {
-            leases.push(lease);
-        }
-    }
-    Ok(leases)
-}
-
-/// Parse a lease's retained invite, unless replaying it could not
-/// produce usable authority.
-///
-/// `Ok(None)` means the invite itself has lapsed. A guest hop is bounded
-/// by the chain it extends, so replaying an expired invite would mint a
-/// chain that is already dead — and, because the record would then name
-/// an audience whose delegation is inside the renewal margin forever, it
-/// would ask for a rotation on every single sync boundary. Declining
-/// here is what keeps a dead invite from becoming a rotation loop; the
-/// guest simply stays as it is until someone hands it a live link.
-///
-/// A URL that does not parse is a different thing: local corruption. It
-/// comes back as an error so the caller can refuse to rotate and leave
-/// the record in place for diagnosis.
-pub(crate) async fn renewable_invite(
-    lease: &GuestLease,
-    now: u64,
-) -> Result<Option<Invite>, JoinFailure> {
-    let invite = Invite::parse_url(&lease.url).await.map_err(|error| {
-        JoinFailure::malformed(format!(
-            "retained guest invite for {} did not parse: {error}",
-            lease.subject
-        ))
-    })?;
-    if invite
-        .chain
-        .expiration()
-        .is_some_and(|expiration| expiration.to_unix() <= now)
-    {
-        return Ok(None);
-    }
-    Ok(Some(invite))
-}
-
-/// Mint one bounded guest delegation from `invite` to `audience`.
-///
-/// The single place a guest hop is created: staging, the initial visit,
-/// and renewal all come through here, so the TTL and chain shape cannot
-/// drift between what a test exercises and what renewal replays. The
-/// expiry returned is the chain's effective one — an invite that lapses
-/// before the guest hop would bounds the result, and no hop can extend
-/// past it.
-pub(crate) async fn mint_guest_grant(
-    invite: Invite,
-    audience: &Did,
-) -> Result<GuestGrant, JoinFailure> {
-    let chain = invite
-        .visit(audience)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("invite did not extend to a guest: {error}"))
-        })?
-        .chain;
-    let expires_at = chain
-        .expiration()
-        .ok_or_else(|| JoinFailure::claim_failed("a guest delegation must expire"))?
-        .to_unix();
-    Ok(GuestGrant {
-        chain,
-        audience: audience.clone(),
-        expires_at,
-    })
-}
-
-/// Install a minted guest chain in the durable certificate store.
-///
-/// Split from [`save_guest`] so a batch renewal can retain every
-/// replacement chain before it writes any metadata: the operator swap
-/// then happens with no guest left holding a record that names an
-/// audience it has no chain for.
-pub(crate) async fn retain_guest_grant(
-    tonk: &TonkState,
-    operator: &DefaultOperator,
-    grant: &GuestGrant,
-) -> Result<(), JoinFailure> {
-    tonk.profile
-        .access()
-        .save(UcanDelegation(grant.chain.clone()))
-        .perform(operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to save the guest authority: {error}"))
-        })
-}
-
-/// Retain the invite a guest visit was opened with, together with the
-/// audience and expiry of the delegation currently standing on it.
-///
-/// The URL is the renewable half: it is what a promotion replays, and
-/// what renewal replays onto a rotated operator. The metadata is the
-/// half that says whether replaying is due.
-pub(crate) async fn save_guest(
-    tonk: &TonkState,
-    operator: &DefaultOperator,
-    subject: &Did,
-    url: &str,
-    grant: &GuestGrant,
-) -> Result<(), JoinFailure> {
-    write_guest_record(
-        tonk,
-        operator,
-        subject,
-        url,
-        &grant.audience,
-        grant.expires_at,
-    )
-    .await
-}
-
-async fn write_guest_record(
-    tonk: &TonkState,
-    operator: &DefaultOperator,
-    subject: &Did,
-    url: &str,
-    audience: &Did,
-    expires_at: u64,
-) -> Result<(), JoinFailure> {
-    let record = serde_json::to_vec(&GuestRecord {
-        version: GUEST_RECORD_VERSION,
-        url: url.to_string(),
-        audience: Some(audience.to_string()),
-        expires_at: Some(expires_at),
-    })
-    .map_err(|error| {
-        JoinFailure::claim_failed(format!("failed to serialize the guest record: {error}"))
-    })?;
-    tonk.profile
-        .credential()
-        .site(guest_site(subject))
-        .save(record)
-        .perform(operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to save the guest record: {error}"))
-        })
-}
-
-/// Overwrite a retained guest record with chosen metadata, bypassing the
-/// mint that normally produces it.
-///
-/// Test-only. Renewal is driven entirely by what is stored, so the
-/// alternative to writing that directly is waiting an hour for a real
-/// delegation to approach its expiry.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn store_guest_record(
-    tonk: &TonkState,
-    subject: &Did,
-    url: &str,
-    audience: &Did,
-    expires_at: u64,
-) -> Result<(), JoinFailure> {
-    write_guest_record(tonk, &tonk.operator, subject, url, audience, expires_at).await
-}
-
-/// The raw retained bytes for `subject`, for tests that assert a failed
-/// renewal left the record exactly as it found it.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn guest_record_bytes(tonk: &TonkState, subject: &Did) -> Option<Vec<u8>> {
-    tonk.profile
-        .credential()
-        .site(guest_site(subject))
-        .load::<Vec<u8>>()
-        .perform(&tonk.operator)
-        .await
-        .ok()
-        .filter(|bytes| !bytes.is_empty())
-}
-
-/// The stored record is the only thing renewal reads before it decides
-/// whether a guest's authority is still good, so decoding it is pure
-/// data and runs on both targets.
-#[cfg(test)]
-mod guest_record {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    use dialog_credentials::ed25519::Ed25519Signer;
-    use dialog_varsig::{Did, Principal as _};
-
-    use super::{GUEST_RECORD_VERSION, decode_guest_record};
-
-    async fn subject() -> Did {
-        Ed25519Signer::import(&[9u8; 32]).await.unwrap().did()
-    }
-
-    #[dialog_common::test]
-    async fn it_reads_a_v1_guest_record_as_a_legacy_lease() {
-        let subject = subject().await;
-        let bytes = serde_json::json!({ "version": 1, "url": "https://hub.tonk.xyz/join?x=1#s" })
-            .to_string()
-            .into_bytes();
-
-        let (url, audience, expires_at) = decode_guest_record(&subject, &bytes).unwrap();
-
-        assert_eq!(
-            url, "https://hub.tonk.xyz/join?x=1#s",
-            "the retained URL is what a legacy record still carries",
-        );
-        assert!(
-            audience.is_none() && expires_at.is_none(),
-            "a v1 record knows nothing about the live delegation, which is \
-             what makes it due for one refresh",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_reads_a_v2_guest_record_with_its_delegation_metadata() {
-        let subject = subject().await;
-        let audience = Ed25519Signer::import(&[11u8; 32]).await.unwrap().did();
-        let bytes = serde_json::json!({
-            "version": GUEST_RECORD_VERSION,
-            "url": "https://hub.tonk.xyz/join?x=1#s",
-            "audience": audience.to_string(),
-            "expires_at": 1_700_000_000u64,
-        })
-        .to_string()
-        .into_bytes();
-
-        let decoded = decode_guest_record(&subject, &bytes).unwrap();
-
-        assert_eq!(
-            decoded,
-            (
-                "https://hub.tonk.xyz/join?x=1#s".to_string(),
-                Some(audience),
-                Some(1_700_000_000),
-            )
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_refuses_a_v2_guest_record_missing_its_metadata() {
-        let subject = subject().await;
-        for partial in [
-            serde_json::json!({
-                "version": GUEST_RECORD_VERSION,
-                "url": "https://hub.tonk.xyz/join",
-                "expires_at": 1_700_000_000u64,
-            }),
-            serde_json::json!({
-                "version": GUEST_RECORD_VERSION,
-                "url": "https://hub.tonk.xyz/join",
-                "audience": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP",
-            }),
-        ] {
-            assert!(
-                decode_guest_record(&subject, partial.to_string().as_bytes()).is_err(),
-                "half the metadata says nothing about whether the stored \
-                 delegation is still usable, so it must not be read as if it did",
-            );
-        }
-    }
-
-    #[dialog_common::test]
-    async fn it_refuses_a_guest_record_from_an_unsupported_version() {
-        let subject = subject().await;
-        let bytes = serde_json::json!({ "version": 99, "url": "https://hub.tonk.xyz/join" })
-            .to_string()
-            .into_bytes();
-
-        assert!(
-            decode_guest_record(&subject, &bytes).is_err(),
-            "a record this build cannot read is corruption to report, not \
-             authority to guess at",
-        );
-    }
-}
-
-/// Drop the retained guest invite. Part of the durable commit, never a
-/// preflight write: until it runs, a promotion that fails still leaves
-/// the guest with working bounded access.
-async fn clear_guest(tonk: &TonkState, subject: &Did) -> Result<(), JoinFailure> {
-    tonk.profile
-        .credential()
-        .site(guest_site(subject))
-        .save(Vec::<u8>::new())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to clear the guest record: {error}"))
-        })
-}
-
-async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, TonkWorkerError> {
-    Ok(guest_lease(tonk, subject).await?.map(|lease| lease.url))
-}
-
-/// Whether this replica is a guest visit rather than a durable member.
-///
-/// A guest installed bounded invite authority and no roster row. Anything that
-/// needs to delegate the spot's access — minting an invite of its own — has to
-/// ask, because a guest cannot: the retained invite is what it holds, and a
-/// mint delegates from durable membership.
-/// Gated like its only caller (`run_invite`, service-worker only), so a native
-/// build doesn't carry it as dead code.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn is_guest_replica(
-    tonk: &TonkState,
-    subject: &Did,
-) -> Result<bool, TonkWorkerError> {
-    Ok(guest_url(tonk, subject).await?.is_some())
-}
-
-/// Active local membership mode for one mounted repository.
-#[derive(Debug, Serialize)]
-pub struct MembershipResponse {
-    /// `guest` while only bounded invite authority is installed, otherwise `durable`.
-    pub status: &'static str,
-}
-
-/// Report whether this local replica is a guest visit or durable root member.
-#[wasm_compat]
-pub async fn membership(
-    State(state): State<AppState>,
-    Path(repo): Path<String>,
-) -> Result<Json<MembershipResponse>, TonkWorkerError> {
-    let tonk = state.read().await;
-    let repository = tonk
-        .profile
-        .repository(&repo)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
-    let status = if guest_url(&tonk, &repository.did()).await?.is_some() {
-        "guest"
-    } else {
-        "durable"
-    };
-    Ok(Json(MembershipResponse { status }))
-}
-
-/// Explicitly promote a locally visited guest using its retained invite URL.
-///
-/// Answers with the promoted replica rather than an empty 204: the
-/// acknowledgement is useful to the caller, and a body-bearing status is
-/// one fewer null-body case at the browser conversion boundary.
-#[wasm_compat]
-pub async fn join_guest(
-    State(state): State<AppState>,
-    Path(repo): Path<String>,
-    request: Request,
-) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let tonk = state.write().await;
-    let repository = tonk
-        .profile
-        .repository(&repo)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
-    let url = guest_url(&tonk, &repository.did())
-        .await?
-        .ok_or_else(|| TonkWorkerError::Conflict("this replica is already durable".to_string()))?;
-    match join_invite(&tonk, &url, JoinMode::Durable).await {
-        Ok(outcome) => joined_response(&tonk, outcome).await,
-        Err(JoinRejection::AccountRequired) => {
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            {
-                let client = request.extensions().get::<crate::router::ClientId>();
-                crate::router::navigate::notify_account_required(
-                    client,
-                    tonk_worker_api::PendingIntent::DurableJoin { url },
-                );
-            }
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-            let _ = (request, url);
-            Err(TonkWorkerError::AccountRequired)
-        }
-        Err(JoinRejection::Failed(failure)) => {
-            log!("guest promotion failed: {failure:?}");
-            Err(failure.into())
-        }
-    }
-}
-
-/// The one join operation: HTTP visit, HTTP join, the `tonk:join`
-/// command, and guest promotion all run through it.
+/// Every join is durable, to whatever account this device has: the
+/// passkey root when one is linked, the onboarding account otherwise.
+/// Accreditation re-roots the membership from the custodied invite
+/// seed, so a join never has to be redone.
 ///
 /// Nothing durable changes before [`commit_join`], and everything
 /// [`commit_join`] does is either local or already proven, so a failure
 /// at any earlier stage leaves the recipient's profile, repository list,
-/// roster, guest credential, and claim backup exactly as they were.
-pub(crate) async fn join_invite(
-    tonk: &TonkState,
-    url: &str,
-    mode: JoinMode,
-) -> Result<JoinOutcome, JoinRejection> {
-    let prepared = prepare_join(tonk, url, mode).await?;
+/// roster, and claim backup exactly as they were.
+pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
+    let prepared = prepare_join(tonk, url).await?;
     let staged = stage_join(tonk, prepared).await?;
-    Ok(commit_join(tonk, staged).await?)
+    commit_join(tonk, staged).await
 }
 
 /// Parse the invite, verify it is addressed to this identity, and build
-/// the candidate chain. Reads only.
-async fn prepare_join(
-    tonk: &TonkState,
-    url: &str,
-    mode: JoinMode,
-) -> Result<PreparedJoin, JoinRejection> {
+/// the candidate chain. Reads only, except that a device joining before
+/// it has any account mints its onboarding account here.
+async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinFailure> {
     let invite = Invite::parse_url(url)
         .await
         .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?;
@@ -1265,88 +646,50 @@ async fn prepare_join(
         .expect("Invite invariant: chain has a specific subject");
 
     let open = matches!(&invite.audience, InviteAudience::Open { .. });
-    let invitation_execution = invite.revocation_url.as_ref().map(|relay| {
-        InvitationExecution::new(
-            &invitation,
-            if open { "open" } else { "scoped" },
-            relay.as_str(),
-        )
-    });
+    let invitation_execution =
+        InvitationExecution::new(&invitation, if open { "open" } else { "scoped" });
     let subject = invite.subject().clone();
     let key = subject.repo_key().to_owned();
     let remote_url = invite.remote_url.as_ref().map(url::Url::to_string);
     let revocation_url = invite.revocation_url.as_ref().map(url::Url::to_string);
-
-    // Audience: an open invite redelegates to whoever redeems it; a
-    // targeted one only ever redeems for the DID it names.
-    let (member, chain) = match mode {
-        JoinMode::GuestVisit => {
-            if !open {
-                return Err(JoinFailure::audience_mismatch(
-                    "a targeted invite cannot be opened as a guest",
-                )
-                .into());
-            }
-            (None, None)
-        }
-        JoinMode::Durable => {
-            // Durable membership is what a later share delegates from, so it
-            // has to terminate at an account root — an anonymous one leaves
-            // the chain rooted in something with no owner and no way to
-            // revoke it. A guest visit is the accountless path, and takes the
-            // arm above.
-            crate::router::account::require_account(tonk)
-                .await
-                .map_err(|_| JoinRejection::AccountRequired)?;
-            let member = match crate::router::account::member_did(tonk).await {
-                Ok(member) => member,
-                Err(TonkWorkerError::RootRequired) => {
-                    return Err(JoinRejection::AccountRequired);
-                }
-                Err(error) => {
-                    return Err(JoinFailure::claim_failed(format!(
-                        "failed to resolve the joining member: {error}"
-                    ))
-                    .into());
-                }
-            };
-            let claimed = invite.clone().claim(&member).await.map_err(|error| {
-                if open {
-                    JoinFailure::claim_failed(format!("invite did not extend: {error}"))
-                } else {
-                    JoinFailure::audience_mismatch(format!("invite is not for this root: {error}"))
-                }
-            })?;
-            (Some(member), Some(claimed.chain))
-        }
-    };
 
     let existing = find_replica_for_subject(tonk, &subject)
         .await
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to look up the local replica: {error}"))
         })?;
-    let guest = guest_url(tonk, &subject)
+    // The membership terminates at this device's account, and the
+    // account's grant to the device is what the proof walk composes the
+    // claim onto. Both come from the same place, so a device cannot end
+    // up holding a chain it cannot prove for.
+    let (member, device_grant) = crate::router::account::current_account(tonk)
         .await
         .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to read the guest record: {error}"))
-        })?
-        .is_some();
+            JoinFailure::claim_failed(format!("failed to resolve the joining account: {error}"))
+        })?;
+
+    // Audience: an open invite redelegates to whoever redeems it; a
+    // targeted one only ever redeems for the DID it names.
+    let claimed = invite.clone().claim(&member).await.map_err(|error| {
+        if open {
+            JoinFailure::claim_failed(format!("invite did not extend: {error}"))
+        } else {
+            JoinFailure::audience_mismatch(format!("invite is not for this account: {error}"))
+        }
+    })?;
 
     Ok(PreparedJoin {
-        mode,
-        url: url.to_owned(),
         invite,
         invitation,
         invitation_execution,
         subject,
         key,
         member,
-        chain,
+        chain: claimed.chain,
+        device_grant,
         remote_url,
         revocation_url,
         existing,
-        guest,
     })
 }
 
@@ -1363,28 +706,10 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
     let staging = Staging::open(tonk).await?;
 
     // Retain only what the proof walk needs. The staged session's
-    // `profile -> operator` delegation is already in the pool; a durable
-    // claim also needs the `root -> device` grant it composes onto.
-    if prepared.member.is_some() {
-        let root = crate::router::identity::local_root(tonk)
-            .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!("failed to read the local root: {error}"))
-            })?;
-        staging.retain(tonk, root.delegation).await?;
-    }
-
-    let chain = match &prepared.chain {
-        Some(chain) => chain.clone(),
-        // A guest visit's authority is minted per audience, so the staged
-        // attempt gets its own bounded delegation and the real operator
-        // only receives one once this stage has passed.
-        None => {
-            mint_guest_grant(prepared.invite.clone(), &staging.operator().did())
-                .await?
-                .chain
-        }
-    };
+    // `profile -> operator` delegation is already in the pool; the claim
+    // composes onto the `account -> device` grant.
+    staging.retain(tonk, prepared.device_grant.clone()).await?;
+    let chain = prepared.chain.clone();
     staging.retain(tonk, chain.clone()).await?;
 
     let branch = staging
@@ -1410,40 +735,35 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
         }
     }
 
-    // A guest records no roster row; every durable claim, including a
-    // renewal, stages roster/provenance/name into the exact revision that will
-    // be installed before authority is saved.
-    let mut repeated_claim = false;
-    if let Some(member) = &prepared.member {
-        let (changes, already_claimed) = claim_changes(
-            tonk,
-            &branch,
-            staging.operator(),
-            &prepared.invitation,
-            prepared.invitation_execution.as_ref(),
-            member,
-            &prepared.subject,
-        )
-        .await?;
-        repeated_claim = already_claimed;
-        if !changes.is_empty() {
-            branch
-                .transaction()
-                .assert(changes)
-                .commit()
-                .perform(staging.operator())
-                .await
-                .map_err(|error| {
-                    JoinFailure::claim_failed(format!("failed to stage the claim: {error}"))
-                })?;
-        }
+    // Every claim, including a renewal, stages roster/provenance/name into
+    // the exact revision that will be installed before authority is saved.
+    let (changes, _already_claimed) = claim_changes(
+        tonk,
+        &branch,
+        staging.operator(),
+        &prepared.invitation,
+        &prepared.invitation_execution,
+        &prepared.member,
+        &prepared.subject,
+    )
+    .await?;
+    if !changes.is_empty() {
+        branch
+            .transaction()
+            .assert(changes)
+            .commit()
+            .perform(staging.operator())
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("failed to stage the claim: {error}"))
+            })?;
     }
     if prepared.needs_remote_authorization() {
         validate_content(&branch, staging.operator(), &prepared.subject).await?;
     }
 
-    // A local-only guest visit can still have no revision. Every durable
-    // claim and every existing replica has an exact staged head to install.
+    // Every claim and every existing replica has an exact staged head to
+    // install.
     let installable = branch.revision().map(|revision| StagedContent {
         branch,
         revision,
@@ -1455,7 +775,6 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
         staging,
         chain,
         installable,
-        repeated_claim,
     })
 }
 
@@ -1510,15 +829,13 @@ async fn copy_existing_to_stage(
 /// Content is installed while the repository is still unindexed, the
 /// accepted authority is saved next, and the profile `Replica` fact —
 /// the moment the join becomes visible — lands only once both are in
-/// place. The guest credential, the backup, and the caller's navigation
-/// all follow.
+/// place. The backup and the caller's navigation follow.
 async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome, JoinFailure> {
     let StagedJoin {
         prepared,
         staging,
         chain,
         installable,
-        repeated_claim,
     } = staged;
 
     let repository = if prepared.installs_replica() {
@@ -1553,7 +870,8 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
         .await?;
     }
 
-    let grant = save_authority(tonk, &prepared, chain).await?;
+    save_authority(tonk, &prepared, chain.clone()).await?;
+    retain_claim_authority(tonk, &prepared.key, &chain).await;
 
     if prepared.installs_replica() {
         record_initialized_replica_in_profile(tonk, &prepared.subject)
@@ -1563,35 +881,46 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
             })?;
     }
 
-    match prepared.mode {
-        JoinMode::GuestVisit => {
-            let grant = grant.ok_or_else(|| {
-                JoinFailure::claim_failed("a guest visit installed no bounded authority")
-            })?;
-            save_guest(
-                tonk,
-                &tonk.operator,
-                &prepared.subject,
-                &prepared.url,
-                &grant,
-            )
-            .await?;
+    {
+        // The account directory is how another of this account's
+        // devices recovers this claim: alongside the membership
+        // facts, record the mount configuration the invite carried,
+        // or a fresh sign-in lists a spot it can never mount.
+        // Renewals record too. Best-effort, and strictly after the local
+        // commit — the
+        // join is already complete.
+        match invite_configuration(
+            &prepared.subject,
+            prepared.remote_url.as_deref(),
+            prepared.revocation_url.as_deref(),
+        ) {
+            Ok(configuration) => {
+                super::repository::record_space_mount(
+                    tonk,
+                    &prepared.subject,
+                    &configuration,
+                    None,
+                )
+                .await;
+            }
+            Err(error) => {
+                log!("claimed space directory record skipped: {error}");
+            }
         }
-        JoinMode::Durable => {
-            if prepared.guest {
-                clear_guest(tonk, &prepared.subject).await?;
-            }
-            // Escrow a newly accepted claim so another of this account's
-            // devices can recover the space. Exact local repeats are already
-            // escrowed, while an owner's space-root prefix is backed up by
-            // the owned-space path. Best-effort, and strictly after the local
-            // commit — the join is already complete.
-            if !(prepared.is_self_claim() || prepared.existing && repeated_claim)
-                && let Err(error) =
-                    crate::router::account_backup::back_up_subject(tonk, &prepared.subject).await
-            {
-                log!("joined-space backup skipped: {error}");
-            }
+        // The membership hangs off the invite principal, so the
+        // account keeps that principal's seed: at rotation it mints
+        // `principal -> new root` itself instead of needing a fresh
+        // invite. A targeted invite carries no seed and its chain is
+        // rooted at the account already. Best-effort, like the
+        // directory record above.
+        if let InviteAudience::Open { seed } = &prepared.invite.audience {
+            super::account_state::custody_seed(
+                tonk,
+                prepared.invite.chain.audience(),
+                SeedKind::Invite,
+                Zeroizing::new(*seed),
+            )
+            .await;
         }
     }
 
@@ -1609,6 +938,44 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
     })
 }
 
+/// Retain the claimed chain into the space's content branch, so the hop
+/// that admits this member is provable from the space itself.
+///
+/// The invite hop is already there (the inviter retained it at mint);
+/// what an open invite adds at claim time is the hop from the invite's
+/// ephemeral audience to this member, and without it the space knows
+/// this member only through the invite everyone else also came in
+/// through. An admin removing one member needs that member's own hop:
+/// revoking the shared invite hop would remove everyone who used it.
+///
+/// Best-effort: the join is complete once the authority is saved
+/// locally, and a member whose hop did not land here is still a member,
+/// just not individually removable until it does.
+pub(super) async fn retain_claim_authority(tonk: &TonkState, key: &str, chain: &DelegationChain) {
+    let session = match tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            log!("claimed chain not retained on '{key}': {error}");
+            return;
+        }
+    };
+    if let Err(error) = session
+        .handle()
+        .delegations()
+        .retain(UcanDelegation(chain.clone()))
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("claimed chain not retained on '{key}': {error}");
+    }
+}
+
 /// Save the authority this join accepted into the durable certificate
 /// store.
 ///
@@ -1616,36 +983,16 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
 /// re-saving an extended one adds a fresh proof. Either way the
 /// recipient's effective access can only grow, never shrink, by joining.
 ///
-/// Returns the minted grant for a guest visit, so the caller writes a
-/// retained record that describes the chain actually installed rather
-/// than an independently recomputed one.
 async fn save_authority(
     tonk: &TonkState,
     prepared: &PreparedJoin,
-    staged_chain: DelegationChain,
-) -> Result<Option<GuestGrant>, JoinFailure> {
-    // The staged guest delegation is addressed to the staging operator
-    // and dies with it, so the durable one is minted here — after
-    // staging proved the invite is good for it.
-    let grant = match prepared.mode {
-        JoinMode::Durable => None,
-        JoinMode::GuestVisit => {
-            Some(mint_guest_grant(prepared.invite.clone(), &tonk.operator.did()).await?)
-        }
-    };
-    let chain = match &grant {
-        Some(grant) => grant.chain.clone(),
-        None => staged_chain,
-    };
-
-    let prefix_bytes = match prepared.mode {
-        JoinMode::Durable => Some(chain.to_bytes().map_err(|error| {
-            JoinFailure::claim_failed(format!(
-                "failed to serialize the accepted authority: {error}"
-            ))
-        })?),
-        JoinMode::GuestVisit => None,
-    };
+    chain: DelegationChain,
+) -> Result<(), JoinFailure> {
+    let prefix_bytes = chain.to_bytes().map_err(|error| {
+        JoinFailure::claim_failed(format!(
+            "failed to serialize the accepted authority: {error}"
+        ))
+    })?;
     tonk.profile
         .access()
         .save(UcanDelegation(chain))
@@ -1654,20 +1001,18 @@ async fn save_authority(
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to save the accepted authority: {error}"))
         })?;
-    if let Some(prefix_bytes) = prefix_bytes {
-        tonk.profile
-            .credential()
-            .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", prepared.subject))
-            .save(prefix_bytes)
-            .perform(&tonk.operator)
-            .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!(
-                    "failed to persist the accepted root prefix: {error}"
-                ))
-            })?;
-    }
-    Ok(grant)
+    tonk.profile
+        .credential()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", prepared.subject))
+        .save(prefix_bytes)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!(
+                "failed to persist the accepted root prefix: {error}"
+            ))
+        })?;
+    Ok(())
 }
 
 /// Give the durable repository the staged revision, then publish it as the
@@ -1928,23 +1273,40 @@ fn classify_pull(error: &PullError) -> JoinFailure {
     // `AuthorizeError` / `Rejection` intact from the service boundary),
     // so classification is a match, not a code-table lookup.
     if let Some(authorization) = crate::router::sync::authorization_reason(error) {
-        return match authorization {
-            AuthorizeError::Revoked { .. } => {
-                JoinFailure::revoked("remote access has been revoked")
-            }
-            AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
-                JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
-            }
-            AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
-                JoinFailure::unavailable(format!("remote answered: {authorization}"))
-            }
-            _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
-        };
+        return classify_authorization(authorization);
     }
     if let Some(rejection) = crate::router::sync::rejection_reason(error) {
         return JoinFailure::unavailable(format!("remote answered: {rejection}"));
     }
     JoinFailure::unavailable("the remote could not be reached")
+}
+
+/// Map one authorization verdict to the failure the user is shown.
+///
+/// Split from [`classify_pull`] so it can be tested without building a
+/// `PullError`: the mapping is the part that decides what the page says,
+/// and one arm landing in the wrong bucket is invisible until someone
+/// reads a log.
+fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
+    match authorization {
+        AuthorizeError::Revoked { .. } => JoinFailure::revoked("remote access has been revoked"),
+        AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
+            JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
+        }
+        AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
+            JoinFailure::unavailable(format!("remote answered: {authorization}"))
+        }
+        // The chain proved out and the remote evaluated it; a policy
+        // predicate on the delegation said no (an unprovisioned subject
+        // is the common one). Nothing on this device is wrong, so
+        // `claim-failed` — which says the local claim broke, and reads
+        // as "Tonk could not join this spot" — pointed the user at the
+        // wrong thing entirely.
+        AuthorizeError::PolicyViolation { .. } => {
+            JoinFailure::refused(format!("remote refused: {authorization}"))
+        }
+        _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
+    }
 }
 
 /// Check that a branch carries what navigating into the space needs: the
@@ -2069,7 +1431,7 @@ async fn claim_changes<Env: BranchEnv>(
     branch: &Branch,
     env: &Env,
     invitation: &Invitation,
-    invitation_execution: Option<&InvitationExecution>,
+    invitation_execution: &InvitationExecution,
     member: &Did,
     subject: &Did,
 ) -> Result<(Changes, bool), JoinFailure> {
@@ -2132,9 +1494,7 @@ async fn claim_changes<Env: BranchEnv>(
 
     let mut changes = Changes::new();
     invitation.clone().assert(&mut changes);
-    if let Some(execution) = invitation_execution {
-        execution.clone().assert(&mut changes);
-    }
+    invitation_execution.clone().assert(&mut changes);
     membership.clone().assert(&mut changes);
     if !already_named {
         let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
@@ -2206,9 +1566,20 @@ pub(crate) async fn mount_replica(
         }
     };
 
-    // Mirror what `PUT /api/repository/{name}` writes: a single `main`
-    // branch, plus an `origin` remote tracking the invite's/space's
-    // access service if one was attached.
+    let configuration = invite_configuration(subject, remote_url, revocation_url)?;
+    finish_mount(tonk, &repository, &key, configuration).await?;
+    Ok(repository)
+}
+
+/// The repository configuration an invite describes: a single `main`
+/// branch, plus an `origin` remote tracking the invite's/space's access
+/// service if one was attached — mirroring what
+/// `PUT /api/repository/{name}` writes.
+fn invite_configuration(
+    subject: &Did,
+    remote_url: Option<&str>,
+    revocation_url: Option<&str>,
+) -> Result<RepositoryConfiguration, TonkWorkerError> {
     let mut configuration = RepositoryConfiguration::default();
     if let Some(url) = remote_url {
         let address = SiteAddress::from(UcanAddress::new(url));
@@ -2230,13 +1601,66 @@ pub(crate) async fn mount_replica(
     } else {
         configuration = configuration.branch(DEFAULT_BRANCH, BranchConfiguration::default());
     }
+    Ok(configuration)
+}
 
-    // No display name to seed: a joined/restored repo's name lives in
-    // the shared content branch and arrives over the pull. The helper
-    // only uses this for log context, so the routing key stands in.
-    record_replica_local_meta(tonk, &repository, &key, &configuration).await?;
-
+/// Mount a space with a full, caller-supplied configuration — the
+/// directory-adoption entry point, where the configuration is rebuilt
+/// from account-DB facts and applied verbatim so a non-default setup
+/// replicates identically.
+pub(crate) async fn mount_replica_with_configuration(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: RepositoryConfiguration,
+) -> Result<Repository<Credential>, TonkWorkerError> {
+    let key = subject.repo_key().to_owned();
+    if super::account_state::is_account_key(tonk, &key).await {
+        return Err(TonkWorkerError::Forbidden(
+            "account system repository cannot be mounted as a user space".to_string(),
+        ));
+    }
+    let repository = match tonk
+        .profile
+        .repository(key.as_str())
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(repository) => repository,
+        Err(_) => {
+            let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
+                TonkWorkerError::Router(format!("subject is not a valid Ed25519 did:key: {e:?}"))
+            })?;
+            let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
+            let space_credential = space_capability
+                .create(Credential::from(verifier))
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    TonkWorkerError::Internal(format!(
+                        "failed to create local replica '{key}': {e}"
+                    ))
+                })?;
+            Repository::from(space_credential)
+        }
+    };
+    finish_mount(tonk, &repository, &key, configuration).await?;
     Ok(repository)
+}
+
+/// The shared tail of every mount: record the local meta from the
+/// configuration. No display name to seed — a joined/adopted repo's
+/// name lives in the shared content branch and arrives over the pull;
+/// the helper only uses the name for log context, so the routing key
+/// stands in.
+async fn finish_mount(
+    tonk: &TonkState,
+    repository: &Repository<Credential>,
+    key: &str,
+    configuration: RepositoryConfiguration,
+) -> Result<(), TonkWorkerError> {
+    record_replica_local_meta(tonk, repository, key, &configuration).await?;
+    Ok(())
 }
 
 /// Check whether the active profile already holds a replica for the
@@ -2283,7 +1707,7 @@ pub(crate) async fn find_replica_for_subject(
 /// The fixed entity the in-flight join status lives at. Both the handler
 /// (writes overlay status) and the `/join` view (`entity=tonk:join/status`)
 /// agree on this URI, so there's no per-attempt id to thread.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const JOIN_STATUS_URI: &str = "tonk:join/status";
 
 /// Post-commit handler for the [`Join`] command.
@@ -2345,9 +1769,66 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
             let Some(command) = command else {
                 return;
             };
+            // The invite principal's seed is custodied under the account
+            // as part of the join. A linked device whose root record
+            // predates the encryption key asks the originating page for a
+            // passkey assertion here, before the state lock is taken.
+            if let Err(error) =
+                crate::router::custody::ensure_recipient(env.state(), env.client()).await
+            {
+                log!("join refused: {error}");
+                return;
+            }
             run_join(&env, command).await;
         })
     }
+}
+
+/// Whether a `/join` URL carries an invite at all.
+///
+/// The delegation chain rides in `access`, so its presence is what
+/// separates "redeem this" from "someone opened /join to paste a link".
+/// Deliberately a query test and not a parse: a malformed or truncated
+/// invite IS an attempt and must still fail loudly with its reason,
+/// rather than being silently treated as an empty visit.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn carries_invite(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| {
+        parsed
+            .query_pairs()
+            .any(|(key, value)| key == "access" && !value.is_empty())
+    })
+}
+
+/// Drop this join's own overlay facts, and only those (scoped clear).
+///
+/// The branch overlay is SHARED: the tab's `tonk:site` facts (path,
+/// route, concept) live there too, and they are what every view on the
+/// page resolves through. A blanket `clear_overlay()` therefore wiped
+/// the site out from under the page on every `/join` mount — the site
+/// display lost its entity, fell back to its pending spinner, and
+/// nothing downstream ever rendered. Scope the clear to the join's own
+/// entities, exactly as the site re-stamp does with its own.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_artifacts::Entity) {
+    let status = status.clone();
+    session
+        .state
+        .retain_overlay_entities(move |overlaid| retains_overlay_entity(overlaid, &status));
+}
+
+/// Whether an overlaid entity SURVIVES a join's scoped clear.
+///
+/// Everything but the join's own status entity does. Split out from
+/// [`clear_join_overlay`] so the rule can be tested off-wasm: it is the
+/// whole contract, and getting it backwards is invisible until a page
+/// silently stops rendering.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn retains_overlay_entity(
+    overlaid: &dialog_artifacts::Entity,
+    status: &dialog_artifacts::Entity,
+) -> bool {
+    overlaid != status
 }
 
 /// Run the join operation from the command's full URL and drive the
@@ -2385,9 +1866,24 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
         }
     };
 
+    // A `/join` opened with no invite in its URL is not a failed attempt
+    // — it is someone who arrived holding a link they have not pasted
+    // yet. Asserting `pending` here is what made the paste form flash
+    // and vanish behind a spinner that waited on nothing. Claiming
+    // nothing leaves the view in its own inviteless state rather than
+    // flashing a spinner for an invite that will never arrive. A URL
+    // that carries an invite is untouched by this and proceeds exactly
+    // as before.
+    if !carries_invite(&command.url.0) {
+        clear_join_overlay(&session, &status_entity);
+        tonk.reactor.schedule_poll(Arc::clone(&session.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        return;
+    }
+
     // Pending: a fresh attempt clears any prior status, then marks
     // pending. Schedule a poll so the view shows "Joining…".
-    session.state.clear_overlay();
+    clear_join_overlay(&session, &status_entity);
     session.state.assert_overlay(JoinStatus {
         this: status_entity.clone(),
         status: Status(
@@ -2404,18 +1900,9 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     // contain empty or repeated fields whose byte-for-byte form matters.
     let url = command.url.0;
 
-    // An open invite mounts a guest; a targeted one goes straight to
-    // durable membership. Either way the same operation runs, so the
-    // content behind the redirect is proven before the redirect fires.
-    let open = Invite::parse_url(&url)
-        .await
-        .is_ok_and(|invite| matches!(invite.audience, InviteAudience::Open { .. }));
-    let mode = if open {
-        JoinMode::GuestVisit
-    } else {
-        JoinMode::Durable
-    };
-    match join_invite(&tonk, &url, mode).await {
+    // The same operation the HTTP join runs, so the content behind the
+    // redirect is proven before the redirect fires.
+    match join_invite(&tonk, &url).await {
         Ok(outcome) => {
             // Success means the replica is installed, verified, and
             // indexed — its `tonk/space` model is already present, so the
@@ -2430,7 +1917,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             // the page that asked is a `postMessage` to its client. We post
             // `{ type: "navigate", href }`; the page's `<tonk-host>` performs
             // the navigation.
-            session.state.clear_overlay();
+            clear_join_overlay(&session, &status_entity);
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             let href = format!("/space/{key}", key = outcome.key);
@@ -2441,13 +1928,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                 outcome.key
             );
         }
-        Err(JoinRejection::AccountRequired) => {
-            crate::router::navigate::notify_account_required(
-                env.client(),
-                tonk_worker_api::PendingIntent::DurableJoin { url },
-            );
-        }
-        Err(JoinRejection::Failed(failure)) => {
+        Err(failure) => {
             // Failure: mark failed + record the fixed copy and its kind,
             // overlay-only. The reason is chosen from the closed set, so
             // neither the URL nor an upstream body can reach the page.
@@ -2529,8 +2010,68 @@ pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
     });
 }
 
+/// The inviteless-`/join` guard, pinned on every target: it decides
+/// whether the route claims or offers its paste form, and getting it
+/// wrong flashes the form before a spinner for an invite that will
+/// never arrive.
+#[cfg(test)]
+mod invite_presence_tests {
+    use super::carries_invite;
+
+    #[test]
+    fn it_separates_a_redeemable_invite_from_an_empty_visit() {
+        assert!(carries_invite(
+            "https://tonk.spot/join?access=chain&remote=https%3A%2F%2Fs#seed"
+        ));
+        // A malformed chain is still an ATTEMPT: it must reach the claim
+        // path and fail with its reason, not be mistaken for an empty visit.
+        assert!(carries_invite("https://tonk.spot/join?access=not-a-chain"));
+
+        assert!(!carries_invite("https://tonk.spot/join"));
+        assert!(!carries_invite("https://tonk.spot/join#seed"));
+        assert!(
+            !carries_invite("https://tonk.spot/join?access="),
+            "an empty access parameter carries no chain"
+        );
+        assert!(!carries_invite(
+            "https://tonk.spot/join?remote=https%3A%2F%2Fs"
+        ));
+        assert!(!carries_invite("not a url"));
+    }
+}
+
+/// The join's overlay clear must be SCOPED. The branch overlay is
+/// shared: the tab's `tonk:site` facts (path, route, concept) live
+/// there too, and every view on the page resolves through them. A
+/// blanket clear wiped the site out from under the page on each
+/// `/join` mount, so the site display lost its entity and fell back to
+/// its spinner forever. Pinned here because the failure is silent —
+/// nothing errors, the page just stops rendering.
+#[cfg(test)]
+mod overlay_scope_tests {
+    use super::{JOIN_STATUS_URI, retains_overlay_entity};
+    use dialog_artifacts::Entity;
+
+    #[test]
+    fn it_clears_only_the_joins_own_overlay_entity() {
+        let status: Entity = JOIN_STATUS_URI.parse().expect("status URI parses");
+
+        assert!(
+            !retains_overlay_entity(&status, &status),
+            "the join's own status is what the clear is for"
+        );
+
+        for foreign in ["tonk:site", "tonk:join/route", "tonk:replica"] {
+            assert!(
+                retains_overlay_entity(&foreign.parse::<Entity>().expect("URI parses"), &status),
+                "{foreign} belongs to the page, not to this join"
+            );
+        }
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
+pub(crate) mod tests {
     use super::{DEFAULT_BRANCH, membership_has_name};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
@@ -2551,14 +2092,17 @@ mod tests {
     use crate::router::repository::build_repository_info;
     use crate::router::tests::{
         attach_remote, content_invitations, content_invited_via, content_member_roles,
-        content_memberships, put_repo, test_state,
+        content_memberships, put_repo, test_state, test_state_without_root,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
     /// repository subject. Distinct tag bytes give distinct
     /// subjects/ephemerals. Returns the URL plus the subject's routing
     /// key (the repo the join mounts the claimer's replica under).
-    async fn handcrafted_invite_url(subject_tag: u8, ephemeral_tag: u8) -> (String, String) {
+    pub(crate) async fn handcrafted_invite_url(
+        subject_tag: u8,
+        ephemeral_tag: u8,
+    ) -> (String, String) {
         crate::router::tests::open_invite_url(subject_tag, ephemeral_tag, None).await
     }
 
@@ -2584,7 +2128,7 @@ mod tests {
         let subject = subject_signer.did();
         let key = subject.repo_key().to_owned();
         let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
+            .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(audience)
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])
@@ -2598,15 +2142,15 @@ mod tests {
         )
         .await
         .unwrap();
-        (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
+        (invite.to_url("https://tonk.network/join").unwrap(), key)
     }
 
     /// Everything a failed join must leave untouched, in one value.
     ///
     /// Covers the profile index and its seeding status, the shared
-    /// roster on the subject's content branch, and the guest credential
-    /// site — i.e. every surface the recipient can observe after an
-    /// attempt, plus the one a promotion depends on.
+    /// roster on the subject's content branch, and whether the accepted
+    /// authority proves — i.e. every surface the recipient can observe
+    /// after an attempt.
     #[derive(Debug, PartialEq, Eq)]
     struct JoinSnapshot {
         /// Routing keys of every replica the profile indexes.
@@ -2619,12 +2163,8 @@ mod tests {
         roles: Vec<String>,
         /// Provenance stamps on the subject's content branch.
         provenance: Vec<String>,
-        /// Whether a guest credential is retained for the subject.
-        guest: bool,
         /// Whether durable proof storage authorizes the worker for the subject.
         authority: bool,
-        /// Number of accepted claims handed to the backup boundary.
-        backup_dispatches: usize,
     }
 
     async fn snapshot(state: &crate::router::AppState, key: &str) -> JoinSnapshot {
@@ -2633,7 +2173,7 @@ mod tests {
         // The routing key *is* the subject DID; there is no suffix to strip.
         let subject: dialog_varsig::Did = key.parse().expect("subject parses");
 
-        let (replicas, statuses, guest, authority) = {
+        let (replicas, statuses, authority) = {
             let tonk = state.read().await;
             let profile = tonk
                 .reactor
@@ -2674,19 +2214,18 @@ mod tests {
                 .map(|stamp| (stamp.this.to_string(), stamp.status.0.to_string()))
                 .collect();
             statuses.sort();
-            let guest = super::guest_url(&tonk, &subject)
-                .await
-                .expect("guest record reads")
-                .is_some();
             let authority = tonk
                 .profile
                 .access()
-                .prove(dialog_capability::Subject::from(subject.clone()))
+                .prove(
+                    dialog_capability::Subject::from(subject.clone())
+                        .attenuate(dialog_effects::Use),
+                )
                 .audience(&tonk.operator)
                 .perform(&tonk.operator)
                 .await
                 .is_ok();
-            (replicas, statuses, guest, authority)
+            (replicas, statuses, authority)
         };
 
         // A repository the profile does not index may still exist in
@@ -2722,18 +2261,12 @@ mod tests {
             members,
             roles,
             provenance,
-            guest,
             authority,
-            backup_dispatches: crate::router::account_backup::backup_dispatch_count(),
         }
     }
 
-    async fn post_join(app: &axum::Router, url: &str) -> StatusCode {
+    pub(crate) async fn post_join(app: &axum::Router, url: &str) -> StatusCode {
         post_invite(app, "/api/profile/join", url).await
-    }
-
-    async fn post_visit(app: &axum::Router, url: &str) -> StatusCode {
-        post_invite(app, "/api/profile/visit", url).await
     }
 
     async fn post_invite(app: &axum::Router, path: &str, url: &str) -> StatusCode {
@@ -2753,26 +2286,6 @@ mod tests {
         response.status()
     }
 
-    /// `POST /api/repository/{repo}/membership` — guest promotion.
-    async fn promote(app: &axum::Router, key: &str) -> (StatusCode, Option<serde_json::Value>) {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/membership"))
-                    .method("POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        (status, serde_json::from_slice(&bytes).ok())
-    }
-
     /// The entity a roster row is keyed on: the account root, not the
     /// device. Every roster write resolves the member through
     /// `account::member_did`, so a test that looked up its own row by
@@ -2785,33 +2298,11 @@ mod tests {
             .this()
     }
 
-    /// `GET /api/repository/{repo}/membership` — guest or durable.
-    async fn membership_status(app: &axum::Router, key: &str) -> String {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/membership"))
-                    .method("GET")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        value["status"].as_str().unwrap().to_owned()
-    }
-
     #[dialog_common::test]
     async fn durable_join_persists_and_builds_a_named_root_ending_backup() {
-        use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+        use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
         use tonk_schema::RepositoryName;
         use tonk_schema::prelude::DidExt as _;
-        use wasm_bindgen::JsValue;
 
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let (url, key) = handcrafted_invite_url(105, 106).await;
@@ -2861,34 +2352,6 @@ mod tests {
                 .await
                 .unwrap();
         }
-        crate::router::account_backup::take_backup_artifacts();
-        let fetch = js_sys::Function::new_with_args(
-            "_request",
-            "return Promise.resolve(new Response('{}', { status: 200 }));",
-        );
-        let _fetch_guard =
-            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
-        {
-            let tonk = state.read().await;
-            crate::router::account_backup::back_up_subject(&tonk, &subject)
-                .await
-                .unwrap();
-        }
-        let mut artifact = None;
-        for _ in 0..10 {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
-                .await
-                .unwrap();
-            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
-                .into_iter()
-                .last()
-            {
-                artifact = Some(produced);
-                break;
-            }
-        }
-        let artifact = artifact.expect("durable join backup artifact was produced");
-        assert_eq!(artifact.name.as_deref(), Some("joined-garden"));
         let (root, persisted) = {
             let tonk = state.read().await;
             let root = crate::router::identity::root_did(&tonk).await.unwrap();
@@ -2902,10 +2365,9 @@ mod tests {
                 .unwrap();
             (root, bytes)
         };
-        let validated = artifact.validate_for(&root).await.unwrap();
-        assert_eq!(validated.subject, subject);
-        assert_eq!(validated.chain.audience(), &root);
-        assert_eq!(validated.chain.to_bytes().unwrap(), persisted);
+        let chain = dialog_ucan_core::DelegationChain::try_from(persisted.as_slice())
+            .expect("the persisted space-root prefix parses");
+        assert_eq!(chain.audience(), &root, "the prefix ends at the root");
     }
 
     /// Joining an invite records the claimer's membership, the
@@ -3153,7 +2615,7 @@ mod tests {
                     .uri(format!("/api/repository/{key}/invite"))
                     .method("POST")
                     .header("content-type", "application/json")
-                    .extension(crate::axum::RequestOrigin::parse("https://hub.tonk.xyz/").unwrap())
+                    .extension(crate::axum::RequestOrigin::parse("https://tonk.network/").unwrap())
                     .body(Body::from("{}"))
                     .unwrap(),
             )
@@ -3259,7 +2721,7 @@ mod tests {
         let before = snapshot(&state, &key).await;
 
         assert_eq!(
-            post_join(&app, "https://hub.tonk.xyz/join?access=not-base58").await,
+            post_join(&app, "https://tonk.network/join?access=not-base58").await,
             StatusCode::BAD_REQUEST,
         );
 
@@ -3303,24 +2765,6 @@ mod tests {
             !after.replicas.iter().any(|entry| entry == &key),
             "the replica never enters the profile index",
         );
-    }
-
-    /// The same holds for a guest visit: no bounded credential is minted
-    /// for a space that could not be reached.
-    #[dialog_common::test]
-    async fn it_records_no_guest_credential_when_the_remote_is_unreachable() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (url, key) = unreachable_invite_url(66, 67).await;
-        let before = snapshot(&state, &key).await;
-
-        assert_eq!(
-            post_visit(&app, &url).await,
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-
-        let after = snapshot(&state, &key).await;
-        assert_eq!(after, before);
-        assert!(!after.guest, "a failed visit leaves no guest credential");
     }
 
     /// A remote-backed renewal is staged too: an outage cannot save the
@@ -3427,161 +2871,6 @@ mod tests {
 
     // ----- success and idempotence -----
 
-    /// A guest visit mounts a readable replica and retains the invite for
-    /// a later promotion, without writing a roster row.
-    #[dialog_common::test]
-    async fn it_mounts_a_guest_visit_without_durable_membership() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (url, key) = handcrafted_invite_url(70, 71).await;
-
-        assert_eq!(post_visit(&app, &url).await, StatusCode::CREATED);
-
-        assert_eq!(membership_status(&app, &key).await, "guest");
-        let after = snapshot(&state, &key).await;
-        assert!(after.replicas.iter().any(|entry| entry == &key));
-        assert!(after.guest, "the visit retains its invite for promotion");
-        assert!(
-            after.members.is_empty(),
-            "a guest writes no durable roster row",
-        );
-    }
-
-    /// Promotion answers with the replica rather than an empty 204, and
-    /// only then gives up the guest credential.
-    #[dialog_common::test]
-    async fn it_promotes_a_guest_to_durable_membership() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (url, key) = handcrafted_invite_url(72, 73).await;
-        assert_eq!(post_visit(&app, &url).await, StatusCode::CREATED);
-        let backups_before = crate::router::account_backup::backup_dispatch_count();
-
-        let (status, body) = promote(&app, &key).await;
-        assert_eq!(status, StatusCode::OK, "promotion acknowledges with a body");
-        assert_eq!(
-            body.expect("promotion returns JSON")["outcome"],
-            serde_json::json!("renewed"),
-        );
-
-        assert_eq!(membership_status(&app, &key).await, "durable");
-        let after = snapshot(&state, &key).await;
-        assert!(!after.guest, "the guest credential is cleared on promotion");
-        assert!(after.authority, "the accepted authority is durable");
-        assert_eq!(
-            after.backup_dispatches, backups_before,
-            "a local-only promotion has no pullable upstream to back up",
-        );
-
-        let root_entity = {
-            let tonk = state.read().await;
-            crate::router::identity::root_did(&tonk)
-                .await
-                .unwrap()
-                .this()
-        };
-        let memberships = content_memberships(&state, &key).await;
-        assert!(
-            memberships.iter().any(|row| row.member.0 == root_entity),
-            "a promoted guest is recorded by root DID",
-        );
-    }
-
-    /// Renewal decides whether a guest's authority is still good from the
-    /// retained record alone, so the record has to describe the chain that
-    /// was actually installed — the operator it names and the expiry the
-    /// chain really carries, not a separately recomputed `now + TTL`.
-    #[dialog_common::test]
-    async fn it_persists_the_guest_grants_actual_audience_and_expiry() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (url, key) = handcrafted_invite_url(74, 75).await;
-        assert_eq!(post_visit(&app, &url).await, StatusCode::CREATED);
-        let subject: dialog_varsig::Did = key.parse().unwrap();
-
-        let tonk = state.read().await;
-        let lease = super::guest_lease(&tonk, &subject)
-            .await
-            .expect("the guest record reads")
-            .expect("a visit retains one");
-
-        let bytes = super::guest_record_bytes(&tonk, &subject)
-            .await
-            .expect("the record is on disk");
-        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(raw["version"], serde_json::json!(2));
-
-        assert_eq!(
-            lease.audience.as_ref(),
-            Some(&tonk.operator.did()),
-            "the record must name the operator the chain was minted for, or \
-             renewal cannot tell a live delegation from a retired one",
-        );
-
-        let proof = tonk
-            .profile
-            .access()
-            .prove(dialog_capability::Subject::from(subject.clone()))
-            .audience(&tonk.operator)
-            .perform(&tonk.operator)
-            .await
-            .expect("the guest chain proves");
-        assert_eq!(
-            proof.duration.expiration, lease.expires_at,
-            "the recorded expiry is the chain's effective one",
-        );
-    }
-
-    /// The operator is shared by every mounted repository, so renewal
-    /// works on the whole guest set. Which means enumerating it has to
-    /// find exactly the guests: not the durable spaces beside them, and
-    /// not a replica whose guest site was cleared by promotion.
-    #[dialog_common::test]
-    async fn it_enumerates_only_repository_replicas_with_guest_records() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (first_url, first_key) = handcrafted_invite_url(76, 77).await;
-        let (second_url, second_key) = handcrafted_invite_url(78, 79).await;
-        let (durable_url, durable_key) = handcrafted_invite_url(80, 81).await;
-        assert_eq!(post_visit(&app, &first_url).await, StatusCode::CREATED);
-        assert_eq!(post_visit(&app, &second_url).await, StatusCode::CREATED);
-        assert_eq!(post_join(&app, &durable_url).await, StatusCode::CREATED);
-
-        let mut expected = vec![first_key.clone(), second_key.clone()];
-        expected.sort();
-
-        let leases = {
-            let tonk = state.read().await;
-            super::guest_leases(&tonk).await.expect("leases enumerate")
-        };
-        assert_eq!(
-            leases
-                .iter()
-                .map(|lease| lease.subject.to_string())
-                .collect::<Vec<_>>(),
-            expected,
-            "only the two guests, in subject order, and never the durable \
-             space or the profile and account replicas beside them",
-        );
-        assert!(
-            !expected.contains(&durable_key),
-            "the durable join is not a guest",
-        );
-
-        // Promotion clears the site by writing empty bytes, which has to
-        // read the same as never having visited.
-        assert_eq!(promote(&app, &first_key).await.0, StatusCode::OK);
-        let leases = {
-            let tonk = state.read().await;
-            super::guest_leases(&tonk).await.expect("leases enumerate")
-        };
-        assert_eq!(
-            leases
-                .iter()
-                .map(|lease| lease.subject.to_string())
-                .collect::<Vec<_>>(),
-            vec![second_key],
-            "a promoted replica must not be replayed as a guest",
-        );
-    }
-
-    /// A targeted invite issued to this device's root joins durably.
     #[dialog_common::test]
     async fn it_joins_a_targeted_invite_issued_to_this_root() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -3593,7 +2882,6 @@ mod tests {
 
         assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
 
-        assert_eq!(membership_status(&app, &key).await, "durable");
         let memberships = content_memberships(&state, &key).await;
         assert!(
             memberships
@@ -3633,6 +2921,52 @@ mod tests {
         );
     }
 
+    /// Re-opening an invite link for a spot this profile already holds
+    /// must not re-route the authority its sync presigns with: the
+    /// renewal saves the same account-rooted chain again, and the
+    /// certificate walk (which never consults the clock, see
+    /// [`crate::session`]) keeps one live route rather than choosing
+    /// between two.
+    #[dialog_common::test]
+    async fn it_keeps_a_durable_members_authority_when_the_invite_is_reopened() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(90, 91).await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        let durable = proof_window(&state, &subject).await;
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::OK);
+
+        assert_eq!(
+            proof_window(&state, &subject).await,
+            durable,
+            "re-opening the invite bounded the durable member's own authority",
+        );
+        assert_eq!(
+            snapshot(&state, &key).await.members.len(),
+            1,
+            "re-opening the invite keeps one membership row",
+        );
+    }
+
+    /// When the presign path's proof for `subject` lapses, if ever.
+    async fn proof_window(
+        state: &crate::router::AppState,
+        subject: &dialog_varsig::Did,
+    ) -> Option<u64> {
+        let tonk = state.read().await;
+        tonk.profile
+            .access()
+            .prove(dialog_capability::Subject::from(subject.clone()).attenuate(dialog_effects::Use))
+            .audience(&tonk.operator)
+            .perform(&tonk.operator)
+            .await
+            .expect("the durable member stays authorized")
+            .duration
+            .expiration
+    }
+
     /// The second attempt at the same invite renews rather than
     /// duplicating: one replica, one membership row.
     #[dialog_common::test]
@@ -3655,6 +2989,85 @@ mod tests {
                 .count(),
             1,
             "exactly one replica in the profile index",
+        );
+    }
+
+    /// A device holding only its onboarding account joins the same way a
+    /// registered one does; the membership just terminates at that
+    /// account until accreditation re-roots it.
+    #[dialog_common::test]
+    async fn it_joins_under_the_onboarding_account_before_accreditation() {
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let (url, key) = handcrafted_invite_url(84, 85).await;
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        // The membership terminates at the onboarding account, the same
+        // shape a passkey root gives, so accreditation re-roots it from
+        // the custodied invite seed rather than redoing the join.
+        let onboarding = crate::onboarding::did(&*state.read().await)
+            .await
+            .expect("the onboarding account reads")
+            .expect("the join minted the onboarding account")
+            .this();
+        let after = snapshot(&state, &key).await;
+        assert!(after.authority, "the accepted authority proves");
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let session_expires_at = state.read().await.session_expires_at;
+        assert_eq!(
+            proof_window(&state, &subject).await,
+            Some(session_expires_at),
+            "only the renewable browser session bounds a pre-account join; \
+             there is no one-hour guest hop",
+        );
+        let memberships = content_memberships(&state, &key).await;
+        assert!(
+            memberships.iter().any(|row| row.member.0 == onboarding),
+            "the membership is keyed on the onboarding account",
+        );
+
+        // The invite principal's seed is custodied on profile main, sealed
+        // to the onboarding account, which is what accreditation opens to
+        // re-root the membership.
+        use dialog_query::{Output as _, Query, Term};
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::CustodiedSeed> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                kind: Term::from(tonk_schema::SeedKind::Invite.kind()),
+                recipient: Term::var("recipient"),
+                sealed: Term::var("sealed"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one custodied invite seed");
+        let principal: dialog_varsig::Did = rows[0].subject.0.to_string().parse().unwrap();
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        let opened = crate::onboarding::account(&tonk)
+            .await
+            .unwrap()
+            .encryption_key()
+            .open(&sealed, &principal)
+            .expect("the onboarding account opens its custodied seed");
+        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
+            .await
+            .unwrap();
+        assert_eq!(
+            reissued.did(),
+            principal,
+            "the seed derives the invite principal the membership hangs off",
         );
     }
 
@@ -3716,7 +3129,6 @@ mod tests {
             joined,
             "classifying a refusal wrote nothing",
         );
-        assert_eq!(membership_status(&app, &key).await, "durable");
     }
 
     /// The content gate a remote-backed join runs before installing a
@@ -3833,33 +3245,72 @@ name!:
             .expect("content carrying a declared space model is joinable");
     }
 
+    /// What installing one claim costs on a space of `filler` facts.
+    struct ClaimInstallCost {
+        /// Nodes copied when the diff keeps the base the remote served —
+        /// what a join actually pays.
+        based: usize,
+        /// Nodes copied by the same install once that base is thrown
+        /// away: the space itself.
+        baseless: usize,
+    }
+
     /// Build a branch holding `filler` facts, snapshot it, commit one more
-    /// fact on top, and report how many nodes
+    /// fact on top, and report what
     /// [`install_claim_nodes`](super::install_claim_nodes) copies to carry
-    /// that last commit.
+    /// that last commit — against the snapshot, and against a head from
+    /// before the filler was written.
     ///
     /// The snapshot stands in for the head a remote served, and the commit
     /// on top for the roster facts a claim stages — the two revisions the
-    /// real install diffs.
-    async fn claim_install_cost(filler: usize) -> usize {
-        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+    /// real install diffs. The pre-filler head stands in for the base the
+    /// regression loses, and prices the same install as a full copy of the
+    /// space.
+    async fn claim_install_cost(filler: usize) -> ClaimInstallCost {
+        use dialog_repository::{Branch, RepositoryExt as _};
 
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let repo = put_repo(&app, &format!("cost-{filler}")).await;
-        let tonk = state.read().await;
-        let repository: Repository = tonk
+        let tonk = test_state().await;
+
+        // Tree shape is a pure function of its keys, and history keys carry
+        // the repository issuer. `put_repo` deliberately generates a fresh
+        // signer, which made this cost fixture sample a different tree on
+        // every run and occasionally turn one insert into a near-total
+        // rechunk. Pin the issuer so this test measures the install
+        // algorithm rather than key-distribution luck.
+        let signer = Ed25519Signer::import(&[65u8; 32])
+            .await
+            .expect("the fixture signer imports");
+        let repo = signer.did().repo_key().to_owned();
+        let repository = tonk
             .profile
-            .repository(&repo)
-            .load()
+            .repository(repo)
+            .create()
+            .with_credential(signer)
             .perform(&tonk.operator)
             .await
-            .expect("repo loads");
+            .expect("the fixture repository creates");
         let content: Branch = repository
             .branch(DEFAULT_BRANCH)
             .open()
             .perform(&tonk.operator)
             .await
             .expect("content branch opens");
+
+        // A head that predates the filler, so a diff against it has to
+        // carry the whole space. Committed rather than read off the fresh
+        // branch, which need not have a revision until something is
+        // written to it.
+        content
+            .transaction()
+            .assert(tonk_schema::RepositoryName {
+                this: "id:filler/origin".parse().expect("entity parses"),
+                name: tonk_schema::domain::repo::Name("the origin".to_string()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the origin commits");
+        let origin = content.revision().expect("the origin produced a head");
 
         // Enough distinct entities to give the tree real depth. One
         // transaction: the cost under test is the diff between two
@@ -3889,13 +3340,18 @@ name!:
             .expect("the claim commits");
         let target = content.revision().expect("the claim produced a head");
 
-        super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &base)
-            .await
-            .expect("the claim installs")
+        ClaimInstallCost {
+            based: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &base)
+                .await
+                .expect("the claim installs"),
+            baseless: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &origin)
+                .await
+                .expect("the space copies"),
+        }
     }
 
     /// A claim install carries what the claim wrote, not what the space
-    /// holds — so its cost does not grow with the size of the space.
+    /// holds — so it stays a fraction of what copying the space costs.
     ///
     /// This is the regression that shipped: dialog's `Branch::install`
     /// diffs against `Index::empty()`, which makes every node in the tree
@@ -3904,35 +3360,39 @@ name!:
     /// before the recipient saw anything, against ~40 and ~9s once the diff
     /// had a real base.
     ///
-    /// Asserted as a ratio rather than an absolute: node counts depend on
-    /// the tree's fan-out, but the whole point is that the big tree costs
-    /// about what the small one does. A correct diff copies a handful of
-    /// nodes either way while a baseless one copies the tree, so the bound
-    /// discriminates with room to spare, and the 375x size gap is what buys
-    /// that room. The large side is sized to discriminate, not to impress:
-    /// in the browser harness this test runs against Chrome's 30-second
-    /// renderer-liveness check, and a bigger fixture proves nothing more
-    /// while drifting toward that cliff on a loaded runner.
+    /// Both counts are taken on the same tree, because losing the base is
+    /// precisely what makes them converge. Pricing the big space against a
+    /// small one instead — the shape this test had first — put a one-node
+    /// tree in the denominator, and left the bound unable to say how bad a
+    /// violation was: a CI run reported 36 nodes against a bound of 3, and
+    /// only measuring the space itself showed that 36 was most of a full
+    /// copy rather than a handful of legitimately rewritten ancestors.
+    /// A correct install copies one node against the low forties for the
+    /// space, so the eighth asserted here carries the tree changing shape
+    /// without letting a near-total copy through.
+    ///
+    /// The fixture is sized to discriminate, not to impress: in the browser
+    /// harness this test runs against Chrome's 30-second renderer-liveness
+    /// check, and a bigger space proves nothing more while drifting toward
+    /// that cliff on a loaded runner.
     #[dialog_common::test]
     async fn it_installs_a_claim_without_copying_the_space() {
-        let small = claim_install_cost(8).await;
-        let large = claim_install_cost(3000).await;
+        let cost = claim_install_cost(3000).await;
 
         assert!(
-            small > 0,
+            cost.based > 0,
             "a claim that wrote a fact must carry at least one node",
         );
         assert!(
-            large <= small * 3,
-            "installing a claim onto a 3000-fact space cost {large} nodes \
-             against {small} for an 8-fact one — the copy is scaling with \
-             the space, so the diff has lost its base",
+            cost.based * 8 <= cost.baseless,
+            "installing a claim onto a 3000-fact space copied {} nodes, \
+             against {} for the space itself — the copy is scaling with the \
+             space, so the diff has lost its base",
+            cost.based,
+            cost.baseless,
         );
     }
 
-    /// A guest visit stages no roster row, so its staged head is the one
-    /// the remote served and there is nothing for the install to carry.
-    ///
     /// The limit case of the rule above: when a claim writes nothing, the
     /// join copies nothing, and the replica is composed entirely of content
     /// read back through the remote.

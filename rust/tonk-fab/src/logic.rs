@@ -4,17 +4,16 @@
 
 use serde_json::{Value, json};
 
-/// Build the membership endpoint with the repository DID as one path segment.
+/// Build the repository endpoint with the repository DID as one path
+/// segment: the bar's presence probe, answered 404 for a space this device
+/// does not hold.
 #[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn membership_endpoint(space: &str) -> Result<String, &'static str> {
+pub(crate) fn repository_endpoint(space: &str) -> Result<String, &'static str> {
     let space = space.trim();
     if space.is_empty() || space.contains('{') || space.contains('}') {
         return Err("repository binding is unresolved");
     }
-    Ok(format!(
-        "/api/repository/{}/membership",
-        urlencoding::encode(space)
-    ))
+    Ok(format!("/api/repository/{}", urlencoding::encode(space)))
 }
 
 // The bar addresses exactly one repository endpoint, above. It mints its open
@@ -24,21 +23,21 @@ pub(crate) fn membership_endpoint(space: &str) -> Result<String, &'static str> {
 // gets is the account page's device list.
 
 #[cfg(test)]
-mod membership_endpoint_tests {
-    use super::membership_endpoint;
+mod repository_endpoint_tests {
+    use super::repository_endpoint;
 
     #[test]
     fn it_encodes_a_repository_did_as_one_path_segment() {
         assert_eq!(
-            membership_endpoint("did:key:z6Mk/a").unwrap(),
-            "/api/repository/did%3Akey%3Az6Mk%2Fa/membership"
+            repository_endpoint("did:key:z6Mk/a").unwrap(),
+            "/api/repository/did%3Akey%3Az6Mk%2Fa"
         );
     }
 
     #[test]
     fn it_rejects_empty_and_unresolved_repository_bindings() {
         for value in ["", "  ", "{id}", "did:key:{id}"] {
-            assert!(membership_endpoint(value).is_err(), "{value:?}");
+            assert!(repository_endpoint(value).is_err(), "{value:?}");
         }
     }
 }
@@ -133,22 +132,104 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     }
 }
 
-/// The four corners the FAB is allowed to rest in. A drop snaps to the nearest
-/// one: the vertical half of the viewport picks top vs bottom, the horizontal
-/// half picks left vs right.
+/// The four fallback seats the FAB can restore on a subsequent page load.
+/// A drop persists the nearest one: the vertical half of the viewport picks
+/// top vs bottom, the horizontal half picks left vs right.
 ///
 /// The resting spot is expressed as two CSS classes on `<tonk-fab>` — a vertical
 /// one (`fab-dock-top` / `fab-dock-bottom`) and a horizontal one
 /// (`fab-dock-left` / `fab-dock-right`) — and the actual pixel placement + the
 /// submenu open-direction live in the view's stylesheet (profile.yaml). This
-/// enum is only the small decision Rust still owns — which corner a drop lands
-/// in — plus its persisted symbol.
+/// enum owns only the persisted fallback seat; the live page keeps the exact
+/// point selected by [`snap_to_nearest_edge`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dock {
     TopLeft,
     TopRight,
     BottomLeft,
     BottomRight,
+}
+
+/// The viewport edge a released FAB settles against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Edge {
+    /// The public event value used by the reference FABB.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Edge::Left => "left",
+            Edge::Right => "right",
+            Edge::Top => "top",
+            Edge::Bottom => "bottom",
+        }
+    }
+}
+
+/// The safe resting inset on each viewport edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeInsets {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+/// The resting top-left position selected for a released FAB.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeSnap {
+    pub edge: Edge,
+    pub left: f64,
+    pub top: f64,
+}
+
+/// Settle a released FAB against its nearest viewport edge while preserving
+/// the free coordinate along that edge.
+pub fn snap_to_nearest_edge(
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    vw: f64,
+    vh: f64,
+    insets: EdgeInsets,
+) -> EdgeSnap {
+    let mut x = left.min(vw - width - insets.right).max(insets.left);
+    let mut y = top.min(vh - height - insets.bottom).max(insets.top);
+    let distances = [
+        (Edge::Left, x),
+        (Edge::Right, vw - (x + width)),
+        (Edge::Top, y),
+        (Edge::Bottom, vh - (y + height)),
+    ];
+    let edge = distances
+        .into_iter()
+        .reduce(|nearest, candidate| {
+            if nearest.1 <= candidate.1 {
+                nearest
+            } else {
+                candidate
+            }
+        })
+        .map_or(Edge::Left, |(edge, _)| edge);
+
+    match edge {
+        Edge::Left => x = insets.left,
+        Edge::Right => x = vw - width - insets.right,
+        Edge::Top => y = insets.top,
+        Edge::Bottom => y = vh - height - insets.bottom,
+    }
+
+    EdgeSnap {
+        edge,
+        left: x.max(insets.left),
+        top: y.max(insets.top),
+    }
 }
 
 /// Every dock axis class the view stylesheet defines, for clearing the element
@@ -217,7 +298,7 @@ pub fn dock_from_conclusions(rows: &Value) -> Option<Dock> {
     Dock::from_symbol(symbol)
 }
 
-/// Pick the corner nearest a drop. The vertical half of the viewport (height
+/// Pick the fallback corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
 /// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
 /// handle's center, the same anchor `mirrored` reads. The exact midlines fall
@@ -238,16 +319,65 @@ pub fn mirrored(center_x: f64, vw: f64) -> bool {
     center_x >= vw / 2.0
 }
 
-/// The stylesheet's dock inset — `tonk-fab.fab-dock-* { …: 16px }` in
-/// `fab.css`. The compact-mode fit test must account for it on both sides.
-pub const DOCK_INSET_PX: f64 = 16.0;
+pub const FULL_BAR_WIDTH_PX: f64 = 414.0;
+pub const COMPACT_CELL_PX: f64 = 44.0;
+pub const COMPACT_SPACE_MIN_PX: f64 = 120.0;
+pub const SPACE_CELL_PX: f64 = 216.0;
+pub const SHARE_CELL_PX: f64 = 144.0;
 
-/// Whether the bar must render compact: the fully EXPANDED bar plus both
-/// dock insets no longer fits the viewport width. Keyed on the would-be
-/// expanded width (not the current rendered width), so the threshold is the
-/// same entering and leaving compact and cannot oscillate.
-pub fn is_compact(expanded_width: f64, viewport_width: f64) -> bool {
-    expanded_width + 2.0 * DOCK_INSET_PX > viewport_width
+/// The action partition for one resolved usable width. The caller subtracts
+/// its safe-area-aware left and right float insets before asking for a layout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarLayout {
+    pub compact: bool,
+    pub space_width_px: f64,
+    pub show_share: bool,
+    pub show_mode: bool,
+    pub show_overflow: bool,
+}
+
+/// Partition the canonical action run according to what fully fits.
+///
+/// Exact fits stay in the wider layout. In compact mode the sync and overflow
+/// bookends never disappear; the space cell consumes the remaining room and
+/// may shrink to zero when even those bookends do not fit.
+pub fn bar_layout(usable_width_px: f64) -> BarLayout {
+    let usable = usable_width_px.max(0.0);
+    if usable >= FULL_BAR_WIDTH_PX {
+        return BarLayout {
+            compact: false,
+            space_width_px: SPACE_CELL_PX,
+            show_share: true,
+            show_mode: true,
+            show_overflow: false,
+        };
+    }
+
+    let show_share = usable >= COMPACT_CELL_PX * 2.0 + COMPACT_SPACE_MIN_PX + SHARE_CELL_PX;
+    let reserved = COMPACT_CELL_PX * 2.0 + if show_share { SHARE_CELL_PX } else { 0.0 };
+    BarLayout {
+        compact: true,
+        space_width_px: (usable - reserved).clamp(0.0, SPACE_CELL_PX),
+        show_share,
+        show_mode: false,
+        show_overflow: true,
+    }
+}
+
+/// Lift a resting bottom edge above the visual viewport, leaving `gap_px`
+/// between the bar and any software keyboard occluding the layout viewport.
+pub fn keyboard_lift_px(
+    resting_bottom: f64,
+    visual_offset_top: f64,
+    visual_height: f64,
+    gap_px: f64,
+) -> f64 {
+    let occlusion = resting_bottom - (visual_offset_top + visual_height);
+    if occlusion > 0.0 {
+        occlusion + gap_px.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Clamp a dragged bar's top-left corner so the bar stays fully inside the
@@ -262,63 +392,6 @@ pub fn clamp_position(
     vh: f64,
 ) -> (f64, f64) {
     (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
-}
-
-/// Whether the compact pager's strip rests at its scroll end — the state in
-/// which the arrow's next tap wraps to the start, and the glyph flips to
-/// point back so the wrap is announced rather than silent. Tolerates a small
-/// epsilon (browsers report fractional scroll positions), and a strip with
-/// nothing to scroll is NOT "at the end": its arrow keeps pointing forward
-/// and its tap is a harmless no-op.
-pub fn strip_at_end(scroll_left: f64, client_width: f64, scroll_width: f64) -> bool {
-    let max = scroll_width - client_width;
-    max > 0.0 && scroll_left >= max - 2.0
-}
-
-/// The scroll offset the compact pager's arrow advances the strip to: one
-/// page-width forward per tap, wrapping back to the start from the end
-/// ([`strip_at_end`]).
-pub fn strip_page_target(scroll_left: f64, client_width: f64, scroll_width: f64) -> f64 {
-    let max = (scroll_width - client_width).max(0.0);
-    if strip_at_end(scroll_left, client_width, scroll_width) {
-        0.0
-    } else {
-        (scroll_left + client_width).min(max)
-    }
-}
-
-/// The telescope animation duration, in milliseconds — each tile's
-/// `max-width` transition (wireframe `--dur: .4s`).
-pub const TELESCOPE_MS: u64 = 400;
-
-/// Milliseconds of stagger between consecutive tiles as the bar telescopes
-/// open/closed (wireframe `CP_STAG`). The tiles animate in sequence rather
-/// than together, so the bar reads as unfolding rather than snapping.
-pub const TELESCOPE_STAGGER_MS: u64 = 70;
-
-/// The `transition-delay` (ms) for tile `i` of `n` in the telescope.
-///
-/// Expanding runs inner-to-outer (`i * stagger`), collapsing runs
-/// outer-to-inner (`(n - 1 - i) * stagger`), so in both directions the tile
-/// nearest the anchoring circle leads and the far edge trails — the bar looks
-/// like it grows from / retracts into the circle. Mirrors the wireframe's
-/// `(collapsed ? nTiles - 1 - i : i) * CP_STAG`.
-pub fn telescope_delay_ms(index: usize, count: usize, collapsing: bool) -> u64 {
-    let step = if collapsing {
-        count.saturating_sub(1).saturating_sub(index)
-    } else {
-        index
-    };
-    step as u64 * TELESCOPE_STAGGER_MS
-}
-
-/// How long the whole telescope takes to settle: the last tile's start delay
-/// plus one transition duration, with a small cushion. Used to schedule the
-/// post-animation `settled` state that unclamps `max-width` so content can
-/// reflow freely.
-pub fn telescope_settle_ms(count: usize) -> u64 {
-    let last = count.saturating_sub(1) as u64 * TELESCOPE_STAGGER_MS;
-    last + TELESCOPE_MS + 160
 }
 
 /// Build a `TransactRequest` JSON body for `window.tonk.transact(...)`.
@@ -351,6 +424,38 @@ pub fn dock_claim_json(dock: Dock) -> Value {
                 "parameters": {
                     "this": "state:fab",
                     "dock": dock.symbol()
+                }
+            }
+        }]
+    })
+}
+
+/// Build a `TransactRequest` JSON body for the `member/promote` command.
+///
+/// Asserted once the page has minted the admin hop under the passkey:
+/// `member` is the DID the membership is keyed on, `space` the space, and
+/// `chain` the base58 hop `promoter-account -> member`. Routeless like
+/// `pause_claim_json`: the worker reads `space` off the command.
+pub fn promote_claim_json(space: &str, member: &str, chain: &str) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Promote a member of a space to admin.",
+                        "with": {
+                            "member": { "the": "xyz.tonk.promote/member", "cardinality": "one", "as": "Entity" },
+                            "space": { "the": "xyz.tonk.promote/space", "cardinality": "one", "as": "Entity" },
+                            "chain": { "the": "xyz.tonk.promote/chain", "cardinality": "one", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "member": member,
+                    "space": space,
+                    "chain": chain
                 }
             }
         }]
@@ -449,20 +554,110 @@ mod compact {
     use super::*;
 
     #[test]
-    fn a_bar_that_fits_with_both_insets_is_not_compact() {
-        assert!(!is_compact(300.0, 400.0));
+    fn the_fit_policy_partitions_every_boundary_width() {
+        for (width, expected) in [
+            (
+                414.0,
+                BarLayout {
+                    compact: false,
+                    space_width_px: 216.0,
+                    show_share: true,
+                    show_mode: true,
+                    show_overflow: false,
+                },
+            ),
+            (
+                413.9,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 181.9,
+                    show_share: true,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                352.0,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 120.0,
+                    show_share: true,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                351.9,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 216.0,
+                    show_share: false,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                216.0,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 128.0,
+                    show_share: false,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+            (
+                80.0,
+                BarLayout {
+                    compact: true,
+                    space_width_px: 0.0,
+                    show_share: false,
+                    show_mode: false,
+                    show_overflow: true,
+                },
+            ),
+        ] {
+            let actual = bar_layout(width);
+            assert_eq!(actual.compact, expected.compact, "usable width {width}");
+            assert_eq!(
+                actual.show_share, expected.show_share,
+                "usable width {width}"
+            );
+            assert_eq!(actual.show_mode, expected.show_mode, "usable width {width}");
+            assert_eq!(
+                actual.show_overflow, expected.show_overflow,
+                "usable width {width}"
+            );
+            assert!(
+                (actual.space_width_px - expected.space_width_px).abs() < 0.001,
+                "usable width {width}: expected space {}, got {}",
+                expected.space_width_px,
+                actual.space_width_px,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod keyboard_lift {
+    use super::*;
+
+    #[test]
+    fn a_resting_bar_inside_the_visual_viewport_is_not_lifted() {
+        assert_eq!(keyboard_lift_px(700.0, 0.0, 720.0, 8.0), 0.0);
     }
 
     #[test]
-    fn a_bar_wider_than_the_viewport_minus_insets_is_compact() {
-        assert!(is_compact(380.0, 400.0));
+    fn an_occluded_resting_bar_clears_the_keyboard_by_the_gap() {
+        assert_eq!(keyboard_lift_px(760.0, 0.0, 600.0, 8.0), 168.0);
     }
 
     #[test]
-    fn the_exact_fit_is_not_compact() {
-        // 368 + 2*16 == 400: still fits; only strictly-greater flips it, so
-        // the threshold is identical in both directions and cannot flap.
-        assert!(!is_compact(368.0, 400.0));
+    fn repeated_measurements_use_the_same_resting_bottom() {
+        let first = keyboard_lift_px(760.0, 20.0, 600.0, 8.0);
+        let second = keyboard_lift_px(760.0, 20.0, 600.0, 8.0);
+        assert_eq!(first, 148.0);
+        assert_eq!(second, first);
     }
 }
 
@@ -590,81 +785,50 @@ mod dock {
 }
 
 #[cfg(test)]
-mod pager {
+mod edge_snap {
     use super::*;
 
-    #[test]
-    fn a_mid_strip_tap_advances_one_page_width() {
-        assert_eq!(strip_page_target(0.0, 300.0, 800.0), 300.0);
-    }
+    const INSETS: EdgeInsets = EdgeInsets {
+        top: 16.0,
+        right: 16.0,
+        bottom: 16.0,
+        left: 16.0,
+    };
 
     #[test]
-    fn the_last_advance_clamps_to_the_end() {
-        // 800 - 300 = 500 is the max offset; 300 + 300 = 600 overshoots it.
-        assert_eq!(strip_page_target(300.0, 300.0, 800.0), 500.0);
-    }
-
-    #[test]
-    fn a_tap_at_the_end_wraps_to_the_start() {
-        assert_eq!(strip_page_target(500.0, 300.0, 800.0), 0.0);
-        // Fractional resting positions a couple px shy of the end wrap too.
-        assert_eq!(strip_page_target(498.5, 300.0, 800.0), 0.0);
-    }
-
-    #[test]
-    fn a_strip_with_nothing_to_scroll_stays_at_the_start() {
-        assert_eq!(strip_page_target(0.0, 300.0, 300.0), 0.0);
-        assert_eq!(strip_page_target(0.0, 300.0, 250.0), 0.0);
-    }
-
-    #[test]
-    fn the_end_state_drives_the_arrow_flip() {
-        assert!(!strip_at_end(0.0, 300.0, 800.0));
-        assert!(!strip_at_end(300.0, 300.0, 800.0));
-        assert!(strip_at_end(500.0, 300.0, 800.0));
-        // Fractionally shy of the end still counts as the end.
-        assert!(strip_at_end(498.5, 300.0, 800.0));
-    }
-
-    #[test]
-    fn a_strip_with_nothing_to_scroll_is_not_at_the_end() {
-        // The arrow must keep pointing forward when there is nothing to
-        // page — a back-arrow on a strip that never moved reads as broken.
-        assert!(!strip_at_end(0.0, 300.0, 300.0));
-        assert!(!strip_at_end(0.0, 300.0, 250.0));
-    }
-}
-
-#[cfg(test)]
-mod telescope {
-    use super::*;
-
-    #[test]
-    fn expanding_leads_from_the_inner_tile() {
-        // Inner-to-outer: tile 0 starts first, later tiles trail.
-        assert_eq!(telescope_delay_ms(0, 3, false), 0);
-        assert_eq!(telescope_delay_ms(1, 3, false), TELESCOPE_STAGGER_MS);
-        assert_eq!(telescope_delay_ms(2, 3, false), 2 * TELESCOPE_STAGGER_MS);
-    }
-
-    #[test]
-    fn collapsing_leads_from_the_outer_tile() {
-        // Outer-to-inner: the far tile (index 2) starts first, tile 0 trails —
-        // so it still reads as retracting toward the circle.
-        assert_eq!(telescope_delay_ms(2, 3, true), 0);
-        assert_eq!(telescope_delay_ms(1, 3, true), TELESCOPE_STAGGER_MS);
-        assert_eq!(telescope_delay_ms(0, 3, true), 2 * TELESCOPE_STAGGER_MS);
-    }
-
-    #[test]
-    fn settle_covers_the_last_tile_plus_a_duration() {
-        // 3 tiles: last starts at 2*stagger, runs one duration, + cushion.
+    fn a_left_edge_drop_keeps_its_vertical_position() {
         assert_eq!(
-            telescope_settle_ms(3),
-            2 * TELESCOPE_STAGGER_MS + TELESCOPE_MS + 160
+            snap_to_nearest_edge(120.0, 300.0, 200.0, 36.0, 1000.0, 800.0, INSETS),
+            EdgeSnap {
+                edge: Edge::Left,
+                left: 16.0,
+                top: 300.0,
+            }
         );
-        // Degenerate: a single tile has no stagger.
-        assert_eq!(telescope_settle_ms(1), TELESCOPE_MS + 160);
+    }
+
+    #[test]
+    fn a_bottom_edge_drop_keeps_its_horizontal_position() {
+        assert_eq!(
+            snap_to_nearest_edge(420.0, 690.0, 200.0, 36.0, 1000.0, 800.0, INSETS),
+            EdgeSnap {
+                edge: Edge::Bottom,
+                left: 420.0,
+                top: 748.0,
+            }
+        );
+    }
+
+    #[test]
+    fn a_release_is_clamped_inside_the_safe_insets_before_it_snaps() {
+        assert_eq!(
+            snap_to_nearest_edge(-40.0, -20.0, 200.0, 36.0, 1000.0, 800.0, INSETS),
+            EdgeSnap {
+                edge: Edge::Left,
+                left: 16.0,
+                top: 16.0,
+            }
+        );
     }
 }
 
@@ -1076,6 +1240,96 @@ pub fn member_roster_query_body() -> String {
     .to_string()
 }
 
+/// The one-shot query body for the signed-in member's own profile DID.
+///
+/// Reads the PROFILE branch's replica records by raw attribute: every
+/// replica there carries `xyz.tonk.replica/profile`, the profile that owns
+/// it, so any row answers. Directory mode (`this` unbound). Routeless from
+/// the FAB, whose host mounts `with="main@profile:tonk"`.
+pub fn self_did_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "profile": { "the": "xyz.tonk.replica/profile", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this":    { "?": { "name": "this" } },
+            "profile": { "?": { "name": "profile" } }
+        }
+    })
+    .to_string()
+}
+
+/// The profile DID from a `Conclusion[]` answer to [`self_did_query_body`]:
+/// the first row's `profile` field. `None` for an empty answer.
+pub fn self_did_from_conclusions(rows: &Value) -> Option<String> {
+    rows.as_array()?.iter().find_map(|row| {
+        row.get("fields")
+            .and_then(|fields| fields.get("profile"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+}
+
+/// Whether a member holding `role` runs the space: founders and admins
+/// may promote (and expel) other members; the worker refuses everyone
+/// else, so the roster offers those controls only to them.
+pub fn role_manages_members(role: &str) -> bool {
+    role == "tonk:founder" || role == "tonk:admin"
+}
+
+#[cfg(test)]
+mod self_did {
+    use super::*;
+
+    #[test]
+    fn it_queries_the_replica_profile_by_raw_attribute() {
+        let body = self_did_query_body();
+        assert!(body.contains("xyz.tonk.replica/profile"));
+        assert!(body.contains("\"this\":{\"?\""));
+        assert!(!body.contains("tonk:profile"));
+    }
+
+    #[test]
+    fn it_reads_the_profile_off_the_first_row() {
+        let rows = json!([
+            { "this": "r1", "fields": { "profile": "did:key:zMe" } },
+            { "this": "r2", "fields": { "profile": "did:key:zMe" } }
+        ]);
+        assert_eq!(
+            self_did_from_conclusions(&rows).as_deref(),
+            Some("did:key:zMe")
+        );
+        assert_eq!(self_did_from_conclusions(&json!([])), None);
+    }
+
+    #[test]
+    fn it_lets_founders_and_admins_manage_members() {
+        assert!(role_manages_members("tonk:founder"));
+        assert!(role_manages_members("tonk:admin"));
+        assert!(!role_manages_members("tonk:member"));
+        assert!(!role_manages_members(""));
+    }
+}
+
+#[cfg(test)]
+mod promote {
+    use super::*;
+
+    #[test]
+    fn it_names_the_space_member_and_chain_on_the_promote_command() {
+        let body = promote_claim_json("did:key:zSpace", "did:key:zMember", "3vQB7B6MrGQZaxCu");
+        let claim = &body["claims"][0];
+        assert_eq!(claim["op"], "assert");
+        assert_eq!(claim["application"]["predicate"]["kind"], "transient");
+        let parameters = &claim["application"]["parameters"];
+        assert_eq!(parameters["space"], "did:key:zSpace");
+        assert_eq!(parameters["member"], "did:key:zMember");
+        assert_eq!(parameters["chain"], "3vQB7B6MrGQZaxCu");
+        let with = &claim["application"]["predicate"]["concept"]["with"];
+        assert_eq!(with["chain"]["the"], "xyz.tonk.promote/chain");
+    }
+}
+
 #[cfg(test)]
 mod member_roster {
     use super::*;
@@ -1120,6 +1374,21 @@ pub fn space_list_query_body() -> String {
     .to_string()
 }
 
+/// Replace a subscription's keyed snapshot while preserving delivery order.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn reset_keyed_rows<T>(
+    rows: &mut Vec<(String, T)>,
+    conclusions: impl IntoIterator<Item = (String, T)>,
+) {
+    rows.clear();
+    for (id, row) in conclusions {
+        match rows.iter_mut().find(|(existing_id, _)| existing_id == &id) {
+            Some(existing) => existing.1 = row,
+            None => rows.push((id, row)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod space_list {
     use super::*;
@@ -1134,6 +1403,21 @@ mod space_list {
         assert!(body.contains("\"this\":{\"?\""));
         // No concept named — nothing seeded is consulted.
         assert!(!body.contains("tonk:space"));
+    }
+
+    #[test]
+    fn a_reset_keeps_one_row_per_replica_entity() {
+        let mut rows = vec![("stale".to_owned(), "stale")];
+
+        reset_keyed_rows(
+            &mut rows,
+            [
+                ("replica:space".to_owned(), "first"),
+                ("replica:space".to_owned(), "latest"),
+            ],
+        );
+
+        assert_eq!(rows, vec![("replica:space".to_owned(), "latest")]);
     }
 }
 
@@ -1242,64 +1526,11 @@ mod rename_repo {
     }
 }
 
-/// Build a `TransactRequest` JSON body for the `space/create` command.
-///
-/// Inlines the descriptor `profile.yaml` declares for `command!: &space/create`
-/// — the same shape, verbatim attribute URIs (`dom.event.current-target.
-/// elements.<field>/value`, matching what a real form submit's read-path would
-/// have produced) — so nothing seeded on the profile branch is consulted.
-/// `this` is omitted so the worker mints it from `(descriptor, parameters)`.
-///
-/// `name` is always sent (the wizard's hidden input always carries the
-/// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
-/// alone — an absent `name` fact means the command never fires at all).
-/// `remote`, `revocation` and `template` are read directly off the
-/// transient's facts by the handler (not decoded as typed `CreateSpace`
-/// fields), so an empty value is omitted rather than sent as `""` — an
-/// omitted fact and a filtered-empty fact land the same way handler-side,
-/// but omitting mirrors what the browser's own event extractor would have
-/// done, and keeps this consistent with [`rename_repo_claim_json`].
-///
-/// `revocation` is the relay stored beside the remote: dropping it here
-/// would attach the remote with no relay, and the omission only surfaces
-/// much later, when an invite has nowhere to publish its revocations.
-pub fn create_space_claim_json(
-    name: &str,
-    remote: &str,
-    revocation: &str,
-    template: &str,
-) -> Value {
-    let mut parameters = json!({ "name": name });
-    if !remote.is_empty() {
-        parameters["remote"] = json!(remote);
-    }
-    if !revocation.is_empty() {
-        parameters["revocation"] = json!(revocation);
-    }
-    if !template.is_empty() {
-        parameters["template"] = json!(template);
-    }
-    json!({
-        "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "A request to create a new space from the wizard form.",
-                        "with": {
-                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                            "revocation": { "the": "dom.event.current-target.elements.revocation/value", "as": "Text" },
-                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
-                        }
-                    }
-                },
-                "parameters": parameters
-            }
-        }]
-    })
-}
+/// The `space/create` claim shape, defined in `tonk-worker-api` so every
+/// dispatcher builds the same transient — the FAB's wizard and the
+/// browser tests that drive creation the way the app does. Re-exported
+/// here because this module is where the FAB's other claim builders live.
+pub use tonk_worker_api::create_space_claim_json;
 
 #[cfg(test)]
 mod create_space {
@@ -1307,7 +1538,7 @@ mod create_space {
 
     #[test]
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
-        let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "wiki");
+        let claim = create_space_claim_json("Untitled");
         let text = claim.to_string();
         // Verbatim, kebab-cased as declared — the handler matches on these.
         // Every control is read at `/value`: the segment after the control
@@ -1315,51 +1546,32 @@ mod create_space {
         // so a descriptive leaf resolves to `undefined` there and the
         // handler would never see the field here.
         assert!(text.contains("dom.event.current-target.elements.name/value"));
-        assert!(text.contains("dom.event.current-target.elements.remote/value"));
-        assert!(text.contains("dom.event.current-target.elements.revocation/value"));
-        assert!(text.contains("dom.event.current-target.elements.template/value"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
-        assert_eq!(params["remote"], "https://x");
-        assert_eq!(params["revocation"], "https://x/rev");
-        assert_eq!(params["template"], "wiki");
     }
 
+    /// The claim declares `name` and nothing else.
+    ///
+    /// Both dropped fields cost a whole create when they were declared
+    /// and unbacked: a field the form does not carry fails to resolve
+    /// against the event, and the command aborts before the handler runs
+    /// — which is how `template` broke creation outright after the Hub
+    /// lost its wizard.
+    ///
+    /// `remote` is gone for a second reason: the page supplying one made
+    /// every create look like a deliberate choice of this server, so a
+    /// spot created before anyone registered was wired to a service that
+    /// refuses to serve it. The worker resolves it from the account.
     #[test]
-    fn it_omits_a_blank_revocation_rather_than_sending_an_empty_string() {
-        // A deployment with no relay configured leaves the hidden input
-        // blank; the remote must still attach, just without a relay.
-        let claim = create_space_claim_json("Untitled", "https://x", "", "blank");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("revocation")
-                .is_none()
-        );
-    }
+    fn it_declares_only_the_field_the_form_carries() {
+        let claim = create_space_claim_json("Untitled");
+        let with = &claim["claims"][0]["application"]["predicate"]["concept"]["with"];
+        let declared: Vec<&String> = with.as_object().expect("a with block").keys().collect();
+        assert_eq!(declared, vec!["name"], "only `name` is backed by a control");
 
-    #[test]
-    fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "", "", "blank");
-        // The descriptor's `with.remote` mapping is always present (it is
-        // schema metadata) — what must be absent is the `remote` PARAMETER,
-        // the thing that actually becomes a fact. Asserting on a bare
-        // substring of the whole claim would also match the `with.remote`
-        // key and pass even if the parameter were still being sent.
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("remote")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn it_omits_a_blank_template_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("template")
-                .is_none()
-        );
+        let params = &claim["claims"][0]["application"]["parameters"];
+        assert!(params.get("remote").is_none(), "the worker resolves it");
+        assert!(params.get("template").is_none(), "template seeding is gone");
     }
 }
 
@@ -1481,28 +1693,25 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
 /// remote is attached. When false the marker is omitted from BOTH the
 /// declared concept and the parameters — a declared field with no value makes
 /// the assert incomplete, so the transient would commit and match nothing.
-pub fn enable_sync_claim_json(
-    space: &str,
-    remote: &str,
-    revocation_url: Option<&str>,
-    share: bool,
-    time: f64,
-) -> Value {
+pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64) -> Value {
     let mut with = json!({
         "time":   { "the": "dom.event/time-stamp", "as": "Float" },
         "space":  { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
-        "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
         "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" }
     });
     let mut parameters = json!({
         "time": time,
         "space": space,
-        "remote": remote,
         "marker": "tonk:enable-sync"
     });
-    if let Some(revocation_url) = revocation_url {
-        with["revocation"] = json!({ "the": "xyz.tonk.enable-sync/revocation-url", "as": "Text" });
-        parameters["revocation"] = json!(revocation_url);
+    // An empty remote is omitted rather than sent as `""`: the handler
+    // then resolves where this account syncs from its own recorded
+    // provider. The page used to derive `origin + /ucan/` for itself,
+    // which a sealed guest cannot do until the portal bridge has told it
+    // its own origin — a share before that arrived silently did nothing.
+    if !remote.is_empty() {
+        with["remote"] = json!({ "the": "xyz.tonk.enable-sync/remote", "as": "Text" });
+        parameters["remote"] = json!(remote);
     }
     if share {
         with["share"] = json!({ "the": "xyz.tonk.enable-sync/share", "as": "Entity" });
@@ -1591,6 +1800,91 @@ mod invite_link {
 /// attributes depends on nothing seeded and works on spots that predate this
 /// feature. `this` binds to the spot's subject DID, the entity the worker
 /// keys the refusal by.
+/// Whether this profile's account is registered and served.
+///
+/// The bar shows "log in to share" or the copy row depending on this.
+/// A live query rather than a `GET /api/account` probe: the answer
+/// changes the moment registration completes, and a one-shot read taken
+/// on connect is stale by then — the bar kept offering to log in to
+/// someone who just had.
+///
+/// `provider` is required here (as it is on the concept), so an account
+/// that enrolled but has no provider yet does not resolve at all. That
+/// is the intent: "has a provider" means "finished registering", so the
+/// absence is the answer.
+pub fn account_customer_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "status": {
+                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
+            },
+            "provider": {
+                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            // `this` has to be bound, even when the subject is unknown:
+            // an unbound one is a query error, not a wildcard, and the
+            // whole subscription fails with `UnboundVariable`. It failed
+            // silently — no frames ever arrived, so the bar fell back to
+            // its defaults and went on offering "log in to share" to
+            // someone who had just registered.
+            //
+            // A variable rather than a subject because the account's DID
+            // is not known here; there is one customer row per profile,
+            // so whatever binds is it.
+            "this": { "?": { "name": "account" } },
+            "status": { "?": { "name": "status" } },
+            "provider": { "?": { "name": "provider" } }
+        }
+    })
+    .to_string()
+}
+
+/// The share control's single subscription: where this space's invite
+/// has got to.
+///
+/// One row, replacing the pair of queries the control used to run (one
+/// for the link, one for the refusal). `status` is what the control
+/// reads; `url` is present only once granted, so it is `maybe:` and a
+/// request in flight still resolves.
+///
+/// See `plan/share-intent.md`.
+pub fn invite_state_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("invite_state_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": {
+            "with": {
+                "status": {
+                    "the": "xyz.tonk.invite/status", "as": "Entity", "cardinality": "one"
+                },
+                // Optional is a FLAG on the attribute, not a separate
+                // block. `maybe:` is the YAML notation's spelling, which
+                // the analyzer translates into this; a hand-built wire
+                // query that uses it declares nothing, and the field is
+                // dropped from the projection without an error.
+                //
+                // That cost a whole share: the invite minted, the row
+                // said `granted`, and the url the control settles the
+                // clipboard write with was simply absent — so it waited
+                // out its timeout and reported "could not copy".
+                "url": {
+                    "the": "xyz.tonk.invite/url", "as": "Text",
+                    "cardinality": "one", "optional": true
+                }
+            }
+        },
+        "terms": {
+            "this": subject,
+            "status": { "?": { "name": "status" } },
+            "url": { "?": { "name": "url" } }
+        }
+    })
+    .to_string())
+}
+
 pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
     if subject.is_empty() {
         return Err("share_blocked_query_body: empty subject".into());
@@ -1613,13 +1907,13 @@ pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
 
 /// This page's default UCAN access-service endpoint: `origin + /ucan/`.
 ///
-/// The same URL `<tonk-default-remote auto>` fills the create wizard's hidden
-/// input with. Kept pure (origin in, URL out) so it is testable off-browser;
-/// the caller supplies the origin.
-pub fn default_remote_url(origin: &str) -> String {
-    format!("{}{}", origin.trim_end_matches('/'), "/ucan/")
-}
-
+/// A fallback, not the source of truth. Where a space syncs is the
+/// account's own registration, recorded by the service in its receipt
+/// and resolved worker-side; the create wizard passes no remote at all
+/// for exactly that reason. This remains for the share path, which still
+/// supplies one, and is the next derivation to remove.
+///
+/// Kept pure (origin in, URL out) so it is testable off-browser; the
 /// How long a share click waits for a result before giving up.
 ///
 /// Without this the control has no failure path at all for anything other
@@ -1636,20 +1930,10 @@ mod enable_sync_claim {
 
     #[test]
     fn it_names_the_space_remote_and_share_marker() {
-        let claim = enable_sync_claim_json(
-            "did:key:z6Mk",
-            "https://tonk.spot/ucan/",
-            Some("https://accounts.tonk.xyz/revocations"),
-            true,
-            7.0,
-        );
+        let claim = enable_sync_claim_json("did:key:z6Mk", "https://tonk.network/ucan/", true, 7.0);
         let app = &claim["claims"][0]["application"];
         assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
-        assert_eq!(app["parameters"]["remote"], "https://tonk.spot/ucan/");
-        assert_eq!(
-            app["parameters"]["revocation"],
-            "https://accounts.tonk.xyz/revocations"
-        );
+        assert_eq!(app["parameters"]["remote"], "https://tonk.network/ucan/");
         assert_eq!(app["parameters"]["share"], "tonk:share");
         assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
         assert_eq!(app["parameters"]["time"], 7.0);
@@ -1663,10 +1947,6 @@ mod enable_sync_claim {
         assert_eq!(with["space"]["the"], "xyz.tonk.enable-sync/space");
         assert_eq!(with["remote"]["the"], "xyz.tonk.enable-sync/remote");
         assert_eq!(
-            with["revocation"]["the"],
-            "xyz.tonk.enable-sync/revocation-url"
-        );
-        assert_eq!(
             with["marker"]["the"],
             "dom.event.current-target.dataset/enable-sync"
         );
@@ -1675,15 +1955,79 @@ mod enable_sync_claim {
 
     #[test]
     fn it_omits_the_share_marker_when_not_sharing() {
-        let claim =
-            enable_sync_claim_json("did:key:z6Mk", "https://x.test/ucan/", None, false, 1.0);
+        let claim = enable_sync_claim_json("did:key:z6Mk", "https://x.test/ucan/", false, 1.0);
         let app = &claim["claims"][0]["application"];
         assert!(app["parameters"].get("share").is_none());
         assert!(
             app["predicate"]["concept"]["with"].get("share").is_none(),
             "an omitted parameter must not be declared, or the assert is incomplete"
         );
-        assert!(app["parameters"].get("revocation").is_none());
+    }
+}
+
+#[cfg(test)]
+mod account_state_query {
+    use super::*;
+
+    /// The subject must be BOUND.
+    ///
+    /// An unbound `this` is a query error, not a wildcard: the whole
+    /// subscription failed with `UnboundVariable` on every attempt, no
+    /// frame ever arrived, and the bar silently fell back to its
+    /// defaults — reporting stale sync and offering to log in to an
+    /// account that was already active.
+    #[test]
+    fn it_binds_its_subject() {
+        let body = account_customer_query_body();
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            parsed["terms"]["this"].is_object(),
+            "`this` must be bound, got {body}",
+        );
+        assert!(body.contains("xyz.tonk.account/customer-status"));
+        assert!(body.contains("xyz.tonk.account/provider-address"));
+    }
+}
+
+#[cfg(test)]
+mod invite_state_query {
+    use super::*;
+
+    #[test]
+    fn it_reads_the_status_and_an_optional_url() {
+        let body = invite_state_query_body("did:key:z6Mk").expect("query body builds");
+        // Raw attribute URIs, not a concept name: nothing seeded is
+        // needed, so an old core.yaml cannot break the read.
+        assert!(body.contains("xyz.tonk.invite/status"));
+        assert!(body.contains("xyz.tonk.invite/url"));
+        assert!(body.contains("did:key:z6Mk"));
+        // `url` must be optional or a request in flight — which has a
+        // status and no url yet — would never resolve, and the control
+        // would sit on `share` through the whole mint.
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        // Optional is a FLAG, not a block. `maybe:` is the YAML
+        // notation's spelling; on the wire an optional attribute stays
+        // in `with` and carries `"optional": true`. A query that used
+        // `maybe:` declared nothing at all — the field was dropped from
+        // the projection with no error, and the share control waited out
+        // its timeout for a url that was sitting in the row.
+        assert!(
+            parsed["predicate"]["maybe"].is_null(),
+            "there is no `maybe` block on the wire, got {body}",
+        );
+        assert_eq!(
+            parsed["predicate"]["with"]["url"]["optional"], true,
+            "url must be marked optional in place, got {body}",
+        );
+        assert!(
+            parsed["predicate"]["with"]["status"]["optional"].is_null(),
+            "status is required, got {body}",
+        );
+    }
+
+    #[test]
+    fn it_refuses_an_empty_subject() {
+        assert!(invite_state_query_body("").is_err());
     }
 }
 
@@ -1707,27 +2051,6 @@ mod share_blocked_query {
 }
 
 #[cfg(test)]
-mod default_remote {
-    use super::*;
-
-    #[test]
-    fn it_appends_the_access_service_path() {
-        assert_eq!(
-            default_remote_url("https://tonk.spot"),
-            "https://tonk.spot/ucan/"
-        );
-    }
-
-    #[test]
-    fn it_does_not_double_slash_an_origin_that_already_has_one() {
-        assert_eq!(
-            default_remote_url("https://tonk.spot/"),
-            "https://tonk.spot/ucan/"
-        );
-    }
-}
-
-#[cfg(test)]
 mod share_state_blocked {
     use super::*;
 
@@ -1738,21 +2061,6 @@ mod share_state_blocked {
         assert!(ShareState::Blocked.accepts_click());
         // The dialog is up; nothing should quietly revert it.
         assert!(!ShareState::Blocked.is_transient());
-    }
-}
-
-#[cfg(test)]
-mod stylesheet {
-    #[test]
-    fn it_ships_the_stylesheet_with_the_crate() {
-        let css = include_str!("fab.css");
-        // A representative selector from each zone, so a truncated or
-        // partial copy fails rather than passing silently.
-        assert!(css.contains(".fab__cap-l"));
-        assert!(css.contains(".fab__menu-item"));
-        assert!(css.contains(".fab__share-label"));
-        assert!(css.contains(".wizard__card"));
-        assert!(css.contains(".fab__strip"));
     }
 }
 
@@ -1787,7 +2095,7 @@ mod wire_types {
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),
             rename_repo_claim_json("did:key:zX", "N").to_string(),
-            create_space_claim_json("N", "https://r", "https://r/rev", "wiki").to_string(),
+            create_space_claim_json("N").to_string(),
             profile_rename_claim_json("N").to_string(),
             invite_claim_json("did:key:zX", 1.0).to_string(),
             pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),

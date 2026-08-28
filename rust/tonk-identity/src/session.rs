@@ -13,7 +13,7 @@
 //! the thing that lapses on its own.
 
 use anyhow::Result;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
@@ -34,9 +34,9 @@ pub const SESSION_TTL_SECONDS: u64 = 12 * 60 * 60;
 ///
 /// The device signs this itself from the `root → device` grant it
 /// already holds — no network, no renewal endpoint, nothing to be
-/// unreachable. Withdrawal works by the grant's registry row, which is
-/// what the presign screen already checks; the expiry is what bounds
-/// the damage between a revoke and the next screen.
+/// unreachable. Withdrawal works by the grant's registry row, which the
+/// chain walk already checks; the expiry is what bounds the damage
+/// between a revoke and the next presign.
 pub async fn mint_session_delegation(
     device: Ed25519Signer,
     session: &Did,
@@ -48,7 +48,7 @@ pub async fn mint_session_delegation(
         .map_err(|err| anyhow::anyhow!("session expiration out of range: {err}"))?;
 
     let delegation = DelegationBuilder::new()
-        .issuer(device)
+        .issuer(Signer::from(device))
         .audience(session)
         .subject(UcanSubject::Any)
         .command(vec![])
@@ -63,9 +63,9 @@ pub async fn mint_session_delegation(
 /// producing the chain a session key presents.
 ///
 /// The composed chain still carries the grant's subject and every hop's
-/// CID, so the presign screen sees the device's identity as well as the
+/// CID, so the chain walk sees the device's identity as well as the
 /// session's — revoking the device severs the session on its next
-/// screen without the session itself being known to the registry.
+/// presign without the session itself being known to the registry.
 pub async fn extend_with_session(
     grant: &DelegationChain,
     device: Ed25519Signer,
@@ -139,7 +139,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_extends_a_device_grant_with_a_session_hop() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let session = signer(&SESSION_SEED).await;
         let grant = crate::delegation::mint_device_delegation(root, &device.did())
@@ -161,7 +161,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_narrows_an_unexpiring_grant() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let session = signer(&SESSION_SEED).await;
         let grant = crate::delegation::mint_device_delegation(root, &device.did())

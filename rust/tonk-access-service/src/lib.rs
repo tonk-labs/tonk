@@ -42,15 +42,16 @@ use worker::*;
 /// mid-load, roughly doubling the requests a cold load pays for.
 pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 
+pub mod deletion;
 pub mod email;
 mod error;
-#[cfg(any(target_arch = "wasm32", test))]
-mod expiry;
 mod handlers;
+pub mod lookup;
 pub mod metering;
+pub mod provisioning;
 pub mod registration;
-#[cfg(any(target_arch = "wasm32", test))]
-mod revocation;
+pub mod revocation;
+pub mod revoke;
 pub mod service;
 pub mod shortcut;
 pub mod store;
@@ -81,6 +82,13 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         )
         // Registration state probe, polled by enrolling clients.
         .get_async("/customer/:did", handlers::registration::handle_customer)
+        // Lookup by email address: the `did:web` document naming the
+        // customer registered under one. Two segments, so it does not
+        // collide with the single-segment probe above.
+        .get_async(
+            "/customer/:domain/:local/did.json",
+            handlers::lookup::handle,
+        )
         // Service info endpoint
         .get_async("/", handlers::info::handle)
         // Health check

@@ -16,8 +16,8 @@ helpers = [
     "dep:tonk-access-service",
     "dep:tonk-account-service",
 ]
-integration-tests = ["helpers", "dialog-common/integration-tests"]
-web-integration-tests = ["helpers", "dialog-common/integration-tests"]
+integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
+web-integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -45,6 +45,7 @@ tonk-host = { workspace = true }
 tonk-account = { workspace = true }
 tonk-identity = { workspace = true }
 tonk-portal = { workspace = true }
+tonk-schema = { workspace = true }
 tonk-worker = { workspace = true }
 tonk-worker-api = { workspace = true }
 tonk-analytics = { workspace = true }
@@ -95,6 +96,9 @@ features = [
     "HtmlHeadElement",
     "HtmlInputElement",
     "History",
+    "Clipboard",
+    "KeyboardEvent",
+    "KeyboardEventInit",
     "HtmlScriptElement",
     "Location",
     "MessageEvent",

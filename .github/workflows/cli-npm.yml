@@ -107,10 +107,27 @@ jobs:
       - name: 'Build tonk'
         run: nix build --accept-flake-config .#tonk-cli
 
+      - name: 'Stage tonk artifact'
+        run: |
+          mkdir -p artifacts
+          cp result/bin/tonk artifacts/tonk
+          chmod 0755 artifacts/tonk
+
+      - name: 'Sign and notarize macOS artifact'
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/sign-notarize-macos
+        with:
+          binary-path: artifacts/tonk
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          app-store-connect-key: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
-          path: result/bin/tonk
+          path: artifacts/tonk
 
   publish:
     name: 'Publish to npm'

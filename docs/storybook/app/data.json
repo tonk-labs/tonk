@@ -1,0 +1,2173 @@
+{
+  "auditCommit": "a3f8670b1",
+  "bugs": [
+    {
+      "area": "CLI account login",
+      "decision": "finish recovery contract",
+      "id": "B-01",
+      "severity": "high",
+      "title": "CLI login recovery does not span every account boundary"
+    },
+    {
+      "area": "Browser account creation",
+      "decision": "product call",
+      "id": "B-02",
+      "severity": "high",
+      "title": "Duplicate-email account creation leaves an orphaned passkey"
+    },
+    {
+      "area": "Browser account lifecycle",
+      "decision": "fix or require restart reconciliation",
+      "id": "B-04",
+      "severity": "high",
+      "title": "Busy account pages leave navigation links operational"
+    },
+    {
+      "area": "Browser account login",
+      "decision": "generation-binding contract fix",
+      "id": "B-06",
+      "severity": "high",
+      "title": "Same-device browser relink stores a grant the service did not activate"
+    },
+    {
+      "area": "Browser API/error UX",
+      "decision": "fix",
+      "id": "B-03",
+      "severity": "medium",
+      "title": "Browser account reads can hide service errors as JSON decoder errors"
+    },
+    {
+      "area": "Activation page",
+      "decision": "fix",
+      "id": "B-05",
+      "severity": "medium",
+      "title": "Activation accepts concurrent duplicate submissions"
+    }
+  ],
+  "coverage": [
+    {
+      "document": "glossary.md",
+      "status": "drafted"
+    },
+    {
+      "document": "journey-catalog.md",
+      "status": "drafted"
+    },
+    {
+      "document": "bug-triage.md",
+      "status": "drafted"
+    },
+    {
+      "document": "foundations/state-model.md",
+      "status": "drafted"
+    },
+    {
+      "document": "foundations/coverage-model.md",
+      "status": "drafted"
+    },
+    {
+      "document": "accounts/lifecycle.md",
+      "status": "drafted"
+    },
+    {
+      "document": "accounts/browser-cli-handoff.md",
+      "status": "drafted"
+    },
+    {
+      "document": "accounts/authority-and-deletion.md",
+      "status": "drafted"
+    },
+    {
+      "document": "spaces/lifecycle-and-collaboration.md",
+      "status": "drafted"
+    },
+    {
+      "document": "cli/command-surface.md",
+      "status": "drafted"
+    },
+    {
+      "document": "ui/routing-and-runtime.md",
+      "status": "drafted"
+    },
+    {
+      "document": "cross-cutting/failure-and-recovery.md",
+      "status": "drafted"
+    },
+    {
+      "document": "verification/accounts.md",
+      "status": "drafted"
+    },
+    {
+      "document": "verification/cli-spaces-ui.md",
+      "status": "drafted"
+    },
+    {
+      "document": "screens.json",
+      "status": "drafted"
+    },
+    {
+      "document": "capture/README.md",
+      "status": "drafted"
+    },
+    {
+      "document": "app/index.html",
+      "status": "drafted"
+    }
+  ],
+  "journeys": [
+    {
+      "evidence": "Whole happy path in account_flow; one route unit test.",
+      "gaps": "Mount failures, unsafe next, duplicated/malformed query, history/reload.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B01",
+      "title": "Open /settings; redirect legacy /account* without losing the query.",
+      "variants": "Fresh, linked, add-account, revoke, delete, callback queries."
+    },
+    {
+      "evidence": "Whole happy path plus DOM form tests.",
+      "gaps": "Passkey cancel/unavailable/PRF fallback, local save failure, remote timeout, response lost after commit, reload at every stage.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B02",
+      "title": "Choose Create and create a fresh account/passkey.",
+      "variants": "Root missing; provider-free root; add-account profile."
+    },
+    {
+      "evidence": "Whole browser test expects one orphaned credential, then success with another email.",
+      "gaps": "Product decision on orphaning; restart and retry; concurrent availability race; local-root boundary.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B03",
+      "title": "Submit an email that already owns an account, then recover.",
+      "variants": "Root missing; existing provider-free root; new add-account profile."
+    },
+    {
+      "evidence": "None in activate.rs.",
+      "gaps": "Every branch, duplicate click, reload, offline, malformed body, receipt-report failure.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B04",
+      "title": "Receive and open the activation email link.",
+      "variants": "Missing, damaged, valid, expired, already used link."
+    },
+    {
+      "evidence": "Partial component logic; happy activation used by broader browser tests.",
+      "gaps": "Resend success/error/rate limit, stale email, Active idempotency, Suspended copy.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B05",
+      "title": "See activation pending and resend an activation email.",
+      "variants": "Customer absent, Registered, Active, Suspended, unreachable."
+    },
+    {
+      "evidence": "Whole happy paths for local creation, activation, provider attachment, later sync.",
+      "gaps": "Offline/reload between each stage, duplicate provisioning, suspended customer, lost activation receipt.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B06",
+      "title": "Work locally before activation, then attach provider service.",
+      "variants": "Local-only space; account ready/customer Registered; queued custody."
+    },
+    {
+      "evidence": "Whole browser login is exercised by multi-device flows.",
+      "gaps": "Wrong passkey, cancel, unknown account, link succeeds but local attach fails, hydration timeout/restart.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B07",
+      "title": "Log in on a fresh browser/device with a synced passkey.",
+      "variants": "Root missing; account ready/unhydrated/unconfigured; service online/offline."
+    },
+    {
+      "evidence": "Whole real-browser regression; asserts one device row.",
+      "gaps": "Offline logout, lost detach, reload during logout/login, concurrent revoke/delete, stale local grant.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B08",
+      "title": "Log out and sign back into the same account/profile.",
+      "variants": "Same root and server device row; local provider removed."
+    },
+    {
+      "evidence": "Partial unit/flow logic.",
+      "gaps": "Explicit refusal text, zero writes, recovery through Add profile, wrong-root concurrent tabs.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B09",
+      "title": "Attempt login with a different account/root in a used profile.",
+      "variants": "Provider-free old root; registered old account; fresh profile available."
+    },
+    {
+      "evidence": "Whole happy path for two accounts and disjoint space lists.",
+      "gaps": "Switch failure/reload, storage failure, deleted/revoked target, name collisions, rapid repeated switch.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B10",
+      "title": "Add a second browser account/profile and switch between them.",
+      "variants": "One/two accounts; disjoint and same-named spaces; one unavailable account."
+    },
+    {
+      "evidence": "Partial rendering/status tests.",
+      "gaps": "Retry convergence, forbidden edits, reload loop, malformed descriptor, service return after offline.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B11",
+      "title": "Load settings when account state is unconfigured or unhydrated.",
+      "variants": "I2, I3, provider online/offline."
+    },
+    {
+      "evidence": "Partial DOM rendering; no journey fault injection.",
+      "gaps": "Passkey facts remain available, email becomes unavailable, recovery and action gating.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B12",
+      "title": "View customer/account facts while service is unavailable or suspended.",
+      "variants": "C2, C3, CX; repository ready/unhydrated."
+    },
+    {
+      "evidence": "Partial DOM keyboard/blur tests.",
+      "gaps": "Remote reject/conflict, duplicate Enter+blur, response loss, second-device concurrent rename, restart.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B13",
+      "title": "Change the account display name.",
+      "variants": "Ready/unhydrated/revoked; Enter/blur; same/different value."
+    },
+    {
+      "evidence": "Partial custody browser coverage.",
+      "gaps": "Ceremony matrix, duplicate credential, fact/publish failure, reload and retry.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B14",
+      "title": "Add another passkey.",
+      "variants": "Active customer; missing/legacy passkey metadata; PRF/cancel/error."
+    },
+    {
+      "evidence": "Partial DOM rendering.",
+      "gaps": "API non-2xx/malformed body, stale local facts, loading/reload accessibility.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B15",
+      "title": "Inspect account summary and passkey facts.",
+      "variants": "Service online/offline; metadata present/legacy; account unhydrated."
+    },
+    {
+      "evidence": "Partial unit/integration coverage.",
+      "gaps": "Process output/exit/JSON for every state, offline guarantee, unsupported version/corruption.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C01",
+      "title": "Run bare tonk account or account status.",
+      "variants": "Root missing, unregistered, unconfigured, unhydrated, ready, malformed state."
+    },
+    {
+      "evidence": "Loopback bridge contract tests and whole happy hybrid flows for callback/default/discovered provider.",
+      "gaps": "Real Safari/Chrome/Firefox bridge pass, OS-open failure, callback collision, timeout, malformed callback, restart after approval at every write.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C02",
+      "title": "Start tonk account login and approve in an already-linked browser.",
+      "variants": "Default page; --via; --no-open; custom name; TTY/pipe; Safari cross-scheme warning."
+    },
+    {
+      "evidence": "Whole browser flow for registration before linking CLI.",
+      "gaps": "Account ceremony failure while callback waits, reload losing callback query, different-account/profile choice.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C03",
+      "title": "Start CLI login from an unlinked browser, create/login there, then approve.",
+      "variants": "Fresh browser root missing/provider-free; activation pending/active."
+    },
+    {
+      "evidence": "Whole real-browser decline flow.",
+      "gaps": "Tab close, callback POST failure, repeat decline, CLI gone before decline, machine output.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C04",
+      "title": "Decline a waiting CLI in the browser.",
+      "variants": "Linked/unlinked browser; default/direct callback."
+    },
+    {
+      "evidence": "Whole process test for SIGINT during callback wait.",
+      "gaps": "SIGTERM/SIGHUP/terminal close; persisted session invariant; browser later posting to dead callback.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C05",
+      "title": "Cancel CLI login with Ctrl-C before authorization.",
+      "variants": "Callback bound; browser unopened/open; TTY/pipe."
+    },
+    {
+      "evidence": "Existing process test explicitly expects a fresh callback before approval.",
+      "gaps": "All post-approval crash points; decision whether declared pending states resume or are removed.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C06",
+      "title": "Resume or restart CLI login after interruption/crash.",
+      "variants": "Before approval; grant received; partial root/provider/session; hydration/push."
+    },
+    {
+      "evidence": "Partial direct state check.",
+      "gaps": "Process output, no browser open, no writes, concurrent logout/login.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C07",
+      "title": "Attempt CLI login while an account is already active.",
+      "variants": "Same account/different account; stale active state; provider offline."
+    },
+    {
+      "evidence": "Partial account unit test for local preservation/idempotency.",
+      "gaps": "Session transition owner tests, pending states, lock contention, crash, detach failure/retry, process output.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C08",
+      "title": "Run tonk account logout.",
+      "variants": "Active; pending; signed out; provider online/offline; concurrent account command."
+    },
+    {
+      "evidence": "Partial account authority/state integration tests.",
+      "gaps": "Process matrix and bounded timeout; retry after partial pull/mount/push.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C09",
+      "title": "Run tonk account sync.",
+      "variants": "Ready/unhydrated/unconfigured; offline/revoked/diverged."
+    },
+    {
+      "evidence": "Partial account/device integration tests.",
+      "gaps": "Empty/malformed account, pull timeout warning streams, stable JSON, concurrent revocation.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C10",
+      "title": "List account devices in human or JSON output.",
+      "variants": "Online/offline local facts; duplicate facts; self/other/revoked."
+    },
+    {
+      "evidence": "Partial revoked_device integration; browser revokes CLI whole flow.",
+      "gaps": "CLI process matrix, partial multi-service publish, retry/idempotency, local state after self-revoke.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C11",
+      "title": "Revoke a device from the CLI.",
+      "variants": "Self/other/already revoked/unknown DID; service online/offline."
+    },
+    {
+      "evidence": "Partial URL construction and browser deletion flow.",
+      "gaps": "Safe URL encoding/redirect, process exit/output, target changed before browser loads.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C12",
+      "title": "Open account or hosted-space deletion from CLI.",
+      "variants": "Browser opens/fails; --no-open; signed out; stale subject."
+    },
+    {
+      "evidence": "Whole browser revoke-CLI flow; DOM list tests.",
+      "gaps": "Offline, passkey cancel/wrong assertion, partial service publish, reload, concurrent revoke.",
+      "group": "Account authority and destructive actions",
+      "id": "AUTH-01",
+      "title": "View devices and revoke another device in browser settings.",
+      "variants": "Self/other/unknown/already revoked; deep link."
+    },
+    {
+      "evidence": "Partial handler/state logic.",
+      "gaps": "Whole self-revoke and landing/recovery, local data boundaries, second device observation.",
+      "group": "Account authority and destructive actions",
+      "id": "AUTH-02",
+      "title": "Revoke the current browser/device.",
+      "variants": "Only device/multiple devices; other active profile; customer states."
+    },
+    {
+      "evidence": "Partial unit logic and happy browser flow.",
+      "gaps": "Cancel consumes query, reload, target disappears concurrently, safe profile switching.",
+      "group": "Account authority and destructive actions",
+      "id": "AUTH-03",
+      "title": "Arrive through ?revoke=DID.",
+      "variants": "Linked/unlinked browser; DID present/absent/stale/malformed."
+    },
+    {
+      "evidence": "Partial deletion implementation and broader browser coverage.",
+      "gaps": "Whole exact-scope deletion, no-passkey worker authorization, stale/changed plan, partial remote failure, retry.",
+      "group": "Account authority and destructive actions",
+      "id": "AUTH-04",
+      "title": "Review and delete one owned hosted space.",
+      "variants": "Owned/joined/unknown/already deleted; stale plan; customer unavailable."
+    },
+    {
+      "evidence": "Whole browser account deletion/reuse-email flow.",
+      "gaps": "Passkey denial, plan failure, response loss, partial space purge, restart, unrelated boundaries.",
+      "group": "Account authority and destructive actions",
+      "id": "AUTH-05",
+      "title": "Review and delete the whole account.",
+      "variants": "Zero/many owned spaces; joined spaces; multiple profiles/devices."
+    },
+    {
+      "evidence": "Whole profile/email release path plus rotation unit behavior.",
+      "gaps": "Offline reload, second device stale state, explicit status/error on next remote action.",
+      "group": "Account authority and destructive actions",
+      "id": "AUTH-06",
+      "title": "Recover after account deletion.",
+      "variants": "Deleted selected profile; another local profile; retained joined/local replicas."
+    },
+    {
+      "evidence": "Broad process coverage in cli_space.",
+      "gaps": "Locked/malformed registry, stable JSON version, concurrent registry mutation.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-01",
+      "title": "List spaces with human or JSON output.",
+      "variants": "Empty; registered; missing data; unregistered site; account-listed remote copy."
+    },
+    {
+      "evidence": "Broad cli_space and context tests.",
+      "gaps": "CWD/binding changes during long command, malformed env, machine error contract.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-02",
+      "title": "Select a space via --space, environment, or nearest binding.",
+      "variants": "All precedence levels; nested/stale/missing binding."
+    },
+    {
+      "evidence": "Whole CLI process coverage; browser pre-activation flow covers local-first use.",
+      "gaps": "Crash between data/registry/binding, read-only/full disk, concurrent same name.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-03",
+      "title": "Create a new local-only space while signed out.",
+      "variants": "Canonical/custom site; valid/invalid/colliding name."
+    },
+    {
+      "evidence": "Partial authority and browser flows.",
+      "gaps": "All service states, ownership transaction crash, lost response, retry without duplicate space.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-04",
+      "title": "Create an account-owned space while signed in.",
+      "variants": "Customer Active/Registered/Suspended/offline; ready/unhydrated account."
+    },
+    {
+      "evidence": "Partial CLI process/migration coverage.",
+      "gaps": "Crash and concurrent adoption, wrong repository identity, read-only site.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-05",
+      "title": "Adopt an existing site with space new --site.",
+      "variants": "Valid site; already registered; reserved canonical name; malformed/old data."
+    },
+    {
+      "evidence": "Broad process coverage.",
+      "gaps": "Concurrent binding writes, malformed registry, symlink/case/platform variants.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-06",
+      "title": "Bind a directory with space use; unbind it later.",
+      "variants": "Parent/nested/exact/vanished path."
+    },
+    {
+      "evidence": "Broad process coverage.",
+      "gaps": "Signal/crash during removal, failed partial filesystem delete, concurrent use/sync.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-07",
+      "title": "Remove a space locally with confirmation.",
+      "variants": "TTY/no TTY; yes/no; owned/listed/local-only; data missing."
+    },
+    {
+      "evidence": "Whole process coverage.",
+      "gaps": "Crash between unregister/report, concurrent adopt, account directory disagreement.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-08",
+      "title": "Unregister but retain data with space rm --keep-data.",
+      "variants": "Canonical/custom site; re-adopt later; name reserved."
+    },
+    {
+      "evidence": "Authoring/agents integration coverage.",
+      "gaps": "Partial write/restart, invalid model, remote conflict, pipe/encoding/large file.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-09",
+      "title": "Set home concepts or read/write space AGENTS claim.",
+      "variants": "Blank/existing home; notation/dry-run/no-sync; file/stdin."
+    },
+    {
+      "evidence": "Six space_link tests plus authority/browser happy paths.",
+      "gaps": "Crash/retry at ownership/hosting/listing/upstream stages, partial remote commit, concurrent link.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "SPACE-10",
+      "title": "Link a local-only space to the active account.",
+      "variants": "Signed out; same/different owner; customer states; provider offline."
+    },
+    {
+      "evidence": "Eleven account_spaces tests cover many list/pull cases.",
+      "gaps": "Process JSON/error matrix, concurrent rename/delete, corrupted local account branch.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "SPACE-11",
+      "title": "List spaces from the account directory.",
+      "variants": "Empty; duplicate names; joined/owned; offline cached; stale deletion."
+    },
+    {
+      "evidence": "Broad account_spaces integration coverage.",
+      "gaps": "Crash between fetch/site/registry, disk failure, concurrent pull, stale account fact.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "SPACE-12",
+      "title": "Pull an account space by name or subject.",
+      "variants": "Unique/ambiguous/missing name; existing local name/subject; offline/revoked."
+    },
+    {
+      "evidence": "Broad sync/status tests.",
+      "gaps": "Stable process output for all states, corrupt head, concurrent upstream move.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "SYNC-01",
+      "title": "Inspect status without mutating local main.",
+      "variants": "No upstream/synced/ahead/behind/diverged/unreachable/revoked."
+    },
+    {
+      "evidence": "Broad sync and access tests.",
+      "gaps": "Lost response after commit, concurrent push, retry/idempotency, bounded timeout.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "SYNC-02",
+      "title": "Push local main.",
+      "variants": "R0–R6; account customer states; invite authority."
+    },
+    {
+      "evidence": "Broad sync tests.",
+      "gaps": "Crash after fetch/before ref update, concurrent local write, explicit divergence recovery.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "SYNC-03",
+      "title": "Pull upstream main.",
+      "variants": "R0–R6; dirty/ahead/diverged; remote changes during fetch."
+    },
+    {
+      "evidence": "Data verb and sync integration coverage.",
+      "gaps": "Whole command × all remote states, response loss, local commit succeeds/push fails recovery.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "SYNC-04",
+      "title": "Auto-pull/write/auto-push around a write.",
+      "variants": "--dry-run, --no-sync, TONK_NO_SYNC, offline, conflict."
+    },
+    {
+      "evidence": "Broad invite/integration coverage.",
+      "gaps": "Shortcut timeout/malformed answer, lost push, stable URL privacy, concurrent revoke.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-01",
+      "title": "Mint an audience-open invite.",
+      "variants": "Zero/one/many remotes; shortening on/off/offline; upstream states."
+    },
+    {
+      "evidence": "Partial invite tests.",
+      "gaps": "Full claim boundary, wrong recipient, root rotation, URL leakage.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-02",
+      "title": "Mint a recipient-root invite.",
+      "variants": "Valid/wrong DID; accountless/account recipient; remote variants."
+    },
+    {
+      "evidence": "Join, profile, authority tests; accountless claim-to-link flow.",
+      "gaps": "Process error matrix, crash between claim and registration, response loss, concurrent claim.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-03",
+      "title": "Join or claim an invite into a named space.",
+      "variants": "Fresh/existing name; remote/no remote; malformed/expired/revoked/already claimed."
+    },
+    {
+      "evidence": "Invite revocation integration and real-browser access cutoff.",
+      "gaps": "Multi-remote partial publish, later reconnection, local-write semantics, idempotent revoke.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-04",
+      "title": "Revoke an invite and observe access loss.",
+      "variants": "Before/after claim; local replica; online/offline recipient; several remotes."
+    },
+    {
+      "evidence": "Whole integration/browser flow exists for claim retention and backup.",
+      "gaps": "Restart at each retention/push stage, duplicate claims, different-root account attempt.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-05",
+      "title": "Claim while accountless, later link an account, recover on another device.",
+      "variants": "Provider-free root; customer activation states; second device."
+    },
+    {
+      "evidence": "Strong authoring/process coverage.",
+      "gaps": "Concurrent definition, remote conflict, malformed Unicode/large schema, crash after commit.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-01",
+      "title": "Define/list a concept.",
+      "variants": "Empty/existing name; field types/cardinality; notation/dry-run/sync."
+    },
+    {
+      "evidence": "Strong authoring/render coverage.",
+      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility in real browser.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-02",
+      "title": "Define/list a detail, directory, label, or title view.",
+      "variants": "Inline/file template; blank/existing home; --home."
+    },
+    {
+      "evidence": "Strong data_verbs coverage.",
+      "gaps": "Pipe/TTY distinctions, concurrent supersede, response loss after push.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-03",
+      "title": "Assert a new entity through schema-derived flags.",
+      "variants": "Required/optional/many fields; help; notation/dry-run/no-sync/quiet."
+    },
+    {
+      "evidence": "Strong data verb coverage.",
+      "gaps": "Multi-writer conflict, auto-sync partial failure, durable no-op invariant.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-04",
+      "title": "Update an existing entity.",
+      "variants": "Bookmark/URI; same values no-op; wrong concept; missing entity."
+    },
+    {
+      "evidence": "Strong data/schema coverage.",
+      "gaps": "Huge output/broken pipe, concurrent write consistency, stable JSON compatibility.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-05",
+      "title": "Query a concept.",
+      "variants": "Empty/many/malformed schema; human/JSON; offline."
+    },
+    {
+      "evidence": "Strong data verb coverage.",
+      "gaps": "Already retracted, concurrent assertion, push failure/retry, value-level limitation copy.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-06",
+      "title": "Retract one field or an entire instance.",
+      "variants": "One/many cardinality; notation/dry-run/no-sync/quiet."
+    },
+    {
+      "evidence": "Strong notation/site coverage.",
+      "gaps": "Broken pipe, signal during eval/sync, huge input, file mutation mid-read.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-07",
+      "title": "Evaluate notation from inline text, file, explicit -, or piped stdin.",
+      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync."
+    },
+    {
+      "evidence": "Listing/schema tests.",
+      "gaps": "Stable error/output matrix, huge values/broken pipe, concurrent schema change.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-08",
+      "title": "Show schema, concept, entity, or view.",
+      "variants": "Missing/ambiguous names; JSON/notation/human."
+    },
+    {
+      "evidence": "Eight render integration tests.",
+      "gaps": "Atomic output file, broken pipe, real-browser parity, concurrent source change.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-09",
+      "title": "Render a route to stdout or a file.",
+      "variants": "Directory/detail/explicit view; missing fields/view; output path errors."
+    },
+    {
+      "evidence": "Ten blob integration tests.",
+      "gaps": "Large stream/disk full, signal, content changed mid-read, broken pipe.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-10",
+      "title": "Add/list/read a content-addressed blob.",
+      "variants": "Inferred/explicit type; dry-run; missing/corrupt file/blob; stdout pipe."
+    },
+    {
+      "evidence": "Transfer integration tests.",
+      "gaps": "Atomic output/import, partial row failure/retry, escaping/large file, concurrent branch.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-11",
+      "title": "Export or import CSV.",
+      "variants": "stdout/file; branch; empty/malformed/duplicate rows; write flags."
+    },
+    {
+      "evidence": "Parser/unit and process coverage.",
+      "gaps": "Snapshot of every help route, width/color/broken pipe, hidden-command discoverability.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-01",
+      "title": "Ask for index, command help, all commands, or guides.",
+      "variants": "TTY/pipe; known/unknown command/guide; dynamic concept help."
+    },
+    {
+      "evidence": "Partial output tests.",
+      "gaps": "One stable exit-code/stream taxonomy across every command family.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-02",
+      "title": "Receive a usage or runtime error.",
+      "variants": "Human/verbose; JSON-capable command; TTY/pipe."
+    },
+    {
+      "evidence": "Remote/sync/invite tests.",
+      "gaps": "Concurrent mutation, partial meta-branch write, wrong origin, JSON matrix.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-03",
+      "title": "Add/list/select a remote and upstream.",
+      "variants": "Zero/one/many remotes; invalid URL/DID/name; existing upstream."
+    },
+    {
+      "evidence": "Partial identity/profile tests.",
+      "gaps": "Process-level destructive boundaries, recovery/redelegation guidance, read-only state.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-04",
+      "title": "Inspect or reset the local identity.",
+      "variants": "Missing/existing profile; spaces/accounts present; confirmation expectations."
+    },
+    {
+      "evidence": "Live migration tests.",
+      "gaps": "Crash/restart, partial copy cleanup, permissions, concurrent writer.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-05",
+      "title": "Migrate a carry directory.",
+      "variants": "Found/not found; copy/move; cross-filesystem; destination exists."
+    },
+    {
+      "evidence": "Authority migration tests.",
+      "gaps": "Crash at each drain/retain stage, duplicate run, corrupt delegation, push failure.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-06",
+      "title": "Migrate legacy account delegations.",
+      "variants": "Empty/partial/already migrated; offline account; many spaces."
+    },
+    {
+      "evidence": "Three telemetry integration tests.",
+      "gaps": "Complete precedence, malformed state, stable privacy output, concurrent write.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-07",
+      "title": "Inspect/toggle telemetry.",
+      "variants": "default/env/DNT/persisted; on/off/status; write failure."
+    },
+    {
+      "evidence": "Nine integration plus source unit tests.",
+      "gaps": "Full process restart/swap rollback, interrupted download, platform/deployment smoke.",
+      "group": "CLI setup and maintenance",
+      "id": "CLI-08",
+      "title": "Update the binary or change background-check setting.",
+      "variants": "install script/npm/nix; newer/current; network/error/signature/swap failure."
+    },
+    {
+      "evidence": "Partial deployment and broad E2E setup.",
+      "gaps": "Explicit boot state machine, update/reload failure, accessibility, recovery from stale assets.",
+      "group": "Browser shell and runtime",
+      "id": "UI-01",
+      "title": "Boot the browser shell and mount the current route.",
+      "variants": "First install/return; SW controlled/not controlled/updating; offline/cache corrupt."
+    },
+    {
+      "evidence": "Partial route unit + account browser test.",
+      "gaps": "Real mount assertions for every family, malformed URL, history back/forward.",
+      "group": "Browser shell and runtime",
+      "id": "UI-02",
+      "title": "Route /settings*, /activate*, or content through the correct top-level surface.",
+      "variants": "Canonical/legacy/unknown/deep route; query/hash."
+    },
+    {
+      "evidence": "Partial account_gate test and broader browser flows.",
+      "gaps": "Full state matrix, offline local-first guarantee, gate recovery without reload.",
+      "group": "Browser shell and runtime",
+      "id": "UI-03",
+      "title": "Pass account gating and enter local Hub/content.",
+      "variants": "Root missing/provider-free/registered; customer states; revoked."
+    },
+    {
+      "evidence": "Rendering/portal coverage outside tonk-ui; some E2E paths.",
+      "gaps": "Top-level real-browser route matrix and interactive behavior, not only headless render.",
+      "group": "Browser shell and runtime",
+      "id": "UI-04",
+      "title": "Open a space home or explicit rendered route.",
+      "variants": "Blank/configured home; missing view/entity; local/remote; unauthorized."
+    },
+    {
+      "evidence": "One deployment browser test plus build checks.",
+      "gaps": "Visible failure/retry, no infinite boot, diagnostics without leaking secrets.",
+      "group": "Browser shell and runtime",
+      "id": "UI-05",
+      "title": "Recover from service-worker or deployment configuration failure.",
+      "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache."
+    }
+  ],
+  "schemaVersion": 1,
+  "screens": [
+    {
+      "area": "Hub",
+      "artifact": "app/screens/web-01-first-boot.png",
+      "capture": "running product",
+      "id": "WEB-01",
+      "journey_ids": [
+        "UI-01",
+        "UI-03"
+      ],
+      "name": "First boot and empty Hub",
+      "source_paths": [
+        "rust/tonk-ui/index.html",
+        "rust/tonk-ui/src/bin/ui.rs"
+      ],
+      "status": "captured",
+      "summary": "The browser shell starts, establishes its local profile, and presents the empty space directory.",
+      "surface": "browser"
+    },
+    {
+      "area": "Hub",
+      "artifact": "app/screens/web-02-space-directory.png",
+      "capture": "running product",
+      "id": "WEB-02",
+      "journey_ids": [
+        "SPACE-01",
+        "SPACE-03",
+        "SPACE-04",
+        "SPACE-05",
+        "SPACE-06",
+        "SPACE-07",
+        "SPACE-08",
+        "UI-04"
+      ],
+      "name": "Space directory",
+      "source_paths": [
+        "rust/tonk-ui/src/bin/ui.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-fab/src/markup.rs"
+      ],
+      "status": "captured",
+      "summary": "The Hub lists local, owned, and joined spaces and exposes the account and create-space routes.",
+      "surface": "browser"
+    },
+    {
+      "area": "Spaces",
+      "artifact": "app/screens/web-03-space-home.png",
+      "capture": "running product",
+      "id": "WEB-03",
+      "journey_ids": [
+        "SPACE-09",
+        "DATA-02",
+        "DATA-09",
+        "UI-04"
+      ],
+      "name": "Space home",
+      "source_paths": [
+        "rust/tonk-ui/src/bin/ui.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-portal/src/site.rs",
+        "rust/tonk-fab/src/markup.rs"
+      ],
+      "status": "captured",
+      "summary": "A selected space renders its configured home with the floating action bar available over the content.",
+      "surface": "browser"
+    },
+    {
+      "area": "Spaces",
+      "artifact": "app/screens/web-04-space-actions.png",
+      "capture": "running product",
+      "id": "WEB-04",
+      "journey_ids": [
+        "SPACE-06",
+        "SYNC-01",
+        "SYNC-02",
+        "SYNC-03",
+        "SYNC-04",
+        "COLLAB-01",
+        "CLI-03"
+      ],
+      "name": "Space actions and switching",
+      "source_paths": [
+        "rust/tonk-ui/src/bin/ui.rs",
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-fab/src/skin.rs"
+      ],
+      "status": "captured",
+      "summary": "The expanded floating action bar names the current space and exposes switching, renaming, sharing, sync, and appearance actions.",
+      "surface": "browser"
+    },
+    {
+      "area": "Collaboration",
+      "artifact": "app/screens/web-05-join-share.png",
+      "capture": "running product",
+      "id": "WEB-05",
+      "journey_ids": [
+        "COLLAB-01",
+        "COLLAB-02",
+        "COLLAB-03",
+        "COLLAB-04",
+        "COLLAB-05"
+      ],
+      "name": "Join and share ceremonies",
+      "source_paths": [
+        "rust/tonk-ui/src/bin/ui.rs",
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-fab/src/share.rs"
+      ],
+      "status": "captured",
+      "summary": "Invite claim, accountless accreditation, share, and access-loss states explain what will change before authority moves.",
+      "surface": "browser"
+    },
+    {
+      "area": "Recovery",
+      "artifact": "app/screens/web-06-runtime-failure.png",
+      "capture": "running product",
+      "id": "WEB-06",
+      "journey_ids": [
+        "UI-02",
+        "UI-05"
+      ],
+      "name": "Invalid space route",
+      "source_paths": [
+        "rust/tonk-ui/index.html",
+        "rust/tonk-ui/assets/boot-progress.mjs",
+        "rust/tonk-ui/src/bin/ui.rs"
+      ],
+      "status": "captured",
+      "summary": "The running shell keeps an invalid space identifier visible as a configuration error instead of silently returning to the Hub.",
+      "surface": "browser"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/web-07-account-choice.png",
+      "capture": "production-source fixture",
+      "id": "WEB-07",
+      "journey_ids": [
+        "ACCT-B01",
+        "ACCT-B02",
+        "ACCT-B03",
+        "ACCT-B09",
+        "ACCT-B10"
+      ],
+      "name": "Account choice",
+      "source_paths": [
+        "rust/tonk-ui/src/account.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/account.rs"
+      ],
+      "status": "captured",
+      "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
+      "surface": "browser"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/web-08-account-create.png",
+      "capture": "production-source fixture",
+      "id": "WEB-08",
+      "journey_ids": [
+        "ACCT-B02",
+        "ACCT-B05",
+        "ACCT-B06",
+        "ACCT-B07"
+      ],
+      "name": "Create account",
+      "source_paths": [
+        "rust/tonk-ui/src/account.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/account.rs"
+      ],
+      "status": "captured",
+      "summary": "The account creation form collects an email and explains passkey and activation consequences before ceremony submission.",
+      "surface": "browser"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/web-09-account-login.png",
+      "capture": "production-source fixture",
+      "id": "WEB-09",
+      "journey_ids": [
+        "ACCT-B03",
+        "ACCT-B08",
+        "ACCT-B09"
+      ],
+      "name": "Log in with a passkey",
+      "source_paths": [
+        "rust/tonk-ui/src/account.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/account.rs"
+      ],
+      "status": "captured",
+      "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
+      "surface": "browser"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/web-10-cli-handoff.png",
+      "capture": "production-source fixture",
+      "id": "WEB-10",
+      "journey_ids": [
+        "ACCT-C02",
+        "ACCT-C03",
+        "ACCT-C04",
+        "ACCT-C05",
+        "ACCT-C06"
+      ],
+      "name": "CLI authorization handoff",
+      "source_paths": [
+        "rust/tonk-ui/src/account.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/account.rs",
+        "rust/tonk-cli/src/account.rs"
+      ],
+      "status": "captured",
+      "summary": "The browser names the waiting CLI device and requires explicit passkey approval or cancellation.",
+      "surface": "browser"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/web-11-account-settings.png",
+      "capture": "production-source fixture",
+      "id": "WEB-11",
+      "journey_ids": [
+        "ACCT-B04",
+        "ACCT-B11",
+        "ACCT-B12",
+        "ACCT-B13",
+        "ACCT-B14",
+        "ACCT-B15"
+      ],
+      "name": "Account settings",
+      "source_paths": [
+        "rust/tonk-ui/src/account.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/account.rs"
+      ],
+      "status": "captured",
+      "summary": "Account facts, passkey provenance, sync activation, browser profiles, and account-management actions remain visible in one panel.",
+      "surface": "browser"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/web-12-devices.png",
+      "capture": "production-source fixture",
+      "id": "WEB-12",
+      "journey_ids": [
+        "ACCT-B04",
+        "ACCT-B14",
+        "ACCT-B15",
+        "AUTH-01",
+        "AUTH-02",
+        "AUTH-03"
+      ],
+      "name": "Devices and revocation",
+      "source_paths": [
+        "rust/tonk-ui/src/account.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/account.rs"
+      ],
+      "status": "captured",
+      "summary": "The devices panel identifies this device and offers passkey-authorized revocation for other devices.",
+      "surface": "browser"
+    },
+    {
+      "area": "Destructive actions",
+      "artifact": "app/screens/web-13-deletion-review.png",
+      "capture": "production-source fixture",
+      "id": "WEB-13",
+      "journey_ids": [
+        "AUTH-04",
+        "AUTH-05",
+        "AUTH-06"
+      ],
+      "name": "Deletion review",
+      "source_paths": [
+        "rust/tonk-ui/src/account.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/account.rs"
+      ],
+      "status": "captured",
+      "summary": "The destructive confirmation enumerates owned hosted spaces, preserves joined-space boundaries, and requires exact arming.",
+      "surface": "browser"
+    },
+    {
+      "area": "Activation",
+      "artifact": "app/screens/web-14-activation-confirm.png",
+      "capture": "production-source fixture",
+      "id": "WEB-14",
+      "journey_ids": [
+        "ACCT-B06",
+        "ACCT-B07"
+      ],
+      "name": "Activate account",
+      "source_paths": [
+        "rust/tonk-ui/src/activate.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/activate.rs"
+      ],
+      "status": "captured",
+      "summary": "An emailed activation link can be accepted on any device without exposing root authority.",
+      "surface": "browser"
+    },
+    {
+      "area": "Activation",
+      "artifact": "app/screens/web-15-activation-result.png",
+      "capture": "production-source fixture",
+      "id": "WEB-15",
+      "journey_ids": [
+        "ACCT-B06",
+        "ACCT-B07"
+      ],
+      "name": "Activation result",
+      "source_paths": [
+        "rust/tonk-ui/src/activate.html",
+        "rust/tonk-ui/src/account.css",
+        "rust/tonk-ui/src/activate.rs"
+      ],
+      "status": "captured",
+      "summary": "Successful and failed activation settle with explicit sync status and a safe route back to Tonk.",
+      "surface": "browser"
+    },
+    {
+      "area": "Discovery",
+      "artifact": "app/screens/cli-01-help.png",
+      "capture": "captured CLI output",
+      "id": "CLI-01",
+      "journey_ids": [
+        "CLI-01",
+        "CLI-02"
+      ],
+      "name": "Command index and help",
+      "source_paths": [
+        "rust/tonk-cli/src/bin/tonk.rs",
+        "rust/tonk-cli/src/guide.rs",
+        "rust/tonk-cli/src/output.rs"
+      ],
+      "status": "captured",
+      "summary": "The command index, command help, and embedded guides expose the CLI's user-facing surface before any state changes.",
+      "surface": "cli"
+    },
+    {
+      "area": "Spaces",
+      "artifact": "app/screens/cli-02-space-inventory.png",
+      "capture": "captured CLI output",
+      "id": "CLI-02",
+      "journey_ids": [
+        "SPACE-01",
+        "SPACE-02"
+      ],
+      "name": "Space inventory and selection",
+      "source_paths": [
+        "rust/tonk-cli/src/space.rs",
+        "rust/tonk-cli/src/context.rs",
+        "rust/tonk-cli/src/output.rs"
+      ],
+      "status": "captured",
+      "summary": "Human and JSON listings identify local, owned, joined, and unresolved spaces while context rules select one for later commands.",
+      "surface": "cli"
+    },
+    {
+      "area": "Spaces",
+      "artifact": "app/screens/cli-03-space-lifecycle.png",
+      "capture": "captured CLI output",
+      "id": "CLI-03",
+      "journey_ids": [
+        "SPACE-03",
+        "SPACE-04",
+        "SPACE-05",
+        "SPACE-06",
+        "SPACE-07",
+        "SPACE-08",
+        "SPACE-09"
+      ],
+      "name": "Space lifecycle",
+      "source_paths": [
+        "rust/tonk-cli/src/space.rs",
+        "rust/tonk-cli/src/authoring.rs",
+        "rust/tonk-cli/src/output.rs"
+      ],
+      "status": "captured",
+      "summary": "Creation, adoption, binding, removal, and home selection report what changed locally and what data remains.",
+      "surface": "cli"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/cli-04-account-status.png",
+      "capture": "captured CLI output",
+      "id": "CLI-04",
+      "journey_ids": [
+        "ACCT-C01",
+        "ACCT-C07",
+        "ACCT-C08",
+        "ACCT-C09",
+        "ACCT-C10",
+        "ACCT-C11",
+        "ACCT-C12",
+        "SPACE-10",
+        "SPACE-11",
+        "SPACE-12"
+      ],
+      "name": "Account status and devices",
+      "source_paths": [
+        "rust/tonk-cli/src/account.rs",
+        "rust/tonk-cli/src/account_state.rs",
+        "rust/tonk-cli/src/account_session.rs"
+      ],
+      "status": "captured",
+      "summary": "Account commands report profile, attachment, customer, repository, and device authority without collapsing them into signed-in or signed-out.",
+      "surface": "cli"
+    },
+    {
+      "area": "Accounts",
+      "artifact": "app/screens/cli-05-account-login.png",
+      "capture": "captured CLI output",
+      "id": "CLI-05",
+      "journey_ids": [
+        "ACCT-C02",
+        "ACCT-C03",
+        "ACCT-C04",
+        "ACCT-C05",
+        "ACCT-C06"
+      ],
+      "name": "Browser login handoff",
+      "source_paths": [
+        "rust/tonk-cli/src/account.rs",
+        "rust/tonk-cli/src/account_session.rs",
+        "rust/tonk-cli/src/callback.rs"
+      ],
+      "status": "captured",
+      "summary": "CLI login names the browser route, waiting state, cancellation boundary, and activation or recovery result.",
+      "surface": "cli"
+    },
+    {
+      "area": "Sync",
+      "artifact": "app/screens/cli-06-sync.png",
+      "capture": "captured CLI output",
+      "id": "CLI-06",
+      "journey_ids": [
+        "SYNC-01",
+        "SYNC-02",
+        "SYNC-03",
+        "SYNC-04"
+      ],
+      "name": "Status, pull, push, and auto-sync",
+      "source_paths": [
+        "rust/tonk-cli/src/sync.rs",
+        "rust/tonk-cli/src/auto_sync.rs",
+        "rust/tonk-cli/src/output.rs"
+      ],
+      "status": "captured",
+      "summary": "Sync output distinguishes no upstream, synced, ahead, behind, diverged, unavailable, and unauthorized states.",
+      "surface": "cli"
+    },
+    {
+      "area": "Collaboration",
+      "artifact": "app/screens/cli-07-collaboration.png",
+      "capture": "captured CLI output",
+      "id": "CLI-07",
+      "journey_ids": [
+        "COLLAB-01",
+        "COLLAB-02",
+        "COLLAB-03",
+        "COLLAB-04",
+        "COLLAB-05"
+      ],
+      "name": "Invite, join, and revoke",
+      "source_paths": [
+        "rust/tonk-cli/src/invite.rs",
+        "rust/tonk-cli/src/space_link.rs",
+        "rust/tonk-cli/src/output.rs"
+      ],
+      "status": "captured",
+      "summary": "Collaboration commands expose the authority being shared, the claimed space, remote choice, and later revocation result.",
+      "surface": "cli"
+    },
+    {
+      "area": "Authoring",
+      "artifact": "app/screens/cli-08-authoring.png",
+      "capture": "captured CLI output",
+      "id": "CLI-08",
+      "journey_ids": [
+        "DATA-01",
+        "DATA-02",
+        "DATA-03",
+        "DATA-04",
+        "DATA-05",
+        "DATA-06",
+        "DATA-08",
+        "DATA-09"
+      ],
+      "name": "Concepts, views, and data verbs",
+      "source_paths": [
+        "rust/tonk-cli/src/authoring.rs",
+        "rust/tonk-cli/src/data.rs",
+        "rust/tonk-cli/src/data_ops.rs",
+        "rust/tonk-cli/src/render.rs"
+      ],
+      "status": "captured",
+      "summary": "Schema-derived commands make definitions, assertions, updates, queries, retractions, and rendering visible in human and machine modes.",
+      "surface": "cli"
+    },
+    {
+      "area": "Evaluation",
+      "artifact": "app/screens/cli-09-eval.png",
+      "capture": "captured CLI output",
+      "id": "CLI-09",
+      "journey_ids": [
+        "DATA-07"
+      ],
+      "name": "Notation evaluation",
+      "source_paths": [
+        "rust/tonk-cli/src/eval.rs",
+        "rust/tonk-cli/src/output.rs"
+      ],
+      "status": "captured",
+      "summary": "Evaluation reports parse, analysis, match, commit, and sync outcomes for inline, file, and piped input.",
+      "surface": "cli"
+    },
+    {
+      "area": "Content",
+      "artifact": "app/screens/cli-10-content-transfer.png",
+      "capture": "captured CLI output",
+      "id": "CLI-10",
+      "journey_ids": [
+        "DATA-10",
+        "DATA-11"
+      ],
+      "name": "Blob and CSV transfer",
+      "source_paths": [
+        "rust/tonk-cli/src/blob.rs",
+        "rust/tonk-cli/src/transfer.rs",
+        "rust/tonk-cli/src/output.rs"
+      ],
+      "status": "captured",
+      "summary": "Blob and transfer commands make content type, content address, input source, output destination, and partial failure explicit.",
+      "surface": "cli"
+    },
+    {
+      "area": "Maintenance",
+      "artifact": "app/screens/cli-11-maintenance.png",
+      "capture": "captured CLI output",
+      "id": "CLI-11",
+      "journey_ids": [
+        "CLI-03",
+        "CLI-04",
+        "CLI-05",
+        "CLI-06",
+        "CLI-07",
+        "CLI-08"
+      ],
+      "name": "Remote, identity, migration, telemetry, and update",
+      "source_paths": [
+        "rust/tonk-cli/src/remote.rs",
+        "rust/tonk-cli/src/identity.rs",
+        "rust/tonk-cli/src/migrate.rs",
+        "rust/tonk-cli/src/telemetry.rs",
+        "rust/tonk-cli/src/update.rs"
+      ],
+      "status": "captured",
+      "summary": "Maintenance commands state their local and remote scope, confirmation boundary, privacy behavior, and recovery result.",
+      "surface": "cli"
+    }
+  ],
+  "verification": [
+    {
+      "claim": "Legacy account routes canonicalize without losing intent (Resolve).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-01",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Fresh Create yields one root/account/device and a pending customer (Settle).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Existing-email rejection has the decided credential policy and safe retry (Edge cases, suspected B-02).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Cancelling WebAuthn before a credential exists leaves account state unchanged (Cancel and interrupt).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-04",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Lost account-create response reconciles instead of creating a second account (Failure checkpoints).",
+      "device": "fault + restart",
+      "file": "verification/accounts.md",
+      "id": "LIFE-05",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Remote create followed by local attachment failure is recoverable through login (Cross a boundary).",
+      "device": "fault + restart",
+      "file": "verification/accounts.md",
+      "id": "LIFE-06",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Busy account actions cannot be abandoned into an unlabelled partial state (Cancel and interrupt, suspected B-04).",
+      "device": "fault",
+      "file": "verification/accounts.md",
+      "id": "LIFE-07",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Every browser-create checkpoint has a deterministic restart outcome (Browser create checkpoints).",
+      "device": "restart",
+      "file": "verification/accounts.md",
+      "id": "LIFE-08",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Missing and damaged activation links do no network/account work (Exit early).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-09",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Activation maps success, expired, service error, malformed body, and offline distinctly (Browser response contract).",
+      "device": "fault",
+      "file": "verification/accounts.md",
+      "id": "LIFE-10",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Activation is single-submit and idempotent (Edge cases, suspected B-05).",
+      "device": "two-actor",
+      "file": "verification/accounts.md",
+      "id": "LIFE-11",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Activation confirmed in another browser reaches the waiting one without a reload (Remain in flight).",
+      "device": "two-actor + second-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-24",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "The settings panel reflects an account the registration cluster created, in place (Settle).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-25",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "The cluster answers about an address it has already been told about (Resolve).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-26",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Registered customer sees pending notice and resend recovery (Remain in flight).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-12",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Local-only space remains usable before activation and attaches afterward (Simple case).",
+      "device": "offline + returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-13",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Fresh-browser login links one device and survives restart (Settle).",
+      "device": "second-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-14",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Logout then same-account login reuses the device safely (Simple case).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-15",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Browser and CLI logout are local-first when provider detach fails (Settle).",
+      "device": "offline + restart",
+      "file": "verification/accounts.md",
+      "id": "LIFE-16",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Different-root login into a used profile is refused without writes (Exit early).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-17",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Two browser accounts switch without leaking spaces or in-flight results (Settle).",
+      "device": "two-actor",
+      "file": "verification/accounts.md",
+      "id": "LIFE-18",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Unconfigured and unhydrated account states are visible and recoverable (Resolve).",
+      "device": "fault + returning-browser",
+      "file": "verification/accounts.md",
+      "id": "LIFE-19",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Suspended/unreachable customer does not hide local account or space state (Interactions).",
+      "device": "offline + two-actor",
+      "file": "verification/accounts.md",
+      "id": "LIFE-20",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Enter/blur/concurrent account renames have one defined result (Edge cases).",
+      "device": "two-actor",
+      "file": "verification/accounts.md",
+      "id": "LIFE-21",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "CLI status reports every local state without remote dependency (Resolve).",
+      "device": "cli + corrupt",
+      "file": "verification/accounts.md",
+      "id": "LIFE-22",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Settings geometry preserves one coherent Account/Devices surface (Settings presentation decision).",
+      "device": "browser + keyboard + responsive",
+      "file": "verification/accounts.md",
+      "id": "LIFE-23",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Linked browser approves a waiting CLI end to end (Simple case).",
+      "device": "hybrid",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-01",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Unlinked browser creates/logs in before approving without losing callback (Resolve).",
+      "device": "hybrid + fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Browser decline reaches CLI promptly and commits no CLI authority (Exit early).",
+      "device": "hybrid",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Ctrl-C during callback wait exits code 4 and stays signed out (Exit early).",
+      "device": "cli",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-04",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "SIGTERM/forced exit before approval leaves no resumable or remote state (Cancel and interrupt).",
+      "device": "restart",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-05",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Missing/malformed callback query cannot authorize (Resolve).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-06",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Invalid callback payload installs no authority (Cross a boundary).",
+      "device": "hybrid + fault",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-07",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Crash after browser registration but before callback receipt reconciles one generation (Edge cases, suspected B-01).",
+      "device": "hybrid + restart",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-08",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Every post-callback native write has a safe fresh-process recovery (Open questions).",
+      "device": "hybrid + restart",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-09",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Account store failure is detected before approval where possible (Cancel and interrupt).",
+      "device": "cli + locked/corrupt",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-10",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Hydration timeout settles logged in but unhydrated, then sync recovers (Settle).",
+      "device": "hybrid + offline",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-11",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Page-supplied deployment provider overrides CLI default safely (Edge cases).",
+      "device": "hybrid",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-12",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Concurrent login/logout cannot create two active sessions or deadlock (Interactions).",
+      "device": "cli + two-actor",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-13",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Browser profile switch cannot authorize CLI from the wrong account (Cancel and interrupt).",
+      "device": "hybrid + two-actor",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-14",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Broken CLI stdout after URL/result does not replay authorization (Interactions).",
+      "device": "hybrid + pipe",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-15",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "HTTPS approval reaches loopback without relying on a cross-scheme POST body (Remain in flight).",
+      "device": "hybrid + Safari/Chrome/Firefox",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-16",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Device list identifies self separately from shared rows (Resolve).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "AUTH-01",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Revoke deep link selects but does not authorize (Resolve).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "AUTH-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Revoking another device denies later remote access and preserves unrelated/local state (Settle).",
+      "device": "two-actor",
+      "file": "verification/accounts.md",
+      "id": "AUTH-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Self-revocation disables authority and leaves an escape path (Settle).",
+      "device": "two-actor",
+      "file": "verification/accounts.md",
+      "id": "AUTH-04",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Partial revocation publication is visible and retryable (Remain in flight).",
+      "device": "fault + two-actor",
+      "file": "verification/accounts.md",
+      "id": "AUTH-05",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Exact hosted-space deletion removes only the reviewed owned subject (Settle).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "AUTH-06",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Joined/missing/stale exact-space plans cannot widen deletion scope (Resolve).",
+      "device": "two-actor",
+      "file": "verification/accounts.md",
+      "id": "AUTH-07",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Whole-account deletion releases exact owned scope and rotates deleted profile (Settle).",
+      "device": "returning-browser",
+      "file": "verification/accounts.md",
+      "id": "AUTH-08",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Wrong email, unchecked box, Cancel, and passkey rejection delete nothing (Exit early).",
+      "device": "fresh-browser",
+      "file": "verification/accounts.md",
+      "id": "AUTH-09",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Lost/partial deletion response reconciles exact per-subject results (Remain in flight).",
+      "device": "fault + restart",
+      "file": "verification/accounts.md",
+      "id": "AUTH-10",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Deleted/revoked stale devices cannot recreate account or hosted space (Edge cases).",
+      "device": "two-actor",
+      "file": "verification/accounts.md",
+      "id": "AUTH-11",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Adding a passkey does not leave an unexplained orphan on fact/publish failure (Cross a boundary).",
+      "device": "fault + restart",
+      "file": "verification/accounts.md",
+      "id": "AUTH-12",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Every command/subcommand is reachable through help and mapped to a journey (Inventory).",
+      "device": "TTY + pipe",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-01",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Help and usage errors create no profile/site/lock/telemetry mutation (Exit early).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Space selection precedence is flag, environment, nearest binding, then none (Resolve).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Human/JSON/notation/CSV/HTML/blob stdout stays free of diagnostics (Interactions).",
+      "device": "pipe",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-04",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "--verbose expands the chain without changing product result (Resolve).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-05",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Dry-run never commits or touches remote (Exit early).",
+      "device": "cli + offline",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-06",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Local commit followed by push failure reports committed-local and retries safely (Settle).",
+      "device": "cli + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-07",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Lost remote response is reconciled before mutation replay (Recovery rules).",
+      "device": "cli + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-08",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Broken stdout after commit cannot cause mutation replay (Edge cases).",
+      "device": "pipe + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-09",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "SIGINT/SIGTERM at each command-family boundary has explicit state (Cancel and interrupt).",
+      "device": "restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-10",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Locked, read-only/full, malformed, and unsupported local state fail safely (Error families).",
+      "device": "cli + locked/corrupt",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-11",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "CI discovers every intended CLI test, including native-only exceptions (Open questions).",
+      "device": "ci",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "CLI-12",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Space list distinguishes empty, registered, data-only, missing-data, and account-listed state (Resolve).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-01",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Local-only creation is atomic or recoverable at site/registry/binding checkpoints (Cross a boundary).",
+      "device": "restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Signed-in creation retains ownership locally while service is pending/unavailable (Remain in flight).",
+      "device": "offline + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "space new --site adopts only a valid existing site and never overwrites (Resolve).",
+      "device": "cli + locked/corrupt",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-04",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Use/unbind changes only exact selection pointers (Settle).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-05",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Local remove decline changes nothing; confirmed remove has recoverable checkpoints (Cross a boundary).",
+      "device": "TTY + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-06",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "--keep-data unregisters without deleting and later adoption restores it (Settle).",
+      "device": "cli + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-07",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Linking local-only to account is generation/subject-idempotent (Cross a boundary).",
+      "device": "fault + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-08",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Link refuses signed-out, joined, foreign-owned, and already-owned targets safely (Exit early).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-09",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Account directory list/pull handles duplicates, offline cache, missing/stale and exact subjects (Resolve).",
+      "device": "cli + offline",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-10",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Account-space pull crash cannot leave invisible or duplicate replica (Edge cases).",
+      "device": "restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-11",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Status reports R0–R6 without mutation (Settle).",
+      "device": "two-actor",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SYNC-01",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Push handles concurrent head and lost response without lost update/duplicate commit (Remain in flight).",
+      "device": "two-actor + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SYNC-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Pull does not destructively resolve ahead/diverged and recovers before ref update (Cancel and interrupt).",
+      "device": "two-actor + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SYNC-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Sharing a spot with no account raises registration in place and finishes the interrupted share (Cross a boundary).",
+      "device": "fresh-browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-00",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Invite remote/base/shortening variants produce the intended URL without leaking authority (Resolve).",
+      "device": "cli + offline",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-01",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Join/claim is atomic across claim, site, registry, binding, remote setup (Cross a boundary).",
+      "device": "fault + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Accountless claim survives later account link and second-device recovery (Edge cases).",
+      "device": "hybrid + second-browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Revocation denies later remote work without falsifying retained local state (Settle).",
+      "device": "two-actor + offline",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-04",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "The share stack remains aligned and contained for a long member roster (Share-menu presentation decision).",
+      "device": "browser + touch",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-05",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-01",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "view add --home and space home are atomically visible as browser home (Open questions).",
+      "device": "hybrid",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Assert/update/no-op/retract preserve untouched fields and handle concurrent claims (Inventory).",
+      "device": "cli + two-actor",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Eval input modes and output modes agree (Resolve).",
+      "device": "pipe",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-04",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Render/blob/export outputs handle missing targets and output failure safely (Inventory).",
+      "device": "pipe + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-05",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Import is row-safe and retryable after malformed/partial failure (Cross a boundary).",
+      "device": "restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-06",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Space AGENTS claim round-trips default file, named file, and stdin (Inventory).",
+      "device": "pipe",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-07",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Carry/account migrations are idempotent and crash-recoverable (Inventory).",
+      "device": "restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "MAINT-01",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Telemetry precedence and privacy are stable (Interactions).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "MAINT-02",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Update download/verify/swap rolls back safely on interruption (Cross a boundary).",
+      "device": "restart + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "MAINT-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Every route family mounts exactly one correct top-level element (Resolve).",
+      "device": "fresh-browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-01",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "First/returning/offline boot has bounded visible recovery (Remain in flight).",
+      "device": "fresh-browser + offline",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-02",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Service-worker update never mixes asset generations (Cross a boundary).",
+      "device": "two-actor",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-03",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Account gate permits provider-free/local use and blocks only authority-specific work (Exit early).",
+      "device": "returning-browser + offline",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-04",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Profile switch/revoke/delete invalidates stale DOM authority (Remain in flight).",
+      "device": "two-actor",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-05",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Blank/configured/invalid home routes visibly and interactively (Settle).",
+      "device": "returning-browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-06",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Deployment misconfiguration fails closed with diagnostics (Edge cases).",
+      "device": "fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-07",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Async custom element disconnect cannot repaint a later route/profile (Cancel and interrupt).",
+      "device": "browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-08",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Busy/errors/confirmations are keyboard, touch, and screen-reader usable (Interactions).",
+      "device": "keyboard + touch",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-09",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Compact and zoomed layouts retain the full interaction (Edge cases).",
+      "device": "browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-10",
+      "priority": "P3",
+      "result": "—"
+    },
+    {
+      "claim": "Boot and transient space loading use one accessible, destination-neutral treatment (Loading presentation decision).",
+      "device": "browser + reduced-motion + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-11",
+      "priority": "P2",
+      "result": "—"
+    }
+  ],
+  "verificationResults": {
+    "blocked": 0,
+    "fail": 0,
+    "other": 0,
+    "pass": 0,
+    "unrun": 107
+  },
+  "visualCommit": "49a873a23"
+}

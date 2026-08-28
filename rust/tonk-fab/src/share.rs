@@ -92,8 +92,8 @@ use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement, window};
 
 use crate::logic::{
-    COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, default_remote_url, enable_sync_claim_json,
-    invite_claim_json, invite_link_query_body, share_blocked_query_body,
+    COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, enable_sync_claim_json, invite_claim_json,
+    invite_state_query_body,
 };
 use crate::subscribing;
 
@@ -148,31 +148,13 @@ impl PendingClipboard {
 /// A refusal delivered on the blocked subscription.
 #[derive(Debug, Clone, PartialEq)]
 struct Blocked {
-    /// `not-synced` | `unshareable-remote` | `attach-failed`.
+    /// `account-required` | `not-synced` | `unshareable-remote` | `attach-failed`.
     code: String,
     /// The sentence to show.
     detail: String,
     /// The timestamp of the command this answers.
     time: f64,
 }
-
-/// The refusal class the enable-sync prompt can repair. Wire vocabulary
-/// shared with the worker that publishes it.
-const BLOCKED_NOT_SYNCED: &str = tonk_worker_api::share::BLOCKED_NOT_SYNCED;
-
-/// The refusal class the join prompt can repair: this replica is a guest
-/// visit, which holds no membership to delegate an invite from.
-const BLOCKED_NEEDS_MEMBERSHIP: &str = tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP;
-
-/// Subscription tag for the refusal query, distinct from [`SUB_TAG`] so the
-/// scaffolding can tell the two subscriptions' frames apart.
-const BLOCKED_TAG: &str = "tonk-share-blocked";
-
-/// The refusal class the same prompt repairs by attaching a relay rather than
-/// a remote: the spot syncs, but its remote carries no revocation relay, so a
-/// minted invite could never be withdrawn.
-const BLOCKED_MISSING_REVOCATION_RELAY: &str =
-    tonk_worker_api::share::BLOCKED_MISSING_REVOCATION_RELAY;
 
 /// The enable-sync prompt's id, and the attributes marking its confirm button,
 /// its reason slot, and the line describing what confirming does. Authored in
@@ -183,17 +165,31 @@ const BLOCKED_MISSING_REVOCATION_RELAY: &str =
 /// every refusal so `detail` always lands somewhere visible, disabling the
 /// confirm button (see `open_enable_sync_dialog`) on the one class it cannot
 /// repair.
-const DIALOG_ID: &str = "fab-enable-sync";
+/// The refusal class the enable-sync prompt can still repair: an account
+/// with a provider, and a spot not yet attached to it.
+const BLOCKED_NOT_SYNCED: &str = tonk_worker_api::share::BLOCKED_NOT_SYNCED;
+
+/// The account enrolled but never confirmed the emailed link.
+const BLOCKED_NEEDS_ACTIVATION: &str = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION;
+
+const DIALOG_ID: &str = "fabb-connect-cluster";
 const DIALOG_CONFIRM: &str = "[data-enable-sync-confirm]";
 const DIALOG_DETAIL: &str = "[data-enable-sync-detail]";
 const DIALOG_ACTION: &str = "[data-enable-sync-action]";
+const DIALOG_STATEMENT: &str = "[data-enable-sync-statement]";
+const DIALOG_REMOTE: &str = "[data-enable-sync-remote]";
+
+/// Marks the dialog as answering a refusal whose repair is registration
+/// rather than an attach, so the confirm handler navigates instead of
+/// dispatching enable-sync.
+const DIALOG_OUTCOME: &str = "data-repair-register";
 
 /// Heading and confirm label for a refusal with no repair. The button stays
 /// visible but disabled, so it needs wording that doesn't promise an action —
 /// "Turn on sync & copy link" greyed out reads as a broken control rather than
 /// an answer.
-const TERMINAL_LABEL: &str = "Can't share this spot";
-const TERMINAL_CONFIRM: &str = "Copy link";
+const TERMINAL_LABEL: &str = "this space cannot be shared";
+const TERMINAL_CONFIRM: &str = "copy link";
 
 /// What confirming the prompt is offering to do, for one refusal class.
 ///
@@ -213,6 +209,21 @@ struct Repair {
     action: &'static str,
     /// The confirm button's text.
     confirm: &'static str,
+    /// What confirming does.
+    outcome: RepairOutcome,
+}
+
+/// What the dialog's confirm button carries out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RepairOutcome {
+    /// Attach the account's remote to this spot, then mint — the
+    /// one-click path that has always existed.
+    EnableSync,
+    /// Leave for `/account`, where registration lives. The bar is a
+    /// sealed guest with no ceremony of its own, so this hands off
+    /// rather than pretending to run one; the user shares again once
+    /// they have an account.
+    Register,
 }
 
 impl Repair {
@@ -220,30 +231,26 @@ impl Repair {
     fn for_code(code: &str) -> Option<Self> {
         match code {
             BLOCKED_NOT_SYNCED => Some(Self {
-                label: "Turn on sync?",
-                action: "Turn on sync so the people you share with can open it.",
-                confirm: "Turn on sync & copy link",
+                label: "connect this space",
+                action: "Connect it so the people you share with can open it.",
+                confirm: "connect",
+                outcome: RepairOutcome::EnableSync,
             }),
-            // The spot already syncs — this repair upserts the relay onto the
-            // remote that is there. Every spot whose remote predates in-band
-            // revocation lands here, so the wording explains a gap the user
-            // never chose rather than asking them to configure anything.
-            BLOCKED_MISSING_REVOCATION_RELAY => Some(Self {
-                label: "Finish setting up sharing?",
-                action: "Add a revocation relay so you can take access back later.",
-                confirm: "Add relay & copy link",
+            // `needs-account` offers no repair here on purpose. Whether
+            // a share issues a link or gets an account first is the
+            // worker's decision, and it asks the page for registration
+            // itself — so a prompt here would be a second, competing
+            // path to the same dialog.
+            BLOCKED_NEEDS_ACTIVATION => Some(Self {
+                label: "confirm your email to share",
+                action: "We sent you a link. Confirm your address, then share again.",
+                confirm: "open account settings",
+                outcome: RepairOutcome::Register,
             }),
             _ => None,
         }
     }
 }
-
-/// The join prompt, shown for [`BLOCKED_NEEDS_MEMBERSHIP`]. Its own dialog
-/// rather than the sync one with substituted copy: the two refusals have
-/// nothing in common but being repairable, and a guest's sync is fine.
-const JOIN_DIALOG_ID: &str = "fab-join-first";
-const JOIN_DIALOG_CONFIRM: &str = "[data-join-first-confirm]";
-const JOIN_DIALOG_DETAIL: &str = "[data-join-first-detail]";
 
 /// Per-element state. One pending copy at a time — a click while a mint is in
 /// flight is dropped (see [`ShareState::accepts_click`]).
@@ -301,29 +308,46 @@ impl Default for TonkShare {
     }
 }
 
-/// This element's [`subscribing::Subscribing`] behaviour: the space-derived
-/// (default `resolve_with`) routing context, the raw-attribute invite-link
-/// query, and settling a pending copy when a fresh link lands.
-struct ShareLinkBehaviour {
+/// This element's [`subscribing::Subscribing`] behaviour: one row per
+/// space saying where its invite has got to.
+///
+/// One subscription, not two. The control used to run a link query and a
+/// refusal query and branch on five reason codes to pick a repair — which
+/// put the judgement of *why* a share failed in the caller. The worker
+/// makes that call now, and this renders the answer:
+///
+/// | `status` | The control |
+/// |---|---|
+/// | `invite:granted` | settle the copy with `url` |
+/// | `invite:requested` | keep waiting |
+/// | anything else | failed |
+///
+/// The default arm is what lets a new terminal status ship without
+/// touching this file.
+struct InviteStateBehaviour {
     state: Rc<RefCell<ShareStateCell>>,
     current_link: Rc<RefCell<Option<String>>>,
 }
 
-impl subscribing::Subscribing for ShareLinkBehaviour {
+impl subscribing::Subscribing for InviteStateBehaviour {
     fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
         let space = this.get_attribute("space").unwrap_or_default();
-        invite_link_query_body(&space)
+        invite_state_query_body(&space)
     }
 
     fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
-        if let Some(link) = read_link_from_frame(payload) {
-            handle_link(host, &self.state, &self.current_link, link);
+        let rows = js_sys::Array::from(payload);
+        if let Some(invite) = read_invite_row(&rows.get(0)) {
+            self.apply(host, invite);
         }
     }
 
     fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
-        if let Some(link) = read_link_from_delta(payload) {
-            handle_link(host, &self.state, &self.current_link, link);
+        let asserted =
+            Reflect::get(payload, &JsValue::from_str("asserted")).unwrap_or(JsValue::UNDEFINED);
+        let rows = js_sys::Array::from(&asserted);
+        if let Some(invite) = read_invite_row(&rows.get(rows.length().saturating_sub(1))) {
+            self.apply(host, invite);
         }
     }
 
@@ -332,40 +356,63 @@ impl subscribing::Subscribing for ShareLinkBehaviour {
     }
 }
 
-/// The refusal subscription's behaviour: the same routing context as the link
-/// subscription, the raw `xyz.tonk.share/*` query, and acting on a refusal
-/// that answers the click currently in flight.
-struct ShareBlockedBehaviour {
-    state: Rc<RefCell<ShareStateCell>>,
-}
-
-impl subscribing::Subscribing for ShareBlockedBehaviour {
-    fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
-        let space = this.get_attribute("space").unwrap_or_default();
-        share_blocked_query_body(&space)
-    }
-
-    fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
-        let rows = js_sys::Array::from(payload);
-        if let Some(blocked) = read_blocked_row(&rows.get(0)) {
-            handle_blocked(host, &self.state, blocked);
+impl InviteStateBehaviour {
+    /// Render one row.
+    fn apply(&self, host: &HtmlElement, invite: InviteRow) {
+        match invite.status.as_str() {
+            tonk_schema::command::InviteState::GRANTED => {
+                let Some(url) = invite.url else {
+                    // Granted with no url is a malformed row; waiting is
+                    // safer than reporting a copy that never happened.
+                    return;
+                };
+                handle_link(host, &self.state, &self.current_link, url);
+            }
+            tonk_schema::command::InviteState::REQUESTED => {}
+            // Terminal. The button's "failed" label carries no reason, so
+            // anything that wants to say more has to render the status
+            // itself; this only stops the spinner.
+            _ => {
+                if self.state.borrow().pending.is_some() {
+                    fail_copy(host, &self.state, "");
+                } else {
+                    set_state(host, ShareState::Blocked);
+                }
+            }
         }
-    }
-
-    fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
-        let asserted =
-            Reflect::get(payload, &JsValue::from_str("asserted")).unwrap_or(JsValue::UNDEFINED);
-        let rows = js_sys::Array::from(&asserted);
-        if let Some(blocked) = read_blocked_row(&rows.get(rows.length().saturating_sub(1))) {
-            handle_blocked(host, &self.state, blocked);
-        }
-    }
-
-    fn tag(&self) -> &'static str {
-        BLOCKED_TAG
     }
 }
 
+/// Read `conclusion.fields.{status,url}` off a raw subscription row.
+///
+/// `status` is required; `url` is optional, present only once granted —
+/// which is why a request in flight still resolves and the control can
+/// distinguish "waiting" from "nothing asked".
+fn read_invite_row(row: &JsValue) -> Option<InviteRow> {
+    if row.is_undefined() || row.is_null() {
+        return None;
+    }
+    let fields = Reflect::get(row, &JsValue::from_str("fields")).ok()?;
+    let status = Reflect::get(&fields, &JsValue::from_str("status"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())?;
+    let url = Reflect::get(&fields, &JsValue::from_str("url"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty());
+    Some(InviteRow { status, url })
+}
+
+/// One `tonk:invite` row as the control reads it.
+struct InviteRow {
+    /// One of the `invite:*` markers.
+    status: String,
+    /// The invite URL, once granted.
+    url: Option<String>,
+}
+
+/// Read `conclusion.fields.{blocked,detail,time}` off a raw subscription row.
 /// Read `conclusion.fields.{blocked,detail,time}` off a raw subscription row.
 /// `None` for a missing row or any missing field — all three are asserted
 /// together, so a partial row is not a refusal.
@@ -543,14 +590,11 @@ impl TonkShare {
     /// be re-run (it no-ops while the routing context is unresolvable and
     /// dedupes live tags).
     fn connect_subscriptions(&self, this: &HtmlElement) {
-        let link: Rc<dyn subscribing::Subscribing> = Rc::new(ShareLinkBehaviour {
+        let invite: Rc<dyn subscribing::Subscribing> = Rc::new(InviteStateBehaviour {
             state: Rc::clone(&self.state),
             current_link: Rc::clone(&self.current_link),
         });
-        let blocked: Rc<dyn subscribing::Subscribing> = Rc::new(ShareBlockedBehaviour {
-            state: Rc::clone(&self.state),
-        });
-        self.scaffold.connect_all(this, vec![link, blocked]);
+        self.scaffold.connect_all(this, vec![invite]);
     }
 
     /// Listen for the enable-sync prompt's confirm, wherever it is in the
@@ -581,21 +625,6 @@ impl TonkShare {
             let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
                 return;
             };
-            // The join prompt's confirm shares this listener because both
-            // prompts answer a refusal of the same click. It promotes and
-            // stops: minting after it would spend a delegation on a click the
-            // user made to answer a question, and the passkey prompt the
-            // promotion raises is a better place to end than a surprise copy.
-            if let Ok(Some(join)) = target.closest(JOIN_DIALOG_CONFIRM)
-                && !join.has_attribute("disabled")
-            {
-                event.prevent_default();
-                close_join_dialog();
-                if let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) {
-                    promote_to_member(&space);
-                }
-                return;
-            }
             let Some(confirm) = target.closest(DIALOG_CONFIRM).ok().flatten() else {
                 return;
             };
@@ -618,48 +647,107 @@ impl TonkShare {
             let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) else {
                 return;
             };
-            // Inside a sealed guest the document is `about:srcdoc`, so
-            // `location.origin` is the opaque `"null"` and the remote URL
-            // built from it would be unusable. `context_origin` prefers the
-            // true origin the portal bridge injects.
-            let Some(origin) = tonk_host::bridge::context_origin() else {
-                warn("share: cannot resolve this page's origin");
+            // Registration runs in the TOP page, the only document with
+            // both a `window` and the user gesture WebAuthn wants. This
+            // frame has neither the ceremony nor the account UI, so it
+            // asks through the portal bridge and the dialog opens over
+            // the spot rather than navigating away from it.
+            //
+            // The space rides along so the dialog can finish what this
+            // click started: once an account exists, the share it
+            // interrupted mints and hands over the link.
+            //
+            // The clipboard write is abandoned rather than held. A
+            // ceremony consumes transient activation, so a write
+            // attempted after it costs a second permission prompt; the
+            // link gets a copy button instead.
+            if let Some(reason) =
+                enable_sync_dialog().and_then(|dialog| dialog.get_attribute(DIALOG_OUTCOME))
+            {
+                fail_copy(&host, &state, "");
+                close_enable_sync_dialog();
+                tonk_host::request_registration(
+                    &serde_json::json!({ "reason": reason, "space": space }).to_string(),
+                );
                 return;
-            };
-            let remote = default_remote_url(&origin);
+            }
+            let wants_share = enable_sync_dialog().is_some_and(|dialog| {
+                dialog.get_attribute("data-share").as_deref() == Some("true")
+            });
 
             let time = js_sys::Date::now();
             state.borrow_mut().pending_time = Some(time);
-            let stale = current_link.borrow().clone();
-            if let Err(e) = open_clipboard_write(Rc::clone(&state), stale) {
-                warn(&format!("share: clipboard unavailable: {e:?}"));
-            }
-            set_state(&host, ShareState::Copying);
-            arm_timeout(&host, &state);
-            close_enable_sync_dialog();
-            let host_for_config = host.clone();
-            let state_for_config = Rc::clone(&state);
-            wasm_bindgen_futures::spawn_local(async move {
-                match deployment_revocation_url(&origin).await {
-                    Ok(revocation_url) => {
-                        dispatch_enable_sync(&space, &remote, Some(&revocation_url), time);
-                    }
-                    Err(error) => {
-                        warn(&format!("share: {error}"));
-                        fail_copy(
-                            &host_for_config,
-                            &state_for_config,
-                            "Could not load sharing configuration.",
-                        );
-                    }
+            if wants_share {
+                let stale = current_link.borrow().clone();
+                if let Err(e) = open_clipboard_write(Rc::clone(&state), stale) {
+                    warn(&format!("share: clipboard unavailable: {e:?}"));
                 }
-            });
+                set_state(&host, ShareState::Copying);
+                arm_timeout(&host, &state);
+            }
+            if let Some(narrator) = enable_sync_dialog()
+                .and_then(|dialog| dialog.query_selector(DIALOG_DETAIL).ok().flatten())
+            {
+                narrator.set_text_content(Some("connecting…"));
+            }
+            let _ = confirm.set_attribute("disabled", "");
+            // No remote: the worker resolves where this account syncs.
+            // Deriving it here meant asking a sealed guest for its own
+            // origin — `about:srcdoc`, so `location.origin` is the
+            // opaque `"null"` until the portal bridge injects the real
+            // one — and a share before that arrived returned silently.
+            dispatch_enable_sync(&space, "", wants_share, time);
         });
         let target: &web_sys::EventTarget = document.unchecked_ref();
         let _ =
             target.add_event_listener_with_callback("click", on_confirm.as_ref().unchecked_ref());
         self.document_listeners
             .push(("click".to_owned(), on_confirm));
+
+        let host = this.clone();
+        let on_bail = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+            else {
+                return;
+            };
+            if target.id() != DIALOG_ID {
+                return;
+            }
+            close_enable_sync_dialog();
+            if read_state(&host) == ShareState::Blocked {
+                set_state(&host, ShareState::Idle);
+            }
+        });
+        let target: &web_sys::EventTarget = document.unchecked_ref();
+        let _ =
+            target.add_event_listener_with_callback("fabb-bail", on_bail.as_ref().unchecked_ref());
+        self.document_listeners
+            .push(("fabb-bail".to_owned(), on_bail));
+
+        let on_commit = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(field) = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+            else {
+                return;
+            };
+            if !field.matches(DIALOG_REMOTE).unwrap_or(false) {
+                return;
+            }
+            let Some(confirm) = enable_sync_dialog()
+                .and_then(|dialog| dialog.query_selector(DIALOG_CONFIRM).ok().flatten())
+            else {
+                return;
+            };
+            confirm.unchecked_ref::<HtmlElement>().click();
+        });
+        let target: &web_sys::EventTarget = document.unchecked_ref();
+        let _ = target
+            .add_event_listener_with_callback("fabb-commit", on_commit.as_ref().unchecked_ref());
+        self.document_listeners
+            .push(("fabb-commit".to_owned(), on_commit));
     }
 }
 
@@ -675,30 +763,8 @@ fn dispatch_invite(space: &str, time: f64) {
 /// Dispatch the `tonk:enable-sync` claim, asking the worker to attach `remote`
 /// to this spot and — because `share` is set — mint the invite the refused
 /// click was after, as soon as the attach lands.
-fn dispatch_enable_sync(space: &str, remote: &str, revocation_url: Option<&str>, time: f64) {
-    dispatch_claim(&enable_sync_claim_json(
-        space,
-        remote,
-        revocation_url,
-        true,
-        time,
-    ));
-}
-
-async fn deployment_revocation_url(origin: &str) -> Result<String, String> {
-    let response = reqwest::Client::new()
-        .get(format!("{origin}/.well-known/tonk"))
-        .send()
-        .await
-        .map_err(|_| "deployment configuration is unavailable".to_string())?;
-    if !response.status().is_success() {
-        return Err("deployment configuration is unavailable".to_string());
-    }
-    response
-        .json::<tonk_worker_api::DeploymentConfig>()
-        .await
-        .map(|config| config.revocation_relay_url.to_string())
-        .map_err(|_| "deployment configuration is invalid".to_string())
+fn dispatch_enable_sync(space: &str, remote: &str, share: bool, time: f64) {
+    dispatch_claim(&enable_sync_claim_json(space, remote, share, time));
 }
 
 /// Hand a claim to `window.tonk.transact`. A no-op wherever the bridge is not
@@ -945,16 +1011,6 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
     }
     state.borrow_mut().pending_time = None;
 
-    // A guest's refusal is repairable, but not by attaching sync: it asks for
-    // membership, which the promote request obtains (raising the passkey
-    // prompt through the identity gate when there is no local root yet).
-    if blocked.code == BLOCKED_NEEDS_MEMBERSHIP {
-        abandon(state, &blocked.detail);
-        set_state(host, ShareState::Blocked);
-        open_join_dialog(&blocked.detail);
-        return;
-    }
-
     let Some(repair) = Repair::for_code(&blocked.code) else {
         // Nothing the prompt could fix — including an attach that failed after
         // the user already accepted it. Say so rather than leaving the button
@@ -1008,6 +1064,10 @@ fn abandon(state: &Rc<RefCell<ShareStateCell>>, reason: &str) {
 /// signature exists to make hard — a repairable refusal must also restore
 /// what a terminal one disabled.
 fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
+    open_enable_sync_ceremony(detail, repair, true);
+}
+
+fn open_enable_sync_ceremony(detail: &str, repair: Option<Repair>, wants_share: bool) {
     let Some(dialog) = enable_sync_dialog() else {
         return;
     };
@@ -1026,7 +1086,21 @@ fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
     if let Ok(Some(slot)) = dialog.query_selector(DIALOG_ACTION) {
         slot.set_text_content(Some(action));
     }
+    if let Ok(Some(slot)) = dialog.query_selector(DIALOG_STATEMENT) {
+        slot.set_text_content(Some(label));
+    }
     let _ = dialog.set_attribute("label", label);
+    let _ = dialog.set_attribute("data-share", if wants_share { "true" } else { "false" });
+    // Stamp what confirming does, so the confirm handler branches on the
+    // refusal it is answering rather than assuming enable-sync.
+    match repair.as_ref().map(|repair| repair.outcome) {
+        Some(RepairOutcome::Register) => {
+            let _ = dialog.set_attribute(DIALOG_OUTCOME, "register");
+        }
+        _ => {
+            let _ = dialog.remove_attribute(DIALOG_OUTCOME);
+        }
+    }
     if let Ok(Some(confirm)) = dialog.query_selector(DIALOG_CONFIRM) {
         confirm.set_text_content(Some(confirm_label));
         // Visible either way — an unrepairable refusal greys the button rather
@@ -1040,70 +1114,36 @@ fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
             let _ = confirm.set_attribute("disabled", "");
         }
     }
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::TRUE);
-}
-
-/// Promote this guest replica to durable membership — the same request the
-/// bar's `join spot` action makes, so there is one promote path and not two.
-///
-/// The worker answers `AccountRequired` when this device has no account and
-/// posts an account-required message, which the page turns into a trip through
-/// sign-up and replays on the way back — so a refusal needs nothing from here.
-/// A success does: the bar stamped `data-share-unavailable` from its check at
-/// connect and has no other reason to look again, so this asks it to. The
-/// comment this replaces deferred to "the membership check on the next
-/// render", which nothing performs — that is why share stayed greyed until a
-/// reload.
-fn promote_to_member(space: &str) {
-    let Ok(path) = crate::logic::membership_endpoint(space) else {
-        return;
-    };
-    let Some(origin) = tonk_host::bridge::context_origin() else {
-        return;
-    };
-    wasm_bindgen_futures::spawn_local(async move {
-        let promoted = reqwest::Client::new()
-            .post(format!("{origin}{path}"))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success());
-        if promoted {
-            crate::element::refresh_membership();
-        }
-    });
-}
-
-/// Open the join prompt with the worker's sentence. Its confirm is always
-/// live: unlike the sync prompt there is no variant of this refusal the user
-/// can't act on — a guest can always join.
-fn open_join_dialog(detail: &str) {
-    let Some(dialog) = window()
+    let _ = dialog.remove_attribute("hidden");
+    if let Some(banner) = window()
         .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(JOIN_DIALOG_ID))
-    else {
-        return;
-    };
-    if let Ok(Some(slot)) = dialog.query_selector(JOIN_DIALOG_DETAIL) {
-        slot.set_text_content(Some(detail));
+        .and_then(|document| document.get_element_by_id(crate::bar::CONNECT_BANNER_ID))
+    {
+        let _ = banner.set_attribute("hidden", "");
     }
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::TRUE);
 }
 
-fn close_join_dialog() {
-    let Some(dialog) = window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(JOIN_DIALOG_ID))
-    else {
-        return;
-    };
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::FALSE);
+/// Open the same editable connect ceremony from the local-only condition
+/// banner. Unlike the share refusal, this attaches without minting a link.
+pub(crate) fn open_enable_sync_from_banner() {
+    open_enable_sync_ceremony(
+        "This space only exists on this device.",
+        Repair::for_code(BLOCKED_NOT_SYNCED),
+        false,
+    );
 }
 
 fn close_enable_sync_dialog() {
     let Some(dialog) = enable_sync_dialog() else {
         return;
     };
-    let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::FALSE);
+    let _ = dialog.set_attribute("hidden", "");
+    if let Some(banner) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(crate::bar::CONNECT_BANNER_ID))
+    {
+        let _ = banner.remove_attribute("hidden");
+    }
 }
 
 fn enable_sync_dialog() -> Option<Element> {
@@ -1147,6 +1187,16 @@ fn read_link_field(row: &JsValue) -> Option<String> {
 /// stylesheet owns the appearance.
 fn set_state(host: &HtmlElement, state: ShareState) {
     let _ = host.set_attribute("data-share-state", state.as_str());
+    // The row the user actually sees is a sibling in the bar's share stack —
+    // this element is headless there. Stamp the state onto it too so the row
+    // can answer in place ("copy link" → "copying…" → "copied"), which is the
+    // same word-answers grammar the Hub's rows use. Absent (a fixture, or the
+    // element used standalone) this simply finds nothing.
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten()
+        && let Ok(Some(row)) = bar.query_selector("[data-share-link]")
+    {
+        let _ = row.set_attribute("data-share-state", state.as_str());
+    }
 }
 
 fn read_state(host: &HtmlElement) -> ShareState {
@@ -1264,6 +1314,31 @@ mod tests {
     /// A refusal row, as the blocked subscription delivers it: `blocked` and
     /// `detail` are text, `time` is a float (an echoed `dom.event/time-stamp`),
     /// so this cannot reuse [`row_with_fields`]'s all-strings shape.
+    fn invite_row(status: &str, url: Option<&str>) -> JsValue {
+        let fields = Object::new();
+        Reflect::set(&fields, &"status".into(), &JsValue::from_str(status)).expect("set status");
+        if let Some(url) = url {
+            Reflect::set(&fields, &"url".into(), &JsValue::from_str(url)).expect("set url");
+        }
+        let row = Object::new();
+        Reflect::set(&row, &"fields".into(), &fields).expect("set fields");
+        row.into()
+    }
+
+    fn invite_reset_payload(status: &str, url: Option<&str>) -> JsValue {
+        let rows = js_sys::Array::new();
+        rows.push(&invite_row(status, url));
+        rows.into()
+    }
+
+    fn invite_update_payload(status: &str, url: Option<&str>) -> JsValue {
+        let asserted = js_sys::Array::new();
+        asserted.push(&invite_row(status, url));
+        let payload = Object::new();
+        Reflect::set(&payload, &"asserted".into(), &asserted).expect("set asserted");
+        payload.into()
+    }
+
     fn blocked_row(code: &str, time: f64) -> JsValue {
         let fields = Object::new();
         Reflect::set(&fields, &"blocked".into(), &JsValue::from_str(code)).expect("set blocked");
@@ -1301,6 +1376,7 @@ mod tests {
     /// The action line is not returned: only the tests about per-refusal
     /// wording read it, and they do so through [`action_text`].
     fn dialog_stub() -> (Element, Element, Element) {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let dialog = document.create_element("div").expect("create dialog");
         dialog.set_id(DIALOG_ID);
@@ -1325,6 +1401,15 @@ mod tests {
             .append_child(&dialog)
             .expect("attach dialog");
         (dialog, detail, confirm)
+    }
+
+    /// Refusal dialogs use a fixed document id in production. Keep test
+    /// fixtures unique too so one test cannot update a stale duplicate.
+    fn remove_refusal_dialog() {
+        let document = window().expect("window").document().expect("document");
+        if let Some(dialog) = document.get_element_by_id(DIALOG_ID) {
+            dialog.remove();
+        }
     }
 
     /// The prompt's action line — what confirming is being offered as.
@@ -1533,79 +1618,22 @@ mod tests {
     /// the authored ones, not a fixture's idea of them. Returns the mounted
     /// host, which the caller removes.
     fn mounted_bar() -> HtmlElement {
+        remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
         let host: HtmlElement = document
             .create_element("tonk-fab")
             .expect("create host")
             .unchecked_into();
-        host.set_inner_html(&crate::markup::fab_html("did:key:zShareFixture"));
+        let _ = host.set_attribute("space", "did:key:zShareFixture");
         document
             .body()
             .expect("body")
             .append_child(&host)
             .expect("mount");
+        // The refusal prompts are mounted on <body> by the bar, not authored
+        // inside it — see `element::mount_refusal_dialogs`.
+        crate::element::mount_refusal_dialogs();
         host
-    }
-
-    fn dialog_is_open(id: &str) -> bool {
-        window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id(id))
-            .map(|dialog| {
-                Reflect::get(&dialog, &JsValue::from_str("open"))
-                    .map(|open| open.is_truthy())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-    }
-
-    /// A guest's refusal is repairable, and the repair is not the one the
-    /// enable-sync prompt offers: joining the spot, which is what raises the
-    /// passkey prompt. Two refusals, two prompts — reusing the sync dialog
-    /// would put "Turn on sync & copy link" in front of a guest whose sync is
-    /// fine.
-    #[dialog_common::test]
-    fn it_offers_the_join_repair_for_a_membership_refusal() {
-        let bar = mounted_bar();
-        let host = fresh_host();
-        let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        state.borrow_mut().pending_time = Some(7.0);
-        set_state(&host, ShareState::Copying);
-
-        handle_blocked(
-            &host,
-            &state,
-            Blocked {
-                code: tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP.to_owned(),
-                detail: "You're visiting this spot as a guest.".to_owned(),
-                time: 7.0,
-            },
-        );
-
-        let join_open = dialog_is_open(JOIN_DIALOG_ID);
-        let sync_open = dialog_is_open(DIALOG_ID);
-        let confirm_live = window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id(JOIN_DIALOG_ID))
-            .and_then(|dialog| dialog.query_selector(JOIN_DIALOG_CONFIRM).ok().flatten())
-            .map(|confirm| !confirm.has_attribute("disabled"))
-            .unwrap_or(false);
-        let detail = window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id(JOIN_DIALOG_ID))
-            .and_then(|dialog| dialog.query_selector(JOIN_DIALOG_DETAIL).ok().flatten())
-            .and_then(|slot| slot.text_content())
-            .unwrap_or_default();
-        bar.remove();
-
-        assert_eq!(read_state(&host), ShareState::Blocked);
-        assert!(join_open, "the join prompt opens");
-        assert!(!sync_open, "the sync prompt stays shut");
-        assert!(confirm_live, "its confirm is offered, not disabled");
-        assert_eq!(
-            detail, "You're visiting this spot as a guest.",
-            "the worker's sentence reaches the user",
-        );
     }
 
     /// A refusal with no repair still has to explain itself. The confirm stays
@@ -1631,6 +1659,7 @@ mod tests {
         let hidden = confirm.has_attribute("hidden");
         let disabled = confirm.has_attribute("disabled");
         bar.remove();
+        remove_refusal_dialog();
 
         assert!(!hidden, "the confirm stays on screen");
         assert!(disabled, "and inert");
@@ -1874,94 +1903,6 @@ mod tests {
         dialog.remove();
     }
 
-    /// A spot whose remote carries no revocation relay is repairable, not
-    /// terminal: it syncs, so the mint is refused only because the invite
-    /// could never be withdrawn, and confirming upserts the relay.
-    ///
-    /// The regression this pins: every spot whose remote predates in-band
-    /// revocation lands here, and the class used to fall through to the
-    /// terminal branch — a dead, greyed-out confirm with no way forward.
-    #[dialog_common::test]
-    fn it_offers_the_relay_repair_when_the_remote_has_no_revocation_relay() {
-        let (dialog, detail, confirm) = dialog_stub();
-        let host = fresh_host();
-        let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        state.borrow_mut().pending_time = Some(7.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
-        set_state(&host, ShareState::Copying);
-
-        handle_blocked(
-            &host,
-            &state,
-            Blocked {
-                code: BLOCKED_MISSING_REVOCATION_RELAY.to_owned(),
-                detail: "Invites to this spot can't be withdrawn yet.".to_owned(),
-                time: 7.0,
-            },
-        );
-
-        assert_eq!(read_state(&host), ShareState::Blocked);
-        assert!(
-            !confirm.has_attribute("disabled"),
-            "the relay repair must offer a working confirm button",
-        );
-        assert_eq!(
-            detail.text_content().as_deref(),
-            Some("Invites to this spot can't be withdrawn yet.")
-        );
-        assert!(
-            state.borrow().pending.is_none(),
-            "the clipboard write is abandoned while the question is on screen",
-        );
-
-        dialog.remove();
-    }
-
-    /// The prompt is one element reused across refusal classes, so the wording
-    /// has to be rewritten per class and not merely appended to. A spot that
-    /// already syncs must never be told to turn on sync — the bug that made a
-    /// missing relay show "Turn on sync so the people you share with can open
-    /// it." above a button offering the same.
-    #[dialog_common::test]
-    fn it_rewrites_the_whole_prompt_for_each_refusal_class() {
-        let (dialog, _detail, confirm) = dialog_stub();
-
-        open_enable_sync_dialog(
-            "This spot only exists on this device.",
-            Repair::for_code(BLOCKED_NOT_SYNCED),
-        );
-        let synced_action = action_text(&dialog);
-        let synced_confirm = confirm.text_content().unwrap_or_default();
-        let synced_label = dialog.get_attribute("label").unwrap_or_default();
-
-        open_enable_sync_dialog(
-            "Invites to this spot can't be withdrawn yet.",
-            Repair::for_code(BLOCKED_MISSING_REVOCATION_RELAY),
-        );
-        let relay_action = action_text(&dialog);
-        let relay_confirm = confirm.text_content().unwrap_or_default();
-        let relay_label = dialog.get_attribute("label").unwrap_or_default();
-
-        dialog.remove();
-
-        assert!(synced_action.contains("Turn on sync"));
-        assert!(synced_confirm.contains("Turn on sync"));
-        assert_eq!(synced_label, "Turn on sync?");
-
-        assert!(
-            !relay_action.contains("Turn on sync"),
-            "a synced spot is not asked to turn on sync, got {relay_action:?}",
-        );
-        assert!(
-            !relay_confirm.contains("Turn on sync"),
-            "nor offered it on the button, got {relay_confirm:?}",
-        );
-        assert!(
-            !relay_label.contains("Turn on sync"),
-            "nor in the heading, got {relay_label:?}",
-        );
-    }
-
     /// A terminal refusal must not leave the previous repair's promise on
     /// screen beside a button that can no longer keep it.
     #[dialog_common::test]
@@ -2112,59 +2053,132 @@ mod tests {
         assert!(state.borrow().timeout.is_none(), "no timer left running");
     }
 
-    /// The refusal reaches the handler the way the host delivers it: a frame
-    /// on the blocked subscription, not a direct call.
+    /// A terminal status stops the spinner, delivered as the host
+    /// delivers it: a frame, not a direct call.
     #[dialog_common::test]
-    fn it_acts_on_a_refusal_delivered_as_a_subscription_frame() {
+    fn it_fails_the_copy_on_a_terminal_status() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        state.borrow_mut().pending_time = Some(42.0);
         open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
-        let behaviour = ShareBlockedBehaviour {
+        let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
+            current_link: Rc::new(RefCell::new(None)),
         };
 
-        behaviour.render_reset(&host, &blocked_reset_payload("not-synced", 42.0));
+        behaviour.render_reset(&host, &invite_reset_payload("invite:suspended", None));
 
-        assert_eq!(read_state(&host), ShareState::Blocked);
+        assert_eq!(read_state(&host), ShareState::Failed);
     }
 
-    /// The path production actually takes: a refusal always arrives after the
-    /// blocked subscription is already open (the click that provokes it can
-    /// only happen once the button exists), so it lands as an `update` delta,
-    /// never a `reset` snapshot. `render_reset` being correct proves nothing
-    /// about `render_update`; the link subscription's delta reader has its own
-    /// covering test (`it_reads_a_reset_snapshot_and_an_update_delta`) for the
-    /// same reason.
+    /// The path production takes: the row is already subscribed when the
+    /// click lands, so an answer arrives as an `update` delta rather
+    /// than a `reset` snapshot. `render_reset` being right proves
+    /// nothing about `render_update`.
     #[dialog_common::test]
-    fn it_acts_on_a_refusal_delivered_as_an_update_delta() {
+    fn it_fails_the_copy_on_a_terminal_status_delivered_as_a_delta() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        state.borrow_mut().pending_time = Some(42.0);
         open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
-        let behaviour = ShareBlockedBehaviour {
+        let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
+            current_link: Rc::new(RefCell::new(None)),
         };
 
-        behaviour.render_update(&host, &blocked_update_payload("not-synced", 42.0));
+        behaviour.render_update(&host, &invite_update_payload("invite:unshareable", None));
 
-        assert_eq!(read_state(&host), ShareState::Blocked);
+        assert_eq!(read_state(&host), ShareState::Failed);
     }
 
-    /// A snapshot replayed on resubscribe, with no click in flight, is inert.
+    /// A status the control has never heard of is a failure, not a
+    /// panic and not a hang.
+    ///
+    /// This is what lets the worker ship a new terminal status without
+    /// touching the control.
     #[dialog_common::test]
-    fn it_leaves_the_control_alone_when_a_replayed_refusal_answers_no_click() {
+    fn it_treats_an_unknown_status_as_a_failure() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        let behaviour = ShareBlockedBehaviour {
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+        let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
+            current_link: Rc::new(RefCell::new(None)),
         };
 
-        behaviour.render_reset(&host, &blocked_reset_payload("not-synced", 42.0));
+        behaviour.render_reset(&host, &invite_reset_payload("invite:something-new", None));
 
-        assert_eq!(read_state(&host), ShareState::Idle);
+        assert_eq!(read_state(&host), ShareState::Failed);
+    }
+
+    /// A request in flight leaves the control spinning.
+    ///
+    /// The worker writes `requested` while it goes off to get an
+    /// account or attach a remote; treating that as an answer would
+    /// stop the button mid-share.
+    #[dialog_common::test]
+    fn it_keeps_waiting_while_the_request_is_open() {
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+        let behaviour = InviteStateBehaviour {
+            state: Rc::clone(&state),
+            current_link: Rc::new(RefCell::new(None)),
+        };
+
+        behaviour.render_reset(&host, &invite_reset_payload("invite:requested", None));
+
+        assert_eq!(read_state(&host), ShareState::Copying);
+    }
+
+    /// A granted row settles the pending copy with its url.
+    #[dialog_common::test]
+    fn it_settles_the_copy_when_the_invite_is_granted() {
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+        let behaviour = InviteStateBehaviour {
+            state: Rc::clone(&state),
+            current_link: Rc::new(RefCell::new(None)),
+        };
+
+        behaviour.render_reset(
+            &host,
+            &invite_reset_payload("invite:granted", Some("https://example.com/join#seed")),
+        );
+
+        assert_eq!(read_state(&host), ShareState::Copied);
+    }
+
+    /// Granted with no url is malformed; waiting beats reporting a copy
+    /// that never happened.
+    #[dialog_common::test]
+    fn it_keeps_waiting_when_a_granted_row_carries_no_url() {
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+        let behaviour = InviteStateBehaviour {
+            state: Rc::clone(&state),
+            current_link: Rc::new(RefCell::new(None)),
+        };
+
+        behaviour.render_reset(&host, &invite_reset_payload("invite:granted", None));
+
+        assert_eq!(read_state(&host), ShareState::Copying);
+    }
+
+    /// The optional url really is optional: a row with only a status
+    /// still reads.
+    #[dialog_common::test]
+    fn it_reads_a_row_with_no_url() {
+        let row = invite_row("invite:requested", None);
+        let parsed = read_invite_row(&row).expect("a status-only row reads");
+        assert_eq!(parsed.status, "invite:requested");
+        assert!(parsed.url.is_none());
     }
 
     #[dialog_common::test]
@@ -2200,15 +2214,18 @@ mod tests {
         let document = window().expect("window").document().expect("document");
         let host = fresh_host();
         host.set_attribute("space", "did:key:z6Mk").expect("space");
-        let button = document.create_element("button").expect("create button");
-        button
-            .set_attribute("data-enable-sync-confirm", "")
-            .expect("mark button");
-        document
-            .body()
-            .expect("body")
-            .append_child(&button)
-            .expect("attach button");
+        let (dialog, _detail, button) = dialog_stub();
+        dialog
+            .set_attribute("data-share", "true")
+            .expect("share ceremony");
+        let remote = document.create_element("tonk-field").expect("remote field");
+        remote
+            .set_attribute("data-enable-sync-remote", "")
+            .expect("mark remote");
+        remote
+            .set_attribute("value", "https://example.test/ucan/")
+            .expect("remote value");
+        dialog.append_child(&remote).expect("attach remote");
 
         let mut element = TonkShare::default();
         let state = Rc::clone(&element.state);
@@ -2238,7 +2255,7 @@ mod tests {
             state.borrow().pending_time.is_none(),
             "a click after disconnect must reach nothing",
         );
-        button.remove();
+        dialog.remove();
     }
 
     #[wasm_bindgen_test]

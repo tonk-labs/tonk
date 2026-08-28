@@ -2,7 +2,7 @@
 //!
 //! Routes the same HTTP surface as the Cloudflare Worker (see
 //! `src/handlers/`) onto native backends: a `SqliteStore::in_memory()`,
-//! a `MemoryChainStore`, and a shared `CapturedEmail`. Route paths,
+//! a shared `CapturedEmail`. Route paths,
 //! JSON field names, status codes, and CORS headers all match the
 //! worker exactly, except for native-only `GET /_test/*` inspection routes
 //! used by out-of-process tests.
@@ -14,42 +14,34 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{
     ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-    ACCESS_CONTROL_EXPOSE_HEADERS, CONTENT_LENGTH, CONTENT_TYPE,
+    ACCESS_CONTROL_EXPOSE_HEADERS, CONTENT_TYPE,
 };
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tonk_account::backup::{ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABILITY_V1};
-use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 
 use crate::auth::{
-    authorize, authorize_link_activation, authorize_root, optional_passkey_metadata,
-    optional_revocation, required_string, string_argument,
+    authorize, authorize_root, optional_passkey_metadata, optional_revocation, required_string,
+    string_argument,
 };
-use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account, preflight_account};
-use crate::core::backup::{get_chain, list_account_spots, list_chains, put_chain_and_index_spot};
 use crate::core::codes::{generate_code, request_code};
+use crate::core::deletion::delete_account;
 use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
-    DeviceView, detach_device, list_devices, register_device, revoke_device,
+    DeviceView, detach_device, link_device, list_devices, register_device, revoke_device,
 };
-use crate::core::links::{activate_link, complete_link, consume_link, create_link, resolve_link};
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
-use crate::revocations::{MemoryRevocationStore, PublishError, publish};
 use crate::store::Store;
 use crate::store::sqlite::SqliteStore;
-use tonk_identity::revocation::VerifyError;
 
 /// The backends a running [`AccountServer`] routes requests onto.
 struct Backends {
     store: SqliteStore,
-    chains: MemoryChainStore,
-    revocations: MemoryRevocationStore,
     emails: Arc<CapturedEmail>,
 }
 
@@ -68,14 +60,12 @@ pub struct AccountServer {
 
 impl AccountServer {
     /// Start an account service on an ephemeral localhost port, backed
-    /// by `SqliteStore::in_memory()`, `MemoryChainStore::default()`, and
+    /// by `SqliteStore::in_memory()` and
     /// a shared `CapturedEmail`.
     pub async fn start() -> AccountServer {
         let emails = Arc::new(CapturedEmail::default());
         let backends = Arc::new(Backends {
             store: SqliteStore::in_memory().expect("in-memory sqlite store"),
-            chains: MemoryChainStore::default(),
-            revocations: MemoryRevocationStore::default(),
             emails: emails.clone(),
         });
 
@@ -140,12 +130,11 @@ async fn handle_request(
         (Method::GET, "/") => return Ok(info_response()),
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
-        (Method::GET, "/_test/spots") => spots_route(req, &backends).await,
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/accounts/preflight") => accounts_preflight_route(req, &backends).await,
         (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
-        (Method::POST, "/revocations") => revocations_route(req, &backends).await,
+        (Method::POST, "/account/delete") => account_delete_route(req, &backends).await,
         (Method::POST, "/account/repository/establish") => {
             repository_establish_route(req, &backends).await
         }
@@ -154,15 +143,6 @@ async fn handle_request(
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         (Method::POST, "/devices/detach") => devices_detach_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
-        (Method::POST, "/links") => links_create_route(req, &backends).await,
-        (Method::POST, "/links/resolve") => links_resolve_route(req, &backends).await,
-        (Method::POST, "/links/complete") => links_complete_route(req, &backends).await,
-        (Method::POST, "/links/activate") => links_activate_route(req, &backends).await,
-        (Method::POST, "/links/consume") => links_consume_route(req, &backends).await,
-        (Method::POST, "/chains/put") => chains_put_route(req, &backends).await,
-        (Method::POST, "/chains/list") => chains_list_route(req, &backends).await,
-        (Method::POST, "/chains/spots") => chains_spots_route(req, &backends).await,
-        (Method::POST, "/chains/get") => chains_get_route(req, &backends).await,
         _ => Err(ServiceError::new(
             ErrorCode::NotFound,
             "no such route".to_string(),
@@ -173,6 +153,23 @@ async fn handle_request(
         Ok(response) => response,
         Err(err) => error_response(err),
     }))
+}
+
+/// `POST /account/delete` → root-authorized permanent account removal.
+async fn account_delete_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize(&backends.store, &body, &["account", "delete"])
+        .await
+        .map_err(ceremony_error)?;
+    let confirmed_email =
+        required_string(&caller.arguments, "confirmedEmail").map_err(ceremony_error)?;
+    let receipt = delete_account(&backends.store, &caller.account.root_did, &confirmed_email)
+        .await
+        .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::OK, &receipt))
 }
 
 /// `POST /account/summary` → verified account facts for an active device.
@@ -256,36 +253,6 @@ fn emails_route(backends: &Backends) -> Result<Response<Full<Bytes>>, ServiceErr
         .map(|(address, code)| serde_json::json!({ "address": address, "code": code }))
         .collect();
     Ok(json_response(StatusCode::OK, &snapshot))
-}
-
-/// `GET /_test/spots` → the semantic inventory for the root named by the
-/// `X-Test-Root` header, without a device invocation. Native test server only;
-/// lets browser integration tests inspect whether a prior browser actually
-/// uploaded an artifact before simulating a new device.
-async fn spots_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let root = req
-        .headers()
-        .get("x-test-root")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            ServiceError::new(ErrorCode::InvalidArgument, "missing test root".to_string())
-        })?;
-    let account = backends
-        .store
-        .account_by_root(root)
-        .await
-        .map_err(|error| ServiceError::new(ErrorCode::InternalError, format!("{error:?}")))?
-        .ok_or_else(|| {
-            ServiceError::new(ErrorCode::NotFound, "unknown test account".to_string())
-        })?;
-    let spots = list_account_spots(&backends.chains, &account)
-        .await
-        .map_err(|error| ServiceError::new(ErrorCode::InternalError, format!("{error:?}")))?;
-    Ok(json_response(StatusCode::OK, &spots))
 }
 
 /// `POST /codes` → request a verification code.
@@ -444,7 +411,7 @@ async fn devices_link_route(
     })?;
     let descriptor_hex = hex::encode(descriptor);
 
-    let attachment_id = register_device(
+    let attachment_id = link_device(
         &backends.store,
         &account,
         &device_did,
@@ -515,73 +482,13 @@ async fn devices_register_route(
     ))
 }
 
-/// `POST /revocations` → publish a self-certifying immutable artifact.
-async fn revocations_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    const MAX_BYTES: usize = 64 * 1024;
-    let content_type = req
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if content_type.split(';').next() != Some("application/cbor") {
-        return Err(ServiceError::new(
-            ErrorCode::InvalidArgument,
-            "Content-Type must be application/cbor",
-        ));
-    }
-    if req
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|length| length > MAX_BYTES)
-    {
-        return Err(ServiceError::new(
-            ErrorCode::InvalidArgument,
-            "revocation artifact exceeds 64 KiB",
-        ));
-    }
-    let bytes = body_bytes(req).await?;
-    if bytes.len() > MAX_BYTES {
-        return Err(ServiceError::new(
-            ErrorCode::InvalidArgument,
-            "revocation artifact exceeds 64 KiB",
-        ));
-    }
-    let outcome = publish(&backends.revocations, &bytes)
-        .await
-        .map_err(|error| match error {
-            PublishError::Verification(VerifyError::Malformed(message)) => {
-                ServiceError::new(ErrorCode::InvalidArgument, message)
-            }
-            PublishError::Verification(VerifyError::Unauthorized(message)) => {
-                ServiceError::new(ErrorCode::Forbidden, message)
-            }
-            PublishError::Store(error) => {
-                eprintln!("revocation publication failed: {error}");
-                ServiceError::new(ErrorCode::InternalError, "internal error")
-            }
-        })?;
-    Ok(json_response(
-        StatusCode::ACCEPTED,
-        &serde_json::json!({
-            "targetCid": outcome.verified.target_cid,
-            "artifactCid": outcome.verified.artifact_cid,
-            "stored": outcome.stored,
-        }),
-    ))
-}
-
 /// `POST /devices/detach` → detach one exact signed generation.
 async fn devices_detach_route(
     req: Request<Incoming>,
     backends: &Backends,
 ) -> Result<Response<Full<Bytes>>, ServiceError> {
     let intent: tonk_account::detach::SignedDetachIntent = parse_json(req).await?;
-    let outcome = detach_device(&backends.store, &intent, unix_now())
+    let outcome = detach_device(&backends.store, &intent)
         .await
         .map_err(ceremony_error)?;
     Ok(json_response(
@@ -612,7 +519,6 @@ async fn devices_revoke_route(
         })?;
     let outcome = revoke_device(
         &backends.store,
-        &backends.revocations,
         &caller.account,
         &caller.device.device_did,
         &attachment_id,
@@ -631,194 +537,8 @@ async fn devices_revoke_route(
             "targetCid": outcome.target_cid,
             "artifactCid": outcome.artifact_cid,
             "published": true,
-            "stored": outcome.stored,
         }),
     ))
-}
-
-async fn links_create_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body: LinkCreateRequest = parse_json(req).await?;
-    create_link(
-        &backends.store,
-        &body.token_hash,
-        &body.device_did,
-        &body.device_name,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::CREATED, &serde_json::json!({})))
-}
-
-async fn links_resolve_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body: LinkSecretRequest = parse_json(req).await?;
-    let link = resolve_link(&backends.store, &body.secret, unix_now())
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::OK, &link))
-}
-
-async fn links_complete_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize_root(&body, &["account", "link", "complete"])
-        .await
-        .map_err(ceremony_error)?;
-    complete_link(
-        &backends.store,
-        &caller.root_did,
-        &required_string(&caller.arguments, "tokenHash").map_err(ceremony_error)?,
-        &required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
-        &required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?,
-        &required_string(&caller.arguments, "delegation").map_err(ceremony_error)?,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
-}
-
-async fn links_activate_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize_link_activation(&body)
-        .await
-        .map_err(ceremony_error)?;
-    let token_hash = required_string(&caller.arguments, "tokenHash").map_err(ceremony_error)?;
-    let attachment_id =
-        required_string(&caller.arguments, "attachmentId").map_err(ceremony_error)?;
-    let device = activate_link(
-        &backends.store,
-        &token_hash,
-        &attachment_id,
-        &caller.root_did,
-        &caller.device_did,
-        &caller.delegation_cid,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({
-            "attachmentId": device.attachment_id,
-            "activated": true,
-        }),
-    ))
-}
-
-async fn links_consume_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body: LinkSecretRequest = parse_json(req).await?;
-    match consume_link(&backends.store, &body.secret, unix_now())
-        .await
-        .map_err(ceremony_error)?
-    {
-        Some(consumed) => Ok(json_response(StatusCode::OK, &consumed)),
-        None => Ok(json_response(
-            StatusCode::ACCEPTED,
-            &serde_json::json!({ "pending": true }),
-        )),
-    }
-}
-
-/// `POST /chains/put` → back up a delegation chain, returning its
-/// content-addressed key.
-async fn chains_put_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "chain", "put"])
-        .await
-        .map_err(ceremony_error)?;
-
-    let chain_hex = string_argument(&caller, "chain").map_err(ceremony_error)?;
-    let bytes = hex::decode(&chain_hex).map_err(|err| {
-        ServiceError::new(ErrorCode::InvalidArgument, format!("bad chain hex: {err}"))
-    })?;
-
-    let key = put_chain_and_index_spot(&backends.chains, &caller.account, &bytes)
-        .await
-        .map_err(ceremony_error)?;
-
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({ "key": key }),
-    ))
-}
-
-/// `POST /chains/list` → list the chain keys backed up under an
-/// account.
-async fn chains_list_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "chain", "list"])
-        .await
-        .map_err(ceremony_error)?;
-
-    let keys = list_chains(&backends.chains, &caller.account)
-        .await
-        .map_err(ceremony_error)?;
-
-    let mut response = json_response(StatusCode::OK, &keys);
-    response.headers_mut().insert(
-        hyper::header::HeaderName::from_bytes(ACCOUNT_SPOTS_CAPABILITY_HEADER.as_bytes())
-            .expect("capability header name is valid"),
-        ACCOUNT_SPOTS_CAPABILITY_V1.parse().unwrap(),
-    );
-    Ok(response)
-}
-
-/// `POST /chains/spots` → list one semantic row per account spot.
-async fn chains_spots_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "chain", "spots"])
-        .await
-        .map_err(ceremony_error)?;
-    let spots = list_account_spots(&backends.chains, &caller.account)
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::OK, &spots))
-}
-
-/// `POST /chains/get` → fetch the bytes backed up under a chain key.
-async fn chains_get_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "chain", "get"])
-        .await
-        .map_err(ceremony_error)?;
-
-    let key = string_argument(&caller, "key").map_err(ceremony_error)?;
-    let bytes = get_chain(&backends.chains, &caller.account, &key)
-        .await
-        .map_err(ceremony_error)?;
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/octet-stream")
-        .body(Full::new(Bytes::from(bytes)))
-        .expect("well-formed response"))
 }
 
 /// Current time as unix seconds.
@@ -897,7 +617,7 @@ fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     );
     headers.insert(
         ACCESS_CONTROL_EXPOSE_HEADERS,
-        "Content-Type, X-Tonk-Account-Spots".parse().unwrap(),
+        "Content-Type".parse().unwrap(),
     );
     response
 }

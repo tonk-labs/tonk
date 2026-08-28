@@ -66,6 +66,66 @@ pub struct CreateSpace {
     pub name: SpaceName,
 }
 
+/// Ask whether an address is already registered, so the form can route
+/// before anyone runs a ceremony.
+///
+/// Answers on the overlay as [`crate::EmailStatus`], not in a response
+/// body: the form subscribes to that row and renders the branch it
+/// names. Asserted as the user types, which is why the answer is
+/// overlay-only.
+///
+/// Creating an account with an address that already has one runs the
+/// whole WebAuthn ceremony and fails at the end, leaving an orphan
+/// passkey in the authenticator. Asking first is what avoids that.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CheckEmail {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The address to ask about, read from the form's `email` input.
+    pub email: crate::domain::command::email::Value,
+}
+
+impl Command for CheckEmail {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Register an account, from the form the registration overlay renders.
+///
+/// The page asserts this and then watches facts: `AccountCustomer`
+/// appears once enrollment lands, and gains a provider at activation.
+/// Nothing is read back from a response, because a command answers with
+/// facts rather than a body.
+///
+/// The provider cannot finish this alone. Creating an account is a
+/// WebAuthn ceremony, which needs a `window` and a user gesture, and the
+/// service worker has neither; it asks the originating client to
+/// authorize with a passkey and continues from what comes back.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RegisterAccount {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The address to register, read from the form's `email` input.
+    pub email: crate::domain::command::email::Value,
+    /// Per-command marker keeping this distinct from [`CheckEmail`],
+    /// which is otherwise the same shape.
+    ///
+    /// Without it every keystroke's lookup also decoded as a
+    /// registration, and a passkey prompt appeared while the user was
+    /// still typing their address.
+    pub marker: crate::domain::command::register::RegisterAccount,
+}
+
+impl RegisterAccount {
+    /// The value [`Self::marker`] carries.
+    pub const MARKER: &str = "tonk:register-account";
+}
+
+impl Command for RegisterAccount {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `CreateSpace` is a [`dialog_capability::Command`]. Note the worker
 /// registers a custom `CreateSpaceHandler` (not a plain `Provider`) so it
 /// can read the optional remote from the facts; the `Command` impl is
@@ -162,7 +222,7 @@ impl Command for Invite {
     type Output = ();
 }
 
-/// Attach a sync remote to an existing spot, and optionally mint an invite
+/// Attach a sync remote to an existing space, and optionally mint an invite
 /// once it is attached.
 ///
 /// Dispatched routelessly by the share control when a user accepts the offer
@@ -175,7 +235,7 @@ impl Command for Invite {
 /// This is deliberately NOT the `space/enable-sync` command seeded in
 /// `core.yaml`: that one shares `CreateSpace`'s trigger attribute, so a
 /// handler registered against it would fire alongside `CreateSpaceHandler`
-/// and mint a new spot instead of attaching to the existing one.
+/// and mint a new space instead of attaching to the existing one.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct EnableSync {
     /// The command entity (a fresh id per invocation).
@@ -312,6 +372,57 @@ impl Command for RemoveSpace {
     type Output = ();
 }
 
+/// Promote a member of a space to admin.
+///
+/// Dispatched by the FAB's roster after the page minted the admin hop
+/// under the passkey: the guest asks the outer page to delegate `/` on
+/// the space to the member's account, and the page answers with the hop
+/// signed by the promoter's account root. The worker's handler proves the
+/// promoter's own `/` chain from the space db, appends the hop, checks it
+/// is the one asked for, retains the chain beside the invites, and stamps
+/// `MemberRole::admin`. No device key sits in the admin chain, so signing
+/// a device out never takes the admins it promoted with it.
+///
+/// Routeless like `tonk:pause-sync`: the command names its `space` rather
+/// than firing on it, so the FAB needs nothing seeded per space.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PromoteMember {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The DID the member's membership is keyed on.
+    pub member: crate::domain::command::promote::Member,
+    /// The space the promotion is in.
+    pub space: crate::domain::command::promote::Space,
+    /// The page-minted `promoter-account -> member` hop, base58.
+    pub chain: crate::domain::command::promote::Chain,
+}
+
+impl Command for PromoteMember {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Remove a member from the space this command fires in.
+///
+/// Asserted transiently by the roster row's expel form; the worker's
+/// handler revokes the hop that admits the member under the remover's
+/// own `/` chain, records it at the space's access service, and retracts
+/// the member's roster rows. The service refuses a revocation minted
+/// under a member's `/use` chain, so holding the space is what lets this
+/// take effect, not the role fact.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExpelMember {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The DID the member's membership is keyed on, from `data-expel`.
+    pub member: crate::domain::command::expel::Expel,
+}
+
+impl Command for ExpelMember {
+    type Input = Self;
+    type Output = ();
+}
+
 /// The durable fact a `tonk:invite` handler asserts: the public
 /// delegation chain it minted, **keyed by the membership DID** (`this`).
 ///
@@ -348,8 +459,83 @@ pub struct Credential {
     pub link: crate::domain::credential::Link,
 }
 
+/// Where a space's invite has got to — the single row the share control
+/// renders, keyed by the space's **subject** DID.
+///
+/// Three nouns are close here and must stay distinct:
+/// [`Invite`] is the COMMAND (the intent to share), [`crate::Invitation`]
+/// is the durable record of a MINTED invite (keyed on the delegation
+/// CID, used for revocation), and this is the per-space STATE the
+/// control renders.
+///
+/// The share control subscribes to this and nothing else. It reads
+/// `status`: `granted` copies the `url`, `requested` keeps waiting, and
+/// **anything else** shows failed. That default is what lets a new
+/// terminal status ship without touching the control, and it is why the
+/// control never enumerates the terminal set.
+///
+/// Overlay-only. The url carries the membership seed in its fragment, so
+/// it must not reach storage, and the row is a per-session view of an
+/// in-flight request rather than a durable record. The durable record of
+/// a minted invite is [`crate::Invitation`], keyed on the delegation CID.
+///
+/// `url` is optional, so one row covers every state with no sentinel
+/// value: a request in flight simply has no url yet.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InviteState {
+    /// The space's subject DID.
+    pub this: Entity,
+    /// One of the `invite:*` markers; see [`InviteState::REQUESTED`].
+    pub status: crate::domain::invite::Status,
+    /// The finished invite URL, once there is one.
+    pub url: Option<crate::domain::invite::Url>,
+}
+
+impl InviteState {
+    /// Asked for, and in progress. The control keeps waiting.
+    pub const REQUESTED: &str = "invite:requested";
+    /// Minted; `url` is present.
+    pub const GRANTED: &str = "invite:granted";
+    /// The account's service was withdrawn. Terminal.
+    pub const SUSPENDED: &str = "invite:suspended";
+    /// The upstream is not a UCAN endpoint, so no invite URL can
+    /// express it. Terminal.
+    pub const UNSHAREABLE: &str = "invite:unshareable";
+
+    /// A request in flight, with no url yet.
+    pub fn requested(space: Entity) -> Self {
+        Self::marker(space, Self::REQUESTED)
+    }
+
+    /// A granted invite carrying its url.
+    pub fn granted(space: Entity, url: String) -> Self {
+        Self {
+            this: space,
+            status: crate::domain::invite::Status(
+                Self::GRANTED.parse().expect("invite:granted parses"),
+            ),
+            url: Some(crate::domain::invite::Url(url)),
+        }
+    }
+
+    /// A terminal state naming why no invite is possible.
+    pub fn denied(space: Entity, status: &str) -> Self {
+        Self::marker(space, status)
+    }
+
+    fn marker(space: Entity, status: &str) -> Self {
+        Self {
+            this: space,
+            status: crate::domain::invite::Status(
+                status.parse().expect("an invite:* marker parses"),
+            ),
+            url: None,
+        }
+    }
+}
+
 /// The overlay-only fact a refused `tonk:invite` asserts: why the mint did
-/// not happen, keyed by the spot's **subject** DID (`this`) — the same
+/// not happen, keyed by the space's **subject** DID (`this`) — the same
 /// entity [`Credential`] is keyed by, so one subject carries both the
 /// success and the refusal.
 ///
@@ -359,7 +545,7 @@ pub struct Credential {
 /// to avoid).
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct ShareBlocked {
-    /// The spot's subject DID.
+    /// The space's subject DID.
     pub this: Entity,
     /// Refusal class: `not-synced` | `unshareable-remote` | `attach-failed`.
     pub blocked: crate::domain::share::Blocked,

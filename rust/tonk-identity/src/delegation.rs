@@ -1,7 +1,7 @@
 //! The `root → device` delegation.
 
 use anyhow::Result;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
@@ -9,9 +9,12 @@ use dialog_varsig::Did;
 /// Mint the `root → device` delegation: subject-open, audience-specific —
 /// "this device may act as me, for anything". Deliberately the opposite
 /// shape from space invites, which are subject-specific and must stay so.
-pub async fn mint_device_delegation(root: Ed25519Signer, device: &Did) -> Result<DelegationChain> {
+pub async fn mint_device_delegation(
+    root: impl Into<Signer>,
+    device: &Did,
+) -> Result<DelegationChain> {
     let delegation = DelegationBuilder::new()
-        .issuer(root)
+        .issuer(root.into())
         .audience(device)
         .subject(UcanSubject::Any)
         .command(vec![])
@@ -46,7 +49,7 @@ mod tests {
     /// of a space delegating to a root identity.
     async fn space_chain(issuer: Ed25519Signer, audience: &Did, subject: &Did) -> DelegationChain {
         let delegation = DelegationBuilder::new()
-            .issuer(issuer)
+            .issuer(dialog_credentials::Signer::from(issuer))
             .audience(audience)
             .subject(UcanSubject::Specific(subject.clone()))
             .command(vec![])
@@ -58,7 +61,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_mints_a_subject_open_delegation_to_the_device() {
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let device = signer(&DEVICE_SEED).await;
         let chain = mint_device_delegation(root, &device.did()).await.unwrap();
         assert_eq!(*chain.audience(), device.did());
@@ -73,7 +76,7 @@ mod tests {
     async fn it_extends_a_space_chain_through_the_root_to_the_device() {
         let space = signer(&SPACE_SEED).await;
         let space_did = space.did();
-        let root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let root = Ed25519Signer::import(&ROOT_PRF).await.unwrap();
         let root_did = root.did();
         let device = signer(&DEVICE_SEED).await;
 

@@ -9,6 +9,7 @@
 //! definition.
 
 use dialog_capability::{Attenuate, Attenuation, Effect, Subject};
+use dialog_effects::Use;
 use dialog_effects::archive::{Archive, Catalog};
 use dialog_effects::memory::{Memory, Space};
 use dialog_ucan::Scope;
@@ -65,9 +66,11 @@ pub fn service_space(service: &Did) -> String {
 /// is accepted as a deposit.
 pub fn deposit_scopes(customer: &Did, service: &Did) -> [Scope; 2] {
     let memory = Subject::from(customer.clone())
+        .attenuate(Use)
         .attenuate(Memory)
         .attenuate(Space::new(service_space(service)));
     let archive = Subject::from(customer.clone())
+        .attenuate(Use)
         .attenuate(Archive)
         .attenuate(Catalog::new(SERVICE_CATALOG));
     [Scope::from(&memory), Scope::from(&archive)]
@@ -112,11 +115,89 @@ pub struct Add {
     /// container. It must root at the consumer and be issued to the
     /// invoking customer, granting `/consumer/provision` or broader.
     pub consent: Cid,
+    /// What the consumer is: `"space"` (the default) for a user's data
+    /// space, `"custody"` for a passkey's custody namespace — plumbing
+    /// the account provisions for itself. The service keeps the kind so
+    /// deletion can tell a user's spaces from the account's own key
+    /// custody: custody namespaces never appear in a deletion review
+    /// and are purged by customer finalization, last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl Effect for Add {
     type Of = Provider;
     type Output = Result<ConsumerReceipt, RegistrationError>;
+}
+
+/// `/provider/remove` — deprovision a hosted consumer space: the
+/// reverse of [`Add`], and how a hosted space is deleted. The
+/// invocation's subject is the owning customer DID; the service purges
+/// the space's hosted content and denies the consumer forever. No
+/// per-space artifact is presented — the customer's own chain is the
+/// authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Attenuate)]
+pub struct Remove {
+    /// The hosted space being deprovisioned.
+    pub consumer: Did,
+}
+
+impl Effect for Remove {
+    type Of = Provider;
+    type Output = Result<(), RegistrationError>;
+}
+
+/// Ability segment `/ucan`: acts defined by the UCAN specification
+/// itself rather than by this service's roles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ucan;
+
+impl Attenuation for Ucan {
+    type Of = Subject;
+}
+
+/// `/ucan/revoke` — withdraw a delegation, per the
+/// [UCAN revocation spec](https://github.com/ucan-wg/revocation).
+///
+/// The subject is the principal whose authority is being exercised, and
+/// it is what a validator matches against the issuers of a presented
+/// chain. The invocation's issuer may differ, when revocation authority
+/// was itself delegated.
+///
+/// Argument names are the spec's IPLD schema (`rev`, `pth`), not the
+/// longer forms its prose uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Attenuate)]
+pub struct Revoke {
+    /// The delegation being withdrawn, by canonical CID.
+    #[serde(rename = "rev")]
+    pub revoke: Cid,
+    /// The delegation path witnessing that the subject may revoke the
+    /// target: root through target, each named by CID and carried as a
+    /// block in the same container.
+    ///
+    /// The spec makes this optional, and names the reason to require it:
+    /// storing revocations nobody was entitled to issue is a denial of
+    /// service vector.
+    #[serde(rename = "pth")]
+    pub path: Vec<Cid>,
+}
+
+impl Effect for Revoke {
+    type Of = Ucan;
+    type Output = Result<RevokeReceipt, RegistrationError>;
+}
+
+/// The successful answer to a `/ucan/revoke` invocation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevokeReceipt {
+    /// The delegation now recorded as revoked.
+    pub revoked: Cid,
+    /// The principal whose authority withdrew it.
+    pub subject: Did,
+    /// Whether this call recorded the revocation, as against finding it
+    /// already present. Revocation is idempotent, so a replay answers
+    /// success either way.
+    pub recorded: bool,
 }
 
 /// Ability segment `/consumer`: acts a space takes on its own behalf.
@@ -187,6 +268,19 @@ pub struct Receipt {
     pub customer: Did,
     /// The customer's lifecycle state after the act.
     pub status: CustomerStatus,
+    /// The provider serving this customer: the UCAN endpoint its
+    /// spaces attach their remotes to.
+    ///
+    /// The service decides which provider serves its customers and says
+    /// so here, rather than every client deriving an address from
+    /// whichever origin its request happened to reach. A client records
+    /// this and attaches spaces to it; it never has to guess.
+    ///
+    /// Optional so a receipt from a service that predates this field
+    /// still decodes. An absent address means "unchanged", not "no
+    /// provider": a client that already recorded one keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// A registration refusal. Serialized with the variant as a `code` tag,
@@ -219,9 +313,20 @@ pub enum RegistrationError {
     /// The consumer already has a different provider.
     #[error("this consumer already has a provider")]
     ConsumerProvided,
+    /// The subject is not a consumer this service holds anything for, so
+    /// a revocation about it would guard nothing. Distinct from an
+    /// unactivated customer: that one has data here and may still
+    /// revoke.
+    #[error("this subject is not a registered consumer")]
+    UnknownConsumer,
     /// The customer is already active, so enrollment is refused.
     #[error("this customer is already active")]
     CustomerActive,
+    /// The customer enrolled but has not confirmed their email address,
+    /// so nothing may be provisioned under them yet. Recoverable by the
+    /// customer alone: re-enrolling resends the activation email.
+    #[error("this customer is awaiting email activation")]
+    CustomerInactive,
     /// The customer is suspended, so nothing self-serve applies.
     #[error("this customer is suspended")]
     CustomerSuspended,
@@ -241,7 +346,9 @@ impl RegistrationError {
             RegistrationError::Unauthorized { .. } => 401,
             RegistrationError::Forbidden { .. } => 403,
             RegistrationError::UnknownCustomer => 404,
+            RegistrationError::UnknownConsumer => 404,
             RegistrationError::CustomerActive
+            | RegistrationError::CustomerInactive
             | RegistrationError::CustomerSuspended
             | RegistrationError::ConsumerProvided => 409,
             RegistrationError::Internal { .. } => 500,
@@ -276,8 +383,17 @@ mod tests {
         let add: Capability<Add> = subject().attenuate(Provider).invoke(Add {
             consumer: did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
             consent: Cid::default(),
+            kind: None,
         });
         assert_eq!(add.ability(), "/provider/add");
+
+        // The spec's own command, so it is `/ucan/revoke` rather than
+        // one of this service's roles.
+        let revoke: Capability<Revoke> = subject().attenuate(Ucan).invoke(Revoke {
+            revoke: Cid::default(),
+            path: vec![Cid::default()],
+        });
+        assert_eq!(revoke.ability(), "/ucan/revoke");
 
         let provision: Capability<Provision> = subject().attenuate(Consumer).invoke(Provision);
         assert_eq!(provision.ability(), "/consumer/provision");
@@ -289,12 +405,14 @@ mod tests {
         let service = did!("key:z6MkrZ1r5XBFZjBU34qyD8fueMbMRkKw17BZaq2ivKFjnz2z");
         let [memory, archive] = deposit_scopes(&customer, &service);
 
-        assert_eq!(memory.command.segments(), &["memory".to_string()]);
+        // Both deposits sit at `/use`: what tells them apart is the policy,
+        // and neither is `/`.
+        assert_eq!(memory.command.segments(), &["use".to_string()]);
         assert_eq!(
             memory.parameters.as_map().get("space"),
             Some(&ipld_core::ipld::Ipld::String(format!("branch/{service}")))
         );
-        assert_eq!(archive.command.segments(), &["archive".to_string()]);
+        assert_eq!(archive.command.segments(), &["use".to_string()]);
         assert_eq!(
             archive.parameters.as_map().get("catalog"),
             Some(&ipld_core::ipld::Ipld::String("index".to_string()))

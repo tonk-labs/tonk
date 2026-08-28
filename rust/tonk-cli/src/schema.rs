@@ -1,4 +1,4 @@
-//! `tonk schema` — read every attribute and concept asserted on
+//! `tonk show --notation` — read every attribute and concept asserted on
 //! the branch, emit a notation document that re-submits cleanly.
 //!
 //! Two query passes:
@@ -47,10 +47,11 @@ use crate::output::EvaluateResponse;
 use crate::site::TonkSite;
 
 /// Slim summary of one named concept on the branch — just enough
-/// for `tonk concept ls` to print. The full descriptor stays internal
+/// for `tonk concept` to print. The full descriptor stays internal
 /// to [`render`] (which needs it to re-emit the `with:` map as
 /// notation).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConceptSummary {
     /// Bookmark name published via `db.name/referent` on
     /// the matching `id:<name>` entity.
@@ -69,7 +70,8 @@ pub struct ConceptSummary {
 }
 
 /// Agent-facing summary of one concept field.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FieldSummary {
     /// Flag name accepted by `tonk assert`.
     pub name: String,
@@ -83,11 +85,31 @@ pub struct FieldSummary {
     pub description: String,
 }
 
-/// Enumerate every user-defined concept on the meta branch,
-/// returning a slim per-concept summary. Built-in concepts
-/// (`attribute`, `concept`, etc.) are filtered out — see
-/// [`is_builtin_concept`].
+/// Enumerate the concepts this space's author defined, returning a
+/// slim per-concept summary. Runtime concepts — analyzer built-ins,
+/// the seeded standard library, the CLI's own space-home recipe — are
+/// filtered out; see [`is_system_concept`].
+///
+/// The filter is presentational, not a scoping rule: a system concept
+/// is still addressable by name through [`find_concept`], so
+/// `tonk query member` keeps working while `tonk concept` stays
+/// about the space's own vocabulary.
 pub async fn list_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
+    let mut concepts = list_all_concepts(site).await?;
+    concepts.retain(|concept| !is_system_concept(&concept.name));
+    Ok(concepts)
+}
+
+/// Every concept on the branch bar the analyzer's built-ins: the
+/// author's own, plus the runtime vocabulary the standard library
+/// seeds. `command` is the one built-in kept — see
+/// [`is_builtin_concept`] for why the rest are dropped here.
+///
+/// For callers that need to answer a question about a system concept
+/// and list the author's in the same pass — `tonk status` reads the
+/// `tonk/agents` claim and prints the author's concepts, and would
+/// otherwise enumerate the branch twice.
+pub async fn list_all_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
     let infos = enumerate_concepts(site).await?;
     Ok(infos
         .into_iter()
@@ -369,10 +391,16 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
 /// Built-in concept names hard-coded in
 /// `tonk_schema::builtin::concept_registry`. Documents can't
 /// shadow a built-in (the registry wins on lookup), so re-emitting
-/// them in `tonk schema` output would be both wasteful and
+/// them in `tonk show --notation` output would be both wasteful and
 /// rejected — built-ins carry attributes without descriptions, and
 /// the analyzer's `attribute!` validator requires non-empty
 /// descriptions.
+///
+/// Deliberately not the whole registry: `command` is a queryable view
+/// over the branch's transient concepts, and dropping it here would
+/// also drop it from [`find_concept`], breaking `tonk query command`.
+/// [`is_system_concept`] reads the registry instead, because hiding a
+/// name from a listing costs nothing.
 fn is_builtin_concept(name: &str) -> bool {
     matches!(
         name,
@@ -385,6 +413,28 @@ fn is_builtin_concept(name: &str) -> bool {
             | "remote"
             | "tracking-branch"
     )
+}
+
+/// Name of the concept `tonk space home` authors to key the space home.
+/// Machinery for the home recipe, not vocabulary the author asserts
+/// against, so it is filtered out of agent-facing listings alongside
+/// the standard library.
+pub const SPACE_HOME_CONCEPT: &str = "space-home";
+
+/// Whether `name` belongs to the runtime rather than to this space's
+/// author: an analyzer built-in, a standard-library concept or
+/// command, or the CLI's own space-home recipe.
+///
+/// A fresh space carries forty-one of these. Listing them alongside
+/// the one concept an agent just defined — and pasting the same list
+/// into every "no concept named X" error — buries the answer, so
+/// every agent-facing surface filters on this.
+pub fn is_system_concept(name: &str) -> bool {
+    tonk_schema::builtin::concept_registry()
+        .iter()
+        .any(|(builtin, _)| *builtin == name)
+        || name == SPACE_HOME_CONCEPT
+        || crate::site::standard_library_declares_concept(name)
 }
 
 // ---------------------------------------------------------------- //

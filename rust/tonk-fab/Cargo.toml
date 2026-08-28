@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 tonk-common = { workspace = true }
 tonk-host = { workspace = true }
+tonk-schema = { workspace = true }
 tonk-worker-api = { workspace = true }
 urlencoding = { workspace = true }
 wasm-bindgen = { workspace = true }
@@ -26,6 +27,7 @@ web-sys = { workspace = true, features = [
     "CssStyleDeclaration",
     "CustomElementRegistry",
     "CustomEvent",
+    "CustomEventInit",
     "Document",
     "DomRect",
     "DomStringMap",
@@ -36,9 +38,13 @@ web-sys = { workspace = true, features = [
     "EventTarget",
     "FontFaceSet",
     "HtmlCollection",
+    "HtmlDialogElement",
     "HtmlElement",
     "HtmlHeadElement",
     "HtmlInputElement",
+    "KeyboardEvent",
+    "Location",
+    "MediaQueryList",
     "MessageEvent",
     "MouseEvent",
     "MouseEventInit",
@@ -46,16 +52,23 @@ web-sys = { workspace = true, features = [
     "MutationObserverInit",
     "Navigator",
     "Node",
+    "Performance",
     "NodeList",
     "PointerEvent",
+    "Range",
     "Request",
     "RequestInit",
     "Response",
     "ResizeObserver",
     "ScrollBehavior",
     "ScrollToOptions",
+    "Selection",
+    "ShadowRoot",
+    "ShadowRootInit",
+    "ShadowRootMode",
     "Text",
     "VisibilityState",
+    "VisualViewport",
     "Window",
 ] }
 

@@ -18,6 +18,7 @@
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
 //!   navigate(href)    -> void,
+//!   reload()           -> void,
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
 //!   ready: Promise<void>,
@@ -241,11 +242,23 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // {document, transact}; the parent relays it to the installed host's
     // consumer path, which performs the typed evaluate and returns its parsed result.
     evaluate:function(detail){return call("evaluate",{document:(detail&&detail.document)||"",transact:!(detail&&detail.transact===false)});},
+    // Ask the HOST page to delegate: the account root lives behind the
+    // passkey, and WebAuthn exists only on the top-level window, inside a
+    // user gesture. A guest click posts {subject, command, audience} here;
+    // the parent runs the ceremony and answers with the minted hop (base58
+    // of the serialized chain), or rejects with the reason.
+    delegate:function(request){return call("delegate",request||{});},
     // Navigate the HOST page: the opaque guest can't touch parent.location
     // and has no router, so a link click posts its href here and the parent
     // performs the real navigation. Fire-and-forget (no response).
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
+    },
+    // Reload the HOST page after a whole-profile state swap. Unlike navigate,
+    // this is meaningful when the route itself has not changed: every portal
+    // and subscription owned by the previous profile must be rebuilt.
+    reload:function(){
+      ready.then(function(){port.postMessage({v:1,type:"reload"});});
     },
     // Retitle the HOST page's tab: the opaque guest can't touch
     // parent.document.title. `<tonk-title>` posts its text here and the
@@ -260,6 +273,14 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // Fire-and-forget (no response).
     open:function(href){
       ready.then(function(){port.postMessage({v:1,type:"open",href:href});});
+    },
+    // Raise the registration dialog on the HOST page. Sharing needs an
+    // account, and only the top page can run the ceremony: WebAuthn wants
+    // a `window` and a user gesture, which the guest's opaque realm and
+    // the service worker both lack. The guest posts the refusal class so
+    // the host can word the prompt. Fire-and-forget (no response).
+    register:function(reason){
+      ready.then(function(){port.postMessage({v:1,type:"register",reason:reason});});
     },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
@@ -303,6 +324,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       case "evaluate-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve(env.result); return;
+      }
+      case "delegate-result": {
+        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
+        h.resolve(env.delegation); return;
       }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
@@ -360,7 +385,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         h.resolve(rebuilt);
         return;
       }
-      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": {
+      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": case "delegate-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.reject(new Error(env.error)); return;
       }
@@ -452,7 +477,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // cross-origin fetch (CORS-blocked, origin `null`), so strip the origin
     // prefix and relay the path. TWO origins qualify: the REAL host origin
     // (`context.origin`), and the guest's SYNTHETIC per-space base origin
-    // (`context.base`, e.g. `https://{label}.tonk.spot`) — with a `<base>` set
+    // (`context.base`, e.g. `https://{label}.tonk.network`) — with a `<base>` set
     // to the latter, a relative `/api/…` resolves against it, so a `Request`
     // built from it is fake-origin-absolute and must be stripped the same way.
     var ctx=(window.tonk&&window.tonk.context)||{};
@@ -504,6 +529,22 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
   // POST anywhere — the event is observable, the navigation is not. Runs on
   // every submit regardless of whether the form has an app handler.
   document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
+
+  // A light/dark change made in some ancestor frame, relayed down. The
+  // theme is a whole-app property, but each guest is its own document with
+  // its own root element, so the only way a toggle reaches nested content is
+  // to walk the frame tree. Each guest applies it and passes it on, so one
+  // message reaches every depth.
+  window.addEventListener("message", function(e){
+    var d=e.data; if(!d||d.__tonkRuntime!=="mode") return;
+    var isDark=d.mode==="dark";
+    var cls=document.documentElement.classList;
+    cls.toggle("wa-dark",isDark); cls.toggle("wa-light",!isDark);
+    var frames=document.querySelectorAll("iframe");
+    for(var i=0;i<frames.length;i++){
+      try{ frames[i].contentWindow.postMessage({__tonkRuntime:"mode",mode:d.mode},"*"); }catch(_){}
+    }
+  });
 
   window.addEventListener("message", async function(e){
     var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
@@ -742,7 +783,7 @@ fn base_tag(base: &str) -> String {
     if base.is_empty() {
         String::new()
     } else {
-        // `base` is a same-origin literal we built (`https://{label}.tonk.spot/`),
+        // `base` is a same-origin literal we built (`https://{label}.tonk.network/`),
         // so there is nothing to escape, but keep it minimal and attribute-safe.
         format!("<base href=\"{base}\">")
     }
@@ -1543,9 +1584,12 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&state, &data),
+            "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
+            "register" => handle_register(&data),
             "fetch" => handle_host_fetch(&state, &port, &data),
+            "delegate" => handle_delegate(&port, &data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -1795,7 +1839,7 @@ fn handle_navigate(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
 /// Translate a guest-world href into the REAL route the host navigates to.
 ///
 /// The guest resolves links against its synthetic per-space origin
-/// (`https://{label}.tonk.spot/`), so an in-space link arrives as a bare
+/// (`https://{label}.tonk.network/`), so an in-space link arrives as a bare
 /// absolute path (`/activity`). The document is really served at
 /// `/space/{did}/...`, so prefix the space segment. A guest with no space
 /// context (profile/Hub), or an already-`/space/...` path, is left as-is.
@@ -1810,7 +1854,7 @@ fn real_href(state: &Rc<RefCell<PortalState>>, href: &str) -> String {
     // A leading-slash in-space path; anything else (already absolute host
     // path, or a fragment/query) is passed through untouched.
     if let Some(rest) = href.strip_prefix('/') {
-        if rest.starts_with("space/") {
+        if rest.starts_with("space/") || is_top_level_route(rest) {
             href.to_owned()
         } else {
             format!("/space/{space}/{rest}")
@@ -1820,9 +1864,74 @@ fn real_href(state: &Rc<RefCell<PortalState>>, href: &str) -> String {
     }
 }
 
+/// Routes that belong to the PROFILE, not to any space.
+///
+/// The guest resolves every link against its synthetic per-space origin, so a
+/// link to one of these arrives looking exactly like an in-space path and would
+/// be rewritten to `/space/{did}/join` — a route no space defines. The page then
+/// tries to boot the whole app inside the sealed frame, where the origin is
+/// opaque: no service worker, every asset CORS-blocked, and the renderer dies.
+///
+/// These names are the profile's own route table (`profile.yaml`), which no
+/// space route shadows, so passing them through is unambiguous.
+fn is_top_level_route(rest: &str) -> bool {
+    let head = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    matches!(head, "join" | "account" | "inspector" | "diagnose")
+}
+
 /// Set the host page's tab title on the guest's behalf. The guest's
 /// `<tonk-title>` posts `{v:1, type:"title", text}`; this runs in the
 /// parent document, which is where `document.title` lives.
+/// Raise the host's registration dialog for a share that needs an
+/// account.
+///
+/// The dialog itself lives in `tonk-ui`, which depends on this crate, so
+/// it cannot be called by name from here. The top page registers a
+/// handler at boot instead — the same shape as the other page effects,
+/// where this crate carries the transport and the shell supplies the
+/// behaviour.
+fn handle_register(data: &JsValue) {
+    let Some(reason) = register_reason(data) else {
+        return;
+    };
+    REGISTER_HANDLER.with(|handler| {
+        if let Some(handler) = handler.borrow().as_ref() {
+            handler(&reason);
+        }
+    });
+}
+
+/// What a page does when a guest asks it to raise registration.
+type RegisterHandler = Box<dyn Fn(&str)>;
+
+thread_local! {
+    /// What to do when a guest asks for registration. `None` until the
+    /// shell installs one, which is correct for a page with no account
+    /// UI: the ask is dropped rather than half-performed.
+    static REGISTER_HANDLER: std::cell::RefCell<Option<RegisterHandler>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install what runs when a guest asks the host to register an account.
+///
+/// Called once by the shell at boot. Later calls replace the handler,
+/// which keeps a hot reload from stacking dialogs.
+pub fn on_register(handler: impl Fn(&str) + 'static) {
+    REGISTER_HANDLER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(handler));
+    });
+}
+
+/// Read `reason` out of a `{ type: "register", reason }` message, or
+/// `None` when the message is not one. Split out so the parse is
+/// testable on its own, the way [`title_text`] is.
+fn register_reason(data: &JsValue) -> Option<String> {
+    if get_str(data, "type")? != "register" {
+        return None;
+    }
+    get_str(data, "reason").filter(|reason| !reason.is_empty())
+}
+
 fn handle_title(data: &JsValue) {
     let Some(text) = title_text(data) else {
         return;
@@ -1845,6 +1954,77 @@ fn title_text(data: &JsValue) -> Option<String> {
 /// and no `allow-top-navigation`, so it cannot open anything itself; it posts
 /// the raw href and `tonk_host::open_external` — running on the page, which is
 /// the only place that can both resolve and open it — decides what happens.
+/// Mint a delegation under the passkey on the guest's behalf.
+///
+/// The guest asks `{ subject, command, audience }`; the account root that
+/// signs it lives behind the passkey, which exists only on this top-level
+/// window and only inside a user gesture. The guest's click propagates its
+/// activation to this frame, so the ceremony runs here immediately and the
+/// prompt is the user's own gesture. The hop minted is `root -> audience`
+/// over `subject` at `command`; the guest carries it to the worker, which
+/// checks it against what it composes it with. Answered with
+/// `delegate-result` carrying the base58 chain, or `delegate-error`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn handle_delegate(port: &MessagePort, data: &JsValue) {
+    let Some(id) = get_str(data, "id") else {
+        return;
+    };
+    let request = (
+        get_str(data, "subject").unwrap_or_default(),
+        get_str(data, "command").unwrap_or_default(),
+        get_str(data, "audience").unwrap_or_default(),
+    );
+    let port = port.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        match mint_delegation(&request.0, &request.1, &request.2).await {
+            Ok(encoded) => post_result(
+                &port,
+                "delegate-result",
+                &id,
+                "delegation",
+                &JsValue::from_str(&encoded),
+            ),
+            Err(error) => post_error(&port, "delegate-error", &id, &format!("{error:#}")),
+        }
+    });
+}
+
+/// Run the passkey ceremony and mint `root -> audience` over `subject` at
+/// `command`, returning the serialized chain as base58.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn mint_delegation(subject: &str, command: &str, audience: &str) -> anyhow::Result<String> {
+    use dialog_ucan_core::command::Command;
+    use dialog_ucan_core::subject::Subject as UcanSubject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::Did;
+
+    let subject: Did = subject
+        .parse()
+        .map_err(|error| anyhow::anyhow!("the subject is not a DID: {error:?}"))?;
+    let audience: Did = audience
+        .parse()
+        .map_err(|error| anyhow::anyhow!("the audience is not a DID: {error:?}"))?;
+    let command = Command::parse(command)
+        .map_err(|error| anyhow::anyhow!("the command does not parse: {error}"))?;
+    // The custody endpoint the page's other ceremonies use: the account
+    // service is served under `/ucan/` on the page's own origin.
+    let origin = web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .ok_or_else(|| anyhow::anyhow!("window origin is unavailable"))?;
+    let endpoint = format!("{}/ucan/", origin.trim_end_matches('/'));
+    let root = tonk_identity::ceremony::unlock_root(&endpoint).await?;
+    let delegation = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(root))
+        .audience(&audience)
+        .subject(UcanSubject::Specific(subject))
+        .command(command.segments().clone())
+        .try_build()
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to mint the delegation: {error}"))?;
+    let bytes = DelegationChain::new(delegation).to_bytes()?;
+    Ok(bs58::encode(bytes).into_string())
+}
+
 fn handle_open(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
     let Some(href) = open_href(data) else {
         return;
@@ -2430,7 +2610,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
     // The per-space SYNTHETIC origin this guest believes it lives at
-    // (`https://{label}.tonk.spot/`), so in-guest navigation resolves like an
+    // (`https://{label}.tonk.network/`), so in-guest navigation resolves like an
     // ordinary page: in-space routes are plain absolute paths under it, and an
     // href that escapes it is external. Distinct from `origin` (the REAL host
     // origin, which propagates down nesting and keys the `/api` relay strip).
@@ -2619,6 +2799,36 @@ mod tests {
     const DESCRIPTOR: &str = r#"{"with":{
         "count": { "the": "counter/count", "as": "UnsignedInteger", "cardinality": "one" }
     }}"#;
+
+    /// The guest resolves every link against its synthetic per-space
+    /// origin, so a link to a PROFILE route (`/join`) arrives looking
+    /// exactly like an in-space path. Rewriting it to `/space/{did}/join`
+    /// names a route no space defines, and the app then tries to boot
+    /// inside the sealed frame — opaque origin, no service worker, every
+    /// asset CORS-blocked, renderer crash. These must pass through.
+    #[dialog_common::test]
+    fn it_treats_profile_routes_as_top_level() {
+        assert!(is_top_level_route("join"));
+        assert!(is_top_level_route("account"));
+        assert!(is_top_level_route("inspector"));
+        assert!(is_top_level_route("diagnose"));
+        // A query or sub-path does not disguise the route.
+        assert!(is_top_level_route("join?x=1"));
+        assert!(is_top_level_route("account/devices"));
+        assert!(is_top_level_route("diagnose/abc123"));
+    }
+
+    /// Everything else is genuinely in-space and still gets the space
+    /// prefix — the behaviour the pass-through must not swallow.
+    #[dialog_common::test]
+    fn it_leaves_in_space_paths_to_the_space_prefix() {
+        assert!(!is_top_level_route("activity"));
+        assert!(!is_top_level_route("board"));
+        assert!(!is_top_level_route(""));
+        // A path that merely STARTS with a top-level name is not one.
+        assert!(!is_top_level_route("joinery"));
+        assert!(!is_top_level_route("accounts-payable"));
+    }
 
     // --- find_font_paths: url() argument extraction --------------------
 

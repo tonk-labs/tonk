@@ -204,6 +204,7 @@ task!:
             format: Format::Notation,
             quiet: false,
             dry_run: true,
+            home: None,
         };
         let outcome = test
             .eval_inline_with(
@@ -270,6 +271,7 @@ blob!:
             format: Format::Notation,
             quiet: false,
             dry_run: true,
+            home: None,
         };
         let outcome = test
             .eval_inline_with("task:\n  this: ?t\n  title: ?title\n", dry_run)
@@ -289,6 +291,7 @@ mod when_reporting_errors {
     use anyhow::Result;
 
     use crate::common;
+    use tonk_cli::Coded;
 
     #[dialog_common::test]
     async fn it_exits_with_parse_error_on_malformed_yaml() -> Result<()> {
@@ -344,6 +347,7 @@ task!: &ax
                     format: Format::Notation,
                     quiet: false,
                     dry_run: false,
+                    home: None,
                 },
             )
             .await?;
@@ -419,48 +423,130 @@ mod when_introspecting_the_schema {
 }
 
 mod when_serving_the_guide {
+    use crate::common;
+    use tonk_cli::eval::{self, Source};
     use tonk_cli::guide;
 
+    #[derive(Debug)]
+    struct GuideYamlFence {
+        info: String,
+        body: String,
+        opening_line: usize,
+    }
+
+    fn guide_yaml_fences(topic: &str, body: &str) -> Vec<GuideYamlFence> {
+        let lines: Vec<_> = body.lines().collect();
+        let mut fences = Vec::new();
+        let mut index = 0;
+
+        while index < lines.len() {
+            let info = lines[index].trim_start();
+            if !info.starts_with("```yaml") {
+                index += 1;
+                continue;
+            }
+
+            let opening_line = index + 1;
+            let fence_info = info.trim_start_matches("```").to_string();
+            index += 1;
+            let body_start = index;
+            while index < lines.len() && lines[index].trim() != "```" {
+                index += 1;
+            }
+            assert!(
+                index < lines.len(),
+                "{topic}:{opening_line}: unterminated YAML fence"
+            );
+            fences.push(GuideYamlFence {
+                info: fence_info,
+                body: lines[body_start..index].join("\n"),
+                opening_line,
+            });
+            index += 1;
+        }
+
+        fences
+    }
+
     #[dialog_common::test]
-    fn it_returns_the_index_for_no_topic() {
-        let text = guide::resolve(None, None).expect("index resolves");
-        assert!(text.contains("tonk guide notation"));
+    async fn guide_notation_examples_are_classified_and_executable() {
+        for (topic, body) in [
+            ("notation", guide::NOTATION),
+            ("views", guide::VIEWS),
+            ("events", guide::EVENTS),
+        ] {
+            for fence in guide_yaml_fences(topic, body) {
+                let location = format!("{topic}:{}", fence.opening_line);
+                match fence.info.as_str() {
+                    "yaml tonk=parse" => {
+                        let parsed = tonk_notation::parse(&fence.body);
+                        assert!(
+                            parsed.diagnostics.is_empty(),
+                            "{location}: parse example has diagnostics: {:#?}",
+                            parsed.diagnostics
+                        );
+                    }
+                    "yaml tonk=eval" => {
+                        let test = common::TestSite::new().await.unwrap_or_else(|error| {
+                            panic!("{location}: create test site: {error}")
+                        });
+                        let outcome = eval::run_against_site(
+                            &test.site,
+                            Source::Inline(fence.body),
+                            eval::Options {
+                                dry_run: true,
+                                ..eval::Options::default()
+                            },
+                        )
+                        .await
+                        .unwrap_or_else(|error| panic!("{location}: eval example failed: {error}"));
+                        assert_eq!(
+                            outcome.response.revision_before, outcome.response.revision_after,
+                            "{location}: dry run changed the revision"
+                        );
+                        assert_eq!(
+                            outcome.response.commits.claims, 0,
+                            "{location}: dry run reported committed claims"
+                        );
+                    }
+                    info if info.starts_with("yaml tonk=illustrative-")
+                        && info.len() > "yaml tonk=illustrative-".len() => {}
+                    _ => panic!(
+                        "{location}: YAML fence must use tonk=eval, tonk=parse, or a specific tonk=illustrative-<reason> classification; got `{}`",
+                        fence.info
+                    ),
+                }
+            }
+        }
     }
 
     #[dialog_common::test]
     fn it_returns_each_topic_body() {
+        assert!(
+            guide::topic("glossary")
+                .unwrap()
+                .contains("content-addressed")
+        );
         assert!(guide::topic("notation").unwrap().contains("attribute!"));
+        assert!(guide::topic("spaces").unwrap().contains("TONK_SPACE"));
+        assert!(guide::topic("tutorial").unwrap().contains("tonk assert"));
+        assert!(guide::topic("sync").unwrap().contains("upstream"));
         assert!(guide::topic("views").unwrap().contains("tonk:view"));
         assert!(guide::topic("events").unwrap().contains("rule!"));
-        assert!(
-            guide::topic("workspace")
-                .unwrap()
-                .contains("view: tonk:view")
-        );
         assert!(guide::topic("bogus").is_none());
     }
 
     #[dialog_common::test]
     fn it_returns_the_full_guide_for_all() {
-        let all = guide::resolve(Some("all"), None).expect("all resolves");
-        assert!(all.starts_with("# Asserted-notation guide"));
-        assert_eq!(all, guide::GUIDE);
-    }
-
-    #[dialog_common::test]
-    fn it_concatenates_the_per_topic_bodies_into_the_full_guide() {
-        // `GUIDE` repeats the `include_str!` paths literally (concat!
-        // needs them), so it can silently drift from the per-topic
-        // consts. Pin it to the concatenation so a renamed/moved topic
-        // file updated in only one place fails here.
-        let expected = format!(
-            "{}\n{}\n{}\n{}",
-            guide::NOTATION,
-            guide::VIEWS,
-            guide::EVENTS,
-            guide::WORKSPACE,
-        );
-        assert_eq!(guide::GUIDE, expected);
+        assert!(guide::GUIDE.starts_with("# Glossary"));
+        for topic in guide::TOPICS {
+            let heading = guide::topic(topic)
+                .expect("topic body")
+                .lines()
+                .next()
+                .unwrap();
+            assert!(guide::GUIDE.contains(heading), "full guide omits {topic}");
+        }
     }
 
     #[dialog_common::test]
@@ -473,64 +559,252 @@ mod when_serving_the_guide {
             let body =
                 guide::topic(name).unwrap_or_else(|| panic!("advertised topic {name} has no body"));
             assert!(!body.is_empty(), "topic {name} is empty");
-            assert_eq!(
-                guide::resolve(Some(name), None).expect("topic resolves"),
-                body
-            );
-        }
-    }
-
-    #[dialog_common::test]
-    fn it_errors_on_an_unknown_topic() {
-        let err = guide::resolve(Some("nope"), None).expect_err("unknown rejects");
-        let message = err.to_string();
-        assert!(message.contains("nope"), "echoes the bad input");
-        assert!(message.contains("notation"), "lists a valid topic");
-        assert!(message.contains("all"), "advertises the `all` pseudo-topic");
-    }
-
-    #[dialog_common::test]
-    fn it_serves_every_advertised_element_under_views() {
-        // `ELEMENTS`, the `element()` match arms, the catalog table in
-        // guide-views.md, and the include_str! files are hand-synced.
-        // Drive off `ELEMENTS` so a name advertised without a body (or
-        // vice versa) is caught.
-        for name in guide::ELEMENTS {
-            let body = guide::element(name)
-                .unwrap_or_else(|| panic!("advertised element {name} has no body"));
-            assert!(!body.is_empty(), "element {name} is empty");
             assert!(
-                body.contains(name),
-                "element doc for {name} should mention the tag"
-            );
-            assert_eq!(
-                guide::resolve(Some("views"), Some(name)).expect("element resolves"),
-                body,
-                "`views {name}` should serve the element doc",
+                guide::description(name).is_some(),
+                "topic {name} lacks summary"
             );
         }
-        // tonk-table is the crate this work added; make sure it's wired.
-        assert!(guide::element("tonk-table").is_some());
+        assert!(guide::topic("bogus").is_none());
     }
 
     #[dialog_common::test]
-    fn it_errors_on_an_unknown_element() {
-        let err =
-            guide::resolve(Some("views"), Some("tonk-nope")).expect_err("unknown element rejects");
-        let message = err.to_string();
-        assert!(message.contains("tonk-nope"), "echoes the bad input");
-        assert!(message.contains("tonk-table"), "lists documented elements");
+    fn raw_view_examples_pin_the_entity_they_update() {
+        for (topic, body) in [("views", guide::VIEWS), ("events", guide::EVENTS)] {
+            let lines: Vec<_> = body.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if !line.starts_with("view") || !line.contains("!: &") {
+                    continue;
+                }
+                let pins_entity = lines[index + 1..]
+                    .iter()
+                    .take_while(|line| line.is_empty() || line.starts_with("  "))
+                    .any(|line| line.trim_start().starts_with("this:"));
+                assert!(
+                    pins_entity,
+                    "{topic} guide has an unstable raw view assertion: {line}"
+                );
+            }
+        }
+    }
+}
+
+mod when_rejecting_overlapping_transient_commands {
+    use anyhow::Result;
+    use tonk_cli::eval::{self, EvalError, Source};
+
+    use crate::common;
+
+    #[dialog_common::test]
+    async fn overlapping_transient_commands_fail_without_mutating() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let before = test.site.branch().await?.handle().revision();
+        let doc = r#"concept!: &toggle-result
+  with:
+    todo: { description: The todo, the: xyz.tonk.result/todo, as: entity }
+    checked: { description: The checked state, the: xyz.tonk.result/checked, as: boolean }
+
+concept!: &remove-result
+  with:
+    todo: { description: The todo, the: xyz.tonk.result/todo, as: entity }
+
+command!: &toggle-todo
+  with:
+    todo: { description: The todo, the: dom.event.current-target.dataset/todo, as: entity }
+    checked: { description: The checked state, the: dom.event.current-target/checked, as: boolean }
+
+command!: &remove-todo
+  with:
+    todo: { description: The todo, the: dom.event.current-target.dataset/todo, as: entity }
+
+rule!:
+  assert!: toggle-result
+  when:
+    - assert: toggle-todo
+      where: { this: ?this, todo: ?todo, checked: ?checked }
+
+rule!:
+  assert!: remove-result
+  when:
+    - assert: remove-todo
+      where: { this: ?this, todo: ?todo }
+"#;
+
+        let error = eval::run_against_site(
+            &test.site,
+            Source::Inline(doc.to_owned()),
+            eval::Options {
+                dry_run: true,
+                ..eval::Options::default()
+            },
+        )
+        .await
+        .expect_err("unsafe command shapes must fail analysis");
+        let EvalError::Analyze(message) = error else {
+            panic!("expected analyzer error, got {error}");
+        };
+        assert!(message.contains("toggle-todo"), "{message}");
+        assert!(message.contains("remove-todo"), "{message}");
+        assert_eq!(test.site.branch().await?.handle().revision(), before);
+        Ok(())
+    }
+}
+
+mod eval_home {
+    use anyhow::Result;
+    use tonk_cli::eval::{self, Source};
+
+    use crate::common;
+
+    const TODO_DIRECTORY_VIEW: &str = r#"view/directory!: &todo-directory
+  this: id:todo-directory
+  model: todo
+  display: |
+    <li>{title}</li>
+"#;
+
+    async fn seed_todo(test: &common::TestSite) -> Result<()> {
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "todo",
+            &["title:text:one".into()],
+            Some("a todo"),
+            Default::default(),
+        )
+        .await?;
+        tonk_cli::data_ops::assert_op(
+            &test.site,
+            "todo",
+            None,
+            &["--title".into(), "Write".into()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn render_home(test: &common::TestSite) -> Result<String> {
+        let replica = tonk_cli::data_ops::query(&test.site, "tonk/replica", false).await?;
+        let entity = replica
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("this: ").map(str::to_owned))
+            .expect("a fresh site has a replica entity");
+        let route = tonk_cli::render::RenderRoute::parse(&format!("{entity}@tonk/space"))?;
+        Ok(tonk_cli::render::render(&test.site, &route).await?)
     }
 
     #[dialog_common::test]
-    fn it_errors_when_a_plain_topic_is_given_an_item() {
-        // Only `views` takes a second argument.
-        let err = guide::resolve(Some("notation"), Some("x")).expect_err("rejects an item");
+    async fn it_installs_a_view_and_home_in_one_eval_commit() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        seed_todo(&test).await?;
+        let before = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("revision before eval home")
+            .edition
+            .value();
+
+        eval::run_against_site(
+            &test.site,
+            Source::Inline(TODO_DIRECTORY_VIEW.to_owned()),
+            eval::Options {
+                home: Some("todo".to_owned()),
+                ..eval::Options::default()
+            },
+        )
+        .await?;
+
+        let after = test
+            .site
+            .branch()
+            .await?
+            .handle()
+            .revision()
+            .expect("revision after eval home")
+            .edition
+            .value();
+        assert_eq!(after, before + 1, "view and home must share one commit");
+
+        let html = render_home(&test).await?;
         assert!(
-            err.to_string().contains("views"),
-            "points at the right form"
+            html.contains("Write"),
+            "eval home did not render todo:\n{html}"
         );
-        // A bogus topic with an item still reads as an unknown topic.
-        assert!(guide::resolve(Some("bogus"), Some("x")).is_err());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_a_home_concept_declared_in_the_same_document() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let doc = format!(
+            "concept!: &todo\n  with:\n    title: {{ description: The title, the: xyz.tonk.todo/title, as: text }}\n\ntodo!: &write\n  title: \"Write\"\n\n{TODO_DIRECTORY_VIEW}"
+        );
+        eval::run_against_site(
+            &test.site,
+            Source::Inline(doc),
+            eval::Options {
+                home: Some("todo".to_owned()),
+                ..eval::Options::default()
+            },
+        )
+        .await?;
+
+        let html = render_home(&test).await?;
+        assert!(html.contains("Write"), "same-document home failed:\n{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_previews_eval_home_without_mutating() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        seed_todo(&test).await?;
+        let before = test.site.branch().await?.handle().revision();
+
+        let outcome = eval::run_against_site(
+            &test.site,
+            Source::Inline(TODO_DIRECTORY_VIEW.to_owned()),
+            eval::Options {
+                dry_run: true,
+                home: Some("todo".to_owned()),
+                ..eval::Options::default()
+            },
+        )
+        .await?;
+
+        assert!(!outcome.committed);
+        assert_eq!(
+            outcome.response.revision_before,
+            outcome.response.revision_after
+        );
+        assert_eq!(test.site.branch().await?.handle().revision(), before);
+        let html = render_home(&test).await?;
+        assert!(
+            !html.contains("Write"),
+            "dry run replaced the home:\n{html}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_eval_home_for_an_unknown_concept_without_mutating() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        seed_todo(&test).await?;
+        let before = test.site.branch().await?.handle().revision();
+
+        let error = eval::run_against_site(
+            &test.site,
+            Source::Inline(TODO_DIRECTORY_VIEW.to_owned()),
+            eval::Options {
+                home: Some("missing".to_owned()),
+                ..eval::Options::default()
+            },
+        )
+        .await
+        .expect_err("an unknown home concept must fail analysis");
+
+        assert!(matches!(error, eval::EvalError::Analyze(_)), "{error}");
+        assert_eq!(test.site.branch().await?.handle().revision(), before);
+        Ok(())
     }
 }

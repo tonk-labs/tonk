@@ -64,9 +64,17 @@ pub mod sync;
 pub use sync::*;
 
 pub mod account;
-pub use account::{AccountDisplayName, AccountPasskeyCreated};
+pub use account::{
+    AccountCustomer, AccountDisplayName, AccountEncryptionKey, AccountPasskeyCreated, EmailStatus,
+    email_state,
+};
 
+pub mod custody;
+pub use custody::{CustodiedSeed, CustodyCell, SeedKind};
+
+pub mod device_link;
 pub mod replica;
+pub use device_link::*;
 pub use replica::*;
 
 pub mod repository;
@@ -83,7 +91,8 @@ pub use invitation_execution::*;
 
 pub mod command;
 
-pub mod branch;
+mod branch;
+pub mod directory;
 pub use branch::*;
 
 pub mod remote;
@@ -103,6 +112,9 @@ pub use site::{Route, Site};
 
 mod identity;
 pub use identity::{ProfileIdentity, ProfileName};
+
+mod roster;
+pub use roster::{RosterAccount, RosterEmail, RosterProfile};
 
 mod petname;
 pub use petname::petname;

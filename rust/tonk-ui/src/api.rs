@@ -1,12 +1,11 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
-use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
-    AccountDevice, AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus,
-    AccountSummary, ActivateProfileRequest, EvaluateResponse, IdentifyResponse, JoinRequest,
-    JoinResponse, MembershipResponse, ProfilesResponse, QueryResponse, RepositoryInfo,
-    RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse,
-    SyncStatusResponse,
+    AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDevice,
+    AccountLinkRequest, AccountStatus, AccountSummary, ActivateProfileRequest, EvaluateResponse,
+    HostedSpaceDeletionResult, IdentifyResponse, JoinRequest, JoinResponse, ProfilesResponse,
+    QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus,
+    SaveRootRequest, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -184,6 +183,30 @@ pub async fn evaluate(
 }
 
 /// Profile-side counterpart to [`evaluate`] — POSTs to
+/// Assert a claim on the profile's main branch.
+///
+/// The page's way of causing an effect: a transient lands, its command
+/// runs, and the outcome comes back as facts the page is subscribed to.
+/// Nothing is read from the answer beyond whether the commit landed.
+pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/profile/branch/main/transact", origin()))
+        .json(&claim)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/profile/branch/main/transact returned {status}: {text}"
+        )))
+    }
+}
+
 /// `/api/profile/branch/{branch}/evaluate`. Used by the profile
 /// view's editor so its requests don't get mis-routed through
 /// the named-repo namespace.
@@ -418,55 +441,6 @@ pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
     }
 }
 
-/// Open an audience-open invite as a bounded guest without provisioning a root.
-pub async fn visit(url: &str) -> Result<JoinResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/profile/visit", origin()))
-        .json(&JoinRequest {
-            url: url.to_string(),
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/profile/visit returned {}",
-            response.status()
-        )))
-    }
-}
-
-/// Read whether the current local replica is a guest or durable member.
-pub async fn membership(repo: &str) -> Result<MembershipResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    reqwest::Client::new()
-        .get(format!("{}/api/repository/{repo}/membership", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?
-        .error_for_status()
-        .map_err(into_api_error)?
-        .json()
-        .await
-        .map_err(into_api_error)
-}
-
-/// Promote a local guest visit to durable root membership.
-pub async fn join_guest(repo: &str) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    reqwest::Client::new()
-        .post(format!("{}/api/repository/{repo}/membership", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?
-        .error_for_status()
-        .map_err(into_api_error)?;
-    Ok(())
-}
-
 /// Fetches the current user's identity (DID) from the service worker.
 pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -497,6 +471,7 @@ pub async fn save_root(
     credential_id: String,
     delegation_hex: String,
     passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    encryption_key: Option<String>,
 ) -> Result<RootStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -505,6 +480,7 @@ pub async fn save_root(
             credential_id,
             delegation_hex,
             passkey,
+            encryption_key,
         })
         .send()
         .await
@@ -603,32 +579,6 @@ pub async fn save_account_link(
     }
 }
 
-/// Persist and hydrate the service-selected repository winner for a legacy link.
-pub async fn establish_local_account_repository(
-    descriptor_hex: String,
-    created: bool,
-) -> Result<AccountStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/repository/establish", origin()))
-        .json(&AccountRepositoryEstablishRequest {
-            descriptor_hex,
-            created,
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/account/repository/establish returned {status}: {text}"
-        )))
-    }
-}
-
 /// List the devices registered under the linked account.
 pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -667,9 +617,121 @@ pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
     }
 }
 
+/// Commit the authoritative display name for the active account/profile.
+pub async fn set_account_display_name(name: &str) -> Result<String, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/display-name", origin()))
+        .json(&tonk_worker_api::AccountDisplayNameRequest {
+            name: name.to_owned(),
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response
+            .json::<tonk_worker_api::AccountDisplayNameResponse>()
+            .await
+            .map(|response| response.name)
+            .map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(display_name_error(status, &text))
+    }
+}
+
+fn display_name_error(status: reqwest::StatusCode, text: &str) -> TonkUiError {
+    match serde_json::from_str::<ErrorBody>(text) {
+        Ok(body) if body.error.kind == "account_state_unavailable" => TonkUiError::Account(
+            "Please verify your email using the verification link we sent before changing your display name."
+                .to_owned(),
+        ),
+        _ => TonkUiError::ApiError(format!(
+            "POST /api/account/display-name returned {status}: {text}"
+        )),
+    }
+}
+
 /// Register a freshly authorized device in the account service's
 /// registry, through this browser's own membership. Answers the service's
 /// JSON, which carries the issued `attachmentId`.
+/// Provision a custody space under this profile's account: the page
+/// ran the enrollment ceremony, the worker deposits the consent
+/// through `/provider/add`.
+pub async fn provision_custody(custody: &str, consent_hex: &str) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/custody/provision", origin()))
+        .json(&serde_json::json!({
+            "custody": custody,
+            "consentHex": consent_hex,
+        }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/custody/provision returned {status}: {text}"
+        )))
+    }
+}
+
+/// The work queued until the account confirms its email, so the page
+/// can run the parts only it can sign.
+pub async fn pending_work() -> Result<tonk_account::pending::PendingQueue, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/customer/pending", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/customer/pending returned {status}: {text}"
+        )))
+    }
+}
+
+/// Queue a custody cell that could not be published yet, so it is
+/// republished once provisioning and email activation let it through.
+pub async fn queue_custody_publish(
+    custody: &str,
+    sealed_hex: &str,
+    invocation_hex: &str,
+) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/custody/queue", origin()))
+        .json(&serde_json::json!({
+            "custody": custody,
+            "sealedHex": sealed_hex,
+            "invocationHex": invocation_hex,
+        }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/custody/queue returned {status}: {text}"
+        )))
+    }
+}
+
+/// Register a device with the account service through the worker, so a
+/// grant recipient is already listed before its delegation is delivered.
 pub async fn register_account_device(
     did: &str,
     name: &str,
@@ -698,21 +760,15 @@ pub async fn register_account_device(
 }
 
 /// Revoke one of the account's devices and return the canonical publication
-/// acknowledgement. Refreshing the mutable device list is a separate,
-/// best-effort operation.
+/// acknowledgement. Refreshing the device list is a separate, best-effort
+/// operation.
 pub async fn revoke_account_device(
-    attachment_id: String,
     did: String,
-    revocation: String,
 ) -> Result<RevokeDeviceAcknowledgement, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))
-        .json(&RevokeDeviceRequest {
-            attachment_id,
-            did,
-            revocation,
-        })
+        .json(&RevokeDeviceRequest { did })
         .send()
         .await
         .map_err(into_api_error)?;
@@ -746,6 +802,31 @@ pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
     }
 }
 
+/// Record an activation receipt with the worker.
+///
+/// The activation page posts the emailed invocation straight to the
+/// service, so the receipt — and the provider address it names — never
+/// passes through the worker. This hands it over, so the registration
+/// fact reflects activation the moment it happens.
+pub async fn report_activation(receipt: &serde_json::Value) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/customer/activated", origin()))
+        .json(receipt)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/customer/activated returned {status}: {text}"
+        )))
+    }
+}
+
 /// Swap the worker onto another roster profile. The caller reloads the
 /// page afterwards so every surface re-renders the new profile.
 pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkUiError> {
@@ -767,8 +848,9 @@ pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkU
     }
 }
 
-/// Rotate onto a fresh profile — the landing pad the normal sign-in
-/// ceremony then runs on. The caller reloads the page afterwards.
+/// Rotate onto a fresh profile — the landing pad the account ceremony then
+/// runs on. Call this only when Create or Log in is actually submitted;
+/// opening the account choice must remain reversible navigation.
 pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -787,7 +869,7 @@ pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
     }
 }
 
-/// Sign out on this device while preserving its local profile and spots.
+/// Sign out on this device while preserving its local profile and spaces.
 pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -802,6 +884,69 @@ pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "DELETE /api/account returned {status}: {text}"
+        )))
+    }
+}
+
+/// Load the exact, service-authoritative destructive scope for review.
+pub async fn account_deletion_plan() -> Result<AccountDeletionPlan, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/account/deletion/plan", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/account/deletion/plan returned {status}: {text}"
+        )))
+    }
+}
+
+/// Execute the root-signed destructive plan in service-safe order.
+pub async fn delete_account(
+    request: &AccountDeletionRequest,
+) -> Result<AccountDeletionResult, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/delete", origin()))
+        .json(request)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/delete returned {status}: {text}"
+        )))
+    }
+}
+
+/// Permanently delete one owned hosted space without deleting the account.
+pub async fn delete_owned_space(
+    request: &tonk_worker_api::AccountSpaceDeletionRequest,
+) -> Result<HostedSpaceDeletionResult, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/spaces/delete", origin()))
+        .json(request)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/spaces/delete returned {status}: {text}"
         )))
     }
 }
@@ -898,30 +1043,6 @@ pub async fn submit_account_ceremony(
     }
 }
 
-/// Resolve a pending CLI handoff using its raw fragment secret.
-pub async fn resolve_account_link(
-    service: &str,
-    secret: &str,
-) -> Result<ResolvedLink, TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!("{}/links/resolve", service.trim_end_matches('/')))
-        .json(&LinkSecretRequest {
-            secret: secret.to_string(),
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /links/resolve returned {status}: {text}"
-        )))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,5 +1077,19 @@ mod tests {
             error.to_string(),
             "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
         );
+    }
+
+    #[test]
+    fn it_explains_email_verification_for_an_unavailable_account_name() {
+        let error = display_name_error(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"kind":"account_state_unavailable","message":"Finish or retry account setup at /account before changing the linked account name"}}"#,
+        );
+        let message = error.to_string();
+
+        assert!(message.contains("verification link"));
+        assert!(message.contains("verify your email"));
+        assert!(!message.contains("503 Service Unavailable"));
+        assert!(!message.contains("account_state_unavailable"));
     }
 }

@@ -1,6 +1,6 @@
 //! End-to-end check of the paths the dialog migration rewrote.
 //!
-//! A real spot on real storage: the standard library seeds at repo
+//! A real space on real storage: the standard library seeds at repo
 //! creation, a rule installs and fires at commit time through dialog's
 //! native induction, and the command that triggered it leaves no trace.
 //! This is the headless equivalent of clicking through a running
@@ -76,8 +76,10 @@ concept!: &pong
         .eval_inline("pong:\n  this: ?this\n  tag: ?tag\n")
         .await?
         .stdout;
+    // The rendered field, not a bare `hi`: a revision id is base58 and can
+    // spell that by chance.
     assert!(
-        pong.contains("hi"),
+        pong.contains("tag: \"hi\""),
         "the rule must derive a durable pong from the ping command; saw:\n{pong}"
     );
 
@@ -87,7 +89,7 @@ concept!: &pong
         .await?
         .stdout;
     assert!(
-        !ping.contains("hi"),
+        !ping.contains("tag: \"hi\""),
         "a command must not persist past the commit that dispatched it; saw:\n{ping}"
     );
 

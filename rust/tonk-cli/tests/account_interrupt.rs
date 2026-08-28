@@ -20,23 +20,23 @@ fn binary() -> std::path::PathBuf {
 
 fn spawn_link(home: &std::path::Path) -> Child {
     Command::new(binary())
-        .args(["account", "link", "--no-open"])
+        .args(["account", "login", "--no-open"])
         .current_dir(home)
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join("data"))
-        .env("TONK_SPOTS_STATE", home.join("spots"))
+        .env("TONK_SPACES_STATE", home.join("spaces"))
         .env("TONK_TELEMETRY_STATE", home.join("telemetry"))
         .env("TONK_UPDATE_STATE", home.join("update"))
         .env("TONK_NO_UPDATE_CHECK", "1")
         .env("DO_NOT_TRACK", "1")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env_remove("TONK_TELEMETRY")
-        .env_remove("TONK_SPOT")
+        .env_remove("TONK_SPACE")
         .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("start tonk account link")
+        .expect("start tonk account login")
 }
 
 /// The approval URL the command prints, without blocking the test forever
@@ -54,9 +54,19 @@ fn approval_url(child: &mut Child) -> String {
             }
         }
     });
-    url_rx
-        .recv_timeout(Duration::from_secs(30))
-        .expect("account link prints an approval URL")
+    match url_rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(url) => url,
+        Err(error) => {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .take()
+                .expect("piped stderr")
+                .read_to_string(&mut stderr)
+                .expect("read stderr");
+            panic!("account link prints an approval URL: {error}; stderr: {stderr}")
+        }
+    }
 }
 
 /// SIGINT a command already inside its callback wait and return its stderr.
@@ -69,7 +79,7 @@ fn interrupt(child: &mut Child) -> String {
     let status = wait_for_exit(child, Duration::from_secs(5)).unwrap_or_else(|| {
         child.kill().expect("kill stuck tonk process");
         child.wait().expect("reap stuck tonk process");
-        panic!("tonk account link stayed alive after SIGINT");
+        panic!("tonk account login stayed alive after SIGINT");
     });
     let mut stderr = String::new();
     child
@@ -111,7 +121,7 @@ fn account_link_can_be_interrupted_during_the_callback_wait() {
     let stderr = interrupt(&mut child);
 
     assert!(
-        stderr.contains("account link cancelled"),
+        stderr.contains("account login cancelled"),
         "stderr: {stderr}"
     );
 }

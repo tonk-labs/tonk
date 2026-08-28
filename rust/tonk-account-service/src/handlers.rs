@@ -7,17 +7,11 @@ pub mod info;
 #[cfg(target_arch = "wasm32")]
 pub mod accounts;
 #[cfg(target_arch = "wasm32")]
-pub mod chains;
-#[cfg(target_arch = "wasm32")]
 pub mod codes;
 #[cfg(target_arch = "wasm32")]
 pub mod devices;
 #[cfg(target_arch = "wasm32")]
-pub mod links;
-#[cfg(target_arch = "wasm32")]
 pub mod repository;
-#[cfg(target_arch = "wasm32")]
-pub mod revocations;
 
 /// Add CORS headers permitting cross-origin requests to a response.
 #[cfg(target_arch = "wasm32")]
@@ -26,10 +20,7 @@ pub fn with_cors_headers(response: worker::Response) -> worker::Response {
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
-    let _ = headers.set(
-        "Access-Control-Expose-Headers",
-        "Content-Type, X-Tonk-Account-Spots",
-    );
+    let _ = headers.set("Access-Control-Expose-Headers", "Content-Type");
     response.with_headers(headers)
 }
 
@@ -95,34 +86,6 @@ pub fn build_store(
     Ok(crate::store::d1::D1Store::new(db))
 }
 
-/// Build a [`crate::chains::r2::R2ChainStore`] from the worker
-/// environment's `CHAINS` binding.
-///
-/// A missing binding is a deployment/config error, not something a
-/// caller can act on: the detail is logged and never put on the wire.
-#[cfg(target_arch = "wasm32")]
-pub fn build_chains(
-    ctx: &worker::RouteContext<()>,
-) -> std::result::Result<crate::chains::r2::R2ChainStore, crate::error::ServiceError> {
-    let bucket = ctx.bucket("CHAINS").map_err(|err| {
-        worker::console_error!("missing R2 binding: {err}");
-        crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
-    })?;
-    Ok(crate::chains::r2::R2ChainStore::new(bucket))
-}
-
-/// Build the immutable revocation writer from the `REVOCATIONS` binding.
-#[cfg(target_arch = "wasm32")]
-pub fn build_revocations(
-    ctx: &worker::RouteContext<()>,
-) -> std::result::Result<crate::revocations::r2::R2RevocationStore, crate::error::ServiceError> {
-    let bucket = ctx.bucket("REVOCATIONS").map_err(|err| {
-        worker::console_error!("missing REVOCATIONS binding: {err}");
-        crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
-    })?;
-    Ok(crate::revocations::r2::R2RevocationStore::new(bucket))
-}
-
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::ceremony_error;
@@ -131,9 +94,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_hides_internal_detail_from_the_wire() {
-        let err = ceremony_error(CeremonyError::Internal(
-            "R2 bucket 'tonk-account-chains' unreachable".into(),
-        ));
+        let err = ceremony_error(CeremonyError::Internal("R2 bucket unreachable".into()));
         assert_eq!(err.code, ErrorCode::InternalError);
         assert_eq!(err.message, "internal error");
     }
