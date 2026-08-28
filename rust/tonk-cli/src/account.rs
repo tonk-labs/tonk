@@ -1830,8 +1830,16 @@ mod tests {
 
         let (profile, operator) = fixture.reopen().await;
         let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+        // A deadlock guard, not a stopwatch. Waiting for a browser
+        // means waiting on the announcement channel forever, which no
+        // budget rescues — `assert_no_browser_announcement` below is
+        // what actually proves recovery took the durable generation.
+        // At one second this was measuring how loaded the machine was:
+        // reopening the store, deriving keys and loading the guarded
+        // state is real work, and it failed in a full `--lib` run while
+        // passing alone.
         let outcome = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(30),
             link_with_operator(&profile, &operator, &fixture.options(Some(announce))),
         )
         .await
