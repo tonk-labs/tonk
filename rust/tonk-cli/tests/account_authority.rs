@@ -377,10 +377,13 @@ async fn it_syncs_a_claimed_space_after_linking_an_account(
         tonk_cli::invite::claim(&joined_root, &invitation.url, production_config.clone()).await?;
 
     let joined = TonkSite::open_with(&joined_root, production_config.clone()).await?;
-    assert_eq!(
-        tonk_cli::site::member_did(&joined).await?,
+    // The pre-link claim terminates at the ONBOARDING account: durable
+    // before any passkey, and carried forward by the sign-in union.
+    let member = tonk_cli::site::member_did(&joined).await?;
+    assert_ne!(
+        member,
         joined.profile.did(),
-        "the pre-link invite must terminate at the persistent profile"
+        "the pre-link invite terminates at the onboarding account, not the bare profile"
     );
     let page = common::authorizing_page(account_owner.root_signer().await?, remote.clone()).await?;
     let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
@@ -875,14 +878,17 @@ async fn it_custodies_the_created_space_seed() -> Result<()> {
     Ok(())
 }
 
-/// A space created before the account existed moves under the account's
-/// custody at sign-in: authority reaches the root and the seed is
-/// sealed to the account's key. Hosting does not move — that stays
+/// Sign-in moves custody with two passes. The shared rotation core
+/// rotates whatever the onboarding account sealed (here the fixture's
+/// pre-account site, created before any root existed) and retires the
+/// onboarding account; the legacy walk then exports spaces that predate
+/// custody rows entirely — "premade", created with a root recorded but
+/// no account gate. Hosting moves in neither pass; that stays
 /// `tonk space link`'s boundary.
 #[dialog_common::test]
 async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
     use dialog_query::{Output as _, Query, Term};
-    use tonk_cli::custody::{Accreditation, accredit_local_spaces};
+    use tonk_cli::custody::{SpaceRotation, rotate_from_onboarding, rotate_local_spaces};
     use tonk_schema::{CustodiedSeed, prelude::DidExt as _};
 
     let fixture = common::AccountFixture::new().await?;
@@ -897,12 +903,20 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
         tonk_cli::space::create(&fixture.store, "premade", None, None, local_config).await?;
     let subject: dialog_varsig::Did = created.did.parse()?;
 
-    let outcomes = accredit_local_spaces(&fixture.store, &fixture.config).await?;
+    // The login sequence: the shared core rotates the onboarding-sealed
+    // seeds, then the legacy walk covers anything without a custody row.
+    // The fixture's attach recorded a root before this create, so
+    // "premade" is the LEGACY shape: root-delegated, no custody row.
+    // The rotation pass moves the genuinely onboarding-custodied seed
+    // (the fixture's pre-account site) and the walk exports this one.
+    let failures = rotate_from_onboarding(&fixture.store, &fixture.config).await?;
+    assert!(failures.is_empty(), "rotation completes: {failures:?}");
+    let outcomes = rotate_local_spaces(&fixture.store, &fixture.config).await?;
     assert!(
         outcomes
             .iter()
-            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Moved)),
-        "sign-in moves the local space's custody: {outcomes:?}"
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, SpaceRotation::Moved)),
+        "the walk moves the legacy space: {outcomes:?}"
     );
 
     let account_operator =
@@ -947,12 +961,18 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
         "the custodied seed derives the space"
     );
 
-    // Running again converges: nothing is moved twice.
-    let again = accredit_local_spaces(&fixture.store, &fixture.config).await?;
+    // Running again converges: the onboarding account is retired, so
+    // the rotation finds nothing, and the walk still reports the row.
+    let failures = rotate_from_onboarding(&fixture.store, &fixture.config).await?;
+    assert!(
+        failures.is_empty(),
+        "a second rotation is a no-op: {failures:?}"
+    );
+    let again = rotate_local_spaces(&fixture.store, &fixture.config).await?;
     assert!(
         again
             .iter()
-            .any(|(name, outcome)| name == "premade" && matches!(outcome, Accreditation::Already)),
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, SpaceRotation::Already)),
         "a second sign-in finds custody already moved: {again:?}"
     );
     Ok(())

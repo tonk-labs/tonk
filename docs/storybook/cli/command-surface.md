@@ -82,7 +82,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | `identity [--reset]` | `CLI-04` | Missing/existing profile; reset with account/spaces; durability and recovery guidance. |
 | `account`, `account --json`, `account status [--json]` | `ACCT-C01` | Every local account/session state, offline, malformed/versioned state, human/JSON. |
 | `account sync` | `ACCT-C09` | Unconfigured/unhydrated/ready, offline/timeout/revoked/diverged. |
-| `account login [--name] [--no-open] [--via]` | `ACCT-C02`–`ACCT-C07` | Default/direct page, TTY/pipe, browser states, approve/decline/cancel, every crash stage. |
+| `account login [--name] [--no-open] [--via]` | `ACCT-C02`–`ACCT-C07` | Default/direct page, TTY/pipe, browser states, approve/decline/cancel, no/pre-account onboarding state, created/claimed/legacy spaces, per-subject rotation warning, every crash stage. |
 | `account logout` | `ACCT-C08` | Active/pending/signed out, provider online/offline, lock/concurrency/crash. |
 | `account delete [--no-open]` | `ACCT-C12`, `AUTH-05` | Browser open failure, safe review URL, stale/deleted account, no direct mutation. |
 | `account space`, `account space --json` | `SPACE-11` | Empty/owned/joined/duplicates/offline/stale, human/JSON. |
@@ -168,6 +168,11 @@ JSON/notation/stdout data must not be contaminated by warnings or update
 notices. Remote timeouts must be bounded and leave a state that status can
 explain.
 
+Account login has a post-activation reconciliation stage. It rotates
+pre-account created-space custody, walks legacy local spaces, and reports each
+unfinished subject on stderr. A native invite-seed rotation is an explicit
+browser boundary, not permission to discard the onboarding account.
+
 ### Settle
 
 The command selects its exit code from the product result, not from whether a
@@ -179,6 +184,10 @@ For a local commit followed by push failure, settle is not a generic failure:
 the local branch is ahead and the output names `tonk push` or later automatic
 sync as recovery. For response-lost-after-remote-commit, settle is unknown until
 status/reconciliation, and a rerun must be idempotent.
+
+Account login may settle with an active account and a rotation warning. A
+rerun must preserve repository subjects and data, avoid repeating completed
+custody moves, and retry only work whose authority is still unresolved.
 
 ## Modifiers
 
@@ -267,3 +276,4 @@ that may embed secrets.
 - Run signal and broken-pipe fault tests around every mutating command family.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
+Onboarding-account addendum pinned to Tonk commit `b564e83b1`.

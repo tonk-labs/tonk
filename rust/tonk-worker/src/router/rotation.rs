@@ -1,4 +1,4 @@
-//! Accreditation: moving everything the onboarding account custodies to
+//! Account rotation: moving everything the onboarding account custodies to
 //! the passkey account, then retiring the onboarding account.
 //!
 //! A device holds an onboarding account from first boot. Spaces it
@@ -23,10 +23,10 @@ use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::{Did, Principal as _};
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
-use tonk_identity::sealed::{EncryptionKey, RecipientKey, Sealed};
-use tonk_schema::{
-    CustodiedSeed, InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _,
-};
+use tonk_identity::sealed::RecipientKey;
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+use tonk_schema::CustodiedSeed;
+use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _};
 
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
@@ -48,7 +48,6 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
         return;
     };
     let old_key = secret.encryption_key();
-    let old_recipient = old_key.recipient().did();
     // The published fact is the account's word; the root record is the
     // ceremony's. Either names the same recipient, and the record is
     // available even while the account repository is still unhydrated
@@ -60,48 +59,96 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
             Ok(None) => match root.encryption_key.clone() {
                 Some(recipient) => recipient,
                 None => {
-                    log!("accreditation deferred: the account has no encryption key");
+                    log!("account rotation deferred: the account has no encryption key");
                     return;
                 }
             },
             Err(error) => {
-                log!("accreditation deferred: {error}");
+                log!("account rotation deferred: {error}");
                 return;
             }
         };
     let new_key = match RecipientKey::from_did(&new_recipient) {
         Ok(key) => key,
         Err(error) => {
-            log!("accreditation deferred: {error}");
+            log!("account rotation deferred: {error}");
             return;
         }
     };
 
-    let rows = match sealed_to(tonk, &old_recipient).await {
-        Ok(rows) => rows,
+    let branch = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
         Err(error) => {
-            log!("accreditation deferred: {error}");
+            log!("account rotation deferred: open profile main: {error}");
             return;
         }
     };
-    let mut remaining = 0;
-    for row in rows {
-        match rotate_seed(tonk, &root.root_did, &onboarding, &old_key, &new_key, &row).await {
-            Ok(subject) => log!("accreditation: {subject} re-issued to the account"),
-            Err(error) => {
-                remaining += 1;
-                log!("accreditation: a seed was not rotated: {error}");
+    // The rotation itself is the shared core (`tonk_schema::custody::
+    // rotate`), the same one the CLI runs at sign-in; only the re-issue
+    // half — chains, prefixes, retention, provisioning — is this
+    // adapter's.
+    let outcome = match tonk_schema::custody::rotate(
+        branch.handle(),
+        &old_key,
+        &new_key,
+        &tonk.operator,
+        async |kind, signer, row, replacement| {
+            match kind {
+                SeedKind::Space => reissue_space(tonk, &root.root_did, signer)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                SeedKind::Invite => reissue_membership(tonk, &root.root_did, &onboarding, signer)
+                    .await
+                    .map_err(|error| error.to_string())?,
             }
+            // The replacement commits through a fresh handle: the
+            // re-issue writes above advanced the branch underneath any
+            // handle held across them.
+            tonk.reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .transaction()
+                .retract(row.clone())
+                .assert(replacement)
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("reseal commit: {error}"))
+        },
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            log!("account rotation deferred: {error}");
+            return;
         }
+    };
+    for subject in &outcome.rotated {
+        log!("rotation: {subject} re-issued to the account");
     }
-    if remaining > 0 {
-        log!("accreditation: {remaining} seed(s) still under the onboarding account");
+    for (subject, reason) in &outcome.failures {
+        log!("rotation: {subject} was not rotated: {reason}");
+    }
+    if !outcome.failures.is_empty() {
+        log!(
+            "rotation: {} seed(s) still under the onboarding account",
+            outcome.failures.len()
+        );
         return;
     }
     retire_onboarding(tonk, &onboarding).await;
 }
 
 /// Every custodied seed sealed to `recipient`.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 async fn sealed_to(
     tonk: &TonkState,
     recipient: &Did,
@@ -128,75 +175,6 @@ async fn sealed_to(
         .try_vec()
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("read custodied seeds: {error:?}")))
-}
-
-/// Open one seed with the onboarding key, re-issue what it derives to
-/// the root, re-seal it to the account, and replace the row.
-async fn rotate_seed(
-    tonk: &TonkState,
-    root: &Did,
-    onboarding: &Did,
-    old_key: &EncryptionKey,
-    new_key: &RecipientKey,
-    row: &CustodiedSeed,
-) -> Result<Did, TonkWorkerError> {
-    let subject: Did = row
-        .subject
-        .0
-        .to_string()
-        .parse()
-        .map_err(|error| TonkWorkerError::Internal(format!("custodied subject: {error}")))?;
-    let sealed = Sealed::decode(&row.sealed.0)
-        .map_err(|error| TonkWorkerError::Internal(format!("{subject}: {error}")))?;
-    let seed = old_key
-        .open(&sealed, &subject)
-        .map_err(|error| TonkWorkerError::Internal(format!("{subject}: {error}")))?;
-    let signer = Ed25519Signer::import(&*seed)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("{subject}: {error}")))?;
-    if signer.did() != subject {
-        return Err(TonkWorkerError::Internal(format!(
-            "{subject}: the custodied seed derives {}",
-            signer.did()
-        )));
-    }
-
-    let kind = row.kind.0.to_string();
-    if kind == SeedKind::SPACE {
-        reissue_space(tonk, root, signer).await?;
-    } else if kind == SeedKind::INVITE {
-        reissue_membership(tonk, root, onboarding, signer).await?;
-    } else {
-        return Err(TonkWorkerError::Internal(format!(
-            "{subject}: unknown seed kind {kind}"
-        )));
-    }
-
-    let resealed = new_key
-        .seal(&seed, &subject)
-        .map_err(|error| TonkWorkerError::Internal(format!("{subject}: reseal: {error}")))?
-        .encode();
-    let kind = if kind == SeedKind::SPACE {
-        SeedKind::Space
-    } else {
-        SeedKind::Invite
-    };
-    tonk.reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .transaction()
-        .retract(row.clone())
-        .assert(CustodiedSeed::new(
-            subject.clone(),
-            kind,
-            new_key.did(),
-            resealed,
-        ))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("{subject}: reseal commit: {error}")))?;
-    Ok(subject)
 }
 
 /// Mint `space -> root` from the space's own signer and install it the
@@ -578,7 +556,7 @@ async fn retire_onboarding(tonk: &TonkState, onboarding: &Did) {
         log!("onboarding facts not retracted: {error}");
     }
     match crate::onboarding::retire(tonk).await {
-        Ok(()) => log!("accreditation complete: onboarding account {onboarding} retired"),
+        Ok(()) => log!("account rotation complete: onboarding account {onboarding} retired"),
         Err(error) => log!("onboarding account {onboarding} not retired: {error}"),
     }
 }
