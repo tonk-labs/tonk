@@ -69,6 +69,7 @@ impl Refusal {
                 AuthorizeError::UnprovenSubject { .. }
                 | AuthorizeError::CommandEscalation { .. }
                 | AuthorizeError::PolicyViolation { .. }
+                | AuthorizeError::Declined { .. }
                 | AuthorizeError::Revoked { .. } => 403,
                 AuthorizeError::Malformed { .. } | AuthorizeError::UnavailableProof { .. } => 400,
                 AuthorizeError::Unavailable { .. } => 503,

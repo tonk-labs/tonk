@@ -67,6 +67,13 @@ fn fold_group(conclusions: Vec<Conclusion>) -> Conclusion {
     for row in iter {
         for (name, value) in row.fields {
             let bucket = per_field.entry(name).or_default();
+            // A keyed-collection field holds one `{key: value}` entry
+            // per row; entries merge into one map keyed by the
+            // collection's own keys, rather than accumulating a list.
+            if let (Some(Ipld::Map(entries)), Ipld::Map(entry)) = (bucket.last_mut(), &value) {
+                entries.extend(entry.clone());
+                continue;
+            }
             if !bucket.iter().any(|existing| existing == &value) {
                 bucket.push(value);
             }
@@ -119,6 +126,23 @@ mod tests {
     /// a one-element frame.
     fn fold_one(rows: Vec<Conclusion>) -> Option<Conclusion> {
         select_rows(rows).into_iter().next()
+    }
+
+    /// A keyed-collection field arrives as one `{key: value}` entry
+    /// per row; the fold merges them into one map keyed by the
+    /// collection's own keys, which for positions is list order.
+    #[dialog_common::test]
+    fn it_merges_collection_entries_by_key() {
+        let rows = vec![
+            conclusion("did:key:zX", &[("block", json!({"N5": "second"}))]),
+            conclusion("did:key:zX", &[("block", json!({"N": "first"}))]),
+        ];
+        let folded = fold_one(rows).expect("rows fold");
+        assert_eq!(
+            folded.fields.get("block"),
+            Some(&ipld(json!({"N": "first", "N5": "second"}))),
+            "entries merge into one map, in key order"
+        );
     }
 
     #[dialog_common::test]

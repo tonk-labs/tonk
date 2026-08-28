@@ -991,6 +991,10 @@ fn collect_keyed_values(value: Option<Ipld>, entity_key: &str) -> Vec<(String, I
     match value {
         None | Some(Ipld::Null) => Vec::new(),
         Some(Ipld::List(items)) => items.into_iter().map(|v| (key_for(&v), v)).collect(),
+        // A keyed collection: one row per entry, keyed by the entry's
+        // own key, so a re-render after an insert keeps every other
+        // row in place.
+        Some(Ipld::Map(entries)) => entries.into_iter().collect(),
         Some(v) => vec![(entity_key.to_owned(), v)],
     }
 }

@@ -36,6 +36,49 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
 /// field declared `as: unsigned-integer` needs schema-directed
 /// coercion. Pass `None` for slots with no declared type (`this`,
 /// claim attributes, formula operands).
+/// Lower a keyed-collection field's value to its `(key, value)`
+/// terms. The entry form `{?key: ?value}` binds both halves: a
+/// `?var` key is a variable, `_` a blank, anything else a literal
+/// key. A bare value binds every entry with the key left blank.
+pub(crate) fn collection_entry_terms(
+    field_name: &str,
+    value: &FieldValue,
+    range: lsp_types::Range,
+    scope: &Scope,
+    analysis: &Working,
+    expected: Option<Type>,
+) -> Result<(Term<dialog_query::Any>, Term<dialog_query::Any>), AnalyzeError> {
+    let FieldValue::Nested(inner) = value else {
+        let value = field_value_to_term(field_name, value, range, scope, analysis, expected)?;
+        return Ok((Term::<dialog_query::Any>::blank(), value));
+    };
+    let [entry] = inner.as_slice() else {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::UnsupportedFieldValue {
+                field: field_name.into(),
+                form: "a collection entry is one `{key: value}` pair",
+            },
+            range,
+        ));
+    };
+    let key = match entry.name.as_str() {
+        "_" => Term::<dialog_query::Any>::blank(),
+        name => match name.strip_prefix('?') {
+            Some(variable) => Term::<dialog_query::Any>::var(variable),
+            None => Term::Constant(Value::String(name.to_owned())),
+        },
+    };
+    let value = field_value_to_term(
+        field_name,
+        &entry.value,
+        entry.value_range,
+        scope,
+        analysis,
+        expected,
+    )?;
+    Ok((key, value))
+}
+
 pub(crate) fn field_value_to_term(
     field_name: &str,
     value: &FieldValue,
