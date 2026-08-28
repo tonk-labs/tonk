@@ -107,11 +107,19 @@ CLI usage errors, help, an already-active CLI login attempt, and confirmation
 declines exit before opening or changing account authority. Repeating logout
 while already signed out is an idempotent local success.
 
-Current duplicate-email behavior is a surprising exception. The fresh account
-path creates a passkey before the authoritative account insertion reports that
-the email already exists. The form remains available for another address, but
-the failed attempt has left one credential in the authenticator. The existing
-browser E2E test asserts that result.
+The address now decides which ceremony runs, so there is no duplicate-email
+exception to describe. The panel no longer opens on a Create/Log in fork the
+person can answer wrongly: 600ms after typing stops, the button names the
+ceremony that follows. A known address routes to sign-in and creates no
+credential; an unknown one creates exactly one. The browser E2E tests assert
+both, replacing the test that asserted an orphaned passkey per failed attempt.
+
+The same `account/check-email` command and `EmailStatus` fact answer this at
+the front door and in the share dialog, so one place names the states. A
+service that cannot be reached reads as `unavailable` rather than as an
+address nobody has registered, which previously sent people into a creation
+ceremony that failed at the end; no action is offered for a state that is not
+a fact about the address.
 
 ### Cross a boundary
 
@@ -147,8 +155,22 @@ provisioning, hydration, and sync are separate stages; an earlier stage can have
 committed when a later one fails.
 
 Activation shows “Activating…” until the `/ucan/` request returns. A successful
-activation receipt may still fail to record locally; the next status probe is
-expected to recover that observation.
+activation receipt may still fail to record locally, and nothing polls to
+recover that observation. The account space is already in the sync loop, and
+while the customer is unactivated every push it makes is refused; activation
+is that refusal clearing, so the drain already carries the answer. Both
+directions are read, not only the clearing one: an account suspended after it
+was active is refused where it used to be served, and a status that only moved
+forward would leave every device believing it still syncs. The waiting screen
+therefore notices a confirmation opened on another device, which is where these
+links are usually opened.
+
+> Technical note: for a client to act on a refusal it has to say which state it
+> names. dialog `tonk-2026-08-27` adds `AuthorizeError::Declined { recourse,
+> reason }`, where the reason stays the responder's own opaque words and the
+> only structured part is whether retrying can help. The registration row reads
+> the resulting fact through a subscription rather than a fetch, so an
+> activation performed anywhere repaints every open tab.
 
 CLI login waits on a loopback callback and Ctrl-C concurrently. After browser
 approval, it validates the returned grant before writing it, then writes the
@@ -259,8 +281,6 @@ context and should not be logged beyond what the user explicitly sees.
 
 ## Open questions and verification
 
-- Decide whether duplicate-email passkey creation is intentional current
-  product behavior or a regression from the completed preflight contract.
 - Define the exact user contract for browser reload after the root is saved but
   before remote account creation or local attachment settles.
 - Finish native recovery around the implemented post-callback `Activating` and

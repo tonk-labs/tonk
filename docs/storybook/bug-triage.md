@@ -8,8 +8,8 @@ stale design contract before implementation work begins.
 
 ## Summary
 
-Six findings remain after merging related observations: four high and two
-medium. The high findings share one theme: a user-visible account transition can
+Five findings remain after merging related observations: three high and two
+medium; `B-02` is fixed and kept for its history. The high findings share one theme: a user-visible account transition can
 cross an irreversible authority or durability boundary without a tested,
 monotonic recovery state. The medium findings make real service errors or
 duplicate activation results ambiguous. Coverage gaps without a concrete wrong
@@ -18,7 +18,7 @@ behavior remain in the verification backlog rather than this file.
 | ID | Title | Severity | Area | Decision needed | Issue |
 | --- | --- | --- | --- | --- | --- |
 | `B-01` | CLI login recovery does not span every account boundary | high | CLI account login | finish recovery contract | — |
-| `B-02` | Duplicate-email account creation leaves an orphaned passkey | high | Browser account creation | product call | — |
+| `B-02` | Duplicate-email account creation leaves an orphaned passkey | high | Browser account creation | fixed | — |
 | `B-04` | Busy account pages leave navigation links operational | high | Browser account lifecycle | fix or require restart reconciliation | — |
 | `B-06` | Same-device browser relink stores a grant the service did not activate | high | Browser account login | generation-binding contract fix | — |
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
@@ -99,15 +99,18 @@ behavior remain in the verification backlog rather than this file.
 - **Severity:** `high`. A common recoverable input conflict performs an
   irreversible external passkey action that the user did not need, and current
   code/test contradict a previously completed hot-path invariant.
-- **Decision needed:** `product call`. Choose and document one privacy model.
-  If code-authenticated preflight is still valid, restore it before WebAuthn and
-  make zero-credential conflict a regression. If orphaning is now intentional,
-  retire the stale completed plan and provide visible credential cleanup or
-  reuse semantics.
+- **Decision needed:** none; the product call was made in favour of zero
+  credentials on a conflict. The fork the person could answer wrongly is gone:
+  the address decides which ceremony runs, so a known address routes to
+  sign-in without touching the authenticator. Enumeration resistance is kept
+  by answering from one `EmailStatus` fact that also names `invalid` and
+  `unavailable`, rather than by a separate code-authenticated preflight; the
+  stale plan is retired with the code ceremony it described.
 - **Raised by:** [account lifecycle](accounts/lifecycle.md#edge-cases),
   [journey `ACCT-B03`](journey-catalog.md#accounts-browser-lifecycle).
-- **Status:** Not rerun. Current source test explicitly specifies the orphan at
-  `a3f8670b1`; running-product behavior is unconfirmed.
+- **Status:** Fixed. The E2E test that asserted the orphan is replaced by two
+  that assert zero credentials for a known address and exactly one for an
+  unknown one.
 
 ### B-04: Busy account pages leave navigation links operational
 

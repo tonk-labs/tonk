@@ -10,7 +10,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "area": "Browser account creation",
-      "decision": "product call",
+      "decision": "fixed",
       "id": "B-02",
       "severity": "high",
       "title": "Duplicate-email account creation leaves an orphaned passkey"
@@ -132,12 +132,12 @@ window.STORYBOOK_DATA = {
       "variants": "Root missing; provider-free root; add-account profile."
     },
     {
-      "evidence": "Whole browser test expects one orphaned credential, then success with another email.",
-      "gaps": "Product decision on orphaning; restart and retry; concurrent availability race; local-root boundary.",
+      "evidence": "Browser tests expect zero credentials for a known address and exactly one for an unknown one.",
+      "gaps": "Restart and retry; concurrent availability race; local-root boundary.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B03",
-      "title": "Submit an email that already owns an account, then recover.",
-      "variants": "Root missing; existing provider-free root; new add-account profile."
+      "title": "Enter an email and follow the ceremony it names.",
+      "variants": "Address known, unknown, malformed, or the service unreachable."
     },
     {
       "evidence": "None in activate.rs.",
