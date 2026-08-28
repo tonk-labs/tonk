@@ -27,6 +27,24 @@ impl SqliteStore {
         Self::prepare(conn)
     }
 
+    /// Set a customer's status to `Suspended`, for tests.
+    ///
+    /// No production path writes that status: suspension is an
+    /// administrative act and the service has no endpoint for it yet.
+    /// The screening gate still has to answer for it, so tests need a
+    /// way to produce one.
+    #[cfg(test)]
+    pub(crate) async fn suspend_for_test(&self, did: &str) {
+        self.0
+            .lock()
+            .expect("store mutex poisoned")
+            .execute(
+                "UPDATE customer SET status = 'Suspended' WHERE did = ?1",
+                params![did],
+            )
+            .expect("the status is written");
+    }
+
     /// Open (or create) a file-backed database, applying the migrations
     /// only on first open. Development durability: a restarted local
     /// service keeps its customers instead of wiping them.

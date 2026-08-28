@@ -5,7 +5,7 @@ use worker::*;
 use serde::Deserialize;
 
 use crate::auth::{authorize, authorize_root, optional_passkey_metadata, required_string};
-use crate::core::accounts::{CreateAccount, create_account, preflight_account};
+use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::deletion::delete_account;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
@@ -45,41 +45,6 @@ async fn handle_delete_inner(
         .await
         .map_err(ceremony_error)?;
     Response::from_json(&receipt).map_err(|error| {
-        ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
-    })
-}
-
-#[derive(Deserialize)]
-struct PreflightRequest {
-    email: String,
-    code: String,
-}
-
-/// `POST /accounts/preflight` → verify email control and availability.
-pub async fn handle_preflight(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let response = match handle_preflight_inner(&mut req, &ctx).await {
-        Ok(response) => response,
-        Err(err) => err.to_response()?,
-    };
-    Ok(with_cors_headers(response))
-}
-
-async fn handle_preflight_inner(
-    req: &mut Request,
-    ctx: &RouteContext<()>,
-) -> std::result::Result<Response, ServiceError> {
-    let input: PreflightRequest = req.json().await.map_err(|error| {
-        ServiceError::new(
-            ErrorCode::InvalidArgument,
-            format!("failed to parse request body: {error}"),
-        )
-    })?;
-    let store = build_store(ctx)?;
-    let now = Date::now().as_millis() / 1000;
-    preflight_account(&store, &input.email, &input.code, now)
-        .await
-        .map_err(ceremony_error)?;
-    Response::from_json(&serde_json::json!({})).map_err(|error| {
         ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
     })
 }
@@ -135,13 +100,6 @@ async fn handle_inner(
     let passkey = optional_passkey_metadata(&caller.arguments, now).map_err(ceremony_error)?;
     let request = CreateAccount {
         email: required_string(&caller.arguments, "email").map_err(ceremony_error)?,
-        // Optional: legacy clients prove address control by emailed code,
-        // new clients through customer activation at the access service.
-        // Present but malformed is still a client bug worth refusing.
-        code: match caller.arguments.get("code") {
-            None => None,
-            Some(_) => Some(required_string(&caller.arguments, "code").map_err(ceremony_error)?),
-        },
         credential_id: required_string(&caller.arguments, "credentialId")
             .map_err(ceremony_error)?,
         device_did: required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,

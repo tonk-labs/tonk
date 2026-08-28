@@ -167,20 +167,14 @@ fn ensure_banner(this: &HtmlElement, email: &str) {
     };
     if let Some(banner) = document.get_element_by_id(BANNER_ID) {
         set_banner_copy(&banner, email);
-        if let Some(mode) = this.get_attribute("mode") {
-            let _ = banner.set_attribute("mode", &mode);
-        } else {
-            let _ = banner.remove_attribute("mode");
-        }
+        crate::shadow::set_mode(&banner, this.get_attribute("mode").as_deref());
         return;
     }
     let Ok(banner) = document.create_element("tonk-banner") else {
         return;
     };
     banner.set_id(BANNER_ID);
-    if let Some(mode) = this.get_attribute("mode") {
-        let _ = banner.set_attribute("mode", &mode);
-    }
+    crate::shadow::set_mode(&banner, this.get_attribute("mode").as_deref());
     let Ok(message) = document.create_element("span") else {
         return;
     };
@@ -231,9 +225,7 @@ fn open_cluster(this: &HtmlElement) {
         return;
     };
     cluster.set_id(CLUSTER_ID);
-    if let Some(mode) = this.get_attribute("mode") {
-        let _ = cluster.set_attribute("mode", &mode);
-    }
+    crate::shadow::set_mode(&cluster, this.get_attribute("mode").as_deref());
     cluster.set_inner_html(
         r#"<p slot="statement">activate sync for this account</p>
 <tonk-field noun="email" settled changeable data-activation-email></tonk-field>

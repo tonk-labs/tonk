@@ -632,6 +632,28 @@ pub mod command {
 
     /// Attributes of the `member/promote` command, dispatched by the FAB's
     /// roster once the page has minted the admin hop.
+    pub mod enroll {
+        use super::Attribute;
+
+        /// The address to register the account under. Absent on a
+        /// re-enrollment, where the account's recorded address stands:
+        /// derived attribute `xyz.tonk.enroll/email`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Email(pub String);
+
+        /// The account-signed deposits a passkey ceremony minted, hex,
+        /// joined by commas. Empty on a resend, where the worker chains
+        /// a device-issued set through the `root -> device` grant
+        /// instead.
+        ///
+        /// One string rather than a list because a command's fields are
+        /// scalars, and these travel together or not at all.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Deposits(pub String);
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;

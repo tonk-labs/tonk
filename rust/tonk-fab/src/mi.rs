@@ -81,6 +81,10 @@ const CSS: &str = r#"
 @media (hover:hover) and (pointer:fine){
   :host(:hover) .fly, :host(:focus-within) .fly{ display:block; }
 }
+/* Picked open. Hover is the pointer's way in, but a row that is taken --
+   by click, by keyboard, by anything that is not a hovering mouse -- has
+   to be able to open its flyout too, and nothing else did. */
+:host([open]) .fly{ display:block; }
 "#;
 
 const HTML: &str = r#"<div class="w" style="display:contents">
@@ -120,6 +124,10 @@ impl CustomElement for TonkMi {
         if let Ok(Some(row)) = root.query_selector(".row") {
             let host = this.clone();
             self.listeners.push(shadow::on_click(&row, move || {
+                // A row that carries a sub-stack opens it when picked.
+                // Hover reveals it for a mouse, and that was the only way
+                // in — so a click, a tap, or Enter did nothing at all.
+                toggle_open(&host);
                 let detail = Object::new();
                 let _ = Reflect::set(&detail, &"item".into(), &host);
                 shadow::emit(&host, "fabb-pick", &detail);
@@ -191,6 +199,45 @@ fn propagate(this: &HtmlElement) {
         };
         let _ = element.remove_attribute("hidden");
         shadow::pass_mode(this, &element);
+    }
+}
+
+/// Open this row's flyout, and close any sibling that was open.
+///
+/// Only rows that actually carry a sub-stack take the state: on a leaf
+/// row there is nothing to show, and marking it open would leave the
+/// attribute lying around for CSS that reads it.
+fn toggle_open(this: &HtmlElement) {
+    if this
+        .query_selector("tonk-menu[slot=sub]")
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return;
+    }
+    let opening = !this.has_attribute("open");
+    // One at a time: opening a second flyout while the first stands
+    // leaves two stacks overlapping the same column.
+    if let Some(parent) = this.parent_element()
+        && let Ok(siblings) = parent.query_selector_all("tonk-mi[open]")
+    {
+        for index in 0..siblings.length() {
+            if let Some(node) = siblings.item(index)
+                && let Ok(sibling) = node.dyn_into::<Element>()
+            {
+                let _ = sibling.remove_attribute("open");
+            }
+        }
+    }
+    if opening {
+        let _ = this.set_attribute("open", "");
+        // Aim it too. Aiming runs on `pointerenter`/`focusin` because
+        // that is when a hovered row opens — a row opened by a click
+        // gets neither, and an unaimed flyout renders to the right of a
+        // bar that is already at the screen edge, so it is on the page
+        // and off the screen.
+        aim_flyout(this);
     }
 }
 

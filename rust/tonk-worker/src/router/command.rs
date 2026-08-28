@@ -138,6 +138,7 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry.register(Box::new(super::join::JoinHandler::new()));
         registry.register(Box::new(super::email_status::CheckEmailHandler::new()));
         registry.register(Box::new(super::email_status::RegisterAccountHandler::new()));
+        registry.register(Box::new(super::customer::EnrollCustomerHandler::new()));
         registry.register(Box::new(super::session::LoadHandler::new()));
         registry
     }

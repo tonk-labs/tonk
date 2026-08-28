@@ -271,12 +271,17 @@ fn paint(host: &HtmlElement, status: &str) {
             //
             // A write that changes nothing has nothing to notify about,
             // so skipping it costs no correctness.
-            set_if_changed(parent.as_ref(), "state", disc_state(status));
+            // Off this turn. Skipping a no-op write covers the repeats,
+            // but the FIRST paint genuinely changes the value — and it
+            // runs from `connected_callback`, which the parent triggers
+            // from inside its own `inject_children` while still holding
+            // its lock. A microtask lets that callback finish first.
+            defer_write(parent.as_ref(), "state", disc_state(status));
             // The disc has three shapes but sync has eight states, so the
             // precise one travels alongside it for the accessible name —
             // "revoked" and "conflict" both draw a hollow ring, and losing
             // the distinction from the label would make them unreportable.
-            set_if_changed(parent.as_ref(), "data-sync-status", status);
+            defer_write(parent.as_ref(), "data-sync-status", status);
         }
         return;
     }
@@ -331,6 +336,30 @@ fn modifier_class(status: &str) -> &'static str {
 ///
 /// Re-entrancy guard: several of these land on elements that observe
 /// the attribute, and a redundant write still fires their callback.
+/// Write an attribute on another element after this turn.
+///
+/// The parent bar observes what this writes, so the write runs its
+/// `attributeChangedCallback` synchronously — and paint can be reached
+/// from inside that parent's own `inject_children`, which still holds
+/// its lock. On wasm that lock is not reentrant, so it panics with
+/// `cannot recursively acquire mutex`, killing the guest frame; the
+/// frame reloads, the bar re-mounts and paints again, and the crash
+/// loops.
+///
+/// A microtask is enough: by then the callback that owns the lock has
+/// returned. The write is still skipped when it changes nothing.
+fn defer_write(element: &web_sys::Element, attribute: &str, value: &str) {
+    if element.get_attribute(attribute).as_deref() == Some(value) {
+        return;
+    }
+    let element = element.clone();
+    let attribute = attribute.to_owned();
+    let value = value.to_owned();
+    spawn_local(async move {
+        set_if_changed(&element, &attribute, &value);
+    });
+}
+
 fn set_if_changed(element: &web_sys::Element, attribute: &str, value: &str) {
     if element.get_attribute(attribute).as_deref() == Some(value) {
         return;

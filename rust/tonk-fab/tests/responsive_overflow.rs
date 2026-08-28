@@ -480,8 +480,20 @@ async fn the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster() {
         "144px"
     );
 
-    let scrollport = menu.unchecked_ref::<HtmlElement>();
-    assert_eq!(computed(&menu, "overflow-y"), "auto");
+    // The scrollport is a dedicated element wrapping the stack, not the
+    // menu itself: `.w::before` is the glass underlay at `z-index:-1`, and
+    // a negative-z child cannot escape a scroll container's paint context
+    // -- put the overflow on `.w` or on the host and the underlay paints
+    // behind the scroller, costing every row its ring.
+    let scrollport: HtmlElement = menu
+        .shadow_root()
+        .expect("menu shadow root")
+        .query_selector(".port")
+        .ok()
+        .flatten()
+        .expect("the scrollport")
+        .unchecked_into();
+    assert_eq!(computed(scrollport.unchecked_ref(), "overflow-y"), "auto");
     assert!(
         scrollport.client_height() > 0,
         "an upward stack must have space above its bottom-docked bar"
