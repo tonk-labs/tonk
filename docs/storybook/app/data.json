@@ -1419,6 +1419,14 @@
       "result": "—"
     },
     {
+      "claim": "The accountless browser reopens one onboarding identity (Simple case).",
+      "device": "fresh-browser + restart + Safari/Chrome/Firefox",
+      "file": "verification/accounts.md",
+      "id": "LIFE-27",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Registered customer sees pending notice and resend recovery (Remain in flight).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -2168,7 +2176,7 @@
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 107
+    "unrun": 108
   },
   "visualCommit": "49a873a23"
 }
