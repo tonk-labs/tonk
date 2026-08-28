@@ -452,12 +452,12 @@ window.STORYBOOK_DATA = {
       "variants": "Blank/existing home; notation/dry-run/no-sync; file/stdin."
     },
     {
-      "evidence": "Six space_link tests plus authority/browser happy paths.",
-      "gaps": "Crash/retry at ownership/hosting/listing/upstream stages, partial remote commit, concurrent link.",
+      "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
+      "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SPACE-10",
       "title": "Link a local-only space to the active account.",
-      "variants": "Signed out; same/different owner; customer states; provider offline."
+      "variants": "Signed out; same/different owner; creating profile absent with repository signer retained; same-owner retry after sharing; customer states; provider offline."
     },
     {
       "evidence": "Eleven account_spaces tests cover many list/pull cases.",
@@ -1145,7 +1145,8 @@ window.STORYBOOK_DATA = {
       "source_paths": [
         "rust/tonk-cli/src/account.rs",
         "rust/tonk-cli/src/account_state.rs",
-        "rust/tonk-cli/src/account_session.rs"
+        "rust/tonk-cli/src/account_session.rs",
+        "rust/tonk-cli/src/space_link.rs"
       ],
       "status": "captured",
       "summary": "Account commands report profile, attachment, customer, repository, and device authority without collapsing them into signed-in or signed-out.",
@@ -1914,7 +1915,7 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Link refuses signed-out, joined, foreign-owned, and already-owned targets safely (Exit early).",
+      "claim": "Link refuses signed-out, joined, foreign-owned, and mismatched-upstream targets safely while treating the same-account owner as resumable (Exit early).",
       "device": "cli",
       "file": "verification/cli-spaces-ui.md",
       "id": "SPACE-09",

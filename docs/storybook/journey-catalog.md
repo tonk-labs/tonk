@@ -88,7 +88,7 @@ the most important gaps, not the only variants required.
 
 | ID | User journey and entry | Starting variants | Existing evidence | Missing or weak evidence |
 | --- | --- | --- | --- | --- |
-| `SPACE-10` | Link a local-only space to the active account. | Signed out; same/different owner; customer states; provider offline. | Six `space_link` tests plus authority/browser happy paths. | Crash/retry at ownership/hosting/listing/upstream stages, partial remote commit, concurrent link. |
+| `SPACE-10` | Link a local-only space to the active account. | Signed out; same/different owner; creating profile absent with repository signer retained; same-owner retry after sharing; customer states; provider offline. | Eight `space_link` tests, including signer recovery and post-invite retry, plus authority/browser happy paths. | Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link. |
 | `SPACE-11` | List spaces from the account directory. | Empty; duplicate names; joined/owned; offline cached; stale deletion. | Eleven `account_spaces` tests cover many list/pull cases. | Process JSON/error matrix, concurrent rename/delete, corrupted local account branch. |
 | `SPACE-12` | Pull an account space by name or subject. | Unique/ambiguous/missing name; existing local name/subject; offline/revoked. | Broad `account_spaces` integration coverage. | Crash between fetch/site/registry, disk failure, concurrent pull, stale account fact. |
 | `SYNC-01` | Inspect status without mutating local main. | No upstream/synced/ahead/behind/diverged/unreachable/revoked. | Broad sync/status tests. | Stable process output for all states, corrupt head, concurrent upstream move. |

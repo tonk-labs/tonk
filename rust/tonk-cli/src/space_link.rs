@@ -20,6 +20,7 @@ use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
 use dialog_varsig::Did;
 use tonk_schema::Invitation;
+use tonk_schema::prelude::DidExt as _;
 
 use crate::inventory::{Roster, SpaceRole};
 use crate::remote::DEFAULT_REMOTE;
@@ -64,9 +65,6 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
         .get(name)
         .with_context(|| format!("unknown space '{name}'"))?
         .clone();
-    if crate::account::sign_in_phase(store)? != crate::account::SignInPhase::Active {
-        bail!("this account is signed out; run `tonk account login` first");
-    }
     let account_root: Did = account
         .root
         .parse()
@@ -84,36 +82,30 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
     // finished once the chain behind it is here too, so an interrupted run
     // resumes instead of reporting a link that never completed.
     let roster = crate::inventory::read_roster(&site).await?;
+    let mut already_linked = false;
     if let Some(founder) = roster.founder() {
         if founder.did != account.root {
             bail!(already_owned_message(name, &founder.did));
         }
         if holds_account_chain(&site, &subject, &account_root).await {
-            return Ok(LinkOutcome {
-                subject: subject.to_string(),
-                name: name.to_owned(),
-                site: site.root,
-                account: account.root,
-                already_linked: true,
-            });
+            already_linked = true;
         }
+    }
+
+    match crate::account::status_in(&site.profile, store).await? {
+        crate::account::AccountStatus::Registered { root_did, .. } if root_did == account.root => {}
+        _ => bail!("this account is signed out; run `tonk account login` first"),
     }
 
     let access = account
         .access_remote
         .as_deref()
         .context("the account has no content endpoint; sign in again")?;
-    preflight(&site, &roster, access).await?;
+    preflight(&site, &roster, access, already_linked).await?;
 
     // Authority first: the account root can only host what it can prove it
     // was given, and this is the one boundary allowed to mint that grant.
-    let prefix = crate::site::adopt_account_root_prefix_for(
-        &site.profile,
-        site.operator.local(),
-        &subject,
-        &account_root,
-    )
-    .await?;
+    let prefix = crate::site::account_root_prefix(&site, &account_root).await?;
     crate::customer::provision_in(&site.profile, store, &subject, &prefix).await?;
 
     if crate::remote::upstream_remote(&site).await?.is_none() {
@@ -166,7 +158,7 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
         name: name.to_owned(),
         site: site.root,
         account: account.root,
-        already_linked: false,
+        already_linked,
     })
 }
 
@@ -197,7 +189,12 @@ async fn holds_account_chain(
 /// An upstream already pointing at this account's own content service is the
 /// one exception: that is what a half-finished link leaves behind, and a
 /// retry has to be able to get past it.
-async fn preflight(site: &crate::site::TonkSite, roster: &Roster, access: &str) -> Result<()> {
+async fn preflight(
+    site: &crate::site::TonkSite,
+    roster: &Roster,
+    access: &str,
+    already_linked: bool,
+) -> Result<()> {
     if let Some(name) = crate::remote::upstream_remote(site).await? {
         let endpoint = crate::remote::find(site, &name)
             .await?
@@ -206,12 +203,25 @@ async fn preflight(site: &crate::site::TonkSite, roster: &Roster, access: &str) 
             bail!("only a local-only space with no content upstream can be linked to an account");
         }
     }
-    site.profile
+    // Once founder ownership and its retained account chain agree, this is no
+    // longer an ownership transition. Shares and members created afterwards
+    // are expected; a retry only needs to finish the idempotent hosting and
+    // account-directory steps below. Keep the upstream check above so a retry
+    // never silently republishes a space through a different service.
+    if already_linked {
+        return Ok(());
+    }
+    let profile_proof = site
+        .profile
         .access()
         .prove(Subject::from(site.repository.did().clone()))
         .perform(site.operator.local())
-        .await
-        .context("this device cannot prove authority over this space")?;
+        .await;
+    if let Err(error) = profile_proof
+        && site.repository.credential().signer().is_none()
+    {
+        return Err(error).context("this device cannot prove authority over this space");
+    }
     if has_invitations(site).await? {
         bail!("a space with recorded shares cannot be linked to an account");
     }
@@ -256,7 +266,7 @@ async fn invitations_on(site: &crate::site::TonkSite, branch: &Branch) -> Result
         .query()
         .select(Query::<Invitation> {
             this: Term::var("this"),
-            subject: Term::var("subject"),
+            subject: Term::from(site.repository.did().this()),
             inviter: Term::var("inviter"),
             audience: Term::var("audience"),
         })
