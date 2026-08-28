@@ -61,7 +61,7 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
             label.set_text_content(Some(if active.provider.is_some() {
                 profile_label(active)
             } else {
-                "log in"
+                crate::hub_account::trigger_label(Some("false"))
             }));
         }
         let _ = this.set_attribute("data-active-profile", &active.profile_name);
@@ -165,11 +165,22 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
-                if let Some(path) = crate::hub_account::account_trigger_destination(
+                if crate::hub_account::trigger_asks_to_link(
                     host.get_attribute("data-active-provider").as_deref(),
                 ) {
                     close_menu(&host, false);
-                    tonk_host::navigate_to(path);
+                    // The Hub is a sealed guest: WebAuthn needs a
+                    // `window` and a user gesture, which an opaque
+                    // realm does not have. The top page raises the
+                    // cluster, asked through the same bridge the share
+                    // row asks through.
+                    tonk_host::request_registration(
+                        &serde_json::json!({
+                            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+                            "space": "",
+                        })
+                        .to_string(),
+                    );
                     return;
                 }
                 let expanded = account_trigger(&host)
@@ -817,7 +828,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("log in"),
+            Some("link an account"),
             "an unattached first-run profile must not present its storage name as an account"
         );
         let original_url = window().unwrap().location().href().unwrap();
@@ -828,11 +839,15 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        assert!(menu.hidden(), "login must not open the profile roster");
+        assert!(menu.hidden(), "linking must not open the profile roster");
+        // In place, not away. It used to navigate to /settings, which
+        // put a panel and a second button between the label and the
+        // ceremony; the trigger asks the top page for the ceremony
+        // instead, and the Hub stays where it is.
         assert_eq!(
-            window().unwrap().location().pathname().unwrap(),
-            "/settings",
-            "login must navigate directly to account setup"
+            window().unwrap().location().href().unwrap(),
+            original_url,
+            "linking an account must not navigate the Hub anywhere"
         );
         window()
             .unwrap()

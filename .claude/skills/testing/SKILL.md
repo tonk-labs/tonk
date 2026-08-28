@@ -1,6 +1,6 @@
 ---
 name: testing
-description: How tests work in this repo — Rust crates use #[dialog_common::test] (NOT #[test] or #[tokio::test]) so the same source runs unchanged on native (tokio) and wasm32 (wasm-bindgen-test in a real browser). Use when writing or modifying any Rust test, before adding test deps, or whenever about to type #[test] / #[tokio::test] in a tonk-* crate.
+description: How tests work in this repo — Rust crates use #[dialog_common::test] (NOT #[test] or #[tokio::test]) so the same source runs unchanged on native (tokio) and wasm32 (wasm-bindgen-test in a real browser), and user-facing features need an end-to-end test that drives the real control and asserts the rendered result rather than the fact behind it. Use when writing or modifying any Rust test, before adding test deps, whenever about to type #[test] / #[tokio::test] in a tonk-* crate, and before claiming any user-facing flow works.
 allowed-tools: Read, Bash, Glob, Grep
 ---
 
@@ -229,6 +229,69 @@ async fn it_drives_the_editor(env: TestEnvironment) -> Result<()> {
 }
 ```
 
+## Assert on what the user sees, not on the fact behind it
+
+A feature is a chain: click → command → handler → fact → subscription → DOM. A
+test that reads the fact proves the *worker* works. Only a test that reads the
+**rendered result** proves the *feature* works. Every link you skip is a link
+nothing checks.
+
+This is not theoretical. The share-to-register flow shipped with all of these
+green:
+
+- a test polling the `EmailStatus` row directly — passed, while the dialog had
+  no subscription at all and latched on "Checking…" forever
+- unit tests over the state vocabulary — passed, while nothing rendered any of
+  those states
+- a test asserting `/api/repository/{key}` had no remote — passed, while the
+  button that would have shown it was invisible
+
+Each one tested a real thing correctly. None of them touched the seam where the
+bug was.
+
+### Rules
+
+1. **Drive the real control.** Click the actual button, type into the actual
+   input, dispatch a real `input` event (setting `.value` fires nothing, so a
+   debounce never runs). Building the claim in Rust skips the form, and the form
+   is where the wiring is.
+
+2. **Assert the visible consequence.** The submit button's label *is* the
+   routing decision ("Link to an account" vs "Sign in"); asserting it covers the
+   whole chain at once. Prefer that over asserting the row that decided it.
+
+3. **Measure, don't just find.** `querySelector` returning an element does NOT
+   mean the user can see it. A button assigned to a slot its dialog never
+   rendered is present, zero-sized, and invisible. Assert non-zero
+   width/height when "is it usable" is the question.
+
+4. **Assert the effect, not the dispatch.** A successful transact means the
+   *command was accepted*, never that it finished. Commands are asked and
+   answered later as facts, and handlers that ask the page to do something (a
+   WebAuthn ceremony, a navigation) return before it happens. Assert the
+   observable effect — a credential exists, a link appeared — not that the call
+   returned `Ok`.
+
+5. **Cover the whole user workflow in one test.** Steps that pass in isolation
+   still fail in sequence. One stepped test through the real path catches what a
+   pile of per-step tests cannot.
+
+### Before claiming a feature works
+
+Trace the chain and name the receiver of each hop. If a message is sent, grep
+for what handles it:
+
+```bash
+# Sending a constant somewhere? Check something RECEIVES it.
+grep -rn "CREATE_ACCOUNT_REQUEST" --include='*.rs' rust/
+# 3 hits: the definition, a re-export, and the sender. Nothing listens.
+```
+
+`CREATE_ACCOUNT_REQUEST` shipped with a sender and no receiver: the worker asked
+the page to run a passkey ceremony and the page dropped it, while the dialog
+reported success. Compiling proves the types line up, not that the halves are
+connected.
+
 ## Anti-patterns
 
 - **`#[tokio::test]` directly** — won't run on wasm. Use `#[dialog_common::test]`.
@@ -236,6 +299,9 @@ async fn it_drives_the_editor(env: TestEnvironment) -> Result<()> {
 - **`futures::executor::block_on(async_call())` inside `#[test]`** — the test isn't async. Make it `#[dialog_common::test] async fn` and `.await` instead.
 - **Stub bundles or mocks for testing the real `<tonk-code>` editor** — use a real-browser integration test in `tonk-ui`. Stubs verify your own contract; they don't catch CodeMirror/LSP bugs.
 - **JS-side tests for things that have a Rust integration-test path** — prefer the Rust path so coverage shows up in the same `nix develop -c test:*` runs.
+- **Asserting on the fact instead of the render** — passes while nothing displays it. See "Assert on what the user sees" above.
+- **Treating a successful transact as a finished command** — it means accepted, not done.
+- **Existence checks standing in for visibility** — a 0x0 element is present and unusable.
 
 ## Where to look for examples
 
