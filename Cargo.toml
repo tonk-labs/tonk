@@ -228,25 +228,3 @@ opt-level = "s"
 debug = 0
 strip = "debuginfo"
 
-# TEMPORARY: builds against the local dialog worktree so this branch can
-# compile against dialog-db#470 (`AuthorizeError::NotServable`) before it
-# is tagged. Replace with a tag bump on the dependency lines above and
-# DELETE this section before merging -- a patch pointing at a path only
-# this machine has makes the branch unbuildable for everyone else.
-[patch."https://github.com/dialog-db/dialog-db.git"]
-dialog-artifacts = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-artifacts" }
-dialog-capability = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-capability" }
-dialog-common = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-common" }
-dialog-credentials = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-credentials" }
-dialog-csv = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-csv" }
-dialog-effects = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-effects" }
-dialog-operator = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-operator" }
-dialog-query = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-query" }
-dialog-remote-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-remote-s3" }
-dialog-remote-ucan-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-remote-ucan-s3" }
-dialog-repository = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-repository" }
-dialog-search-tree = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-search-tree" }
-dialog-storage = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-storage" }
-dialog-ucan = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-ucan" }
-dialog-ucan-core = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-ucan-core" }
-dialog-varsig = { path = "/Users/gozala/Projects/dialog-db/worker/ada/rust/dialog-varsig" }
