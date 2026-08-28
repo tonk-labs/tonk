@@ -557,6 +557,14 @@ impl Notebook {
         // whatever order they landed. Order comes from the notebook's own
         // `block` sequence, rendered as `.notebook-order__item` rows in
         // position order with the entry's key on each.
+        //
+        // The rows come from a DIRECTORY display — every block in the
+        // space, not just this notebook's — because a block row is
+        // rendered per block entity rather than per notebook. Each row
+        // carries the notebook it belongs to, so the filter is here:
+        // without it a notebook shows every other notebook's blocks,
+        // and editing one rewrites blocks it does not own.
+        let notebook = self.host.dataset().get("notebook");
         let mut sources: HashMap<String, String> = HashMap::new();
         let mut arrival: Vec<String> = Vec::new();
         for index in 0..rows.length() {
@@ -570,6 +578,11 @@ impl Notebook {
             let (Some(entity), Some(source)) = (dataset.get("block"), dataset.get("source")) else {
                 continue;
             };
+            if let Some(notebook) = &notebook
+                && dataset.get("notebook").as_deref() != Some(notebook.as_str())
+            {
+                continue;
+            }
             if sources.insert(entity.clone(), source).is_none() {
                 arrival.push(entity);
             }

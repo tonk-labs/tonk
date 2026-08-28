@@ -49,6 +49,12 @@ concept!: &notebook
     block:
       description: The notebook's blocks, in document order.
       the: xyz.tonk.notebook
+      # Per ENTRY, and explicit: an omitted cardinality defaults to
+      # `one`, which marks the field SCALAR for the renderer — the
+      # template then substitutes `{block}` once instead of iterating
+      # the entries, so the order rows never render and every block
+      # reads as unplaced.
+      cardinality: many
       as: {[position]: entity}
 
 # The sequence alone, so a placement writes one entry rather than
