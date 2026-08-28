@@ -107,19 +107,23 @@ CLI usage errors, help, an already-active CLI login attempt, and confirmation
 declines exit before opening or changing account authority. Repeating logout
 while already signed out is an idempotent local success.
 
-The address now decides which ceremony runs, so there is no duplicate-email
-exception to describe. The panel no longer opens on a Create/Log in fork the
-person can answer wrongly: 600ms after typing stops, the button names the
-ceremony that follows. A known address routes to sign-in and creates no
-credential; an unknown one creates exactly one. The browser E2E tests assert
-both, replacing the test that asserted an orphaned passkey per failed attempt.
+Where the address decides, there is no duplicate-email exception. The
+registration dialog raised from a share asks for the address first and, 600ms
+after typing stops, names the ceremony that follows: a known address offers
+sign-in and mints nothing, and editing it to a free one offers creation with
+nothing to undo in between. The browser E2E test asserts a credential count of
+zero across both.
 
-The same `account/check-email` command and `EmailStatus` fact answer this at
-the front door and in the share dialog, so one place names the states. A
-service that cannot be reached reads as `unavailable` rather than as an
-address nobody has registered, which previously sent people into a creation
-ceremony that failed at the end; no action is offered for a state that is not
-a fact about the address.
+The `account/check-email` command and its `EmailStatus` fact are what answer
+that, so the states are named in one place. A service that cannot be reached
+reads as `unavailable` rather than as an address nobody has registered — which
+previously sent people into a creation ceremony that failed at the end — and no
+action is offered for a state that is not a fact about the address.
+
+> Technical note: the account panel at `/settings` still opens on the Create /
+> Log in fork and can still mint a credential before the duplicate is reported.
+> The panel's own address-first entry screen is a separate change; until it
+> lands, the guarantee above describes the dialog path only.
 
 ### Cross a boundary
 

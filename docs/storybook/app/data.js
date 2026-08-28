@@ -10,7 +10,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "area": "Browser account creation",
-      "decision": "fixed",
+      "decision": "apply to the account panel",
       "id": "B-02",
       "severity": "high",
       "title": "Duplicate-email account creation leaves an orphaned passkey"
@@ -132,8 +132,8 @@ window.STORYBOOK_DATA = {
       "variants": "Root missing; provider-free root; add-account profile."
     },
     {
-      "evidence": "Browser tests expect zero credentials for a known address and exactly one for an unknown one.",
-      "gaps": "Restart and retry; concurrent availability race; local-root boundary.",
+      "evidence": "Browser test expects zero credentials across a taken address and an edit to a free one, through the registration dialog.",
+      "gaps": "Same entry screen on the account panel, which still forks and can still mint an orphan; restart and retry; concurrent availability race; local-root boundary.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B03",
       "title": "Enter an email and follow the ceremony it names.",
