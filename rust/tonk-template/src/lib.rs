@@ -479,6 +479,12 @@ pub fn build_plan_nodes_with_scalars(
         if scalar_fields.contains(&field) {
             continue;
         }
+        // `{x/key}` is the key of the `{x}` row it sits in — the renderer
+        // shadows it per row — so it is a plain binding inside `x`'s
+        // iteration, never an iteration axis of its own.
+        if field.ends_with("/key") {
+            continue;
+        }
         let lca = longest_common_path_prefix(&hosts);
         // A binding whose host *is* the LCA element (e.g. `for={f}`
         // on the shared ancestor, or a `{f}` directly on it) pins the

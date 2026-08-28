@@ -29,7 +29,7 @@
 //! live branch in the meantime is precisely what the design rules out.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
@@ -40,7 +40,7 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, project, reconcile, split};
+use crate::blocks::{Block, assign_keys, project, reconcile, split};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -553,11 +553,11 @@ impl Notebook {
         let Ok(rows) = self.host.query_selector_all(".notebook-block-row") else {
             return;
         };
-        // Rows arrive in entity order, not document order. The notebook's
-        // `order` attribute is the sequence; anything the order does not name
-        // is appended, so a block whose row landed before the order updated
-        // still shows rather than vanishing.
-        let mut by_entity: HashMap<String, String> = HashMap::new();
+        // Sources come from the block rows, one per block entity, in
+        // whatever order they landed. Order comes from the notebook's own
+        // `block` sequence, rendered as `.notebook-order__item` rows in
+        // position order with the entry's key on each.
+        let mut sources: HashMap<String, String> = HashMap::new();
         let mut arrival: Vec<String> = Vec::new();
         for index in 0..rows.length() {
             let Some(row) = rows
@@ -570,43 +570,51 @@ impl Notebook {
             let (Some(entity), Some(source)) = (dataset.get("block"), dataset.get("source")) else {
                 continue;
             };
-            if by_entity.insert(entity.clone(), source).is_none() {
+            if sources.insert(entity.clone(), source).is_none() {
                 arrival.push(entity);
             }
         }
-        if by_entity.is_empty() {
+        if sources.is_empty() {
             return;
         }
 
-        // The order arrives as a hidden row, not an attribute: the space view
-        // that mounts this element has the REPLICA as its model, so it cannot
-        // bind a notebook's fields. Fall back to the attribute for a caller
-        // that can supply one directly.
-        let order = self
-            .host
-            .query_selector(".notebook-row")
-            .ok()
-            .flatten()
-            .and_then(|row| row.dyn_into::<HtmlElement>().ok())
-            .and_then(|row| row.dataset().get("order"))
-            .or_else(|| self.host.get_attribute("order"))
-            .unwrap_or_default();
         let mut ordered: Vec<Block> = Vec::new();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for entity in order.lines().map(str::trim).filter(|e| !e.is_empty()) {
-            if let Some(source) = by_entity.get(entity) {
-                seen.insert(entity);
-                ordered.push(Block {
-                    entity: entity.to_owned(),
-                    source: source.clone(),
-                });
+        let mut placed: HashSet<String> = HashSet::new();
+        if let Ok(entries) = self.host.query_selector_all(".notebook-order__item") {
+            for index in 0..entries.length() {
+                let Some(entry) = entries
+                    .item(index)
+                    .and_then(|n| n.dyn_into::<HtmlElement>().ok())
+                else {
+                    continue;
+                };
+                let dataset = entry.dataset();
+                let (Some(entity), Some(key)) = (dataset.get("block"), dataset.get("key")) else {
+                    continue;
+                };
+                // An entry whose block has no source row yet is skipped, not
+                // rendered blank: its row may simply not have landed.
+                let Some(source) = sources.get(&entity) else {
+                    continue;
+                };
+                if placed.insert(entity.clone()) {
+                    ordered.push(Block {
+                        entity,
+                        source: source.clone(),
+                        key: Some(key),
+                    });
+                }
             }
         }
-        for entity in &arrival {
-            if !seen.contains(entity.as_str()) {
+        // A block with a source but no entry (its placement never landed)
+        // still shows, at the end, and gets a key on the next commit.
+        for entity in arrival {
+            if !placed.contains(&entity) {
+                let source = sources[&entity].clone();
                 ordered.push(Block {
-                    entity: entity.clone(),
-                    source: by_entity[entity].clone(),
+                    entity,
+                    source,
+                    key: None,
                 });
             }
         }
@@ -765,18 +773,40 @@ impl Notebook {
             minted.push(entity);
         }
 
-        if edit.reordered || !edit.created.is_empty() || !edit.removed.is_empty() {
-            let mut fresh = minted.iter();
-            let order: Vec<String> = edit
-                .order
-                .iter()
-                .filter_map(|slot| match slot {
-                    Some(entity) => Some(entity.clone()),
-                    None => fresh.next().cloned(),
-                })
-                .collect();
-            self.dispatch_reorder(&subject, &order.join("\n"));
+        // Placement is per block: each block that moved, was created, or
+        // never had an entry gets a position between its neighbours, and
+        // each removed block has its entry retracted. Blocks that stayed in
+        // order keep their keys, so a reorder touches only what moved.
+        let stored = self.blocks.borrow();
+        let notebook = self.notebook_entity();
+        let mut fresh = minted.iter();
+        let order: Vec<(String, Option<String>)> = edit
+            .order
+            .iter()
+            .filter_map(|slot| match slot {
+                Some(entity) => {
+                    let key = stored
+                        .iter()
+                        .find(|block| &block.entity == entity)
+                        .and_then(|block| block.key.clone());
+                    Some((entity.clone(), key))
+                }
+                None => fresh.next().map(|entity| (entity.clone(), None)),
+            })
+            .collect();
+        for (entity, key) in assign_keys(&order) {
+            self.dispatch_place(&entity, &notebook, &key);
         }
+        for entity in &edit.removed {
+            if let Some(key) = stored
+                .iter()
+                .find(|block| &block.entity == entity)
+                .and_then(|block| block.key.clone())
+            {
+                self.dispatch_remove(entity, &notebook, &key);
+            }
+        }
+        drop(stored);
 
         *self.projected.borrow_mut() = document;
     }
@@ -806,10 +836,7 @@ impl Notebook {
     /// Read from a stored block rather than the host's `data-subject`, which
     /// `dispatch_edit` repoints at whichever entity it is currently writing.
     fn notebook_entity(&self) -> String {
-        if let Ok(Some(row)) = self.host.query_selector(".notebook-row")
-            && let Ok(row) = row.dyn_into::<HtmlElement>()
-            && let Some(entity) = row.dataset().get("notebook")
-        {
+        if let Some(entity) = self.host.dataset().get("notebook") {
             return entity;
         }
         self.host
@@ -818,16 +845,31 @@ impl Notebook {
             .unwrap_or_else(|| "id:notebook/scratch".to_owned())
     }
 
-    /// Dispatch one `notebook/reorder` command carrying the new order.
-    fn dispatch_reorder(&self, subject: &str, order: &str) {
-        let _ = self.host.dataset().set("subject", subject);
+    /// Dispatch one `block/place` command: put `entity` into `notebook`'s
+    /// sequence under `key`.
+    fn dispatch_place(&self, entity: &str, notebook: &str, key: &str) {
+        let _ = self.host.dataset().set("subject", entity);
         let detail = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(&detail, &"order".into(), &order.into());
-        self.emit("reorder", &detail);
+        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.into());
+        let _ = js_sys::Reflect::set(&detail, &"key".into(), &key.into());
+        self.emit("place", &detail);
+    }
+
+    /// Dispatch one `block/remove` command: retract `entity`'s entry
+    /// under `key` from `notebook`'s sequence.
+    fn dispatch_remove(&self, entity: &str, notebook: &str, key: &str) {
+        let _ = self.host.dataset().set("subject", entity);
+        let detail = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.into());
+        // `removed`, not `key`: the two commands must not share a shape, or
+        // one event would decode as both.
+        let _ = js_sys::Reflect::set(&detail, &"removed".into(), &key.into());
+        self.emit("remove", &detail);
     }
 
     /// Fire a bubbling CustomEvent off the host, which the view has wired to
-    /// a command (`onchange=block/edit`, `onreorder=notebook/reorder`).
+    /// a command (`onblockedit=block/edit`, `onplace=block/place`,
+    /// `onremove=block/remove`).
     fn emit(&self, name: &str, detail: &js_sys::Object) {
         let init = web_sys::CustomEventInit::new();
         init.set_detail(detail);

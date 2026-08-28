@@ -5071,6 +5071,7 @@ version = "0.6.8"
 dependencies = [
  "bs58",
  "custom-elements",
+ "dialog-artifacts",
  "dialog-common",
  "js-sys",
  "serde",

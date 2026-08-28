@@ -1,82 +1,69 @@
 # ===========================================================================
 # notebook — a <tonk-notebook> document whose ```dialog-yaml fences are live cells.
 # ===========================================================================
-# The model is deliberately `prose.yaml` with a different view: a notebook IS
-# a prose document. What makes it a notebook is that its fenced `dialog` code
-# blocks are evaluated against the branch and their results rendered beneath
-# them, which is the element's business, not the model's.
+# A notebook IS a prose document. What makes it a notebook is that its fenced
+# `dialog` code blocks are evaluated against the branch and their results
+# rendered beneath them, which is the element's business, not the model's.
 #
-# That is the whole point of the shape. Cells are not entities: they have no
-# order key, no identity facts, and no stored output. Document order is cell
-# order, and the persisted artifact is one markdown string that still renders
-# as ordinary markdown anywhere else.
+# Blocks are the STORED unit: the document the editor shows is the blocks
+# projected (joined with a blank line), and an edit writes back only the
+# blocks that changed. The notebook's `block` field is a SEQUENCE: one fact
+# per block under `xyz.tonk.notebook/<position>`, so document order is the
+# order the facts scan in, an insert touches one block, and two replicas
+# inserting at once merge rather than fight over a list.
 #
-# See plan/notebook.md for why this shape won over cells-as-entities, and for
-# the checkpoint model that later gives mutation cells somewhere to land.
+# See plan/notebook.md for the checkpoint model and plan/keyed-collections.md
+# for the sequence field.
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
 # Attributes
 # ---------------------------------------------------------------------------
 
-attribute!: &notebook/order
-  description: |
-    The notebook's block order: block entities as a newline-separated list,
-    in document order. One fact holds the whole sequence, so moving a block
-    rewrites this and touches no block.
-
-    Order lives here rather than as a key on each block because a notebook
-    is authored by one person at a time: the list is trivial to read (it IS
-    the order, no sort) and a move is one write. The tradeoff is that two
-    replicas inserting at once conflict on the list as a whole rather than
-    merging per block; if notebooks become collaborative, this is the field
-    that has to become a per-block position instead.
-  the: xyz.tonk.notebook/order
-  as: text
-
 attribute!: &notebook/title
   description: The notebook's title.
   the: xyz.tonk.notebook/title
   as: text
 
-attribute!: &block/notebook
-  description: The notebook this block belongs to.
-  the: xyz.tonk.notebook.block/notebook
-  as: entity
-
 attribute!: &block/source
-  description: |
-    One block's markdown source: a paragraph, a heading, a list, or a fenced
-    code block. A ```dialog-yaml fence is a cell — the element evaluates it and
-    renders the result beneath.
+  description: A block's markdown source.
   the: xyz.tonk.notebook.block/source
   as: text
 
 # ---------------------------------------------------------------------------
-# Concept
+# Concepts
 # ---------------------------------------------------------------------------
 
 concept!: &notebook
   this: tonk:notebook
-  description: A notebook - prose with live dialog query cells.
+  description: |
+    A notebook - prose with live dialog query cells. Its content is the
+    `block` sequence: every block, keyed by a fractional position, in
+    document order.
   with:
     title:
       description: The notebook's title.
       the: xyz.tonk.notebook/title
       cardinality: one
       as: text
-    order:
-      description: The block order, newline-separated in document order.
-      the: xyz.tonk.notebook/order
-      cardinality: one
-      as: text
+    block:
+      description: The notebook's blocks, in document order.
+      the: xyz.tonk.notebook
+      as: {[position]: entity}
 
-# One block of a notebook. Blocks are the STORED unit: the document the
-# editor shows is these blocks projected (joined with a blank line), and an
-# edit writes back only the blocks that actually changed. Storing the
-# document whole instead would make every keystroke supersede every block,
-# so each revision would claim all of them changed - which guts the
-# checkpoint model, whose whole basis is revisions saying what moved.
+# The sequence alone, so a placement writes one entry rather than
+# re-binding the notebook's every field (the wiki/board pattern).
+concept!: &notebook/blocks
+  description: A notebook's block sequence, as standalone entries.
+  with:
+    block:
+      description: The notebook's blocks, in document order.
+      the: xyz.tonk.notebook
+      as: {[position]: entity}
+
+# One block of a notebook. Carries a pointer back to its notebook so the
+# block rows the element reads can be scoped, and so a block written before
+# its placement lands still belongs somewhere.
 concept!: &notebook/block
   this: tonk:notebook/block
   description: One markdown block of a notebook.
@@ -92,37 +79,13 @@ concept!: &notebook/block
       cardinality: one
       as: text
 
-# Single-field projections, so an edit upserts one field rather than
-# re-binding every field of the concept (the wiki/board pattern).
-concept!: &block/source-only
-  description: A block's source, as a standalone fact.
-  with:
-    source:
-      description: The block's markdown source.
-      the: xyz.tonk.notebook.block/source
-      cardinality: one
-      as: text
-
-concept!: &notebook/order-only
-  description: A notebook's block order, as a standalone fact.
-  with:
-    order:
-      description: The block order, newline-separated in document order.
-      the: xyz.tonk.notebook/order
-      cardinality: one
-      as: text
-
 # ---------------------------------------------------------------------------
 # The space shell.
 #
 # The space route mounts `<tonk-display entity={replica} model=tonk/space>`,
 # so the model the shell renders has to resolve for the REPLICA entity, not
-# for a notebook entity. `subject` is `dialog.replica/subject` - a fact every
-# replica already carries - which is what makes this concept match.
-#
-# The notebook it shows is the pinned `id:notebook/scratch` seeded below,
-# rather than a field here: a space holds one notebook for now, and binding
-# it through the replica would need a fact nothing asserts yet.
+# a notebook. `tonk:notebook/space` is that model; its view mounts the scratch
+# notebook as a nested display.
 # ---------------------------------------------------------------------------
 
 concept!: &notebook/space
@@ -134,55 +97,55 @@ concept!: &notebook/space
       the: dialog.replica/subject
       as: entity
 
-# Route the space to the notebook shell, overriding core.yaml's default
-# `tonk:blank` - the same alias override wiki.yaml and board.yaml do.
 name!:
   this: id:tonk/space
   entity: tonk:notebook/space
 
-# The element sits DIRECTLY in this view rather than behind a nested
-# `<tonk-display>`. Context propagates across exactly one display boundary
-# (`forward_with`): the space route hands this view `with="{branch}@{repo}"`,
-# and a nested display of our own would have no `with` of its own to forward,
-# so `<tonk-notebook>` would resolve no repository.
 view!:
   this: id:notebook/space/view
   model: tonk:notebook/space
   display: |
     <div class="notebook-space">
-      <tonk-notebook
-        data-subject="id:notebook/scratch"
-        onblockedit=block/edit
-        onreorder=notebook/reorder
-        style="display: block;"
-      >
-        <div class="notebook-data" hidden>
-          <tonk-display model=tonk:notebook></tonk-display>
-          <tonk-display model=tonk:notebook/block></tonk-display>
-        </div>
-      </tonk-notebook>
+      <tonk-display entity="id:notebook/scratch" model=tonk:notebook></tonk-display>
     </div>
 
-# The notebook row: its block order. The order cannot ride as an attribute
-# on `<tonk-notebook>` because the space view's model is the REPLICA, which
-# has no access to a notebook's fields — so it arrives the same way the
-# blocks do, as a hidden row the element reads.
-view/directory!:
-  this: id:notebook/rows
+# ONE notebook. The element reads two hidden row sets: the notebook's own
+# `block` sequence, one `.notebook-order__item` per entry in position order
+# carrying the entry's key, and the block rows carrying each block's source.
+view!:
+  this: id:notebook/view
   model: tonk:notebook
   display: |
-    <div class="notebook-rows">
-      <div class="notebook-row"
-        subject={this}
-        data-notebook={this}
-        data-order={order}
-        data-title={title}><a class="notebook-index__item" href="notebook/{this}">{title}</a></div>
+    <tonk-notebook
+      data-subject={this}
+      data-notebook={this}
+      title={title}
+      onblockedit=block/edit
+      onplace=block/place
+      onremove=block/remove
+      style="display: block;"
+    >
+      <div class="notebook-data" hidden>
+        <div class="notebook-order">
+          <span class="notebook-order__item" data-block={block} data-key={block/key}></span>
+        </div>
+        <tonk-display model=tonk:notebook/block></tonk-display>
+      </div>
+    </tonk-notebook>
+
+# EVERY notebook — the directory view, which is what core's `/{*model}` route
+# renders at `/space/{repo}/notebook`. A list of links, one per notebook.
+view/directory!:
+  this: id:notebook/directory
+  model: tonk:notebook
+  display: |
+    <div class="notebook-index">
+      <a class="notebook-index__item" href="notebook/{this}">
+        <span class="notebook-index__title">{title}</span>
+      </a>
     </div>
 
-# The block rows the element reads. A hidden <tonk-display> per model
-# renders one row per block into the DOM, which keeps the data reactive
-# (a commit re-renders the rows) without the element issuing its own
-# queries. Same shape as the wiki's `.wiki-data` pane.
+# The block rows the element reads: one per block, its source on the row.
 view/directory!:
   this: id:notebook/block/rows
   model: tonk:notebook/block
@@ -196,59 +159,8 @@ view/directory!:
     </div>
 
 # ---------------------------------------------------------------------------
-# The notebook route — `/space/{repo}/notebook/{entity}`.
-#
-# A notebook is addressable, so a space can hold many and a link can name
-# one. The space shell still opens the pinned scratch notebook (the landing
-# case), but that is now the default rather than the only possibility.
-#
-# `entity` is `as: entity`, so the path segment arrives as a real entity the
-# view binds straight into `<tonk-notebook>` — no lookup, no name table.
+# Routes
 # ---------------------------------------------------------------------------
-
-# The index — `/space/{repo}/notebook`. Lists every notebook in the space,
-# each linking to its own page. Declared BEFORE the `{*entity}` route so a
-# bare `/notebook` matches this rather than being read as an entity named
-# nothing.
-route!: &route/notebooks
-  this: id:notebook/index/route
-  path: "/notebook"
-  concept: tonk:notebook/index
-
-concept!: &notebook/index
-  this: tonk:notebook/index
-  description: The notebook index — every notebook in this space.
-  with:
-    repo:
-      description: The space repository, picked off the site entity.
-      the: xyz.tonk.site/repo
-      cardinality: one
-      as: text
-    branch:
-      description: The space branch, picked off the site entity.
-      the: xyz.tonk.site/branch
-      cardinality: one
-      as: text
-
-# The index lists notebooks by rendering the `tonk:notebook` directory view,
-# which is the row-per-notebook shape the element already reads. Each row
-# links to `notebook/{entity}` — a relative href, so it resolves under
-# whatever space path the page is served at.
-# The index renders the same `id:notebook/rows` directory view the notebook
-# page uses for its data pane — a model may have only ONE directory view, and
-# a second would win arbitrarily, breaking whichever page lost.
-#
-# Those rows carry `data-notebook` and `data-title`, so the index is CSS over
-# the same markup rather than a competing view: the row becomes a link
-# through `data-title` and an anchor the stylesheet draws.
-view!:
-  this: id:notebook/index/view
-  model: tonk:notebook/index
-  display: |
-    <div class="notebook-index">
-      <h1>Notebooks</h1>
-      <tonk-display model=tonk:notebook></tonk-display>
-    </div>
 
 route!: &route/notebook
   this: id:notebook/route
@@ -280,25 +192,11 @@ view!:
   model: tonk:notebook/route
   display: |
     <div class="notebook-space">
-      <tonk-notebook
-        data-subject={entity}
-        onblockedit=block/edit
-        onreorder=notebook/reorder
-        style="display: block;"
-      >
-        <div class="notebook-data" hidden>
-          <tonk-display model=tonk:notebook></tonk-display>
-          <tonk-display model=tonk:notebook/block></tonk-display>
-        </div>
-      </tonk-notebook>
+      <tonk-display entity={entity} model=tonk:notebook></tonk-display>
     </div>
 
 # ---------------------------------------------------------------------------
-# Command - one per changed block.
-#
-# `<tonk-notebook>` splits the edited document into blocks, diffs them against
-# the ones it projected, and asserts one command per block that actually
-# changed - so a one-character edit writes one block, not the document.
+# Commands and rules
 # ---------------------------------------------------------------------------
 
 command!: &block/edit
@@ -316,29 +214,49 @@ command!: &block/edit
       description: |
         The notebook the block belongs to. Carried on every edit, not just a
         creating one: a block written with only its source does not match
-        `tonk:notebook/block`, so it renders no row and the projection cannot
-        see it — the order names an entity that never appears. Re-asserting
-        it on an existing block is a no-op.
+        `tonk:notebook/block`, so it renders no row. Re-asserting it on an
+        existing block is a no-op.
       the: dom.event.detail/notebook
       as: entity
 
-# The order command, asserted only when blocks are added, removed or moved -
-# an edit that just changes a block's text leaves the order untouched.
-command!: &notebook/reorder
-  description: Set a notebook's block order.
+# Placement is per block: put this block into its notebook's sequence under
+# a position. The element derives the position between the block's
+# neighbours (`dialog_artifacts::position`), so a move re-keys only what
+# moved.
+command!: &block/place
+  description: Place one block in its notebook's sequence.
   with:
     subject:
-      description: The notebook entity.
+      description: The block entity.
       the: dom.event.current-target.dataset/subject
       as: entity
-    order:
-      description: The new block order, newline-separated.
-      the: dom.event.detail/order
+    notebook:
+      description: The notebook whose sequence the block joins.
+      the: dom.event.detail/notebook
+      as: entity
+    key:
+      description: The block's position in the sequence.
+      the: dom.event.detail/key
       as: text
 
-# ---------------------------------------------------------------------------
-# Rules - persist each edit onto the entity its command names.
-# ---------------------------------------------------------------------------
+command!: &block/remove
+  description: Take one block out of its notebook's sequence.
+  with:
+    subject:
+      description: The block entity.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    notebook:
+      description: The notebook whose sequence the block leaves.
+      the: dom.event.detail/notebook
+      as: entity
+    # Its own attribute, not `detail/key`: two transient commands with the
+    # same shape would both decode from one event, and the retraction
+    # would fire alongside every placement.
+    key:
+      description: The position the block held.
+      the: dom.event.detail/removed
+      as: text
 
 rule!:
   description: Persist a block edit onto its block.
@@ -350,56 +268,49 @@ rule!:
         source: ?source
         notebook: ?notebook
 
+# The head's entry is `block: {?block/key: ?block}`: the body binds the
+# block to the field and the position to its key, and the fact lands under
+# `xyz.tonk.notebook/<key>`.
 rule!:
-  description: Persist a reorder onto its notebook.
-  assert!: notebook/order-only
+  description: Persist a placement into the notebook's sequence.
+  assert!: notebook/blocks
   when:
-    - assert: notebook/reorder
+    - assert: block/place
       where:
-        subject: ?this
-        order: ?order
+        subject: ?block
+        notebook: ?this
+        key: ?block/key
+
+rule!:
+  description: Retract a block's entry from the notebook's sequence.
+  retract!: notebook/blocks
+  when:
+    - assert: block/remove
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?block/key
 
 # ---------------------------------------------------------------------------
-# View - the element reads its blocks from the store, projects them into one
-# markdown document for the embedded <tonk-prose>, and writes back per block.
-# `order` rides as an attribute; the blocks themselves are queried by the
-# element, since a view cannot express "join these in this order".
-# ---------------------------------------------------------------------------
-
-view!:
-  this: id:notebook/view
-  model: notebook
-  display: |
-    <tonk-notebook
-      data-subject={this}
-      order={order}
-      title={title}
-      onblockedit=block/edit
-      onreorder=notebook/reorder
-      style="display: block;"
-    >
-      <div class="notebook-data" hidden>
-        <tonk-display model=tonk:notebook/block></tonk-display>
-      </div>
-    </tonk-notebook>
-
-# ---------------------------------------------------------------------------
-# Seed one notebook so the model resolves on first render: a few blocks and
-# the order naming them. Re-assert these ids to reset the document.
+# Seed
 # ---------------------------------------------------------------------------
 
 notebook!:
   this: id:notebook/scratch
   title: "Scratch"
-  order: |
-    id:notebook/scratch/1
-    id:notebook/scratch/2
-    id:notebook/scratch/3
+  block: {N1: id:notebook/scratch/1}
+
+notebook!:
+  this: id:notebook/scratch
+  block: {N5: id:notebook/scratch/2}
+
+notebook!:
+  this: id:notebook/scratch
+  block: {N9: id:notebook/scratch/3}
 
 # The seeded blocks must be exactly what `split` produces from the projected
 # document, or the first edit re-partitions the whole notebook: a heading is
-# grouped with the paragraph it introduces, so seeding them apart makes the
-# stored blocks and the parsed ones disagree, and every block shifts by one.
+# grouped with the paragraph it introduces.
 notebook/block!:
   this: id:notebook/scratch/1
   notebook: id:notebook/scratch

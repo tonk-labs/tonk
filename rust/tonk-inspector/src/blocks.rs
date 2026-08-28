@@ -175,10 +175,98 @@ fn split_chunks(document: &str) -> Vec<String> {
 /// A stored block: its entity and the source it currently holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
-    /// The block entity, as it appears in the notebook's order list.
+    /// The block entity.
     pub entity: String,
     /// The block's markdown source.
     pub source: String,
+    /// The block's position in its notebook's `block` sequence: the key
+    /// of its entry, a fractional position that sorts in byte order.
+    /// `None` for a block that has a source but no entry yet.
+    pub key: Option<String>,
+}
+
+/// Positions for the blocks of a document, in the order given. Each
+/// item is a block entity and its current key, `None` when it has
+/// none (a block just created, or one whose entry never landed).
+///
+/// The longest run of keys already in ascending order is kept — so a
+/// block moved across its neighbours is the one re-keyed, not the
+/// neighbours — and every other block gets a fresh position between
+/// its nearest kept neighbours, derived from the block's own entity so
+/// the same insert converges to the same key on every replica. Returns
+/// only the blocks that need a new key.
+pub fn assign_keys(order: &[(String, Option<String>)]) -> Vec<(String, String)> {
+    use dialog_artifacts::position::{Bias, Position, insert};
+
+    let current: Vec<Option<Position>> = order
+        .iter()
+        .map(|(_, key)| key.as_deref().and_then(|key| Position::try_from(key).ok()))
+        .collect();
+    let mut kept: Vec<Option<Position>> = vec![None; order.len()];
+    for index in longest_increasing_run(&current) {
+        kept[index] = current[index].clone();
+    }
+
+    let mut placed = Vec::new();
+    let mut prev: Option<Position> = None;
+    for (index, (entity, _)) in order.iter().enumerate() {
+        if let Some(position) = &kept[index] {
+            prev = Some(position.clone());
+            continue;
+        }
+        let next = kept[index + 1..].iter().find_map(|kept| kept.clone());
+        let bias = Bias::derive(entity.as_bytes());
+        let position = match (&prev, &next) {
+            (Some(after), Some(before)) => insert(&bias, after.clone()..before.clone()),
+            (Some(after), None) => insert(&bias, after.clone()..),
+            (None, Some(before)) => insert(&bias, ..before.clone()),
+            (None, None) => insert(&bias, ..),
+        };
+        // An exhausted range cannot happen between two positions that
+        // sort apart; the neighbours were kept precisely because they
+        // do. Leave the block unplaced rather than misplace it.
+        let Ok(position) = position else {
+            continue;
+        };
+        placed.push((entity.clone(), position.as_str().to_owned()));
+        prev = Some(position);
+    }
+    placed
+}
+
+/// Indices of the longest subsequence of present keys in ascending
+/// order. Quadratic, which is nothing at notebook sizes.
+fn longest_increasing_run(keys: &[Option<dialog_artifacts::position::Position>]) -> Vec<usize> {
+    let n = keys.len();
+    let mut best = vec![0usize; n];
+    let mut prev = vec![usize::MAX; n];
+    let mut end: Option<usize> = None;
+    for i in 0..n {
+        let Some(key) = &keys[i] else {
+            continue;
+        };
+        best[i] = 1;
+        for j in 0..i {
+            if let Some(earlier) = &keys[j]
+                && earlier.as_str() < key.as_str()
+                && best[j] + 1 > best[i]
+            {
+                best[i] = best[j] + 1;
+                prev[i] = j;
+            }
+        }
+        if end.is_none_or(|end| best[i] > best[end]) {
+            end = Some(i);
+        }
+    }
+    let mut run = Vec::new();
+    let mut cursor = end;
+    while let Some(index) = cursor {
+        run.push(index);
+        cursor = (prev[index] != usize::MAX).then_some(prev[index]);
+    }
+    run.reverse();
+    run
 }
 
 /// What an edit did to a notebook's blocks.
@@ -435,8 +523,60 @@ mod tests {
             .map(|(entity, source)| Block {
                 entity: (*entity).to_owned(),
                 source: (*source).to_owned(),
+                key: None,
             })
             .collect()
+    }
+
+    /// Keys already in order are kept; a block without one is placed
+    /// between its neighbours, and one out of order is re-keyed.
+    #[dialog_common::test]
+    fn it_assigns_keys_between_kept_neighbours() {
+        let first = assign_keys(&[("id:a".to_owned(), None)]);
+        assert_eq!(first.len(), 1, "an only block gets a key");
+        let a = first[0].1.clone();
+
+        let appended = assign_keys(&[
+            ("id:a".to_owned(), Some(a.clone())),
+            ("id:b".to_owned(), None),
+        ]);
+        assert_eq!(appended.len(), 1, "only the new block is keyed");
+        let b = appended[0].1.clone();
+        assert!(a < b, "appended after: {a} < {b}");
+
+        let between = assign_keys(&[
+            ("id:a".to_owned(), Some(a.clone())),
+            ("id:c".to_owned(), None),
+            ("id:b".to_owned(), Some(b.clone())),
+        ]);
+        assert_eq!(between.len(), 1);
+        let c = between[0].1.clone();
+        assert!(a < c && c < b, "inserted between: {a} < {c} < {b}");
+
+        let moved = assign_keys(&[
+            ("id:b".to_owned(), Some(b.clone())),
+            ("id:a".to_owned(), Some(a.clone())),
+            ("id:c".to_owned(), Some(c.clone())),
+        ]);
+        assert_eq!(moved.len(), 1, "the block that moved is the one re-keyed");
+        assert_eq!(moved[0].0, "id:b");
+        assert!(moved[0].1 < a, "moved to the front: {} < {a}", moved[0].1);
+
+        assert!(
+            assign_keys(&[
+                ("id:a".to_owned(), Some(a.clone())),
+                ("id:b".to_owned(), Some(b.clone()))
+            ])
+            .is_empty(),
+            "nothing to do when every key is in order"
+        );
+        // The keys `notebook.yaml` seeds its scratch blocks under.
+        for seed in ["N1", "N5", "N9"] {
+            assert!(
+                dialog_artifacts::position::Position::try_from(seed).is_ok(),
+                "{seed} is a position"
+            );
+        }
     }
 
     fn sources(values: &[&str]) -> Vec<String> {

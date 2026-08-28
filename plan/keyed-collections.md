@@ -1,12 +1,15 @@
 # Keyed collections in the concept DSL
 
-Status: **landed end to end, notebook switch pending.** Dialog PR #472
+Status: **landed end to end.** Dialog PR #472
 (`feat/keyed-collection-types`) queries and induces collection fields;
 the tonk side declares them (`as: {[position]: entity}`), binds entries
 as `{?key: ?value}` in queries, premises, and assertions, and folds a
-subscription's rows into one `{key: value}` map per field. What is not
-done: the notebook itself still orders blocks by a per-block `order`
-text key; moving it onto `block: {[position]: entity}` is the follow-up.
+subscription's rows into one `{key: value}` map per field. The notebook
+orders its blocks through `block: {[position]: entity}`: the element
+derives a position between a block's neighbours with
+`dialog_artifacts::position` and dispatches one `block/place` per block
+that moved, so a reorder touches only what moved. Inside a `{block}`
+iteration a template reads the entry's key as `{block/key}`.
 
 Two things settled during implementation, beyond the design below:
 

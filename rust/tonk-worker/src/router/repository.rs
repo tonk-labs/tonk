@@ -5460,6 +5460,61 @@ mod tests {
     /// facts. A drift in those injected names breaks the rule's evaluation
     /// context, so the command commits nothing and the name silently reverts —
     /// exactly the FAB "rename dropped on refresh" symptom.
+    const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
+
+    /// The notebook library on a core-seeded branch: the `block`
+    /// sequence seeds three entries, a `block/place` command adds a
+    /// fourth under the position the element derived, and
+    /// `block/remove` takes it back out.
+    #[dialog_common::test]
+    async fn it_places_and_removes_notebook_blocks() {
+        let (_app, state, key) = fresh_repo("test-notebook-sequence").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let entries = "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n";
+        assert_eq!(
+            count(&state, repo, entries).await,
+            3,
+            "the seed places three blocks"
+        );
+
+        seed(
+            &state,
+            repo,
+            "block/place!:\n  subject: id:notebook/scratch/4\n  notebook: id:notebook/scratch\n  key: \"N7\"\n",
+        )
+        .await;
+        assert_eq!(
+            count(&state, repo, entries).await,
+            4,
+            "a placement adds an entry under its key"
+        );
+        assert_eq!(
+            count(
+                &state,
+                repo,
+                "notebook:\n  this: id:notebook/scratch\n  block: {N7: ?block}\n"
+            )
+            .await,
+            1,
+            "the entry is readable under the literal key"
+        );
+
+        seed(
+            &state,
+            repo,
+            "block/remove!:\n  subject: id:notebook/scratch/4\n  notebook: id:notebook/scratch\n  key: \"N7\"\n",
+        )
+        .await;
+        assert_eq!(
+            count(&state, repo, entries).await,
+            3,
+            "a removal retracts the entry"
+        );
+    }
+
     #[dialog_common::test]
     async fn it_persists_a_space_rename() {
         use dialog_repository::RepositoryExt as _;
