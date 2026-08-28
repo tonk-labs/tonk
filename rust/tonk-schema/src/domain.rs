@@ -300,6 +300,42 @@ pub mod command {
     #[domain("dom.event.current-target.elements.name")]
     pub struct Value(pub String);
 
+    /// The address read from the registration form's submit event:
+    /// `event.currentTarget.elements.email.value` (the `<wa-input
+    /// name="email">` inside `<form onsubmit=account/register>`).
+    ///
+    /// Same read-path convention as [`Value`]: one word, so the input's
+    /// `name` and the attribute segment agree without kebab→camel
+    /// conversion getting in the way.
+    /// Marks a transient as an account registration, and not the
+    /// address lookup that shares its shape.
+    ///
+    /// `CheckEmail` and `RegisterAccount` were both `{this, email}`, and
+    /// decode does not consider concept identity — so every keystroke's
+    /// lookup ALSO decoded as a registration, and the worker asked the
+    /// page to run a passkey ceremony while the user was still typing.
+    ///
+    /// An `Entity`, not a `String`: the value (`tonk:register-account`)
+    /// has a `:`, and the worker's untagged `Value` decode reads any
+    /// `:`-bearing string as an `Entity`.
+    pub mod register {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The marker only a registration carries.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct RegisterAccount(pub Entity);
+    }
+
+    pub mod email {
+        use super::Attribute;
+
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.elements.email")]
+        pub struct Value(pub String);
+    }
+
     /// The remote URL read from a space form's submit event:
     /// `event.currentTarget.elements.remote.value` (the `<wa-input
     /// name="remote">` inside the create / enable-sync forms).
@@ -646,6 +682,34 @@ pub mod command {
     }
 }
 
+/// Attributes on the transient overlay row answering "is this address
+/// registered?" for the registration form.
+///
+/// Overlay-only, deliberately. The form asks as the user types, so a
+/// durable fact per answer would write a row per keystroke into a branch
+/// that syncs. The overlay is per-session and unreplicated, which is
+/// what a question about a half-typed address deserves.
+pub mod email_status {
+    use super::Attribute;
+
+    /// The address the answer is about, so a stale answer for an
+    /// address the user has since edited is recognisable as stale.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-status")]
+    #[cardinality(one)]
+    pub struct Address(pub String);
+
+    /// What the access service said: `unregistered` (create an
+    /// account), `active` (sign in), `pending` (sign in, then the
+    /// waiting screen), `suspended` (terminal), `invalid` (not an
+    /// address at all), or `unavailable` (the service could not be
+    /// reached, which is not an answer about the address).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-status")]
+    #[cardinality(one)]
+    pub struct State(pub String);
+}
+
 /// Attributes on the transient self-identity overlay the topbar chip
 /// reads (`state:self`). Overlay-only — never persisted, never replicated.
 pub mod identity {
@@ -929,6 +993,44 @@ pub mod credential {
 ///
 /// Overlay-only, so it is session-scoped and never replicated: a refusal is
 /// this device's answer to this click, not a property of the space.
+/// Attributes on the per-space invite state the share control renders.
+///
+/// One row per space, replaced as the state moves. Overlay-only: the
+/// url carries a secret seed in its fragment, and the row is a
+/// per-session view of an in-flight request rather than a durable
+/// record. The durable record of a *minted* invite is
+/// [`crate::Invitation`], keyed on the delegation CID — a different
+/// thing that happens to share the noun.
+pub mod invite {
+    use super::Attribute;
+    use dialog_artifacts::Entity;
+
+    /// Where this space's invite has got to.
+    ///
+    /// An entity, not a string: a string is a poor discriminator, and
+    /// this follows [`crate::domain::replica::Status`]
+    /// (`tonk:blank` / `tonk:initialized`). One of
+    /// `invite:requested`, `invite:granted`, `invite:suspended`,
+    /// `invite:unshareable`.
+    ///
+    /// A denial IS a status — there is no separate reason field. Two
+    /// fields would encode one fact and make illegal states
+    /// representable (granted-with-a-reason, denied-without-one).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invite")]
+    #[cardinality(one)]
+    pub struct Status(pub Entity);
+
+    /// The finished invite URL, present only once granted.
+    ///
+    /// Optional, so one row covers every state without a sentinel: a
+    /// request in flight simply has no url yet.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invite")]
+    #[cardinality(one)]
+    pub struct Url(pub String);
+}
+
 pub mod share {
     use super::Attribute;
 

@@ -14,7 +14,9 @@
 
 use std::cell::Cell;
 
-use tonk_worker_api::{ENCRYPTION_KEY_REQUEST, RootStatus, WEBAUTHN, WebAuthnRequest};
+use tonk_worker_api::{
+    LINK_ACCOUNT, LinkAccountRequest, RootStatus, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
+};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, MessageEvent};
@@ -179,16 +181,50 @@ pub fn install() {
     };
     let service_worker = window.navigator().service_worker();
     let listener = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+        // The worker decided a share needs an account and is asking for
+        // one. It carries the space so the share can be finished once
+        // the account exists.
+        if let Ok(link) = serde_wasm_bindgen::from_value::<LinkAccountRequest>(event.data())
+            && link.message_type == LINK_ACCOUNT
+        {
+            crate::register_dialog::open();
+            crate::register_dialog::describe(
+                &serde_json::json!({
+                    "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+                    "space": link.space,
+                })
+                .to_string(),
+            );
+            return;
+        }
         let Ok(message) = serde_wasm_bindgen::from_value::<WebAuthnRequest>(event.data()) else {
             return;
         };
-        if message.message_type != WEBAUTHN || message.request != ENCRYPTION_KEY_REQUEST {
+        if message.message_type != WEBAUTHN {
             return;
         }
-        if BUSY.with(|busy| busy.replace(true)) {
-            return;
+        // Exhaustive on purpose. A new ceremony kind must fail to
+        // compile here rather than be dropped: `create-account` was
+        // once filtered out by an `if request != ENCRYPTION_KEY_REQUEST
+        // { return }`, so the worker asked the page to run a signup
+        // ceremony, nothing listened, and the registration dialog still
+        // reported success.
+        match message.request {
+            WebAuthnKind::EncryptionKey => {
+                if BUSY.with(|busy| busy.replace(true)) {
+                    return;
+                }
+                show_consent();
+            }
+            WebAuthnKind::CreateAccount => {
+                // Handled by the registration dialog, which is the only
+                // thing that knows which address the ceremony is for and
+                // is already on screen when this arrives. BUSY is not
+                // taken: that flag guards the consent card this module
+                // owns, and the dialog runs its own ceremony.
+                crate::register_dialog::run_signup_ceremony();
+            }
         }
-        show_consent();
     });
     let _ = service_worker
         .add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());

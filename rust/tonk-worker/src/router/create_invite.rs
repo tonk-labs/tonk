@@ -156,6 +156,7 @@ pub async fn create_invite(
     let remote = match resolve_remote_url(&tonk, &repository).await? {
         RemoteRequirement::Ready(remote) => remote,
         RemoteRequirement::Refused(reason) => {
+            let reason = explain_refusal(&tonk, reason).await;
             return Err(TonkWorkerError::Conflict(format!(
                 "cannot mint an invite for '{repo_name}': {} ({})",
                 reason.detail(),
@@ -391,8 +392,19 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
 /// offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteRefusal {
-    /// `main` has no upstream at all. Repairable by attaching a remote.
+    /// `main` has no upstream at all, and the account has a provider to
+    /// attach one to. Repairable by attaching a remote.
     NotSynced,
+    /// No upstream, and nobody has registered: the account this device
+    /// has held since first boot is not a customer of any provider.
+    /// Repairable by registering, which is what the bar offers.
+    NeedsAccount,
+    /// No upstream, and the account enrolled but never confirmed the
+    /// emailed link. Repairable in the user's inbox, not in the bar —
+    /// attaching now would wire a remote the service refuses.
+    NeedsActivation,
+    /// No upstream, and the account's service was withdrawn. Terminal.
+    Suspended,
     /// `main` tracks something that is not a remote, or a remote whose site
     /// address is not a UCAN endpoint. An invite URL has no way to express
     /// either, so there is nothing to offer.
@@ -407,6 +419,9 @@ impl RemoteRefusal {
         use tonk_worker_api::share;
         match self {
             Self::NotSynced => share::BLOCKED_NOT_SYNCED,
+            Self::NeedsAccount => share::BLOCKED_NEEDS_ACCOUNT,
+            Self::NeedsActivation => share::BLOCKED_NEEDS_ACTIVATION,
+            Self::Suspended => share::BLOCKED_SUSPENDED,
             Self::UnshareableRemote => share::BLOCKED_UNSHAREABLE_REMOTE,
         }
     }
@@ -415,8 +430,42 @@ impl RemoteRefusal {
     pub(crate) fn detail(self) -> &'static str {
         match self {
             Self::NotSynced => "This spot only exists on this device.",
+            Self::NeedsAccount => {
+                "Sharing needs an account, so the people you share with have somewhere to sync from."
+            }
+            Self::NeedsActivation => "Check your email and confirm your address, then share again.",
+            Self::Suspended => "This account's sync service has been suspended.",
             Self::UnshareableRemote => "This spot's sync server can't be shared.",
         }
+    }
+}
+
+/// Say WHY a spot has no upstream, given what this profile's account has
+/// registered.
+///
+/// `resolve_remote_url` sees only the repository, so every unsynced spot
+/// reads as [`RemoteRefusal::NotSynced`] — "attach a remote". That is
+/// the right answer only when there is a provider to attach to. A device
+/// has an account from first boot, so the interesting cases are the ones
+/// before registration finishes, and each wants a different remedy:
+/// register, go confirm an email, or nothing at all.
+///
+/// Only `NotSynced` is refined. Every other refusal already knows its
+/// own cause.
+pub(crate) async fn explain_refusal(
+    tonk: &crate::worker::TonkState,
+    refusal: RemoteRefusal,
+) -> RemoteRefusal {
+    use crate::router::customer::{Registration, registration};
+
+    if !matches!(refusal, RemoteRefusal::NotSynced) {
+        return refusal;
+    }
+    match registration(tonk).await {
+        Registration::Served { .. } => RemoteRefusal::NotSynced,
+        Registration::AwaitingActivation { .. } => RemoteRefusal::NeedsActivation,
+        Registration::Suspended => RemoteRefusal::Suspended,
+        Registration::Unregistered => RemoteRefusal::NeedsAccount,
     }
 }
 

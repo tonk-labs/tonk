@@ -19,6 +19,8 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 mod account;
 mod account_deletion;
 pub(crate) mod customer;
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+mod email_status;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
@@ -246,7 +248,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(migration::repo_vs_profile),
         )
         // Repository lifecycle
-        .route("/api/spaces", post(repository::post_space))
         .route(
             "/api/repository/{repo}",
             put(repository::put_repository).get(repository::get_repository),

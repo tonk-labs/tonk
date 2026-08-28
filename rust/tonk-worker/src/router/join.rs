@@ -324,7 +324,7 @@ mod failure_vocabulary {
         assert_eq!(
             messages,
             vec![
-                "This invite link is invalid.",
+                "This share link is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
                 "Tonk could not reach this spot. Try again.",

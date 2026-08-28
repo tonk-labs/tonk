@@ -148,10 +148,21 @@ mod tests {
     /// context. Callers that navigate or inspect top-document account UI must
     /// call `enter_default_frame` again first.
     async fn enter_hub(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        element(driver, ".hub-page").await?;
+        Ok(())
+    }
+
+    /// Enter the sealed guest frame, whatever page it is showing.
+    ///
+    /// The guest renders at an opaque origin, so `contentDocument` is
+    /// unreachable from the top document: reaching its DOM at all means
+    /// switching the driver's browsing context to it. Every helper that
+    /// touches the bar or a space page goes through here.
+    async fn enter_guest(driver: &WebDriver) -> Result<()> {
         driver.enter_default_frame().await?;
         let frame = element(driver, "tonk-site > iframe").await?;
         frame.enter_frame().await?;
-        element(driver, ".hub-page").await?;
         Ok(())
     }
 
@@ -203,6 +214,13 @@ mod tests {
     /// then a reload with caches and workers cleared — so this wait
     /// only has to outlast that ladder.
     async fn wait_for_service_worker(driver: &WebDriver) -> Result<()> {
+        // From the TOP page. Inside the sealed guest
+        // `navigator.serviceWorker.controller` is null — the frame is at
+        // an opaque origin and is not the registration's client — so a
+        // caller that had just reached into the bar would wait out the
+        // whole deadline on a worker that has been in control the entire
+        // time.
+        driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
         loop {
             let controlled = driver
@@ -299,27 +317,115 @@ mod tests {
         wait_for_service_worker(driver).await?;
         goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
-        element(driver, "#account-choose-create")
-            .await?
-            .click()
+        run_cluster_ceremony(driver, email).await?;
+        // And that is where it stops. Creating an account leaves the
+        // ceremony standing on "awaiting confirmation" — the emailed
+        // link is the next step, and the cluster says so — so there is
+        // no dashboard to land on yet. `activate` is what finishes it.
+        Ok(())
+    }
+
+    /// Take the cluster down the way its own control does.
+    async fn dismiss_register_dialog(driver: &WebDriver) -> Result<()> {
+        driver.enter_default_frame().await?;
+        driver
+            .execute(
+                r##"
+                const back = document.querySelector("#tonk-register-dismiss");
+                if (back) back.click();
+                "##,
+                Vec::new(),
+            )
             .await?;
-        element(driver, "#account-email")
-            .await?
-            .send_keys(email)
-            .await?;
-        element(driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
-        if let Err(wait_error) = element(driver, "tonk-account[data-mode=\"success\"]").await {
-            let host = element(driver, "tonk-account").await?;
-            let mode = host.attr("data-mode").await?.unwrap_or_default();
-            let error = element(driver, "#account-error").await?.text().await?;
-            let working = element(driver, "#account-working").await?.text().await?;
-            return Err(wait_error).context(format!(
-                "account creation stopped in mode {mode:?}; error={error:?}; status={working:?}"
-            ));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let gone = driver
+                .execute(
+                    r##"return !document.querySelector("#tonk-register");"##,
+                    Vec::new(),
+                )
+                .await?;
+            if gone.json().as_bool() == Some(true) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the cluster stayed up after dismiss"));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    /// Run the account ceremony for `email` from the raised cluster.
+    ///
+    /// The panel that asked "create account or log in" before knowing
+    /// the address is gone: one entry raises this, and the address
+    /// lookup picks which ceremony runs. Every caller that used to click
+    /// through those panels goes through here.
+    pub(crate) async fn run_cluster_ceremony(driver: &WebDriver, email: &str) -> Result<()> {
+        element(driver, "#account-choose-link")
+            .await?
+            .click()
+            .await?;
+        await_register_dialog(driver).await?;
+        type_into_register_dialog(driver, email).await?;
+        await_register_action(driver, "create a passkey").await?;
+        click_register_action(driver).await?;
+        let passkey = await_settled_row(driver, "passkey").await?;
+        anyhow::ensure!(
+            passkey.contains(" on "),
+            "the passkey row names the device, got {passkey:?}",
+        );
+        Ok(())
+    }
+
+    /// Sign in to an existing account for `email`, from the cluster.
+    ///
+    /// The counterpart to [`run_cluster_ceremony`]: the address decides
+    /// which of the two runs, so signing in is the same control and the
+    /// same field, answered differently. The old login panel it
+    /// replaced is no longer reachable — one entry raises this instead.
+    pub(crate) async fn run_cluster_login(driver: &WebDriver, email: &str) -> Result<()> {
+        element(driver, "#account-choose-link")
+            .await?
+            .click()
+            .await?;
+        await_register_dialog(driver).await?;
+        type_into_register_dialog(driver, email).await?;
+        await_register_action(driver, "log in with your passkey").await?;
+        click_register_action(driver).await?;
+        // Wait for the ceremony's own receipt before taking the cluster
+        // down, the way signing up does. Dismissing on the click alone
+        // races the assertion the platform is still holding, so a caller
+        // that goes straight on to read the panel is reading it before
+        // there is anything to read.
+        await_settled_row(driver, "passkey").await?;
+        dismiss_register_dialog(driver).await?;
+        Ok(())
+    }
+
+    /// Confirm the emailed address from a SECOND TAB, leaving the
+    /// tab that raised the ceremony exactly where it is.
+    ///
+    /// Which is what the emailed link does, and what the cluster
+    /// requires: it is a DOM element with no persistence, so navigating
+    /// the ceremony's own tab to the link and back destroys it, and the
+    /// confirmation comes home to nothing. Activation reaches the
+    /// waiting tab as a fact on profile main, which is why it can cross
+    /// tabs at all.
+    pub(crate) async fn activate_in_another_tab(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        email: &str,
+    ) -> Result<()> {
+        let link = activation_link(env, email).await?;
+        let ceremony = driver.window().await?;
+        let confirm = driver.new_tab().await?;
+        driver.switch_to_window(confirm).await?;
+        goto(driver, &link).await?;
+        element(driver, "#activate-accept").await?.click().await?;
+        element(driver, "#activate-done").await?;
+        driver.close_window().await?;
+        driver.switch_to_window(ceremony).await?;
         Ok(())
     }
 
@@ -548,29 +654,10 @@ mod tests {
             settings_dark, hub_dark,
             "dark settings tokens drifted from Hub"
         );
-        let hub_heights = driver
-            .execute(
-                r#"document.querySelector('[data-open-settings]').click();
-                    const body = document.querySelector('.hub-settings__body');
-                    document.querySelector('[data-settings-tab="account"]').click();
-                    const account = Math.round(body.getBoundingClientRect().height);
-                    document.querySelector('[data-settings-tab="devices"]').click();
-                    const devices = Math.round(body.getBoundingClientRect().height);
-                    return {account, devices};"#,
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(
-            hub_heights.json()["account"],
-            hub_heights.json()["devices"],
-            "Hub Account and Devices tabs must keep one panel height"
-        );
-
         driver.enter_default_frame().await?;
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        for (window_width, expected_total, expected_rail, expected_body) in
-            [(1200, 576, 144, 432), (607, 432, 108, 324)]
+        for (window_width, expected_total, expected_rail, expected_body) in [(1200, 720, 144, 576)]
         {
             driver.set_window_rect(0, 0, window_width, 900).await?;
             let geometry = driver
@@ -579,12 +666,21 @@ mod tests {
                         const rail = document.querySelector('.account__rail').getBoundingClientRect();
                         const body = document.querySelector('.account__settings-body').getBoundingClientRect();
                         document.querySelector('#account-tab-account').click();
+                        const selectedTabElement = document.querySelector('#account-tab-account');
+                        const selectedTab = selectedTabElement.getBoundingClientRect();
+                        // Computed-style declarations are live; snapshot the
+                        // selected state before switching to Devices below.
+                        const selectedTabBorderRight = getComputedStyle(selectedTabElement).borderRightWidth;
+                        const selectedTabBridgeWidth = getComputedStyle(selectedTabElement, '::after').width;
                         const accountHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         document.querySelector('#account-tab-devices').click();
                         const devicesHeight = Math.round(document.querySelector('.account__settings-body').getBoundingClientRect().height);
                         const error = document.querySelector('#account-error');
                         error.hidden = false;
+                        error.focus();
                         const errorRight = Math.round(error.getBoundingClientRect().right);
+                        const errorWidth = Math.round(error.getBoundingClientRect().width);
+                        const errorFocusShadow = getComputedStyle(error).boxShadow;
                         // Read the body's edge in the SAME layout state:
                         // revealing the notice can grow the page past the
                         // viewport, and a classic scrollbar appearing then
@@ -598,10 +694,18 @@ mod tests {
                           settings: Math.round(settings.width),
                           rail: Math.round(rail.width),
                           body: Math.round(body.width),
+                          railTop: Math.round(rail.top),
+                          bodyTop: Math.round(body.top),
+                          selectedTabRight: Math.round(selectedTab.right),
+                          bodyLeft: Math.round(body.left),
+                          selectedTabBorderRight,
+                          selectedTabBridgeWidth,
                           accountHeight,
                           devicesHeight,
                           bodyRight: errorBodyRight,
                           errorRight,
+                          errorWidth,
+                          errorFocusShadow,
                           logoVisible: logo.width > 0 && logo.height > 0
                         };"#,
                     Vec::new(),
@@ -614,6 +718,10 @@ mod tests {
             );
             assert_eq!(geometry["rail"], expected_rail);
             assert_eq!(geometry["body"], expected_body);
+            assert_eq!(geometry["railTop"], geometry["bodyTop"]);
+            assert_eq!(geometry["selectedTabRight"], geometry["bodyLeft"]);
+            assert_eq!(geometry["selectedTabBorderRight"], "0px");
+            assert_eq!(geometry["selectedTabBridgeWidth"], "2px");
             assert_eq!(
                 geometry["accountHeight"], geometry["devicesHeight"],
                 "Account and Devices tabs must keep one panel height at {window_width}px"
@@ -621,6 +729,17 @@ mod tests {
             assert_eq!(
                 geometry["errorRight"], geometry["bodyRight"],
                 "settings notices must align with the panel body at {window_width}px"
+            );
+            assert_eq!(
+                geometry["errorWidth"], geometry["body"],
+                "settings notices must span the panel body at {window_width}px"
+            );
+            assert!(
+                !geometry["errorFocusShadow"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("inset"),
+                "focused settings notices must keep their ordinary frame"
             );
             assert_eq!(geometry["logoVisible"], true);
         }
@@ -666,10 +785,17 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         enroll_only(&driver, &env, "verify-first@example.com").await?;
 
-        let notice = element(&driver, "#account-error").await?.text().await?;
+        // The ceremony is still standing, and it is what the person is
+        // looking at — so it is where the next step has to be named. The
+        // panel behind it used to carry this notice, back when creation
+        // happened in the panel itself.
+        let notice = element(&driver, "#tonk-register-status")
+            .await?
+            .text()
+            .await?;
         assert!(
-            notice.contains("verification link"),
-            "pending setup should direct the person to the verification email: {notice:?}"
+            notice.contains("confirmation link"),
+            "pending setup should direct the person to the emailed link: {notice:?}"
         );
         assert!(
             !notice.contains("hydration") && !notice.contains("could not be synchronized"),
@@ -677,8 +803,15 @@ mod tests {
         );
         assert!(
             !notice.contains("reload /settings"),
-            "email verification should be the only requested next step: {notice:?}"
+            "opening the emailed link should be the only requested next step: {notice:?}"
         );
+
+        // The rest is about the DASHBOARD's display-name field, which
+        // is behind the standing ceremony — WebDriver refuses to type
+        // into it, exactly as a person cannot. Take the ceremony down
+        // the way it offers, which is also what puts the panel back.
+        dismiss_register_dialog(&driver).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
 
         let display_name = element(&driver, "#account-display-name").await?;
         let select_all = if cfg!(target_os = "macos") {
@@ -763,12 +896,12 @@ mod tests {
         let desktop = desktop.json();
         assert_eq!(desktop["hostDisplay"], "grid");
         assert_eq!(desktop["hostHeight"], desktop["viewportHeight"]);
-        assert_eq!(desktop["page"], "rgb(236, 236, 236)");
+        assert_eq!(desktop["page"], "rgb(232, 230, 228)");
         assert_eq!(desktop["mainWidth"], 576);
         assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
         assert_eq!(desktop["ceremonyWidth"], 432);
         assert_eq!(desktop["logoWidth"], 132);
-        assert_eq!(desktop["actionHeight"], 44);
+        assert_eq!(desktop["actionHeight"], 36);
         assert_eq!(desktop["heading"], "activate your account");
         assert_eq!(desktop["overflow"], false);
 
@@ -788,7 +921,7 @@ mod tests {
             .await?;
         assert_eq!(done.json()["heading"], "account activated");
         assert_eq!(done.json()["rowWidth"], 432);
-        assert_eq!(done.json()["actionHeight"], 44);
+        assert_eq!(done.json()["actionHeight"], 36);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
         let compact = driver
@@ -837,8 +970,7 @@ mod tests {
         click(&driver, "#account-delete-submit").await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
 
-        click(&driver, "#account-choose-link").await?;
-        click(&driver, "#account-link-submit").await?;
+        run_cluster_login(&driver, EMAIL).await?;
         if let Err(wait_error) = element(&driver, "tonk-account[data-mode=\"success\"]").await {
             let host = element(&driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
@@ -863,8 +995,19 @@ mod tests {
         Ok(())
     }
 
+    /// A taken address is routed, not refused.
+    ///
+    /// Creation used to be chosen before the address was known, so
+    /// typing one that already had an account ran creation against it
+    /// and failed at the end — after the custody passkey existed. The
+    /// cost was an orphaned credential in the authenticator per attempt,
+    /// and the recovery was to retype and try again.
+    ///
+    /// The lookup answers first now, and the answer picks the ceremony:
+    /// an address someone holds offers sign-in. Nothing is minted for
+    /// the wrong one.
     #[dialog_common::test]
-    async fn it_reports_an_existing_email_and_recovers_with_another_address(
+    async fn it_offers_sign_in_for_a_taken_address_without_minting(
         env: TestEnvironment,
     ) -> Result<()> {
         let existing_email = "existing@example.com";
@@ -878,44 +1021,29 @@ mod tests {
         wait_for_service_worker(&driver).await?;
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
-        element(&driver, "#account-choose-create")
+        element(&driver, "#account-choose-link")
             .await?
             .click()
             .await?;
-        element(&driver, "#account-email")
-            .await?
-            .send_keys(existing_email)
-            .await?;
-        element(&driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
+        await_register_dialog(&driver).await?;
 
-        // The conflict surfaces at signed account creation — after the
-        // custody passkey exists. That ordering is deliberate: an
-        // availability probe without a verified code would let anyone
-        // enumerate registered emails, so the failed attempt's cost is
-        // one orphaned passkey in the authenticator.
-        wait_for_text(
-            &driver,
-            "#account-error",
-            "an account already exists for this email address",
-        )
-        .await?;
-        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
-
-        let email = element(&driver, "#account-email").await?;
-        email.clear().await?;
-        email.send_keys(available_email).await?;
-        element(&driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        // The taken address offers sign-in...
+        type_into_register_dialog(&driver, existing_email).await?;
+        await_register_action(&driver, "log in with your passkey").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
-            2,
-            "each creation attempt mints exactly one custody passkey"
+            0,
+            "an address that already has an account must mint nothing",
+        );
+
+        // ...and editing to a free one offers creation, in the same
+        // cluster, with nothing to undo in between.
+        type_into_register_dialog(&driver, available_email).await?;
+        await_register_action(&driver, "create a passkey").await?;
+        assert_eq!(
+            credential_count(&driver, &authenticator_id).await?,
+            0,
+            "changing the address must not have minted anything either",
         );
 
         driver.quit().await?;
@@ -1141,18 +1269,7 @@ mod tests {
             // that creates and enrolls the account flows straight into
             // the approval it was interrupted by.
             element(driver, "tonk-account[data-mode=\"choice\"]").await?;
-            element(driver, "#account-choose-create")
-                .await?
-                .click()
-                .await?;
-            element(driver, "#account-email")
-                .await?
-                .send_keys(EMAIL)
-                .await?;
-            element(driver, "#account-create-submit")
-                .await?
-                .click()
-                .await?;
+            run_cluster_ceremony(driver, EMAIL).await?;
             // Let the creation ceremony finish before navigating
             // anywhere: it lands back on the approval it interrupted,
             // and leaving mid-flight loses whatever it had not yet
@@ -1183,10 +1300,6 @@ mod tests {
         // The callback's bridge page re-posts the fragment on loopback and
         // redirects back here, where the outcome uses the account styling.
         if let Err(wait_error) = element(driver, "tonk-account[data-mode=\"success\"]").await {
-            // Say WHERE the approval stopped, not just that it did: the
-            // panel's mode, its error line, and its status line are what
-            // separate a ceremony that failed from a callback that never
-            // redirected.
             let host = element(driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
             let error = match driver.find(By::Css("#account-error")).await {
@@ -1268,6 +1381,1500 @@ mod tests {
         })
     }
 
+    /// Await a fact appearing on a branch, by SUBSCRIPTION rather than
+    /// by polling.
+    ///
+    /// `POST .../query` with `Accept: text/event-stream` opens a live
+    /// subscription: a `snapshot` frame with what already matches, then
+    /// an `update` frame for every change. The browser holds it open and
+    /// resolves as soon as a frame satisfies `predicate`, so the test
+    /// waits on the same notification the app does instead of asking
+    /// again on a timer.
+    ///
+    /// `timeout_ms` bounds the wait so a fact that never arrives fails
+    /// with a message rather than hanging the suite. That is a deadline,
+    /// not an interval: nothing re-checks on a clock.
+    async fn await_subscription(
+        driver: &WebDriver,
+        path: &str,
+        query: serde_json::Value,
+        predicate: &str,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const [path, query, predicateSource, timeoutMs, done] = [
+                    arguments[0], arguments[1], arguments[2], arguments[3],
+                    arguments[arguments.length - 1],
+                ];
+                const matches = new Function("frame", predicateSource);
+                let settled = false;
+                const settle = (value) => {
+                    if (settled) return;
+                    settled = true;
+                    try { controller.abort(); } catch (_) {}
+                    done(value);
+                };
+                const controller = new AbortController();
+                const timer = setTimeout(
+                    () => settle({ error: "timed out waiting for the subscription" }),
+                    timeoutMs,
+                );
+                fetch(path, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/json",
+                        accept: "text/event-stream",
+                    },
+                    body: JSON.stringify(query),
+                    signal: controller.signal,
+                }).then(async (response) => {
+                    if (!response.ok) {
+                        return settle({ error: "subscribe failed: " + response.status });
+                    }
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = "";
+                    for (;;) {
+                        const { value, done: finished } = await reader.read();
+                        if (finished) {
+                            return settle({ error: "the subscription ended early" });
+                        }
+                        buffer += decoder.decode(value, { stream: true });
+                        let cut;
+                        while ((cut = buffer.indexOf("\n\n")) !== -1) {
+                            const chunk = buffer.slice(0, cut);
+                            buffer = buffer.slice(cut + 2);
+                            const line = chunk
+                                .split("\n")
+                                .find((l) => l.startsWith("data:"));
+                            if (!line) continue;
+                            let frame;
+                            try {
+                                frame = JSON.parse(line.slice(5).trim());
+                            } catch (_) {
+                                continue;
+                            }
+                            if (matches(frame)) {
+                                clearTimeout(timer);
+                                return settle({ frame });
+                            }
+                        }
+                    }
+                }).catch((error) => {
+                    if (!settled) settle({ error: String(error) });
+                });
+                "#,
+                vec![
+                    serde_json::json!(path),
+                    query,
+                    serde_json::json!(predicate),
+                    serde_json::json!(timeout_ms),
+                ],
+            )
+            .await?;
+        let value = result.json().clone();
+        if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("{error} (subscribing to {path})"));
+        }
+        Ok(value["frame"].clone())
+    }
+
+    /// The `account/check-email` claim, in the shape the registration
+    /// form dispatches it.
+    fn check_email_claim_json(email: &str) -> serde_json::Value {
+        serde_json::json!({
+            "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": {
+                        "kind": "transient",
+                        "concept": {
+                            "description": "Ask whether an address is registered.",
+                            "with": {
+                                "email": {
+                                    "the": "dom.event.current-target.elements.email/value",
+                                    "as": "Text"
+                                }
+                            }
+                        }
+                    },
+                    "parameters": { "email": email }
+                }
+            }]
+        })
+    }
+
+    /// Asking about an address answers on the overlay, and the answer
+    /// says which of create / sign-in the form should offer.
+    ///
+    /// The unit tests cover the status mapping with no service in sight.
+    /// This is the part they cannot see: the command decodes, the lookup
+    /// reaches a real access service, and the answer lands somewhere the
+    /// form can subscribe to.
+    #[dialog_common::test]
+    async fn it_answers_whether_an_address_is_registered(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        // These calls are `fetch` FROM THE PAGE, answered by the service
+        // worker — so a page has to be loaded and the worker has to be
+        // controlling it. Without that the request leaves for the static
+        // server, which has no `/api/*` and answers 405.
+        driver.goto(env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
+        // A profile exists from first boot, so nothing has to be signed
+        // in for the form to ask this.
+        get_json(&driver, "/api/profile").await?;
+
+        let unknown = "nobody-has-this@example.com";
+        let dispatched = post_json(
+            &driver,
+            "/api/profile/branch/main/transact",
+            check_email_claim_json(unknown),
+        )
+        .await?;
+        successful_body("dispatch account/check-email", &dispatched);
+
+        let answered = await_email_status(&driver, unknown).await?;
+        assert_eq!(
+            answered, "unregistered",
+            "an address nobody registered is the create-an-account branch",
+        );
+
+        // Now one that IS registered: the same question, the other
+        // answer, so the form offers sign-in instead of a ceremony that
+        // would fail at the end.
+        let taken = "taken@example.com";
+        sign_up(&driver, &env, taken).await?;
+        let dispatched = post_json(
+            &driver,
+            "/api/profile/branch/main/transact",
+            check_email_claim_json(taken),
+        )
+        .await?;
+        successful_body("dispatch account/check-email", &dispatched);
+
+        let answered = await_email_status(&driver, taken).await?;
+        assert_eq!(
+            answered, "active",
+            "a registered address is the sign-in branch, not a second signup",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Read the overlay answer for `address`, waiting for the row that
+    /// names it rather than whichever row happens to be there.
+    async fn await_email_status(driver: &WebDriver, address: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let rows = post_json(
+                driver,
+                "/api/profile/branch/main/query",
+                tonk_worker::helpers::email_status_wire_query(),
+            )
+            .await?;
+            if let Some(found) = rows["body"].as_array().and_then(|rows| {
+                rows.iter().find(|row| {
+                    row["address"].as_str() == Some(address)
+                        || row["fields"]["address"].as_str() == Some(address)
+                })
+            }) {
+                let state = found["state"]
+                    .as_str()
+                    .or_else(|| found["fields"]["state"].as_str())
+                    .unwrap_or_default();
+                // `checking` is the question being asked, not an answer
+                // to it: the handler writes it before the lookup runs so
+                // the form can say it is working. Returning it would
+                // report whatever was read first rather than what the
+                // address turned out to be.
+                if !state.is_empty() && state != tonk_schema::email_state::CHECKING {
+                    return Ok(state.to_owned());
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("no email-status answer for {address}: {rows}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// The Hub's own wizard creates a local-only spot before anyone
+    /// registers.
+    ///
+    /// Every other test here builds the claim in Rust, which skips the
+    /// form entirely — so a hidden input that prefills a remote is
+    /// invisible to them. This one submits the real wizard, which is how
+    /// `<tonk-default-remote auto>` went on wiring `origin + /ucan/`
+    /// onto spots created with no account: the form supplied a remote,
+    /// the worker honoured it as a deliberate choice, and the gate that
+    /// keeps a spot local never got a say. The spot then synced to a
+    /// service that refuses to serve it.
+    #[dialog_common::test]
+    async fn it_creates_a_local_only_spot_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
+        // The authenticator id comes along so the ceremony can be
+        // observed: a passkey either got minted or it did not.
+        let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        // Nothing is registered: a device has an account from first
+        // boot, but no provider serves it until someone signs up.
+        let customer = get_json(&driver, "/api/customer").await?;
+        assert!(
+            customer["body"]["provider"].as_str().is_none(),
+            "this profile must not be served yet: {customer}",
+        );
+
+        let before = space_keys(&driver).await?;
+        submit_hub_wizard(&driver).await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let key = loop {
+            let now = space_keys(&driver).await?;
+            if let Some(key) = now.iter().find(|key| !before.contains(key)) {
+                break key.clone();
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the wizard never created a spot; before={before:?} now={now:?}",
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+
+        // Give the handler's post-navigation attach step room to run, so
+        // "no remote" means it declined rather than that we looked early.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let info = successful_body("read the spot configuration", &info);
+        assert!(
+            info["remote"]
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty),
+            "a spot created before registering must wire no remote, got {}",
+            info["remote"],
+        );
+        assert!(
+            info["branch"]["main"]["upstream"].is_null(),
+            "main must track nothing, got {}",
+            info["branch"]["main"]["upstream"],
+        );
+
+        // The spot is local-only, which is what makes sharing it
+        // refuse. Walk the rest of the flow from that refusal, asserting
+        // at each step on WHAT THE USER SEES rather than on the fact
+        // behind it.
+        //
+        // That distinction is the whole point of these steps. The
+        // command is already covered by
+        // `it_answers_whether_an_address_is_registered`, which polls the
+        // worker's row directly — and therefore passes whether or not
+        // anything ever renders the answer. The dialog shipped with a
+        // write and no read, latching on "Checking…" forever, and that
+        // test stayed green throughout.
+        // The bar offers the account row, not the copy row: nothing is
+        // registered. That is the visible half of the account
+        // subscription — when its query failed, no frame ever arrived
+        // and the bar sat on this row even after someone registered.
+        await_share_row(&driver, "account").await?;
+        open_register_dialog(&driver).await?;
+
+        // Nothing is offered until the lookup answers. A ceremony
+        // started before that runs creation against an address that
+        // might already have an account, which fails at the end and
+        // leaves an orphan passkey.
+        let idle = register_action_label(&driver).await?;
+        assert!(
+            idle.is_empty(),
+            "the action row must stay folded until the answer, got {idle:?}",
+        );
+
+        type_into_register_dialog(&driver, "nobody@example.com").await?;
+        let label = await_register_action(&driver, "create a passkey").await?;
+        assert_eq!(
+            label, "create a passkey",
+            "an address nobody registered is the create branch",
+        );
+
+        // The lookup itself must NOT have run a ceremony. `check-email`
+        // and `account/register` are the same shape, and before the
+        // marker every keystroke's lookup also decoded as a
+        // registration — so a passkey prompt appeared while the user was
+        // still typing.
+        let typed = credential_count(&driver, &authenticator).await?;
+        assert_eq!(
+            typed, 0,
+            "typing an address must not mint a passkey, got {typed}",
+        );
+
+        // Clicking it must actually RUN a ceremony. A successful
+        // transact only means the command was accepted; the worker then
+        // asks the page to run WebAuthn. When nothing on the page
+        // listened for that request the dialog still reported success,
+        // so the credential count is what tells the difference.
+        click_register_action(&driver).await?;
+        let after = await_credential_count(&driver, &authenticator, 1).await?;
+        assert_eq!(after, 1, "the ceremony mints a passkey");
+
+        // The share cannot finish until the address is confirmed: the
+        // access service refuses to provision a customer that still
+        // awaits activation ("the subject's own registration awaits
+        // email activation"), so minting before this is asking for a
+        // refusal, not for a link. In a second tab, because the cluster
+        // is a DOM element with no persistence and this tab is holding
+        // the ceremony that the share is waiting on.
+        activate_in_another_tab(&driver, &env, "nobody@example.com").await?;
+
+        // Confirmation comes home to the waiting cluster as a fact, and
+        // the ceremony walks the rest of its steps: the address settles
+        // as verified, the name commits, and the closing action is the
+        // thing the share was for.
+        await_row_value(&driver, "email", "verified").await?;
+        type_into_settled_row(&driver, "display name", "Nobody").await?;
+        await_register_action(&driver, "copy share link").await?;
+        click_register_action(&driver).await?;
+
+        // ...and THEN the share it interrupted finishes, which is the
+        // feature: the spot gains the remote it refused to share
+        // without, and the invite link arrives.
+        await_share_link(&driver, &key).await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Sign up in order to share, end to end, as a person does it.
+    ///
+    /// Every other test here reaches into the worker: it builds a claim
+    /// in Rust, or polls a row, or asserts on `/api/repository`. Each of
+    /// those passes while the thing the user touches is broken — which
+    /// is how the registration dialog shipped latched on "Checking…"
+    /// forever with a green suite.
+    ///
+    /// This one only clicks and reads. It is deliberately the longest
+    /// test in the file, because the value is in the SEQUENCE: steps
+    /// that pass alone still fail in order.
+    ///
+    /// The ceremony's later rows (passkey, verification, display name,
+    /// and the closing copy-link) are not built yet, so this fails part
+    /// way through by design — it is the specification of the flow, and
+    /// what it reports is how far the flow actually gets.
+    #[dialog_common::test]
+    async fn it_signs_up_to_share_and_hands_over_the_link(env: TestEnvironment) -> Result<()> {
+        let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
+
+        // 1–2. The Hub, with nothing in it.
+        driver.goto(env.tonk_web.as_str()).await?;
+        let spaces = space_keys(&driver).await?;
+        assert!(
+            spaces.is_empty(),
+            "a fresh profile has no spaces, got {spaces:?}"
+        );
+
+        // 3–4. Create one, and land in it.
+        submit_hub_wizard(&driver).await?;
+        let key = await_new_space(&driver, &spaces).await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+
+        // 5–6. Share offers to log in: nothing is registered.
+        open_share_stack(&driver).await?;
+        await_share_row(&driver, "account").await?;
+
+        // 7–8. The cluster comes up with the address field focused, so
+        // typing works without aiming at anything.
+        click_share_row(&driver, "[data-share-account]").await?;
+        await_register_dialog(&driver).await?;
+        assert_eq!(
+            focused_element_id(&driver).await?,
+            "tonk-register-email",
+            "the address field must take focus when the cluster opens",
+        );
+
+        // 9–10. An address nobody has reveals the create step. The label
+        // IS the routing decision, so asserting it covers the whole loop:
+        // command dispatched, answer written, subscription delivered.
+        let email = "alice@web.mail";
+        type_into_register_dialog(&driver, email).await?;
+        await_register_action(&driver, "create a passkey").await?;
+
+        // 11–12. Running it waits on the platform, and says so.
+        let before = credential_count(&driver, &authenticator).await?;
+        click_register_action(&driver).await?;
+        await_register_action(&driver, "waiting for your device").await?;
+
+        // 12–13. The ceremony settles into a record naming the device.
+        await_credential_count(&driver, &authenticator, before + 1).await?;
+        let passkey = await_settled_row(&driver, "passkey").await?;
+        assert!(
+            passkey.contains(" on "),
+            "the passkey row names the device, got {passkey:?}",
+        );
+
+        // 14. And the narrator asks for the emailed link.
+        await_narrator_containing(&driver, "confirmation link").await?;
+
+        // 15–17. Open it, accept, and come back — in the tab the
+        // emailed link opens, which is also the only place the cluster
+        // survives it.
+        activate_in_another_tab(&driver, &env, email).await?;
+
+        // 18. The email row settles: the address is confirmed.
+        //
+        // Waiting for the VALUE, not merely for a settled row: the row
+        // is already settled at `awaiting confirmation` while the link
+        // is out, so asking only "has it settled" answers yes before
+        // activation has reached this tab at all.
+        await_row_value(&driver, "email", "verified").await?;
+
+        // 19. Then the name, typed and committed.
+        type_into_settled_row(&driver, "display name", "Alice").await?;
+        assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
+
+        // 20–22. The closing action is the thing the share was for.
+        await_register_action(&driver, "copy share link").await?;
+        watch_clipboard(&driver).await?;
+        click_register_action(&driver).await?;
+        await_register_action(&driver, "copying link…").await?;
+        await_narrator_containing(&driver, "invite someone into a space").await?;
+
+        // 23. And it really is an invite.
+        //
+        // The narrator IS the observation. The link itself is
+        // overlay-only by design — it carries the membership seed in its
+        // fragment, so `Credential` and `InviteState` are asserted into
+        // the session overlay and never written to a branch — which
+        // means no query from here can read it, and the clipboard needs
+        // a permission the harness's Chrome does not grant. What the
+        // page says once it holds a link is the reachable proof that it
+        // does, and the dialog only says it in that one branch.
+        await_narrator_containing(&driver, "invite someone into a space").await?;
+
+        // 24–25. A fresh profile opening it lands in the same space.
+        //
+        // The link comes from the clipboard, read in the page that just
+        // wrote it: the copy is a user gesture, which is what grants the
+        // permission, and the row behind it is overlay-only so no query
+        // from out here can reach it.
+        let invite = copied_text(&driver).await?;
+        assert!(
+            invite.contains("/join") || invite.contains("/@/"),
+            "the copied link must be an invite, got {invite:?}",
+        );
+        let guest = driver_with_prf(&env).await?;
+        guest.goto(&invite).await?;
+        await_url_containing(&guest, &key).await?;
+
+        guest.quit().await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The Hub offers to link an account, and does it in one step.
+    ///
+    /// It used to read "log in" and navigate to `/settings`, which put
+    /// two surfaces between the label and the ceremony — press it, land
+    /// on a panel, press "link an account" there, meet the cluster only
+    /// then. It also named the wrong act: the address decides whether it
+    /// creates a passkey or signs you in, so half of "log in"'s readers
+    /// were told something untrue before they had typed anything.
+    ///
+    /// Both halves are asserted from the page, because both are what a
+    /// person sees: the word on the control, and what one press does.
+    #[dialog_common::test]
+    async fn it_links_an_account_from_the_hub_in_one_step(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        // The word on the control, before anything is linked.
+        enter_hub(&driver).await?;
+        wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
+
+        // One press. The Hub is a sealed guest, so the cluster it asks
+        // for is raised by the TOP page — which is also why pressing it
+        // must not navigate the Hub anywhere.
+        let before = driver.current_url().await?;
+        click(&driver, "[data-account-trigger]").await?;
+        await_register_dialog(&driver).await?;
+
+        driver.enter_default_frame().await?;
+        assert_eq!(
+            driver.current_url().await?,
+            before,
+            "linking an account happens in place, with no page in between",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The account subscription's query actually returns rows.
+    ///
+    /// It shipped without binding `this`, which is a query ERROR rather
+    /// than a wildcard: every attempt failed with `UnboundVariable` and
+    /// no frame ever arrived. Nothing said so — the bar simply fell back
+    /// to its defaults and reported stale sync, kept offering "log in to
+    /// share" to an active account, and pushed toward creating a second
+    /// one. Three symptoms, one missing term, no error anywhere.
+    #[dialog_common::test]
+    async fn it_reads_the_account_state_the_bar_subscribes_to(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "subscribed@example.com").await?;
+
+        let rows = post_json(
+            &driver,
+            "/api/profile/branch/main/query",
+            // The bar's query, inlined: `tonk-ui` does not depend on
+            // `tonk-fab`. Pinned to it by
+            // `logic::account_state_query::it_binds_its_subject`, which
+            // asserts the same shape from the other side.
+            serde_json::json!({
+                "predicate": { "with": {
+                    "status": {
+                        "the": "xyz.tonk.account/customer-status",
+                        "as": "Text", "cardinality": "one"
+                    },
+                    "provider": {
+                        "the": "xyz.tonk.account/provider-address",
+                        "as": "Text", "cardinality": "one"
+                    }
+                } },
+                "terms": {
+                    "this": { "?": { "name": "account" } },
+                    "status": { "?": { "name": "status" } },
+                    "provider": { "?": { "name": "provider" } }
+                }
+            }),
+        )
+        .await?;
+        let rows = successful_body("read the account state", &rows);
+        let rows = rows.as_array().context("the query answers with rows")?;
+        assert!(
+            !rows.is_empty(),
+            "an activated account must resolve, got {rows:?}",
+        );
+        assert_eq!(
+            rows[0]["fields"]["status"], "Active",
+            "and say so: {rows:?}",
+        );
+        assert!(
+            rows[0]["fields"]["provider"]
+                .as_str()
+                .is_some_and(|p| !p.is_empty()),
+            "with the provider the service named: {rows:?}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The bar stops offering to log in once an account exists.
+    ///
+    /// The rendered half of the same subscription. Asserting on the row
+    /// the user sees rather than on the fact behind it is what catches a
+    /// query that silently answers nothing: the fact was right the whole
+    /// time the bar was wrong.
+    #[dialog_common::test]
+    async fn it_offers_the_copy_row_once_an_account_exists(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        // `create_space` answers with the full DID; prefixing `did:key:`
+        // again names nothing, and the bar then has no space to answer
+        // about.
+        let key = create_space(&driver, "Shareable").await?;
+        driver
+            .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
+            .await?;
+        await_share_row(&driver, "account").await?;
+
+        sign_up(&driver, &env, "bar-flips@example.com").await?;
+        driver
+            .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
+            .await?;
+
+        await_share_row(&driver, "link").await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Activating rewrites the answer about the address.
+    ///
+    /// `EmailStatus` was written only by the lookup handler, so an
+    /// address checked BEFORE registering stayed `unregistered` in the
+    /// overlay forever — and the form kept offering to create an account
+    /// for one that had just finished activating. The order here is the
+    /// point: check first, register second.
+    #[dialog_common::test]
+    async fn it_refreshes_the_address_answer_when_the_account_activates(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
+
+        // Ask about the address while nobody has it.
+        let taken = "activates@example.com";
+        let dispatched = post_json(
+            &driver,
+            "/api/profile/branch/main/transact",
+            check_email_claim_json(taken),
+        )
+        .await?;
+        successful_body("dispatch account/check-email", &dispatched);
+        assert_eq!(
+            await_email_status(&driver, taken).await?,
+            "unregistered",
+            "nobody has it yet",
+        );
+
+        // Now register and activate it.
+        sign_up(&driver, &env, taken).await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            // Ask again, the way the form does every time the address is
+            // typed. The answer is written when the question is asked;
+            // nothing re-publishes it behind the scenes, so an answer
+            // from before the account existed stays exactly as true as
+            // it was when it was given.
+            let asked = post_json(
+                &driver,
+                "/api/profile/branch/main/transact",
+                check_email_claim_json(taken),
+            )
+            .await?;
+            successful_body("re-ask account/check-email", &asked);
+            if await_email_status(&driver, taken).await? == "active" {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "activation never refreshed the answer; it still reads {:?}",
+                await_email_status(&driver, taken).await?,
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// An address that already has an account must offer to SIGN IN.
+    ///
+    /// Sending someone with an account through a creation ceremony
+    /// leaves an orphan passkey in their authenticator and fails at the
+    /// end, so the button has to route on the answer rather than assume.
+    #[dialog_common::test]
+    async fn it_offers_sign_in_for_an_address_that_already_has_an_account(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        // Register the address in a profile of its own, then ask about
+        // it from a fresh one. The share row that raises the cluster is
+        // only offered while THIS browser has no account, so a profile
+        // that just signed up cannot reach the cluster to ask anything —
+        // and the question here is what the lookup says about an address
+        // someone else already holds.
+        let owner = driver_with_prf(&env).await?;
+        let taken = "taken@example.com";
+        sign_up(&owner, &env, taken).await?;
+        owner.quit().await?;
+
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+
+        open_register_dialog_from_a_space(&driver, &env, "Signed In").await?;
+        type_into_register_dialog(&driver, taken).await?;
+        let label = await_register_action(&driver, "log in with your passkey").await?;
+        assert_eq!(
+            label, "log in with your passkey",
+            "a registered address must offer sign-in, not a second signup",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A late answer must not render as an answer about what is typed
+    /// now.
+    ///
+    /// The lookups are debounced and run concurrently, so an answer
+    /// about a half-typed address can land after a later one. The row
+    /// carries the address it is about precisely so the dialog can tell
+    /// them apart.
+    #[dialog_common::test]
+    async fn it_ignores_an_answer_about_an_address_that_was_edited_away(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        // Registered elsewhere, for the same reason as
+        // `it_offers_sign_in_for_an_address_that_already_has_an_account`:
+        // a profile with its own account is never offered the row that
+        // raises the cluster.
+        let owner = driver_with_prf(&env).await?;
+        let taken = "taken@example.com";
+        sign_up(&owner, &env, taken).await?;
+        owner.quit().await?;
+
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        open_register_dialog_from_a_space(&driver, &env, "Edited Away").await?;
+
+        // Ask about the registered address, then immediately edit to one
+        // nobody has. The first answer ("Sign in") is in flight when the
+        // second is asked for.
+        type_into_register_dialog(&driver, taken).await?;
+        type_into_register_dialog(&driver, "someone-else-entirely@example.com").await?;
+
+        let label = await_register_action(&driver, "create a passkey").await?;
+        assert_eq!(
+            label, "create a passkey",
+            "the dialog must answer about what is typed now, not what was typed before",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The id of whatever currently has focus.
+    async fn focused_element_id(driver: &WebDriver) -> Result<String> {
+        let id = driver
+            .execute(r##"return document.activeElement?.id || "";"##, Vec::new())
+            .await?;
+        Ok(id.json().as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Wait until the address bar contains `fragment`.
+    async fn await_url_containing(driver: &WebDriver, fragment: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let url = driver.current_url().await?;
+            if url.as_str().contains(fragment) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("never navigated to {fragment}; still at {url}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait for a space key that was not there before, and return it.
+    async fn await_new_space(driver: &WebDriver, before: &[String]) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let now = space_keys(driver).await?;
+            if let Some(key) = now.iter().find(|key| !before.contains(key)) {
+                return Ok(key.clone());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "no space was created; before={before:?} now={now:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait for a row to read `expected`.
+    ///
+    /// A row's value changes as its step advances (`awaiting
+    /// confirmation` → `verified`), so the value is the observation and
+    /// settledness alone is not.
+    async fn await_row_value(driver: &WebDriver, noun: &str, expected: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last = String::new();
+        loop {
+            last = await_settled_row(driver, noun).await.unwrap_or(last);
+            if last == expected {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the {noun:?} row never reached {expected:?}; it reads {last:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Read a settled row's value by its noun.
+    ///
+    /// A row settles when its step completes: the noun stays and the
+    /// value becomes a record (`passkey  Chrome on macOS`). Waiting on
+    /// the value is how a step's completion is observed.
+    async fn await_settled_row(driver: &WebDriver, noun: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut last;
+        loop {
+            let value = driver
+                .execute(
+                    r##"
+                    const noun = arguments[0];
+                    // LAST match, not first: the ceremony stacks rows as
+                    // it advances, and more than one can carry the same
+                    // noun — the address row says which address, and the
+                    // row below it says where its confirmation got to.
+                    // The newest is the step being reported on.
+                    let seen = "";
+                    for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                        const k = row.querySelector(".k");
+                        if (!k || k.textContent.trim() !== noun) continue;
+                        const v = row.querySelector(".v");
+                        // A row still being edited holds an input; a
+                        // settled one holds text.
+                        if (!v || v.querySelector("input")) continue;
+                        seen = v.textContent.trim();
+                    }
+                    return seen;
+                    "##,
+                    vec![serde_json::json!(noun)],
+                )
+                .await?;
+            last = value.json().as_str().unwrap_or_default().to_owned();
+            if !last.is_empty() {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the {noun:?} row never settled"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Type into the row named `noun` and commit it with Enter.
+    async fn type_into_settled_row(driver: &WebDriver, noun: &str, value: &str) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const [noun, value] = [arguments[0], arguments[1]];
+                for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                    const k = row.querySelector(".k");
+                    if (!k || k.textContent.trim() !== noun) continue;
+                    const input = row.querySelector("input");
+                    if (!input) return done({ error: noun + " row takes no input" });
+                    input.focus();
+                    input.value = value;
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                    return done({ ok: true });
+                }
+                done({ error: "no row named " + noun });
+                "##,
+                vec![serde_json::json!(noun), serde_json::json!(value)],
+            )
+            .await?;
+        let outcome = outcome.json().clone();
+        if let Some(error) = outcome.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not fill the {noun:?} row: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Wait for the narrator to say something containing `fragment`.
+    async fn await_narrator_containing(driver: &WebDriver, fragment: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut last;
+        loop {
+            let text = driver
+                .execute(
+                    r##"const p = document.querySelector("#tonk-register-status");
+                       return p ? (p.textContent || "").trim() : "";"##,
+                    Vec::new(),
+                )
+                .await?;
+            last = text.json().as_str().unwrap_or_default().to_owned();
+            if last.to_lowercase().contains(&fragment.to_lowercase()) {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the narrator never said {fragment:?}; it reads {last:?}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Watch what the page copies.
+    ///
+    /// Installed BEFORE the copy runs, because reading the clipboard
+    /// back is not available here: the permission is not granted to the
+    /// harness, and granting it over CDP did not change the answer. What
+    /// the page passes to `writeText` is the same string the person ends
+    /// up with, and it is observable.
+    async fn watch_clipboard(driver: &WebDriver) -> Result<()> {
+        driver
+            .execute(
+                r##"
+                window.__tonkCopied = "";
+                const clipboard = navigator.clipboard;
+                const write = clipboard.writeText.bind(clipboard);
+                clipboard.writeText = (text) => {
+                    window.__tonkCopied = text;
+                    return write(text).catch(() => {});
+                };
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// What the page passed to `writeText`, once it has.
+    async fn copied_text(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let text = driver
+                .execute(r##"return window.__tonkCopied || "";"##, Vec::new())
+                .await?;
+            let text = text.json().as_str().unwrap_or_default().to_owned();
+            if !text.is_empty() {
+                return Ok(text);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the page never copied anything"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// The cluster's action row label, or empty while it is folded.
+    async fn register_action_label(driver: &WebDriver) -> Result<String> {
+        let label = driver
+            .execute(
+                r##"const a = document.querySelector("#tonk-register-action");
+                   if (!a || a.hasAttribute("hidden")) return "";
+                   return (a.textContent || "").trim();"##,
+                Vec::new(),
+            )
+            .await?;
+        Ok(label.json().as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Click the cluster's action row.
+    async fn click_register_action(driver: &WebDriver) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const a = document.querySelector("#tonk-register-action");
+                if (!a) return done({ error: "no action row" });
+                if (a.hasAttribute("hidden")) return done({ error: "the action row is folded" });
+                a.click();
+                done({ ok: true });
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        let value = outcome.json().clone();
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not run the step: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Wait for the virtual authenticator to hold `expected` credentials.
+    async fn await_credential_count(
+        driver: &WebDriver,
+        authenticator_id: &str,
+        expected: usize,
+    ) -> Result<usize> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut last;
+        loop {
+            last = credential_count(driver, authenticator_id).await?;
+            if last >= expected {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "no passkey ceremony ran: the authenticator still holds {last} \
+                     credential(s), expected {expected}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait for the interrupted share to finish and hand over a link.
+    ///
+    /// Read from the SPACE's branch, keyed by the space, because that is
+    /// where the mint writes: `enable-sync` attaches the remote and
+    /// asserts `xyz.tonk.invite/url` on the spot it shared. Profile main
+    /// never carries it, so asking there answers `[]` for a share that
+    /// worked — which is exactly the report this used to give. The
+    /// dialog reads the same row to fill the clipboard, so this is the
+    /// row the person ends up with, not a proxy for it.
+    async fn await_share_link(driver: &WebDriver, space: &str) -> Result<String> {
+        let ask = serde_json::json!({
+            "predicate": { "with": {
+                "status": {
+                    "the": "xyz.tonk.invite/status", "as": "Entity", "cardinality": "one"
+                },
+                "url": {
+                    "the": "xyz.tonk.invite/url", "as": "Text",
+                    "cardinality": "one", "optional": true
+                }
+            } },
+            "terms": {
+                "this": space,
+                "status": { "?": { "name": "status" } },
+                "url": { "?": { "name": "url" } }
+            }
+        });
+        let endpoint = format!("/api/repository/{space}/branch/main/query");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let rows = post_json(driver, &endpoint, ask.clone()).await?;
+            if let Some(link) = rows["body"].as_array().and_then(|rows| {
+                rows.iter().find_map(|row| {
+                    row["fields"]["url"]
+                        .as_str()
+                        .or_else(|| row["url"].as_str())
+                        .filter(|url| !url.is_empty())
+                })
+            }) {
+                return Ok(link.to_owned());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "registering never finished the share it interrupted: \
+                     no invite link. {space} answered: {rows}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Click the bar's `share` cell, which opens the share stack.
+    ///
+    /// The cell is in the bar's shadow root; the stack it reveals is
+    /// slotted light content.
+    async fn open_share_stack(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let outcome = driver
+                .execute(
+                    r##"
+                    const bar = document.querySelector("tonk-fab");
+                    if (!bar || !bar.shadowRoot) return false;
+                    const cell = bar.shadowRoot.querySelector('[data-cell="share"]');
+                    if (!cell) return false;
+                    cell.click();
+                    return true;
+                    "##,
+                    Vec::new(),
+                )
+                .await?;
+            if outcome.json().as_bool() == Some(true) {
+                driver.enter_default_frame().await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await?;
+                return Err(anyhow!("the bar never showed a share cell to click"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Open the FAB's share stack and click one of its rows.
+    ///
+    /// Two DOM boundaries sit between the driver and the row. The bar
+    /// lives in the sealed guest, at an opaque origin, so the browsing
+    /// context has to be switched into it; and the cell that OPENS the
+    /// stack lives in the bar's shadow root, while the row the stack
+    /// holds is a slotted light child. Querying the light tree alone
+    /// finds the row but never opens the stack it is hidden inside.
+    async fn click_share_row(driver: &WebDriver, marker: &str) -> Result<()> {
+        enter_guest(driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let outcome = driver
+                .execute(
+                    r##"
+                    const marker = arguments[0];
+                    const bar = document.querySelector("tonk-fab");
+                    if (!bar) return { error: "no bar" };
+                    // The stack opens from a shadow cell.
+                    const cell = bar.shadowRoot
+                        && bar.shadowRoot.querySelector('[data-cell="share"]');
+                    if (!cell) return { error: "no share cell" };
+                    if (cell.getAttribute("aria-expanded") !== "true") cell.click();
+                    // The rows are slotted light children, and each is a
+                    // `<tonk-mi>` whose click listener sits on `.row`
+                    // INSIDE its own shadow root — picking a row is the
+                    // stack's only verb, and that is where it is heard.
+                    // Clicking the host element reaches no listener, so
+                    // the stack rendered, hovered, and did nothing.
+                    const row = bar.querySelector(marker);
+                    if (!row) return { error: "no row matching " + marker };
+                    if (row.hasAttribute("hidden")) return { error: "row is hidden: " + marker };
+                    const inner = row.shadowRoot && row.shadowRoot.querySelector(".row");
+                    if (!inner) return { error: "row has no shadow .row: " + marker };
+                    inner.click();
+                    return { ok: true };
+                    "##,
+                    vec![serde_json::json!(marker)],
+                )
+                .await?;
+            let value = outcome.json().clone();
+            if value.get("ok").is_some() {
+                // Back to the top page. A helper that leaves the driver
+                // inside the guest hands the next one a context where
+                // `navigator.serviceWorker.controller` is null and the
+                // account UI does not exist — which reads as the worker
+                // never taking control, from a page it never claimed.
+                driver.enter_default_frame().await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let reason = value
+                    .get("error")
+                    .and_then(|error| error.as_str())
+                    .unwrap_or("unknown");
+                driver.enter_default_frame().await?;
+                return Err(anyhow!("could not click the share row: {reason}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Which of the share stack's two rows the bar is offering.
+    ///
+    /// `log in to share` before an account exists, the copy row after —
+    /// the visible half of the account subscription. Returns `None`
+    /// while neither is showing.
+    async fn share_row_offered(driver: &WebDriver) -> Result<Option<String>> {
+        enter_guest(driver).await?;
+        let outcome = driver
+            .execute(
+                r##"
+                const bar = document.querySelector("tonk-fab");
+                if (!bar) return null;
+                const account = bar.querySelector("[data-share-account]");
+                const link = bar.querySelector("[data-share-link]");
+                if (account && !account.hasAttribute("hidden")) return "account";
+                if (link && !link.hasAttribute("hidden")) return "link";
+                return null;
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        Ok(outcome.json().as_str().map(str::to_owned))
+    }
+
+    /// Wait for the bar to offer `expected` (`account` or `link`).
+    async fn await_share_row(driver: &WebDriver, expected: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last;
+        loop {
+            last = share_row_offered(driver).await?;
+            if last.as_deref() == Some(expected) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the bar never offered {expected:?}; it is showing {last:?}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Get to the registration cluster: open the share menu, take the
+    /// "log in to share" row, wait for the cluster.
+    async fn open_register_dialog(driver: &WebDriver) -> Result<()> {
+        click_share_row(driver, "[data-share-account]").await?;
+        await_register_dialog(driver).await
+    }
+
+    /// Raise the cluster from a space of its own.
+    ///
+    /// The bar is a space's control, so the Hub has no `tonk-fab` and no
+    /// share row to take — reaching for one there fails with "no bar".
+    /// A test that only wants the cluster still has to come at it the
+    /// way a person does: from inside a space, through share.
+    async fn open_register_dialog_from_a_space(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        name: &str,
+    ) -> Result<()> {
+        // `create_space` answers with the full DID, so the path takes it
+        // whole: prefixing `did:key:` again names a space that does not
+        // exist, and the page then has nothing to raise a share from.
+        let key = create_space(driver, name).await?;
+        driver
+            .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
+            .await?;
+        // Open the stack, THEN take its row — the same two steps the
+        // signup flow makes. Clicking the cell and the row in one pass
+        // reaches for a row the stack has not rendered yet.
+        open_share_stack(driver).await?;
+        await_share_row(driver, "account").await?;
+        open_register_dialog(driver).await
+    }
+
+    /// Wait for the registration cluster to be raised in the TOP page.
+    ///
+    /// It is raised there and nowhere else: WebAuthn needs a `window`
+    /// and a user gesture, which neither the worker nor the profile
+    /// frame has.
+    async fn await_register_dialog(driver: &WebDriver) -> Result<()> {
+        driver.enter_default_frame().await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let present = driver
+                .execute(
+                    r##"return !!document.querySelector("#tonk-register-email");"##,
+                    Vec::new(),
+                )
+                .await?;
+            if present.json().as_bool() == Some(true) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                // The raise crosses two realms — a guest row click, a
+                // portal message, a top-page handler — and a plain
+                // timeout says only that it did not arrive. Report both
+                // ends so the next reader knows WHICH hop dropped it
+                // rather than starting the bisect over.
+                let diag = driver
+                    .execute(
+                        r##"
+                        return {
+                            url: location.href,
+                            hasTonk: typeof window.tonk,
+                            register: window.tonk && typeof window.tonk.register,
+                            ids: Array.from(document.querySelectorAll("[id]"))
+                                .map(n => n.id).filter(i => i.includes("register")),
+                            dialogs: Array.from(document.querySelectorAll("dialog, .tonk-ceremony, .tonk-cluster"))
+                                .map(n => n.tagName + "." + n.className),
+                        };
+                        "##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|value| value.json().to_string())
+                    .unwrap_or_else(|error| format!("diagnostic failed: {error}"));
+                // And the guest side: did the row exist, was it hidden,
+                // and does the guest have the bridge method the click
+                // forwards through?
+                enter_guest(driver).await?;
+                let guest = driver
+                    .execute(
+                        r##"
+                        const bar = document.querySelector("tonk-fab");
+                        const row = bar && bar.querySelector("[data-share-account]");
+                        return {
+                            bar: !!bar,
+                            row: !!row,
+                            rowHidden: row ? row.hasAttribute("hidden") : null,
+                            tonk: typeof window.tonk,
+                            register: (window.tonk && typeof window.tonk.register) || null,
+                            space: bar ? bar.getAttribute("space") : null,
+                        };
+                        "##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|value| value.json().to_string())
+                    .unwrap_or_else(|error| format!("guest diagnostic failed: {error}"));
+                driver.enter_default_frame().await?;
+                return Err(anyhow!(
+                    "the share refusal never raised the cluster.\n  \
+                     top page: {diag}\n  guest: {guest}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Type an address into the cluster's own input, the way a user
+    /// does.
+    ///
+    /// An `input` event is what the lookup debounces on, so setting
+    /// `.value` alone would ask nothing.
+    async fn type_into_register_dialog(driver: &WebDriver, address: &str) -> Result<()> {
+        let outcome = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                const address = arguments[0];
+                const field = document.querySelector("#tonk-register-email");
+                if (!field) return done({ error: "no address field" });
+                field.focus();
+                field.value = address;
+                field.dispatchEvent(new Event("input", { bubbles: true }));
+                done({ ok: true });
+                "##,
+                vec![serde_json::json!(address)],
+            )
+            .await?;
+        let value = outcome.json().clone();
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not type the address: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Wait for the cluster's action row to offer `expected`.
+    ///
+    /// The row is hidden until the lookup answers, and its label IS the
+    /// routing decision: "create a passkey" for an address nobody has,
+    /// "log in with your passkey" for one that is taken. Waiting on it
+    /// asserts the whole loop — command dispatched, answer written,
+    /// subscription delivered, cluster rendered.
+    async fn await_register_action(driver: &WebDriver, expected: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last;
+        loop {
+            let label = driver
+                .execute(
+                    r##"const a = document.querySelector("#tonk-register-action");
+                       if (!a || a.hasAttribute("hidden")) return "";
+                       return (a.textContent || "").trim();"##,
+                    Vec::new(),
+                )
+                .await?;
+            last = label.json().as_str().unwrap_or_default().to_owned();
+            if last == expected {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the cluster never offered {expected:?}; it shows {last:?}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Create a space from the Hub, the way a person does.
+    ///
+    /// Through WebDriver's frame switching, not
+    /// `iframe.contentDocument`: the Hub renders in a SEALED guest at an
+    /// opaque origin, so script in the outer page cannot reach its
+    /// document at all — a reach-in returns `no guest frame` and says
+    /// nothing about the app.
+    async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
+        enter_hub(driver).await?;
+        wait_for_displayed(driver, ".snew").await?.click().await?;
+        // Back to the top document: everything after this — the space
+        // page, the bar, the cluster — lives there.
+        driver.enter_default_frame().await?;
+        Ok(())
+    }
+
+    /// Create a space the way the app does: dispatch the `space/create`
+    /// transient and wait for the new key to appear in the profile.
+    ///
+    /// There is no creation endpoint to read a key from — a command's
+    /// outcome lands as facts the page subscribes to, and the worker
+    /// navigates the originating client itself — so a test discovers the
+    /// key the way the Hub does, by watching the profile's space list.
+    async fn create_space(driver: &WebDriver, name: &str) -> Result<String> {
+        create_space_awaiting_remote(driver, name, false).await
+    }
+
+    /// [`create_space`], waiting for the remote to attach before
+    /// returning.
+    ///
+    /// The handler creates the space, navigates the client, and attaches
+    /// AFTER, so the navigation does not wait on the network — meaning
+    /// the space appearing is not the attach having landed. A caller
+    /// about to sync through that remote has to wait for it.
+    async fn create_space_awaiting_remote(
+        driver: &WebDriver,
+        name: &str,
+        expect_remote: bool,
+    ) -> Result<String> {
+        let before = space_keys(driver).await?;
+        // `name` alone: where a space syncs is the worker's to resolve
+        // from the account's registration, and template seeding went
+        // with the template libraries.
+        let claim = tonk_worker_api::create_space_claim_json(name);
+        let dispatched = post_json(driver, "/api/profile/branch/main/transact", claim).await?;
+        successful_body("dispatch space/create", &dispatched);
+
+        // Subscribe for the replica rather than re-reading the profile
+        // listing on a timer: the space lands as a `Replica` fact on
+        // profile main, and the subscription delivers it on commit.
+        let known = serde_json::to_string(&before).unwrap_or_else(|_| "[]".to_owned());
+        await_subscription(
+            driver,
+            "/api/profile/branch/main/query",
+            tonk_worker::helpers::replica_concept_wire_query(),
+            &format!(
+                r#"const before = new Set({known});
+                   const rows = frame.conclusions || frame.asserted || [];
+                   return rows.some((row) => {{
+                       const text = JSON.stringify(row);
+                       return [...text.matchAll(/did:key:[A-Za-z0-9]+/g)]
+                           .some((m) => !before.has(m[0].slice("did:key:".length))
+                                     && !before.has(m[0]));
+                   }});"#
+            ),
+            30_000,
+        )
+        .await
+        .context("the created space never appeared on profile main")?;
+
+        // The subscription says a replica landed; the listing says which
+        // key it is, in the shape callers use.
+        let key = space_keys(driver)
+            .await?
+            .into_iter()
+            .find(|key| !before.contains(key))
+            .ok_or_else(|| anyhow!("a replica landed but no new key is listed"))?;
+
+        // The handler navigates the client and attaches the remote
+        // AFTER, so the navigation does not wait on the network. The
+        // space appearing is therefore not the attach having landed —
+        // and a caller that asked for a remote is about to sync through
+        // it. Wait for it here so every caller does not have to.
+        //
+        // The endpoint this replaced attached synchronously before
+        // answering, which is why no caller needed this before.
+        if expect_remote {
+            // Subscribe rather than poll: the attach lands as a `Remote`
+            // fact on the profile branch, and the subscription delivers
+            // it the moment it commits.
+            await_subscription(
+                driver,
+                "/api/profile/branch/main/query",
+                tonk_worker::helpers::remote_concept_wire_query(),
+                &format!(
+                    r#"const rows = frame.conclusions || frame.asserted || [];
+                       return rows.some((row) =>
+                           JSON.stringify(row).includes({key:?}));"#
+                ),
+                30_000,
+            )
+            .await
+            .with_context(|| format!("the requested remote never attached to '{key}'"))?;
+        }
+        Ok(key)
+    }
+
+    /// Every space key this profile lists.
+    async fn space_keys(driver: &WebDriver) -> Result<Vec<String>> {
+        let listed = get_json(driver, "/api/profile").await?;
+        Ok(listed["body"]["space"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry["key"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn post_json(
         driver: &WebDriver,
         path: &str,
@@ -1281,10 +2888,17 @@ mod tests {
                     method: "POST",
                     headers: { "content-type": "application/json" },
                     body: JSON.stringify(arguments[1]),
-                }).then(async response => done({
-                    status: response.status,
-                    body: await response.json(),
-                })).catch(error => done({ error: String(error) }));
+                }).then(async response => {
+                    // A body is not always JSON — an empty 200, or an
+                    // error page from something upstream of the worker.
+                    // Reporting the status with the raw text says what
+                    // happened; `json()` alone throws and hides it.
+                    const text = await response.text();
+                    let body;
+                    try { body = text ? JSON.parse(text) : null; }
+                    catch (_) { body = { raw: text }; }
+                    done({ status: response.status, body });
+                }).catch(error => done({ error: String(error) }));
                 "#,
                 vec![serde_json::json!(path), body],
             )
@@ -1467,23 +3081,15 @@ mod tests {
         let email = "queued@example.com";
         // Stop at Registered: the activation email is sent but unopened.
         enroll_only(&driver, &env, email).await?;
-        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
-            .await?;
+        // The ceremony is still standing, and it is what the person is
+        // looking at, so it is where the unfinished step is named. The
+        // panel's own pending banner is behind it, and only renders once
+        // the cluster comes down — which this test never does.
+        await_narrator_containing(&driver, "confirmation link").await?;
 
         // No remote in the request: the worker decides, the way the
         // create wizard now leaves it to.
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Made While Waiting",
-            }),
-        )
-        .await?;
-        let key = successful_body("create space before activation", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space(&driver, "Made While Waiting").await?;
 
         // The space exists and is remote-less: nothing was wired, so
         // nothing can fail against the service.
@@ -1525,28 +3131,29 @@ mod tests {
 
         // Again no remote: if the worker did not read the recorded
         // provider, this space would come up local-only.
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Made After Activation",
-            }),
-        )
-        .await?;
-        let key = successful_body("create space after activation", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space(&driver, "Made After Activation").await?;
 
+        // The handler creates the space, navigates the client, and
+        // attaches the remote AFTER — deliberately, so the navigation
+        // does not wait on the network. The space existing is therefore
+        // not the attach having landed, so poll rather than read once.
+        await_subscription(
+            &driver,
+            "/api/profile/branch/main/query",
+            tonk_worker::helpers::remote_concept_wire_query(),
+            &format!(
+                r#"const rows = frame.conclusions || frame.asserted || [];
+                   return rows.some((row) => JSON.stringify(row).includes({key:?}));"#
+            ),
+            30_000,
+        )
+        .await
+        .context("an activated account's space must wire the origin remote")?;
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
         let info = successful_body("read the space configuration", &info);
-        // Report what the worker actually knows, so a failure here says
-        // whether the provider fact was recorded or merely unread.
-        let customer = get_json(&driver, "/api/customer").await?;
         assert!(
             info["remote"]["origin"].is_object(),
-            "an activated account's space must wire the origin remote, got {}; \
-             customer state was {customer}",
+            "the attached remote must be `origin`, got {}",
             info["remote"],
         );
         let upstream = &info["branch"]["main"]["upstream"];
@@ -1574,19 +3181,22 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         let email = "optin@example.com";
         enroll_only(&driver, &env, email).await?;
+        // Take the ceremony down by its own back button, which is what
+        // puts the panel behind it back in view. The pending banner is
+        // the panel's, and it is the same row that reads "Active" once
+        // the emailed link is opened below — before and after on one
+        // surface.
+        dismiss_register_dialog(&driver).await?;
         wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
             .await?;
 
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({ "name": "Opted In" }),
-        )
-        .await?;
-        let key = successful_body("create space before activation", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space(&driver, "Opted In").await?;
+
+        // Creating a space navigates into it — the handler posts a
+        // navigate effect to the originating client — so come back to
+        // the account page before reading the panel. The endpoint this
+        // replaced returned a key and navigated nothing.
+        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
 
         // Confirm the email, so a provider exists to attach to.
         activate(&driver, &env, email).await?;
@@ -1594,6 +3204,12 @@ mod tests {
 
         // Still local: activation does not retroactively sync spaces
         // created before it. The user opts in per space.
+        //
+        // No settling wait is needed to make this meaningful. The
+        // handler's attach step, had it run, would have run before
+        // `create_space` returned — and the navigation, the whole
+        // activation ceremony, and the panel wait have all happened
+        // since. An absent remote here is a decision, not a race.
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
         let info = successful_body("read the space configuration", &info);
         assert!(
@@ -1648,20 +3264,7 @@ mod tests {
         let creator = driver_with_prf(&env).await?;
         sign_up(&creator, &env, "creator@example.com").await?;
 
-        let created = post_json(
-            &creator,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Shared Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-                "revocation_url": env.account_service.join("revocations")?,
-            }),
-        )
-        .await?;
-        let key = successful_body("create synced space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space_awaiting_remote(&creator, "Shared Garden", true).await?;
         let pushed = post_json(
             &creator,
             &format!("/api/repository/{key}/branch/main/sync/push"),
@@ -1776,14 +3379,7 @@ mod tests {
         wait_for_service_worker(&claimer).await?;
         goto(&claimer, env.tonk_web.join("settings")?.as_str()).await?;
         element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
-        element(&claimer, "#account-choose-link")
-            .await?
-            .click()
-            .await?;
-        element(&claimer, "#account-link-submit")
-            .await?
-            .click()
-            .await?;
+        run_cluster_login(&claimer, "claimer@example.com").await?;
         if let Err(wait_error) = element(&claimer, "tonk-account[data-mode=\"success\"]").await {
             let host = element(&claimer, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
@@ -1839,20 +3435,7 @@ mod tests {
         let email = "goner@example.com";
         sign_up(&driver, &env, email).await?;
 
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Doomed Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-                "revocation_url": env.account_service.join("revocations")?,
-            }),
-        )
-        .await?;
-        let key = successful_body("create synced space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space_awaiting_remote(&driver, "Doomed Garden", true).await?;
         let pushed = post_json(
             &driver,
             &format!("/api/repository/{key}/branch/main/sync/push"),
@@ -1860,6 +3443,13 @@ mod tests {
         )
         .await?;
         successful_body("push synced space", &pushed);
+
+        // Creating a space navigates the page into it — the handler
+        // sends the client there once the replica lands — so the
+        // deletion controls are no longer on screen. Go back to where
+        // they live.
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account").await?;
 
         click(&driver, "#account-delete-review").await?;
         element(&driver, "[role=alertdialog]").await?;
@@ -1943,20 +3533,7 @@ mod tests {
         sign_up(&driver, &env, "first@example.com").await?;
 
         // First account creates a space; its Hub lists it.
-        let created = post_json(
-            &driver,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "First Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-                "revocation_url": env.account_service.join("revocations")?,
-            }),
-        )
-        .await?;
-        let key = successful_body("create first account's space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space_awaiting_remote(&driver, "First Garden", true).await?;
         let listed = get_json(&driver, "/api/profile").await?;
         let space_keys = |body: &serde_json::Value| -> Vec<String> {
             body["space"]
@@ -2009,19 +3586,7 @@ mod tests {
             "opening Add account must not switch profiles"
         );
 
-        element(&driver, "#account-choose-create")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "#account-email")
-            .await?
-            .send_keys("second@example.com")
-            .await?;
-        element(&driver, "#account-create-submit")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        run_cluster_ceremony(&driver, "second@example.com").await?;
         activate(&driver, &env, "second@example.com").await?;
 
         // The second account sees none of the first account's spaces.
@@ -2081,23 +3646,26 @@ mod tests {
             "the second account's Hub must omit the first account's space"
         );
 
-        // Settings reads real account and device facts through the sealed
-        // guest, and keeps unsupported Usage/Syncing surfaces absent.
+        // The sealed Hub routes settings into the top-level account page,
+        // which reads real account and device facts and keeps unsupported
+        // Usage/Syncing surfaces absent.
         click(&driver, "[data-account-trigger]").await?;
         click(&driver, "[data-open-settings]").await?;
-        wait_for_text(&driver, "[data-account-email]", "second@example.com").await?;
+        driver.enter_default_frame().await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        wait_for_text(&driver, "#account-email-value", "second@example.com").await?;
         assert_eq!(
-            element(&driver, "[data-passkey-created-on]")
+            element(&driver, "#account-passkey-device-value")
                 .await?
                 .prop("textContent")
                 .await?
                 .as_deref(),
             Some(passkey_created_on.as_str()),
-            "Hub settings must render the account summary's passkey creation device"
+            "settings must render the account summary's passkey creation device"
         );
-        click(&driver, "[data-settings-tab=\"devices\"]").await?;
-        wait_for_text_containing(&driver, "[data-device-list]", "current device").await?;
-        let settings_text = element(&driver, "[data-settings-view]")
+        click(&driver, "#account-tab-devices").await?;
+        wait_for_text_containing(&driver, "#account-device-list", "this device").await?;
+        let settings_text = element(&driver, "tonk-account")
             .await?
             .text()
             .await?
@@ -2105,30 +3673,14 @@ mod tests {
         for forbidden in ["usage", "upgrade", "metering", "syncing"] {
             assert!(
                 !settings_text.contains(forbidden),
-                "Hub settings must not contain {forbidden}"
+                "settings must not contain {forbidden}"
             );
         }
-        let section_style = driver
-            .execute(
-                r#"const section = document.querySelector('.settings-section');
-                const style = getComputedStyle(section);
-                return { backgroundColor: style.backgroundColor, display: style.display };"#,
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(
-            section_style.json(),
-            &serde_json::json!({
-                "backgroundColor": "rgba(0, 0, 0, 0)",
-                "display": "block"
-            }),
-            "the attached settings section must not inherit the global badge treatment"
-        );
 
         // The authoritative display-name write repaints the Hub trigger and
-        // remains in the field after the dialog is reopened.
-        click(&driver, "[data-settings-tab=\"account\"]").await?;
-        let display_name = element(&driver, "[data-display-name]").await?;
+        // remains in the field after the settings page is reloaded.
+        click(&driver, "#account-tab-account").await?;
+        let display_name = element(&driver, "#account-display-name").await?;
         let select_all = if cfg!(target_os = "macos") {
             Key::Command + "a"
         } else {
@@ -2137,49 +3689,34 @@ mod tests {
         display_name.send_keys(select_all).await?;
         display_name.send_keys("Second Hub").await?;
         display_name.send_keys(Key::Enter).await?;
-        if let Err(error) = wait_for_text(&driver, "[data-account-label]", "Second Hub").await {
-            let diagnostic = driver
-                .execute(
-                    r#"const input = document.querySelector('[data-display-name]');
-                    const error = document.querySelector('[data-display-name-error]');
-                    const account = document.querySelector('ui-hub-account');
-                    return {
-                        trigger: document.querySelector('[data-account-trigger]')?.textContent,
-                        inputValue: input?.value,
-                        confirmedName: input?.dataset.confirmedName,
-                        inputDisabled: input?.disabled,
-                        inputBusy: input?.getAttribute('aria-busy'),
-                        error: error?.textContent,
-                        errorHidden: error?.hidden,
-                        activeName: account?.dataset.activeName
-                    }"#,
-                    Vec::new(),
-                )
-                .await
-                .map(|value| value.json().to_string())
-                .unwrap_or_else(|diagnostic_error| {
-                    format!("unable to inspect display-name state: {diagnostic_error}")
-                });
-            return Err(error).context(format!("Hub display-name diagnostic: {diagnostic}"));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let input = element(&driver, "#account-display-name").await?;
+            if input.prop("value").await?.as_deref() == Some("Second Hub")
+                && input.attr("data-confirmed-name").await?.as_deref() == Some("Second Hub")
+                && input.attr("aria-busy").await?.is_none()
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let error = element(&driver, "#account-display-name-error")
+                    .await?
+                    .prop("textContent")
+                    .await?
+                    .unwrap_or_default();
+                return Err(anyhow!(
+                    "timed out waiting for the second account display name to save: {error}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        click(&driver, "[data-return-spaces]").await?;
-        let focus_restored = driver
-            .execute(
-                "return document.activeElement?.hasAttribute('data-return-spaces') === true",
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(focus_restored.json(), &serde_json::json!(true));
-        click(&driver, "[data-open-settings]").await?;
-        assert_eq!(
-            element(&driver, "[data-display-name]")
-                .await?
-                .prop("value")
-                .await?
-                .as_deref(),
-            Some("Second Hub")
-        );
-        click(&driver, "[data-return-spaces]").await?;
+        let settings = driver.current_url().await?;
+        goto(&driver, settings.as_str()).await?;
+        wait_for_value(&driver, "#account-display-name", "Second Hub").await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, "[data-account-label]", "Second Hub").await?;
 
         // Switch back from the Hub's account roster. The component reloads
         // the whole top page, rebuilding subscriptions owned by the old
@@ -2542,19 +4079,7 @@ mod tests {
         let owner = driver_with_prf(&env).await?;
         sign_up(&owner, &env, "owner@example.com").await?;
 
-        let created = post_json(
-            &owner,
-            "/api/spaces",
-            serde_json::json!({
-                "name": "Revocable Garden",
-                "remote": env.tonk_web.join("ucan/")?,
-            }),
-        )
-        .await?;
-        let key = successful_body("create space", &created)["key"]
-            .as_str()
-            .context("create response omitted the space key")?
-            .to_string();
+        let key = create_space_awaiting_remote(&owner, "Revocable Garden", true).await?;
         successful_body(
             "push space",
             &post_json(

@@ -27,11 +27,13 @@ use web_sys::{Element, HtmlElement, ResizeObserver, window};
 use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
-:host{ display:block; max-width:100%; }
+:host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%;
+  max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
+  overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
-  width:min(var(--fabb-menu-w, 216px), 100%); max-width:100%; }
+  width:100%; max-width:100%; }
 .w::before{ content:""; position:absolute; inset:0; z-index:-1;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
@@ -205,5 +207,24 @@ pub(crate) fn register() {
     let Some(win) = window() else { return };
     if win.custom_elements().get("tonk-menu").is_undefined() {
         TonkMenu::define("tonk-menu");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CSS;
+
+    #[test]
+    fn the_host_owns_the_requested_menu_width() {
+        assert!(CSS.contains(":host{ display:block; width:var(--fabb-menu-w, 216px)"));
+        assert!(CSS.contains("width:100%; max-width:100%"));
+        assert!(!CSS.contains("width:min(var(--fabb-menu-w"));
+    }
+
+    #[test]
+    fn tall_menus_scroll_inside_the_available_viewport() {
+        assert!(CSS.contains("max-height:var(--fabb-menu-max-h"));
+        assert!(CSS.contains("overflow-y:auto"));
+        assert!(CSS.contains("overscroll-behavior:contain"));
     }
 }

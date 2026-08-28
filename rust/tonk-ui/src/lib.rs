@@ -18,6 +18,9 @@ pub mod account_gate;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod custody_relay;
 
+/// The registration dialog raised when sharing needs an account.
+pub mod register_dialog;
+
 /// API client for interacting with the Tonk service worker.
 pub mod api;
 

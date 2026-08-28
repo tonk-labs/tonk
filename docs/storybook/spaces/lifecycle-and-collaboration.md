@@ -33,6 +33,18 @@ can synchronize within the delegated authority. If the owner revokes the
 invite, later remote operations are rejected while any already-local replica is
 handled according to the documented local authority boundary.
 
+### Share-menu presentation decision
+
+The browser calls the transferable artifact a **share link**. When its FABB
+panel opens, the share stack matches the share rung rather than inheriting the
+width of another action. A long member roster scrolls inside the space
+available above or below the bar, stays within the viewport margin, and keeps
+compact rows usable instead of extending the page beyond the visible area.
+
+This is a source-derived presentation decision for `COLLAB-01`, `WEB-04`, and
+`WEB-05`, pinned to `a3f8657d3`. No FABB screenshot was recaptured, so the
+existing images retain their older visual provenance.
+
 ## The interaction, event by event
 
 ```mermaid
