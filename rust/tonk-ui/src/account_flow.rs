@@ -1300,22 +1300,6 @@ mod tests {
         // The callback's bridge page re-posts the fragment on loopback and
         // redirects back here, where the outcome uses the account styling.
         if let Err(wait_error) = element(driver, "tonk-account[data-mode=\"success\"]").await {
-            // The hop to the CLI's loopback listener is where this
-            // stops, and Chrome's own error page says why — a refused
-            // connection and a port Chrome will not dial are different
-            // problems with different fixes, and the page names which.
-            let hop = driver
-                .execute(
-                    r##"return {
-                        url: location.href,
-                        text: (document.body.innerText || "").slice(0, 300),
-                    }"##,
-                    Vec::new(),
-                )
-                .await
-                .map(|value| value.json().to_string())
-                .unwrap_or_else(|error| format!("unreadable: {error}"));
-            eprintln!("CALLBACK HOP: {hop}");
             let host = element(driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
             let error = match driver.find(By::Css("#account-error")).await {
