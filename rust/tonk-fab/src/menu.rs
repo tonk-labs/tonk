@@ -27,7 +27,11 @@ use web_sys::{Element, HtmlElement, ResizeObserver, window};
 use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
-:host{ display:block; }
+/* The host carries the width so its border box matches the rung that
+   opened it -- a bare block would stretch to the bar instead. Width alone
+   is safe: it neither clips the flyout nor creates a stacking context.
+   `overflow` is the property that does both, and it stays gated below. */
+:host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
 /* A long stack scrolls rather than running off the screen, but only when no
@@ -39,7 +43,7 @@ const CSS: &str = r#"
 :host([scrolls]) .port{ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
   overflow-y:auto; overscroll-behavior:contain; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
-  width:var(--fabb-menu-w, 216px); }
+  width:100%; max-width:100%; }
 /* The underlay sits at z-index 0 and the rows are lifted above it, rather
    than the underlay being pushed below at `z-index:-1`. A negative-z child
    paints behind its stacking context, and any `overflow` on an ancestor
@@ -246,13 +250,21 @@ pub(crate) fn register() {
 mod tests {
     use super::{CSS, HTML};
 
-    /// The WRAPPER owns the width, and the host stays a plain block —
-    /// exactly the study's shape.
+    /// The HOST carries the width, so its border box matches the rung that
+    /// opened the stack. A bare block stretches to the bar instead, and
+    /// `the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster`
+    /// measures the host, not the wrapper.
+    ///
+    /// Width is safe here in a way `overflow` is not: it neither clips the
+    /// flyout nor creates a stacking context that kills the glass.
     #[test]
-    fn the_wrapper_owns_the_requested_menu_width() {
-        assert!(CSS.contains(":host{ display:block; }"));
-        assert!(CSS.contains("width:var(--fabb-menu-w, 216px);"));
-        assert!(!CSS.contains("width:min(var(--fabb-menu-w"));
+    fn the_host_carries_the_requested_menu_width() {
+        assert!(
+            CSS.contains(
+                ":host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%; }"
+            )
+        );
+        assert!(CSS.contains("width:100%; max-width:100%;"));
     }
 
     /// A stack with no flyout to lose scrolls, so a long roster or space
