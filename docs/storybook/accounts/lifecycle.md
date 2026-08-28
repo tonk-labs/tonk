@@ -16,6 +16,13 @@ revoking authority require the relevant browser or service boundary.
 
 ## The simple case
 
+A fresh browser starts with a device-local onboarding identity so it can create
+and revisit local spaces before the person links an account. Browser or worker
+restart must reopen that same identity on every supported browser, including
+Safari; it must not replace the identity and orphan the local spaces or invites
+that already depend on it. Linking an account transfers that local authority
+before the temporary onboarding custodian is retired.
+
 A person opens `/settings` in a fresh browser, chooses Create, enters an email,
 and approves a passkey ceremony. Tonk creates a local root, creates and attaches
 the remote account, records the first device, enrolls the account as a customer,
