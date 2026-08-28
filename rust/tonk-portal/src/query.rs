@@ -25,8 +25,17 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
         .unwrap_or_default();
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!(entity));
-    for field in with.keys() {
+    for (field, spec) in &with {
         terms.insert(field.clone(), json!({ "?": { "name": field } }));
+        // A keyed collection binds TWO terms — the field and its key
+        // operand (`block`, `block/key`) — because an entry is a
+        // `(key, value)` pair. Requesting only the field leaves the key
+        // unbound and the wire fold has no pair to turn into
+        // `{key: value}`, so every entry reads as an unkeyed value.
+        if spec.get("the").is_some_and(Value::is_object) {
+            let key = format!("{field}/key");
+            terms.insert(key.clone(), json!({ "?": { "name": key } }));
+        }
     }
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }

@@ -44,6 +44,28 @@ pub fn view_by_model_query(
     serde_json::from_value(json!({ "terms": terms, "predicate": view_descriptor }))
 }
 
+/// Whether a `with:` entry declares a keyed collection: its `the` is a
+/// `{domain, keyed}` object rather than an attribute string.
+///
+/// A collection field binds TWO terms — the field and its key operand
+/// (`block`, `block/key`) — because an entry is a `(key, value)` pair.
+/// Requesting only the field leaves the key unbound, and the wire fold
+/// that turns the pair into `{key: value}` then has nothing to fold:
+/// the entry arrives as a bare value and every key reads empty.
+fn is_collection(spec: &Value) -> bool {
+    spec.get("the").is_some_and(Value::is_object)
+}
+
+/// The terms one `with:` entry contributes: the field, plus its key
+/// operand when the field is a keyed collection.
+fn field_terms(field: &str, spec: &Value, terms: &mut IndexMap<String, Value>) {
+    terms.insert(field.to_owned(), json!({ "?": { "name": field } }));
+    if is_collection(spec) {
+        let key = format!("{field}/key");
+        terms.insert(key.clone(), json!({ "?": { "name": key } }));
+    }
+}
+
 /// Build the live entity subscription query: given the model
 /// concept's `descriptor_json` (raw JSON from a Phase-1 resolve)
 /// and the target `entity` URI, return a query that pins `this` to
@@ -61,8 +83,8 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
         .unwrap_or_default();
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!(entity));
-    for field in with.keys() {
-        terms.insert(field.clone(), json!({ "?": { "name": field } }));
+    for (field, spec) in &with {
+        field_terms(field, spec, &mut terms);
     }
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
@@ -143,8 +165,8 @@ pub fn instances_query(descriptor_json: &str) -> Result<Query, serde_json::Error
         .unwrap_or_default();
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!({ "?": { "name": "this" } }));
-    for field in with.keys() {
-        terms.insert(field.clone(), json!({ "?": { "name": field } }));
+    for (field, spec) in &with {
+        field_terms(field, spec, &mut terms);
     }
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
@@ -493,6 +515,43 @@ mod tests {
         let q = entity_query(descriptor, "did:key:zGreeting").expect("entity_query");
         assert!(q.terms.contains("message"));
         assert!(q.terms.contains("recipient"));
+    }
+
+    /// A keyed-collection field binds its key operand alongside the
+    /// field. An entry is a `(key, value)` pair, and the wire fold that
+    /// turns the pair into `{key: value}` only fires when BOTH are
+    /// bound — so requesting the field alone makes every entry arrive
+    /// as a bare value with no key. A notebook then reads all its
+    /// blocks as unplaced and re-keys every one of them on each edit,
+    /// which duplicates the whole sequence.
+    #[dialog_common::test]
+    fn it_binds_the_key_operand_of_a_collection_field() {
+        let descriptor = r#"{"with":{
+            "title": { "the": "xyz.tonk.notebook/title", "as": "Text", "cardinality": "one" },
+            "block": {
+                "the": { "domain": "xyz.tonk.notebook", "keyed": "sequence" },
+                "as": "Entity",
+                "cardinality": "many"
+            }
+        }}"#;
+
+        let entity = entity_query(descriptor, "id:notebook/scratch").expect("entity_query");
+        assert!(entity.terms.contains("block"), "the field is bound");
+        assert!(
+            entity.terms.contains("block/key"),
+            "so is its key — without it the entry has no key to fold on"
+        );
+        assert!(
+            !entity.terms.contains("title/key"),
+            "a scalar field has no key operand"
+        );
+
+        let instances = instances_query(descriptor).expect("instances_query");
+        assert!(instances.terms.contains("block"));
+        assert!(
+            instances.terms.contains("block/key"),
+            "the directory query binds it too"
+        );
     }
 
     #[dialog_common::test]
