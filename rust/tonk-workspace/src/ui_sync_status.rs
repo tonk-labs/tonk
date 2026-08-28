@@ -258,22 +258,30 @@ fn paint(host: &HtmlElement, status: &str) {
     // tag, so this element stays ignorant of who is using it.
     if host.has_attribute("headless") {
         if let Some(parent) = host.parent_element() {
-            // DEFERRED, not written inline. `paint` runs from
-            // `connected_callback`, and the parent is itself a custom element:
-            // writing an observed attribute on it synchronously re-enters that
-            // element's `attributeChangedCallback` while `custom_elements`
-            // still holds this one's state mutex, which panics with "cannot
-            // recursively acquire mutex" and takes the whole guest down.
-            // A microtask lands the same write once the callback has returned.
-            let status = status.to_owned();
-            spawn_local(async move {
-                let _ = parent.set_attribute("state", disc_state(&status));
-                // The disc has three shapes but sync has eight states, so the
-                // precise one travels alongside it for the accessible name —
-                // "revoked" and "conflict" both draw a hollow ring, and losing
-                // the distinction from the label would make them unreportable.
-                let _ = parent.set_attribute("data-sync-status", &status);
-            });
+            // Only when it CHANGES.
+            //
+            // `state` is one of the parent bar's observed attributes, so
+            // writing it re-enters that element's
+            // `attributeChangedCallback` — and paint runs from inside a
+            // callback that already holds the element's lock, which
+            // panics with `cannot recursively acquire mutex`. The panic
+            // kills the guest frame, the frame reloads, the bar
+            // re-mounts and paints again: a crash loop that shows up as
+            // endless commits in the worker log.
+            //
+            // A write that changes nothing has nothing to notify about,
+            // so skipping it costs no correctness.
+            // Off this turn. Skipping a no-op write covers the repeats,
+            // but the FIRST paint genuinely changes the value — and it
+            // runs from `connected_callback`, which the parent triggers
+            // from inside its own `inject_children` while still holding
+            // its lock. A microtask lets that callback finish first.
+            defer_write(parent.as_ref(), "state", disc_state(status));
+            // The disc has three shapes but sync has eight states, so the
+            // precise one travels alongside it for the accessible name —
+            // "revoked" and "conflict" both draw a hollow ring, and losing
+            // the distinction from the label would make them unreportable.
+            defer_write(parent.as_ref(), "data-sync-status", status);
         }
         return;
     }
@@ -324,6 +332,41 @@ fn modifier_class(status: &str) -> &'static str {
 /// fourth for `revoked` or `conflict` would be an illustration, not a mark.
 /// The precise status rides alongside as `data-sync-status` so nothing that
 /// needs the distinction — the accessible name above all — has to lose it.
+/// Write `attribute` only when its value differs.
+///
+/// Re-entrancy guard: several of these land on elements that observe
+/// the attribute, and a redundant write still fires their callback.
+/// Write an attribute on another element after this turn.
+///
+/// The parent bar observes what this writes, so the write runs its
+/// `attributeChangedCallback` synchronously — and paint can be reached
+/// from inside that parent's own `inject_children`, which still holds
+/// its lock. On wasm that lock is not reentrant, so it panics with
+/// `cannot recursively acquire mutex`, killing the guest frame; the
+/// frame reloads, the bar re-mounts and paints again, and the crash
+/// loops.
+///
+/// A microtask is enough: by then the callback that owns the lock has
+/// returned. The write is still skipped when it changes nothing.
+fn defer_write(element: &web_sys::Element, attribute: &str, value: &str) {
+    if element.get_attribute(attribute).as_deref() == Some(value) {
+        return;
+    }
+    let element = element.clone();
+    let attribute = attribute.to_owned();
+    let value = value.to_owned();
+    spawn_local(async move {
+        set_if_changed(&element, &attribute, &value);
+    });
+}
+
+fn set_if_changed(element: &web_sys::Element, attribute: &str, value: &str) {
+    if element.get_attribute(attribute).as_deref() == Some(value) {
+        return;
+    }
+    let _ = element.set_attribute(attribute, value);
+}
+
 fn disc_state(status: &str) -> &'static str {
     match status {
         "sync:idle" | "sync:pending" => "synced",

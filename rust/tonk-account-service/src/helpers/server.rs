@@ -26,8 +26,7 @@ use crate::auth::{
     authorize, authorize_root, optional_passkey_metadata, optional_revocation, required_string,
     string_argument,
 };
-use crate::core::accounts::{CreateAccount, create_account, preflight_account};
-use crate::core::codes::{generate_code, request_code};
+use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::deletion::delete_account;
 use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
@@ -130,9 +129,7 @@ async fn handle_request(
         (Method::GET, "/") => return Ok(info_response()),
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
-        (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
-        (Method::POST, "/accounts/preflight") => accounts_preflight_route(req, &backends).await,
         (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
         (Method::POST, "/account/delete") => account_delete_route(req, &backends).await,
         (Method::POST, "/account/repository/establish") => {
@@ -255,31 +252,6 @@ fn emails_route(backends: &Backends) -> Result<Response<Full<Bytes>>, ServiceErr
     Ok(json_response(StatusCode::OK, &snapshot))
 }
 
-/// `POST /codes` → request a verification code.
-async fn codes_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    #[derive(Deserialize)]
-    struct CodeRequest {
-        email: String,
-    }
-
-    let body: CodeRequest = parse_json(req).await?;
-    let code = generate_code();
-    request_code(
-        &backends.store,
-        backends.emails.as_ref(),
-        &body.email,
-        &code,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-
-    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
-}
-
 /// `POST /accounts` → create a new account.
 async fn accounts_route(
     req: Request<Incoming>,
@@ -293,10 +265,6 @@ async fn accounts_route(
     let passkey = optional_passkey_metadata(&caller.arguments, now).map_err(ceremony_error)?;
     let request = CreateAccount {
         email: required_string(&caller.arguments, "email").map_err(ceremony_error)?,
-        code: match caller.arguments.get("code") {
-            None => None,
-            Some(_) => Some(required_string(&caller.arguments, "code").map_err(ceremony_error)?),
-        },
         credential_id: required_string(&caller.arguments, "credentialId")
             .map_err(ceremony_error)?,
         device_did: required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
@@ -328,24 +296,6 @@ async fn accounts_route(
             "descriptorHex": descriptor_hex,
         }),
     ))
-}
-
-/// `POST /accounts/preflight` → verify email control and availability.
-async fn accounts_preflight_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    #[derive(Deserialize)]
-    struct PreflightRequest {
-        email: String,
-        code: String,
-    }
-
-    let body: PreflightRequest = parse_json(req).await?;
-    preflight_account(&backends.store, &body.email, &body.code, unix_now())
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
 }
 
 /// `POST /account/repository/establish` → establish one descriptor winner.

@@ -40,6 +40,29 @@ async fn wait_for(selector: &str) -> Element {
     panic!("{selector} did not mount");
 }
 
+/// Deliver a subscription frame the way the host does: call the
+/// element's own `reset` with the rows the query answered.
+///
+/// The condition is driven by a subscription now, not by a fetch. A
+/// stubbed `fetch` used to be how this test put the bar into
+/// "Registered", and stubbing it today changes nothing at all — the
+/// read it stood in for is gone.
+fn deliver(bar: &HtmlElement, status: &str, email: &str) {
+    let fields = Object::new();
+    Reflect::set(&fields, &"status".into(), &status.into()).expect("status");
+    Reflect::set(&fields, &"email".into(), &email.into()).expect("email");
+    let row = Object::new();
+    Reflect::set(&row, &"fields".into(), &fields).expect("fields");
+    let rows = js_sys::Array::new();
+    rows.push(&row);
+
+    let reset = Reflect::get(bar.as_ref(), &"reset".into()).expect("reset");
+    let reset: Function = reset.dyn_into().expect("reset is callable");
+    reset
+        .call2(bar.as_ref(), &rows.into(), &JsValue::UNDEFINED)
+        .expect("frame delivered");
+}
+
 fn response(body: &str) -> JsValue {
     let constructor = Reflect::get(&window().expect("window"), &"Response".into())
         .expect("Response")
@@ -96,6 +119,12 @@ async fn registered_customer_can_resend_and_retires_when_active() {
         .append_child(&bar)
         .expect("mount");
 
+    // The condition arrives as a subscription frame. `watch` wires
+    // `reset`/`update` onto the element from `connectedCallback`, so
+    // give that a turn before delivering one.
+    yield_for(20).await;
+    deliver(&bar, "Registered", "jack@example.test");
+
     let banner = wait_for("#fabb-activation-banner").await;
     assert!(
         banner
@@ -141,20 +170,10 @@ async fn registered_customer_can_resend_and_retires_when_active() {
             .starts_with("Sent")
     );
 
-    *status.borrow_mut() = "Active".to_owned();
-    let check = cluster
-        .query_selector("[data-check-activation]")
-        .expect("check selector")
-        .expect("check");
-    check
-        .shadow_root()
-        .expect("check shadow")
-        .query_selector(".b")
-        .expect("button selector")
-        .expect("button")
-        .dyn_into::<HtmlElement>()
-        .expect("button html")
-        .click();
+    // Activating retires the condition on its own. There is no "check
+    // now" button any more: the answer is a fact this element is
+    // subscribed to, so it arrives rather than being asked for.
+    deliver(&bar, "Active", "jack@example.test");
     yield_for(20).await;
     assert!(
         document

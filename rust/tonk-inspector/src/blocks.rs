@@ -386,6 +386,15 @@ pub fn reconcile(stored: &[Block], next: &[String]) -> Edit {
 
 #[cfg(test)]
 mod tests {
+    // These tests run in the browser: the wasm test runner
+    // otherwise looks for Node.js, which CI's web leg has not
+    // got. The directive is crate-global, but declaring it per
+    // module keeps it from vanishing when one module goes.
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
     use super::*;
 
     #[dialog_common::test]

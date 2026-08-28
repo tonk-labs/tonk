@@ -1492,6 +1492,18 @@ fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str
     }
 }
 
+fn account_login_warning(status: tonk_account::AccountStateStatus, warning: &str) -> String {
+    match status {
+        tonk_account::AccountStateStatus::Ready => {
+            format!("warning: latest account synchronization is incomplete: {warning}")
+        }
+        tonk_account::AccountStateStatus::Unconfigured
+        | tonk_account::AccountStateStatus::Unhydrated => {
+            format!("warning: account repository is not synchronized: {warning}")
+        }
+    }
+}
+
 /// Best-effort registration line, quiet about being offline: status
 /// must answer without the network. Registration itself is web-only —
 /// the browser enrolls during its passkey ceremonies, which is where
@@ -1687,7 +1699,7 @@ async fn link_account(
                 account_state_label(outcome.account_state)
             );
             if let Some(warning) = outcome.warning {
-                eprintln!("warning: account repository is not synchronized: {warning}");
+                eprintln!("{}", account_login_warning(outcome.account_state, &warning));
             }
             // The device is signed in either way. Say what is missing and
             // what restores it, rather than reporting a failure for a link
@@ -1707,15 +1719,23 @@ async fn link_account(
             // and attaches a remote.
             match site::default_config() {
                 Ok(config) => {
-                    match tonk_cli::custody::accredit_local_spaces(store, &config).await {
+                    match tonk_cli::custody::rotate_from_onboarding(store, &config).await {
+                        Ok(failures) => {
+                            for (subject, reason) in failures {
+                                eprintln!("rotation: {subject} not rotated: {reason}");
+                            }
+                        }
+                        Err(error) => eprintln!("warning: account rotation did not run: {error:#}"),
+                    }
+                    match tonk_cli::custody::rotate_local_spaces(store, &config).await {
                         Ok(outcomes) => {
                             for (name, outcome) in outcomes {
                                 match outcome {
-                                    tonk_cli::custody::Accreditation::Moved => {
+                                    tonk_cli::custody::SpaceRotation::Moved => {
                                         println!("custody: '{name}' moved to the account");
                                     }
-                                    tonk_cli::custody::Accreditation::Already => {}
-                                    tonk_cli::custody::Accreditation::Skipped(reason) => {
+                                    tonk_cli::custody::SpaceRotation::Already => {}
+                                    tonk_cli::custody::SpaceRotation::Skipped(reason) => {
                                         eprintln!("custody: '{name}' not moved: {reason}");
                                     }
                                 }
@@ -3969,6 +3989,35 @@ async fn open_selected(
 #[cfg(test)]
 mod account_spaces_parser_tests {
     use super::*;
+
+    #[test]
+    fn account_login_warning_for_ready_names_the_latest_sync() {
+        let warning = account_login_warning(
+            tonk_account::AccountStateStatus::Ready,
+            "latest account synchronization did not finish within 10 seconds",
+        );
+
+        assert_eq!(
+            warning,
+            "warning: latest account synchronization is incomplete: latest account synchronization did not finish within 10 seconds"
+        );
+        assert!(!warning.contains("repository is not synchronized"));
+        assert_eq!(
+            account_state_label(tonk_account::AccountStateStatus::Ready),
+            "synced"
+        );
+    }
+
+    #[test]
+    fn account_login_warning_for_unhydrated_names_the_repository() {
+        assert_eq!(
+            account_login_warning(
+                tonk_account::AccountStateStatus::Unhydrated,
+                "the account repository did not answer within 10 seconds",
+            ),
+            "warning: account repository is not synchronized: the account repository did not answer within 10 seconds"
+        );
+    }
 
     #[test]
     fn unavailable_account_context_does_not_invent_a_device_identifier() {

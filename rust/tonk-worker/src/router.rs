@@ -19,19 +19,21 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 mod account;
 mod account_deletion;
 pub(crate) mod customer;
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+mod email_status;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
 
 mod http;
 
-/// Accreditation: rotate the onboarding account's custody to the passkey
-/// account, then retire it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) mod accreditation;
 pub(crate) mod adopt;
 /// Getting the account's encryption key onto a device that needs it.
 pub(crate) mod custody;
+/// Accreditation: rotate the onboarding account's custody to the passkey
+/// account, then retire it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) mod rotation;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
@@ -181,7 +183,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.
         .route("/api/customer", get(customer::get_state))
-        .route("/api/customer/enroll", post(customer::enroll))
         .route("/api/customer/activated", post(customer::activated))
         .route("/api/customer/pending", get(customer::get_pending))
         .route("/api/custody/provision", post(customer::provision_custody))
@@ -246,7 +247,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(migration::repo_vs_profile),
         )
         // Repository lifecycle
-        .route("/api/spaces", post(repository::post_space))
         .route(
             "/api/repository/{repo}",
             put(repository::put_repository).get(repository::get_repository),
@@ -926,7 +926,7 @@ pub mod tests {
         let tonk = state.read().await;
         let root_did = persist_test_root(&tonk).await;
 
-        super::accreditation::rotate_from_onboarding(&tonk).await;
+        super::rotation::rotate_from_onboarding(&tonk).await;
 
         let repository = tonk
             .profile

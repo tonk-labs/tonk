@@ -371,7 +371,7 @@ pub async fn link(
     // seeds ahead of the backup sweep, so what gets backed up is the
     // account-rooted authority, and retire the onboarding account.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::accreditation::rotate_from_onboarding(&state).await;
+    super::rotation::rotate_from_onboarding(&state).await;
 
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it

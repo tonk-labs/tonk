@@ -274,6 +274,14 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     open:function(href){
       ready.then(function(){port.postMessage({v:1,type:"open",href:href});});
     },
+    // Raise the registration dialog on the HOST page. Sharing needs an
+    // account, and only the top page can run the ceremony: WebAuthn wants
+    // a `window` and a user gesture, which the guest's opaque realm and
+    // the service worker both lack. The guest posts the refusal class so
+    // the host can word the prompt. Fire-and-forget (no response).
+    register:function(reason){
+      ready.then(function(){port.postMessage({v:1,type:"register",reason:reason});});
+    },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
     // request on its real origin and streams the response back; we rebuild a
@@ -521,6 +529,27 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
   // POST anywhere — the event is observable, the navigation is not. Runs on
   // every submit regardless of whether the form has an app handler.
   document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
+
+  // A press in here is a press "outside" for every overlay an ancestor frame
+  // holds open. A nested guest fills its parent's whole viewport, so once
+  // content renders in one, NO click ever reaches the frame the FABB lives
+  // in, and its open stack could not be dismissed by clicking away at all.
+  // Events do not cross a frame boundary, so relay the fact of the press and
+  // let each ancestor redispatch it on its own document, where the existing
+  // dismiss listeners already handle it. Only the fact travels: no
+  // coordinates, no target, nothing the ancestor could use to observe what
+  // was pressed inside a sealed guest.
+  document.addEventListener("pointerdown", function(){
+    try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
+  }, true);
+
+  window.addEventListener("message", function(e){
+    var d=e.data; if(!d||d.__tonkRuntime!=="press") return;
+    // Redispatch on THIS document so an overlay held open here closes, then
+    // keep it travelling so every ancestor up to the top page does the same.
+    document.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true}));
+    try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
+  });
 
   // A light/dark change made in some ancestor frame, relayed down. The
   // theme is a whole-app property, but each guest is its own document with
@@ -1579,6 +1608,7 @@ fn make_dispatcher(
             "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
+            "register" => handle_register(&data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
             _ => {}
@@ -1873,6 +1903,56 @@ fn is_top_level_route(rest: &str) -> bool {
 /// Set the host page's tab title on the guest's behalf. The guest's
 /// `<tonk-title>` posts `{v:1, type:"title", text}`; this runs in the
 /// parent document, which is where `document.title` lives.
+/// Raise the host's registration dialog for a share that needs an
+/// account.
+///
+/// The dialog itself lives in `tonk-ui`, which depends on this crate, so
+/// it cannot be called by name from here. The top page registers a
+/// handler at boot instead — the same shape as the other page effects,
+/// where this crate carries the transport and the shell supplies the
+/// behaviour.
+fn handle_register(data: &JsValue) {
+    let Some(reason) = register_reason(data) else {
+        return;
+    };
+    REGISTER_HANDLER.with(|handler| {
+        if let Some(handler) = handler.borrow().as_ref() {
+            handler(&reason);
+        }
+    });
+}
+
+/// What a page does when a guest asks it to raise registration.
+type RegisterHandler = Box<dyn Fn(&str)>;
+
+thread_local! {
+    /// What to do when a guest asks for registration. `None` until the
+    /// shell installs one, which is correct for a page with no account
+    /// UI: the ask is dropped rather than half-performed.
+    static REGISTER_HANDLER: std::cell::RefCell<Option<RegisterHandler>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install what runs when a guest asks the host to register an account.
+///
+/// Called once by the shell at boot. Later calls replace the handler,
+/// which keeps a hot reload from stacking dialogs.
+pub fn on_register(handler: impl Fn(&str) + 'static) {
+    REGISTER_HANDLER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(handler));
+    });
+}
+
+/// Read `reason` out of a `{ type: "register", reason }` message, or
+/// `None` when the message is not one. Split out so the parse is
+/// testable on its own, the way [`title_text`] is.
+fn register_reason(data: &JsValue) -> Option<String> {
+    if get_str(data, "type")? != "register" {
+        return None;
+    }
+    get_str(data, "reason").filter(|reason| !reason.is_empty())
+}
+
 fn handle_title(data: &JsValue) {
     let Some(text) = title_text(data) else {
         return;
@@ -2711,6 +2791,45 @@ fn post_error(port: &MessagePort, ty: &str, id: &str, error: &str) {
     let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(id));
     let _ = Reflect::set(&env, &"error".into(), &JsValue::from_str(error));
     let _ = port.post_message(&env);
+}
+
+#[cfg(test)]
+mod runtime_bootstrap_tests {
+    use super::RUNTIME_BOOTSTRAP_JS;
+
+    /// A nested guest fills its parent's whole viewport, so once content
+    /// renders in one, no click reaches the frame the FABB lives in and its
+    /// open stack cannot be dismissed by clicking away. The guest reports
+    /// the press upward and every ancestor redispatches it, so the dismiss
+    /// listeners already on those documents fire.
+    #[test]
+    fn a_press_in_a_guest_reaches_every_ancestor() {
+        assert!(RUNTIME_BOOTSTRAP_JS.contains(r#"__tonkRuntime:"press""#));
+        // Capture phase: content that stops propagation must not also
+        // stop an ancestor's overlay from closing.
+        assert!(RUNTIME_BOOTSTRAP_JS.contains(r#"document.addEventListener("pointerdown""#));
+        // Relayed onward, so the press climbs past the first ancestor.
+        assert!(
+            RUNTIME_BOOTSTRAP_JS
+                .contains(r#"document.dispatchEvent(new PointerEvent("pointerdown""#)
+        );
+    }
+
+    /// Only the FACT of the press travels. Coordinates or a target would
+    /// let an ancestor observe what was pressed inside a sealed guest.
+    #[test]
+    fn the_relayed_press_carries_nothing_about_what_was_pressed() {
+        let at = RUNTIME_BOOTSTRAP_JS
+            .find(r#"parent.postMessage({__tonkRuntime:"press"}"#)
+            .expect("the relay");
+        let message = &RUNTIME_BOOTSTRAP_JS[at..at + 60];
+        for leak in ["clientX", "clientY", "target", "path"] {
+            assert!(
+                !message.contains(leak),
+                "press relay leaks {leak}: {message}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

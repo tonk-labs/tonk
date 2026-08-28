@@ -11,7 +11,7 @@
 //! account secret can ever open the row again.
 
 use anyhow::{Context, Result};
-use dialog_operator::Operator;
+use dialog_operator::{Operator, Profile};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
@@ -86,6 +86,22 @@ pub async fn custody_space_seed(
     Ok(())
 }
 
+/// The profile repository's `main` branch, opened locally — the same
+/// branch the account mounts with a remote after sign-in, reachable
+/// before any account exists. Where an unlinked device's custody rows
+/// live, so they ride straight into the account when it arrives.
+pub async fn open_local_account_branch(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+) -> Result<Branch> {
+    dialog_repository::Repository::from(profile)
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .context("failed to open the local account branch")
+}
+
 /// Whether the account branch already holds a custody row for `subject`.
 pub async fn has_custody(
     account: &Branch,
@@ -130,9 +146,9 @@ pub async fn site_seed(site: &crate::site::TonkSite) -> Result<Option<Zeroizing<
     Ok(Some(Zeroizing::new(seed)))
 }
 
-/// One space's outcome under [`accredit_local_spaces`].
+/// One space's outcome under [`rotate_local_spaces`].
 #[derive(Debug)]
-pub enum Accreditation {
+pub enum SpaceRotation {
     /// Authority and custody now reach the account.
     Moved,
     /// Nothing to do: the account already holds this space's custody.
@@ -143,17 +159,20 @@ pub enum Accreditation {
 }
 
 /// Move custody of every registered local space to the signed-in
-/// account — the CLI's accreditation, mirroring what the browser's
-/// rotation does at sign-in. Authority (`space → root`, retained into
-/// the account) and the sealed seed move; hosting does not: a space
-/// gains its remote and provisioning through `tonk space link`.
+/// account. Two passes share the work: [`rotate_from_onboarding`] runs
+/// the shared core over seeds the onboarding account sealed, and this
+/// walk covers spaces from before the onboarding account existed, whose
+/// only seed source is the signer credential this machine stored.
+/// Authority (`space → root`, retained into the account) and the sealed
+/// seed move; hosting does not: a space gains its remote and
+/// provisioning through `tonk space link`.
 ///
 /// Best-effort per space: a failure is reported and the rest continue,
 /// and running again converges.
-pub async fn accredit_local_spaces(
+pub async fn rotate_local_spaces(
     store: &crate::space::SpaceStore,
     config: &crate::site::SiteConfig,
-) -> Result<Vec<(String, Accreditation)>> {
+) -> Result<Vec<(String, SpaceRotation)>> {
     let registry = store.load()?;
     let Some(account) = registry.account.clone() else {
         return Ok(Vec::new());
@@ -172,27 +191,27 @@ pub async fn accredit_local_spaces(
             Err(error) => {
                 outcomes.push((
                     name.clone(),
-                    Accreditation::Skipped(format!("could not open: {error:#}")),
+                    SpaceRotation::Skipped(format!("could not open: {error:#}")),
                 ));
                 continue;
             }
         };
-        match accredit_site(&site, &account_root, store).await {
+        match rotate_site(&site, &account_root, store).await {
             Ok(outcome) => outcomes.push((name.clone(), outcome)),
             Err(error) => outcomes.push((
                 name.clone(),
-                Accreditation::Skipped(format!("failed: {error:#}")),
+                SpaceRotation::Skipped(format!("failed: {error:#}")),
             )),
         }
     }
     Ok(outcomes)
 }
 
-async fn accredit_site(
+async fn rotate_site(
     site: &crate::site::TonkSite,
     account_root: &Did,
     store: &crate::space::SpaceStore,
-) -> Result<Accreditation> {
+) -> Result<SpaceRotation> {
     let subject = site.repository.did();
     // Ownership is the space's own answer: a founder row naming another
     // account is final — a synced space stays with its owner.
@@ -200,10 +219,10 @@ async fn accredit_site(
     if let Some(founder) = roster.founder()
         && founder.did != account_root.to_string()
     {
-        return Ok(Accreditation::Skipped(format!("owned by {}", founder.did)));
+        return Ok(SpaceRotation::Skipped(format!("owned by {}", founder.did)));
     }
     let Some(seed) = site_seed(site).await? else {
-        return Ok(Accreditation::Skipped(
+        return Ok(SpaceRotation::Skipped(
             "no local signer (a joined space)".to_string(),
         ));
     };
@@ -231,8 +250,125 @@ async fn accredit_site(
         .await?;
 
     if has_custody(&account, &subject, &operator).await? {
-        return Ok(Accreditation::Already);
+        return Ok(SpaceRotation::Already);
     }
     custody_space_seed(&account, &subject, &recipient, &seed, &operator).await?;
-    Ok(Accreditation::Moved)
+    Ok(SpaceRotation::Moved)
+}
+
+/// Rotate everything the onboarding account custodies onto the
+/// signed-in account, with the shared core the worker also runs —
+/// `tonk_schema::custody::rotate` — then retire the onboarding account.
+///
+/// The re-issue half is this adapter's: a space seed mints its
+/// `space -> root` directly, the prefix is persisted, and the chain is
+/// retained into the account. An invite seed is left for a browser to
+/// rotate — the CLI holds no membership re-issue path yet — and the
+/// retirement waits for it.
+pub async fn rotate_from_onboarding(
+    store: &crate::space::SpaceStore,
+    config: &crate::site::SiteConfig,
+) -> Result<Vec<(Did, String)>> {
+    use dialog_varsig::Principal as _;
+
+    let registry = store.load()?;
+    let Some(account) = registry.account.clone() else {
+        return Ok(Vec::new());
+    };
+    let account_root: Did = account
+        .root
+        .parse()
+        .context("the signed-in account root is invalid")?;
+
+    let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
+    let profile = Profile::open(config.profile_name.clone())
+        .at(config.profile_directory.clone())
+        .perform(&storage)
+        .await
+        .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
+    let operator = crate::account_state::credential_operator_for_store(&profile, store).await?;
+    let Some(secret) = crate::onboarding::read_if_openable_in(&profile, &operator).await? else {
+        return Ok(Vec::new());
+    };
+    let old_key = secret.encryption_key();
+    let branch =
+        match crate::account_state::open_account_branch_in(&profile, &operator, store).await? {
+            Some(branch) => branch,
+            None => open_local_account_branch(&profile, &operator).await?,
+        };
+    let new_recipient = account_recipient(&branch, &account_root, &operator)
+        .await?
+        .context(
+            "the account has not published its encryption key yet; \
+             open /account in a signed-in browser once, then run `tonk account status`",
+        )?;
+    let new_key = tonk_identity::sealed::RecipientKey::from_did(&new_recipient)
+        .map_err(|error| anyhow::anyhow!("the account encryption key is unusable: {error}"))?;
+
+    let outcome = tonk_schema::custody::rotate(
+        &branch,
+        &old_key,
+        &new_key,
+        &operator,
+        async |kind, signer, row, replacement| match kind {
+            SeedKind::Space => {
+                let subject = signer.did();
+                let minter = dialog_repository::Repository::from(signer);
+                let chain = minter
+                    .access()
+                    .claim(&minter)
+                    .delegate(account_root.clone())
+                    .perform(&operator)
+                    .await
+                    .map_err(|error| format!("{subject}: delegate: {error}"))?
+                    .into_chain();
+                let bytes = chain
+                    .to_bytes()
+                    .map_err(|error| format!("{subject}: serialize: {error}"))?;
+                profile
+                    .credential()
+                    .site(tonk_account::prefix::space_root_site(
+                        &subject,
+                        &account_root,
+                    ))
+                    .save(bytes)
+                    .perform(&operator)
+                    .await
+                    .map_err(|error| format!("{subject}: prefix: {error}"))?;
+                // Every write for this row goes through one fresh
+                // handle: the retention advances the branch, and the
+                // replacement must commit on top of that, not on a
+                // version held from before it.
+                let commit_branch = open_local_account_branch(&profile, &operator)
+                    .await
+                    .map_err(|error| format!("{subject}: open: {error:#}"))?;
+                tonk_account::delegations::retain_space_delegation(
+                    &commit_branch,
+                    &chain,
+                    &operator,
+                )
+                .await
+                .map_err(|error| format!("{subject}: retain: {error}"))?;
+                commit_branch
+                    .transaction()
+                    .retract(row.clone())
+                    .assert(replacement)
+                    .commit()
+                    .perform(&operator)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| format!("{subject}: reseal commit: {error}"))
+            }
+            SeedKind::Invite => {
+                Err("an invite seed rotates from a browser, not the CLI".to_string())
+            }
+        },
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("rotation could not run: {error}"))?;
+
+    if outcome.failures.is_empty() {
+        crate::onboarding::retire(&profile, &operator).await?;
+    }
+    Ok(outcome.failures)
 }

@@ -55,6 +55,7 @@ use crate::shadow::{self, Bound, Edit};
 /// Below this the space rung's stack discloses in place rather than flying
 /// out sideways: sideways flight needs the room a hover pointer implies.
 const INPLACE_MAX_WIDTH_PX: f64 = 640.0;
+const MENU_VIEWPORT_MARGIN_PX: f64 = 8.0;
 
 pub(crate) const CONNECT_BANNER_ID: &str = "fabb-connect-banner";
 
@@ -441,17 +442,30 @@ pub(crate) fn open_panel(
     };
     let rung: HtmlElement = rung.unchecked_into();
     let menus_style = menus.unchecked_ref::<HtmlElement>().style();
+    let stack_style = stack.unchecked_ref::<HtmlElement>().style();
 
     let usable = state.borrow().usable_width_px.max(0.0);
     let width = if panel == Panel::Overflow || anchor == Cell::More {
         usable.min(logic::SPACE_CELL_PX)
+    } else if panel == Panel::Share {
+        logic::SHARE_CELL_PX
     } else {
         rung.offset_width() as f64
     };
-    let _ = stack
-        .unchecked_ref::<HtmlElement>()
-        .style()
-        .set_property("--fabb-menu-w", &format!("{width}px"));
+    let _ = stack_style.set_property("--fabb-menu-w", &format!("{width}px"));
+    if let Some(viewport_height) = window()
+        .and_then(|window| window.inner_height().ok())
+        .and_then(|height| height.as_f64())
+    {
+        let rect = bar.get_bounding_client_rect();
+        let max_height = available_menu_height(
+            viewport_height,
+            rect.top(),
+            rect.bottom(),
+            this.has_attribute("up"),
+        );
+        let _ = stack_style.set_property("--fabb-menu-max-h", &format!("{max_height}px"));
+    }
 
     if !preserve_anchor {
         let bar_width = bar.unchecked_ref::<HtmlElement>().offset_width();
@@ -478,6 +492,22 @@ pub(crate) fn open_panel(
     focus_first_row(&stack);
 }
 
+fn available_menu_height(
+    viewport_height: f64,
+    bar_top: f64,
+    bar_bottom: f64,
+    opens_up: bool,
+) -> f64 {
+    let available = if opens_up {
+        bar_top
+    } else {
+        viewport_height - bar_bottom
+    };
+    (available - f64::from(markup::STACK_GAP_PX) - MENU_VIEWPORT_MARGIN_PX)
+        .max(0.0)
+        .floor()
+}
+
 /// Close whatever stack is open, restoring any hoisted sub-stack first.
 pub(crate) fn close(this: &HtmlElement, state: &Shared) {
     close_internal(this, state, true);
@@ -485,6 +515,19 @@ pub(crate) fn close(this: &HtmlElement, state: &Shared) {
 
 fn close_internal(this: &HtmlElement, state: &Shared, restore_focus: bool) {
     let opener = state.borrow().open_panel.map(|open| open.anchor);
+    // A row holding its flyout open closes with the stack it lives in.
+    // Left set, it would still be open the next time the stack is
+    // raised — and a press outside dismisses the stack, so the flyout
+    // has to go with it.
+    if let Ok(open_rows) = this.query_selector_all("tonk-mi[open]") {
+        for index in 0..open_rows.length() {
+            if let Some(node) = open_rows.item(index)
+                && let Ok(row) = node.dyn_into::<Element>()
+            {
+                let _ = row.remove_attribute("open");
+            }
+        }
+    }
     restore_sub(state);
     state.borrow_mut().open_panel = None;
     if let Some(menus) = query(this, ".mw") {
@@ -669,7 +712,7 @@ pub(crate) fn commit_edit(this: &HtmlElement, state: &Shared) {
 fn toggle_mode(this: &HtmlElement) {
     let dark = !shadow::is_dark(this);
     let next = if dark { "dark" } else { "light" };
-    let _ = this.set_attribute("mode", next);
+    shadow::set_mode(this, Some(next));
     shadow::apply_mode(this);
     tonk_host::theme::set_mode(dark);
     propagate(this);
@@ -803,9 +846,7 @@ fn update_sync_condition(this: &HtmlElement) {
     };
     banner.set_id(CONNECT_BANNER_ID);
     banner.set_inner_html("connect this space<span slot=\"door\">connect</span>");
-    if let Some(mode) = this.get_attribute("mode") {
-        let _ = banner.set_attribute("mode", &mode);
-    }
+    crate::shadow::set_mode(&banner, this.get_attribute("mode").as_deref());
     let on_open = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
         crate::share::open_enable_sync_from_banner();
     });
@@ -821,11 +862,7 @@ fn sync_condition_mode(this: &HtmlElement, document: &web_sys::Document) {
         let Some(element) = document.get_element_by_id(id) else {
             continue;
         };
-        if let Some(mode) = this.get_attribute("mode") {
-            let _ = element.set_attribute("mode", &mode);
-        } else {
-            let _ = element.remove_attribute("mode");
-        }
+        crate::shadow::set_mode(&element, this.get_attribute("mode").as_deref());
     }
 }
 
@@ -990,4 +1027,16 @@ pub(crate) fn expand(this: &HtmlElement, state: &Shared) {
         }
     }
     update(this);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::available_menu_height;
+
+    #[test]
+    fn it_caps_menus_to_the_space_on_their_opening_side() {
+        assert_eq!(available_menu_height(900.0, 820.0, 856.0, true), 805.0);
+        assert_eq!(available_menu_height(900.0, 40.0, 76.0, false), 809.0);
+        assert_eq!(available_menu_height(100.0, 4.0, 96.0, true), 0.0);
+    }
 }

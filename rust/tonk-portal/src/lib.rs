@@ -25,6 +25,11 @@
 
 #[cfg(target_arch = "wasm32")]
 mod bridge;
+/// Install what runs when a guest asks the host to register an account.
+/// The dialog lives in the shell, which depends on this crate, so the
+/// behaviour is supplied rather than named here.
+#[cfg(target_arch = "wasm32")]
+pub use bridge::on_register;
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]

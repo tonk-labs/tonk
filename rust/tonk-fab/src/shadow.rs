@@ -139,8 +139,41 @@ pub fn apply_mode(this: &HtmlElement) {
 /// so slotted children — which render in their OWN shadow roots — have to be
 /// told explicitly. Without this a slotted `<tonk-mi>` inside a dark bar
 /// renders light.
+/// Set `mode` on `element`, or clear it, only when that changes anything.
+///
+/// `mode` is observed by every element it is set on, and `set_attribute`
+/// runs `attributeChangedCallback` SYNCHRONOUSLY — so a write that
+/// changes nothing still re-enters the element's own state lock, which
+/// on wasm is not reentrant and panics with `cannot recursively acquire
+/// mutex` rather than deadlocking.
+pub fn set_mode(element: &Element, mode: Option<&str>) {
+    let current = element.get_attribute("mode");
+    match mode {
+        Some(mode) => {
+            if current.as_deref() == Some(mode) {
+                return;
+            }
+            let _ = element.set_attribute("mode", mode);
+        }
+        None => {
+            if current.is_none() {
+                return;
+            }
+            let _ = element.remove_attribute("mode");
+        }
+    }
+}
+
 pub fn pass_mode(this: &HtmlElement, child: &Element) {
-    let _ = child.set_attribute("mode", if is_dark(this) { "dark" } else { "light" });
+    let mode = if is_dark(this) { "dark" } else { "light" };
+    // Only when it actually changes. `mode` is an observed attribute on
+    // every element this is called for, and `set_attribute` runs their
+    // `attributeChangedCallback` SYNCHRONOUSLY — so a write that changes
+    // nothing still re-enters, and on wasm the state lock is not
+    // reentrant: it panics with `cannot recursively acquire mutex`
+    // rather than deadlocking. The dialog propagates its mode to every
+    // child on open, which is exactly when that fires.
+    set_mode(child, Some(mode));
 }
 
 /// Dispatch a composed, bubbling `fabb-*` event.

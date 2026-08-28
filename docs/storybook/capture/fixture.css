@@ -1,0 +1,98 @@
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 400;
+  src: url("../../../rust/tonk-ui/assets/fonts/ibm-plex-sans-condensed-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 600;
+  src: url("../../../rust/tonk-ui/assets/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  src: url("../../../rust/tonk-ui/assets/fonts/ibm-plex-sans-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  src: url("../../../rust/tonk-ui/assets/fonts/ibm-plex-mono-400-normal.woff2") format("woff2");
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: #ececec;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body { min-height: 100vh; margin: 0; }
+#stage { min-height: 100vh; }
+
+tonk-account .account__logo,
+tonk-activate .account__logo {
+  -webkit-mask-image: url("../../../rust/tonk-ui/assets/images/tonk-wordmark.svg");
+  mask-image: url("../../../rust/tonk-ui/assets/images/tonk-wordmark.svg");
+}
+
+.terminal-stage {
+  display: grid;
+  min-height: 100vh;
+  padding: 70px;
+  place-items: center;
+  background:
+    radial-gradient(circle at 16% 12%, rgb(104 70 232 / 15%), transparent 30%),
+    #e8e6dd;
+  box-sizing: border-box;
+}
+
+.terminal-window {
+  width: min(1120px, calc(100vw - 96px));
+  min-height: 670px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: #171713;
+  color: #f2efe2;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 22%), 0 28px 80px rgb(0 0 0 / 24%);
+}
+
+.terminal-titlebar {
+  display: flex;
+  height: 46px;
+  padding: 0 17px;
+  align-items: center;
+  gap: 8px;
+  background: #24241f;
+  border-bottom: 1px solid rgb(255 255 255 / 7%);
+}
+
+.terminal-dot { width: 11px; height: 11px; border-radius: 50%; background: #db6659; }
+.terminal-dot:nth-child(2) { background: #e5b851; }
+.terminal-dot:nth-child(3) { background: #75b96b; }
+.terminal-title { margin-left: auto; color: rgb(242 239 226 / 38%); font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.terminal-window pre {
+  margin: 0;
+  padding: 28px 32px 44px;
+  overflow: hidden;
+  color: #eeeadd;
+  font: 14px/1.62 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+  white-space: pre-wrap;
+}
+
+.terminal-window .prompt { color: #c7f36b; }
+
+.fixture-error {
+  padding: 40px;
+  color: #8a211b;
+  font: 16px/1.5 system-ui, sans-serif;
+}
