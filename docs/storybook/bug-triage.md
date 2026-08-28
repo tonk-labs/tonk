@@ -8,9 +8,8 @@ stale design contract before implementation work begins.
 
 ## Summary
 
-Six findings remain after merging related observations: four high and two
-medium. `B-02` is fixed on the registration-dialog path and open on the
-account panel. The high findings share one theme: a user-visible account transition can
+Five findings remain after merging related observations: three high and two
+medium; `B-02` is fixed and kept for its history. The high findings share one theme: a user-visible account transition can
 cross an irreversible authority or durability boundary without a tested,
 monotonic recovery state. The medium findings make real service errors or
 duplicate activation results ambiguous. Coverage gaps without a concrete wrong
@@ -19,7 +18,7 @@ behavior remain in the verification backlog rather than this file.
 | ID | Title | Severity | Area | Decision needed | Issue |
 | --- | --- | --- | --- | --- | --- |
 | `B-01` | CLI login recovery does not span every account boundary | high | CLI account login | finish recovery contract | — |
-| `B-02` | Duplicate-email account creation leaves an orphaned passkey | high | Browser account creation | apply to the account panel | — |
+| `B-02` | Duplicate-email account creation leaves an orphaned passkey | high | Browser account creation | fixed | — |
 | `B-04` | Busy account pages leave navigation links operational | high | Browser account lifecycle | fix or require restart reconciliation | — |
 | `B-06` | Same-device browser relink stores a grant the service did not activate | high | Browser account login | generation-binding contract fix | — |
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
@@ -106,14 +105,13 @@ behavior remain in the verification backlog rather than this file.
   touching the authenticator. Enumeration resistance is kept by answering from
   one `EmailStatus` fact that also names `invalid` and `unavailable`, rather
   than by a separate code-authenticated preflight; the stale plan is retired
-  with the code ceremony it described. What remains is applying the same entry
-  screen to the account panel.
+  with the code ceremony it described.
 - **Raised by:** [account lifecycle](accounts/lifecycle.md#edge-cases),
   [journey `ACCT-B03`](journey-catalog.md#accounts-browser-lifecycle).
-- **Status:** Partly fixed. `it_offers_sign_in_for_a_taken_address_without_minting`
-  asserts a credential count of zero through the registration dialog. The
-  `/settings` account panel still opens on the Create / Log in fork and can
-  still mint the orphan.
+- **Status:** Fixed. `it_offers_sign_in_for_a_taken_address_without_minting`
+  asserts a credential count of zero. The account panel's Create / Log in fork
+  is gone: one "link an account" button raises the same dialog, so there is no
+  longer a place to answer the question wrongly.
 
 ### B-04: Busy account pages leave navigation links operational
 

@@ -28,6 +28,17 @@ use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
 :host{ display:block; }
+/* A long stack scrolls rather than running off the screen -- but ONLY when
+   no row of it flies a sub-stack out, because `overflow` clips the flyout,
+   and a flyout that has flipped LEFT lands before the scroll container's
+   start edge where scrolling cannot reach it at all. The cap sits on the
+   HOST, not on `.w`: `.w::before` is the glass underlay at `z-index:-1`,
+   and a scroll container is its own paint context, so an overflow on `.w`
+   makes the underlay paint behind it instead of showing through -- every
+   row loses its ring and the stack reads as one flat block.
+   `mark_scrollable` sets the attribute. */
+:host([scrolls]){ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
+  overflow-y:auto; overscroll-behavior:contain; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
@@ -128,6 +139,24 @@ impl CustomElement for TonkMenu {
     }
 }
 
+/// Cap the stack only when no row of it flies a sub-stack out.
+///
+/// The cap brings `overflow`, and `overflow` clips the flyout -- which sits
+/// outside this box, and once flipped sits before its start edge, where
+/// scrolling cannot reach it. The stacks that actually grow (a member
+/// roster, a space list) carry no flyout, so the two needs never collide on
+/// one stack.
+fn mark_scrollable(this: &HtmlElement) {
+    let carries_flyout = rows(this)
+        .iter()
+        .any(|row| matches!(row.query_selector("tonk-menu[slot=sub]"), Ok(Some(_))));
+    if carries_flyout {
+        let _ = this.remove_attribute("scrolls");
+    } else {
+        let _ = this.set_attribute("scrolls", "");
+    }
+}
+
 /// Pass the resolved mode to every row, then re-cut — a mode change can
 /// change a row's height (nothing does today, but the mask is cheap and a
 /// stale mask is a visible seam).
@@ -161,6 +190,7 @@ fn rows(this: &HtmlElement) -> Vec<Element> {
 /// opens — the observer fires on its own schedule, and a stack that paints
 /// one frame with a stale mask shows glass across its gaps.
 pub(crate) fn recut_mask(this: &HtmlElement) {
+    mark_scrollable(this);
     let Some(root) = this.shadow_root() else {
         return;
     };
@@ -221,28 +251,35 @@ mod tests {
         assert!(!CSS.contains("width:min(var(--fabb-menu-w"));
     }
 
-    /// The stack never becomes a scroll container, and that is
-    /// load-bearing twice over.
-    ///
-    /// `overflow` clips the flyout, which sits outside this box on
-    /// purpose — and once it flips LEFT it lands before the container's
-    /// start edge, where scrolling cannot even reach it: it just
-    /// disappears. A scroll container is also its own paint context, and
-    /// the glass underlay is a `z-index:-1` child — inside one it paints
-    /// behind the container rather than showing through, so every row
-    /// loses its ring and the stack renders as one flat block. Both were
-    /// shipped, and both were plainly visible on screen. A long stack
-    /// running off the edge is the lesser problem: seat the stack, do not
-    /// clip it.
+    /// A stack with no flyout to lose scrolls, so a long roster or space
+    /// list stays on screen. Gated behind `scrolls`, which
+    /// `mark_scrollable` sets only when no row carries a sub-stack.
     #[test]
-    fn the_stack_never_becomes_a_scroll_container() {
+    fn a_stack_without_a_flyout_scrolls_instead_of_overrunning() {
+        assert!(CSS.contains(":host([scrolls]){ max-height:var(--fabb-menu-max-h"));
+        assert!(CSS.contains("overflow-y:auto"));
+        assert!(CSS.contains("overscroll-behavior:contain"));
+    }
+
+    /// The cap lives on the HOST, never on `.w`.
+    ///
+    /// `.w::before` is the glass underlay at `z-index:-1`. A scroll
+    /// container is its own paint context, so an `overflow` on `.w` makes
+    /// that underlay paint behind the wrapper rather than showing through:
+    /// every row loses its ring and the stack renders as one flat block.
+    /// That shipped once and was plainly visible on screen.
+    #[test]
+    fn the_wrapper_never_becomes_the_scrollport() {
+        let at = CSS.find(".w{").expect("the wrapper rule");
+        let body = &CSS[at..];
+        let body = &body[..body.find('}').expect("a closed rule")];
         assert!(
-            !CSS.contains("overflow"),
-            "an overflow here costs the flyout AND every row's ring"
+            !body.contains("overflow"),
+            "overflow on .w kills the underlay"
         );
         assert!(
-            !CSS.contains("max-height"),
-            "a cap brings the overflow with it"
+            !body.contains("max-height"),
+            "a cap on .w brings that overflow"
         );
     }
 }

@@ -120,10 +120,9 @@ reads as `unavailable` rather than as an address nobody has registered — which
 previously sent people into a creation ceremony that failed at the end — and no
 action is offered for a state that is not a fact about the address.
 
-> Technical note: the account panel at `/settings` still opens on the Create /
-> Log in fork and can still mint a credential before the duplicate is reported.
-> The panel's own address-first entry screen is a separate change; until it
-> lands, the guarantee above describes the dialog path only.
+> Technical note: the account panel reaches the same dialog. Its old up-front
+> Create / Log in fork is gone -- one "link an account" button raises the
+> dialog, because the lookup answers on its own the question that fork asked.
 
 ### Cross a boundary
 
