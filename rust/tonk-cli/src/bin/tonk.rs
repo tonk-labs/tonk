@@ -1719,15 +1719,23 @@ async fn link_account(
             // and attaches a remote.
             match site::default_config() {
                 Ok(config) => {
-                    match tonk_cli::custody::accredit_local_spaces(store, &config).await {
+                    match tonk_cli::custody::rotate_from_onboarding(store, &config).await {
+                        Ok(failures) => {
+                            for (subject, reason) in failures {
+                                eprintln!("rotation: {subject} not rotated: {reason}");
+                            }
+                        }
+                        Err(error) => eprintln!("warning: account rotation did not run: {error:#}"),
+                    }
+                    match tonk_cli::custody::rotate_local_spaces(store, &config).await {
                         Ok(outcomes) => {
                             for (name, outcome) in outcomes {
                                 match outcome {
-                                    tonk_cli::custody::Accreditation::Moved => {
+                                    tonk_cli::custody::SpaceRotation::Moved => {
                                         println!("custody: '{name}' moved to the account");
                                     }
-                                    tonk_cli::custody::Accreditation::Already => {}
-                                    tonk_cli::custody::Accreditation::Skipped(reason) => {
+                                    tonk_cli::custody::SpaceRotation::Already => {}
+                                    tonk_cli::custody::SpaceRotation::Skipped(reason) => {
                                         eprintln!("custody: '{name}' not moved: {reason}");
                                     }
                                 }

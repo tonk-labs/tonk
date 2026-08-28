@@ -27,13 +27,13 @@ pub use account_state::AccountKeys;
 
 mod http;
 
-/// Accreditation: rotate the onboarding account's custody to the passkey
-/// account, then retire it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) mod accreditation;
 pub(crate) mod adopt;
 /// Getting the account's encryption key onto a device that needs it.
 pub(crate) mod custody;
+/// Accreditation: rotate the onboarding account's custody to the passkey
+/// account, then retire it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) mod rotation;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
@@ -926,7 +926,7 @@ pub mod tests {
         let tonk = state.read().await;
         let root_did = persist_test_root(&tonk).await;
 
-        super::accreditation::rotate_from_onboarding(&tonk).await;
+        super::rotation::rotate_from_onboarding(&tonk).await;
 
         let repository = tonk
             .profile

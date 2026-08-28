@@ -35,8 +35,9 @@ only its exact `http://127.0.0.1:<port>/` callback shape.
 
 The CLI validates the grant, persists the account authority and provider,
 activates its local session, hydrates the account repository, retains both
-directions of authority in the account, and pushes. It reports success or a
-bounded warning if first sync is still pending.
+directions of authority in the account, and pushes. It then reconciles spaces
+created or claimed before the passkey account existed. It reports success or a
+bounded warning if first sync or an individual rotation is still pending.
 
 ## The interaction, event by event
 
@@ -53,7 +54,8 @@ stateDiagram-v2
     staged --> projecting : grant, root, and provider compatibility writes
     projecting --> active : exact compare-and-set promotion
     active --> hydrating : mount, retain, and push account state
-    hydrating --> complete : ready or unhydrated with warning
+    hydrating --> rotating : reconcile pre-account spaces
+    rotating --> complete : ready or explicit warning
     delivered --> recovering : invalid payload or local failure
     staged --> recovering : crash or local write failure
     active --> recovering : crash, timeout, or push failure
@@ -115,9 +117,10 @@ callback navigation, bridge execution, and the same-origin callback POST are
 separate failure boundaries. During CLI activation, payload parsing, delegation
 validation, durable staging, credential writes, provider attachment, exact
 promotion, account hydration, authority retention, and push are separate
-boundaries. Focused tests cover the fragment bridge, pending restart,
-projection replay, and post-promotion recovery; a real Safari pass and a full
-process restart at every write are still open.
+boundaries. Onboarding-account rotation and the legacy-space walk are further
+post-approval stages. Focused tests cover the fragment bridge, pending restart,
+projection replay, post-promotion recovery, and repeatable space rotation; a
+real Safari pass and a full process restart at every write are still open.
 
 ### Settle
 
@@ -125,6 +128,13 @@ Success requires a canonical active session tied to the exact returned
 attachment, a usable local root/provider record, and an account status of ready
 or unhydrated with an explicit warning. A fresh `tonk account status` after the
 process exits must report the same identity.
+
+Pre-account created spaces settle with the same repository subject and data,
+but with space custody and account authority moved to the passkey account.
+Joined membership stays usable through the onboarding/account union. If an
+invite seed needs rotation, the CLI names that browser-only action on stderr
+and retains the onboarding account; login itself remains active and a later
+reconciliation can retry the unfinished subject.
 
 Decline or pre-approval Ctrl-C settles signed out. A post-approval failure must
 not casually claim signed out: the remote device may exist and some local
@@ -136,9 +146,9 @@ finish the same generation or detach/revoke it before starting another.
 | Modifier | Set at the start | Changed while in flight |
 | --- | --- | --- |
 | Surface and input | CLI TTY may open a browser; `--no-open`/pipe prints the URL. Browser pointer and keyboard must approve/decline equivalently. | Closing one surface does not cancel work already committed on the other. |
-| Local account state | `S0` may begin; `S3` rejects. Partial credential/session state requires reconciliation. | The first local write changes restart behavior and must be detected. |
+| Local account state | `S0` may begin with no onboarding account or with pre-account spaces; `S3` rejects. Partial credential/session state requires reconciliation. | The first local write changes restart behavior; successful rotation may retire the onboarding account only after no dependent invite remains. |
 | Customer state | Browser account may be waiting or active; account authority can approve while first service sync is pending. | Activation can complete during the wait; refresh before provider-dependent work. |
-| Space relationship | No selected space is required. Later account hydration discovers account spaces. | Space changes do not change the fixed account/device audience. |
+| Space relationship | No selected space is required. Local-created, onboarding-claimed, and legacy spaces may exist before login. | Rotation preserves subjects/data; a native invite-seed boundary is reported instead of silently dropping authority. |
 | Connectivity and actor | Loopback, browser page, provider, and repository sync can fail independently. | A second browser/device can revoke or delete the account during authorization. |
 | Output mode | Human CLI prints URL/status; future machine mode must separate the URL/result from diagnostics. | Broken stdout must not repeat or invalidate remote registration. |
 
@@ -206,6 +216,10 @@ from loopback browser history before the bridge creates or submits form fields.
   not signed out.
 - Authority retention succeeds but push fails; later sync must finish without
   minting another device grant.
+- Created-space rotation succeeds but another subject fails; login reports the
+  exact subject and retry converges without a second ownership transition.
+- An onboarding account still holds an invite seed; native login reports that
+  rotation belongs in the browser and does not retire the onboarding account.
 - Two `tonk account login` processes start together.
 - Logout begins after callback delivery but before session activation.
 
@@ -221,3 +235,4 @@ from loopback browser history before the bridge creates or submits form fields.
 - Add fault points after every post-approval write and assert restart state.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
+Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
