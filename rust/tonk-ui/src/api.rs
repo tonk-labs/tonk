@@ -548,6 +548,7 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
 /// the account's recorded one, and no deposits mean the worker mints a
 /// device-chained set. The deposits join with commas rather than riding
 /// as a list, because a command's fields are scalars.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn enroll_claim(email: Option<&str>, deposits: &[String]) -> serde_json::Value {
     serde_json::json!({
         "claims": [{

@@ -12,7 +12,6 @@ pub mod activate;
 /// The account panel's registration row, kept live by a subscription to
 /// the fact rather than a fetch, so an activation performed elsewhere
 /// reaches this tab.
-pub mod registration_notice;
 
 /// Top-document gate sending a signed-out user to sign up, and replaying
 /// what they were doing when it fired.
