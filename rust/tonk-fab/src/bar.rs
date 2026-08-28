@@ -699,7 +699,7 @@ pub(crate) fn commit_edit(this: &HtmlElement, state: &Shared) {
 fn toggle_mode(this: &HtmlElement) {
     let dark = !shadow::is_dark(this);
     let next = if dark { "dark" } else { "light" };
-    let _ = this.set_attribute("mode", next);
+    shadow::set_mode(this, Some(next));
     shadow::apply_mode(this);
     tonk_host::theme::set_mode(dark);
     propagate(this);
@@ -833,9 +833,7 @@ fn update_sync_condition(this: &HtmlElement) {
     };
     banner.set_id(CONNECT_BANNER_ID);
     banner.set_inner_html("connect this space<span slot=\"door\">connect</span>");
-    if let Some(mode) = this.get_attribute("mode") {
-        let _ = banner.set_attribute("mode", &mode);
-    }
+    crate::shadow::set_mode(&banner, this.get_attribute("mode").as_deref());
     let on_open = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
         crate::share::open_enable_sync_from_banner();
     });
@@ -851,11 +849,7 @@ fn sync_condition_mode(this: &HtmlElement, document: &web_sys::Document) {
         let Some(element) = document.get_element_by_id(id) else {
             continue;
         };
-        if let Some(mode) = this.get_attribute("mode") {
-            let _ = element.set_attribute("mode", &mode);
-        } else {
-            let _ = element.remove_attribute("mode");
-        }
+        crate::shadow::set_mode(&element, this.get_attribute("mode").as_deref());
     }
 }
 
