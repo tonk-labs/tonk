@@ -97,9 +97,11 @@ Events:
 
 - Inline syntax (`**bold**`, `*em*`, `` `code` ``, `[text](url)`)
   converts via the reparse loop; deleting a marker converts back.
-- Block syntax: `> `, `- `/`* `/`+ `, `1. ` wrap on typing (input
-  rules; one Backspace undoes the wrap). `## ` headings convert via
-  the loop. `---` becomes a rule.
+- Block syntax: `> `, `- `/`* `/`+ `, `1. ` and `## ` convert through
+  the reparse loop, preserving their literal source markers. Enter in a
+  list immediately materializes the next bullet/number; Enter or Backspace
+  on an empty item exits/outdents it using normal list semantics. `---`
+  becomes a rule.
 - Images are *expanded* (allusion's `expandedImage`): the document
   stores the literal `![alt](src)` source under an `image_markup`
   mark, hidden/revealed like any marker, while a widget decoration

@@ -22,11 +22,24 @@ import {
   liftListItem,
   sinkListItem,
 } from "prosemirror-schema-list";
-import { TextSelection } from "prosemirror-state";
-import type { Command, EditorState } from "prosemirror-state";
+import { Selection, TextSelection } from "prosemirror-state";
+import type {
+  Command,
+  EditorState,
+  Transaction,
+} from "prosemirror-state";
 import type { Plugin } from "prosemirror-state";
+import type { ResolvedPos } from "prosemirror-model";
 import { liftTarget } from "prosemirror-transform";
 import { schema } from "./schema";
+import {
+  demarkupDoc,
+  materializeDoc,
+} from "./markup";
+import {
+  isBlockMarkerOnly,
+  leadingBlockMarkerSize,
+} from "./block-markers";
 
 /** Enter at the end of a textblock reading "```" or "```lang"
  *  converts it to a code block — the path the fence input rule
@@ -102,6 +115,152 @@ function quoteContext(state: EditorState): {
   }
   return { depth, prefix: "> ".repeat(depth) };
 }
+
+/** Markdown quote prefix implied by `$pos`'s structural ancestors. */
+function quotePrefixAt($pos: ResolvedPos): string {
+  let depth = 0;
+  for (let d = $pos.depth; d >= 0; d--) {
+    if ($pos.node(d).type === schema.nodes.blockquote) depth++;
+  }
+  return "> ".repeat(depth);
+}
+
+/** Closest list around `$pos`. */
+function listDepthAt($pos: ResolvedPos): number {
+  for (let d = $pos.depth - 1; d >= 1; d--) {
+    const node = $pos.node(d);
+    if (
+      node.type === schema.nodes.bullet_list ||
+      node.type === schema.nodes.ordered_list
+    ) {
+      return d;
+    }
+  }
+  return -1;
+}
+
+/** Position after the materialized prefix in `itemIndex`'s first
+ *  textblock. `listFrom` points immediately before `list`. */
+function itemContentStart(
+  listFrom: number,
+  list: import("prosemirror-model").Node,
+  itemIndex: number,
+): number | null {
+  if (itemIndex < 0 || itemIndex >= list.childCount) return null;
+  let itemOffset = 0;
+  for (let i = 0; i < itemIndex; i++) itemOffset += list.child(i).nodeSize;
+  const item = list.child(itemIndex);
+  const itemFrom = listFrom + 1 + itemOffset;
+  let target: number | null = null;
+  item.descendants((node, offset) => {
+    if (target !== null) return false;
+    if (node.isTextblock) {
+      target = itemFrom + 1 + offset + 1 + leadingBlockMarkerSize(node);
+      return false;
+    }
+    return true;
+  });
+  return target;
+}
+
+/** `splitListItem` changes the structural list but knows nothing about
+ *  Tonk-Prose's literal source markers. Re-materialize the closest list in
+ *  the SAME transaction, giving the new item its `- `/`N. ` prefix and
+ *  renumbering later ordered items before the view paints an inconsistent
+ *  state. */
+function materializeSplitList(tr: Transaction): boolean {
+  const $head = tr.selection.$head;
+  const listDepth = listDepthAt($head);
+  if (listDepth < 1) return false;
+  const list = $head.node(listDepth);
+  const itemIndex = $head.index(listDepth);
+  const listFrom = $head.before(listDepth);
+  const rebuilt = materializeDoc(demarkupDoc(list), quotePrefixAt($head));
+  tr.replaceWith(listFrom, listFrom + list.nodeSize, rebuilt);
+  const target = itemContentStart(listFrom, rebuilt, itemIndex);
+  if (target !== null) {
+    tr.setSelection(TextSelection.create(tr.doc, target));
+  }
+  return true;
+}
+
+/** Append `after` (created against `base.doc`) to `base`, preserving the
+ *  command's final selection while keeping the user action one transaction
+ *  and therefore one undo step/change event. */
+function appendTransaction(base: Transaction, after: Transaction): void {
+  for (const step of after.steps) base.step(step);
+  base.setSelection(Selection.fromJSON(base.doc, after.selection.toJSON()));
+  if (after.storedMarksSet) base.setStoredMarks(after.storedMarks);
+  if (after.scrolledIntoView) base.scrollIntoView();
+}
+
+const nativeListEnter = splitListItem(schema.nodes.list_item);
+const nativeEmptyListEnter = chainCommands(
+  nativeListEnter,
+  baseKeymap.Enter,
+);
+
+/** Run a native command against a temporary state where a marker-only list
+ *  paragraph is genuinely empty, then replay its steps into the marker
+ *  deletion transaction. */
+function runMarkerOnlyListCommand(
+  state: EditorState,
+  dispatch: ((tr: Transaction) => void) | undefined,
+  command: Command,
+): boolean {
+  const { $from, $to, empty } = state.selection;
+  const inListItem =
+    empty &&
+    $from.sameParent($to) &&
+    $from.depth >= 2 &&
+    $from.node(-1).type === schema.nodes.list_item;
+  if (!inListItem || !isBlockMarkerOnly($from.parent)) return false;
+
+  const start = $from.start();
+  const clean = state.tr.delete(start, start + $from.parent.content.size);
+  clean.setSelection(TextSelection.create(clean.doc, start));
+  const cleanState = state.apply(clean);
+  if (!dispatch) return command(cleanState);
+  let after: Transaction | null = null;
+  if (!command(cleanState, (tr) => { after = tr; }) || !after) return false;
+  appendTransaction(clean, after);
+  // A nested empty item may have outdented into its parent list. Restore
+  // that list's source markers too; at top level there is no surrounding
+  // list and this is intentionally a no-op.
+  materializeSplitList(clean);
+  dispatch(clean);
+  return true;
+}
+
+/** Enter in a list, adapted to the materialized-marker invariant.
+ *
+ *  - A normal split is immediately re-materialized, so the new item has
+ *    its bullet/number before any typing or debounced reparse can occur.
+ *  - A marker-only item is semantically empty. Its hidden source marker is
+ *    removed in-memory, native empty-item behavior runs, and both transforms
+ *    are combined into one transaction. Thus a second Enter exits a
+ *    top-level list (or outdents a nested one) instead of minting endless
+ *    marker-only items. */
+export const listEnter: Command = (state, dispatch) => {
+  if (runMarkerOnlyListCommand(state, dispatch, nativeEmptyListEnter)) {
+    return true;
+  }
+
+  if (!dispatch) return nativeListEnter(state);
+  return nativeListEnter(state, (tr) => {
+    materializeSplitList(tr);
+    dispatch(tr);
+  });
+};
+
+/** Backspace on a marker-only item follows structural empty-list behavior
+ *  instead of deleting one hidden source character at a time. */
+export const listBackspace: Command = (state, dispatch) =>
+  runMarkerOnlyListCommand(
+    state,
+    dispatch,
+    liftListItem(schema.nodes.list_item),
+  );
 
 /** A `> ` (or `> > ` …) leading block marker node for a new quote line. */
 function quoteMarker(prefix: string) {
@@ -194,11 +353,15 @@ export function buildKeymap(): Plugin {
     "Mod-y": redo,
     // Undo an input-rule conversion first (one Backspace restores
     // the literal `> ` / `- ` / "```" text), then normal backspace.
-    Backspace: chainCommands(undoInputRule, baseKeymap.Backspace),
+    Backspace: chainCommands(
+      undoInputRule,
+      listBackspace,
+      baseKeymap.Backspace,
+    ),
     Enter: chainCommands(
       codeFenceEnter,
       blockquoteEnter,
-      splitListItem(schema.nodes.list_item),
+      listEnter,
       baseKeymap.Enter,
     ),
     "Mod-Enter": exitCode,

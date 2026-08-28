@@ -724,8 +724,8 @@
       "variants": "Root missing/provider-free/registered; customer states; revoked."
     },
     {
-      "evidence": "Rendering/portal coverage outside tonk-ui; some E2E paths.",
-      "gaps": "Top-level real-browser route matrix and interactive behavior, not only headless render.",
+      "evidence": "Rendering/portal coverage outside tonk-ui; Tonk-Prose list editing has deterministic marker, caret, and empty-item regressions; some E2E paths.",
+      "gaps": "Top-level real-browser route matrix and hosted editor interaction, not only lower-layer or headless coverage.",
       "group": "Browser shell and runtime",
       "id": "UI-04",
       "title": "Open a space home or explicit rendered route.",
@@ -801,7 +801,8 @@
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/styles.css",
         "rust/tonk-portal/src/site.rs",
-        "rust/tonk-fab/src/markup.rs"
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-prose/src-js/editor/index.ts"
       ],
       "status": "captured",
       "summary": "A selected space renders its configured home with the floating action bar available over the content.",
