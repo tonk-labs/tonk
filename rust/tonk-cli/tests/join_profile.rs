@@ -41,13 +41,17 @@ async fn it_claims_to_the_profile_without_a_linked_account() -> Result<()> {
     claimed?;
 
     let joined = TonkSite::open_with(&claimer_root, claimer_config.clone()).await?;
-    assert_eq!(
-        tonk_cli::site::member_did(&joined).await?,
+    // The unlinked claim binds to the ONBOARDING account — the durable
+    // identity a device has before any passkey — never to an anonymous
+    // fabrication, and not to the bare profile key either.
+    let member = tonk_cli::site::member_did(&joined).await?;
+    assert_ne!(
+        member,
         joined.profile.did(),
-        "claiming must not fabricate an anonymous membership root"
+        "the claim outlives the profile key"
     );
     let roster = inventory::read_roster(&joined).await?;
     assert_eq!(roster.members.len(), 1);
-    assert_eq!(roster.members[0].did, joined.profile.did().to_string());
+    assert_eq!(roster.members[0].did, member.to_string());
     Ok(())
 }

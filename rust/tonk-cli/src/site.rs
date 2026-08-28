@@ -300,15 +300,9 @@ impl TonkSite {
         {
             Ok(repository) => (repository, false),
             Err(_) => (
-                bootstrap_repository(
-                    &profile,
-                    &operator,
-                    &config.account_store,
-                    config.require_account,
-                    config.provision_account_spaces,
-                )
-                .await
-                .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
+                bootstrap_repository(&profile, &operator, &config)
+                    .await
+                    .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
                 true,
             ),
         };
@@ -413,10 +407,13 @@ impl TonkSite {
 /// interchangeable:
 ///
 /// - the **account** signed in here, which a linked device writes rows under;
-/// - the durable **local root** this device delegates from — the same DID as
-///   the account root once linked, a device-generated root before that. It is
-///   what `tonk join` stamps its membership with, and, living in the profile
-///   rather than the registry, it survives sign-out;
+/// - the durable **local root** this device delegates from once a passkey
+///   account is linked. Living in the profile rather than the registry, it
+///   survives sign-out;
+/// - the **onboarding account** — the durable root before any passkey, what
+///   unlinked creates delegate to and unlinked joins stamp their membership
+///   with. Read from its grant's issuer, so rows it wrote stay recognizable
+///   even after sign-in retires the account itself;
 /// - the **profile**, this device's own key, as the last resort.
 ///
 /// Reading and writing resolve through this same order, so a row this
@@ -429,6 +426,7 @@ impl TonkSite {
 pub struct Identity {
     account: Option<String>,
     local_root: Option<String>,
+    onboarding: Option<String>,
     profile: String,
 }
 
@@ -452,6 +450,7 @@ impl Identity {
             .ok()
             .flatten()
             .map(|root| root.root_did),
+            onboarding: onboarding_grant_issuer(site).await,
             profile: site.profile.did().to_string(),
         })
     }
@@ -472,6 +471,7 @@ impl Identity {
             .as_deref()
             .into_iter()
             .chain(self.local_root.as_deref())
+            .chain(self.onboarding.as_deref())
             .chain(std::iter::once(self.profile.as_str()))
     }
 
@@ -490,6 +490,23 @@ impl Identity {
 /// order they are tried in.
 pub async fn member_did(site: &TonkSite) -> Result<Did> {
     Identity::of(site).await?.member_did()
+}
+
+/// The onboarding account's DID, read from its persisted grant's
+/// issuer. Best effort, and deliberately independent of the custodian:
+/// rows the onboarding account wrote must stay recognizable after
+/// sign-in retires it.
+async fn onboarding_grant_issuer(site: &TonkSite) -> Option<String> {
+    let bytes = site
+        .profile
+        .credential()
+        .site(crate::onboarding::ONBOARDING_GRANT_SITE)
+        .load::<Vec<u8>>()
+        .perform(site.operator.local())
+        .await
+        .ok()?;
+    let chain = DelegationChain::try_from(bytes.as_slice()).ok()?;
+    Some(chain.issuer().to_string())
 }
 
 /// Stamp this installation as the space's founder.
@@ -543,10 +560,11 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
 async fn bootstrap_repository(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    account_store: &crate::space::SpaceStore,
-    require_account: bool,
-    provision_account_spaces: bool,
+    config: &SiteConfig,
 ) -> Result<Repository> {
+    let account_store = &config.account_store;
+    let require_account = config.require_account;
+    let provision_account_spaces = config.provision_account_spaces;
     let local_root = crate::identity::local_root_with_operator(profile, operator).await?;
     let account_operator = if require_account {
         crate::account::require_account_with_operator_in(profile, operator, account_store).await?;
@@ -556,11 +574,44 @@ async fn bootstrap_repository(
     } else {
         None
     };
-    let durable_did: dialog_varsig::Did = local_root
-        .context("local root provisioning did not produce a record")?
-        .root_did
-        .parse()
-        .context("stored root DID is invalid")?;
+    // The durable owner: the passkey root once one is linked, else this
+    // device's onboarding account — a real account custodied locally,
+    // minted on first use, the same shape the worker gives a browser
+    // from first boot. Unlinked spaces then have the same anatomy as
+    // linked ones, and `tonk account login` moves them with the shared
+    // account rotation instead of adopting a bespoke local form.
+    let store_operator = crate::account_state::store_operator_with_config(
+        profile,
+        account_store,
+        &config.profile_name,
+        config.profile_directory.clone(),
+    )
+    .await?;
+    let onboarding = match &local_root {
+        Some(_) => None,
+        None => Some(crate::onboarding::account(profile, &store_operator).await?),
+    };
+    let durable_did: dialog_varsig::Did = match (&local_root, &onboarding) {
+        (Some(record), _) => record
+            .root_did
+            .parse()
+            .context("stored root DID is invalid")?,
+        (None, Some(secret)) => {
+            use dialog_varsig::Principal as _;
+            // The grant travels by exact bytes so every operator store
+            // holds the same delegation; this site's operator installs
+            // it here, where the space chain will be proven.
+            crate::onboarding::install_grant(profile, operator)
+                .await?
+                .context("the onboarding account has no device grant")?;
+            secret
+                .signer()
+                .await
+                .map_err(|error| anyhow::anyhow!("the onboarding signer did not derive: {error}"))?
+                .did()
+        }
+        (None, None) => unreachable!("an onboarding account is minted when no root exists"),
+    };
 
     // The signer comes from an explicit seed so the seed can be sealed
     // to the account BEFORE the space exists: the custody row is the
@@ -591,6 +642,20 @@ async fn bootstrap_repository(
             &recipient,
             &seed,
             account_operator,
+        )
+        .await?;
+    } else if let Some(secret) = &onboarding {
+        // Unlinked: the seed seals to the onboarding key on the local
+        // account branch — the same branch the account mounts once the
+        // device signs in, so the rows ride straight into rotation.
+        let recipient = secret.encryption_key().recipient().did();
+        let account = crate::custody::open_local_account_branch(profile, &store_operator).await?;
+        crate::custody::custody_space_seed(
+            &account,
+            &signer.did(),
+            &recipient,
+            &seed,
+            &store_operator,
         )
         .await?;
     }
@@ -718,10 +783,25 @@ async fn mount_delegated_inner(
             .root_did
             .parse()
             .context("stored root DID is invalid")?,
-        None if require_reusable => {
-            bail!("local root provisioning did not produce a record")
+        None => {
+            // Before a passkey exists the device's durable root is its
+            // onboarding account, and a reusable prefix may terminate
+            // there — sign-in rotation re-roots it later.
+            let store_operator = crate::account_state::store_operator_with_config(
+                &profile,
+                &config.account_store,
+                &config.profile_name,
+                config.profile_directory.clone(),
+            )
+            .await?;
+            match crate::onboarding::did(&profile, &store_operator).await? {
+                Some(did) => did,
+                None if require_reusable => {
+                    bail!("neither a root nor an onboarding account exists on this device")
+                }
+                None => profile.did(),
+            }
         }
-        None => profile.did(),
     };
     let subject = chain
         .subject()
@@ -1166,43 +1246,6 @@ pub(crate) async fn build_profile_and_operator(
         .await
         .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
     let operator = derive_operator_for_profile(root, &profile, storage).await?;
-
-    // Isolated legacy test fixtures opt into a software-generated root so they
-    // still exercise the same space → root → device chain shape. Production
-    // never enters this path and requires a browser/passkey handoff.
-    if !config.require_account
-        && crate::identity::local_root_with_operator(&profile, &operator)
-            .await?
-            .is_none()
-    {
-        let root = Ed25519Signer::generate()
-            .await
-            .context("failed to generate the isolated fixture root")?;
-        let delegation =
-            tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did()).await?;
-        let bytes = delegation
-            .to_bytes()
-            .context("failed to serialize fixture root")?;
-        let record = crate::identity::LocalRoot {
-            credential_id: "isolated-software-root".to_string(),
-            root_did: root.did().to_string(),
-            delegation_cid: delegation.proof_cids()[0].to_string(),
-            delegation_hex: hex::encode(&bytes),
-        };
-        profile
-            .access()
-            .save(UcanDelegation(delegation))
-            .perform(&operator)
-            .await
-            .context("failed to install fixture root grant")?;
-        profile
-            .credential()
-            .site(crate::identity::LOCAL_ROOT_SITE)
-            .save(serde_json::to_vec(&record)?)
-            .perform(&operator)
-            .await
-            .context("failed to persist fixture root")?;
-    }
 
     Ok((profile, operator))
 }

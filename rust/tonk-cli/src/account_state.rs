@@ -441,6 +441,25 @@ pub async fn migrate_delegations(
     Ok(outcome)
 }
 
+/// The account-state operator, remounting the profile by explicit name
+/// and directory. Buildable before any account attachment — which the
+/// onboarding path needs, since an unlinked device writes its custody
+/// rows into the account branch that does not have an account yet.
+pub(crate) async fn store_operator_with_config(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    profile_name: &str,
+    profile_directory: Directory,
+) -> Result<Operator<NativeSpace>> {
+    operator_with_profile(
+        profile,
+        &store.account_dir(),
+        profile_name,
+        profile_directory,
+    )
+    .await
+}
+
 async fn operator_with_profile(
     profile: &Profile,
     root: &Path,

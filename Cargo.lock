@@ -5244,6 +5244,7 @@ dependencies = [
  "tokio",
  "tonk-core",
  "tonk-evaluator",
+ "tonk-identity",
  "tonk-notation",
  "tonk-worker-api",
  "wasm-bindgen-test",

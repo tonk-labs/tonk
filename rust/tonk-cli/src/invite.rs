@@ -407,8 +407,9 @@ pub async fn claim(
 
     // An invite already carries the authority needed to join. A linked
     // profile claims to its durable account root; before linking, the
-    // persistent profile DID is the stable identity available on this device.
-    // The later profile↔account union carries profile-held spaces forward.
+    // device's account is the ONBOARDING account — a real account
+    // custodied locally — so the join is durable to the same identity
+    // creates delegate to, and the sign-in rotation carries it forward.
     let member = match crate::identity::local_root_with_operator(&profile, &operator)
         .await
         .map_err(|e| InviteError::Io(e.to_string()))?
@@ -417,7 +418,25 @@ pub async fn claim(
             .root_did
             .parse()
             .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?,
-        None => profile.did(),
+        None => {
+            use dialog_varsig::Principal as _;
+            let store_operator = crate::account_state::store_operator_with_config(
+                &profile,
+                &config.account_store,
+                &config.profile_name,
+                config.profile_directory.clone(),
+            )
+            .await
+            .map_err(|e| InviteError::Io(format!("{e:#}")))?;
+            let secret = crate::onboarding::account(&profile, &store_operator)
+                .await
+                .map_err(|e| InviteError::Io(format!("{e:#}")))?;
+            secret
+                .signer()
+                .await
+                .map_err(|e| InviteError::Io(format!("the onboarding signer did not derive: {e}")))?
+                .did()
+        }
     };
     let claimed = invite
         .claim(&member)

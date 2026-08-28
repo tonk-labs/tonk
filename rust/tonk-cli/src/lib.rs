@@ -56,6 +56,7 @@ pub mod inventory;
 pub mod invite;
 pub mod listing;
 pub mod migrate;
+pub mod onboarding;
 pub mod output;
 pub mod recovery;
 pub mod remote;

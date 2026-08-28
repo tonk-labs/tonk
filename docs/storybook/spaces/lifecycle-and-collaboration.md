@@ -18,14 +18,15 @@ different destructive actions.
 ## The simple case
 
 Signed out, the person runs `tonk space new garden`. Tonk creates a canonical
-site, registers it under `garden`, and binds the current directory. The person
-defines concepts, writes data, and renders views entirely locally.
+site, registers it under `garden`, binds the current directory, and places its
+custody in a lazily created local onboarding account. The person defines
+concepts, writes data, and renders views entirely locally.
 
-After `tonk account login`, `tonk space link garden` retains the same repository
-and data while assigning it to the active account, hosting it, listing it in the
-account directory, configuring its upstream, and synchronizing it. On another
-device, `tonk account space pull garden` creates the local replica and
-registration.
+After `tonk account login`, Tonk rotates the same repository and data into the
+passkey account's authority and custody. Hosting remains explicit:
+`tonk space link garden` lists it in the account directory, configures its
+upstream, and synchronizes it. On another device, `tonk account space pull
+garden` creates the local replica and registration.
 
 The owner runs `tonk invite`, sends the URL, and a recipient runs `tonk join
 'URL#fragment' --name shared-garden`. The recipient receives a joined space and
@@ -73,9 +74,10 @@ unique name or exact repository subject; ambiguous names require the subject.
 
 `space new` validates the slug, detects registry/site collisions, chooses a
 canonical or explicit `--site` path, and distinguishes creating a new site from
-adopting an existing one. Signed-out state selects local-only creation. A valid
-active account selects account ownership, but customer/provider readiness still
-controls whether hosting settles immediately.
+adopting an existing one. Signed-out state selects local-only creation under a
+local onboarding account. A valid active account selects passkey-account
+ownership, but customer/provider readiness still controls whether hosting
+settles immediately.
 
 `space link` resolves one registered space and the active account for that
 space's exact profile. The profile must report the same registered account root
@@ -157,10 +159,11 @@ the idempotent provisioning, custody, sync, and account-directory work even if
 an invite was minted after ownership committed. Another device must be able to
 discover the exact repository subject through the account directory.
 
-Join settles with authority addressed to the current profile and a local
-registration that names the original repository. An accountless claim remains
-valid under that profile DID and can later be retained into the account without
-changing its subject.
+Join settles with authority addressed to the local onboarding account and a
+local registration that names the original repository. A later account login
+unites that onboarding authority with the passkey account without changing the
+subject. Created-space custody rotates to the passkey account; invite-seed
+rotation remains browser-only and must be reported explicitly.
 
 Status settles with one of no-upstream, synced, ahead, behind, or diverged plus
 the current local hash. An unreachable or revoked remote is an error/variant,
@@ -176,7 +179,7 @@ state that recovery can inspect.
 | Modifier | Set at the start | Changed while in flight |
 | --- | --- | --- |
 | Surface and input | CLI performs lifecycle/data operations; browser routes expose account/space state and interaction. TTY affects confirmations and progress. | A browser view cannot redirect a running CLI's fixed repository subject. A pipe closing changes output only. |
-| Local account state | Signed out creates local-only; active account can own/link; provider-free/unhydrated states restrict remote stages. | Login/logout during a command cannot transfer ownership; the command uses the resolved account generation or aborts stale. |
+| Local account state | Signed out creates local-only under an onboarding account; active account can own/link; provider-free/unhydrated states restrict remote stages. | Login reconciles pre-account work after the command; concurrent login/logout cannot retarget an in-flight subject. |
 | Customer state | Active hosts; Registered queues; Suspended/unreachable keeps local work but blocks service. | Activation may resume queued work; suspension causes remote failure without deleting local state. |
 | Space relationship | Local-only, owned, joined, data-only, and deleted targets admit different verbs. | A relationship change invalidates the operation rather than widening authority. |
 | Connectivity and actor | Offline supports documented local operations; sync/invite shortening/hosting need services. | Concurrent head, ownership, registry, or revocation changes are detected and reconciled. |
@@ -250,6 +253,9 @@ URLs, DIDs, data, or argument values.
   origin/shortcut service is unavailable.
 - Recipient is accountless at claim, later links an account, then recovers the
   space on another device.
+- Account login rotates created-space custody but finds an invite seed that the
+  native CLI cannot reissue; it reports the browser-only boundary and preserves
+  the onboarding authority for retry.
 - Revoked recipient retains local bytes and attempts local write, push, pull,
   or a new invite.
 - `space rm` is interrupted between data removal and registry/binding cleanup.
@@ -268,3 +274,4 @@ URLs, DIDs, data, or argument values.
   journey, not only lower-layer authority assertions.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
+Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
