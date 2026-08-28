@@ -724,12 +724,12 @@ window.STORYBOOK_DATA = {
       "variants": "Root missing/provider-free/registered; customer states; revoked."
     },
     {
-      "evidence": "Rendering/portal coverage outside tonk-ui; some E2E paths.",
-      "gaps": "Top-level real-browser route matrix and interactive behavior, not only headless render.",
+      "evidence": "Rendering/portal coverage, inspector renderer tests, and some E2E paths.",
+      "gaps": "Top-level real-browser route matrix, configured-upstream probe, and interactive behavior beyond headless render.",
       "group": "Browser shell and runtime",
       "id": "UI-04",
-      "title": "Open a space home or explicit rendered route.",
-      "variants": "Blank/configured home; missing view/entity; local/remote; unauthorized."
+      "title": "Open a space home, explicit rendered route, or /inspector.",
+      "variants": "Blank/configured home; missing view/entity; local/remote; unauthorized; named-space/profile inspector."
     },
     {
       "evidence": "One deployment browser test plus build checks.",
@@ -2139,7 +2139,7 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Blank/configured/invalid home routes visibly and interactively (Settle).",
+      "claim": "Blank/configured/invalid home and inspector routes settle visibly and interactively (Settle).",
       "device": "returning-browser",
       "file": "verification/cli-spaces-ui.md",
       "id": "UI-06",
