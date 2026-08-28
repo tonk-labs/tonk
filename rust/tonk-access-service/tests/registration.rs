@@ -822,11 +822,15 @@ async fn it_denies_presign_until_the_customer_confirms_their_email(
         .await?;
     assert_eq!(response.status(), 403, "an unprovisioned subject is served");
     let reason: serde_json::Value = response.json().await?;
-    assert_eq!(reason["kind"], "PolicyViolation");
+    assert_eq!(reason["kind"], "Declined");
+    assert_eq!(
+        reason["recourse"], "None",
+        "nobody is coming to provision this subject: {reason}"
+    );
     assert!(
-        reason["predicate"]
+        reason["reason"]
             .as_str()
-            .expect("the refusal names its predicate")
+            .expect("the refusal says why")
             .contains("not provisioned"),
         "the refusal must say why: {reason}"
     );
@@ -852,10 +856,18 @@ async fn it_denies_presign_until_the_customer_confirms_their_email(
         .await?;
     assert_eq!(response.status(), 403, "a Registered customer is served");
     let reason: serde_json::Value = response.json().await?;
+    assert_eq!(reason["kind"], "Declined");
+    // The bit a waiting client acts on: this refusal clears when
+    // somebody opens the link, so the client holds its work and retries
+    // rather than treating the account as unusable.
+    assert_eq!(
+        reason["recourse"], "Retry",
+        "an unconfirmed email is worth waiting on: {reason}"
+    );
     assert!(
-        reason["predicate"]
+        reason["reason"]
             .as_str()
-            .expect("the refusal names its predicate")
+            .expect("the refusal says why")
             .contains("awaits email activation"),
         "the refusal must name the unopened email: {reason}"
     );

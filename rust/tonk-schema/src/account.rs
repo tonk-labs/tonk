@@ -96,24 +96,37 @@ pub struct AccountCustomer {
     pub email: CustomerEmail,
     /// The provider serving this account: the UCAN access-service
     /// endpoint its spaces attach their remotes to.
-    pub provider: ProviderAddress,
+    ///
+    /// Optional because the service names one only at activation, so
+    /// there is a real interval -- enrolled, email unconfirmed -- with
+    /// no address to record. A required field would make the row
+    /// unresolvable for exactly the account whose state a caller most
+    /// needs to read.
+    pub provider: Option<ProviderAddress>,
 }
 
 impl AccountCustomer {
     /// Record the account's registration state.
-    pub fn new(account: Entity, status: &str, email: String, provider: String) -> Self {
+    pub fn new(account: Entity, status: &str, email: String, provider: Option<String>) -> Self {
         Self {
             this: account,
             status: CustomerStatus(status.to_owned()),
             email: CustomerEmail(email),
-            provider: ProviderAddress(provider),
+            provider: provider.map(ProviderAddress),
         }
     }
 
     /// The provider serving this account, absent when registration
     /// recorded none.
+    ///
+    /// An address recorded as empty reads as absent too: the field was
+    /// a required one carrying `""` before it became optional, and rows
+    /// written then are still on devices.
     pub fn provider(&self) -> Option<&str> {
-        Some(self.provider.0.as_str()).filter(|address| !address.is_empty())
+        self.provider
+            .as_ref()
+            .map(|address| address.0.as_str())
+            .filter(|address| !address.is_empty())
     }
 
     /// Whether the access service will serve this account's subjects.

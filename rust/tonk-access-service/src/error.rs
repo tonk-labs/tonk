@@ -69,6 +69,9 @@ impl Refusal {
                 AuthorizeError::UnprovenSubject { .. }
                 | AuthorizeError::CommandEscalation { .. }
                 | AuthorizeError::PolicyViolation { .. }
+                // The authority is real; this service declined on a
+                // policy of its own — which is what 403 says.
+                | AuthorizeError::Declined { .. }
                 | AuthorizeError::Revoked { .. } => 403,
                 AuthorizeError::Malformed { .. } | AuthorizeError::UnavailableProof { .. } => 400,
                 AuthorizeError::Unavailable { .. } => 503,

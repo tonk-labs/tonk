@@ -530,6 +530,27 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
   // every submit regardless of whether the form has an app handler.
   document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
 
+  // A press in here is a press "outside" for every overlay an ancestor frame
+  // holds open. A nested guest fills its parent's whole viewport, so once
+  // content renders in one, NO click ever reaches the frame the FABB lives
+  // in, and its open stack could not be dismissed by clicking away at all.
+  // Events do not cross a frame boundary, so relay the fact of the press and
+  // let each ancestor redispatch it on its own document, where the existing
+  // dismiss listeners already handle it. Only the fact travels: no
+  // coordinates, no target, nothing the ancestor could use to observe what
+  // was pressed inside a sealed guest.
+  document.addEventListener("pointerdown", function(){
+    try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
+  }, true);
+
+  window.addEventListener("message", function(e){
+    var d=e.data; if(!d||d.__tonkRuntime!=="press") return;
+    // Redispatch on THIS document so an overlay held open here closes, then
+    // keep it travelling so every ancestor up to the top page does the same.
+    document.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true}));
+    try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
+  });
+
   // A light/dark change made in some ancestor frame, relayed down. The
   // theme is a whole-app property, but each guest is its own document with
   // its own root element, so the only way a toggle reaches nested content is
@@ -2770,6 +2791,45 @@ fn post_error(port: &MessagePort, ty: &str, id: &str, error: &str) {
     let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(id));
     let _ = Reflect::set(&env, &"error".into(), &JsValue::from_str(error));
     let _ = port.post_message(&env);
+}
+
+#[cfg(test)]
+mod runtime_bootstrap_tests {
+    use super::RUNTIME_BOOTSTRAP_JS;
+
+    /// A nested guest fills its parent's whole viewport, so once content
+    /// renders in one, no click reaches the frame the FABB lives in and its
+    /// open stack cannot be dismissed by clicking away. The guest reports
+    /// the press upward and every ancestor redispatches it, so the dismiss
+    /// listeners already on those documents fire.
+    #[test]
+    fn a_press_in_a_guest_reaches_every_ancestor() {
+        assert!(RUNTIME_BOOTSTRAP_JS.contains(r#"__tonkRuntime:"press""#));
+        // Capture phase: content that stops propagation must not also
+        // stop an ancestor's overlay from closing.
+        assert!(RUNTIME_BOOTSTRAP_JS.contains(r#"document.addEventListener("pointerdown""#));
+        // Relayed onward, so the press climbs past the first ancestor.
+        assert!(
+            RUNTIME_BOOTSTRAP_JS
+                .contains(r#"document.dispatchEvent(new PointerEvent("pointerdown""#)
+        );
+    }
+
+    /// Only the FACT of the press travels. Coordinates or a target would
+    /// let an ancestor observe what was pressed inside a sealed guest.
+    #[test]
+    fn the_relayed_press_carries_nothing_about_what_was_pressed() {
+        let at = RUNTIME_BOOTSTRAP_JS
+            .find(r#"parent.postMessage({__tonkRuntime:"press"}"#)
+            .expect("the relay");
+        let message = &RUNTIME_BOOTSTRAP_JS[at..at + 60];
+        for leak in ["clientX", "clientY", "target", "path"] {
+            assert!(
+                !message.contains(leak),
+                "press relay leaks {leak}: {message}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

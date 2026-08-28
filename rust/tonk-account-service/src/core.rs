@@ -9,7 +9,6 @@ use crate::error::ErrorCode;
 use crate::store::StoreError;
 
 pub mod accounts;
-pub mod codes;
 pub mod delegation;
 pub mod deletion;
 pub mod descriptor;
