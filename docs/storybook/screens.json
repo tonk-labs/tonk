@@ -6,7 +6,8 @@
     "rust/tonk-ui/",
     "rust/tonk-cli/",
     "rust/tonk-fab/",
-    "rust/tonk-portal/"
+    "rust/tonk-portal/",
+    "rust/tonk-prose/"
   ],
   "screens": [
     {
@@ -43,7 +44,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["SPACE-09", "DATA-02", "DATA-09", "UI-04"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-portal/src/site.rs", "rust/tonk-fab/src/markup.rs"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-portal/src/site.rs", "rust/tonk-fab/src/markup.rs", "rust/tonk-prose/src-js/editor/index.ts"]
     },
     {
       "id": "WEB-04",

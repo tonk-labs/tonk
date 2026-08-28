@@ -20,12 +20,14 @@
 // Visibility itself is pure CSS keyed off these two decorations —
 // cursor movement never mutates the document.
 
-import { Plugin, PluginKey } from "prosemirror-state";
+import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import type { EditorState } from "prosemirror-state";
 import type { Node, ResolvedPos } from "prosemirror-model";
+import type { EditorView } from "prosemirror-view";
 import { schema } from "./schema";
 import { effectiveMarks } from "./markup";
+import { isBlockMarkerOnly } from "./block-markers";
 
 export const revealKey = new PluginKey<DecorationSet>("tonk-prose-reveal");
 
@@ -90,9 +92,43 @@ function findEditRange($head: ResolvedPos): { from: number; to: number } | null 
 
 function computeDecorations(state: EditorState): DecorationSet {
   const { $head } = state.selection;
-  if (!$head.parent.isTextblock) return DecorationSet.empty;
-
   const decorations: Decoration[] = [];
+
+  // A marker-only line is structurally non-empty to ProseMirror, but all of
+  // its DOM text is hidden at rest. Put a zero-content widget at the end so
+  // ProseMirror emits its normal trailing <br> caret surface. The widget is
+  // not document content and never reaches Markdown; it only gives a loaded
+  // empty `- `/`2. ` item somewhere real to click before selection reveals
+  // the marker.
+  state.doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true;
+    if (isBlockMarkerOnly(node)) {
+      const at = pos + 1 + node.content.size;
+      decorations.push(
+        Decoration.widget(
+          at,
+          () => {
+            const anchor = document.createElement("span");
+            anchor.className = "md-empty-caret-anchor";
+            anchor.setAttribute("aria-hidden", "true");
+            return anchor;
+          },
+          {
+            side: 1,
+            key: `empty-caret-${pos}`,
+            raw: true,
+            emptyMarkerCaret: true,
+          },
+        ),
+      );
+    }
+    return false;
+  });
+
+  if (!$head.parent.isTextblock) {
+    return DecorationSet.create(state.doc, decorations);
+  }
+
   const blockStart = $head.before();
   decorations.push(
     Decoration.node(blockStart, blockStart + $head.parent.nodeSize, {
@@ -143,6 +179,41 @@ function computeDecorations(state: EditorState): DecorationSet {
   return DecorationSet.create(state.doc, decorations);
 }
 
+/** Browsers target a click on a native `::marker` at the `<li>`, not at
+ *  the paragraph that owns the document position. Usually ProseMirror can
+ *  infer the nearby caret, but a marker-only paragraph has no visible text
+ *  at rest. Put the caret at its semantic content start explicitly. */
+function selectMarkerOnlyListItem(
+  view: EditorView,
+  event: MouseEvent,
+): boolean {
+  const target = event.target;
+  if (!(target instanceof Element)) return false;
+  const item = target.closest("li");
+  // A click in the paragraph (including on a revealed source marker) keeps
+  // native placement. This path is only for the list's own bullet/number.
+  if (!item || target.closest("p")) return false;
+  const paragraph = item.querySelector(":scope > p");
+  if (!paragraph) return false;
+  let pos: number;
+  try {
+    pos = view.posAtDOM(paragraph, 0);
+  } catch {
+    return false;
+  }
+  const $pos = view.state.doc.resolve(pos);
+  if (!$pos.parent.isTextblock || !isBlockMarkerOnly($pos.parent)) {
+    return false;
+  }
+  const at = $pos.start() + $pos.parent.content.size;
+  event.preventDefault();
+  view.dispatch(
+    view.state.tr.setSelection(TextSelection.create(view.state.doc, at)),
+  );
+  view.focus();
+  return true;
+}
+
 export function reveal(): Plugin<DecorationSet> {
   return new Plugin<DecorationSet>({
     key: revealKey,
@@ -156,6 +227,13 @@ export function reveal(): Plugin<DecorationSet> {
     props: {
       decorations(state) {
         return revealKey.getState(state);
+      },
+      handleDOMEvents: {
+        mousedown(view, event) {
+          return event instanceof MouseEvent
+            ? selectMarkerOnlyListItem(view, event)
+            : false;
+        },
       },
     },
   });
