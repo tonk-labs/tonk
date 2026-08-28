@@ -192,7 +192,7 @@ view!:
   model: tonk:notebook/route
   display: |
     <div class="notebook-space">
-      <tonk-display entity={entity} model=tonk:notebook></tonk-display>
+      <tonk-display with="{branch}@{repo}" entity={entity} model=tonk:notebook></tonk-display>
     </div>
 
 # ---------------------------------------------------------------------------
