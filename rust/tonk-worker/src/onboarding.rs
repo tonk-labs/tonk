@@ -20,6 +20,7 @@
 //! before: an attacker controls the pre-passkey spaces, not the account.
 
 use dialog_artifacts::Entity;
+use dialog_credentials::secret::SealedSecret;
 use dialog_credentials::{Credential, Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
 use dialog_effects::credential::prelude::*;
@@ -43,20 +44,32 @@ use crate::worker::TonkState;
 const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
 
 /// Credential key holding the onboarding custodian: the keypair whose
-/// signature derives the KEK that opens [`ONBOARDING_ENVELOPE_SITE`].
+/// agreement key reveals the KEK that opens [`ONBOARDING_ENVELOPE_SITE`].
 ///
 /// A key, not a site, because `.key()` stores a `CryptoKeyPair` handle
-/// that WebCrypto generates **non-extractable** by default. The KEK
-/// itself is never written anywhere: it is recomputed from a fresh
-/// signature on every boot, so no bytes on disk can open the envelope.
-/// That is what makes this a stand-in for a passkey rather than a
-/// password sitting next to the thing it locks.
+/// that WebCrypto generates **non-extractable** by default. The KEK is
+/// on disk only sealed to this keypair ([`ONBOARDING_KEK_SITE`]), so no
+/// bytes on disk can open the envelope without it. That is what makes
+/// this a stand-in for a passkey rather than a password sitting next to
+/// the thing it locks.
 ///
 /// Separate from the envelope on purpose: accreditation destroys the
 /// custodian and leaves the envelope unopenable, which makes "the
 /// onboarding custodian can no longer reach the account" a fact about
 /// storage rather than a promise about code paths.
 const ONBOARDING_CUSTODIAN_KEY: &str = "tonk-onboarding-custodian-v1";
+
+/// Credential site holding the KEK that opens [`ONBOARDING_ENVELOPE_SITE`],
+/// sealed to the custodian ([`KekMethod::Custodian`]).
+///
+/// Bytes on disk, but bytes only the custodian's agreement key turns
+/// back into a KEK, so the envelope is exactly as unopenable without
+/// the custodian as when the KEK was derived from its signature. What
+/// the seal buys is reproducibility: an X25519 agreement gives the same
+/// answer on every platform, where a signature does not (Safari
+/// randomizes Ed25519). Absent for an envelope written under the legacy
+/// [`KekMethod::Local`], which `read` reseals on its first open.
+const ONBOARDING_KEK_SITE: &str = "tonk-onboarding-kek-v1";
 
 /// This device's onboarding account, minting one on first call.
 ///
@@ -96,7 +109,9 @@ pub(crate) async fn did(state: &TonkState) -> Result<Option<Did>, TonkWorkerErro
 /// A record that exists but cannot be opened is NOT treated as absent:
 /// minting a replacement would orphan every space and invite delegated
 /// to the account the old bytes name, so corruption surfaces as an error
-/// and leaves the bytes in place for diagnosis.
+/// and leaves the bytes in place for diagnosis. The one exception is a
+/// legacy envelope on a platform that cannot reproduce its KEK at all
+/// (see [`Opened::Unrecoverable`]).
 async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerError> {
     let Some(envelope) = load(state, ONBOARDING_ENVELOPE_SITE).await? else {
         return Ok(None);
@@ -114,13 +129,90 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
     let envelope = Envelope::decode(&envelope).map_err(|error| {
         TonkWorkerError::Internal(format!("the onboarding envelope is malformed: {error}"))
     })?;
-    derive_kek(&custodian)
-        .await?
-        .open(&envelope)
-        .map(Some)
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("the onboarding account did not open: {error}"))
-        })
+    let sealed_kek = load(state, ONBOARDING_KEK_SITE).await?;
+    // Only a legacy envelope's fate depends on how the platform signs,
+    // so only that shape pays for the probe.
+    let signing = match envelope.method {
+        KekMethod::Local => probe_signing(&custodian).await?,
+        _ => Signing::Deterministic,
+    };
+    match open_stored(&custodian, &envelope, sealed_kek.as_deref(), signing).await? {
+        Opened::Current(secret) => Ok(Some(secret)),
+        Opened::Legacy(secret) => {
+            // Converge on the sealed KEK, so this device stops depending
+            // on how its platform signs. Best effort: the account opened,
+            // and a failed reseal costs one more legacy open next boot.
+            if let Err(error) = wrap(state, &custodian, &secret).await {
+                log!("onboarding envelope reseal skipped: {error}");
+            }
+            Ok(Some(secret))
+        }
+        Opened::Unrecoverable => {
+            log!(
+                "the onboarding envelope was sealed under a signature this platform never repeats; \
+                 minting a replacement"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// What opening the stored envelope yielded.
+enum Opened {
+    /// Opened under the KEK sealed to the custodian: the current shape.
+    Current(AccountSecret),
+    /// Opened under a signature-derived KEK ([`KekMethod::Local`]): the
+    /// caller reseals it.
+    Legacy(AccountSecret),
+    /// A signature-derived KEK on a platform whose signatures never
+    /// repeat. The envelope could never have opened here, so nothing was
+    /// ever delegated to its account, and replacing it loses nothing;
+    /// keeping it would keep the device locked out for good.
+    Unrecoverable,
+}
+
+/// Open `envelope` with `custodian`, by whichever method it names.
+async fn open_stored(
+    custodian: &Ed25519Signer,
+    envelope: &Envelope<Recovery>,
+    sealed_kek: Option<&[u8]>,
+    signing: Signing,
+) -> Result<Opened, TonkWorkerError> {
+    match envelope.method {
+        KekMethod::Custodian => {
+            let Some(sealed) = sealed_kek else {
+                return Err(TonkWorkerError::Internal(
+                    "the onboarding envelope names a sealed KEK that is not stored".into(),
+                ));
+            };
+            let sealed = SealedSecret::from_bytes(sealed).map_err(|error| {
+                TonkWorkerError::Internal(format!("the onboarding KEK is malformed: {error}"))
+            })?;
+            Kek::<Recovery>::from_custodian_sealed(custodian, &sealed)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("the onboarding KEK did not reveal: {error}"))
+                })?
+                .open(envelope)
+                .map(Opened::Current)
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!(
+                        "the onboarding account did not open: {error}"
+                    ))
+                })
+        }
+        KekMethod::Local => match derive_kek(custodian).await?.open(envelope) {
+            Ok(secret) => Ok(Opened::Legacy(secret)),
+            Err(_) if signing == Signing::Randomized => Ok(Opened::Unrecoverable),
+            Err(error) => Err(TonkWorkerError::Internal(format!(
+                "the onboarding account did not open: {error}"
+            ))),
+        },
+        KekMethod::Passkey | KekMethod::Phrase => Err(TonkWorkerError::Internal(format!(
+            "the onboarding envelope names {:?}, which is not a local custody method",
+            envelope.method
+        ))),
+    }
 }
 
 /// Mint, wrap, and store a fresh onboarding account.
@@ -136,18 +228,33 @@ async fn create(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
             "failed to generate the onboarding custodian: {error}"
         ))
     })?;
-    let envelope = derive_kek(&custodian)
-        .await?
-        .seal(&secret, KekMethod::Local)
-        .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
 
-    // Custodian first, envelope second: a custodian with no envelope
-    // reads as absent, while an envelope with no custodian is the
-    // unopenable shape accreditation leaves. Neither half alone can be
-    // mistaken for a usable account.
-    save_custodian(state, custodian).await?;
-    save(state, ONBOARDING_ENVELOPE_SITE, envelope.encode()).await?;
+    // Custodian first, envelope last: a custodian with no envelope reads
+    // as absent, while an envelope with no custodian is the unopenable
+    // shape accreditation leaves. Neither half alone can be mistaken for
+    // a usable account.
+    save_custodian(state, custodian.clone()).await?;
+    wrap(state, &custodian, &secret).await?;
     Ok(secret)
+}
+
+/// Wrap `secret` under a fresh KEK sealed to `custodian`, and store the
+/// sealed KEK and the envelope. Replaces whatever envelope was there.
+async fn wrap(
+    state: &TonkState,
+    custodian: &Ed25519Signer,
+    secret: &AccountSecret,
+) -> Result<(), TonkWorkerError> {
+    let (kek, sealed) = Kek::<Recovery>::seal_to_custodian(custodian)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
+    let envelope = kek
+        .seal(secret, KekMethod::Custodian)
+        .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
+    // KEK first, envelope second: until the envelope names the sealed
+    // KEK, a legacy one being replaced still opens the old way.
+    save(state, ONBOARDING_KEK_SITE, sealed.to_bytes()).await?;
+    save(state, ONBOARDING_ENVELOPE_SITE, envelope.encode()).await
 }
 
 /// Ensure the onboarding account has granted this device a powerline,
@@ -432,14 +539,16 @@ async fn is_powerline(
 }
 
 /// The recovery-clearance KEK this custodian derives, via a signature
-/// over [`CUSTODIAN_KEK_CONTEXT`].
+/// over [`CUSTODIAN_KEK_CONTEXT`]: the legacy [`KekMethod::Local`].
 ///
 /// Recovery clearance because this key wraps the account secret itself:
 /// the onboarding custodian is the pre-passkey stand-in at the top of
 /// the hierarchy, not something derived from what it protects.
 ///
-/// Ed25519 signatures are deterministic, so the same custodian yields
-/// the same KEK on every call without it ever being written down.
+/// Only opens envelopes written before the KEK was sealed to the
+/// custodian instead. It reproduces the KEK where signing is
+/// deterministic (RFC 8032: native, Chrome) and never where it is not
+/// (Safari's WebCrypto), which is why nothing writes this method anymore.
 async fn derive_kek(custodian: &Ed25519Signer) -> Result<Kek<Recovery>, TonkWorkerError> {
     let signature = VarsigSigner::sign(custodian, CUSTODIAN_KEK_CONTEXT)
         .await
@@ -447,6 +556,36 @@ async fn derive_kek(custodian: &Ed25519Signer) -> Result<Kek<Recovery>, TonkWork
             TonkWorkerError::Internal(format!("the onboarding custodian did not sign: {error}"))
         })?;
     Ok(Kek::from_custodian(signature.to_bytes().as_ref()))
+}
+
+/// Whether this platform's Ed25519 signatures repeat for one message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signing {
+    /// RFC 8032: the same key and message always give the same bytes.
+    Deterministic,
+    /// A fresh nonce per signature (Safari's WebCrypto). Still valid
+    /// signatures; just never the same twice.
+    Randomized,
+}
+
+/// Sign the legacy context twice and compare. Two matching signatures
+/// do not prove determinism in general, but a randomized signer has a
+/// negligible chance of repeating, so a match is as good as proof.
+async fn probe_signing(custodian: &Ed25519Signer) -> Result<Signing, TonkWorkerError> {
+    let mut signatures = Vec::with_capacity(2);
+    for _ in 0..2 {
+        let signature = VarsigSigner::sign(custodian, CUSTODIAN_KEK_CONTEXT)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("the onboarding custodian did not sign: {error}"))
+            })?;
+        signatures.push(signature.to_bytes());
+    }
+    Ok(if signatures[0] == signatures[1] {
+        Signing::Deterministic
+    } else {
+        Signing::Randomized
+    })
 }
 
 /// The stored custodian, or `None` when this device has none.
@@ -663,10 +802,10 @@ mod tests {
         assert_eq!(rows.len(), 1, "one device, one row");
     }
 
-    /// The whole custodian design rests on Ed25519 signatures being
-    /// deterministic (RFC 8032): the KEK is never stored, so a second
-    /// signature over the same context has to reproduce it exactly or
-    /// the account becomes unopenable on the next boot.
+    /// The legacy method rests on Ed25519 signatures being deterministic
+    /// (RFC 8032): the KEK is never stored, so a second signature over
+    /// the same context has to reproduce it exactly. True natively and in
+    /// Chrome; Safari is why it is legacy.
     #[dialog_common::test]
     async fn it_derives_the_same_kek_from_one_custodian() {
         let custodian = Ed25519Signer::generate().await.unwrap();
@@ -705,5 +844,150 @@ mod tests {
                 .open(&envelope)
                 .is_err()
         );
+    }
+
+    /// The current shape: a KEK sealed to the custodian opens the
+    /// envelope on every read, however the platform signs.
+    #[dialog_common::test]
+    async fn it_opens_an_envelope_under_a_kek_sealed_to_its_custodian() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let (kek, sealed) = Kek::<Recovery>::seal_to_custodian(&custodian)
+            .await
+            .unwrap();
+        let envelope = kek
+            .seal(&AccountSecret::generate().unwrap(), KekMethod::Custodian)
+            .unwrap();
+
+        for signing in [Signing::Deterministic, Signing::Randomized] {
+            assert!(
+                matches!(
+                    open_stored(&custodian, &envelope, Some(&sealed.to_bytes()), signing).await,
+                    Ok(Opened::Current(_))
+                ),
+                "a sealed KEK opens regardless of signing ({signing:?})"
+            );
+        }
+        assert!(
+            open_stored(&custodian, &envelope, None, Signing::Deterministic)
+                .await
+                .is_err(),
+            "the sealed KEK is required, not optional"
+        );
+    }
+
+    /// An envelope from before the sealed KEK still opens where signing
+    /// is deterministic, and is reported as legacy so `read` reseals it.
+    #[dialog_common::test]
+    async fn a_legacy_envelope_opens_where_signing_is_deterministic() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let envelope = derive_kek(&custodian)
+            .await
+            .unwrap()
+            .seal(&AccountSecret::generate().unwrap(), KekMethod::Local)
+            .unwrap();
+
+        assert!(matches!(
+            open_stored(&custodian, &envelope, None, Signing::Deterministic).await,
+            Ok(Opened::Legacy(_))
+        ));
+    }
+
+    /// A legacy envelope that does not open is corruption where signing
+    /// is deterministic, and replaceable only where it is not: there the
+    /// envelope never opened, so nothing depends on its account.
+    #[dialog_common::test]
+    async fn an_unopenable_legacy_envelope_is_replaced_only_where_signing_is_randomized() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let envelope = Kek::<Recovery>::from_custodian(b"a signature this custodian never made")
+            .seal(&AccountSecret::generate().unwrap(), KekMethod::Local)
+            .unwrap();
+
+        assert!(
+            open_stored(&custodian, &envelope, None, Signing::Deterministic)
+                .await
+                .is_err(),
+            "where signing repeats, a legacy envelope that does not open is corrupt"
+        );
+        assert!(matches!(
+            open_stored(&custodian, &envelope, None, Signing::Randomized).await,
+            Ok(Opened::Unrecoverable)
+        ));
+    }
+
+    /// Native signing is RFC 8032 deterministic; the probe must say so,
+    /// or every legacy envelope would read as replaceable.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_finds_native_signing_deterministic() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        assert_eq!(
+            probe_signing(&custodian).await.unwrap(),
+            Signing::Deterministic
+        );
+    }
+
+    /// The account minted on first call is the one read back after.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_reads_back_the_account_it_minted() {
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state_without_root().await;
+        let minted = account(&tonk).await.expect("the account mints");
+        let read_back = read(&tonk)
+            .await
+            .expect("the stored account reads")
+            .expect("an account is stored");
+        assert_eq!(
+            minted.signer().await.unwrap().did(),
+            read_back.signer().await.unwrap().did(),
+        );
+        let stored = load(&tonk, ONBOARDING_ENVELOPE_SITE)
+            .await
+            .unwrap()
+            .expect("an envelope is stored");
+        assert_eq!(
+            Envelope::<Recovery>::decode(&stored).unwrap().method,
+            KekMethod::Custodian
+        );
+    }
+
+    /// A device that onboarded under the signature-derived KEK keeps its
+    /// account, and its next boot no longer depends on how it signs.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn a_legacy_onboarding_account_is_resealed_on_open() {
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state_without_root().await;
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let secret = AccountSecret::generate().unwrap();
+        let envelope = derive_kek(&custodian)
+            .await
+            .unwrap()
+            .seal(&secret, KekMethod::Local)
+            .unwrap();
+        save_custodian(&tonk, custodian).await.unwrap();
+        save(&tonk, ONBOARDING_ENVELOPE_SITE, envelope.encode())
+            .await
+            .unwrap();
+        let expected = secret.signer().await.unwrap().did();
+
+        let opened = account(&tonk).await.expect("the legacy envelope opens");
+        assert_eq!(opened.signer().await.unwrap().did(), expected);
+
+        let stored = load(&tonk, ONBOARDING_ENVELOPE_SITE)
+            .await
+            .unwrap()
+            .expect("an envelope is stored");
+        assert_eq!(
+            Envelope::<Recovery>::decode(&stored).unwrap().method,
+            KekMethod::Custodian,
+            "the first open reseals under the sealed KEK"
+        );
+        assert!(load(&tonk, ONBOARDING_KEK_SITE).await.unwrap().is_some());
+
+        let again = account(&tonk).await.expect("the resealed envelope opens");
+        assert_eq!(again.signer().await.unwrap().did(), expected);
     }
 }
