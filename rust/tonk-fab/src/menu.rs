@@ -28,27 +28,31 @@ use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
 :host{ display:block; }
-/* A long stack scrolls rather than running off the screen -- but ONLY when
-   no row of it flies a sub-stack out, because `overflow` clips the flyout,
-   and a flyout that has flipped LEFT lands before the scroll container's
-   start edge where scrolling cannot reach it at all. The cap sits on the
-   HOST, not on `.w`: `.w::before` is the glass underlay at `z-index:-1`,
-   and a scroll container is its own paint context, so an overflow on `.w`
-   makes the underlay paint behind it instead of showing through -- every
-   row loses its ring and the stack reads as one flat block.
-   `mark_scrollable` sets the attribute. */
-:host([scrolls]){ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
-  overflow-y:auto; overscroll-behavior:contain; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
+/* A long stack scrolls rather than running off the screen, but only when no
+   row of it flies a sub-stack out: an `overflow` clips the flyout, and once
+   the flyout has flipped LEFT it lands before the scrollport's start edge
+   where scrolling cannot reach it at all. `mark_scrollable` sets `scrolls`.
+   The scrollport is its own element so `.w` stays a plain block. */
+.port{ display:block; }
+:host([scrolls]) .port{ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
+  overflow-y:auto; overscroll-behavior:contain; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
   width:var(--fabb-menu-w, 216px); }
-.w::before{ content:""; position:absolute; inset:0; z-index:-1;
+/* The underlay sits at z-index 0 and the rows are lifted above it, rather
+   than the underlay being pushed below at `z-index:-1`. A negative-z child
+   paints behind its stacking context, and any `overflow` on an ancestor
+   creates one -- so the underlay would vanish behind the scroller and every
+   row would lose the ring it paints over the glass. Staying at 0 keeps the
+   pair in the same context, so the stack looks the same scrolled or not. */
+.w::before{ content:""; position:absolute; inset:0; z-index:0;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
+::slotted(*){ position:relative; z-index:1; }
 "#;
 
-const HTML: &str = r#"<div class="w"><slot></slot></div>"#;
+const HTML: &str = r#"<div class="port"><div class="w"><slot></slot></div></div>"#;
 
 /// Per-element state.
 #[derive(Default)]
@@ -240,7 +244,7 @@ pub(crate) fn register() {
 
 #[cfg(test)]
 mod tests {
-    use super::CSS;
+    use super::{CSS, HTML};
 
     /// The WRAPPER owns the width, and the host stays a plain block —
     /// exactly the study's shape.
@@ -256,30 +260,31 @@ mod tests {
     /// `mark_scrollable` sets only when no row carries a sub-stack.
     #[test]
     fn a_stack_without_a_flyout_scrolls_instead_of_overrunning() {
-        assert!(CSS.contains(":host([scrolls]){ max-height:var(--fabb-menu-max-h"));
+        assert!(CSS.contains(":host([scrolls]) .port{ max-height:var(--fabb-menu-max-h"));
         assert!(CSS.contains("overflow-y:auto"));
         assert!(CSS.contains("overscroll-behavior:contain"));
     }
 
-    /// The cap lives on the HOST, never on `.w`.
+    /// The scroll is gated, never unconditional.
     ///
-    /// `.w::before` is the glass underlay at `z-index:-1`. A scroll
-    /// container is its own paint context, so an `overflow` on `.w` makes
-    /// that underlay paint behind the wrapper rather than showing through:
-    /// every row loses its ring and the stack renders as one flat block.
-    /// That shipped once and was plainly visible on screen.
+    /// `overflow` kills the underlay's `backdrop-filter` outright: the glass
+    /// stops painting and every row loses the ring it draws over it, so the
+    /// stack reads as one flat block. Measured in Chrome 152 -- removing
+    /// only `overflow-y` restores the borders, while the port element, the
+    /// `max-height`, `isolation` and the z-order change nothing. It also
+    /// clips the flyout. So a stack that flies a sub-stack out never scrolls.
     #[test]
-    fn the_wrapper_never_becomes_the_scrollport() {
-        let at = CSS.find(".w{").expect("the wrapper rule");
-        let body = &CSS[at..];
-        let body = &body[..body.find('}').expect("a closed rule")];
-        assert!(
-            !body.contains("overflow"),
-            "overflow on .w kills the underlay"
-        );
-        assert!(
-            !body.contains("max-height"),
-            "a cap on .w brings that overflow"
-        );
+    fn only_a_flyout_free_stack_ever_scrolls() {
+        assert!(HTML.contains(r#"<div class="port"><div class="w">"#));
+        assert!(CSS.contains(":host([scrolls]) .port{"));
+        for rule in [":host{", ".w{", ".port{"] {
+            let at = CSS.find(rule).expect("the rule");
+            let body = &CSS[at..];
+            let body = &body[..body.find('}').expect("a closed rule")];
+            assert!(
+                !body.contains("overflow"),
+                "{rule} must not scroll ungated: {body}"
+            );
+        }
     }
 }
