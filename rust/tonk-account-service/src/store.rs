@@ -130,21 +130,6 @@ impl DeviceStatus {
     }
 }
 
-/// A pending email verification code.
-#[derive(Debug, Clone)]
-pub struct CodeRow {
-    /// The email address the code was issued to.
-    pub email: String,
-    /// Hash of the code (never the code itself).
-    pub code_hash: String,
-    /// Issue time, as a unix timestamp in seconds.
-    pub created_at: u64,
-    /// Expiry time, as a unix timestamp in seconds.
-    pub expires_at: u64,
-    /// Number of verification attempts made against this code.
-    pub attempts: u32,
-}
-
 /// Storage-level result of detaching one exact generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetachStoreOutcome {
@@ -177,19 +162,6 @@ pub enum StoreError {
 /// over `Store`, never `dyn Store`.
 #[allow(async_fn_in_trait)]
 pub trait Store {
-    /// Look up the pending code for an email, if any.
-    async fn code(&self, email: &str) -> Result<Option<CodeRow>, StoreError>;
-
-    /// Insert or replace the pending code for an email, resetting
-    /// `attempts` to 0.
-    async fn put_code(&self, row: &CodeRow) -> Result<(), StoreError>;
-
-    /// Increment the attempt counter for an email's pending code.
-    async fn bump_attempts(&self, email: &str) -> Result<(), StoreError>;
-
-    /// Remove the pending code for an email.
-    async fn delete_code(&self, email: &str) -> Result<(), StoreError>;
-
     /// Create a new account. Returns `StoreError::Conflict` if the
     /// email or root DID is already registered.
     async fn create_account(
@@ -280,26 +252,6 @@ pub const DELETE_ACCOUNT_DEVICES: &str = "DELETE FROM devices WHERE account_id =
 
 /// SQL: delete the account row itself, bound to its verified email.
 pub const DELETE_ACCOUNT: &str = "DELETE FROM accounts WHERE id = ?1 AND email = ?2";
-
-/// SQL: look up the pending code row for an email.
-pub const SELECT_CODE: &str =
-    "SELECT email, code_hash, created_at, expires_at, attempts FROM email_codes WHERE email = ?1";
-
-/// SQL: insert a fresh code for an email, or replace an existing one and
-/// reset its attempt counter.
-pub const UPSERT_CODE: &str = "INSERT INTO email_codes (email, code_hash, created_at, expires_at, attempts) \
-     VALUES (?1, ?2, ?3, ?4, 0) \
-     ON CONFLICT(email) DO UPDATE SET \
-        code_hash = excluded.code_hash, \
-        created_at = excluded.created_at, \
-        expires_at = excluded.expires_at, \
-        attempts = 0";
-
-/// SQL: increment the attempt counter for an email's pending code.
-pub const BUMP_ATTEMPTS: &str = "UPDATE email_codes SET attempts = attempts + 1 WHERE email = ?1";
-
-/// SQL: remove the pending code for an email.
-pub const DELETE_CODE: &str = "DELETE FROM email_codes WHERE email = ?1";
 
 /// SQL: insert a new account.
 pub const INSERT_ACCOUNT: &str =

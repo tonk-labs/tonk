@@ -9,6 +9,10 @@ pub mod account;
 /// Customer activation page reached from the activation email.
 pub mod activate;
 
+/// The account panel's registration row, kept live by a subscription to
+/// the fact rather than a fetch, so an activation performed elsewhere
+/// reaches this tab.
+
 /// Top-document gate sending a signed-out user to sign up, and replaying
 /// what they were doing when it fired.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

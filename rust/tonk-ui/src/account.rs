@@ -156,7 +156,21 @@ fn input(host: &HtmlElement, selector: &str) -> Result<String, String> {
     }
 }
 
+/// The mode that shows no panel at all.
+///
+/// Reached when the deployment cannot be resolved, so there is no
+/// service to sign into and nothing any panel could usefully offer. The
+/// error text is the whole message. Named rather than left to fall out
+/// of matching no panel, because that made "every panel hidden" the
+/// behaviour of any unrecognised mode — a typo included — instead of a
+/// state someone chose.
+const NO_PANEL_MODE: &str = "blocked";
+
 fn set_mode(host: &HtmlElement, mode: &str) {
+    debug_assert!(
+        mode == NO_PANEL_MODE || ["choice", "create", "link", "handoff", "success"].contains(&mode),
+        "unknown account mode {mode:?} would hide every panel"
+    );
     let _ = host.set_attribute("data-mode", mode);
     for (name, selector) in [
         ("choice", "#account-choice"),
@@ -454,11 +468,12 @@ fn load_activation_notice(host: HtmlElement) {
                 .is_ok_and(|config| config.service_did.is_some())
         {
             match crate::api::enroll_customer(None, &[]).await {
-                // The receipt names no email; the recorded enrollment does.
-                Ok(_) => match crate::api::customer_state().await {
-                    Ok(fresh) => state = fresh,
-                    Err(_) => return,
-                },
+                // Enrollment is a command, so this returns once the
+                // transient is committed, not once the service answers.
+                // Re-reading here would race the handler and paint a
+                // state already superseded; the row's subscription is
+                // what shows the outcome, whenever it lands.
+                Ok(()) => {}
                 Err(error) => {
                     web_sys::console::error_1(
                         &format!("customer re-enrollment failed: {error}").into(),
@@ -1509,7 +1524,7 @@ fn load_status(host: HtmlElement) {
     spawn_local(async move {
         if let Err(error) = service(&host).await {
             set_busy(&host, false, "");
-            set_mode(&host, "blocked");
+            set_mode(&host, NO_PANEL_MODE);
             show_error(&host, error);
             return;
         }
@@ -2005,18 +2020,23 @@ async fn complete_remote(
         }
     };
     // Registration with the access service, on signup and login alike:
-    // the account exists either way, so a refused enrollment is surfaced
-    // but does not undo the attach. The login path names no email; the
+    // the account exists either way, so a failed enrollment does not
+    // undo the attach. The login path names no email; the
     // worker resolves the account's recorded address. Deployments that
     // publish no service identity have no registration to perform.
     if wants_enrollment().await {
         set_busy(host, true, "Registering with the sync service…");
+        // Enrollment is a command now, so this catches a dispatch that
+        // never reached the worker, not a service that refused. A
+        // refusal shows up where it belongs: the registration row
+        // follows the fact, so it says what actually happened and keeps
+        // saying it, instead of a one-shot verdict from this moment.
         if let Err(error) = crate::api::enroll_customer(enroll_email, &ceremony.deposits_hex).await
         {
             web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
             show_error(
                 host,
-                "Your account is ready, but registering it with the sync service failed. Reload /settings to retry.",
+                "Your account is ready, but registering it with the sync service could not be started. Reload /settings to retry.",
             );
         }
     }
