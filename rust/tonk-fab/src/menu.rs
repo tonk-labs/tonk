@@ -27,20 +27,19 @@ use web_sys::{Element, HtmlElement, ResizeObserver, window};
 use crate::shadow::{self, Bound};
 
 const CSS: &str = r#"
-:host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%;
-  max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
-  overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
-/* A stack that holds a flyout cannot clip: the sub-stack is positioned
-   one gap OUTSIDE this box, so `overflow` — which a scrolling stack
-   needs, and which is what makes the height cap work — cuts it away
-   entirely. A stack with nothing flying out of it keeps the scroll; one
-   that carries a sub-stack gives it up, because a menu you cannot see is
-   worse than a menu you cannot scroll. */
-:host([has-sub]){ overflow-x:visible; overflow-y:visible; max-height:none; }
+:host{ display:block; max-width:100%; }
+/* Height and scrolling live on the WRAPPER, not the host. On the host
+   they clip the flyout, which is positioned outside this box on
+   purpose — and an `overflow` on the host is what
+   `aim_flyout` reads as the clipping boundary, so it measured the
+   216px menu instead of the window and never flipped. The wrapper
+   scrolls its own rows without any of that. */
+.w{ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
+  overflow-y:auto; overscroll-behavior:contain; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
-  width:100%; max-width:100%; }
+  width:var(--fabb-menu-w, 216px); max-width:100%; }
 .w::before{ content:""; position:absolute; inset:0; z-index:-1;
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
@@ -101,7 +100,6 @@ impl CustomElement for TonkMenu {
                 }));
         }
 
-        mark_sub(this);
         self.listeners.push(shadow::install_visibility_pause(this));
         if let Some(listener) = shadow::install_system_mode(this) {
             self.listeners.push(listener);
@@ -170,20 +168,6 @@ fn rows(this: &HtmlElement) -> Vec<Element> {
 /// Public to the crate because the bar cuts it manually the moment a stack
 /// opens — the observer fires on its own schedule, and a stack that paints
 /// one frame with a stale mask shows glass across its gaps.
-/// Say whether this stack carries a flyout, for CSS that must not clip.
-///
-/// An attribute rather than `:host(:has(...))`: that selector matches in
-/// `Element::matches` and does NOT apply at style time here, so the
-/// stack went on clipping while every check said it should not.
-fn mark_sub(this: &HtmlElement) {
-    let has_sub = matches!(this.query_selector("tonk-menu[slot=sub]"), Ok(Some(_)));
-    if has_sub {
-        let _ = this.set_attribute("has-sub", "");
-    } else {
-        let _ = this.remove_attribute("has-sub");
-    }
-}
-
 pub(crate) fn recut_mask(this: &HtmlElement) {
     let Some(root) = this.shadow_root() else {
         return;
@@ -236,16 +220,34 @@ pub(crate) fn register() {
 mod tests {
     use super::CSS;
 
+    /// The WRAPPER owns the width, and the host stays a plain block.
+    ///
+    /// Width, height and overflow on the host all clip the flyout — it
+    /// is positioned one gap outside this box on purpose — and an
+    /// `overflow` there is what `aim_flyout` reads as the clipping
+    /// boundary, so it measured the menu instead of the window and
+    /// never flipped the stack away from the screen edge.
     #[test]
-    fn the_host_owns_the_requested_menu_width() {
-        assert!(CSS.contains(":host{ display:block; width:var(--fabb-menu-w, 216px)"));
-        assert!(CSS.contains("width:100%; max-width:100%"));
+    fn the_wrapper_owns_the_requested_menu_width() {
+        assert!(CSS.contains(":host{ display:block; max-width:100%; }"));
+        assert!(CSS.contains("width:var(--fabb-menu-w, 216px); max-width:100%"));
         assert!(!CSS.contains("width:min(var(--fabb-menu-w"));
+    }
+
+    /// Nothing on the host may clip: the flyout lives outside it.
+    #[test]
+    fn the_host_does_not_clip_its_flyout() {
+        let host = &CSS[CSS.find(":host{").expect("a host rule")..];
+        let host = &host[..host.find('}').expect("a closed host rule")];
+        assert!(!host.contains("overflow"), "host must not clip: {host}");
+        assert!(!host.contains("max-height"), "host must not cap: {host}");
     }
 
     #[test]
     fn tall_menus_scroll_inside_the_available_viewport() {
-        assert!(CSS.contains("max-height:var(--fabb-menu-max-h"));
+        // On the wrapper, which scrolls its own rows without clipping
+        // what the row flies out.
+        assert!(CSS.contains(".w{ max-height:var(--fabb-menu-max-h"));
         assert!(CSS.contains("overflow-y:auto"));
         assert!(CSS.contains("overscroll-behavior:contain"));
     }
