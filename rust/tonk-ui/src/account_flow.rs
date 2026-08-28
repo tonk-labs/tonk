@@ -3799,13 +3799,31 @@ mod tests {
         assert_eq!(url::Url::parse(provider)?, env.account_service);
         assert!(linked.link.stdout.contains("signed in"));
 
-        let devices = devices(&linked.profile, &env).await?;
-        assert!(
-            devices.status.success(),
-            "devices failed: {}",
-            devices.stderr
-        );
-        let device_rows = device_rows(&devices.stdout)?;
+        // The approving page describes the terminal's row and pushes the
+        // account branch best-effort before it delivers the grant; a push
+        // that loses the race to the CLI's own bounded pull leaves the
+        // row for the next sync sweep. Each `devices` call pulls again, so
+        // wait for the row rather than reading the list once.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let (devices, device_rows) = loop {
+            let devices = devices(&linked.profile, &env).await?;
+            assert!(
+                devices.status.success(),
+                "devices failed: {}",
+                devices.stderr
+            );
+            let rows = device_rows(&devices.stdout)?;
+            if rows.iter().any(|row| row.name == "e2e terminal") {
+                break (devices, rows);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "the linked terminal never appeared in the device list: {}\n--- devices stderr ---\n{}",
+                    devices.stdout, devices.stderr
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        };
         assert!(
             device_rows
                 .iter()

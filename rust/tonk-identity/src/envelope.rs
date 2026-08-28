@@ -11,6 +11,7 @@ use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::Result;
 use dialog_credentials::Ed25519Signer;
+use dialog_credentials::secret::{Context as SecretContext, SealedSecret};
 use hkdf::Hkdf;
 use sha2_0_10::Sha256;
 use std::marker::PhantomData;
@@ -39,19 +40,29 @@ pub const CUSTODY_KEY_CONTEXT: &[u8] = b"tonk/custody/key/v1";
 /// (or fed to the phrase KDF).
 pub const CUSTODY_KEK_CONTEXT: &[u8] = b"tonk/custody/kek/v1";
 
-/// The fixed message a custodian signs to produce KEK input.
+/// The fixed message a custodian signed to produce KEK input, under the
+/// legacy [`KekMethod::Local`].
 ///
 /// A custodian is a signing keypair, because a non-extractable keypair
 /// is the only shape browser storage can hold whose private material
-/// never exists as bytes. Its signature over this message is
-/// deterministic (RFC 8032), so the same custodian reproduces the same
-/// KEK on every boot without the KEK ever being stored. This is the
-/// local stand-in for a passkey's PRF output.
+/// never exists as bytes. RFC 8032 makes an Ed25519 signature over this
+/// message deterministic, which let the same custodian reproduce the
+/// same KEK on every boot without the KEK ever being stored. WebCrypto
+/// does not promise that, though: Safari randomizes its Ed25519
+/// signatures, so there a KEK derived this way differs on every boot
+/// and the envelope never opens again. New envelopes use
+/// [`KekMethod::Custodian`] instead; this context only opens old ones.
 ///
 /// The signature is the *input*; the clearance level supplies the HKDF
 /// info, so one custodian keypair yields unrelated keys per level. See
 /// [`Kek::from_custodian`].
 pub const CUSTODIAN_KEK_CONTEXT: &[u8] = b"tonk/custodian/kek/v1";
+
+/// The sealing context a custodian's KEK is concealed under
+/// ([`KekMethod::Custodian`]). Versioned with the meaning of the sealed
+/// bytes: a 32-byte KEK at the clearance the envelope names.
+pub const CUSTODIAN_KEK_SEAL_CONTEXT: SecretContext =
+    SecretContext::new("tonk/custodian/kek/sealed/v1");
 
 /// The well-known memory-cell address of the wrapped secret inside a
 /// custody space: space `custody`, cell `secret`.
@@ -153,15 +164,22 @@ pub fn custody_kek(entry_output: &[u8; 32]) -> Kek<Recovery> {
 /// which entry function to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KekMethod {
-    /// A this-device wrapping under a locally held custodian keypair:
-    /// the pre-passkey stand-in used during onboarding. No KEK is
-    /// stored — it is re-derived from the custodian's signature on
-    /// every boot.
+    /// A this-device wrapping under a locally held custodian keypair,
+    /// the KEK re-derived from the custodian's signature over
+    /// [`CUSTODIAN_KEK_CONTEXT`] on every boot. Legacy: reproducible
+    /// only where signing is deterministic, which WebCrypto does not
+    /// guarantee. Opened, never written anew; see [`Self::Custodian`].
     Local,
     /// WebAuthn PRF evaluated at the two custody salts.
     Passkey,
     /// Recovery phrase through Argon2id, split the same two ways.
     Phrase,
+    /// A this-device wrapping under a locally held custodian keypair,
+    /// the KEK random and sealed to the custodian's `did:key` (a
+    /// [`SealedSecret`] stored beside the envelope). Reproducible by
+    /// construction: revealing is an X25519 agreement only the
+    /// custodian's agreement key completes. Replaces [`Self::Local`].
+    Custodian,
 }
 
 impl KekMethod {
@@ -170,6 +188,7 @@ impl KekMethod {
             KekMethod::Local => 0,
             KekMethod::Passkey => 1,
             KekMethod::Phrase => 2,
+            KekMethod::Custodian => 3,
         }
     }
 
@@ -178,6 +197,7 @@ impl KekMethod {
             0 => Ok(KekMethod::Local),
             1 => Ok(KekMethod::Passkey),
             2 => Ok(KekMethod::Phrase),
+            3 => Ok(KekMethod::Custodian),
             other => Err(EnvelopeError::UnknownMethod(other)),
         }
     }
@@ -444,14 +464,16 @@ impl<C: Clearance, K: Capability> Kek<C, K> {
         Self(Material::Bytes(bytes), PhantomData)
     }
 
-    /// Derive a KEK from a custodian's signature.
+    /// Derive a KEK from a custodian's signature ([`KekMethod::Local`]).
     ///
     /// The caller signs [`CUSTODIAN_KEK_CONTEXT`] with a non-extractable
     /// keypair and passes the raw signature here. Expanding it through
     /// HKDF gives a KEK that is reproducible for whoever holds the key
-    /// and unreachable for anyone who does not, which is what a
-    /// passkey's PRF output provides. The KEK is never stored: it is
-    /// recomputed from a fresh signature on every boot.
+    /// and unreachable for anyone who does not, provided the signature
+    /// itself is reproducible. Safari's WebCrypto randomizes Ed25519
+    /// signatures, so this only opens envelopes written before
+    /// [`Self::seal_to_custodian`] existed, on platforms that sign
+    /// deterministically.
     ///
     /// The level is mixed into the expansion, so one custodian keypair
     /// yields unrelated keys at each level it is used for.
@@ -461,6 +483,32 @@ impl<C: Clearance, K: Capability> Kek<C, K> {
         hkdf.expand(C::CONTEXT, okm.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         Self(Material::Bytes(okm), PhantomData)
+    }
+
+    /// The KEK a custodian sealed with [`Self::seal_to_custodian`],
+    /// revealed by that same custodian.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`EnvelopeError::Sealed`] for another custodian, a
+    /// tampered blob, and a revealed value that is not a KEK alike.
+    pub async fn from_custodian_sealed(
+        custodian: &Ed25519Signer,
+        sealed: &SealedSecret,
+    ) -> Result<Self, EnvelopeError> {
+        let revealed = Zeroizing::new(
+            custodian
+                .secret(CUSTODIAN_KEK_SEAL_CONTEXT)
+                .reveal(sealed)
+                .await
+                .map_err(|_| EnvelopeError::Sealed)?,
+        );
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        if revealed.len() != bytes.len() {
+            return Err(EnvelopeError::Sealed);
+        }
+        bytes.copy_from_slice(&revealed);
+        Ok(Self(Material::Bytes(bytes), PhantomData))
     }
 
     /// The `aes_gcm` cipher, for KEKs backed by real bytes.
@@ -607,6 +655,33 @@ impl<C: Clearance> Kek<C, Sealing> {
         Self(Material::Handle(handle), PhantomData)
     }
 
+    /// A fresh random KEK, sealed to `custodian` so only it can produce
+    /// the KEK again ([`KekMethod::Custodian`]).
+    ///
+    /// Store the returned [`SealedSecret`] beside the envelope; a later
+    /// boot gets the KEK back with [`Self::from_custodian_sealed`]. The
+    /// seal adds no secrecy the custodian did not already provide, since
+    /// whoever can use its agreement key can reveal it; what it adds is
+    /// reproducibility. Revealing is an X25519 agreement, so unlike
+    /// [`Self::from_custodian`] it does not depend on how the platform
+    /// signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the platform has no entropy for the KEK, or
+    /// the custodian's identity yields no agreement key to seal to.
+    pub async fn seal_to_custodian(custodian: &Ed25519Signer) -> Result<(Self, SealedSecret)> {
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        getrandom::fill(bytes.as_mut())
+            .map_err(|error| anyhow::anyhow!("no entropy for a custodian KEK: {error}"))?;
+        let sealed = custodian
+            .secret(CUSTODIAN_KEK_SEAL_CONTEXT)
+            .conceal(bytes.as_ref())
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to seal the KEK to the custodian: {error}"))?;
+        Ok((Self(Material::Bytes(bytes), PhantomData), sealed))
+    }
+
     /// Wrap a 32-byte seed this KEK custodies at its own clearance.
     ///
     /// Same envelope format as a wrapped account secret, so the two are
@@ -666,6 +741,46 @@ mod tests {
         let second = Kek::<Recovery>::from_custodian(b"a signature");
         let envelope = first.seal(&secret(3), KekMethod::Local).unwrap();
         assert!(second.open(&envelope).is_ok());
+    }
+
+    #[dialog_common::test]
+    async fn it_reopens_a_kek_sealed_to_its_custodian() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let (kek, sealed) = Kek::<Recovery>::seal_to_custodian(&custodian)
+            .await
+            .unwrap();
+        let envelope = kek.seal(&secret(5), KekMethod::Custodian).unwrap();
+
+        // The sealed KEK reaches the next boot as bytes.
+        let sealed = SealedSecret::from_bytes(&sealed.to_bytes()).unwrap();
+        let reopened = Kek::<Recovery>::from_custodian_sealed(&custodian, &sealed)
+            .await
+            .expect("the custodian reveals its own KEK")
+            .open(&envelope)
+            .expect("the revealed KEK opens the envelope");
+        assert_eq!(reopened.0.as_ref(), &[5u8; 32]);
+    }
+
+    #[dialog_common::test]
+    async fn a_stranger_cannot_reveal_a_custodian_sealed_kek() {
+        let custodian = Ed25519Signer::generate().await.unwrap();
+        let (_, sealed) = Kek::<Recovery>::seal_to_custodian(&custodian)
+            .await
+            .unwrap();
+
+        let stranger = Ed25519Signer::generate().await.unwrap();
+        assert!(matches!(
+            Kek::<Recovery>::from_custodian_sealed(&stranger, &sealed).await,
+            Err(EnvelopeError::Sealed)
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_round_trips_the_custodian_method() {
+        let envelope = kek(1).seal(&secret(2), KekMethod::Custodian).unwrap();
+        let decoded = Envelope::<Recovery>::decode(&envelope.encode()).unwrap();
+        assert_eq!(decoded.method, KekMethod::Custodian);
+        assert!(kek(1).open(&decoded).is_ok());
     }
 
     #[dialog_common::test]

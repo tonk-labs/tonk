@@ -109,25 +109,36 @@ mod native {
         }
     }
 
-    /// Navigates, retrying once when the renderer wedges mid-load.
+    fn retryable_navigation_error(error: &thirtyfour::error::WebDriverErrorInner) -> bool {
+        use thirtyfour::error::WebDriverErrorInner;
+
+        match error {
+            WebDriverErrorInner::WebDriverTimeout(_) | WebDriverErrorInner::Timeout(_) => true,
+            WebDriverErrorInner::UnknownError(info) => {
+                info.value.message.contains("net::ERR_SSL_PROTOCOL_ERROR")
+            }
+            _ => false,
+        }
+    }
+
+    /// Navigates, retrying once when the renderer wedges mid-load or the
+    /// per-test Caddy server is still finishing its first TLS handshake.
     ///
     /// A navigation whose renderer stops responding surfaces as
     /// chromedriver's 'timed out receiving message from renderer' after the
     /// page-load allowance. The page's own boot watchdog cannot act there —
     /// a hung renderer runs no scripts — so the recovery lives on this side
     /// of the DevTools pipe: one fresh navigation to the same URL, the same
-    /// restart a person's reload performs.
+    /// restart a person's reload performs. Caddy can also accept TCP while it
+    /// is still minting the origin certificate; Chrome reports that short
+    /// startup window as `net::ERR_SSL_PROTOCOL_ERROR`, so the same one-shot
+    /// retry crosses that readiness boundary without hiding other failures.
     pub async fn goto(driver: &WebDriver, url: impl AsRef<str>) -> Result<()> {
-        use thirtyfour::error::WebDriverErrorInner;
         let url = url.as_ref();
         match driver.goto(url).await {
-            Err(error)
-                if matches!(
-                    error.as_inner(),
-                    WebDriverErrorInner::WebDriverTimeout(_) | WebDriverErrorInner::Timeout(_)
-                ) =>
-            {
-                eprintln!("navigation to {url} wedged ({error}); retrying once");
+            Err(error) if retryable_navigation_error(error.as_inner()) => {
+                eprintln!("navigation to {url} failed transiently ({error}); retrying once");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 Ok(driver.goto(url).await?)
             }
             other => Ok(other?),
@@ -430,6 +441,30 @@ mod native {
     async fn test_servers(_: ()) -> Result<Service<TestEnvironment, TestServers>> {
         let (server, address) = TestServers::start().await?;
         Ok(Service::new(address, server))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::retryable_navigation_error;
+        use thirtyfour::error::{WebDriverErrorInfo, WebDriverErrorInner, WebDriverErrorValue};
+
+        fn unknown_navigation_error(message: &str) -> WebDriverErrorInner {
+            WebDriverErrorInner::UnknownError(WebDriverErrorInfo {
+                status: 500,
+                error: "unknown error".to_string(),
+                value: WebDriverErrorValue::new(message.to_string()),
+            })
+        }
+
+        #[test]
+        fn it_retries_the_tls_handshake_race_only() {
+            assert!(retryable_navigation_error(&unknown_navigation_error(
+                "unknown error: net::ERR_SSL_PROTOCOL_ERROR"
+            )));
+            assert!(!retryable_navigation_error(&unknown_navigation_error(
+                "unknown error: net::ERR_CONNECTION_REFUSED"
+            )));
+        }
     }
 }
 
