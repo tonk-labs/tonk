@@ -26,15 +26,16 @@ view!: &person-card
 from the `model` concept's shape. `&person-card` publishes the anchor
 name; the explicit `this: id:person-card` pins the view entity so a
 later assertion supersedes its cardinality-one `display` instead of
-leaving the old view entity queryable. `tonk view add --name person-card`
-adds this stable `this:` automatically.
+leaving the old view entity queryable. `tonk view add --anchor person-card`
+derives this stable `this: id:person-card` automatically.
 
 ## Authoring detail, directory, label, and title views
 
 `tonk view add` authors a detail view by default. Select any standard view
 concept explicitly with `--kind detail|directory|label|title`; each kind gets a
 stable default anchor (`<model>-view`, `<model>-directory`, `<model>-label`, or
-`<model>-title`). A supplied `--name` is preserved unchanged.
+`<model>-title`). Supplying `--anchor person-card` derives
+`this: id:person-card`; omitting it generates the stable kind-specific anchor.
 
 ```text
 tonk view add todo --kind directory --template-file todo.html --home
@@ -59,8 +60,9 @@ renders a single entity. The resolution that trips people up:
 - `model` is the entity's concept; it projects the entity's fields.
 - `view` is a **view concept** (e.g. the built-in `tonk:view`), NOT a
   specific view instance. `<tonk-display>` resolves the view concept,
-  then runs a **model-constrained query** to find the view instance
-  whose `model` equals the resolved model.
+  then runs a **model-constrained query** to find every view instance
+  whose `model` equals the resolved model. Every matching entry renders in view
+  entity order.
 
 So you author the instance with a `model` (above) and point callers at
 the concept:

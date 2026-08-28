@@ -4,7 +4,7 @@
 
 use crate::authoring::{
     AuthoringError, ViewKind, build_concept_decl, build_home_recipe, build_view_decl,
-    lint_view_template, parse_attr_spec,
+    lint_view_template, parse_attr_spec, validate_view_anchor,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -608,7 +608,7 @@ pub async fn view_add(
     site: &TonkSite,
     model: &str,
     kind: ViewKind,
-    name: Option<&str>,
+    anchor: Option<&str>,
     template: &str,
     set_home: bool,
     write: WriteOptions,
@@ -624,9 +624,10 @@ pub async fn view_add(
         .map(|(field, _)| field.to_string())
         .collect();
     let lint = lint_view_template(template, &fields);
-    let anchor = name
+    let anchor = anchor
         .map(str::to_string)
         .unwrap_or_else(|| kind.default_anchor(model));
+    validate_view_anchor(&anchor)?;
     let auto_surface = !set_home && kind.can_auto_surface() && home_is_unset(site).await?;
     let surface_home = set_home || auto_surface;
     let mut doc = build_view_decl(kind, &anchor, model, template);
@@ -640,8 +641,8 @@ pub async fn view_add(
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let mut out = format!(
-        "{}\n",
-        write.summarize(format_args!("asserted view {anchor}"))
+        "{}\nanchor: {anchor}\nentity: id:{anchor}\n",
+        write.summarize("asserted view")
     );
     for warning in &lint {
         out.push_str(&format!("warning: {warning}\n"));

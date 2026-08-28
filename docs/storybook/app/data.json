@@ -556,12 +556,12 @@
       "variants": "Empty/existing name; field types/cardinality; notation/dry-run/sync."
     },
     {
-      "evidence": "Strong authoring/render coverage.",
+      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection.",
       "gaps": "Template read failure, atomic home replacement under sync failure, route visibility in real browser.",
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-02",
       "title": "Define/list a detail, directory, label, or title view.",
-      "variants": "Inline/file template; blank/existing home; --home."
+      "variants": "Inline/file template; explicit/default anchor; entity-like anchor; blank/existing home; --home."
     },
     {
       "evidence": "Strong data_verbs coverage.",
@@ -612,12 +612,12 @@
       "variants": "Missing/ambiguous names; JSON/notation/human."
     },
     {
-      "evidence": "Eight render integration tests.",
+      "evidence": "Ten render integration tests cover ordered multi-view siblings and frame-wide portal mode.",
       "gaps": "Atomic output file, broken pipe, real-browser parity, concurrent source change.",
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-09",
       "title": "Render a route to stdout or a file.",
-      "variants": "Directory/detail/explicit view; missing fields/view; output path errors."
+      "variants": "Directory/detail/explicit view; zero/one/many matching views; mixed portal types; missing fields/view; output path errors."
     },
     {
       "evidence": "Ten blob integration tests.",
@@ -1235,12 +1235,14 @@
       "name": "Concepts, views, and data verbs",
       "source_paths": [
         "rust/tonk-cli/src/authoring.rs",
+        "rust/tonk-cli/src/bin/tonk.rs",
         "rust/tonk-cli/src/data.rs",
         "rust/tonk-cli/src/data_ops.rs",
-        "rust/tonk-cli/src/render.rs"
+        "rust/tonk-cli/src/render.rs",
+        "rust/tonk-render/src/page/orchestrate.rs"
       ],
       "status": "captured",
-      "summary": "Schema-derived commands make definitions, assertions, updates, queries, retractions, and rendering visible in human and machine modes.",
+      "summary": "Schema-derived commands expose stable view anchors and entities, then render every matching presentation in browser-equivalent order and frame mode.",
       "surface": "cli"
     },
     {
@@ -2075,6 +2077,22 @@
       "result": "—"
     },
     {
+      "claim": "View creation exposes the stable anchor and derived entity before later commands need either identity (Inventory).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-08",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "Headless rendering matches the browser's multi-view frame boundary (Inventory).",
+      "device": "cli",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-09",
+      "priority": "P2",
+      "result": "—"
+    },
+    {
       "claim": "Carry/account migrations are idempotent and crash-recoverable (Inventory).",
       "device": "restart",
       "file": "verification/cli-spaces-ui.md",
@@ -2192,7 +2210,7 @@
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 110
+    "unrun": 112
   },
   "visualCommit": "49a873a23"
 }
