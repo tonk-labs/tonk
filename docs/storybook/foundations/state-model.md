@@ -13,7 +13,7 @@ each coordinate that may change afterward.
 
 | Code | State | User-visible meaning |
 | --- | --- | --- |
-| `I0` | Root missing | A profile/device exists, but no passkey-controlled root is stored. |
+| `I0` | Root missing | A profile/device exists, and may have a local onboarding account, but no passkey-controlled root is stored. |
 | `I1` | Root present, unregistered | Local root authority exists without a provider attachment. Local work remains possible. |
 | `I2` | Registered, account unconfigured | A provider is attached, but the account repository descriptor is not established. |
 | `I3` | Registered, account unhydrated | The descriptor exists, but the local account repository is not current or mountable yet. |
@@ -24,6 +24,22 @@ The browser worker exposes `RootMissing`, `Unregistered`, and `Registered` with
 `Unconfigured`, `Unhydrated`, or `Ready`. The CLI exposes the equivalent local
 account status. Tests must not require the provider to be reachable merely to
 report these local facts.
+
+### Pre-passkey onboarding account
+
+The first signed-out `space new` or `join` lazily creates one local onboarding
+account. This does not move the profile to `I1`: it is local device authority,
+not a passkey-controlled root or provider attachment. New-space custody is
+sealed to its `main` encryption key, and invite claims name the onboarding
+account rather than an otherwise disposable profile DID.
+
+After browser approval, `account login` reconciles this pre-account work. It
+rotates created-space custody and authority to the passkey account while
+keeping each repository subject and its data stable; a legacy walk covers
+spaces created before onboarding custody existed. Joined-space membership
+remains usable through the onboarding/account union. Native code cannot
+reissue an invite seed, so it reports that browser-only boundary and keeps the
+onboarding account instead of retiring authority that is still needed.
 
 ### Customer service
 
@@ -157,3 +173,4 @@ The following triples are load-bearing and require explicit tests:
   to a permanent regression scenario.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
+Onboarding-account addendum pinned to Tonk commit `b564e83b1`.

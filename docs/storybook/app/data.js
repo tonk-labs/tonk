@@ -244,12 +244,12 @@ window.STORYBOOK_DATA = {
       "variants": "Root missing, unregistered, unconfigured, unhydrated, ready, malformed state."
     },
     {
-      "evidence": "Loopback bridge contract tests and whole happy hybrid flows for callback/default/discovered provider.",
-      "gaps": "Real Safari/Chrome/Firefox bridge pass, OS-open failure, callback collision, timeout, malformed callback, restart after approval at every write.",
+      "evidence": "Loopback bridge contract tests, whole happy hybrid flows, and integration coverage for repeatable created/legacy space rotation.",
+      "gaps": "Real Safari/Chrome/Firefox bridge pass, OS-open failure, callback collision, timeout, malformed callback, restart after every write, browser completion of deferred invite-seed rotation.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C02",
       "title": "Start tonk account login and approve in an already-linked browser.",
-      "variants": "Default page; --via; --no-open; custom name; TTY/pipe; Safari cross-scheme warning."
+      "variants": "Default page; --via; --no-open; custom name; TTY/pipe; Safari cross-scheme warning; no onboarding state; onboarding-created/claimed and legacy spaces."
     },
     {
       "evidence": "Whole browser flow for registration before linking CLI.",
@@ -524,12 +524,12 @@ window.STORYBOOK_DATA = {
       "variants": "Valid/wrong DID; accountless/account recipient; remote variants."
     },
     {
-      "evidence": "Join, profile, authority tests; accountless claim-to-link flow.",
-      "gaps": "Process error matrix, crash between claim and registration, response loss, concurrent claim.",
+      "evidence": "Join, profile, and authority tests; accountless claim terminates at the onboarding account and remains usable after account union.",
+      "gaps": "Process error matrix, crash between claim and registration, response loss, concurrent claim, browser-only invite-seed rotation after native login.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-03",
       "title": "Join or claim an invite into a named space.",
-      "variants": "Fresh/existing name; remote/no remote; malformed/expired/revoked/already claimed."
+      "variants": "Fresh/existing name; remote/no remote; malformed/expired/revoked/already claimed; no passkey account."
     },
     {
       "evidence": "Invite revocation integration and real-browser access cutoff.",
@@ -1650,6 +1650,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "CLI login reconciles pre-account spaces without changing their identity or hiding deferred invite rotation (Settle).",
+      "device": "hybrid + restart",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-17",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -2175,7 +2183,7 @@ window.STORYBOOK_DATA = {
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 108
+    "unrun": 109
   },
   "visualCommit": "49a873a23"
 };
