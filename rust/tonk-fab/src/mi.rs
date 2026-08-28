@@ -232,6 +232,12 @@ fn toggle_open(this: &HtmlElement) {
     }
     if opening {
         let _ = this.set_attribute("open", "");
+        // Aim it too. Aiming runs on `pointerenter`/`focusin` because
+        // that is when a hovered row opens — a row opened by a click
+        // gets neither, and an unaimed flyout renders to the right of a
+        // bar that is already at the screen edge, so it is on the page
+        // and off the screen.
+        aim_flyout(this);
     }
 }
 

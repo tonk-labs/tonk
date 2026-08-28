@@ -515,6 +515,19 @@ pub(crate) fn close(this: &HtmlElement, state: &Shared) {
 
 fn close_internal(this: &HtmlElement, state: &Shared, restore_focus: bool) {
     let opener = state.borrow().open_panel.map(|open| open.anchor);
+    // A row holding its flyout open closes with the stack it lives in.
+    // Left set, it would still be open the next time the stack is
+    // raised — and a press outside dismisses the stack, so the flyout
+    // has to go with it.
+    if let Ok(open_rows) = this.query_selector_all("tonk-mi[open]") {
+        for index in 0..open_rows.length() {
+            if let Some(node) = open_rows.item(index)
+                && let Ok(row) = node.dyn_into::<Element>()
+            {
+                let _ = row.remove_attribute("open");
+            }
+        }
+    }
     restore_sub(state);
     state.borrow_mut().open_panel = None;
     if let Some(menus) = query(this, ".mw") {
