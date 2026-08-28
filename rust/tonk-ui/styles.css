@@ -1,3 +1,51 @@
+/* The design tokens every tonk surface is built from.
+ *
+ * Page-level on purpose. These lived inside `account.css`, scoped to
+ * `:is(tonk-account, tonk-activate)`, so any new surface had to either
+ * widen that selector or invent its own values — and inventing them is
+ * how the registration cluster came up ringed in near-white while
+ * nothing else in the app was.
+ *
+ * Values are the fabb studies' own (`~/Projects/gooey/fabb`), both
+ * twins. `--ring` is translucent ink rather than a grey border token,
+ * which is what gives every block its edge.
+ */
+:root {
+    --page: #ececec;
+    --ink: #131313;
+    --on-ink: #fbfaef;
+    --soft: #55544f;
+    --ring: rgb(19 19 19 / 85%);
+    --sep: rgb(19 19 19 / 28%);
+    --frost-solid: #fafafa;
+    --panel: #d2d2d2;
+    --wash: rgb(19 19 19 / 6%);
+    --wash-2: rgb(19 19 19 / 12%);
+    --wash-p: rgb(251 250 239 / 16%);
+    --card: #fff;
+    --dim: rgb(16 16 12 / 32%);
+    --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
+    --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+:root.wa-dark {
+    --page: #161613;
+    --ink: #e9e6d6;
+    --on-ink: #22221c;
+    --soft: #cdcaba;
+    --ring: rgb(233 230 214 / 55%);
+    --sep: rgb(233 230 214 / 28%);
+    --frost-solid: #1e1e19;
+    --panel: #3b3a34;
+    --wash: rgb(251 250 239 / 9%);
+    --wash-2: rgb(251 250 239 / 15%);
+    --wash-p: rgb(19 19 19 / 14%);
+    --card: #26251f;
+    --dim: rgb(0 0 0 / 45%);
+}
+
 /* `hidden` has to keep hiding things. Web Awesome skins native form
    controls inside `@layer wa-native`, and its rule for
    `button, input[type=button|reset|submit|file], a.wa-button` nests
@@ -50,42 +98,14 @@ wa-tree-item:not(:defined) {
     visibility: hidden;
 }
 
-/* Self-hosted brutalist-theme fonts: Space Grotesk (body),
-   IBM Plex Sans Condensed (heading), Space Mono (code). Files
+/* Self-hosted interface fonts: IBM Plex Sans (body), IBM Plex Sans
+   Condensed (heading), and IBM Plex Mono (code). Files
    live under `/fonts/` (copied into the dist by Trunk's
    `copy-dir` on `./assets/fonts`). Self-hosting means no
    cross-origin font fetch and the files flow through the SW
    cache automatically once the offline-support milestone lands.
    `font-display: swap` keeps the page legible (fallback face)
    if the .woff2 hasn't downloaded yet. */
-@font-face {
-    font-family: "Space Grotesk";
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url("/fonts/space-grotesk-latin-400-normal.woff2") format("woff2");
-}
-@font-face {
-    font-family: "Space Grotesk";
-    font-style: normal;
-    font-weight: 500;
-    font-display: swap;
-    src: url("/fonts/space-grotesk-latin-500-normal.woff2") format("woff2");
-}
-@font-face {
-    font-family: "Space Grotesk";
-    font-style: normal;
-    font-weight: 600;
-    font-display: swap;
-    src: url("/fonts/space-grotesk-latin-600-normal.woff2") format("woff2");
-}
-@font-face {
-    font-family: "Space Grotesk";
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    src: url("/fonts/space-grotesk-latin-700-normal.woff2") format("woff2");
-}
 @font-face {
     font-family: "IBM Plex Sans Condensed";
     font-style: normal;
@@ -114,32 +134,8 @@ wa-tree-item:not(:defined) {
     font-display: swap;
     src: url("/fonts/ibm-plex-sans-condensed-latin-700-normal.woff2") format("woff2");
 }
-@font-face {
-    font-family: "Space Mono";
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url("/fonts/space-mono-latin-400-normal.woff2") format("woff2");
-}
-@font-face {
-    font-family: "Space Mono";
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    src: url("/fonts/space-mono-latin-700-normal.woff2") format("woff2");
-}
-
 /* Control Panel launcher faces — self-hosted like the others. Gestalte
    (display) is shipped as OpenType; IBM Plex Sans/Mono as woff2. */
-/* GestalteName — a separate wordmark cut, used ONLY for the "tonk" wordmark
-   (the launcher brand). Ships as TrueType at its single weight (500). */
-@font-face {
-    font-family: "GestalteName";
-    font-style: normal;
-    font-weight: 500;
-    font-display: swap;
-    src: url("/fonts/gestaltename-500.ttf") format("truetype");
-}
 @font-face {
     font-family: "Gestalte";
     font-style: normal;
@@ -217,15 +213,29 @@ body {
     color: var(--wa-color-text-normal);
 }
 
-/* We stay on the default WA theme but borrow two things from the
-   brutalist theme: its font stack (Space Grotesk / IBM Plex Sans
-   Condensed / Space Mono) and a zero border-radius. Drop-shadows
-   are also zeroed out so cards and panels read as flat blocks of
-   color. Fonts themselves are loaded via a `<link>` in index.html. */
+/* Keep Web Awesome's default theme mechanics while giving old and new
+   surfaces one type system and the stone-ink material selected for Tonk.
+   Drop-shadows are zeroed so cards and panels read as flat blocks. */
 :where(.wa-theme-default) {
-    --wa-font-family-body: "Space Grotesk", sans-serif;
+    --wa-font-family-body: "IBM Plex Sans", Helvetica, Arial, sans-serif;
     --wa-font-family-heading: "IBM Plex Sans Condensed", sans-serif;
-    --wa-font-family-code: "Space Mono", monospace;
+    --wa-font-family-code: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+    --wa-color-surface-raised: #fcfbfb;
+    --wa-color-surface-default: #e8e6e4;
+    --wa-color-surface-lowered: #e4e2e0;
+    --wa-color-surface-border: rgb(56 24 42 / 28%);
+    --wa-color-text-normal: #38182a;
+    --wa-color-text-quiet: #5b4953;
+    --wa-color-neutral-fill-quiet: #eeedec;
+    --wa-color-neutral-fill-normal: #d0ccc8;
+    --wa-color-neutral-fill-loud: #38182a;
+    --wa-color-neutral-border-quiet: rgb(56 24 42 / 18%);
+    --wa-color-neutral-border-normal: rgb(56 24 42 / 28%);
+    --wa-color-neutral-border-loud: rgb(56 24 42 / 55%);
+    --wa-color-neutral-on-quiet: #5b4953;
+    --wa-color-neutral-on-normal: #38182a;
+    --wa-color-neutral-on-loud: #f7f6f5;
 
     --wa-border-radius-scale: 0;
 
@@ -257,6 +267,56 @@ body {
     /* Paused reads as muted/inactive — same quiet ink as the "all repos"
        crumb, dimmer than the other status colours. */
     --sync-paused: var(--wa-color-text-quiet);
+}
+
+:where(.wa-theme-default.wa-dark) {
+    --wa-color-surface-raised: #261f20;
+    --wa-color-surface-default: #161313;
+    --wa-color-surface-lowered: #1c1718;
+    --wa-color-surface-border: rgb(226 223 221 / 28%);
+    --wa-color-text-normal: #e2dfdd;
+    --wa-color-text-quiet: #c8c3bf;
+    --wa-color-neutral-fill-quiet: #261f20;
+    --wa-color-neutral-fill-normal: #3c3335;
+    --wa-color-neutral-fill-loud: #e2dfdd;
+    --wa-color-neutral-border-quiet: rgb(226 223 221 / 18%);
+    --wa-color-neutral-border-normal: rgb(226 223 221 / 28%);
+    --wa-color-neutral-border-loud: rgb(226 223 221 / 55%);
+    --wa-color-neutral-on-quiet: #c8c3bf;
+    --wa-color-neutral-on-normal: #e2dfdd;
+    --wa-color-neutral-on-loud: #221c1d;
+}
+
+/* One loading signal everywhere: the supplied reference grows from a small,
+   solid dot into a larger, softer one over roughly two seconds. */
+.tonk-pulse {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    border-radius: 50%;
+    background: currentcolor;
+    transform-origin: center;
+    animation: tonk-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes tonk-pulse {
+    0%, 100% {
+        opacity: 1;
+        scale: 0.33;
+    }
+    50% {
+        opacity: 0.35;
+        scale: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tonk-pulse {
+        animation: none;
+        opacity: 1;
+        scale: 0.5;
+    }
 }
 
 /* Cards and callouts: transparent fill so the dot-grid shows
@@ -309,7 +369,7 @@ tonk-site {
    sealed iframe booting and the SW stamping the tab's `tonk:site` (route
    match + stamp, ~1s) the site entity carries none of its required
    attributes, so the display projects its slotted `loading` / `no-entity`
-   child (a spinner) rather than flashing the loud concept-mismatch dump.
+   child (the shared pulse) rather than flashing the loud concept-mismatch dump.
    `<tonk-display>` toggles the `hidden` attribute to show/hide the slot, so
    this only centres the child while it is shown — `[hidden]`'s `display:
    none` must still win when it is not. */
@@ -2488,3 +2548,191 @@ tonk-code:focus-within {
 }
 .notebook-index__title { font-weight: 500; }
 .notebook-index .notebook-block-rows { display: none; }
+/* ── The ceremony cluster ──────────────────────────────────────────
+ *
+ * A column of blocks over a dimmed page, from `fabb/onboard.html`:
+ * "the page dims, the surface never". Rows settle into records as
+ * their step completes, so what has been answered stays legible above
+ * what is being answered now.
+ *
+ * Written as classes rather than against one element's id: the
+ * registration cluster is the first surface built this way, not the
+ * only one it suits. `.ed` in particular is the study's editor — a
+ * bare input wearing the row's own type, with a block cursor for a
+ * seat — and any row that takes a value wants it.
+ */
+  /* The cluster, from `fabb/onboard.html`: rows stack over a dimmed
+     page and the surface itself never dims. Each row settles into a
+     record as its step completes, so what you have already answered
+     stays legible above what you are answering now.
+
+     Not a `wa-dialog`: this is a column of blocks, and the way out is a
+     bare word at the foot rather than a titlebar close. */
+  /* The dim carries the whole separation — the surface never dims — so
+     it has to actually hide what is behind it. A light-theme value
+     hardcoded here read as nearly transparent against the dark theme,
+     and the page showed through and collided with the rows. */
+  .tonk-dim {
+    position: fixed; inset: 0; z-index: 20;
+    background: var(--dim);
+    opacity: 0; transition: opacity .4s var(--ease);
+    pointer-events: none;
+  }
+  .tonk-dim.on { opacity: 1; pointer-events: auto; }
+
+  .tonk-cluster {
+    position: fixed; inset: 0; z-index: 21; overflow: auto;
+    transition: opacity .4s var(--ease);
+  }
+  .tonk-cluster[hidden] { display: none; }
+
+  /* The study's chrome type: condensed, 600, 13px, slightly tracked and
+     lowercased. Inheriting the page's body font instead made everything
+     read thin and a size too large. */
+  .tonk-ceremony {
+    font-family: var(--cond);
+    font-weight: 600;
+    font-size: 13px;
+    line-height: 1;
+    letter-spacing: .02em;
+    text-transform: lowercase;
+    color: var(--ink);
+  }
+  .tonk-ceremony ::selection {
+    background: var(--ink);
+    color: var(--on-ink);
+  }
+  .tonk-ceremony .ocol {
+    width: min(432px, calc(100vw - 48px));
+    margin: 22vh auto 80px;
+    display: flex; flex-direction: column;
+  }
+  .tonk-ceremony .ostack { display: flex; flex-direction: column; gap: 7px; }
+
+  /* The dim does the separating, so the blocks need no blur of their own. */
+  /* `--ring` is the study's edge: translucent ink, not a grey border
+     token. Reaching for the app's `--wa-color-*` set instead put a
+     near-white ring around every block in the dark theme, which nothing
+     else in the design has. */
+  .tonk-ceremony .mblk {
+    background: var(--modal, var(--card));
+    color: var(--ink);
+    box-shadow: 0 0 0 1px var(--ring);
+  }
+
+  .tonk-ceremony .m-head {
+    height: 36px; display: flex; align-items: flex-end;
+    padding: 0 16px 9px; font-size: 13px; white-space: nowrap;
+  }
+
+  /* One row per step. `pre` is the folded state a row unfolds out of. */
+  .tonk-ceremony .orow {
+    position: relative; height: 36px;
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 16px; padding: 0 10px 9px 16px; overflow: hidden;
+    transition: height .4s var(--ease),
+                opacity .4s var(--ease),
+                padding-top .4s var(--ease),
+                padding-bottom .4s var(--ease);
+  }
+  .tonk-ceremony .orow.pre,
+  .tonk-ceremony .obtn.pre {
+    height: 0 !important; opacity: 0;
+    padding-top: 0; padding-bottom: 0; pointer-events: none;
+  }
+  .tonk-ceremony .orow .k {
+    color: var(--soft);
+    white-space: nowrap; display: flex; align-items: flex-end; gap: 8px;
+  }
+  .tonk-ceremony .orow .v {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; text-align: right;
+    display: flex; align-items: flex-end; justify-content: flex-end;
+    flex: 1;
+  }
+  /* Descender room for the clip, handed straight back so the seat holds. */
+  .tonk-ceremony .orow .v,
+  .tonk-ceremony .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
+
+  /* The editor: inline text, no caret of its own, a block cursor
+     hard-blinking on the tail. The cursor IS the affordance. */
+  /* A real `<input>`, not the study's contenteditable span.
+     Conditional mediation is the reason: WebAuthn will only offer a
+     discoverable passkey through `autocomplete="username webauthn"` on
+     an actual form control, so a span could never surface the autofill
+     this ceremony is built around. Styled to sit in the row like the
+     study's editor — no chrome, right-aligned, the row's own type. */
+  /* A real input, wearing the study's editor.
+     `caret-color: transparent` hides the native caret so the block
+     cursor beside it is the only seat marker — the same trick the study
+     plays on its contenteditable. */
+  .tonk-ceremony .ed {
+    appearance: none; -webkit-appearance: none;
+    background: none; border: 0; outline: none; padding: 0; margin: 0;
+    font: inherit; letter-spacing: inherit; text-transform: none;
+    color: var(--ink); caret-color: transparent;
+    text-align: right; width: 100%; min-width: 0;
+    /* The row is `align-items: flex-end`, so the input has to sit on the
+       same baseline as the noun beside it rather than centring itself in
+       whatever height it claims. */
+    height: 1em; line-height: 1;
+  }
+  .tonk-ceremony .ed::placeholder {
+    color: var(--soft); opacity: .55; text-transform: none;
+  }
+
+  /* The block cursor: hard-blinking, on the tail of the value. Hidden
+     while the field is unfocused, since the seat is only meaningful
+     where the typing goes. */
+  .tonk-ceremony .cur {
+    display: inline-block; width: 7px; height: 13px;
+    background: var(--ink); vertical-align: -1px; margin-left: 1px;
+    animation: tonk-register-caret 1.05s steps(1, end) infinite;
+  }
+  .tonk-ceremony .v:not(:focus-within) .cur { visibility: hidden; }
+  @keyframes tonk-register-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+
+  /* An action step: solid ink, full rung, the word bottom-right. While a
+     ceremony is out of our hands the block blinks rather than spins. */
+  .tonk-ceremony .obtn {
+    display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px;
+    height: 36px; padding: 0 10px 9px 24px; overflow: hidden;
+    background: var(--ink);
+    color: var(--on-ink);
+    box-shadow: 0 0 0 1px var(--ink);
+    font-size: 13px; cursor: pointer; white-space: nowrap; border: 0;
+    transition: height .4s var(--ease),
+                opacity .4s var(--ease);
+  }
+  .tonk-ceremony .obtn.wait {
+    cursor: default;
+    animation: tonk-register-wait 2.4s var(--ease) infinite;
+  }
+  @keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
+
+  /* A mistake flashes rather than colouring: attention is earned by
+     blinking, never by hue. */
+  .tonk-ceremony .flash { animation: tonk-register-flash .45s var(--ease) 2; }
+  @keyframes tonk-register-flash { 50% { opacity: .55 } }
+
+  /* The narrator: one block whose sentence changes with the step. */
+  .tonk-ceremony .oexp {
+    margin-top: 7px; min-height: 36px; padding: 10px 16px 11px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .tonk-ceremony .oexp p {
+    margin: 0; font-size: 13px; line-height: 1.55;
+    color: var(--soft);
+  }
+  .tonk-ceremony .oexp p b {
+    font-weight: 600; color: var(--ink);
+  }
+
+  /* The way out: the quietest thing on screen. */
+  .tonk-ceremony .ghost {
+    align-self: flex-end; margin-top: 10px; background: none; border: 0;
+    padding: 0; display: block;
+    font-size: 13px; cursor: pointer;
+    color: var(--ink);
+    text-decoration: underline; text-underline-offset: 3px;
+  }

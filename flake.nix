@@ -160,6 +160,13 @@
             description = "Build the Tonk web application";
             command = "nix build .#tonk-ui";
           };
+          "dev:storybook" = {
+            description = "Serve the visual product Storybook at http://127.0.0.1:4173/docs/storybook/app/";
+            command = ''
+              ${pkgs.python3}/bin/python3 docs/storybook/scripts/build.py --check
+              exec ${pkgs.python3}/bin/python3 -m http.server 4173 --bind 127.0.0.1
+            '';
+          };
           "dev:web" = {
             description = "Start a dev server with a local access service (set UCAN_ENDPOINT to proxy /ucan/ to a remote instead)";
             command = ''
@@ -341,6 +348,14 @@
             '';
           };
 
+          "test:storybook" = {
+            description = "Validate the visual product Storybook and its local links";
+            command = ''
+              ${pkgs.python3}/bin/python3 docs/storybook/scripts/build.py --check
+              ${pkgs.python3}/bin/python3 docs/storybook/scripts/check-links.py docs/storybook
+            '';
+          };
+
           "test:native:debug" = menuTestCommand {
             description = "Unit and integration tests (${system}, debug)";
             package = "tests-native-debug";
@@ -502,6 +517,17 @@
             '';
           };
 
+          # The dependency-free product Storybook, validated and shipped as
+          # static assets. Its source map remains in docs/storybook; only the
+          # browser explorer is included in the deployed asset bundle.
+          tonk-storybook = pkgs.runCommand "tonk-storybook" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            cd ${self}
+            python3 docs/storybook/scripts/build.py --check
+            python3 docs/storybook/scripts/check-links.py docs/storybook
+            mkdir -p $out
+            cp -r docs/storybook/app/* $out/
+          '';
+
           tonk-cloudflare-artifacts = buildWasmCrate {
             pname = "tonk-cloudflare-assets";
             buildPhase = ''
@@ -517,6 +543,10 @@
               # Cloudflare asset layer serves it at /guide/ directly.
               mkdir -p ./build/tonk-ui/guide
               cp -r ${tonk-guide}/* ./build/tonk-ui/guide/
+              # Keep the same reviewed Storybook available to the whole team
+              # from the deployed Tonk asset origin.
+              mkdir -p ./build/tonk-ui/storybook
+              cp -r ${tonk-storybook}/* ./build/tonk-ui/storybook/
             '';
             installPhase = ''
               mkdir -p $out

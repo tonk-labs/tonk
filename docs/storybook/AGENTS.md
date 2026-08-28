@@ -1,0 +1,1 @@
+Read `README.md`, then `goal.md`. The coverage table in `README.md` is the work list. Run `python3 scripts/build.py --check` after changing journeys, screens, verification items, triage, or visual artifacts, then run `python3 scripts/check-links.py .`.

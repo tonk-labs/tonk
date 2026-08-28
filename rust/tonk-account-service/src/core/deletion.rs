@@ -49,7 +49,7 @@ pub async fn delete_account<S: Store>(
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use crate::store::sqlite::SqliteStore;
-    use crate::store::{CodeRow, Device, DeviceStatus, Store};
+    use crate::store::{Device, DeviceStatus, Store};
 
     async fn populated() -> (SqliteStore, String, i64) {
         let store = SqliteStore::in_memory().unwrap();
@@ -69,16 +69,6 @@ mod tests {
                 name: "laptop".into(),
                 status: DeviceStatus::Active,
                 created_at: 1,
-            })
-            .await
-            .unwrap();
-        store
-            .put_code(&CodeRow {
-                email: "owner@example.com".into(),
-                code_hash: "hash".into(),
-                created_at: 1,
-                expires_at: 2,
-                attempts: 0,
             })
             .await
             .unwrap();
@@ -117,7 +107,6 @@ mod tests {
                 .is_none()
         );
         assert!(store.devices(account_id).await.unwrap().is_empty());
-        assert!(store.code("owner@example.com").await.unwrap().is_none());
         assert!(
             store
                 .create_account("owner@example.com", "did:key:z6Mknew", "new", 3)

@@ -1374,6 +1374,21 @@ pub fn space_list_query_body() -> String {
     .to_string()
 }
 
+/// Replace a subscription's keyed snapshot while preserving delivery order.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn reset_keyed_rows<T>(
+    rows: &mut Vec<(String, T)>,
+    conclusions: impl IntoIterator<Item = (String, T)>,
+) {
+    rows.clear();
+    for (id, row) in conclusions {
+        match rows.iter_mut().find(|(existing_id, _)| existing_id == &id) {
+            Some(existing) => existing.1 = row,
+            None => rows.push((id, row)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod space_list {
     use super::*;
@@ -1388,6 +1403,21 @@ mod space_list {
         assert!(body.contains("\"this\":{\"?\""));
         // No concept named — nothing seeded is consulted.
         assert!(!body.contains("tonk:space"));
+    }
+
+    #[test]
+    fn a_reset_keeps_one_row_per_replica_entity() {
+        let mut rows = vec![("stale".to_owned(), "stale")];
+
+        reset_keyed_rows(
+            &mut rows,
+            [
+                ("replica:space".to_owned(), "first"),
+                ("replica:space".to_owned(), "latest"),
+            ],
+        );
+
+        assert_eq!(rows, vec![("replica:space".to_owned(), "latest")]);
     }
 }
 
@@ -1496,47 +1526,11 @@ mod rename_repo {
     }
 }
 
-/// Build a `TransactRequest` JSON body for the `space/create` command.
-///
-/// Inlines the descriptor `profile.yaml` declares for `command!: &space/create`
-/// — the same shape, verbatim attribute URIs (`dom.event.current-target.
-/// elements.<field>/value`, matching what a real form submit's read-path would
-/// have produced) — so nothing seeded on the profile branch is consulted.
-/// `this` is omitted so the worker mints it from `(descriptor, parameters)`.
-///
-/// `name` is always sent (the wizard's hidden input always carries the
-/// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
-/// alone — an absent `name` fact means the command never fires at all).
-/// `remote` is read directly off the transient's facts by the handler
-/// (not decoded as a typed `CreateSpace` field), so an empty value is
-/// omitted rather than sent as `""` — an omitted fact and a
-/// filtered-empty fact land the same way handler-side, but omitting
-/// mirrors what the browser's own event extractor would have done, and
-/// keeps this consistent with [`rename_repo_claim_json`].
-pub fn create_space_claim_json(name: &str, remote: &str) -> Value {
-    let mut parameters = json!({ "name": name });
-    if !remote.is_empty() {
-        parameters["remote"] = json!(remote);
-    }
-    json!({
-        "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "A request to create a new space from the wizard form.",
-                        "with": {
-                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" }
-                        }
-                    }
-                },
-                "parameters": parameters
-            }
-        }]
-    })
-}
+/// The `space/create` claim shape, defined in `tonk-worker-api` so every
+/// dispatcher builds the same transient — the FAB's wizard and the
+/// browser tests that drive creation the way the app does. Re-exported
+/// here because this module is where the FAB's other claim builders live.
+pub use tonk_worker_api::create_space_claim_json;
 
 #[cfg(test)]
 mod create_space {
@@ -1544,7 +1538,7 @@ mod create_space {
 
     #[test]
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
-        let claim = create_space_claim_json("Untitled", "https://x");
+        let claim = create_space_claim_json("Untitled");
         let text = claim.to_string();
         // Verbatim, kebab-cased as declared — the handler matches on these.
         // Every control is read at `/value`: the segment after the control
@@ -1552,25 +1546,32 @@ mod create_space {
         // so a descriptive leaf resolves to `undefined` there and the
         // handler would never see the field here.
         assert!(text.contains("dom.event.current-target.elements.name/value"));
-        assert!(text.contains("dom.event.current-target.elements.remote/value"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
-        assert_eq!(params["remote"], "https://x");
     }
 
+    /// The claim declares `name` and nothing else.
+    ///
+    /// Both dropped fields cost a whole create when they were declared
+    /// and unbacked: a field the form does not carry fails to resolve
+    /// against the event, and the command aborts before the handler runs
+    /// — which is how `template` broke creation outright after the Hub
+    /// lost its wizard.
+    ///
+    /// `remote` is gone for a second reason: the page supplying one made
+    /// every create look like a deliberate choice of this server, so a
+    /// spot created before anyone registered was wired to a service that
+    /// refuses to serve it. The worker resolves it from the account.
     #[test]
-    fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "");
-        // The descriptor's `with.remote` mapping is always present (it is
-        // schema metadata) — what must be absent is the `remote` PARAMETER,
-        // the thing that actually becomes a fact. Asserting on a bare
-        // substring of the whole claim would also match the `with.remote`
-        // key and pass even if the parameter were still being sent.
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("remote")
-                .is_none()
-        );
+    fn it_declares_only_the_field_the_form_carries() {
+        let claim = create_space_claim_json("Untitled");
+        let with = &claim["claims"][0]["application"]["predicate"]["concept"]["with"];
+        let declared: Vec<&String> = with.as_object().expect("a with block").keys().collect();
+        assert_eq!(declared, vec!["name"], "only `name` is backed by a control");
+
+        let params = &claim["claims"][0]["application"]["parameters"];
+        assert!(params.get("remote").is_none(), "the worker resolves it");
+        assert!(params.get("template").is_none(), "template seeding is gone");
     }
 }
 
@@ -1696,15 +1697,22 @@ pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64)
     let mut with = json!({
         "time":   { "the": "dom.event/time-stamp", "as": "Float" },
         "space":  { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
-        "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
         "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" }
     });
     let mut parameters = json!({
         "time": time,
         "space": space,
-        "remote": remote,
         "marker": "tonk:enable-sync"
     });
+    // An empty remote is omitted rather than sent as `""`: the handler
+    // then resolves where this account syncs from its own recorded
+    // provider. The page used to derive `origin + /ucan/` for itself,
+    // which a sealed guest cannot do until the portal bridge has told it
+    // its own origin — a share before that arrived silently did nothing.
+    if !remote.is_empty() {
+        with["remote"] = json!({ "the": "xyz.tonk.enable-sync/remote", "as": "Text" });
+        parameters["remote"] = json!(remote);
+    }
     if share {
         with["share"] = json!({ "the": "xyz.tonk.enable-sync/share", "as": "Entity" });
         parameters["share"] = json!("tonk:share");
@@ -1792,6 +1800,91 @@ mod invite_link {
 /// attributes depends on nothing seeded and works on spots that predate this
 /// feature. `this` binds to the spot's subject DID, the entity the worker
 /// keys the refusal by.
+/// Whether this profile's account is registered and served.
+///
+/// The bar shows "log in to share" or the copy row depending on this.
+/// A live query rather than a `GET /api/account` probe: the answer
+/// changes the moment registration completes, and a one-shot read taken
+/// on connect is stale by then — the bar kept offering to log in to
+/// someone who just had.
+///
+/// `provider` is required here (as it is on the concept), so an account
+/// that enrolled but has no provider yet does not resolve at all. That
+/// is the intent: "has a provider" means "finished registering", so the
+/// absence is the answer.
+pub fn account_customer_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "status": {
+                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
+            },
+            "provider": {
+                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            // `this` has to be bound, even when the subject is unknown:
+            // an unbound one is a query error, not a wildcard, and the
+            // whole subscription fails with `UnboundVariable`. It failed
+            // silently — no frames ever arrived, so the bar fell back to
+            // its defaults and went on offering "log in to share" to
+            // someone who had just registered.
+            //
+            // A variable rather than a subject because the account's DID
+            // is not known here; there is one customer row per profile,
+            // so whatever binds is it.
+            "this": { "?": { "name": "account" } },
+            "status": { "?": { "name": "status" } },
+            "provider": { "?": { "name": "provider" } }
+        }
+    })
+    .to_string()
+}
+
+/// The share control's single subscription: where this space's invite
+/// has got to.
+///
+/// One row, replacing the pair of queries the control used to run (one
+/// for the link, one for the refusal). `status` is what the control
+/// reads; `url` is present only once granted, so it is `maybe:` and a
+/// request in flight still resolves.
+///
+/// See `plan/share-intent.md`.
+pub fn invite_state_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("invite_state_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": {
+            "with": {
+                "status": {
+                    "the": "xyz.tonk.invite/status", "as": "Entity", "cardinality": "one"
+                },
+                // Optional is a FLAG on the attribute, not a separate
+                // block. `maybe:` is the YAML notation's spelling, which
+                // the analyzer translates into this; a hand-built wire
+                // query that uses it declares nothing, and the field is
+                // dropped from the projection without an error.
+                //
+                // That cost a whole share: the invite minted, the row
+                // said `granted`, and the url the control settles the
+                // clipboard write with was simply absent — so it waited
+                // out its timeout and reported "could not copy".
+                "url": {
+                    "the": "xyz.tonk.invite/url", "as": "Text",
+                    "cardinality": "one", "optional": true
+                }
+            }
+        },
+        "terms": {
+            "this": subject,
+            "status": { "?": { "name": "status" } },
+            "url": { "?": { "name": "url" } }
+        }
+    })
+    .to_string())
+}
+
 pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
     if subject.is_empty() {
         return Err("share_blocked_query_body: empty subject".into());
@@ -1821,11 +1914,6 @@ pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
 /// supplies one, and is the next derivation to remove.
 ///
 /// Kept pure (origin in, URL out) so it is testable off-browser; the
-/// caller supplies the origin.
-pub fn default_remote_url(origin: &str) -> String {
-    format!("{}{}", origin.trim_end_matches('/'), "/ucan/")
-}
-
 /// How long a share click waits for a result before giving up.
 ///
 /// Without this the control has no failure path at all for anything other
@@ -1878,6 +1966,72 @@ mod enable_sync_claim {
 }
 
 #[cfg(test)]
+mod account_state_query {
+    use super::*;
+
+    /// The subject must be BOUND.
+    ///
+    /// An unbound `this` is a query error, not a wildcard: the whole
+    /// subscription failed with `UnboundVariable` on every attempt, no
+    /// frame ever arrived, and the bar silently fell back to its
+    /// defaults — reporting stale sync and offering to log in to an
+    /// account that was already active.
+    #[test]
+    fn it_binds_its_subject() {
+        let body = account_customer_query_body();
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            parsed["terms"]["this"].is_object(),
+            "`this` must be bound, got {body}",
+        );
+        assert!(body.contains("xyz.tonk.account/customer-status"));
+        assert!(body.contains("xyz.tonk.account/provider-address"));
+    }
+}
+
+#[cfg(test)]
+mod invite_state_query {
+    use super::*;
+
+    #[test]
+    fn it_reads_the_status_and_an_optional_url() {
+        let body = invite_state_query_body("did:key:z6Mk").expect("query body builds");
+        // Raw attribute URIs, not a concept name: nothing seeded is
+        // needed, so an old core.yaml cannot break the read.
+        assert!(body.contains("xyz.tonk.invite/status"));
+        assert!(body.contains("xyz.tonk.invite/url"));
+        assert!(body.contains("did:key:z6Mk"));
+        // `url` must be optional or a request in flight — which has a
+        // status and no url yet — would never resolve, and the control
+        // would sit on `share` through the whole mint.
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        // Optional is a FLAG, not a block. `maybe:` is the YAML
+        // notation's spelling; on the wire an optional attribute stays
+        // in `with` and carries `"optional": true`. A query that used
+        // `maybe:` declared nothing at all — the field was dropped from
+        // the projection with no error, and the share control waited out
+        // its timeout for a url that was sitting in the row.
+        assert!(
+            parsed["predicate"]["maybe"].is_null(),
+            "there is no `maybe` block on the wire, got {body}",
+        );
+        assert_eq!(
+            parsed["predicate"]["with"]["url"]["optional"], true,
+            "url must be marked optional in place, got {body}",
+        );
+        assert!(
+            parsed["predicate"]["with"]["status"]["optional"].is_null(),
+            "status is required, got {body}",
+        );
+    }
+
+    #[test]
+    fn it_refuses_an_empty_subject() {
+        assert!(invite_state_query_body("").is_err());
+    }
+}
+
+#[cfg(test)]
 mod share_blocked_query {
     use super::*;
 
@@ -1893,27 +2047,6 @@ mod share_blocked_query {
     #[test]
     fn it_rejects_an_empty_subject() {
         assert!(share_blocked_query_body("").is_err());
-    }
-}
-
-#[cfg(test)]
-mod default_remote {
-    use super::*;
-
-    #[test]
-    fn it_appends_the_access_service_path() {
-        assert_eq!(
-            default_remote_url("https://tonk.network"),
-            "https://tonk.network/ucan/"
-        );
-    }
-
-    #[test]
-    fn it_does_not_double_slash_an_origin_that_already_has_one() {
-        assert_eq!(
-            default_remote_url("https://tonk.network/"),
-            "https://tonk.network/ucan/"
-        );
     }
 }
 
@@ -1962,7 +2095,7 @@ mod wire_types {
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),
             rename_repo_claim_json("did:key:zX", "N").to_string(),
-            create_space_claim_json("N", "https://r").to_string(),
+            create_space_claim_json("N").to_string(),
             profile_rename_claim_json("N").to_string(),
             invite_claim_json("did:key:zX", 1.0).to_string(),
             pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),

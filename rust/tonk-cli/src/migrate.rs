@@ -42,6 +42,18 @@ pub enum Mode {
     Move,
 }
 
+/// [`run`] with a caller-supplied [`crate::site::SiteConfig`], so the
+/// verification open resolves against the caller's profile and store
+/// rather than the install defaults — what isolated tests need.
+pub async fn run_with(
+    start: &Path,
+    source_override: Option<&Path>,
+    mode: Mode,
+    config: crate::site::SiteConfig,
+) -> Result<MigrationOutcome> {
+    run_inner(start, source_override, mode, config).await
+}
+
 /// Drive the migration: locate, refuse-on-conflict, copy/move,
 /// verify by opening the new `.tonk/`, roll back on verification
 /// failure.
@@ -49,6 +61,15 @@ pub async fn run(
     start: &Path,
     source_override: Option<&Path>,
     mode: Mode,
+) -> Result<MigrationOutcome> {
+    run_inner(start, source_override, mode, crate::site::default_config()?).await
+}
+
+async fn run_inner(
+    start: &Path,
+    source_override: Option<&Path>,
+    mode: Mode,
+    config: crate::site::SiteConfig,
 ) -> Result<MigrationOutcome> {
     let source = resolve_source(start, source_override)?;
     let destination = source
@@ -67,7 +88,7 @@ pub async fn run(
 
     // Verify by opening the migrated site. If the repo handle
     // loads, the migration is sound.
-    match open_for_verify(&destination).await {
+    match open_for_verify(&destination, config).await {
         Ok(repository) => Ok(MigrationOutcome {
             source,
             destination,
@@ -191,7 +212,10 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
 /// Open the migrated `.tonk/` and return the repository handle.
 /// Used as the verification step — if this fails, the migration
 /// is rolled back.
-async fn open_for_verify(destination: &Path) -> Result<Repository> {
-    let site = TonkSite::open(destination).await?;
+async fn open_for_verify(
+    destination: &Path,
+    config: crate::site::SiteConfig,
+) -> Result<Repository> {
+    let site = TonkSite::open_with(destination, config).await?;
     Ok(site.repository)
 }

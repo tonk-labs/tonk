@@ -1,0 +1,31 @@
+$ tonk eval -h
+
+Evaluate an asserted-notation document (the full DSL)
+
+Usage: tonk eval [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  Path to a notation document, or `-` to read from stdin. Omit to read from a piped stdin
+
+Options:
+  -c, --command <DOC>   Inline document. Mutually exclusive with the positional path / `-`
+      --space <NAME>    Operate on this space instead of the active directory binding. Precedence: --space > TONK_SPACE > `tonk space use` in the nearest ancestor directory
+      --json            Emit `EvaluateResponse` as pretty JSON instead of notation
+  -v, --verbose         Print full error chains: every layer of context down to the root cause, not just the outermost message
+  -q, --quiet           Suppress the matches section; emit only the envelope (notation) or the structured commits-only response (JSON)
+      --home <CONCEPT>  Atomically replace the current home with this concept's directory
+      --no-sync         Skip the automatic pull-before / push-after that wraps a committing eval when an upstream is configured. The manual `tonk pull` / `tonk push` flow stays available. Also settable via the `TONK_NO_SYNC` environment variable
+      --dry-run         Run the document without committing: analyze, query, and plan, then drop the transaction. Query matches are returned and the commit summary shows zero claims; the branch is left untouched. Implies `--no-sync` (a preview never touches the remote). Mirrors the worker's `transact=false` preview the notebook editor uses to render results as you type
+  -h, --help            Print help (see more with '--help')
+  -V, --version         Print version
+
+Examples:
+  tonk eval -c 'person:'
+  tonk eval ./doc.notation
+  cat doc.notation | tonk eval -
+  tonk eval -c 'person:' --json
+  tonk eval ./doc.notation --home todo
+  tonk eval ./doc.notation --no-sync
+  tonk eval ./doc.notation --dry-run
+
+[exit 0]

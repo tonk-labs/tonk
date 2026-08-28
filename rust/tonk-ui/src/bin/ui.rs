@@ -52,6 +52,12 @@ async fn main() {
     // page must never look like one.
     tonk_identity::install();
     tonk_ui::custody_relay::install();
+    // A guest asking to register raises the dialog here, in the only
+    // document that can run the ceremony.
+    tonk_portal::on_register(|reason| {
+        tonk_ui::register_dialog::open();
+        tonk_ui::register_dialog::describe(reason);
+    });
     tonk_ui::account::register();
     tonk_ui::activate::register();
 

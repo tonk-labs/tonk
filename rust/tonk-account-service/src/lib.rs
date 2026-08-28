@@ -4,9 +4,10 @@
 //!
 //! Authentication is UCAN invocation containers signed by a device key
 //! with the `root → device` chain attached; the invocation subject is
-//! the account's root DID. The two bootstrap ceremonies (code request,
-//! account creation) use email codes instead, because no delegation
-//! exists yet.
+//! the account's root DID. Account creation is the one ceremony with no
+//! delegation to present yet, so it is signed by the root key itself and
+//! proves nothing about the address; control of the address is proven
+//! afterwards, by activating the customer at the access service.
 
 use worker::*;
 
@@ -27,12 +28,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     Router::new()
         .get_async("/", handlers::info::handle)
         .get_async("/health", handlers::health::handle)
-        .post_async("/codes", handlers::codes::handle)
-        .options_async("/codes", handlers::codes::handle_options)
         .post_async("/accounts", handlers::accounts::handle)
         .options_async("/accounts", handlers::accounts::handle_options)
-        .post_async("/accounts/preflight", handlers::accounts::handle_preflight)
-        .options_async("/accounts/preflight", handlers::accounts::handle_options)
         .post_async("/account/summary", handlers::accounts::handle_summary)
         .options_async("/account/summary", handlers::accounts::handle_options)
         .post_async("/account/delete", handlers::accounts::handle_delete)

@@ -422,3 +422,90 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
 
     parent.remove();
 }
+
+#[dialog_common::test]
+async fn the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster() {
+    tonk_fab::register();
+    let document = window().expect("window").document().expect("document");
+    let parent = document
+        .create_element("div")
+        .expect("create parent")
+        .dyn_into::<HtmlElement>()
+        .expect("html parent");
+    parent
+        .style()
+        .set_property("position", "fixed")
+        .expect("fix parent position");
+    parent
+        .style()
+        .set_property("bottom", "8px")
+        .expect("dock parent at bottom");
+    let fab = document
+        .create_element("tonk-fab")
+        .expect("create fab")
+        .dyn_into::<HtmlElement>()
+        .expect("html fab");
+    fab.set_attribute("label", "test").expect("label");
+    fab.set_attribute("up", "").expect("open upward");
+    parent.append_child(&fab).expect("mount fab");
+    document
+        .body()
+        .expect("body")
+        .append_child(&parent)
+        .expect("mount parent");
+
+    set_parent_width(&parent, &fab, 500, false, true).await;
+    let share_rung = shadow_element(&fab, "[data-cell=share]");
+    share_rung.clone().unchecked_into::<HtmlElement>().click();
+
+    let menu = light_element(&fab, "tonk-menu[data-for=share]");
+    let copy = light_element(&fab, "[data-share-link]");
+    copy.remove_attribute("hidden").expect("show copy row");
+    for index in 0..40 {
+        let member = document.create_element("tonk-mi").expect("member row");
+        member.set_text_content(Some(&format!("member {index}")));
+        menu.append_child(&member).expect("append member row");
+    }
+    yield_for(20).await;
+
+    assert!(
+        (width(&menu) - width(&share_rung)).abs() < 0.5,
+        "the share stack border box must match its rung"
+    );
+    assert_eq!(
+        menu.unchecked_ref::<HtmlElement>()
+            .style()
+            .get_property_value("--fabb-menu-w")
+            .expect("menu width"),
+        "144px"
+    );
+
+    // The scrollport is a dedicated element wrapping the stack, not the
+    // menu itself: `.w::before` is the glass underlay at `z-index:-1`, and
+    // a negative-z child cannot escape a scroll container's paint context
+    // -- put the overflow on `.w` or on the host and the underlay paints
+    // behind the scroller, costing every row its ring.
+    let scrollport: HtmlElement = menu
+        .shadow_root()
+        .expect("menu shadow root")
+        .query_selector(".port")
+        .ok()
+        .flatten()
+        .expect("the scrollport")
+        .unchecked_into();
+    assert_eq!(computed(scrollport.unchecked_ref(), "overflow-y"), "auto");
+    assert!(
+        scrollport.client_height() > 0,
+        "an upward stack must have space above its bottom-docked bar"
+    );
+    assert!(
+        scrollport.scroll_height() > scrollport.client_height(),
+        "a long member roster must scroll inside the share stack"
+    );
+    let copy_row = menu_row(&copy).get_bounding_client_rect();
+    let viewport = menu.get_bounding_client_rect();
+    assert!(copy_row.top() >= viewport.top());
+    assert!(copy_row.bottom() <= viewport.bottom());
+
+    parent.remove();
+}

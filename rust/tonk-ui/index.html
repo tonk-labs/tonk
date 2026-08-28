@@ -51,17 +51,6 @@
        follows the `color-scheme` meta above, the same OS signal the
        wa-dark/wa-light classes are toggled by. -->
         <style>
-            /* The wordmark cut, duplicated from styles.css (the canonical
-               @font-face set) because that file is async and the shell
-               shows "tonk" at first paint. Browsers dedupe identical
-               @font-face descriptors; the preload below has the bytes. */
-            @font-face {
-                font-family: "GestalteName";
-                font-style: normal;
-                font-weight: 500;
-                font-display: swap;
-                src: url("/fonts/gestaltename-500.ttf") format("truetype");
-            }
             #tonk-boot {
                 position: fixed;
                 inset: 0;
@@ -71,11 +60,11 @@
                 padding: 26px 38px 30px;
                 background: var(
                     --wa-color-surface-default,
-                    light-dark(#ffffff, #101113)
+                    light-dark(#e8e6e4, #161313)
                 );
                 color: var(
                     --wa-color-text-normal,
-                    light-dark(#1d1d20, #f2f2f3)
+                    light-dark(#38182a, #e2dfdd)
                 );
             }
             /* CSS-only teardown: the wasm mounts <tonk-site> into <body>
@@ -94,32 +83,7 @@
                     opacity 400ms ease 300ms,
                     visibility 0s 700ms;
             }
-            /* Header replica — token-for-token with the Hub brand
-               row (profile.yaml), so the real header takes over in
-               place. */
-            .tonk-boot-brand {
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                flex: none;
-            }
-            .tonk-boot-logo {
-                font-family: "GestalteName", "Gestalte", sans-serif;
-                font-size: var(--wa-font-size-4xl, 52px);
-                font-weight: 500;
-                line-height: 1;
-                text-transform: lowercase;
-            }
-            .tonk-boot-badge {
-                font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-                font-weight: 600;
-                font-size: 19px;
-                line-height: 1.1;
-                padding: 3px 11px;
-                color: var(--wa-color-brand-on-loud, #2a3005);
-                background: #deff1a;
-            }
-            /* Progress, centered where the Hub's directory will land. */
+            /* Destination-neutral loading indicator. */
             .tonk-boot-center {
                 flex: 1;
                 display: flex;
@@ -128,58 +92,60 @@
                 justify-content: center;
                 gap: 14px;
             }
-            .tonk-boot-bar {
-                inline-size: min(220px, 60vw);
-                block-size: 2px;
-                background: var(
-                    --wa-color-neutral-fill-normal,
-                    light-dark(#e5e5e8, #313134)
-                );
-                overflow: hidden;
-            }
-            /* Indeterminate by default; boot-progress.mjs flips to
-               [data-determinate] + explicit widths once real totals
-               exist, and [data-failed] on a load error. */
-            .tonk-boot-fill {
-                block-size: 100%;
-                inline-size: 40%;
-                background: var(
-                    --wa-color-text-normal,
-                    light-dark(#1d1d20, #f2f2f3)
-                );
-                animation: tonk-boot-sweep 1.2s ease-in-out infinite;
-            }
-            .tonk-boot-fill[data-determinate] {
-                animation: none;
-                inline-size: 0;
-                transition: inline-size 200ms ease;
-            }
-            .tonk-boot-fill[data-failed] {
-                animation: none;
-                inline-size: 100%;
-                background: var(--wa-color-danger-fill-loud, #e02c2b);
-            }
-            @keyframes tonk-boot-sweep {
-                0% {
-                    translate: -250% 0;
-                }
-                100% {
-                    translate: 350% 0;
-                }
-            }
-            @media (prefers-reduced-motion: reduce) {
-                .tonk-boot-fill {
-                    animation: none;
-                }
+            .tonk-pulse {
+                display: inline-block;
+                width: 18px;
+                height: 18px;
+                flex: none;
+                border-radius: 50%;
+                background: currentcolor;
+                transform-origin: center;
+                animation: tonk-pulse 2s cubic-bezier(0.4, 0, 0.6, 1)
+                    infinite;
             }
             .tonk-boot-status {
-                margin: 0;
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                margin: -1px;
+                padding: 0;
+                overflow: hidden;
+                clip: rect(0, 0, 0, 0);
+                white-space: nowrap;
+                border: 0;
                 font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
                 font-size: 12px;
                 color: var(
                     --wa-color-text-quiet,
-                    light-dark(#565861, #94959b)
+                    light-dark(#5b4953, #c8c3bf)
                 );
+            }
+            .tonk-boot-status[data-failed] {
+                position: static;
+                width: auto;
+                height: auto;
+                margin: 0;
+                overflow: visible;
+                clip: auto;
+                white-space: normal;
+            }
+            @keyframes tonk-pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                    scale: 0.33;
+                }
+                50% {
+                    opacity: 0.35;
+                    scale: 1;
+                }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .tonk-pulse {
+                    animation: none;
+                    opacity: 1;
+                    scale: 0.5;
+                }
             }
         </style>
 
@@ -189,9 +155,8 @@
        where its bundled assets (icons, etc.) live.
 
        We use the default theme with the shoelace palette. Two
-       local overrides layer on top (see styles.css): brutalist's
-       fonts (Space Grotesk / IBM Plex Sans Condensed / Space Mono)
-       and a zero border radius so nothing is rounded.
+       local overrides layer on top (see styles.css): IBM Plex Sans,
+       IBM Plex Sans Condensed, IBM Plex Mono, and a zero border radius.
 
        webawesome-flat.css is the three entry stylesheets' @import graph
        (webawesome.css + themes/default.css + color/palettes/shoelace.css)
@@ -212,23 +177,11 @@
             media="print"
             onload="this.onload=null;this.media='all'"
         />
-        <!-- Brutalist-theme fonts (Space Grotesk / IBM Plex Sans
-       Condensed / Space Mono) are self-hosted: see styles.css
+        <!-- Interface fonts (IBM Plex Sans / IBM Plex Sans Condensed /
+       IBM Plex Mono) are self-hosted: see styles.css
        for the `@font-face` declarations. Files live in
        `assets/fonts/` and are copied into the dist by the
        Trunk `copy-dir` rule below. No external font CDN. -->
-        <!-- The wordmark cut only (27 KB): the boot shell shows "tonk"
-       immediately, and without the preload the face would arrive after
-       the shell's first paint and flash the fallback. Fonts are always
-       CORS-fetched, so `crossorigin` is required for the preload to
-       match. The other faces load on demand as usual. -->
-        <link
-            rel="preload"
-            href="/fonts/gestaltename-500.ttf"
-            as="font"
-            type="font/ttf"
-            crossorigin
-        />
         <!-- Web Awesome loader — injected when the browser goes idle, NOT
        eagerly. The loader module statically imports ~16 runtime chunks
        (discover/startLoader/icon+translation registries/base-path utils),
@@ -468,9 +421,11 @@
                         );
                         const status =
                             document.querySelector("[data-boot-status]");
-                        if (status)
+                        if (status) {
+                            status.setAttribute("data-failed", "");
                             status.textContent =
                                 "failed to load — check your connection and reload";
+                        }
                         return;
                     }
                     try {
@@ -677,21 +632,13 @@
     <body>
         <!-- Static boot shell: the ONLY body content until the wasm mounts
          `<tonk-site>` — the async-stylesheet strategy in <head> depends on
-         that staying true. It replicates the Hub header (wordmark + badge,
-         same tokens as the profile card) so the app's own header
-         appears to simply take over, and shows live wasm download progress
-         via the Trunk initializer (assets/boot-progress.mjs). Styled by the
-         inline critical CSS in <head>; hidden purely by CSS
+         that staying true. It shows the shared loading pulse while the Trunk
+         initializer reports progress to assistive technology. Styled by the inline
+         critical CSS in <head>; hidden purely by CSS
          (`body:has(tonk-site)`) — the wasm never has to know it exists. -->
         <div id="tonk-boot" aria-live="polite">
-            <div class="tonk-boot-brand">
-                <span class="tonk-boot-logo">tonk</span>
-                <span class="tonk-boot-badge">space</span>
-            </div>
             <div class="tonk-boot-center">
-                <div class="tonk-boot-bar">
-                    <div class="tonk-boot-fill" data-boot-fill></div>
-                </div>
+                <span class="tonk-pulse" aria-hidden="true"></span>
                 <p class="tonk-boot-status" data-boot-status>loading…</p>
             </div>
         </div>

@@ -29,7 +29,6 @@ const ROUTES: &[&str] = &[
     "/api/custody/queue",
     "/api/customer",
     "/api/customer/activated",
-    "/api/customer/enroll",
     "/api/customer/pending",
     "/api/identify",
     "/api/identity/root",
@@ -71,7 +70,6 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/invites/{target_cid}/revoke",
     "/api/repository/{repo}/remote",
     "/api/site",
-    "/api/spaces",
     "/api/sync",
 ];
 

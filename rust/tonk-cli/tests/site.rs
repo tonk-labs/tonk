@@ -584,15 +584,18 @@ mod when_recording_roster_facts {
         assert_eq!(roles.len(), 1);
         assert_eq!(roles[0].this, memberships[0].this);
         assert_eq!(roles[0].role.0.to_string(), MemberRole::MEMBER);
+        // The member the claim recorded is the joiner's onboarding
+        // account — the durable identity an unlinked device has.
         let root_bytes = joined
             .profile
             .credential()
-            .site(tonk_cli::identity::LOCAL_ROOT_SITE)
+            .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
             .perform(&joined.operator)
             .await?;
-        let root: tonk_cli::identity::LocalRoot = serde_json::from_slice(&root_bytes)?;
-        let root_did: dialog_varsig::Did = root.root_did.parse()?;
+        let chain = dialog_ucan_core::DelegationChain::try_from(root_bytes.as_slice())
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let root_did: dialog_varsig::Did = chain.issuer().clone();
         assert_eq!(memberships[0].member.0, root_did.this());
 
         let stamps: Vec<InvitedVia> = claimer_content
@@ -1318,7 +1321,8 @@ mod when_migrating_from_carry {
         let parent = tmp.path().canonicalize()?;
         let original_did = carry_lookalike_at(&parent).await?;
 
-        let outcome = migrate::run(&parent, None, Mode::Copy).await?;
+        let outcome =
+            migrate::run_with(&parent, None, Mode::Copy, common::isolated_config(&parent)?).await?;
         assert_eq!(outcome.source, parent.join(".carry"));
         assert_eq!(outcome.destination, parent.join(SITE_DIRNAME));
         assert!(!outcome.moved);
@@ -1346,7 +1350,8 @@ mod when_migrating_from_carry {
         std::fs::create_dir_all(&carry_dir)?;
         std::fs::write(carry_dir.join("placeholder"), b"")?;
 
-        let result = migrate::run(&parent, None, Mode::Copy).await;
+        let result =
+            migrate::run_with(&parent, None, Mode::Copy, common::isolated_config(&parent)?).await;
         let err = result.expect_err("expected refuse-on-conflict").to_string();
         assert!(
             err.contains("refusing to overwrite"),
@@ -1363,7 +1368,8 @@ mod when_migrating_from_carry {
         let parent = tmp.path().canonicalize()?;
         let original_did = carry_lookalike_at(&parent).await?;
 
-        let outcome = migrate::run(&parent, None, Mode::Move).await?;
+        let outcome =
+            migrate::run_with(&parent, None, Mode::Move, common::isolated_config(&parent)?).await?;
         assert!(outcome.moved);
         assert_eq!(outcome.repo_did, original_did.to_string());
         assert!(!parent.join(".carry").exists());
@@ -1417,16 +1423,19 @@ mod when_mounting_account_authority {
 
     use crate::common;
 
+    /// The device's durable root: the onboarding account, read from its
+    /// persisted grant's issuer — no passkey root exists in these tests.
     async fn local_root(site: &TonkSite) -> Result<dialog_varsig::Did> {
         let bytes = site
             .profile
             .credential()
-            .site(tonk_cli::identity::LOCAL_ROOT_SITE)
+            .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
             .perform(&site.operator)
             .await?;
-        let root: tonk_cli::identity::LocalRoot = serde_json::from_slice(&bytes)?;
-        Ok(root.root_did.parse()?)
+        let chain = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(chain.issuer().clone())
     }
 
     async fn delegated_prefix(
