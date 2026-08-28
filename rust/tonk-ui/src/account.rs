@@ -449,7 +449,7 @@ fn load_activation_notice(host: HtmlElement) {
             let _ = host.set_attribute("data-backup", "done");
             return;
         }
-        let state = match crate::api::customer_state().await {
+        let mut state = match crate::api::customer_state().await {
             Ok(state) => state,
             Err(_) => {
                 set_text(&host, "#account-registration-value", "Unreachable");
