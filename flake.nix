@@ -356,7 +356,21 @@
               test:native:release
               test:web:debug
               test:web:release
+              test:sw
             '';
+          };
+
+          "test:sw" = {
+            description = "Service-worker lifecycle tests (update, rollback, caching)";
+            # Runs against the SHIPPED `assets/service_worker.js` with
+            # stubbed service-worker globals, so it pins the artifact
+            # that actually deploys. No browser and no wasm needed —
+            # these cover the update/rollback paths whose failure mode
+            # is a user stranded on a stale build.
+            # An explicit glob, not the directory: node's directory
+            # discovery skips `.mjs`, so `--test <dir>` silently runs
+            # nothing and still exits non-zero.
+            command = "${pkgs.nodejs}/bin/node --test 'rust/tonk-ui/tests/*.test.mjs'";
           };
 
           "test:e2e" = {
