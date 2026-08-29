@@ -279,28 +279,7 @@
             };
 
             self.serviceWorkerActivates = async () => {
-                /// Whether the currently deployed build has been revoked.
-            /// Read from the same `no-store` flag the worker checks, so
-            /// the page and the worker agree on what is pulled.
-            /// Anything unparseable, missing, or unreachable means "not
-            /// revoked" — a network blip must never cost the user their
-            /// service worker.
-            async function isRevoked() {
-                try {
-                    const [flagResponse, versionResponse] = await Promise.all([
-                        fetch("/kill-switch.json", { cache: "no-store" }),
-                        fetch("/version.json", { cache: "no-store" }),
-                    ]);
-                    if (!flagResponse.ok || !versionResponse.ok) return false;
-                    const { revoked } = JSON.parse(await flagResponse.text());
-                    const { build } = JSON.parse(await versionResponse.text());
-                    return Array.isArray(revoked) && revoked.includes(build);
-                } catch {
-                    return false;
-                }
-            }
-
-            if (!("serviceWorker" in navigator)) {
+                if (!("serviceWorker" in navigator)) {
                     throw new Error(
                         "Service workers not supported; Tonk will not work!",
                     );
@@ -662,6 +641,27 @@
         </div>
 
         <script type="module">
+            /// Whether the currently deployed build has been revoked.
+            /// Read from the same `no-store` flag the worker checks, so
+            /// the page and the worker agree on what is pulled.
+            /// Anything unparseable, missing, or unreachable means "not
+            /// revoked" — a network blip must never cost the user their
+            /// service worker.
+            async function isRevoked() {
+                try {
+                    const [flagResponse, versionResponse] = await Promise.all([
+                        fetch("/kill-switch.json", { cache: "no-store" }),
+                        fetch("/version.json", { cache: "no-store" }),
+                    ]);
+                    if (!flagResponse.ok || !versionResponse.ok) return false;
+                    const { revoked } = JSON.parse(await flagResponse.text());
+                    const { build } = JSON.parse(await versionResponse.text());
+                    return Array.isArray(revoked) && revoked.includes(build);
+                } catch {
+                    return false;
+                }
+            }
+
             if (!("serviceWorker" in navigator)) {
                 console.error(
                     "Service workers not supported; Tonk will not work!",
