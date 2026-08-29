@@ -43,7 +43,12 @@ async fn handle_inner(
         env.d1("CONTROL")
             .map_err(|err| internal(format!("control database: {err}")))?,
     );
-    let service = service_signer(env)?;
+    let service_seed = env
+        .secret("SERVICE_SECRET_KEY")
+        .map_err(|err| internal(format!("SERVICE_SECRET_KEY: {err}")))?
+        .to_string();
+    let service = signer_from_hex(&service_seed)
+        .map_err(|message| RegistrationError::Internal { message })?;
     let api_key = env
         .secret("RESEND_API_KEY")
         .map_err(|err| internal(format!("RESEND_API_KEY: {err}")))?
@@ -78,6 +83,7 @@ async fn handle_inner(
         store: &store,
         email: &email,
         service: &service,
+        service_seed: &service_seed,
         origin: &origin,
         activation_ttl,
         now: Date::now().as_millis() / 1_000,

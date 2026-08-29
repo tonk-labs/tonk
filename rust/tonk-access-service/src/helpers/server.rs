@@ -66,6 +66,9 @@ struct RegistrationState {
     emails: Arc<CapturedEmail>,
     sender: AnnouncedEmail,
     service: Ed25519Signer,
+    /// The hex seed `service` was built from; customer spaces derive
+    /// from it, and a signer cannot give its seed back.
+    service_seed: String,
     origin: String,
     purger: crate::deletion::NativeSpacePurger,
     /// Revocations recorded by `/ucan/revoke`. In memory, as the
@@ -136,11 +139,19 @@ impl AccessServer {
         // A persistent state dir keeps the service's identity stable
         // across restarts; rotating it would orphan the deposits and the
         // enrollment records the published service DID anchors.
-        let service = match state_dir {
+        let (service, service_seed) = match state_dir {
             Some(dir) => persistent_signer(dir).await?,
-            None => Ed25519Signer::generate()
-                .await
-                .map_err(|err| anyhow::anyhow!("service signer: {err:?}"))?,
+            // An ephemeral identity still needs its seed, since customer
+            // spaces derive from it and a signer cannot give one back.
+            None => {
+                let mut seed = [0u8; 32];
+                getrandom::fill(&mut seed)
+                    .map_err(|err| anyhow::anyhow!("no entropy source: {err}"))?;
+                let encoded = hex::encode(seed);
+                let signer = crate::service::signer_from_hex(&encoded)
+                    .map_err(|message| anyhow::anyhow!("service signer: {message}"))?;
+                (signer, encoded)
+            }
         };
         let service_did = service.did().to_string();
         let (store, ingest) = match state_dir {
@@ -161,6 +172,7 @@ impl AccessServer {
             emails: emails.clone(),
             sender: AnnouncedEmail(emails.clone()),
             service,
+            service_seed,
             // Activation links open on the page origin, which behind a
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
@@ -452,6 +464,10 @@ async fn handle_request(
                         customer: parsed,
                         status: customer.status,
                         // Only for a served customer; see the worker twin.
+                        // A status probe reports stored state; the space
+                        // is minted by enroll and activate, which are the
+                        // answers a client records it from.
+                        customer_space: None,
                         provider: (customer.status == CustomerStatus::Active).then(|| {
                             format!("{}/ucan/", registration.origin.trim_end_matches('/'))
                         }),
@@ -623,6 +639,7 @@ async fn handle_request(
             store: &registration.store,
             email: &registration.sender,
             service: &registration.service,
+            service_seed: &registration.service_seed,
             origin: &registration.origin,
             activation_ttl: 24 * 60 * 60,
             now: unix_now(),
@@ -1042,19 +1059,22 @@ impl Default for AccessServiceSettings {
 
 /// The service's signing identity from `{dir}/service.key`, minting and
 /// persisting a fresh seed on first start.
-async fn persistent_signer(dir: &std::path::Path) -> anyhow::Result<Ed25519Signer> {
+async fn persistent_signer(dir: &std::path::Path) -> anyhow::Result<(Ed25519Signer, String)> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("service.key");
     if let Ok(seed) = std::fs::read_to_string(&path) {
-        return crate::service::signer_from_hex(seed.trim())
-            .map_err(|message| anyhow::anyhow!("stored service key is unusable: {message}"));
+        let seed = seed.trim().to_string();
+        let signer = crate::service::signer_from_hex(&seed)
+            .map_err(|message| anyhow::anyhow!("stored service key is unusable: {message}"))?;
+        return Ok((signer, seed));
     }
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).map_err(|err| anyhow::anyhow!("no entropy source: {err}"))?;
     let encoded = hex::encode(seed);
     std::fs::write(&path, &encoded)?;
-    crate::service::signer_from_hex(&encoded)
-        .map_err(|message| anyhow::anyhow!("fresh service key is unusable: {message}"))
+    let signer = crate::service::signer_from_hex(&encoded)
+        .map_err(|message| anyhow::anyhow!("fresh service key is unusable: {message}"))?;
+    Ok((signer, encoded))
 }
 
 /// Dev durability for the in-memory blob store: hydrate it from a

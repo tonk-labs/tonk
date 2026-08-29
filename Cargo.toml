@@ -193,22 +193,22 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/invocation-bundle" }
 
 [profile.dev]
 opt-level = 1

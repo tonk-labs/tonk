@@ -39,6 +39,28 @@ pub struct Enroll {
     /// The set must cover exactly the [`deposit_scopes`]: the service's
     /// own branch in memory and the index catalog backing it.
     pub access: Vec<Cid>,
+    /// The passkey's custody space, whose cell holds the sealed account
+    /// secret. Named here so every carried block can be checked against
+    /// it rather than trusted to agree with itself.
+    pub custody: Did,
+    /// The pre-signed `/use/put/memory/cell` invocation that writes the
+    /// custody cell, by CID.
+    ///
+    /// Verified here and executed at activation. Self-signed by the
+    /// custody key and proofless, so it verifies against that key alone
+    /// and any holder can redeem it — which is what lets a browser other
+    /// than the enrolling one finish the account.
+    pub recovery: Cid,
+    /// The custody space's consent to being provisioned by this
+    /// account, by CID.
+    pub consent: Cid,
+    /// The sealed envelope [`Self::recovery`] checksums, by CID. Opaque
+    /// ciphertext: the bytes the activation write puts in the cell.
+    ///
+    /// Required, like the rest of the custody material: an enrollment
+    /// that carries none would leave an account no second device could
+    /// open, which is the failure this whole path exists to prevent.
+    pub sealed: Cid,
 }
 
 impl Effect for Enroll {
@@ -281,6 +303,32 @@ pub struct Receipt {
     /// provider": a client that already recorded one keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The bookkeeping space this service owns for the customer, and a
+    /// `/use/get` delegation letting the account read it.
+    ///
+    /// The service writes metering and billing there and the account
+    /// only reads, so a client cannot rewrite its own record. Owning it
+    /// is also what keeps the service's bookkeeping out of the
+    /// customer's reach: a delegation the client granted, the client
+    /// could withdraw.
+    ///
+    /// Optional so a receipt from a service that predates this still
+    /// decodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_space: Option<CustomerSpace>,
+}
+
+/// The service-owned bookkeeping space named in a [`Receipt`], with the
+/// authority to read it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomerSpace {
+    /// The space's DID: the subject a client points a remote at.
+    pub did: Did,
+    /// Hex-encoded `/use/get` delegation chain, issued by the space to
+    /// the account. Saved the way a joined space's authority is, and
+    /// presented on every pull.
+    pub read_hex: String,
 }
 
 /// A registration refusal. Serialized with the variant as a `code` tag,
@@ -371,6 +419,10 @@ mod tests {
         let enroll: Capability<Enroll> = subject().attenuate(Customer).invoke(Enroll {
             email: "alice@example.com".into(),
             access: vec![Cid::default()],
+            custody: did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
+            recovery: Cid::default(),
+            consent: Cid::default(),
+            sealed: Cid::default(),
         });
         assert_eq!(enroll.ability(), "/customer/enroll");
 

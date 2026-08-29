@@ -22,10 +22,14 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_capability::{Capability, Provider, Subject};
 use dialog_common::ConditionalSync;
 use dialog_credentials::{DidKeyResolver, Ed25519Signer};
+use dialog_ucan_core::container::bundle::InvocationBundle;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as DelegatedSubject;
 use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
-use dialog_ucan_core::{Container, Delegation, Invocation, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{
+    Container, Delegation, DelegationBuilder, DelegationChain, Invocation, InvocationBuilder,
+    InvocationChain,
+};
 use dialog_varsig::AnySignature;
 use dialog_varsig::{Did, Principal};
 use ipld_core::cid::Cid;
@@ -34,8 +38,8 @@ use ipld_core::serde::from_ipld;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tonk_account::customer::{
-    Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Provider as ProviderRole,
-    Receipt, RegistrationError, deposit_scopes,
+    Activate, Add, ConsumerReceipt, Customer, CustomerSpace, CustomerStatus, Enroll,
+    Provider as ProviderRole, Receipt, RegistrationError, deposit_scopes,
 };
 
 use crate::email::{EmailSender, normalize_email};
@@ -55,6 +59,45 @@ pub const PROVIDER_ADD_COMMAND: [&str; 2] = ["provider", "add"];
 
 /// The command path a consent delegation must grant, or a prefix of it.
 pub const CONSUMER_PROVISION_COMMAND: [&str; 2] = ["consumer", "provision"];
+
+/// The longest activation URL this service will mint. The conservative
+/// floor for what mail clients and browsers carry intact; a link past it
+/// is refused at enrollment rather than emailed and found broken.
+const MAX_ACTIVATION_LINK: usize = 2000;
+
+/// The command a recovery invocation must invoke to write the custody
+/// cell.
+const CUSTODY_PUBLISH_COMMAND: [&str; 4] = ["use", "put", "memory", "cell"];
+
+/// The custody space and cell the sealed account secret lives at. Fixed
+/// names, so an enrollment naming anything else is not custody.
+const CUSTODY_SPACE: &str = "custody";
+/// See [`CUSTODY_SPACE`].
+const CUSTODY_SECRET_CELL: &str = "secret";
+
+/// The verified blocks an activation link carries: exactly what was
+/// checked at enrollment, and nothing else the container happened to
+/// hold.
+pub struct CustodyMaterial {
+    /// The sealed envelope, written into the custody cell.
+    pub sealed: Vec<u8>,
+    /// The pre-signed publish invocation that writes it.
+    pub recovery: Vec<u8>,
+    /// The custody space's consent to being provisioned.
+    pub consent: Vec<u8>,
+}
+
+/// The multihash form the memory protocol names content by: varint code
+/// `0x12` (sha2-256), varint length `0x20`, digest.
+fn sha256_multihash(content: &[u8]) -> Vec<u8> {
+    use sha2_0_10::{Digest, Sha256};
+    let digest = Sha256::digest(content);
+    let mut bytes = Vec::with_capacity(2 + digest.len());
+    bytes.push(0x12);
+    bytes.push(0x20);
+    bytes.extend_from_slice(&digest);
+    bytes
+}
 
 /// How far in the future an enrollment invocation's mandatory
 /// expiration may sit: the five-minute ceremony window plus a one-minute
@@ -115,6 +158,10 @@ pub struct Registration<'a, S, E, R> {
     pub email: &'a E,
     /// The service's signing identity, issuer of activation delegations.
     pub service: &'a Ed25519Signer,
+    /// The hex seed `service` was built from, which customer spaces
+    /// derive from. Held rather than re-read so the derivation has one
+    /// source, and because a signer cannot give its seed back.
+    pub service_seed: &'a str,
     /// Origin the activation link points at, e.g. `https://tonk.network`.
     pub origin: &'a str,
     /// Lifetime of the emailed activation delegation, in seconds.
@@ -218,7 +265,14 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             });
         }
 
+        // Everything that can refuse this enrollment refuses before any
+        // of it is recorded: a customer row whose activation link cannot
+        // work is an account stranded exactly the way this flow exists
+        // to prevent.
         self.verify_deposits(&effect.access, &customer).await?;
+        let material = self.verify_custody(&effect, &customer).await?;
+        let space = self.customer_space(&customer).await?;
+        let link = self.activation_link(&customer, &material).await?;
         // What gets stored is everything the deposit needs to be
         // exercised later: the scoped heads together with the chain
         // links that walk them back to the customer, re-encoded as a
@@ -260,7 +314,6 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             },
         }
 
-        let link = self.activation_link(&customer).await?;
         self.email
             .send_activation(&address, &link)
             .await
@@ -281,6 +334,11 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             // to say "check your email" rather than "turn on sync".
             // Activation is where it lands.
             provider: None,
+            // The space, though, is named now: it is derived rather than
+            // allocated, so it exists as soon as the account does, and a
+            // client that records it here needs nothing from activation
+            // to know where its own record will live.
+            customer_space: Some(space),
         })
     }
 
@@ -302,10 +360,12 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             .await
             .map_err(internal)?
         {
+            let customer_space = Some(self.customer_space(&customer).await?);
             return Ok(Receipt {
                 customer,
                 status: CustomerStatus::Active,
                 provider: Some(self.provider_address()),
+                customer_space,
             });
         }
         match self
@@ -314,11 +374,15 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             .await
             .map_err(internal)?
         {
-            Some(existing) if existing.status == CustomerStatus::Active => Ok(Receipt {
-                customer,
-                status: CustomerStatus::Active,
-                provider: Some(self.provider_address()),
-            }),
+            Some(existing) if existing.status == CustomerStatus::Active => {
+                let customer_space = Some(self.customer_space(&customer).await?);
+                Ok(Receipt {
+                    customer,
+                    status: CustomerStatus::Active,
+                    provider: Some(self.provider_address()),
+                    customer_space,
+                })
+            }
             Some(_) => Err(RegistrationError::CustomerSuspended),
             None => Err(RegistrationError::UnknownCustomer),
         }
@@ -448,11 +512,210 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         format!("{}/ucan/", self.origin.trim_end_matches('/'))
     }
 
+    /// Check the custody material an enrollment carries, without
+    /// performing any of it.
+    ///
+    /// Enrollment is the only point at which this is examined —
+    /// activation replays what was verified here rather than checking it
+    /// again — so a refusal that belongs anywhere belongs here, while
+    /// the person is still watching. Anything accepted becomes an
+    /// account that cannot be opened on a second device.
+    ///
+    /// Returns the bytes activation will need, so the caller carries
+    /// exactly the blocks it verified and nothing else.
+    async fn verify_custody(
+        &self,
+        effect: &Enroll,
+        account: &Did,
+    ) -> Result<CustodyMaterial, RegistrationError> {
+        // Read the enrollment as a bundle rather than a chain: it carries
+        // an invocation and opaque ciphertext beside its proofs, which an
+        // invocation chain refuses by design.
+        let bundle = InvocationBundle::try_from(self.container).map_err(|err| {
+            RegistrationError::Invalid {
+                message: format!("bad enrollment container: {err}"),
+            }
+        })?;
+        let carried = |cid: &Cid, field: &str| {
+            bundle
+                .block(cid)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| RegistrationError::Invalid {
+                    message: format!("`{field}` names {cid}, which the container does not carry"),
+                })
+        };
+        let sealed = carried(&effect.sealed, "sealed")?;
+        let recovery_bytes = carried(&effect.recovery, "recovery")?;
+        let consent_bytes = carried(&effect.consent, "consent")?;
+
+        // The recovery invocation: self-signed by the custody key, so it
+        // verifies against that key alone and any browser can redeem it.
+        let recovery = bundle.resolve_invocation(&effect.recovery).map_err(|err| {
+            RegistrationError::Invalid {
+                message: format!("`recovery` does not decode as an invocation: {err}"),
+            }
+        })?;
+        // Proofless by construction — issuer, audience and subject are
+        // all the custody key — so this must carry no delegations, and
+        // there is nothing for a revocation query to ask about. Checked
+        // rather than assumed: a chain that did carry proofs would be
+        // verified here without its revocations being consulted.
+        if !recovery.invocation.proofs().is_empty() {
+            return Err(RegistrationError::Forbidden {
+                message: "`recovery` must be self-signed by the custody key and carry no proofs"
+                    .to_string(),
+            });
+        }
+        recovery
+            .verify(&VerificationContext::new(&Environment::new(
+                recovery.proof_store(),
+                DidKeyResolver,
+                &dialog_ucan_core::revocation::UnverifiedRevocations,
+            )))
+            .await
+            .map_err(|err| RegistrationError::Unauthorized {
+                message: format!("`recovery` failed to verify: {err}"),
+            })?;
+        if recovery.subject() != &effect.custody {
+            return Err(RegistrationError::Forbidden {
+                message: format!(
+                    "`recovery` acts on {}, not the custody space {}",
+                    recovery.subject(),
+                    effect.custody
+                ),
+            });
+        }
+        let command: Vec<&str> = recovery.command().0.iter().map(String::as_str).collect();
+        if command.as_slice() != CUSTODY_PUBLISH_COMMAND {
+            return Err(RegistrationError::Forbidden {
+                message: format!(
+                    "`recovery` invokes /{}, not /{}",
+                    command.join("/"),
+                    CUSTODY_PUBLISH_COMMAND.join("/")
+                ),
+            });
+        }
+        let arguments = recovery.invocation.arguments();
+        for (name, expected) in [("space", CUSTODY_SPACE), ("cell", CUSTODY_SECRET_CELL)] {
+            match arguments.get(name) {
+                Some(Promised::String(value)) if value == expected => {}
+                other => {
+                    return Err(RegistrationError::Forbidden {
+                        message: format!("`recovery` names {name} {other:?}, not the custody cell"),
+                    });
+                }
+            }
+        }
+        // An overwrite could destroy an envelope the passkey has since
+        // rotated, so the queued write must be a first write.
+        if arguments.contains_key("when") {
+            return Err(RegistrationError::Forbidden {
+                message:
+                    "`recovery` carries `when`, so it would overwrite the custody cell rather \
+                          than write it once"
+                        .to_string(),
+            });
+        }
+        // The invocation names its content by checksum; the bytes travel
+        // beside it. Binding the two here is what stops a mismatched
+        // envelope being written at activation.
+        match arguments.get("checksum") {
+            Some(Promised::Bytes(checksum)) if checksum.as_slice() == sha256_multihash(&sealed) => {
+            }
+            _ => {
+                return Err(RegistrationError::Forbidden {
+                    message: "`recovery` checksums content other than the carried `sealed` block"
+                        .to_string(),
+                });
+            }
+        }
+        // The one check that cannot wait: everything else verified here
+        // stays true until activation, but an invocation that lapses
+        // first cannot be re-minted, and the account is stranded exactly
+        // as it would have been without any of this.
+        let expiration =
+            recovery
+                .invocation
+                .expiration()
+                .ok_or_else(|| RegistrationError::Unauthorized {
+                    message: "`recovery` must carry an expiration".to_string(),
+                })?;
+        let expires_at = expiration.to_unix();
+        if expires_at < self.now + self.activation_ttl {
+            return Err(RegistrationError::Unauthorized {
+                message: format!(
+                    "`recovery` expires at {expires_at}, before the activation link it would be \
+                     carried by"
+                ),
+            });
+        }
+
+        // The consent: the same shape `/provider/add` deposits, checked
+        // now so activation can provision without asking again.
+        let consent = bundle.resolve_delegation(&effect.consent).map_err(|err| {
+            RegistrationError::Invalid {
+                message: format!("`consent` does not decode as a delegation: {err}"),
+            }
+        })?;
+        let head = consent
+            .proofs()
+            .next()
+            .ok_or_else(|| RegistrationError::Invalid {
+                message: "`consent` carries no delegation".to_string(),
+            })?;
+        self.verify_consent(head, &effect.custody, account).await?;
+
+        Ok(CustodyMaterial {
+            sealed,
+            recovery: recovery_bytes,
+            consent: consent_bytes,
+        })
+    }
+
+    /// The bookkeeping space for `account`, and the account's authority
+    /// to read it.
+    ///
+    /// The space is derived from the service seed, so nothing is stored
+    /// and the same account always resolves to the same DID. The
+    /// delegation grants `/use/get` — every read, and only reads. The
+    /// service writes the customer's metering and billing there; the
+    /// account can see its own record but never rewrite it, and cannot
+    /// withdraw the service's own access the way a client-granted
+    /// delegation could be withdrawn.
+    async fn customer_space(&self, account: &Did) -> Result<CustomerSpace, RegistrationError> {
+        let space = crate::service::customer_space_signer(self.service_seed, account)
+            .map_err(|message| RegistrationError::Internal { message })?;
+        let did = space.did();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space))
+            .audience(account)
+            .subject(DelegatedSubject::Specific(did.clone()))
+            .command(vec!["use".to_string(), "get".to_string()])
+            .try_build()
+            .await
+            .map_err(|err| RegistrationError::Internal {
+                message: format!("minting the customer space read failed: {err}"),
+            })?;
+        let bytes = DelegationChain::new(delegation).to_bytes().map_err(|err| {
+            RegistrationError::Internal {
+                message: format!("encoding the customer space read failed: {err}"),
+            }
+        })?;
+        Ok(CustomerSpace {
+            did,
+            read_hex: hex::encode(bytes),
+        })
+    }
+
     /// Mint the activation invocation and wrap it into a link. The
     /// invocation is complete and service-signed: the accept button
     /// presents it as-is, so activation needs no key on the presenting
     /// device and a click on any device finalizes.
-    pub async fn activation_link(&self, customer: &Did) -> Result<String, RegistrationError> {
+    pub async fn activation_link(
+        &self,
+        customer: &Did,
+        material: &CustodyMaterial,
+    ) -> Result<String, RegistrationError> {
         let expiration = timestamp(self.now + self.activation_ttl)?;
         let service = self.service.did();
         let invocation = InvocationBuilder::new()
@@ -479,11 +742,46 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             .map_err(|err| RegistrationError::Internal {
                 message: format!("encoding activation failed: {err}"),
             })?;
-        Ok(format!(
+        // Exactly the blocks enrollment verified, and nothing else the
+        // enrolling container happened to carry: the link is the
+        // tightest budget in this flow, and unnamed material riding
+        // along is weight nobody checked.
+        let mut tokens = Container::from_bytes(&bytes)
+            .map_err(|err| RegistrationError::Internal {
+                message: format!("reopening the activation container failed: {err}"),
+            })?
+            .into_tokens();
+        tokens.extend([
+            material.recovery.clone(),
+            material.consent.clone(),
+            material.sealed.clone(),
+        ]);
+        let bytes =
+            Container::new(tokens)
+                .to_bytes()
+                .map_err(|err| RegistrationError::Internal {
+                    message: format!("encoding the activation container failed: {err}"),
+                })?;
+        let link = format!(
             "{}/activate?ucan={}",
             self.origin.trim_end_matches('/'),
             URL_SAFE_NO_PAD.encode(bytes)
-        ))
+        );
+        // Checked on the finished URL rather than the material, because
+        // the origin and the invocation's own fields count too. A link
+        // that does not survive a mail client is an account nobody can
+        // activate, so this refuses the enrollment instead — which is
+        // why the caller mints before it writes anything.
+        if link.len() > MAX_ACTIVATION_LINK {
+            return Err(RegistrationError::Invalid {
+                message: format!(
+                    "the activation link is {} characters, past the {MAX_ACTIVATION_LINK} a mail \
+                     client and browser can be relied on to carry",
+                    link.len()
+                ),
+            });
+        }
+        Ok(link)
     }
 
     /// Parse and cryptographically verify the container, require the
@@ -494,11 +792,16 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         expected_command: &[&str],
         window: Option<u64>,
     ) -> Result<InvocationChain<AnySignature>, RegistrationError> {
-        let chain = InvocationChain::try_from(self.container).map_err(|err| {
-            RegistrationError::Invalid {
+        // Read as a bundle, not a chain: an enrollment carries the
+        // recovery invocation and the sealed envelope beside its proofs,
+        // and a chain refuses any token that is not a delegation. The
+        // root still authorizes the ordinary way — `chain()` is the same
+        // invocation with the proofs it names, and nothing else.
+        let chain = InvocationBundle::try_from(self.container)
+            .and_then(|bundle| bundle.chain())
+            .map_err(|err| RegistrationError::Invalid {
                 message: format!("bad invocation container: {err}"),
-            }
-        })?;
+            })?;
         chain
             .verify(&VerificationContext::new(&Environment::new(
                 chain.proof_store(),
@@ -540,29 +843,28 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         Ok(chain)
     }
 
-    /// Decode every delegation token in the container. The invocation
-    /// token is skipped; a token that does not decode as a delegation is
-    /// an error.
+    /// The delegation tokens the container carries, invocation aside.
+    ///
+    /// A token that is not a delegation is skipped rather than refused:
+    /// an enrollment also carries the recovery invocation and the sealed
+    /// envelope, which are arguments rather than proofs. What must be
+    /// present is checked where it is named — a deposit the `access`
+    /// argument names and the container does not carry is an error at
+    /// that point, which is where the reader can see which one it was.
     fn delegation_tokens(&self) -> Result<Vec<DelegationToken>, RegistrationError> {
-        let tokens = Container::from_bytes(self.container)
+        Ok(Container::from_bytes(self.container)
             .map_err(|err| RegistrationError::Invalid {
                 message: format!("bad container: {err}"),
             })?
-            .into_tokens();
-        tokens
+            .into_tokens()
             .into_iter()
             .skip(1)
-            .enumerate()
-            .map(|(index, bytes)| {
-                let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(&bytes)
-                    .map_err(|err| {
-                    RegistrationError::Invalid {
-                        message: format!("failed to decode delegation {index}: {err}"),
-                    }
-                })?;
-                Ok(DelegationToken { delegation, bytes })
+            .filter_map(|bytes| {
+                serde_ipld_dagcbor::from_slice::<Delegation<AnySignature>>(&bytes)
+                    .ok()
+                    .map(|delegation| DelegationToken { delegation, bytes })
             })
-            .collect()
+            .collect())
     }
 
     /// Find the deposited access delegation the `access` argument names.
@@ -816,6 +1118,12 @@ mod tests {
         let enroll = subject.clone().attenuate(Customer).invoke(Enroll {
             email: "alice@example.com".into(),
             access: vec![Cid::default()],
+            custody: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                .parse()
+                .unwrap(),
+            recovery: Cid::default(),
+            consent: Cid::default(),
+            sealed: Cid::default(),
         });
         assert_eq!(enroll.ability(), format!("/{}", ENROLL_COMMAND.join("/")));
         let activate = subject.attenuate(Customer).invoke(Activate {

@@ -18,6 +18,7 @@ use tonk_access_service::revocation::index::MemoryRevocationIndex;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_credentials::Ed25519Signer;
+use dialog_ucan_core::cid::dagcbor_cid;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as DelegatedSubject;
 use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
@@ -56,6 +57,9 @@ struct Fixture {
     revocations: IndexedRevocations<Arc<MemoryRevocationIndex>>,
     emails: CapturedEmail,
     service: Ed25519Signer,
+    /// The seed `service` was built from: customer spaces derive from
+    /// it, and a signer cannot give its seed back.
+    service_seed: String,
     origin: String,
 }
 
@@ -64,7 +68,9 @@ impl Fixture {
         Fixture {
             store: SqliteStore::in_memory().expect("in-memory control store"),
             emails: CapturedEmail::default(),
-            service: Ed25519Signer::generate().await.expect("service signer"),
+            service: tonk_access_service::service::signer_from_hex(&"ab".repeat(32))
+                .expect("service signer"),
+            service_seed: "ab".repeat(32),
             origin: "https://hub.test".to_string(),
             revocations: IndexedRevocations(Default::default()),
         }
@@ -79,6 +85,7 @@ impl Fixture {
             store: &self.store,
             email: &self.emails,
             service: &self.service,
+            service_seed: &self.service_seed,
             origin: &self.origin,
             activation_ttl: 60 * 60,
             now: unix_now(),
@@ -149,19 +156,139 @@ async fn scoped_deposits(
 
 /// Build an enroll container: a self-signed `/customer/enroll` invocation
 /// carrying the deposited access delegations as extra container tokens.
+/// The custody material an enrollment carries, with one knob per thing
+/// that can be wrong.
+///
+/// Every rejection test starts from a VALID set and breaks exactly one
+/// field, so a refusal proves the check it names rather than tripping an
+/// earlier one. `Default` is the valid set.
+#[derive(Clone)]
+struct Custody {
+    /// Signs the recovery invocation and the consent.
+    key_seed: [u8; 32],
+    /// The custody DID the enrollment names. `None` means "whatever
+    /// `key_seed` produces", which is the honest case.
+    claimed_did: Option<Did>,
+    sealed: Vec<u8>,
+    /// Content the invocation checksums, when it should differ from what
+    /// is carried.
+    checksum_over: Option<Vec<u8>>,
+    command: Vec<String>,
+    space: String,
+    cell: String,
+    /// Seconds from now the recovery invocation expires.
+    expires_in: u64,
+    /// Set to make the write an overwrite rather than a first write.
+    when: Option<Vec<u8>>,
+    /// Audience of the consent; `None` means the enrolling account.
+    consent_audience: Option<Did>,
+    /// Command the consent grants.
+    consent_command: Vec<String>,
+    /// Drop these blocks from the container, though the arguments still
+    /// name them.
+    omit: Vec<&'static str>,
+}
+
+impl Default for Custody {
+    fn default() -> Self {
+        Custody {
+            key_seed: [9u8; 32],
+            claimed_did: None,
+            sealed: b"sealed-account-secret".to_vec(),
+            checksum_over: None,
+            command: ["use", "put", "memory", "cell"]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            space: "custody".to_string(),
+            cell: "secret".to_string(),
+            // Comfortably past the fixture's one-hour activation TTL.
+            expires_in: 30 * 24 * 60 * 60,
+            when: None,
+            consent_audience: None,
+            consent_command: vec![],
+            omit: Vec::new(),
+        }
+    }
+}
+
+fn sha256_multihash(content: &[u8]) -> Vec<u8> {
+    use sha2_0_10::{Digest, Sha256};
+    let digest = Sha256::digest(content);
+    let mut bytes = vec![0x12, 0x20];
+    bytes.extend_from_slice(&digest);
+    bytes
+}
+
 async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) -> Vec<u8> {
     let deposits = scoped_deposits(customer, service, service).await;
     enroll_container_with_deposits(customer, email, &deposits, true).await
 }
 
-/// Build an enroll container with explicit deposits, optionally leaving
-/// their bytes out of the container.
-async fn enroll_container_with_deposits(
+/// An enrollment carrying `custody`, valid unless a knob says otherwise.
+async fn enroll_container_with_custody(
+    customer: &Ed25519Signer,
+    service: &Did,
+    email: &str,
+    custody: &Custody,
+) -> Vec<u8> {
+    let deposits = scoped_deposits(customer, service, service).await;
+    enroll_container_parts(customer, email, &deposits, true, custody).await
+}
+
+/// The one place an enrollment container is assembled.
+async fn enroll_container_parts(
     customer: &Ed25519Signer,
     email: &str,
     deposits: &[Delegation<AnySignature>],
     carry_deposits: bool,
+    custody: &Custody,
 ) -> Vec<u8> {
+    let key = Ed25519Signer::import(&custody.key_seed)
+        .await
+        .expect("custody signer");
+    let custody_did = custody.claimed_did.clone().unwrap_or_else(|| key.did());
+
+    let checksum = sha256_multihash(custody.checksum_over.as_ref().unwrap_or(&custody.sealed));
+    let mut arguments = BTreeMap::from([
+        ("space".to_string(), Promised::String(custody.space.clone())),
+        ("cell".to_string(), Promised::String(custody.cell.clone())),
+        ("checksum".to_string(), Promised::Bytes(checksum)),
+    ]);
+    if let Some(when) = &custody.when {
+        arguments.insert("when".to_string(), Promised::Bytes(when.clone()));
+    }
+    let recovery = InvocationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(key.clone()))
+        .audience(&key.did())
+        .subject(&key.did())
+        .command(custody.command.clone())
+        .arguments(arguments)
+        .proofs(vec![])
+        .expiration(
+            Timestamp::new(
+                dialog_ucan_core::time::timestamp::SystemTime::now()
+                    + dialog_ucan_core::time::timestamp::Duration::from_secs(custody.expires_in),
+            )
+            .expect("recovery expiration"),
+        )
+        .try_build()
+        .await
+        .expect("recovery invocation");
+    // A carried block is a bare token, the same unit the enclosing
+    // container holds — not a container of its own.
+    let recovery_bytes = serde_ipld_dagcbor::to_vec(&recovery).expect("recovery encodes");
+
+    let consent = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(key.clone()))
+        .audience(custody.consent_audience.as_ref().unwrap_or(&customer.did()))
+        .subject(dialog_ucan_core::subject::Subject::Specific(key.did()))
+        .command(custody.consent_command.clone())
+        .try_build()
+        .await
+        .expect("consent");
+    let consent_bytes = consent.encoded().to_vec();
+
     let invocation = InvocationBuilder::new()
         .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
@@ -178,21 +305,72 @@ async fn enroll_container_with_deposits(
                         .collect(),
                 ),
             ),
+            (
+                "custody".to_string(),
+                Promised::String(custody_did.to_string()),
+            ),
+            (
+                "recovery".to_string(),
+                Promised::Link(dagcbor_cid(&recovery_bytes)),
+            ),
+            (
+                "consent".to_string(),
+                Promised::Link(dagcbor_cid(&consent_bytes)),
+            ),
+            (
+                "sealed".to_string(),
+                Promised::Link(dagcbor_cid(&custody.sealed)),
+            ),
         ]))
         .proofs(vec![])
         .expiration(Timestamp::five_minutes_from_now())
         .try_build()
         .await
         .expect("enroll invocation");
+
     let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes")];
     if carry_deposits {
         for deposit in deposits {
             tokens.push(deposit.encoded().to_vec());
         }
     }
+    for (name, bytes) in [
+        ("recovery", recovery_bytes),
+        ("consent", consent_bytes),
+        ("sealed", custody.sealed.clone()),
+    ] {
+        if !custody.omit.contains(&name) {
+            tokens.push(bytes);
+        }
+    }
     Container::new(tokens)
         .to_bytes()
         .expect("container encodes")
+}
+
+/// Build an enroll container with explicit deposits, optionally leaving
+/// their bytes out of the container.
+/// An enrollment with the given deposits, carrying valid custody
+/// material.
+///
+/// Every enrollment must carry it, so a fixture testing something else
+/// still needs a well-formed set — these tests are about deposits and
+/// customer lifecycle, not custody, and each would otherwise fail for a
+/// reason it is not asking about.
+async fn enroll_container_with_deposits(
+    customer: &Ed25519Signer,
+    email: &str,
+    deposits: &[Delegation<AnySignature>],
+    carry_deposits: bool,
+) -> Vec<u8> {
+    enroll_container_parts(
+        customer,
+        email,
+        deposits,
+        carry_deposits,
+        &Custody::default(),
+    )
+    .await
 }
 
 /// Decode the invocation container carried by an activation link. It is
@@ -1141,4 +1319,257 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
         "the unwrapped secret derives the same account",
     );
     Ok(())
+}
+
+/// Enrollment is the only place the custody material is examined —
+/// activation replays what was verified rather than checking it again —
+/// so every one of these refusals is the difference between saying no
+/// while the person is watching and handing them an account no second
+/// device can open.
+///
+/// Each starts from a valid `Custody` and breaks exactly one thing, so a
+/// refusal proves the check it names instead of tripping an earlier one.
+mod custody {
+    use super::*;
+
+    async fn enroll(custody: Custody) -> Result<Answer, RegistrationError> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await.expect("customer");
+        let container = enroll_container_with_custody(
+            &customer,
+            &fixture.service.did(),
+            "alice@example.com",
+            &custody,
+        )
+        .await;
+        fixture.registration(&container).handle().await
+    }
+
+    /// The control. Without this every refusal below could be passing
+    /// for a reason that has nothing to do with what it claims.
+    #[dialog_common::test]
+    async fn it_accepts_a_well_formed_enrollment() -> anyhow::Result<()> {
+        let answer = enroll(Custody::default()).await;
+        assert!(
+            matches!(answer, Ok(Answer::Customer(_))),
+            "a valid enrollment must be accepted, got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// The account's own bookkeeping space is named in the receipt, so a
+    /// client knows where its record lives without asking again.
+    #[dialog_common::test]
+    async fn it_names_the_bookkeeping_space_in_the_receipt() -> anyhow::Result<()> {
+        let Ok(Answer::Customer(receipt)) = enroll(Custody::default()).await else {
+            panic!("a valid enrollment is accepted");
+        };
+        let space = receipt
+            .customer_space
+            .expect("the receipt names the customer space");
+        assert!(
+            !space.read_hex.is_empty(),
+            "the space carries the account's authority to read it"
+        );
+        assert_ne!(
+            space.did, receipt.customer,
+            "the bookkeeping space is not the account itself"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_material_the_container_does_not_carry() -> anyhow::Result<()> {
+        for missing in ["recovery", "consent", "sealed"] {
+            let answer = enroll(Custody {
+                omit: vec![missing],
+                ..Default::default()
+            })
+            .await;
+            assert!(
+                matches!(answer, Err(RegistrationError::Invalid { .. })),
+                "`{missing}` named but not carried must be refused, got {answer:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A recovery invocation acting on some other space would provision
+    /// and write a custody namespace this enrollment never vouched for.
+    #[dialog_common::test]
+    async fn it_refuses_a_recovery_for_a_different_space() -> anyhow::Result<()> {
+        let stranger = Ed25519Signer::generate().await?;
+        let answer = enroll(Custody {
+            claimed_did: Some(stranger.did()),
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Forbidden { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_recovery_that_is_not_a_cell_write() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            command: ["use", "get", "memory", "cell"]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Forbidden { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// The cell address is fixed. A write aimed anywhere else is not
+    /// custody, whatever it claims.
+    #[dialog_common::test]
+    async fn it_refuses_a_recovery_aimed_at_another_cell() -> anyhow::Result<()> {
+        for custody in [
+            Custody {
+                space: "elsewhere".to_string(),
+                ..Default::default()
+            },
+            Custody {
+                cell: "elsewhere".to_string(),
+                ..Default::default()
+            },
+        ] {
+            let answer = enroll(custody).await;
+            assert!(
+                matches!(answer, Err(RegistrationError::Forbidden { .. })),
+                "got {answer:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The invocation names its content by checksum and the bytes travel
+    /// beside it. Unbound, activation would write an envelope nobody
+    /// checked into the cell that recovers the account.
+    #[dialog_common::test]
+    async fn it_refuses_a_recovery_that_checksums_other_content() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            checksum_over: Some(b"a different secret".to_vec()),
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Forbidden { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// `when` makes the write an overwrite, which a replayed activation
+    /// link could use to destroy an envelope the passkey has since
+    /// rotated.
+    #[dialog_common::test]
+    async fn it_refuses_a_recovery_that_would_overwrite_the_cell() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            when: Some(b"etag-1".to_vec()),
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Forbidden { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// The one check that cannot be deferred: everything else verified
+    /// here stays true until activation, but an invocation that lapses
+    /// first cannot be re-minted, and the account is stranded exactly as
+    /// it would have been without any of this.
+    #[dialog_common::test]
+    async fn it_refuses_a_recovery_that_expires_before_the_link() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            // The fixture's activation TTL is an hour.
+            expires_in: 60,
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Unauthorized { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// A consent given to one account must not enroll another, which is
+    /// what stops someone claiming a custody space they merely saw.
+    #[dialog_common::test]
+    async fn it_refuses_a_consent_issued_to_someone_else() -> anyhow::Result<()> {
+        let stranger = Ed25519Signer::generate().await?;
+        let answer = enroll(Custody {
+            consent_audience: Some(stranger.did()),
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Forbidden { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_consent_that_does_not_cover_provisioning() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            consent_command: vec!["unrelated".to_string()],
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Forbidden { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// Nothing may be recorded by an enrollment that is refused: a
+    /// customer row whose activation link cannot work is the stranded
+    /// account this flow exists to prevent.
+    #[dialog_common::test]
+    async fn it_records_nothing_when_it_refuses() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let container = enroll_container_with_custody(
+            &customer,
+            &fixture.service.did(),
+            "alice@example.com",
+            &Custody {
+                when: Some(b"etag-1".to_vec()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(fixture.registration(&container).handle().await.is_err());
+        assert!(
+            fixture
+                .store
+                .customer(customer.did().as_str())
+                .await?
+                .is_none(),
+            "a refused enrollment leaves no customer row"
+        );
+        assert!(
+            fixture
+                .emails
+                .0
+                .lock()
+                .expect("captured email mutex poisoned")
+                .is_empty(),
+            "a refused enrollment sends no activation email"
+        );
+        Ok(())
+    }
 }
