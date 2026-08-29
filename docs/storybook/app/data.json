@@ -124,32 +124,32 @@
       "variants": "Fresh, linked, add-account, revoke, delete, callback queries."
     },
     {
-      "evidence": "Whole happy path plus DOM form tests.",
-      "gaps": "Passkey cancel/unavailable/PRF fallback, local save failure, remote timeout, response lost after commit, reload at every stage.",
+      "evidence": "Whole happy path plus DOM form tests; account-action presenter unit tests distinguish passkey cancellation, missing PRF support, and unavailable browser ceremonies.",
+      "gaps": "Whole-browser passkey failure matrix, local save failure, remote timeout, response lost after commit, reload at every stage.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B02",
       "title": "Choose Create and create a fresh account/passkey.",
       "variants": "Root missing; provider-free root; add-account profile."
     },
     {
-      "evidence": "Browser test expects zero credentials across a taken address and an edit to a free one.",
-      "gaps": "Restart and retry; concurrent availability race; local-root boundary.",
+      "evidence": "Browser test expects zero credentials across a taken address and an edit to a free one; presenter tests cover lookup dispatch and account-options subscription failures.",
+      "gaps": "Whole-browser lookup/subscription faults, restart and retry, concurrent availability race, local-root boundary.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B03",
       "title": "Enter an email and follow the ceremony it names.",
       "variants": "Address known, unknown, malformed, or the service unreachable."
     },
     {
-      "evidence": "None in activate.rs.",
-      "gaps": "Every branch, duplicate click, reload, offline, malformed body, receipt-report failure.",
+      "evidence": "Presenter unit coverage prevents an unclassified service body from becoming activation-page copy.",
+      "gaps": "Whole activation branches, duplicate click, reload, offline, malformed body, receipt-report failure.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B04",
       "title": "Receive and open the activation email link.",
       "variants": "Missing, damaged, valid, expired, already used link."
     },
     {
-      "evidence": "Partial component logic; happy activation used by broader browser tests.",
-      "gaps": "Resend success/error/rate limit, stale email, Active idempotency, Suspended copy.",
+      "evidence": "Partial component logic; happy activation used by broader browser tests; presenter tests cover a failed activation watcher and resend fallback.",
+      "gaps": "Whole-browser watcher failure, resend success/error/rate limit, stale email, Active idempotency, Suspended copy.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B05",
       "title": "See activation pending and resend an activation email.",
@@ -196,8 +196,8 @@
       "variants": "One/two accounts; disjoint and same-named spaces; one unavailable account."
     },
     {
-      "evidence": "Partial rendering/status tests.",
-      "gaps": "Retry convergence, forbidden edits, reload loop, malformed descriptor, service return after offline.",
+      "evidence": "Browser regression navigates to settings before email confirmation, waits through the enrollment race, requires email-verification guidance, and keeps display-name editing disabled; partial rendering/status tests cover other states.",
+      "gaps": "Full offline-to-online convergence, malformed descriptor, Suspended recovery, and service return after offline.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B11",
       "title": "Load settings when account state is unconfigured or unhydrated.",
@@ -212,16 +212,16 @@
       "variants": "C2, C3, CX; repository ready/unhydrated."
     },
     {
-      "evidence": "Partial DOM keyboard/blur tests.",
-      "gaps": "Remote reject/conflict, duplicate Enter+blur, response loss, second-device concurrent rename, restart.",
+      "evidence": "Partial DOM keyboard/blur tests; pending-verification browser coverage proves the field remains disabled, and presenter unit tests mask transport details.",
+      "gaps": "Ready-state remote reject/conflict, duplicate Enter+blur, response loss, second-device concurrent rename, restart.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B13",
       "title": "Change the account display name.",
       "variants": "Ready/unhydrated/revoked; Enter/blur; same/different value."
     },
     {
-      "evidence": "Partial custody browser coverage.",
-      "gaps": "Ceremony matrix, duplicate credential, fact/publish failure, reload and retry.",
+      "evidence": "Partial custody browser coverage plus presenter unit tests for cancellation, unsupported security capability, and unavailable browser integration.",
+      "gaps": "Whole ceremony matrix, duplicate credential, fact/publish failure, reload and retry.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B14",
       "title": "Add another passkey.",
@@ -332,8 +332,8 @@
       "variants": "Browser opens/fails; --no-open; signed out; stale subject."
     },
     {
-      "evidence": "Whole browser revoke-CLI flow; DOM list tests.",
-      "gaps": "Offline, passkey cancel/wrong assertion, partial service publish, reload, concurrent revoke.",
+      "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
+      "gaps": "Offline, partial service publish, reload, concurrent revoke.",
       "group": "Account authority and destructive actions",
       "id": "AUTH-01",
       "title": "View devices and revoke another device in browser settings.",
@@ -364,8 +364,8 @@
       "variants": "Owned/joined/unknown/already deleted; stale plan; customer unavailable."
     },
     {
-      "evidence": "Whole browser account deletion/reuse-email flow.",
-      "gaps": "Passkey denial, plan failure, response loss, partial space purge, restart, unrelated boundaries.",
+      "evidence": "Whole browser account deletion/reuse-email flow; presenter tests say that passkey cancellation deleted nothing and reserve uncertain wording for request/response failures.",
+      "gaps": "Whole-browser passkey denial, plan failure, response loss, partial space purge, restart, unrelated boundaries.",
       "group": "Account authority and destructive actions",
       "id": "AUTH-05",
       "title": "Review and delete the whole account.",
@@ -912,7 +912,7 @@
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The account creation form collects an email and explains passkey and activation consequences before ceremony submission.",
+      "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
       "surface": "browser"
     },
     {
@@ -978,7 +978,7 @@
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "Account facts, passkey provenance, sync activation, browser profiles, and account-management actions remain visible in one panel.",
+      "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
       "surface": "browser"
     },
     {
@@ -1001,7 +1001,7 @@
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The devices panel identifies this device and offers passkey-authorized revocation for other devices.",
+      "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
       "surface": "browser"
     },
     {
@@ -1021,7 +1021,7 @@
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The destructive confirmation enumerates owned hosted spaces, preserves joined-space boundaries, and requires exact arming.",
+      "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",
       "surface": "browser"
     },
     {
@@ -1030,6 +1030,7 @@
       "capture": "production-source fixture",
       "id": "WEB-14",
       "journey_ids": [
+        "ACCT-B04",
         "ACCT-B06",
         "ACCT-B07"
       ],
@@ -1040,7 +1041,7 @@
         "rust/tonk-ui/src/activate.rs"
       ],
       "status": "captured",
-      "summary": "An emailed activation link can be accepted on any device without exposing root authority.",
+      "summary": "An emailed activation link can be accepted on any device; damaged, expired, offline, and unknown failures each lead to a safe next step.",
       "surface": "browser"
     },
     {
@@ -1049,6 +1050,7 @@
       "capture": "production-source fixture",
       "id": "WEB-15",
       "journey_ids": [
+        "ACCT-B04",
         "ACCT-B06",
         "ACCT-B07"
       ],
@@ -1059,7 +1061,7 @@
         "rust/tonk-ui/src/activate.rs"
       ],
       "status": "captured",
-      "summary": "Successful and failed activation settle with explicit sync status and a safe route back to Tonk.",
+      "summary": "Successful and failed activation settle explicitly without exposing service response bodies, routes, or HTTP details.",
       "surface": "browser"
     },
     {
@@ -1429,6 +1431,22 @@
       "result": "—"
     },
     {
+      "claim": "A customer waiting for email confirmation remains an account on every surface (Remain in flight).",
+      "device": "returning-browser + responsive",
+      "file": "verification/accounts.md",
+      "id": "LIFE-28",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Every browser account failure names the failed action, safe remaining state, and next step (Output, errors, and recovery).",
+      "device": "fault + keyboard",
+      "file": "verification/accounts.md",
+      "id": "LIFE-29",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Registered customer sees pending notice and resend recovery (Remain in flight).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -1502,7 +1520,7 @@
     },
     {
       "claim": "Enter/blur/concurrent account renames have one defined result (Edge cases).",
-      "device": "two-actor",
+      "device": "two-actor + fault",
       "file": "verification/accounts.md",
       "id": "LIFE-21",
       "priority": "P1",
@@ -1686,7 +1704,7 @@
     },
     {
       "claim": "Revoking another device denies later remote access and preserves unrelated/local state (Settle).",
-      "device": "two-actor",
+      "device": "two-actor + fault",
       "file": "verification/accounts.md",
       "id": "AUTH-03",
       "priority": "P1",
@@ -1726,7 +1744,7 @@
     },
     {
       "claim": "Whole-account deletion releases exact owned scope and rotates deleted profile (Settle).",
-      "device": "returning-browser",
+      "device": "returning-browser + fault",
       "file": "verification/accounts.md",
       "id": "AUTH-08",
       "priority": "P1",
@@ -2210,7 +2228,7 @@
     "fail": 0,
     "other": 0,
     "pass": 0,
-    "unrun": 112
+    "unrun": 114
   },
   "visualCommit": "49a873a23"
 }

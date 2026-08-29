@@ -1808,18 +1808,22 @@ mod invite_link {
 /// on connect is stale by then — the bar kept offering to log in to
 /// someone who just had.
 ///
-/// `provider` is required here (as it is on the concept), so an account
-/// that enrolled but has no provider yet does not resolve at all. That
-/// is the intent: "has a provider" means "finished registering", so the
-/// absence is the answer.
+/// `provider` is optional on the concept because it is assigned only
+/// after email confirmation. Keeping it optional here lets the bar
+/// distinguish an enrolled account awaiting confirmation from a profile
+/// with no account at all.
 pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
             "status": {
                 "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
             },
+            "email": {
+                "the": "xyz.tonk.account/customer-email", "as": "Text", "cardinality": "one"
+            },
             "provider": {
-                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one",
+                "optional": true
             }
         } },
         "terms": {
@@ -1835,6 +1839,7 @@ pub fn account_customer_query_body() -> String {
             // so whatever binds is it.
             "this": { "?": { "name": "account" } },
             "status": { "?": { "name": "status" } },
+            "email": { "?": { "name": "email" } },
             "provider": { "?": { "name": "provider" } }
         }
     })
@@ -1985,7 +1990,15 @@ mod account_state_query {
             "`this` must be bound, got {body}",
         );
         assert!(body.contains("xyz.tonk.account/customer-status"));
+        assert_eq!(
+            parsed["predicate"]["with"]["email"]["the"],
+            "xyz.tonk.account/customer-email",
+        );
         assert!(body.contains("xyz.tonk.account/provider-address"));
+        assert_eq!(
+            parsed["predicate"]["with"]["provider"]["optional"], true,
+            "a Registered customer has no provider until email activation",
+        );
     }
 }
 

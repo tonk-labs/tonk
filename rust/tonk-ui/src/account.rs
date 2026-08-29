@@ -18,6 +18,7 @@ use crate::identity_bridge::{
     VerifyPasskeyInput, create_account, enroll_custody_passkey, unlock_with_passkey,
     verify_passkey,
 };
+use crate::user_error::{self, AccountAction};
 
 const STYLE_ID: &str = "tonk-account-styles";
 /// Where a pending callback authorization's `(audience, callback)` is parked.
@@ -298,8 +299,13 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
                 .item(index)
                 .and_then(|node| node.dyn_into::<HtmlInputElement>().ok())
             {
-                if busy || input.get_attribute("aria-busy").as_deref() != Some("true") {
-                    input.set_disabled(busy);
+                let account_edit_blocked =
+                    input.id() == "account-display-name" && host.has_attribute(ACCOUNT_NOT_READY);
+                if busy
+                    || account_edit_blocked
+                    || input.get_attribute("aria-busy").as_deref() != Some("true")
+                {
+                    input.set_disabled(busy || account_edit_blocked);
                 }
             }
         }
@@ -330,6 +336,7 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
 }
 
 fn show_error(host: &HtmlElement, message: impl AsRef<str>) {
+    let _ = host.remove_attribute(ACCOUNT_GUIDANCE_SHOWN);
     if let Ok(Some(error)) = host.query_selector("#account-error") {
         error.set_text_content(Some(message.as_ref()));
         let _ = error.remove_attribute("hidden");
@@ -342,9 +349,69 @@ fn show_error(host: &HtmlElement, message: impl AsRef<str>) {
 }
 
 fn clear_error(host: &HtmlElement) {
+    let _ = host.remove_attribute(ACCOUNT_GUIDANCE_SHOWN);
     if let Ok(Some(error)) = host.query_selector("#account-error") {
         error.set_text_content(None);
         let _ = error.set_attribute("hidden", "");
+    }
+}
+
+fn log_action_error(action: AccountAction, detail: &str) {
+    web_sys::console::error_1(&format!("account {action:?} failed: {detail}").into());
+}
+
+fn show_action_error(host: &HtmlElement, action: AccountAction, detail: &str) {
+    log_action_error(action, detail);
+    show_error(host, user_error::diagnostic(action, detail));
+}
+
+fn show_api_error(host: &HtmlElement, action: AccountAction, error: &crate::error::TonkUiError) {
+    log_action_error(action, &error.to_string());
+    show_error(host, user_error::api(action, error));
+}
+
+fn show_confirmation_action_error(host: &HtmlElement, action: AccountAction, detail: &str) {
+    log_action_error(action, detail);
+    show_confirmation_error(host, user_error::diagnostic(action, detail));
+}
+
+fn show_confirmation_api_error(
+    host: &HtmlElement,
+    action: AccountAction,
+    error: &crate::error::TonkUiError,
+) {
+    log_action_error(action, &error.to_string());
+    show_confirmation_error(host, user_error::api(action, error));
+}
+
+fn show_display_name_api_error(
+    host: &HtmlElement,
+    action: AccountAction,
+    error: &crate::error::TonkUiError,
+) {
+    log_action_error(action, &error.to_string());
+    show_display_name_error(host, &user_error::api(action, error));
+}
+
+fn show_account_guidance(host: &HtmlElement, message: &str) {
+    let unchanged = host.has_attribute(ACCOUNT_GUIDANCE_SHOWN)
+        && host
+            .query_selector("#account-error")
+            .ok()
+            .flatten()
+            .and_then(|error| error.text_content())
+            .as_deref()
+            == Some(message);
+    if unchanged {
+        return;
+    }
+    show_error(host, message);
+    let _ = host.set_attribute(ACCOUNT_GUIDANCE_SHOWN, "true");
+}
+
+fn clear_account_guidance(host: &HtmlElement) {
+    if host.has_attribute(ACCOUNT_GUIDANCE_SHOWN) {
+        clear_error(host);
     }
 }
 
@@ -370,7 +437,15 @@ fn show_success(host: &HtmlElement) {
         false,
     );
     load_summary(host.clone());
-    load_devices(host.clone());
+    if host.has_attribute(ACCOUNT_NOT_READY) {
+        set_text(
+            host,
+            "#account-device-list",
+            "Available after email verification.",
+        );
+    } else {
+        load_devices(host.clone());
+    }
     load_profiles(host.clone());
     load_activation_notice(host.clone());
 }
@@ -451,8 +526,17 @@ fn load_activation_notice(host: HtmlElement) {
         }
         let mut state = match crate::api::customer_state().await {
             Ok(state) => state,
-            Err(_) => {
-                set_text(&host, "#account-registration-value", "Unreachable");
+            Err(error) => {
+                set_text(
+                    &host,
+                    "#account-registration-value",
+                    "Unavailable — reload to retry",
+                );
+                if host.has_attribute(ACCOUNT_NOT_READY) {
+                    show_api_error(&host, AccountAction::LoadAccount, &error);
+                } else {
+                    log_action_error(AccountAction::LoadAccount, &error.to_string());
+                }
                 return;
             }
         };
@@ -468,21 +552,17 @@ fn load_activation_notice(host: HtmlElement) {
                 .is_ok_and(|config| config.service_did.is_some())
         {
             match crate::api::enroll_customer(None, &[]).await {
-                // Enrollment is a command, so this returns once the
-                // transient is committed, not once the service answers.
-                // Re-reading here would race the handler and paint a
-                // state already superseded; the row's subscription is
-                // what shows the outcome, whenever it lands.
+                // Enrollment is a command, so this returns before the
+                // resulting customer row necessarily settles. The loop
+                // below keeps probing until it can name the real state.
                 Ok(()) => {}
                 Err(error) => {
-                    web_sys::console::error_1(
-                        &format!("customer re-enrollment failed: {error}").into(),
-                    );
                     set_text(
                         &host,
                         "#account-registration-value",
                         "Not registered — reload to retry",
                     );
+                    show_api_error(&host, AccountAction::LoadAccount, &error);
                     return;
                 }
             }
@@ -492,6 +572,38 @@ fn load_activation_notice(host: HtmlElement) {
         // the phone the email is on), and a dashboard that only learns
         // about it on a manual reload looks stuck at "pending" long
         // after the account is live.
+        // A fresh enrollment can be briefly absent even though the command
+        // succeeded. Do not classify that transient absence as "not
+        // registered", and do not discard the only marker that says the
+        // account repository is still unsafe to edit.
+        let mut last_probe_error: Option<String> = None;
+        for unsettled_round in 0..=20 {
+            if !state["status"].is_null() {
+                break;
+            }
+            if unsettled_round == 20 {
+                set_text(
+                    &host,
+                    "#account-registration-value",
+                    "Unavailable — reload to retry",
+                );
+                if host.has_attribute(ACCOUNT_NOT_READY) {
+                    show_account_guidance(&host, ACCOUNT_STATUS_UNKNOWN);
+                }
+                if let Some(error) = last_probe_error {
+                    log_action_error(AccountAction::LoadAccount, &error);
+                }
+                return;
+            }
+            wait_for(500).await;
+            match crate::api::customer_state().await {
+                Ok(fresh) => state = fresh,
+                Err(error) => {
+                    last_probe_error = Some(error.to_string());
+                }
+            }
+        }
+
         loop {
             render_registration(&host, &state).await;
             if state["status"].as_str() != Some("Registered") {
@@ -518,14 +630,19 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
         _ => "Not registered",
     };
     set_text(host, "#account-registration-value", label);
-    // The load found the state unsynchronized and left the generic
-    // reason up. This is the first point that knows whether the emailed
-    // link is what it is waiting on, so it is where that is said —
-    // once, since the marker comes off with it.
-    if host.has_attribute(UNHYDRATED_ON_LOAD) {
-        let _ = host.remove_attribute(UNHYDRATED_ON_LOAD);
-        if state["status"].as_str() == Some("Registered") {
-            show_error(host, VERIFY_EMAIL);
+    // An unhydrated repository must remain read-only until it reaches Ready.
+    // The customer answer explains why without exposing that implementation
+    // state or prescribing a reload that cannot satisfy email confirmation.
+    if host.has_attribute(ACCOUNT_NOT_READY) {
+        match state["status"].as_str() {
+            Some("Registered") => show_account_guidance(host, VERIFY_EMAIL),
+            Some("Active") => {
+                show_account_guidance(host, ACCOUNT_SETUP_FINISHING);
+                let host = host.clone();
+                spawn_local(async move { finish_account_readiness(&host).await });
+            }
+            Some("Suspended") => show_account_guidance(host, ACCOUNT_SYNC_PAUSED),
+            _ => {}
         }
     }
     // The worker drains the queued backup itself once activation
@@ -554,6 +671,33 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
     // while Registered and resends the link, which is also the
     // recovery for one that expired.
     let _ = show(host, "#account-resend-activation");
+}
+
+/// Keep retrying the local account pull after activation until authoritative
+/// account settings are safe to edit. A later unrelated error owns the banner
+/// and is not cleared by this background task.
+async fn finish_account_readiness(host: &HtmlElement) {
+    for round in 0..20 {
+        match crate::api::account_status().await {
+            Ok(AccountStatus::Registered {
+                account_state: AccountStateStatus::Ready,
+                ..
+            }) => {
+                let _ = host.remove_attribute(ACCOUNT_NOT_READY);
+                clear_account_guidance(host);
+                load_profiles(host.clone());
+                load_devices(host.clone());
+                return;
+            }
+            Ok(AccountStatus::Registered { .. }) => {}
+            Ok(_) => return,
+            Err(error) if round == 19 => {
+                log_action_error(AccountAction::LoadAccount, &error.to_string());
+            }
+            Err(_) => {}
+        }
+        wait_for(1_000).await;
+    }
 }
 
 /// Resolve after `ms` milliseconds.
@@ -931,7 +1075,12 @@ fn load_summary(host: HtmlElement) {
                 ] {
                     set_text(&host, selector, "Unavailable");
                 }
-                web_sys::console::warn_1(&format!("account summary unavailable: {error}").into());
+                set_text(
+                    &host,
+                    "#account-passkey-detail",
+                    "We couldn't load these account details. Check your connection and reload settings.",
+                );
+                log_action_error(AccountAction::LoadAccount, &error.to_string());
             }
         }
     });
@@ -969,10 +1118,7 @@ fn settle_with(
             // than repainting a page on its way out — or there was nothing to
             // return to, and the success panel is already the right answer.
             Ok(_) => {}
-            Err(error) => show_error(
-                &host,
-                format!("You're signed in, but we couldn't finish what you started: {error}"),
-            ),
+            Err(error) => show_action_error(&host, AccountAction::FinishPreviousAction, &error),
         }
     });
 }
@@ -1151,7 +1297,7 @@ fn render_profiles(host: &HtmlElement, profiles: &tonk_worker_api::ProfilesRespo
         input.set_value(&label);
         let _ = input.set_attribute("data-confirmed-name", &label);
         let _ = input.remove_attribute("aria-busy");
-        input.set_disabled(false);
+        input.set_disabled(host.has_attribute(ACCOUNT_NOT_READY));
     }
 }
 
@@ -1173,7 +1319,10 @@ fn commit_display_name(host: HtmlElement) {
     else {
         return;
     };
-    if input.get_attribute("aria-busy").as_deref() == Some("true") {
+    if input.disabled()
+        || host.has_attribute(ACCOUNT_NOT_READY)
+        || input.get_attribute("aria-busy").as_deref() == Some("true")
+    {
         return;
     }
     let confirmed = input
@@ -1205,10 +1354,10 @@ fn commit_display_name(host: HtmlElement) {
             }
             Err(error) => {
                 input.set_value(&confirmed);
-                show_display_name_error(&host, &error.to_string());
+                show_display_name_api_error(&host, AccountAction::ChangeDisplayName, &error);
             }
         }
-        input.set_disabled(false);
+        input.set_disabled(host.has_attribute(ACCOUNT_NOT_READY));
         let _ = input.remove_attribute("aria-busy");
     });
 }
@@ -1245,8 +1394,7 @@ fn load_profiles(host: HtmlElement) {
         match crate::api::list_profiles().await {
             Ok(profiles) => render_profiles(&host, &profiles),
             Err(error) => {
-                show_display_name_error(&host, &error.to_string());
-                web_sys::console::warn_1(&format!("profile roster unavailable: {error}").into());
+                show_display_name_api_error(&host, AccountAction::LoadProfiles, &error);
             }
         }
     });
@@ -1257,7 +1405,7 @@ fn load_choice_profiles(host: HtmlElement, root_persisted: bool) {
         match crate::api::list_profiles().await {
             Ok(profiles) => render_choice_profiles(&host, &profiles, root_persisted),
             Err(error) => {
-                web_sys::console::warn_1(&format!("profile roster unavailable: {error}").into());
+                show_api_error(&host, AccountAction::LoadProfiles, &error);
             }
         }
     });
@@ -1388,7 +1536,7 @@ fn load_devices(host: HtmlElement) {
             Ok(identity) => identity.did,
             Err(error) => {
                 set_busy(&host, false, "");
-                show_error(&host, error.to_string());
+                show_api_error(&host, AccountAction::LoadDevices, &error);
                 return;
             }
         };
@@ -1411,7 +1559,7 @@ fn load_devices(host: HtmlElement) {
             }
             Err(error) => {
                 set_busy(&host, false, "");
-                show_error(&host, error.to_string());
+                show_api_error(&host, AccountAction::LoadDevices, &error);
             }
         }
     });
@@ -1499,7 +1647,7 @@ fn load_status(host: HtmlElement) {
                         Err(error) => {
                             set_busy(&host, false, "");
                             set_mode(&host, "choice");
-                            show_error(&host, error.to_string());
+                            show_api_error(&host, AccountAction::LinkCli, &error);
                         }
                     }
                 });
@@ -1525,7 +1673,7 @@ fn load_status(host: HtmlElement) {
         if let Err(error) = service(&host).await {
             set_busy(&host, false, "");
             set_mode(&host, NO_PANEL_MODE);
-            show_error(&host, error);
+            show_action_error(&host, AccountAction::LoadAccount, &error);
             return;
         }
         match crate::api::account_status().await {
@@ -1538,6 +1686,11 @@ fn load_status(host: HtmlElement) {
                     AccountStatus::Registered { account_state, .. } => Some(account_state),
                     AccountStatus::RootMissing { .. } | AccountStatus::Unregistered { .. } => None,
                 };
+                if account_state == Some(AccountStateStatus::Unhydrated) {
+                    let _ = host.set_attribute(ACCOUNT_NOT_READY, "true");
+                } else {
+                    let _ = host.remove_attribute(ACCOUNT_NOT_READY);
+                }
                 match landing(
                     account_state,
                     revoke_target_from_url().is_some(),
@@ -1553,16 +1706,8 @@ fn load_status(host: HtmlElement) {
                         // probe is not a read: it replays the work
                         // deferred while the account was unserved, the
                         // account backup among it.
-                        if account_state == Some(AccountStateStatus::Unhydrated) {
-                            let _ = host.set_attribute(UNHYDRATED_ON_LOAD, "true");
-                        } else {
-                            let _ = host.remove_attribute(UNHYDRATED_ON_LOAD);
-                        }
                         settle_on_load(&host);
                         apply_link_outcome(&host, link_outcome.as_ref());
-                        if account_state == Some(AccountStateStatus::Unhydrated) {
-                            show_error(&host, UNSYNCHRONIZED);
-                        }
                     }
                     Landing::Choice { revoke_hint } => {
                         set_busy(&host, false, "");
@@ -1582,7 +1727,7 @@ fn load_status(host: HtmlElement) {
             Err(error) => {
                 set_busy(&host, false, "");
                 set_mode(&host, "choice");
-                show_error(&host, error.to_string());
+                show_api_error(&host, AccountAction::LoadAccount, &error);
             }
         }
     });
@@ -1602,7 +1747,7 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
         let message = message
             .as_deref()
             .unwrap_or("the command-line link did not complete");
-        show_error(host, format!("Command-line link failed: {message}."));
+        show_action_error(host, AccountAction::LinkCli, message);
     }
 }
 
@@ -2024,6 +2169,7 @@ async fn complete_remote(
     // undo the attach. The login path names no email; the
     // worker resolves the account's recorded address. Deployments that
     // publish no service identity have no registration to perform.
+    let mut enrollment_started = true;
     if wants_enrollment().await {
         set_busy(host, true, "Registering with the sync service…");
         // Enrollment is a command now, so this catches a dispatch that
@@ -2033,11 +2179,8 @@ async fn complete_remote(
         // saying it, instead of a one-shot verdict from this moment.
         if let Err(error) = crate::api::enroll_customer(enroll_email, &ceremony.deposits_hex).await
         {
-            web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
-            show_error(
-                host,
-                "Your account is ready, but registering it with the sync service could not be started. Reload /settings to retry.",
-            );
+            enrollment_started = false;
+            log_action_error(AccountAction::LoadAccount, &error.to_string());
         }
     }
     // The custody rows are recorded before ANY settled state renders —
@@ -2075,7 +2218,16 @@ async fn complete_remote(
         load_callback_request(host.clone(), audience, callback, name);
         return Ok(());
     }
+    if is_unhydrated(&status) {
+        let _ = host.set_attribute(ACCOUNT_NOT_READY, "true");
+    } else {
+        let _ = host.remove_attribute(ACCOUNT_NOT_READY);
+    }
     settle(host);
+    if !enrollment_started {
+        show_account_guidance(host, ACCOUNT_ENROLLMENT_NOT_STARTED);
+        return Ok(());
+    }
     // An unhydrated account right after signup is the expected state
     // while the email activation is pending — the access service
     // refuses the pull until the emailed link is opened — so the notice
@@ -2084,23 +2236,19 @@ async fn complete_remote(
     // the failure unexpected, and then the notice says so instead.
     if initialize_name && is_unhydrated(&status) {
         if activation_pending().await {
-            show_error(host, VERIFY_EMAIL);
+            show_account_guidance(host, VERIFY_EMAIL);
         } else {
-            show_error(
-                host,
-                "Your account was created, but this browser could not finish syncing it. Reload to retry.",
-            );
+            show_account_guidance(host, ACCOUNT_SETUP_FINISHING);
         }
     }
     Ok(())
 }
 
-/// Marks a load that found the account state unsynchronized, so the
-/// customer probe's answer can say which of the two reasons it was.
-const UNHYDRATED_ON_LOAD: &str = "data-unhydrated-on-load";
-
-/// An account whose state has not synchronized, reason unknown.
-const UNSYNCHRONIZED: &str = "Account state is not synchronized yet. Reload /settings to retry before changing your account name.";
+/// Marks an account repository that is not ready for authoritative edits.
+const ACCOUNT_NOT_READY: &str = "data-account-not-ready";
+/// Marks a banner owned by account-readiness guidance, so the background
+/// readiness probe never clears a later unrelated action error.
+const ACCOUNT_GUIDANCE_SHOWN: &str = "data-account-guidance-shown";
 
 /// The same state, when the emailed link is what it is waiting on.
 ///
@@ -2110,6 +2258,11 @@ const UNSYNCHRONIZED: &str = "Account state is not synchronized yet. Reload /set
 /// for a retry that cannot succeed buries the one step that does.
 const VERIFY_EMAIL: &str =
     "Check your email and open the verification link to verify your email address.";
+const ACCOUNT_STATUS_UNKNOWN: &str =
+    "We couldn't check whether your email is verified. Check your connection and reload settings.";
+const ACCOUNT_SETUP_FINISHING: &str = "Your email is verified. Tonk is finishing account setup; reload settings if the display name stays unavailable.";
+const ACCOUNT_SYNC_PAUSED: &str = "Online sync for this account is paused. Your local work is still available; try again later or contact Tonk support.";
+const ACCOUNT_ENROLLMENT_NOT_STARTED: &str = "Your account is saved on this browser, but Tonk couldn't start email verification. Check your connection and reload settings to try again.";
 
 /// Whether the customer is registered but not yet email-activated.
 async fn activation_pending() -> bool {
@@ -2417,7 +2570,7 @@ fn bind(host: &HtmlElement) {
             .await;
             if let Err(error) = result {
                 set_busy(&host, false, "");
-                show_error(&host, error);
+                show_action_error(&host, AccountAction::CreateAccount, &error);
             }
         });
     });
@@ -2437,7 +2590,7 @@ fn bind(host: &HtmlElement) {
                     "#account-activation-notice",
                     "Sent. Open the link in your activation email.",
                 ),
-                Err(error) => show_error(&host, format!("could not resend: {error}")),
+                Err(error) => show_api_error(&host, AccountAction::ResendActivation, &error),
             }
         });
     });
@@ -2519,7 +2672,7 @@ fn bind(host: &HtmlElement) {
                     }
                     load_summary(host.clone());
                 }
-                Err(error) => show_error(&host, error),
+                Err(error) => show_action_error(&host, AccountAction::AddPasskey, &error),
             }
         });
     });
@@ -2556,7 +2709,7 @@ fn bind(host: &HtmlElement) {
             .await;
             if let Err(error) = result {
                 set_busy(&host, false, "");
-                show_error(&host, error);
+                show_action_error(&host, AccountAction::LogIn, &error);
             }
         });
     });
@@ -2650,7 +2803,7 @@ fn bind(host: &HtmlElement) {
                 .await;
                 if let Err(error) = result {
                     set_busy(&host, false, "");
-                    show_error(&host, error);
+                    show_action_error(&host, AccountAction::LinkCli, &error);
                 }
             });
             return;
@@ -2685,14 +2838,14 @@ fn bind(host: &HtmlElement) {
             &callback,
             &[("deny", "declined in the browser"), ("redirect", &redirect)],
         ) {
-            show_error(&host, error);
+            show_action_error(&host, AccountAction::LinkCli, &error);
         }
     });
 
     on_click(host, "#account-unlink", |host| {
         clear_error(&host);
         if let Err(error) = open_confirmation(&host, Confirmation::SignOut) {
-            show_error(&host, error);
+            show_action_error(&host, AccountAction::SignOut, &error);
         }
     });
 
@@ -2708,12 +2861,12 @@ fn bind(host: &HtmlElement) {
                         requested_space: requested_space_deletion(),
                     };
                     if let Err(error) = open_confirmation(&host, pending) {
-                        show_error(&host, error);
+                        show_action_error(&host, AccountAction::LoadDeletionPlan, &error);
                     }
                 }
                 Err(error) => {
                     set_busy(&host, false, "");
-                    show_error(&host, error.to_string());
+                    show_api_error(&host, AccountAction::LoadDeletionPlan, &error);
                 }
             }
         });
@@ -2739,7 +2892,7 @@ fn bind(host: &HtmlElement) {
                         },
                         Err(error) => {
                             set_busy(&host, false, "");
-                            show_confirmation_error(&host, error.to_string());
+                            show_confirmation_api_error(&host, AccountAction::SignOut, &error);
                         }
                     }
                 });
@@ -2792,7 +2945,7 @@ fn bind(host: &HtmlElement) {
                     Ok(_) => reload_into_switched_profile(&host),
                     Err(error) => {
                         set_busy(&host, false, "");
-                        show_error(&host, error.to_string());
+                        show_api_error(&host, AccountAction::SwitchProfile, &error);
                     }
                 }
             });
@@ -2822,6 +2975,11 @@ fn bind(host: &HtmlElement) {
 }
 
 fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<String>) {
+    let action = if requested.is_some() {
+        AccountAction::DeleteSpace
+    } else {
+        AccountAction::DeleteAccount
+    };
     let confirmed_email = match input(&host, "#account-delete-email") {
         Ok(email) if email == plan.email => email,
         Ok(_) => {
@@ -2950,11 +3108,11 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
             }
             Ok(_) => {
                 set_busy(&host, false, "");
-                show_confirmation_error(&host, "the deletion result was incomplete");
+                show_confirmation_action_error(&host, action, "the deletion result was incomplete");
             }
             Err(error) => {
                 set_busy(&host, false, "");
-                show_confirmation_error(&host, error);
+                show_confirmation_action_error(&host, action, &error);
             }
         }
     });
@@ -2970,7 +3128,7 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
 fn begin_revoke(host: HtmlElement, did: String, self_revoke: bool) {
     clear_error(&host);
     if let Err(error) = open_confirmation(&host, Confirmation::Revoke { did, self_revoke }) {
-        show_error(&host, error);
+        show_action_error(&host, AccountAction::RevokeDevice, &error);
     }
 }
 
@@ -3020,7 +3178,7 @@ fn execute_revoke(host: HtmlElement, did: String, self_revoke: bool) {
             }
             Err(error) => {
                 set_busy(&host, false, "");
-                show_confirmation_error(&host, error.to_string());
+                show_confirmation_api_error(&host, AccountAction::RevokeDevice, &error);
             }
         }
     });

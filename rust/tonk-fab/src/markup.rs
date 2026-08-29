@@ -155,7 +155,7 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
     <span class="say say--copying">copying&hellip;</span>
     <span class="say say--copied">copied</span>
     <span class="say say--failed">couldn&rsquo;t copy</span>
-    <span class="say say--activation">sharing needs an activated email</span>
+    <span class="say say--activation">confirm your email to share</span>
   </tonk-mi>
   <ui-member-roster space="{space}"></ui-member-roster>
 </tonk-menu>
