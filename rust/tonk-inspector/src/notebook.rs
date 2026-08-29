@@ -1328,6 +1328,13 @@ impl Cell {
         let held_closures = notebook.closures.clone();
         let notebook_for_cell = notebook.clone();
         let cell_id = id.to_owned();
+        // The notebook's own routing context, handed to every card this cell
+        // renders. Results live in prose's shadow root, and context
+        // resolution reads an element's own `with` rather than walking
+        // ancestors — so a `<tonk-display>` that is not stamped here resolves
+        // no repository, and whatever its view mounts renders "no repository
+        // in context" in place of the entity.
+        let cell_context = format!("{}@{}", notebook.branch, notebook.repo);
         let closure = Closure::wrap(Box::new(move |event: Event| {
             let detail = event
                 .dyn_ref::<CustomEvent>()
@@ -1387,25 +1394,33 @@ impl Cell {
                     {
                         let consumer = cell_editor.clone();
                         let slot = cell_result.clone();
-                        let run =
-                            Closure::wrap(Box::new(move |event: Event| {
-                                event.prevent_default();
-                                event.stop_propagation();
-                                let Some(body) = reflect_string(consumer.as_ref(), "value") else {
-                                    return;
-                                };
-                                let slot = slot.clone();
-                                let consumer = consumer.clone();
-                                spawn_local(async move {
-                                    // `transact: true` — the deliberate act.
-                                    match evaluate(&consumer, &body, true).await {
-                                        Ok(response) => slot
-                                            .set_inner_html(&render_result(None, Some(&response))),
-                                        Err(message) => slot
-                                            .set_inner_html(&render_result(Some(&message), None)),
-                                    }
-                                });
-                            }) as Box<dyn FnMut(Event)>);
+                        let with = cell_context.clone();
+                        let run = Closure::wrap(Box::new(move |event: Event| {
+                            event.prevent_default();
+                            event.stop_propagation();
+                            let Some(body) = reflect_string(consumer.as_ref(), "value") else {
+                                return;
+                            };
+                            let slot = slot.clone();
+                            let consumer = consumer.clone();
+                            let with = with.clone();
+                            spawn_local(async move {
+                                // `transact: true` — the deliberate act.
+                                match evaluate(&consumer, &body, true).await {
+                                    Ok(response) => slot.set_inner_html(&render_result(
+                                        None,
+                                        Some(&response),
+                                        &with,
+                                    )),
+                                    Err(message) => slot.set_inner_html(&render_result(
+                                        Some(&message),
+                                        None,
+                                        &with,
+                                    )),
+                                }
+                            });
+                        })
+                            as Box<dyn FnMut(Event)>);
                         let _ = play.add_event_listener_with_callback(
                             "click",
                             run.as_ref().unchecked_ref(),
@@ -1422,10 +1437,15 @@ impl Cell {
             let slot = cell_result.clone();
             let consumer = cell_editor.clone();
             let in_flight = running.clone();
+            let with = cell_context.clone();
             spawn_local(async move {
                 match evaluate(&consumer, &body, false).await {
-                    Ok(response) => slot.set_inner_html(&render_result(None, Some(&response))),
-                    Err(message) => slot.set_inner_html(&render_result(Some(&message), None)),
+                    Ok(response) => {
+                        slot.set_inner_html(&render_result(None, Some(&response), &with))
+                    }
+                    Err(message) => {
+                        slot.set_inner_html(&render_result(Some(&message), None, &with))
+                    }
                 }
                 in_flight.set(false);
             });

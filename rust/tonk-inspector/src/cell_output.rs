@@ -55,7 +55,14 @@ fn esc(text: &str) -> String {
 }
 
 /// Render a cell's output: a failure, or a response, or nothing.
-pub fn render(failure: Option<&str>, response: Option<&EvaluateResponse>) -> String {
+///
+/// `with` is the notebook's own routing context (`branch@repo`), stamped
+/// onto every `<tonk-display>` a card mounts. It has to be passed down
+/// rather than inherited: results render INSIDE prose's shadow root, and
+/// context resolution reads an element's own `with` rather than walking
+/// ancestors — so a card that is not stamped resolves no repository, and
+/// whatever its view mounts renders "no repository in context".
+pub fn render(failure: Option<&str>, response: Option<&EvaluateResponse>, with: &str) -> String {
     if let Some(message) = failure {
         return format!(
             "<div class=\"nb-out nb-out--error\"><span class=\"nb-out__icon\">!</span>\
@@ -76,11 +83,14 @@ pub fn render(failure: Option<&str>, response: Option<&EvaluateResponse>) -> Str
     if blocks.is_empty() {
         return String::new();
     }
-    blocks.iter().map(render_block).collect()
+    blocks
+        .iter()
+        .map(|block| render_block(block, with))
+        .collect()
 }
 
 /// One query's results: a summary line plus a capped gallery.
-fn render_block(block: &QueryMatchBlock) -> String {
+fn render_block(block: &QueryMatchBlock, with: &str) -> String {
     let count = block.results.len();
     let summary = format!(
         "<div class=\"nb-out__summary\">\
@@ -102,7 +112,7 @@ fn render_block(block: &QueryMatchBlock) -> String {
         .results
         .iter()
         .take(CARD_CAP)
-        .map(|result| render_card(result, &block.label))
+        .map(|result| render_card(result, &block.label, with))
         .collect();
     // State what was dropped. A silently truncated gallery reads as the whole
     // answer, which is worse than a long one.
@@ -131,7 +141,7 @@ fn render_block(block: &QueryMatchBlock) -> String {
 /// The model comes from the query's own label (`person ?alice:` → `person`)
 /// when the result does not name one itself, so an ordinary query gets its
 /// concept's view rather than the generic listing.
-fn render_card(result: &QueryResult, label: &str) -> String {
+fn render_card(result: &QueryResult, label: &str, with: &str) -> String {
     // Prefer a `name` over the entity URI: `db:attribute` and `attribute`
     // are the same row, and the readable one belongs in the title. The URI
     // stays as the tooltip, so nothing is lost.
@@ -146,10 +156,11 @@ fn render_card(result: &QueryResult, label: &str) -> String {
         return format!(
             "<div class=\"nb-card nb-card--display\">\
                <div class=\"nb-card__title\">{title}</div>\
-               <tonk-display entity=\"{}\" model=\"{}\"></tonk-display>\
+               <tonk-display entity=\"{}\" model=\"{}\" with=\"{}\"></tonk-display>\
              </div>",
             esc(&result.this),
-            esc(&model)
+            esc(&model),
+            esc(with)
         );
     }
     let fields: String = result
@@ -296,7 +307,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_renders_nothing_without_a_response() {
-        assert_eq!(render(None, None), "");
+        assert_eq!(render(None, None, "main@id:repo"), "");
     }
 
     #[dialog_common::test]
@@ -305,7 +316,7 @@ mod tests {
             label: "person".to_owned(),
             results: Vec::new(),
         };
-        let html = render_block(&block);
+        let html = render_block(&block, "main@id:repo");
         assert!(html.contains("no results"));
         assert!(!html.contains("nb-out__gallery"), "no gallery for nothing");
     }
@@ -321,7 +332,7 @@ mod tests {
             label: "thing".to_owned(),
             results,
         };
-        let html = render_block(&block);
+        let html = render_block(&block, "main@id:repo");
         assert_eq!(html.matches("nb-card__title").count(), CARD_CAP);
         assert!(html.contains("and 28 more"));
         assert!(html.contains("40 results"));
@@ -333,6 +344,7 @@ mod tests {
         let html = render_card(
             &result("id:notebook/scratch", &[("model", json!("tonk:notebook"))]),
             "concept",
+            "main@id:repo",
         );
         assert!(html.contains("<tonk-display"));
         assert!(html.contains("entity=\"id:notebook/scratch\""));
@@ -344,7 +356,11 @@ mod tests {
     /// mounting a display that would only dump them again.
     #[dialog_common::test]
     fn it_lists_fields_for_a_meta_head() {
-        let html = render_card(&result("id:x", &[("name", json!("Alice"))]), "concept");
+        let html = render_card(
+            &result("id:x", &[("name", json!("Alice"))]),
+            "concept",
+            "main@id:repo",
+        );
         assert!(!html.contains("<tonk-display"));
         assert!(html.contains("Alice"));
     }
@@ -356,10 +372,30 @@ mod tests {
     /// list even after someone defines a view for it.
     #[dialog_common::test]
     fn it_hands_a_result_to_a_display_by_its_query_label() {
-        let html = render_card(&result("id:alice", &[("name", json!("Alice"))]), "person");
+        let html = render_card(
+            &result("id:alice", &[("name", json!("Alice"))]),
+            "person",
+            "main@id:repo",
+        );
         assert!(html.contains("<tonk-display"));
         assert!(html.contains("entity=\"id:alice\""));
         assert!(html.contains("model=\"person\""));
+    }
+
+    /// A card's display carries the notebook's routing context.
+    ///
+    /// Results render inside prose's shadow root, and context resolution
+    /// reads an element's own `with` rather than walking ancestors — so an
+    /// unstamped card resolves no repository and whatever its view mounts
+    /// renders "no repository in context" instead of the entity.
+    #[dialog_common::test]
+    fn it_stamps_the_context_on_a_card_display() {
+        let html = render_card(
+            &result("id:alice", &[("name", json!("Alice"))]),
+            "person",
+            "main@id:repo",
+        );
+        assert!(html.contains("with=\"main@id:repo\""));
     }
 
     /// A result naming its own model keeps it: the field is more specific
@@ -369,6 +405,7 @@ mod tests {
         let html = render_card(
             &result("id:x", &[("model", json!("tonk:notebook"))]),
             "person",
+            "main@id:repo",
         );
         assert!(html.contains("model=\"tonk:notebook\""));
     }
@@ -400,6 +437,7 @@ mod tests {
                 &[("name", json!("attribute")), ("transient", json!(false))],
             ),
             "concept",
+            "main@id:repo",
         );
         assert!(html.contains(">attribute</div>"));
         assert!(
@@ -428,7 +466,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_reports_a_failure_without_a_gallery() {
-        let html = render(Some("boom"), None);
+        let html = render(Some("boom"), None, "main@id:repo");
         assert!(html.contains("nb-out--error"));
         assert!(html.contains("boom"));
     }
