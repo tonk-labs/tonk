@@ -13,6 +13,40 @@ use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
 
+/// Whether a newer service worker is installed and WAITING to take over —
+/// i.e. whether this worker is retiring.
+///
+/// Read live from the registration rather than latched at `updatefound`,
+/// so it is self-healing: an update that never activates (a failed
+/// install, a canceled upgrade) clears the `waiting` slot and this
+/// worker goes back to serving streams normally. A latch would leave it
+/// permanently refusing.
+///
+/// Every route that opens a LONG-LIVED response must consult this. An
+/// SSE body is a fetch event that never settles, and the spec keeps a
+/// worker alive while any of its fetch events are in flight — so a
+/// single stream opened after the successor started installing re-pins
+/// this worker and parks the new one in `waiting` indefinitely. That is
+/// the "reloading doesn't help, it's still the old version" symptom:
+/// reloads land on the old ACTIVE worker, which is exactly what's
+/// keeping the new one out.
+///
+/// `false` off-wasm and whenever the registration is unreadable — a
+/// wrongly refused stream would starve consumers, a wrongly opened one
+/// only delays an update.
+pub(crate) fn update_pending() -> bool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast;
+        return js_sys::global()
+            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+            .map(|scope| scope.registration().waiting().is_some())
+            .unwrap_or(false);
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    false
+}
+
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 

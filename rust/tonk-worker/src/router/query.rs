@@ -25,6 +25,7 @@ use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::reactor::{Conclusion, Query, ReactorError};
+use crate::router::update_pending;
 use crate::{TonkWorkerError, router::AppState};
 
 /// Path parameters for `/query`.
@@ -228,23 +229,6 @@ async fn query_on_branch<'a>(
         };
         Ok(Json(wire).into_response())
     }
-}
-
-/// Whether a newer service worker is installed and WAITING to take over.
-/// `false` off-wasm and whenever the registration is unreadable — a wrongly
-/// refused stream would starve consumers, a wrongly opened one only delays
-/// an update.
-fn update_pending() -> bool {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use wasm_bindgen::JsCast;
-        return js_sys::global()
-            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .map(|scope| scope.registration().waiting().is_some())
-            .unwrap_or(false);
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    false
 }
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
