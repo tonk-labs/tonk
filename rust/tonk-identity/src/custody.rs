@@ -298,6 +298,45 @@ mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// The activation link carries the recovery invocation, the consent
+    /// and the sealed envelope, base64'd into a URL query parameter. A
+    /// URL that outgrows what mail clients and browsers carry reliably
+    /// (~2000 characters is the conservative floor) forces the material
+    /// out of the link, so measure it rather than assume.
+    #[dialog_common::test]
+    async fn it_keeps_the_activation_link_inside_a_url_budget() {
+        use base64::Engine as _;
+
+        let custody = custody().await;
+        let account = Ed25519Signer::generate().await.unwrap();
+        let sealed = [7u8; 64];
+
+        let recovery = build_deferred_publish_invocation(custody.clone(), &sealed)
+            .await
+            .unwrap();
+        let consent = mint_custody_consent(custody, &account.did())
+            .await
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+
+        let payload = recovery.len() + consent.len() + sealed.len();
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(vec![0u8; payload])
+            .len();
+
+        println!(
+            "recovery={} consent={} sealed={} raw={payload} base64={encoded}",
+            recovery.len(),
+            consent.len(),
+            sealed.len(),
+        );
+        assert!(
+            encoded < 2000,
+            "the activation link's material is {encoded} base64 characters, past a safe URL budget"
+        );
+    }
+
     async fn custody() -> Ed25519Signer {
         Ed25519Signer::import(&*crate::envelope::custody_seed(&[5u8; 32]))
             .await

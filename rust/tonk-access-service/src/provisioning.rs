@@ -71,6 +71,7 @@ pub fn container_subject(container_bytes: &[u8]) -> Option<String> {
 pub async fn screen<S: Store>(
     store: &S,
     subject: &str,
+    now: u64,
 ) -> Result<Result<(), AuthorizeError>, StoreError> {
     if let Some(customer) = store.customer(subject).await? {
         return Ok(servable(customer.status, "the subject's own registration"));
@@ -81,6 +82,16 @@ pub async fn screen<S: Store>(
             "the subject is not provisioned",
         )));
     };
+    // A live reservation holds the name and nothing more. The row carries
+    // a provider so the claim can be checked, which would otherwise read
+    // here as provisioned — so the reservation is what this asks about
+    // first. Retryable: the provisioning that follows is what serves it.
+    if consumer.reserved_until.is_some_and(|until| until > now) {
+        return Ok(Err(denial(
+            Recourse::Retry,
+            "the subject is reserved but not yet provisioned",
+        )));
+    }
     let Some(provider) = consumer.provider else {
         return Ok(Err(denial(Recourse::None, "the subject has no provider")));
     };
@@ -148,6 +159,10 @@ mod tests {
         store
     }
 
+    /// A fixed "now" for the gate. The fixtures register at 0, so any
+    /// positive value reads as the present.
+    const NOW: u64 = 1_000;
+
     #[dialog_common::test]
     async fn it_serves_an_active_customer_and_its_provisioned_consumer() {
         let store = store_with(
@@ -155,8 +170,11 @@ mod tests {
             &[("did:key:zSpace", "did:key:zCustomer")],
         )
         .await;
-        assert_eq!(screen(&store, "did:key:zCustomer").await.unwrap(), Ok(()));
-        assert_eq!(screen(&store, "did:key:zSpace").await.unwrap(), Ok(()));
+        assert_eq!(
+            screen(&store, "did:key:zCustomer", NOW).await.unwrap(),
+            Ok(())
+        );
+        assert_eq!(screen(&store, "did:key:zSpace", NOW).await.unwrap(), Ok(()));
     }
 
     #[dialog_common::test]
@@ -166,14 +184,29 @@ mod tests {
             &[("did:key:zSpace", "did:key:zPending")],
         )
         .await;
-        assert!(screen(&store, "did:key:zNobody").await.unwrap().is_err());
-        assert!(screen(&store, "did:key:zPending").await.unwrap().is_err());
-        assert!(screen(&store, "did:key:zSpace").await.unwrap().is_err());
+        assert!(
+            screen(&store, "did:key:zNobody", NOW)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            screen(&store, "did:key:zPending", NOW)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            screen(&store, "did:key:zSpace", NOW)
+                .await
+                .unwrap()
+                .is_err()
+        );
     }
 
     /// The recourse a refusal carries, or `None` when it served.
     async fn recourse_of(store: &SqliteStore, subject: &str) -> Option<Recourse> {
-        match screen(store, subject).await.unwrap() {
+        match screen(store, subject, NOW).await.unwrap() {
             Ok(()) => None,
             Err(AuthorizeError::Declined { recourse, .. }) => Some(recourse),
             Err(other) => panic!("the gate refused with {other:?}, not a declined request"),
@@ -255,6 +288,62 @@ mod tests {
         assert_eq!(recourse_of(&store, "did:key:zCustomer").await, None);
     }
 
+    /// A reservation holds the name and serves nothing. The row carries
+    /// a provider so the claim can be checked, which without this gate
+    /// would read as provisioned and serve a space nobody has paid for
+    /// yet.
+    #[dialog_common::test]
+    async fn it_refuses_a_reserved_subject_until_it_is_provisioned() {
+        let store = store_with(&[("did:key:zCustomer", CustomerStatus::Active)], &[]).await;
+        store
+            .reserve_consumer(
+                "did:key:zHeld",
+                "did:key:zCustomer",
+                0,
+                crate::store::ConsumerKind::Custody,
+                NOW + 1,
+            )
+            .await
+            .expect("reservation");
+
+        assert_eq!(
+            recourse_of(&store, "did:key:zHeld").await,
+            Some(Recourse::Retry),
+            "the provisioning that follows is what serves it, so the client retries"
+        );
+
+        // Claiming it clears the hold, and the same subject is served.
+        store
+            .add_consumer(
+                "did:key:zHeld",
+                "did:key:zCustomer",
+                0,
+                crate::store::ConsumerKind::Custody,
+            )
+            .await
+            .expect("claim");
+        assert_eq!(recourse_of(&store, "did:key:zHeld").await, None);
+    }
+
+    /// A reservation that has lapsed no longer holds anything back: the
+    /// row is claimable, and until someone claims it the subject is
+    /// judged by its provider like any other.
+    #[dialog_common::test]
+    async fn it_stops_holding_a_subject_once_the_reservation_lapses() {
+        let store = store_with(&[("did:key:zCustomer", CustomerStatus::Active)], &[]).await;
+        store
+            .reserve_consumer(
+                "did:key:zLapsed",
+                "did:key:zCustomer",
+                0,
+                crate::store::ConsumerKind::Custody,
+                NOW - 1,
+            )
+            .await
+            .expect("reservation");
+        assert_eq!(recourse_of(&store, "did:key:zLapsed").await, None);
+    }
+
     /// The sentence is for a person, not a client. It is asserted here
     /// only so a refusal that says nothing useful fails loudly; nothing
     /// in the system matches on it.
@@ -262,7 +351,7 @@ mod tests {
     async fn it_explains_itself_in_words_too() {
         let store = store_with(&[("did:key:zPending", CustomerStatus::Registered)], &[]).await;
         let Err(AuthorizeError::Declined { reason, .. }) =
-            screen(&store, "did:key:zPending").await.unwrap()
+            screen(&store, "did:key:zPending", NOW).await.unwrap()
         else {
             panic!("an unconfirmed customer is declined");
         };

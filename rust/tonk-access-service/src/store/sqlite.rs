@@ -11,8 +11,8 @@ use super::{
     ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
     ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
     INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
-    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, Store,
-    StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    RESERVE_CONSUMER, SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER,
+    SELECT_CUSTOMER_BY_EMAIL, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -91,6 +91,15 @@ impl SqliteStore {
             conn.execute_batch(include_str!("../../migrations/0005_customer_email.sql"))
                 .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 5)
+                .map_err(map_err)?;
+            version = 5;
+        }
+        if version < 6 {
+            conn.execute_batch(include_str!(
+                "../../migrations/0006_consumer_reservation.sql"
+            ))
+            .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 6)
                 .map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
@@ -183,12 +192,13 @@ impl Store for SqliteStore {
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
         row.map(
-            |(did, provider, owner, registered, kind, state, deleted_at)| {
+            |(did, provider, owner, registered, kind, state, deleted_at, reserved_until)| {
                 Ok(Consumer {
                     did,
                     provider,
@@ -197,6 +207,7 @@ impl Store for SqliteStore {
                     kind: ConsumerKind::parse(&kind)?,
                     deletion_state: ConsumerDeletionState::parse(&state)?,
                     deleted_at: deleted_at.map(|value| value as u64),
+                    reserved_until: reserved_until.map(|value| value as u64),
                 })
             },
         )
@@ -216,11 +227,12 @@ impl Store for SqliteStore {
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
                 ))
             })
             .map_err(map_err)?;
         rows.map(|row| {
-            let (did, provider, owner, registered, kind, state, deleted_at) =
+            let (did, provider, owner, registered, kind, state, deleted_at, reserved_until) =
                 row.map_err(map_err)?;
             Ok(Consumer {
                 did,
@@ -230,6 +242,7 @@ impl Store for SqliteStore {
                 kind: ConsumerKind::parse(&kind)?,
                 deletion_state: ConsumerDeletionState::parse(&state)?,
                 deleted_at: deleted_at.map(|value| value as u64),
+                reserved_until: reserved_until.map(|value| value as u64),
             })
         })
         .collect()
@@ -275,6 +288,30 @@ impl Store for SqliteStore {
             .execute(
                 ADD_CONSUMER,
                 params![did, provider, now as i64, kind.as_str()],
+            )
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn reserve_consumer(
+        &self,
+        did: &str,
+        provider: &str,
+        now: u64,
+        kind: ConsumerKind,
+        reserved_until: u64,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(
+                RESERVE_CONSUMER,
+                params![
+                    did,
+                    provider,
+                    now as i64,
+                    kind.as_str(),
+                    reserved_until as i64
+                ],
             )
             .map_err(map_err)?;
         Ok(changed > 0)

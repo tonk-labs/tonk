@@ -77,6 +77,10 @@ pub struct Consumer {
     pub deletion_state: ConsumerDeletionState,
     /// Completed deletion time, when any.
     pub deleted_at: Option<u64>,
+    /// While set and in the future, this DID is only held — the name is
+    /// claimed but nothing is served under it. Null once provisioned,
+    /// which is what a claimed row looks like.
+    pub reserved_until: Option<u64>,
 }
 
 /// What a consumer namespace holds.
@@ -192,6 +196,19 @@ pub trait Store {
         kind: ConsumerKind,
     ) -> Result<bool, StoreError>;
 
+    /// Hold `did` for `provider` until `reserved_until`, so nothing else
+    /// claims it before the provisioning that follows. Answers false when
+    /// another customer holds a reservation that has not lapsed, or
+    /// provides the consumer outright.
+    async fn reserve_consumer(
+        &self,
+        did: &str,
+        provider: &str,
+        now: u64,
+        kind: ConsumerKind,
+        reserved_until: u64,
+    ) -> Result<bool, StoreError>;
+
     /// Atomically deny future storage operations before object removal.
     async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError>;
 
@@ -232,12 +249,14 @@ SELECT did, email, status, plan, verified, terms_version
 "#;
 
 pub const SELECT_CONSUMER: &str = r#"
-SELECT did, provider, owner, registered, kind, deletion_state, deleted_at
+SELECT did, provider, owner, registered, kind, deletion_state, deleted_at,
+       reserved_until
   FROM consumer WHERE did = ?1
 "#;
 
 pub const SELECT_CONSUMERS_BY_OWNER: &str = r#"
-SELECT did, provider, owner, registered, kind, deletion_state, deleted_at
+SELECT did, provider, owner, registered, kind, deletion_state, deleted_at,
+       reserved_until
   FROM consumer WHERE owner = ?1 ORDER BY registered, did
 "#;
 
@@ -258,13 +277,42 @@ ON CONFLICT (did) DO NOTHING
 /// Provisioning is idempotent per provider: re-adding under the same
 /// customer re-runs the update, while a consumer someone else provides
 /// matches no row and changes nothing.
+///
+/// A reservation another customer holds is refused for as long as it
+/// stands, and claimable once it lapses — `?3` is the current time, so
+/// the comparison is against this call rather than a swept state.
+/// Claiming clears `reserved_until`, which is what a provisioned row
+/// looks like: null never lapses.
 pub const ADD_CONSUMER: &str = r#"
 INSERT INTO consumer (did, provider, owner, registered, kind)
 VALUES (?1, ?2, ?2, ?3, ?4)
 ON CONFLICT (did) DO UPDATE SET
   provider = excluded.provider,
-  kind = excluded.kind
-WHERE (consumer.provider IS NULL OR consumer.provider = excluded.provider)
+  kind = excluded.kind,
+  reserved_until = NULL
+WHERE (consumer.provider IS NULL
+       OR consumer.provider = excluded.provider
+       OR (consumer.reserved_until IS NOT NULL AND consumer.reserved_until <= ?3))
+  AND consumer.deletion_state = 'active'
+"#;
+
+/// Reserve `did` for `provider` until `reserved_until`, so the window
+/// between naming a space and provisioning it cannot be raced.
+///
+/// The same guard as [`ADD_CONSUMER`]: a free DID, one this provider
+/// already holds, or one whose reservation has lapsed. Re-reserving
+/// extends the deadline, which is what a passkey re-enrolling on a new
+/// device does.
+pub const RESERVE_CONSUMER: &str = r#"
+INSERT INTO consumer (did, provider, owner, registered, kind, reserved_until)
+VALUES (?1, ?2, ?2, ?3, ?4, ?5)
+ON CONFLICT (did) DO UPDATE SET
+  provider = excluded.provider,
+  kind = excluded.kind,
+  reserved_until = excluded.reserved_until
+WHERE (consumer.provider IS NULL
+       OR consumer.provider = excluded.provider
+       OR (consumer.reserved_until IS NOT NULL AND consumer.reserved_until <= ?3))
   AND consumer.deletion_state = 'active'
 "#;
 

@@ -704,26 +704,27 @@ async fn handle_request(
     // this denies the data plane.
     if outcome.is_ok() {
         match crate::provisioning::container_subject(&body_bytes) {
-            Some(subject) => match crate::provisioning::screen(&registration.store, &subject).await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(reason)) => {
-                    println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
-                    return Ok(cors_response(authorize_error_response(
-                        StatusCode::FORBIDDEN,
-                        &reason,
-                    )));
+            Some(subject) => {
+                match crate::provisioning::screen(&registration.store, &subject, unix_now()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(reason)) => {
+                        println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
+                        return Ok(cors_response(authorize_error_response(
+                            StatusCode::FORBIDDEN,
+                            &reason,
+                        )));
+                    }
+                    Err(error) => {
+                        // Fails closed, but as our own unavailability rather
+                        // than a denial billed to the customer.
+                        eprintln!("presign refused, control store unreachable: {error}");
+                        return Ok(cors_response(authorize_error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            &unavailable_provisioning(),
+                        )));
+                    }
                 }
-                Err(error) => {
-                    // Fails closed, but as our own unavailability rather
-                    // than a denial billed to the customer.
-                    eprintln!("presign refused, control store unreachable: {error}");
-                    return Ok(cors_response(authorize_error_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        &unavailable_provisioning(),
-                    )));
-                }
-            },
+            }
             None => {
                 return Ok(cors_response(authorize_error_response(
                     StatusCode::SERVICE_UNAVAILABLE,

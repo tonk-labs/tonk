@@ -1,0 +1,17 @@
+-- A consumer DID may be claimed before it is provisioned, so the space
+-- an enrollment names cannot be taken by someone else in the window
+-- before its activation lands.
+--
+-- One nullable column carries the whole state. A timestamp holds the DID
+-- until then and it is claimable after; NULL never lapses, which is also
+-- what a claimed row looks like — so there is no separate status column
+-- and no "claimed" flag to keep in step. Matches `suspend_until` in the
+-- same table, where null already means indefinite.
+--
+-- Custody reservations must carry a real deadline rather than NULL. A
+-- custody DID is derived from the passkey's PRF and so is stable: the
+-- same passkey on a new device re-derives it and needs to re-reserve it,
+-- which is the recovery this exists for. Holding it forever would strand
+-- the passkey. Nothing squats it in the meantime, since only the passkey
+-- holder can produce that DID at all.
+ALTER TABLE consumer ADD COLUMN reserved_until INTEGER;

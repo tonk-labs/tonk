@@ -227,7 +227,7 @@ async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Resul
         console_error!("provisioning screen unavailable, no CONTROL binding: {err}");
         provisioning_unavailable()
     })?);
-    match screen(&store, &subject).await {
+    match screen(&store, &subject, Date::now().as_millis() / 1_000).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(reason)) => {
             worker::console_log!("presign rejected: {subject} is not servable ({reason})");
