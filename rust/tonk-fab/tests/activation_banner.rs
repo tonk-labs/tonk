@@ -126,12 +126,9 @@ async fn registered_customer_can_resend_and_retires_when_active() {
     deliver(&bar, "Registered", "jack@example.test");
 
     let banner = wait_for("#fabb-activation-banner").await;
-    assert!(
-        banner
-            .text_content()
-            .unwrap_or_default()
-            .contains("jack@example.test is not activated yet — nothing syncs until it is")
-    );
+    assert!(banner.text_content().unwrap_or_default().contains(
+        "jack@example.test is waiting for email confirmation — nothing syncs until you confirm it"
+    ));
     banner
         .shadow_root()
         .expect("banner shadow")

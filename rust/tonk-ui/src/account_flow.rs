@@ -874,43 +874,40 @@ mod tests {
             "opening the emailed link should be the only requested next step: {notice:?}"
         );
 
-        // The rest is about the DASHBOARD's display-name field, which
-        // is behind the standing ceremony — WebDriver refuses to type
-        // into it, exactly as a person cannot. Take the ceremony down
-        // the way it offers, which is also what puts the panel back.
-        dismiss_register_dialog(&driver).await?;
+        // Navigate the way a person following a settings link would while
+        // the emailed confirmation is still unopened. The customer command
+        // can still be settling here; the dashboard must keep probing until
+        // it can replace its temporary unhydrated fallback with the actual
+        // prerequisite.
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
 
-        let display_name = element(&driver, "#account-display-name").await?;
-        let select_all = if cfg!(target_os = "macos") {
-            Key::Meta + "a"
-        } else {
-            Key::Control + "a"
-        };
-        display_name.send_keys(select_all).await?;
-        display_name.send_keys("Pending Name").await?;
-        display_name.send_keys(Key::Enter).await?;
-
-        wait_for_text_containing(&driver, "#account-display-name-error", "verification link")
-            .await?;
-        let error = element(&driver, "#account-display-name-error")
-            .await?
-            .text()
-            .await?;
+        wait_for_text_containing(&driver, "#account-error", "verification link").await?;
+        let dashboard_error = element(&driver, "#account-error").await?.text().await?;
         assert!(
-            error.contains("verify your email"),
-            "display-name failure should explain the required account step: {error:?}"
+            dashboard_error.contains("verify your email"),
+            "settings should name the pending email step: {dashboard_error:?}"
         );
         for technical in [
-            "Error from local API",
-            "503 Service Unavailable",
-            "account_state_unavailable",
+            "not synchronized",
+            "hydration",
+            "reload /settings",
+            "account state",
+            "HTTP",
         ] {
             assert!(
-                !error.contains(technical),
-                "display-name failure should not expose {technical:?}: {error:?}"
+                !dashboard_error
+                    .to_lowercase()
+                    .contains(&technical.to_lowercase()),
+                "settings should not expose {technical:?}: {dashboard_error:?}"
             );
         }
+
+        let display_name = element(&driver, "#account-display-name").await?;
+        assert!(
+            !display_name.is_enabled().await?,
+            "authoritative account fields must stay disabled until verification lets shared account state load"
+        );
 
         driver.quit().await?;
         Ok(())
@@ -3779,6 +3776,72 @@ mod tests {
         assert!(
             upstream.is_null(),
             "main must track nothing before activation, got {upstream}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// An enrolled account stays an account everywhere while its email is
+    /// still unconfirmed.
+    ///
+    /// The account customer row has no provider until activation. The FABB
+    /// used to require that optional field in its query, so this exact state
+    /// resolved as no row: the space offered "log in to share" and raised the
+    /// signup ceremony even though the account already existed.
+    #[dialog_common::test]
+    async fn it_names_pending_activation_consistently_in_a_space(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "pending-space@example.com";
+        enroll_only(&driver, &env, email).await?;
+        dismiss_register_dialog(&driver).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        wait_for_text(
+            &driver,
+            "#account-registration-value",
+            "Waiting for email confirmation",
+        )
+        .await?;
+
+        let key = create_space(&driver, "Waiting for Email").await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+
+        enter_guest(&driver).await?;
+        let banner = wait_for_displayed(&driver, "#fabb-activation-banner").await?;
+        let banner_text = banner.text().await?;
+        assert!(
+            banner_text.contains(email) && banner_text.contains("waiting for email confirmation"),
+            "the space must name the existing account's pending step: {banner_text:?}",
+        );
+        driver.enter_default_frame().await?;
+
+        open_share_stack(&driver).await?;
+        await_share_row(&driver, "link").await?;
+        enter_guest(&driver).await?;
+        let share_copy = driver
+            .execute(
+                r#"const bar = document.querySelector('tonk-fab');
+                   return {
+                     accountHidden: bar?.querySelector('[data-share-account]')?.hasAttribute('hidden'),
+                     link: (bar?.querySelector('[data-share-link]')?.textContent || '').trim()
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            share_copy.json()["accountHidden"],
+            true,
+            "a pending account must not offer login or signup: {}",
+            share_copy.json(),
+        );
+        assert!(
+            share_copy.json()["link"]
+                .as_str()
+                .is_some_and(|text| text.contains("confirm your email to share")),
+            "the share row must name activation as the missing step: {}",
+            share_copy.json(),
         );
 
         driver.quit().await?;

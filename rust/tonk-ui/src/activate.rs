@@ -17,6 +17,8 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlButtonElement, HtmlElement, window};
 
+use crate::user_error::{self, AccountAction};
+
 const STYLE_ID: &str = "tonk-activate-styles";
 
 /// The top-document activation element.
@@ -191,7 +193,10 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 .await;
             let response = match response {
                 Ok(response) => response,
-                Err(_) => {
+                Err(error) => {
+                    web_sys::console::error_1(
+                        &format!("account activation request failed: {error}").into(),
+                    );
                     pending.set(false);
                     set_busy(&host, false, false);
                     return show_error(&host, "The service could not be reached. Try again.");
@@ -239,7 +244,13 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                     .as_str()
                     .unwrap_or("Activation failed. Try again.")
                     .to_string();
-                show_error(&host, &message);
+                web_sys::console::error_1(
+                    &format!("account activation service refused the link: {message}").into(),
+                );
+                show_error(
+                    &host,
+                    &user_error::diagnostic(AccountAction::ActivateAccount, &message),
+                );
             }
         });
     });

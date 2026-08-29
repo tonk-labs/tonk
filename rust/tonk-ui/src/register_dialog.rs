@@ -29,6 +29,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::HtmlButtonElement;
 use web_sys::{Element, HtmlDialogElement, HtmlElement};
 
+use crate::user_error::{self, AccountAction};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_host::consumer::{self, Subscription};
 
@@ -620,6 +621,10 @@ fn check_now() {
         if let Err(error) = crate::api::transact_profile(check_email_claim(&email)).await {
             tonk_common::log!("register: could not ask about the address: {error}");
             clear_state();
+            set_status(&user_error::diagnostic(
+                AccountAction::CheckEmail,
+                &error.to_string(),
+            ));
         }
     });
 }
@@ -657,6 +662,7 @@ fn await_activation(host: &Element) {
                 }
             });
         if js_sys::Reflect::set(host.as_ref(), &method.into(), delegate.as_ref()).is_err() {
+            activation_watch_failed("could not install the activation listener");
             return;
         }
         delegates.push(delegate);
@@ -664,14 +670,25 @@ fn await_activation(host: &Element) {
     DELEGATES.with(|held| held.borrow_mut().extend(delegates));
 
     let Ok(query) = js_sys::JSON::parse(&account_query_body()) else {
+        activation_watch_failed("could not prepare the activation query");
         return;
     };
     match consumer::subscribe(host, &query, Some(&ACCOUNT_TAG.into())) {
         Ok(subscription) => ANSWERS.with(|held| *held.borrow_mut() = Some(subscription)),
         Err(error) => {
-            tonk_common::log!("register: could not watch for activation: {error:?}");
+            activation_watch_failed(&format!("activation subscription failed: {error:?}"));
         }
     }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn activation_watch_failed(detail: &str) {
+    tonk_common::log!("register: {detail}");
+    set_status(&user_error::diagnostic(
+        AccountAction::WatchActivation,
+        detail,
+    ));
+    set_action(RETURN_TO_SPACE, true);
 }
 
 /// Whether a frame carries an activated account.
@@ -782,6 +799,7 @@ fn watch_answers(host: &Element) {
                 }
             });
         if js_sys::Reflect::set(host.as_ref(), &method.into(), delegate.as_ref()).is_err() {
+            registration_watch_failed("could not install the account-options listener");
             return;
         }
         delegates.push(delegate);
@@ -798,6 +816,7 @@ fn watch_answers(host: &Element) {
         tonk_host::ready::wait().await;
         let body = answer_query_body();
         let Ok(query) = js_sys::JSON::parse(&body) else {
+            registration_watch_failed("could not prepare the account-options query");
             return;
         };
         // The dialog may already be gone by the time the gate opens.
@@ -807,10 +826,21 @@ fn watch_answers(host: &Element) {
         match consumer::subscribe(&host, &query, Some(&ANSWER_TAG.into())) {
             Ok(subscription) => ANSWERS.with(|held| *held.borrow_mut() = Some(subscription)),
             Err(error) => {
-                tonk_common::log!("register: could not watch for the answer: {error:?}");
+                registration_watch_failed(&format!(
+                    "account-options subscription failed: {error:?}"
+                ));
             }
         }
     });
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn registration_watch_failed(detail: &str) {
+    tonk_common::log!("register: {detail}");
+    set_status(&user_error::diagnostic(
+        AccountAction::LoadRegistration,
+        detail,
+    ));
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1068,12 +1098,18 @@ fn copy_the_share_link() {
         // The link arrives as a fact on the space's own branch, so this
         // waits for the row rather than for a response body.
         match await_invite_link(&space).await {
-            Some(link) => {
-                write_to_clipboard(&link).await;
-                set_status("You can use the copied link to invite someone into a space.");
-                set_action(RETURN_TO_SPACE, true);
-                focus_action();
-            }
+            Some(link) => match write_to_clipboard(&link).await {
+                Ok(()) => {
+                    set_status("You can use the copied link to invite someone into a space.");
+                    set_action(RETURN_TO_SPACE, true);
+                    focus_action();
+                }
+                Err(error) => {
+                    tonk_common::log!("register: could not copy the invite link: {error}");
+                    set_status(&user_error::diagnostic(AccountAction::CopyInvite, &error));
+                    set_action(COPY_LINK, true);
+                }
+            },
             None => {
                 set_status("The link is taking longer than expected. Share the spot again.");
                 set_action(COPY_LINK, true);
@@ -1142,13 +1178,16 @@ async fn wait_ms(ms: i32) {
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
-/// Put `text` on the clipboard, best effort.
+/// Put `text` on the clipboard.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn write_to_clipboard(text: &str) {
+async fn write_to_clipboard(text: &str) -> Result<(), String> {
     let Some(clipboard) = web_sys::window().map(|window| window.navigator().clipboard()) else {
-        return;
+        return Err("the clipboard is unavailable".to_owned());
     };
-    let _ = wasm_bindgen_futures::JsFuture::from(clipboard.write_text(text)).await;
+    wasm_bindgen_futures::JsFuture::from(clipboard.write_text(text))
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("clipboard write failed: {error:?}"))
 }
 
 /// Run the signup ceremony for the typed address.
@@ -1203,7 +1242,14 @@ pub(crate) fn run_signup_ceremony() {
         match outcome {
             Err(error) => {
                 tonk_common::log!("register: the ceremony did not complete: {error}");
-                set_status(&error);
+                set_status(&user_error::diagnostic(
+                    if existing {
+                        AccountAction::LogIn
+                    } else {
+                        AccountAction::CreateAccount
+                    },
+                    &error,
+                ));
                 // Back to something clickable: a control left mid-flight
                 // refuses every later attempt.
                 set_action(
@@ -1518,12 +1564,19 @@ fn offer_the_link(name: &str) {
     wasm_bindgen_futures::spawn_local({
         let name = name.to_owned();
         async move {
-            if let Err(error) = crate::api::transact_profile(profile_rename_claim(&name)).await {
-                tonk_common::log!("register: could not record the display name: {error}");
-            }
+            let status = match crate::api::transact_profile(profile_rename_claim(&name)).await {
+                Ok(()) => "Your account is ready.".to_owned(),
+                Err(error) => {
+                    tonk_common::log!("register: could not record the display name: {error}");
+                    user_error::diagnostic(
+                        AccountAction::SaveInitialDisplayName,
+                        &error.to_string(),
+                    )
+                }
+            };
             match pending_share() {
                 Some(_) => {
-                    set_status("Your account is ready.");
+                    set_status(&status);
                     set_action(COPY_LINK, true);
                 }
                 None => {
@@ -1531,7 +1584,7 @@ fn offer_the_link(name: &str) {
                     // but there is still a way out to offer: hiding the
                     // action left the ceremony finished and standing,
                     // with only the back arrow to leave by.
-                    set_status("Your account is ready.");
+                    set_status(&status);
                     set_action(RETURN_TO_SPACE, true);
                     focus_action();
                 }

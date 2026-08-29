@@ -196,6 +196,9 @@ must not restore it.
 **Output, errors, and recovery.** Errors need stage names and a next action.
 “Cancelled” is valid only before remote registration. After that, status and
 device lists are the recovery tools.
+The browser never echoes a callback-supplied message. If the terminal does not
+receive the account link, the browser directs the person back to the terminal
+to start login again while retaining the exact diagnostic in the console.
 
 **Accessibility, TTY, and machine output.** The approval panel must name the
 device, expose keyboard approve/decline, and maintain focus. CLI signals, exit

@@ -82,10 +82,10 @@ pub(crate) fn watch(this: &HtmlElement) -> Option<ActivationWatch> {
         Err(error) => tonk_common::log!("activation: could not watch: {error:?}"),
     }
 
-    // An account nobody has registered yet resolves to no row at all —
-    // `provider` is required on the concept, so "enrolled but unserved"
-    // does not match. That absence IS the answer, and nothing else will
-    // say it, so paint it now rather than waiting for a frame.
+    // An account nobody has registered yet resolves to no row at all.
+    // Paint that absence now rather than waiting for a frame. An enrolled
+    // account awaiting confirmation does resolve because `provider` is
+    // optional in the query, and its frame replaces this initial state.
     render(this, None, None);
 
     Some(ActivationWatch { _frames: frames })
@@ -204,7 +204,7 @@ fn ensure_banner(this: &HtmlElement, email: &str) {
 fn set_banner_copy(banner: &Element, email: &str) {
     if let Ok(Some(message)) = banner.query_selector("[data-activation-message]") {
         message.set_text_content(Some(&format!(
-            "{email} is not activated yet — nothing syncs until it is"
+            "{email} is waiting for email confirmation — nothing syncs until you confirm it"
         )));
     }
 }
@@ -353,6 +353,7 @@ mod tests {
     fn it_reads_the_condition_from_the_account_row() {
         let body = crate::logic::account_customer_query_body();
         assert!(body.contains("xyz.tonk.account/customer-status"));
+        assert!(body.contains("xyz.tonk.account/customer-email"));
         assert!(body.contains("xyz.tonk.account/provider-address"));
         // A concept name would need the profile to have been seeded with
         // a matching definition; the raw URIs need nothing.
