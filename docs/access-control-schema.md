@@ -34,7 +34,7 @@ erDiagram
     customer {
         TEXT account PK "DID (did:key) of the ACCOUNT: identity and subscription are fused"
         TEXT email UK
-        TEXT ledger "DID (did:key), nullable: the space this service replicates metering into"
+        BLOB access "the customer-to-service delegation; not yet read by anything"
         TEXT status "enum: Registered | Active | Suspended"
         TEXT plan FK "plan.id, not a DID"
         INTEGER verified_at "activation time, 0 while Registered"

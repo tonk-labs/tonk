@@ -69,6 +69,25 @@ Two conventions the document keeps:
   re-derivable, so holding one forever would strand the account. A
   reader who does not know that will remove the expiry.
 
+## The test that checks this
+
+`rust/tonk-access-service/tests/schema_doc.rs` applies every migration to
+an in-memory database and compares the result against the `erDiagram`
+block, table by table and column by column. A missing column and an
+invented one both fail, each naming what is wrong.
+
+```
+cargo test -p tonk-access-service --features integration-tests --test schema_doc
+```
+
+It exists because this document drifted while a skill said not to let it:
+the diagram carried a `ledger` column no migration ever created, and
+omitted the `access` one that does exist. Prose asking for diligence did
+not survive a rename; a red test does.
+
+The test reads structure only. Comments, relationships, the flowchart and
+the lifecycle are still yours to keep true.
+
 ## Checking your work
 
 Mermaid fails silently when a block is malformed — the diagram renders
