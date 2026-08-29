@@ -144,8 +144,17 @@ Three relationships that a single word would blur:
 | Provider | `subscription.provider` | who pays for it | exactly one, required to serve |
 | Sponsor | *(not yet built)* | pledges credits to a consumer it does not provide | zero or more |
 
-`owner` and `provider` are seeded identical and diverge only when a
-provider changes.
+`owner` and `provider` hold the same value on every write today:
+nothing transfers a space to a different payer, so no code path sets
+them apart. `owner` is kept anyway because it answers a different
+question — the deletion check asks "is this your space?", which stays
+right when third-party payment makes the answer stop coinciding with
+"do you pay for it?". Collapsing them now would encode the coincidence,
+and the bug would surface only on the day a space gets a second payer.
+
+That day is also when ownership moves to its own `space` table
+(`subject` PK, `account`): several subscriptions per space means several
+copies of `owner` with nothing keeping them in step.
 
 ## Not yet built
 
