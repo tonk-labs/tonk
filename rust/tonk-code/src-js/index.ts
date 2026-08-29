@@ -1242,9 +1242,13 @@ const SHADOW_STYLESHEET = `
 
   :host([hidden]) { display: none; }
 
+  /* No focus ring on the host. A cell takes focus whenever the caret
+     enters it, and a blue border plus a 2px halo reads as a form field
+     being validated rather than as a cursor. The editor already carries
+     its own caret, and the notebook's block highlight says which block
+     you are in; a third signal on top of those is noise. */
   :host(:focus-within) {
-    border-color: var(--tonk-code-cursor);
-    box-shadow: 0 0 0 2px var(--tonk-code-focus-ring);
+    border-color: var(--tonk-code-border);
   }
 
   .cm-editor { height: 100%; }

@@ -262,7 +262,11 @@ ${t[n]}`}return Mr(Na(e)).content}function Fa(t,e){let n=t.length,r=e.length,i=0
   /* ProseMirror needs these for correct behavior. */
   .ProseMirror { position: relative; }
   .ProseMirror-hideselection *::selection { background: transparent; }
-  .ProseMirror-selectednode { outline: 2px solid var(--tonk-prose-accent); }
+  /* No outline on a selected node. A code cell is selected whenever the
+     caret enters it, and a ring around the box reads as an error state
+     rather than a cursor. The block highlight below carries "where am I"
+     instead, across the whole block rather than one node of it. */
+  .ProseMirror-selectednode { outline: none; }
   .ProseMirror-gapcursor {
     display: none;
     pointer-events: none;
