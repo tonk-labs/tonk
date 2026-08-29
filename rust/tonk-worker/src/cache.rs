@@ -9,18 +9,40 @@
 //! pass through. Caching policy lives here in one place rather
 //! than being split between JS and Rust.
 
+use std::sync::OnceLock;
+
 use js_sys::{Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Cache, Request, Response, ServiceWorkerGlobalScope};
 
-/// Cache name. Carries a version segment so an SW update that
-/// changes the cache surface invalidates the entire cache
-/// atomically — the new worker installs against `_v2`, and
-/// `purge_old_caches` (called from `onactivate`) drops every
-/// older `TONK_SHELL_*` cache. Bump when the cached-asset
-/// surface changes shape.
-const SHELL_CACHE: &str = "TONK_SHELL_v1";
+/// Prefixes for this worker's caches. The full name is the prefix
+/// plus the build id, so every build owns its own caches and two
+/// builds can never read or write the same one.
+const SHELL_PREFIX: &str = "TONK_SHELL_";
+const WORKER_PREFIX: &str = "TONK_WORKER_";
+
+/// The build id, handed in by the JS shim at activate time (see
+/// `set_build_id`). The shim gets it from the stamp
+/// `scripts/hash-guest.sh` writes, so both sides derive their cache
+/// names from one injected value instead of hand-syncing a literal
+/// across two languages.
+static BUILD_ID: OnceLock<String> = OnceLock::new();
+
+/// Record the build id for cache naming. Called once, from the
+/// worker binary's `activate` export, before any cache use.
+pub fn set_build_id(id: String) {
+    let _ = BUILD_ID.set(id);
+}
+
+fn build_id() -> &'static str {
+    BUILD_ID.get().map(String::as_str).unwrap_or("dev")
+}
+
+/// This build's shell cache name.
+fn shell_cache() -> String {
+    format!("{SHELL_PREFIX}{}", build_id())
+}
 
 /// Should this request be served via the shell cache?
 ///
@@ -32,6 +54,13 @@ const SHELL_CACHE: &str = "TONK_SHELL_v1";
 /// on the Rust worker boot.
 pub fn is_cacheable(request: &Request, path: &str) -> bool {
     if request.method() != "GET" {
+        return false;
+    }
+    // Same-origin only — see `isShellCacheable` in `service_worker.js`,
+    // which this mirrors. Excluding opaque responses isn't enough: a
+    // CORS-enabled cross-origin GET succeeds normally and would be
+    // stored in the app's own shell cache.
+    if !is_same_origin(&request.url()) {
         return false;
     }
     if request.mode() == web_sys::RequestMode::Navigate {
@@ -83,26 +112,62 @@ pub async fn stale_while_revalidate(request: &Request) -> Result<JsValue, JsValu
     }
 }
 
-/// Drop every cache key that doesn't match the current version.
-/// Called from `onactivate` so the page's first fetch after an
-/// SW update doesn't race against a stale entry from the
-/// previous worker.
+/// Drop every cache belonging to a build other than this one.
+/// Called from `onactivate`, once this worker is the controller —
+/// only then is the previous build's cache genuinely nobody's.
+///
+/// This is what makes an install atomic: the incoming worker
+/// populates its OWN shell cache, so the still-serving old worker
+/// never observes a half-written one, and the crossing that
+/// `serve_navigation`'s prune logic works to avoid can't arise.
 pub async fn purge_old_caches() -> Result<(), JsValue> {
     let caches = caches()?;
+    let shell = shell_cache();
+    let worker = format!("{WORKER_PREFIX}{}", build_id());
     let keys: js_sys::Array = JsFuture::from(caches.keys()).await?.dyn_into()?;
     for key in keys.iter() {
         let Some(name) = key.as_string() else {
             continue;
         };
-        if name.starts_with("TONK_SHELL_") && name != SHELL_CACHE {
+        // Both families, so a superseded build leaves nothing behind:
+        // its shell AND the copy of its wasm the JS shim precached.
+        let stale = (name.starts_with(SHELL_PREFIX) && name != shell)
+            || (name.starts_with(WORKER_PREFIX) && name != worker);
+        if stale {
             let _ = JsFuture::from(caches.delete(&name)).await;
         }
     }
     Ok(())
 }
 
+/// Whether `url` is on this worker's own origin.
+///
+/// A request URL is always absolute and already normalized by the
+/// browser, so an origin prefix test is exact here: the character
+/// after the origin can only be `/`, `?` or `#`, none of which can
+/// appear inside an origin — so `https://evil.test/` cannot match a
+/// base of `https://tonk.network`.
+///
+/// Anything we can't confirm is treated as foreign: refusing to cache
+/// it costs a network fetch, whereas caching it wrongly puts another
+/// origin's bytes behind our own paths.
+fn is_same_origin(url: &str) -> bool {
+    let Ok(global) = js_sys::global().dyn_into::<ServiceWorkerGlobalScope>() else {
+        return false;
+    };
+    let base = global.location().origin();
+    if base.is_empty() {
+        return false;
+    }
+    match url.strip_prefix(&base) {
+        Some("") => true,
+        Some(rest) => rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#'),
+        None => false,
+    }
+}
+
 async fn open_cache() -> Result<Cache, JsValue> {
-    let cache_value = JsFuture::from(caches()?.open(SHELL_CACHE)).await?;
+    let cache_value = JsFuture::from(caches()?.open(&shell_cache())).await?;
     cache_value.dyn_into::<Cache>()
 }
 
@@ -191,4 +256,87 @@ fn is_opaque(response: &Response) -> bool {
 extern "C" {
     #[wasm_bindgen(js_name = fetch)]
     fn sw_fetch(request: &Request) -> Promise;
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    use web_sys::RequestInit;
+
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    fn get(url: &str) -> Request {
+        let init = RequestInit::new();
+        init.set_method("GET");
+        Request::new_with_str_and_init(url, &init).expect("request")
+    }
+
+    fn origin() -> String {
+        js_sys::global()
+            .dyn_into::<ServiceWorkerGlobalScope>()
+            .expect("service worker scope")
+            .location()
+            .origin()
+    }
+
+    /// A cross-origin GET must never enter the app's shell cache.
+    /// Excluding opaque responses was not enough: a CORS-enabled
+    /// cross-origin fetch succeeds like any same-origin one, so it
+    /// would have been stored under, and later served from, this
+    /// app's own cache.
+    #[dialog_common::test]
+    async fn it_refuses_to_cache_another_origin() {
+        assert!(
+            !is_cacheable(&get("https://evil.test/app.js"), "/app.js"),
+            "a foreign origin must not be shell-cacheable"
+        );
+        // A prefix test alone would be fooled by a longer host that
+        // starts with ours; the origin must end at a path boundary.
+        let lookalike = format!("{}.evil.test/app.js", origin());
+        assert!(
+            !is_cacheable(&get(&lookalike), "/app.js"),
+            "a host merely PREFIXED by our origin is still foreign"
+        );
+    }
+
+    /// The same request on our own origin still caches — the origin
+    /// check must not have closed the door on the normal path.
+    #[dialog_common::test]
+    async fn it_still_caches_our_own_assets() {
+        let url = format!("{}/ui-abc123.js", origin());
+        assert!(
+            is_cacheable(&get(&url), "/ui-abc123.js"),
+            "a same-origin static asset is the whole point of the cache"
+        );
+    }
+
+    /// The data plane is never served from cache, same origin or not.
+    #[dialog_common::test]
+    async fn it_never_caches_the_data_plane() {
+        let url = format!("{}/api/health", origin());
+        assert!(!is_cacheable(&get(&url), "/api/health"));
+    }
+
+    /// Cache names carry the build id, so two builds cannot share a
+    /// cache. That is what makes an install atomic: the incoming
+    /// worker populates its OWN shell cache, and the still-serving old
+    /// worker can never observe a half-written one.
+    #[dialog_common::test]
+    async fn it_scopes_cache_names_to_the_build() {
+        let name = shell_cache();
+        assert!(
+            name.starts_with(SHELL_PREFIX),
+            "shell cache keeps its prefix so purge can find it: {name}"
+        );
+        assert!(
+            name.ends_with(build_id()),
+            "shell cache is scoped to this build: {name}"
+        );
+        assert_ne!(
+            name,
+            format!("{SHELL_PREFIX}some-other-build"),
+            "a different build must name a different cache"
+        );
+    }
 }

@@ -87,7 +87,7 @@ EOF
 echo "hash-guest: js=$JS wasm=$WASM waJs=$WA_JS waCss=$WA_CSS"
 
 # ---------------------------------------------------------------------------
-# Service-worker cache-bust.
+# Service-worker build identity.
 #
 # The SW script chain — `service_worker.js` (a copied static file) imports
 # `worker.js` (trunk's `data-bin=worker` glue) which loads `worker_bg.wasm`
@@ -97,20 +97,58 @@ echo "hash-guest: js=$JS wasm=$WASM waJs=$WA_JS waCss=$WA_CSS"
 # identical across rebuilds even when the wasm changed, so the browser never
 # detects an update and the old worker is never replaced.
 #
-# Fix: stamp the current `worker_bg.wasm` content hash into a comment in
-# `service_worker.js`. Its bytes now change iff the worker wasm changes, so
-# the browser's byte comparison sees a new script and installs the update.
+# So stamp a build id into `service_worker.js`. Two properties matter:
+#
+#  1. It hashes the WHOLE worker artifact set (glue + wasm), not just the
+#     wasm. A glue-only change would otherwise rely on the browser
+#     byte-checking imported scripts — correct on current engines, but
+#     historically unreliable on WebKit, which is the engine that strands
+#     users on old workers.
+#
+#  2. It is a real `const`, not a comment. The shim needs the value at
+#     runtime: it names the per-version caches (so two builds never share
+#     one cache) and it verifies the wasm the worker precaches at install,
+#     which is what keeps glue and wasm from drifting apart.
 DIST="${TRUNK_STAGING_DIR:?TRUNK_STAGING_DIR not set}"
 SW="$DIST/service_worker.js"
 WORKER_WASM="$DIST/worker_bg.wasm"
-if [ -f "$SW" ] && [ -f "$WORKER_WASM" ]; then
-    WH=$(hash_of "$WORKER_WASM")
-    # Drop any prior stamp, then append the current one. The marker line is
-    # inert (a comment) and changes the script's bytes with the wasm.
-    grep -v '^// worker-wasm-hash:' "$SW" > "$SW.tmp" || cp "$SW" "$SW.tmp"
-    printf '// worker-wasm-hash: %s\n' "$WH" >> "$SW.tmp"
+WORKER_GLUE="$DIST/worker.js"
+if [ -f "$SW" ] && [ -f "$WORKER_WASM" ] && [ -f "$WORKER_GLUE" ]; then
+    WASM_HASH=$(hash_of "$WORKER_WASM")
+    echo "$WASM_HASH" | grep -qE '^[0-9a-f]{16}$' || {
+        echo "hash-guest: bad worker wasm hash '$WASM_HASH'" >&2
+        exit 1
+    }
+    # Build id covers glue and wasm together. Hash of the concatenated
+    # per-file hashes, so it changes if EITHER half changes.
+    BUILD_ID=$(printf '%s\n' "$WASM_HASH" "$(hash_of "$WORKER_GLUE")" \
+        | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } \
+        | cut -c1-16)
+    echo "$BUILD_ID" | grep -qE '^[0-9a-f]{16}$' || {
+        echo "hash-guest: bad worker build id '$BUILD_ID'" >&2
+        exit 1
+    }
+    # Replace the placeholder declarations the checked-in source carries.
+    # `__TONK_BUILD_ID__` / `__TONK_WORKER_WASM_HASH__` are the dev-build
+    # values; a release build rewrites them in place. Fail loudly if the
+    # placeholders are gone — a silent no-op here reintroduces exactly the
+    # staleness this hook exists to prevent.
+    grep -q 'const BUILD_ID = ' "$SW" || {
+        echo "hash-guest: service_worker.js has no BUILD_ID declaration to stamp" >&2
+        exit 1
+    }
+    sed -e "s|^const BUILD_ID = .*|const BUILD_ID = \"$BUILD_ID\";|" \
+        -e "s|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = \"$WASM_HASH\";|" \
+        "$SW" > "$SW.tmp"
     mv -f "$SW.tmp" "$SW"
-    echo "hash-guest: stamped service_worker.js with worker-wasm-hash=$WH"
+
+    # `version.json` — the page-side update probe (finding 4). Served
+    # `no-store`, so it answers correctly even when the SW's own update
+    # machinery is wedged, which is the Safari failure mode.
+    cat > "$DIST/version.json" <<EOF
+{ "build": "$BUILD_ID", "workerWasm": "$WASM_HASH" }
+EOF
+    echo "hash-guest: stamped service_worker.js build=$BUILD_ID wasm=$WASM_HASH"
 else
-    echo "hash-guest: no service_worker.js or worker_bg.wasm to stamp, skipping"
+    echo "hash-guest: no service_worker.js / worker.js / worker_bg.wasm to stamp, skipping"
 fi
