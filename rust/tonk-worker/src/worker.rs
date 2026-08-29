@@ -28,6 +28,14 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
 
+/// Request headers an opaque-origin caller is allowed to send.
+///
+/// Every `x-tonk-*` header the bridge sends must be named here, or the
+/// preflight rejects it and the request never arrives at all. `site`
+/// identifies the tab, `path`/`hash` carry the route, `build` drives the
+/// version handshake, `blob-name` names an upload.
+const ALLOWED_REQUEST_HEADERS: &str = "content-type, if-none-match, accept, x-tonk-site, x-tonk-path, x-tonk-hash, x-tonk-build, x-tonk-blob-name";
+
 /// The fetch event whose lifetime owns background work started by one of its
 /// routed handlers.
 ///
@@ -243,7 +251,7 @@ async fn handle_via_router(
     );
     headers.insert(
         HeaderName::from_static("access-control-allow-headers"),
-        HeaderValue::from_static("content-type, if-none-match, accept"),
+        HeaderValue::from_static(ALLOWED_REQUEST_HEADERS),
     );
     headers.insert(
         HeaderName::from_static("access-control-expose-headers"),
@@ -419,6 +427,80 @@ pub struct TonkState {
 unsafe impl Send for TonkState {}
 #[cfg(target_arch = "wasm32")]
 unsafe impl Sync for TonkState {}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::ALLOWED_REQUEST_HEADERS;
+
+    /// Every `x-tonk-*` header this crate READS off an incoming request.
+    ///
+    /// Read out of the source rather than restated, so adding a header to
+    /// a route without allowing it fails here instead of in a browser,
+    /// where it shows up as a preflight rejection and a request that
+    /// simply never arrives.
+    fn headers_the_routes_read() -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        for source in [
+            include_str!("worker.rs"),
+            include_str!("router.rs"),
+            include_str!("router/session.rs"),
+            include_str!("router/blob.rs"),
+        ] {
+            for (index, _) in source.match_indices("\"x-tonk-") {
+                let rest = &source[index + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let name = &rest[..end];
+                // Response-only headers are not sent BY a caller, so they
+                // belong in expose-headers, not in the allow list. The
+                // bare prefix is this test's own search needle.
+                if name == "x-tonk-client-id" || name == "x-tonk-" {
+                    continue;
+                }
+                if !found.iter().any(|seen| seen == name) {
+                    found.push(name.to_owned());
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn it_allows_every_tonk_header_the_routes_read() {
+        let allowed: Vec<&str> = ALLOWED_REQUEST_HEADERS.split(", ").collect();
+        let missing: Vec<String> = headers_the_routes_read()
+            .into_iter()
+            .filter(|name| !allowed.contains(&name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these headers are read by a route but not named in \
+             access-control-allow-headers, so an opaque-origin caller's \
+             preflight rejects them: {missing:?}",
+        );
+    }
+
+    #[test]
+    fn it_finds_the_headers_it_claims_to_check() {
+        // Guards the grep above: if it silently matched nothing, the
+        // test before this one would pass no matter what was allowed.
+        let read = headers_the_routes_read();
+        assert!(
+            read.iter().any(|name| name == "x-tonk-build"),
+            "expected to find x-tonk-build among {read:?}",
+        );
+        assert!(read.len() >= 4, "expected several headers, found {read:?}");
+    }
+
+    #[test]
+    fn it_still_allows_the_standard_headers() {
+        for name in ["content-type", "if-none-match", "accept"] {
+            assert!(
+                ALLOWED_REQUEST_HEADERS.split(", ").any(|h| h == name),
+                "{name} must stay allowed",
+            );
+        }
+    }
+}
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod route_for_tests {
