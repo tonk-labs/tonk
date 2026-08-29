@@ -102,12 +102,14 @@ const OUTPUT_CSS: &str = r#"
    Quieter than the focused code cell above, deliberately: this says "you
    are here", not "this is selected". */
 .nb-block-active {
-  background: rgba(127, 127, 127, 0.055);
-  background: color-mix(in srgb, currentColor 5.5%, transparent);
-  box-shadow: -0.6rem 0 0 0 currentColor, 0.6rem 0 0 0 currentColor;
+  background: rgba(127, 127, 127, 0.14);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   box-shadow:
-    -0.6rem 0 0 0 color-mix(in srgb, currentColor 5.5%, transparent),
-    0.6rem 0 0 0 color-mix(in srgb, currentColor 5.5%, transparent);
+    -0.6rem 0 0 0 rgba(127, 127, 127, 0.14),
+    0.6rem 0 0 0 rgba(127, 127, 127, 0.14);
+  box-shadow:
+    -0.6rem 0 0 0 color-mix(in srgb, currentColor 12%, transparent),
+    0.6rem 0 0 0 color-mix(in srgb, currentColor 12%, transparent);
 }
 .nb-block-active:not(.nb-block-active + .nb-block-active) {
   border-start-start-radius: 0.25rem;
