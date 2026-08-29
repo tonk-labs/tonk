@@ -86,7 +86,12 @@ mod tests {
             .issuer(dialog_credentials::Signer::from(device))
             .audience(&root.did())
             .subject(&root.did())
-            .command(vec!["memory".into(), "resolve".into()])
+            .command(vec![
+                "use".into(),
+                "get".into(),
+                "memory".into(),
+                "cell".into(),
+            ])
             .proofs(vec![cid])
             .expiration(Timestamp::five_minutes_from_now())
             .try_build()
@@ -100,7 +105,7 @@ mod tests {
         .unwrap();
 
         let record = collect(&container, "ok", None, 0, 1_755_000_000).unwrap();
-        assert_eq!(record.cmd, "/memory/resolve");
+        assert_eq!(record.cmd, "/use/get/memory/cell");
         assert_eq!(record.consumer, root.did().to_string());
         assert_eq!(record.proofs.len(), 1);
         let again = collect(&container, "ok", None, 0, 1_755_000_000).unwrap();

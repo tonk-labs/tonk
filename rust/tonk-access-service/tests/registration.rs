@@ -1285,6 +1285,15 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     // The ceremony's pre-signed shape: bounded to a month, redeemed
     // long after signing — what the worker drains once activation lands.
     let publish = custody::build_deferred_publish_invocation(custody_key.clone(), &sealed).await?;
+    // The same invocation enrollment verifies, so the command it accepts
+    // and the one this endpoint redeems cannot drift apart. Reading it
+    // back from the built container rather than restating it is the
+    // point: a constant restated in two places is how they diverged.
+    assert_eq!(
+        InvocationChain::try_from(publish.as_slice())?.command().0,
+        tonk_access_service::registration::CUSTODY_PUBLISH_COMMAND,
+        "the command enrollment demands must be the one the service redeems"
+    );
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
