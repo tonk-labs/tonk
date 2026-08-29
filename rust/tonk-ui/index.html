@@ -978,6 +978,40 @@
                 window.addEventListener("online", checkForUpdate);
                 setInterval(checkForUpdate, 60 * 60 * 1000);
 
+                // Deliberately NOT listening to `updatefound` to decide
+                // this. `registration` is shared across every tab on the
+                // origin, so that event fires in all of them — including
+                // tabs already running the new build, and including the
+                // install a *sibling tab's* reload just triggered. Two tabs
+                // then ping-pong: reload A, B prompts; reload B, A prompts;
+                // forever, with neither ever actually wrong.
+                //
+                // Gating it on `registration.waiting` does not fix that
+                // either: this worker calls `skipWaiting()`, so a successor
+                // goes `installing -> activating` and barely touches the
+                // `waiting` slot. The gate reads an almost-always-empty
+                // field and fires or not by luck.
+                //
+                // The honest question is a STATE, not an event: is the
+                // build this page loaded different from the build being
+                // served now? Each tab answers that for itself, no sibling
+                // can trigger it, and a reload makes it false — so the
+                // prompt appears exactly when reloading would change
+                // something, and stops once it would not.
+                const checkStale = async () => {
+                    try {
+                        const response = await fetch("/version.json", {
+                            cache: "no-store",
+                        });
+                        if (!response.ok) return;
+                        const { build } = await response.json();
+                        if (!build || !ourBuild) return;
+                        if (build !== ourBuild) announceUpdate();
+                    } catch {
+                        // Offline — nothing to report.
+                    }
+                };
+
                 // ---- Version probe ---------------------------------------
                 //
                 // `version.json` is written by the build (see
@@ -988,7 +1022,11 @@
                 // reports a build other than the one this worker is running,
                 // announce it; `<tonk-site>` renders the reload affordance.
                 const BUILD_PROBE_MS = 15 * 60 * 1000;
-                let knownBuild = null;
+                // The build THIS document loaded with, fixed for its
+                // lifetime. Staleness is measured against it: the page is
+                // stale exactly when the served build differs from the one
+                // it started on, and a reload is what resolves that.
+                let ourBuild = null;
 
                 // Publish this document's build so the host layer can
                 // send it on every `/api/*` request. `skipWaiting` +
@@ -1004,47 +1042,32 @@
                 // `navigate` method that does not exist here and returned
                 // early. Links and menu buttons silently stopped working.
                 const publishBuild = (build) => {
+                    ourBuild = build;
                     globalThis.tonkBuild = build;
                 };
-                const probeVersion = async () => {
+                // Record our own build first, then poll for divergence.
+                void (async () => {
                     try {
                         const response = await fetch("/version.json", {
                             cache: "no-store",
                         });
-                        if (!response.ok) return;
-                        const { build } = await response.json();
-                        if (!build) return;
-                        if (knownBuild === null) {
-                            knownBuild = build;
-                            publishBuild(build);
-                            return;
-                        }
-                        if (build !== knownBuild) {
-                            knownBuild = build;
-                            // Pair the signal with a real update check, so
-                            // the new worker is actually installing by the
-                            // time the user acts on the prompt.
-                            checkForUpdate();
-                            announceUpdate();
+                        if (response.ok) {
+                            const { build } = await response.json();
+                            if (build) publishBuild(build);
                         }
                     } catch {
-                        // Offline — nothing to report.
+                        // Offline at boot — the handshake header is simply
+                        // absent, which the worker treats as "cannot
+                        // classify" and lets through.
                     }
-                };
-                void probeVersion();
-                setInterval(probeVersion, BUILD_PROBE_MS);
-
-                // A worker that reaches `installed` while this page already
-                // has a controller is a NEW build waiting to take over. Same
-                // announcement, from the other direction — this one fires
-                // even when the version probe is blocked.
-                registration.addEventListener("updatefound", () => {
-                    const installing = registration.installing;
-                    if (!installing || !navigator.serviceWorker.controller) return;
-                    installing.addEventListener("statechange", () => {
-                        if (installing.state === "installed") announceUpdate();
+                    setInterval(checkStale, BUILD_PROBE_MS);
+                    // Also on focus: a tab returned to after a deploy is the
+                    // likeliest moment for the prompt to matter.
+                    document.addEventListener("visibilitychange", () => {
+                        if (document.visibilityState === "visible") checkStale();
                     });
-                });
+                })();
+
         </script>
     </body>
 </html>

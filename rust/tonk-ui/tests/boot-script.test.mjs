@@ -29,6 +29,17 @@ function moduleBlocks() {
   );
 }
 
+/** The one module block that owns `needle`. */
+function moduleBlockContaining(needle) {
+  const matches = moduleBlocks().filter((block) => block.includes(needle));
+  assert.equal(
+    matches.length,
+    1,
+    `expected exactly one module block containing ${needle}, found ${matches.length}`,
+  );
+  return matches[0];
+}
+
 /**
  * Bare identifiers a block CALLS as a plain function — `foo(...)`, not
  * `obj.foo(...)` — that it does not itself declare.
@@ -110,15 +121,15 @@ describe("boot script module scoping", () => {
     // The specific pairing that broke: the gate runs BEFORE registration
     // and decides whether it happens at all, so a scope split here means
     // no service worker is registered on any page load.
-    const blocks = moduleBlocks();
-    const registering = blocks.find((b) => b.includes("serviceWorker.register"));
-    assert.ok(registering, "expected a block that registers the worker");
+    const registering = moduleBlockContaining("serviceWorker.register");
     assert.ok(
       registering.includes("await isRevoked()"),
       "the revocation gate should guard registration",
     );
     assert.ok(
-      /(?:async\s+)?function isRevoked/.test(registering),
+      /(?:function\s+isRevoked|const\s+isRevoked\s*=\s*async)/.test(
+        registering,
+      ),
       "isRevoked must be defined in the same block that calls it",
     );
   });
@@ -153,10 +164,9 @@ describe("boot script contract with the worker", () => {
     // request; the worker compares it against its own. If the boot
     // script stops publishing it, the handshake silently stops working
     // rather than failing loudly.
-    const blocks = moduleBlocks();
-    const registering = blocks.find((b) => b.includes("serviceWorker.register"));
+    const updateDiscovery = moduleBlockContaining("globalThis.tonkBuild");
     assert.match(
-      registering,
+      updateDiscovery,
       /globalThis\.tonkBuild\s*=/,
       "the build id is published under its own name, not on window.tonk",
     );
@@ -165,12 +175,40 @@ describe("boot script contract with the worker", () => {
   test("asks for updates on the triggers an SPA actually gets", () => {
     // The browser only checks on navigation and at register time, which
     // a pushState app with long-lived tabs can go days without.
-    const registering = moduleBlocks().find((b) =>
-      b.includes("serviceWorker.register"),
+    const updateDiscovery = moduleBlockContaining("const checkForUpdate");
+    assert.match(updateDiscovery, /visibilitychange/);
+    assert.match(updateDiscovery, /"online"/);
+    assert.match(updateDiscovery, /registration\.update\(\)/);
+  });
+
+  test("decides staleness by comparing builds, not by listening for events", () => {
+    // `registration` is shared across every tab on the origin, so
+    // `updatefound` fires in all of them — including tabs already
+    // running the new build, and including the install a sibling tab's
+    // reload just triggered. Announcing on that event made two tabs
+    // ping-pong: reload A, B prompts; reload B, A prompts; forever.
+    //
+    // Gating on `registration.waiting` did not fix it either: the
+    // worker calls `skipWaiting()`, so a successor goes
+    // `installing -> activating` and barely touches that slot.
+    //
+    // The honest question is a state each tab answers for itself: is
+    // the served build different from the one this page loaded?
+    const updateDiscovery = moduleBlockContaining("const checkStale");
+    const code = updateDiscovery
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+
+    assert.match(
+      code,
+      /build\s*!==\s*ourBuild/,
+      "staleness must be a build comparison against this page's own build",
     );
-    assert.match(registering, /visibilitychange/);
-    assert.match(registering, /"online"/);
-    assert.match(registering, /registration\.update\(\)/);
+    assert.ok(
+      !/registration\.addEventListener\(\s*["']updatefound["']/.test(code),
+      "announcing from the `updatefound` event makes sibling tabs prompt " +
+        "each other in a loop",
+    );
   });
 
   test("reads the version and kill-switch probes uncached", () => {
