@@ -107,20 +107,99 @@ describe("boot script module scoping", () => {
   });
 
   test("registration and its revocation gate live together", () => {
-    // The specific pairing that broke: the gate runs BEFORE registration
-    // and decides whether it happens at all, so a scope split here means
-    // no service worker is registered on any page load.
+    // The specific pairing that broke: `isRevoked` was declared in one
+    // block and called from another, so the call threw before any
+    // worker was registered. They have to stay in one block.
     const blocks = moduleBlocks();
     const registering = blocks.find((b) => b.includes("serviceWorker.register"));
     assert.ok(registering, "expected a block that registers the worker");
     assert.ok(
-      registering.includes("await isRevoked()"),
-      "the revocation gate should guard registration",
+      registering.includes("isRevoked("),
+      "the revocation gate should live with registration",
     );
     assert.ok(
       /(?:async\s+)?function isRevoked/.test(registering),
       "isRevoked must be defined in the same block that calls it",
     );
+  });
+});
+
+describe("boot script revocation gate", () => {
+  // The gate used to be `else if (await isRevoked())`, which put two
+  // `no-store` round-trips in front of `register()` on EVERY load — for
+  // a file that is empty in every case but a rollback.
+  const registering = () =>
+    moduleBlocks().find((b) => b.includes("serviceWorker.register"));
+
+  test("does not block registration on the revocation probe", () => {
+    const block = registering();
+    const register = block.indexOf("serviceWorker.register");
+    const gate = block.search(/await\s+isRevoked\s*\(/);
+    assert.ok(
+      gate === -1 || gate > register,
+      "awaiting isRevoked() before register() puts a network round-trip " +
+        "in front of the service worker on every page load",
+    );
+  });
+
+  test("still unregisters when the build is revoked", () => {
+    const block = registering();
+    assert.match(
+      block,
+      /isRevoked\(\)\s*\.then\([\s\S]*?unregisterAll\(\)/,
+      "a revoked build must still tear its workers down, just not on " +
+        "the critical path",
+    );
+    assert.match(
+      block,
+      /getRegistrations\(\)/,
+      "unregisterAll must reach every registration on the origin",
+    );
+  });
+
+  test("never reloads the page on revocation", () => {
+    // A revoked worker that unregisters while the page re-registers it
+    // is a navigation loop, and it is worse than the bad build. This
+    // cost a manual flag-file deletion to break once already.
+    const block = registering();
+    const gate = block.slice(block.indexOf("function unregisterAll"));
+    const body = gate.slice(0, gate.indexOf("\n            }"));
+    assert.doesNotMatch(
+      body,
+      /location\.reload|location\.href|navigate\(/,
+      "unregisterAll must not navigate",
+    );
+  });
+});
+
+describe("shipped control files", () => {
+  test("kill-switch.json ships, empty and parseable", () => {
+    // Without a real file the probe hits the SPA catch-all, which
+    // answers with the whole shell at 200 — so both the worker and the
+    // page have to parse HTML defensively and throw it away, having
+    // paid for the download.
+    const flag = JSON.parse(
+      readFileSync(join(HERE, "..", "assets", "kill-switch.json"), "utf8"),
+    );
+    assert.deepEqual(flag.revoked, [], "shipped flag must revoke nothing");
+  });
+
+  test("kill-switch.json is copied into dist", () => {
+    const html = readFileSync(INDEX, "utf8");
+    assert.match(
+      html,
+      /rel="copy-file"\s+href="\.\/assets\/kill-switch\.json"/,
+      "the flag has to be wired into the Trunk build to be served",
+    );
+  });
+
+  test("kill-switch.json is served no-store", () => {
+    // A cached kill switch is not a kill switch.
+    const headers = readFileSync(
+      join(HERE, "..", "assets", "_headers"),
+      "utf8",
+    );
+    assert.match(headers, /\/kill-switch\.json\s*\n\s*Cache-Control: no-store/);
   });
 });
 

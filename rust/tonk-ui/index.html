@@ -510,6 +510,13 @@
        `plan/offline-support.md` called for this; it had never been wired,
        so everything was served `max-age=0, must-revalidate`. -->
         <link data-trunk rel="copy-file" href="./assets/_headers" />
+        <!-- The remote kill switch, shipped empty. It exists so the
+       probe gets a real 200 with real JSON: without it an SPA host
+       answers the missing path with the whole shell, which both the
+       worker and the boot script then have to parse defensively and
+       throw away. Publishing a build id into `revoked` pulls that
+       build out of every browser that already installed it. -->
+        <link data-trunk rel="copy-file" href="./assets/kill-switch.json" />
         <!-- Dev-only hot reload control. Copied to dist so it's
        available under `trunk serve`, but the loading `<script>` is
        injected only in debug builds by the UI shell (see ui.rs,
@@ -662,24 +669,39 @@
                 }
             }
 
+            /// Unregister every worker for this origin, for a build that
+            /// the kill switch has named. Pages then run uncontrolled and
+            /// fetch straight from the network, which is what a rollback
+            /// wants. Deliberately does not reload: a revoked worker that
+            /// unregisters itself while the page keeps re-registering it
+            /// is a navigation loop, which is worse than the bad build.
+            async function unregisterAll() {
+                console.warn(
+                    "This build has been revoked; running without a service worker.",
+                );
+                for (const reg of await navigator.serviceWorker.getRegistrations()) {
+                    await reg.unregister().catch(() => {});
+                }
+            }
+
             if (!("serviceWorker" in navigator)) {
                 console.error(
                     "Service workers not supported; Tonk will not work!",
                 );
-            } else if (await isRevoked()) {
-                // The worker for this build has been pulled. Do not
-                // register it again: a revoked worker that unregisters
-                // itself while the page keeps re-registering it is a
-                // navigation loop, which is worse than the bad build.
-                //
-                // Unregister anything already installed and run
-                // uncontrolled — the app fetches straight from the
-                // network, which is exactly what a rollback wants.
-                console.warn("This build has been revoked; running without a service worker.");
-                for (const reg of await navigator.serviceWorker.getRegistrations()) {
-                    await reg.unregister().catch(() => {});
-                }
             } else {
+                // The revocation check runs AFTER registration, never
+                // before it. It is two `no-store` fetches, and gating boot
+                // on them put a full network round-trip in front of the
+                // worker on every single load — for a file that is absent
+                // in the overwhelmingly common case, and that an SPA host
+                // answers with the whole 40KB shell.
+                //
+                // Registering first costs nothing when the build is fine
+                // and, when it is not, loses only the few seconds until
+                // the check resolves — during which the worker the flag
+                // revokes is the one already installed anyway.
+                isRevoked().then(revoked => revoked && unregisterAll());
+
                 let registration;
                 try {
                     registration = await navigator.serviceWorker.register(
