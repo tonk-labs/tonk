@@ -191,6 +191,26 @@ mod tests {
         }
     }
 
+    async fn wait_for_absent(driver: &WebDriver, selector: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match driver.find_all(By::Css(selector.to_string())).await {
+                Ok(found) if found.is_empty() => return Ok(()),
+                Ok(_) => {}
+                Err(error) if tokio::time::Instant::now() >= deadline => {
+                    return Err(error).with_context(|| {
+                        format!("timed out waiting for `{selector}` to disappear")
+                    });
+                }
+                Err(_) => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for `{selector}` to disappear"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn registration_motion_styles(driver: &WebDriver) -> Result<serde_json::Value> {
         driver
             .execute(
@@ -2330,14 +2350,14 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_space_removal_focus_inside_the_sealed_guest(
+    async fn it_removes_a_space_without_letting_focus_escape_the_sealed_guest(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
         submit_hub_wizard(&driver).await?;
-        let _ = await_new_space(&driver, &before).await?;
+        let key = await_new_space(&driver, &before).await?;
 
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
@@ -2407,6 +2427,46 @@ mod tests {
             true,
             "Escape must restore the remove opener"
         );
+
+        click(&driver, "[data-space-remove-open]").await?;
+        wait_for_displayed(&driver, "tonk-dialog[data-space-remove-dialog]").await?;
+        let association = driver
+            .execute(
+                r#"const button = document.querySelector('.m-go');
+                   const form = document.querySelector('form[data-remove]');
+                   return {
+                     attribute: button?.getAttribute('form') || null,
+                     associated: button?.form?.id || null,
+                     expected: form?.id || null
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let expected_form = association.json()["expected"]
+            .as_str()
+            .ok_or_else(|| anyhow!("the rendered remove form has no id: {}", association.json()))?;
+        assert_eq!(
+            association.json()["associated"].as_str(),
+            Some(expected_form),
+            "the rendered remove button must submit its row's form: {}",
+            association.json()
+        );
+        click(&driver, ".m-go").await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let spaces = space_keys(&driver).await?;
+            if !spaces.contains(&key) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "removed space {key:?} remained in the profile listing: {spaces:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        wait_for_absent(&driver, ".srow-wrap").await?;
 
         driver.quit().await?;
         Ok(())

@@ -189,7 +189,7 @@ fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
         "data-space-remove-open",
         "<tonk-dialog data-space-remove-dialog",
         "data-dialog=\"close\"",
-        "type=\"submit\" form=\"remove-{subject}\"",
+        "type=\"submit\" html:form=\"remove-{subject}\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
