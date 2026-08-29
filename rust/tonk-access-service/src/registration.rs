@@ -66,8 +66,9 @@ pub const CONSUMER_PROVISION_COMMAND: [&str; 2] = ["consumer", "provision"];
 const MAX_ACTIVATION_LINK: usize = 2000;
 
 /// The command a recovery invocation must invoke to write the custody
-/// cell.
-const CUSTODY_PUBLISH_COMMAND: [&str; 4] = ["use", "put", "memory", "cell"];
+/// cell — the same one the `/ucan/` endpoint redeems, so what
+/// enrollment accepts is exactly what activation can execute.
+const CUSTODY_PUBLISH_COMMAND: [&str; 2] = ["memory", "publish"];
 
 /// The custody space and cell the sealed account secret lives at. Fixed
 /// names, so an enrollment naming anything else is not custody.

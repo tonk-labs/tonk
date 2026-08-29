@@ -15,8 +15,10 @@ use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain};
-use dialog_varsig::{Did, Principal};
+use dialog_ucan_core::{
+    Delegation, DelegationBuilder, DelegationChain, Invocation, InvocationBuilder, InvocationChain,
+};
+use dialog_varsig::{AnySignature, Did, Principal};
 use sha2_0_10::{Digest, Sha256};
 
 use crate::envelope::{CUSTODY_SECRET_CELL, CUSTODY_SPACE};
@@ -32,14 +34,19 @@ fn sha256_multihash(content: &[u8]) -> Vec<u8> {
     bytes
 }
 
-async fn build_self_invocation(
+/// Sign a self-issued custody invocation.
+///
+/// The value itself, not a container: a caller carrying it as a block
+/// in someone else's container has no use for framing, and one posting
+/// it to the service wraps it with [`into_container`].
+async fn sign_self_invocation(
     custody: Ed25519Signer,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
     expiration: Timestamp,
-) -> Result<Vec<u8>> {
+) -> Result<Invocation<AnySignature>> {
     let did = custody.did();
-    let invocation = InvocationBuilder::new()
+    InvocationBuilder::new()
         .issuer(Signer::from(custody))
         .audience(&did)
         .subject(&did)
@@ -49,10 +56,24 @@ async fn build_self_invocation(
         .expiration(expiration)
         .try_build()
         .await
-        .context("failed to sign the custody invocation")?;
+        .context("failed to sign the custody invocation")
+}
+
+/// Frame a proofless invocation as the container the `/ucan/` endpoint
+/// reads.
+pub fn into_container(invocation: Invocation<AnySignature>) -> Result<Vec<u8>> {
     InvocationChain::new(invocation, HashMap::new())
         .to_bytes()
         .context("failed to serialize the custody invocation")
+}
+
+async fn build_self_invocation(
+    custody: Ed25519Signer,
+    command: Vec<String>,
+    arguments: BTreeMap<String, Promised>,
+    expiration: Timestamp,
+) -> Result<Vec<u8>> {
+    into_container(sign_self_invocation(custody, command, arguments, expiration).await?)
 }
 
 /// How long a deferred publish invocation stays redeemable: the
@@ -86,6 +107,17 @@ pub async fn build_publish_invocation(
     when: Option<&[u8]>,
     expiration: Timestamp,
 ) -> Result<Vec<u8>> {
+    into_container(sign_publish_invocation(custody, content, when, expiration).await?)
+}
+
+/// [`build_publish_invocation`] as a value, for a caller carrying it as
+/// a block rather than posting it.
+pub async fn sign_publish_invocation(
+    custody: Ed25519Signer,
+    content: &[u8],
+    when: Option<&[u8]>,
+    expiration: Timestamp,
+) -> Result<Invocation<AnySignature>> {
     let mut arguments = cell_arguments();
     arguments.insert(
         "checksum".to_string(),
@@ -94,7 +126,7 @@ pub async fn build_publish_invocation(
     if let Some(version) = when {
         arguments.insert("when".to_string(), Promised::Bytes(version.to_vec()));
     }
-    build_self_invocation(
+    sign_self_invocation(
         custody,
         vec!["memory".to_string(), "publish".to_string()],
         arguments,
@@ -112,11 +144,20 @@ pub async fn build_deferred_publish_invocation(
     custody: Ed25519Signer,
     content: &[u8],
 ) -> Result<Vec<u8>> {
+    into_container(sign_deferred_publish_invocation(custody, content).await?)
+}
+
+/// [`build_deferred_publish_invocation`] as a value, for a caller
+/// carrying it as a block rather than posting it.
+pub async fn sign_deferred_publish_invocation(
+    custody: Ed25519Signer,
+    content: &[u8],
+) -> Result<Invocation<AnySignature>> {
     use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
     let expiration =
         Timestamp::new(SystemTime::now() + Duration::from_secs(DEFERRED_PUBLISH_TTL_SECONDS))
             .context("the deferred publish expiration is out of range")?;
-    build_publish_invocation(custody, content, None, expiration).await
+    sign_publish_invocation(custody, content, None, expiration).await
 }
 
 /// Build a `/memory/resolve` container for the wrapped-secret cell.
@@ -137,16 +178,26 @@ pub async fn mint_custody_consent(
     custody: Ed25519Signer,
     account: &Did,
 ) -> Result<DelegationChain> {
+    Ok(DelegationChain::new(
+        sign_custody_consent(custody, account).await?,
+    ))
+}
+
+/// [`mint_custody_consent`] as a value, for a caller carrying it as a
+/// block rather than as a chain of its own.
+pub async fn sign_custody_consent(
+    custody: Ed25519Signer,
+    account: &Did,
+) -> Result<Delegation<AnySignature>> {
     let subject = custody.did();
-    let delegation = DelegationBuilder::new()
+    DelegationBuilder::new()
         .issuer(Signer::from(custody))
         .audience(account)
         .subject(UcanSubject::Specific(subject))
         .command(vec![])
         .try_build()
         .await
-        .map_err(|e| anyhow::anyhow!("failed to mint the custody consent: {e}"))?;
-    Ok(DelegationChain::new(delegation))
+        .map_err(|e| anyhow::anyhow!("failed to mint the custody consent: {e}"))
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

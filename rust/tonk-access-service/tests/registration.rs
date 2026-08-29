@@ -196,7 +196,7 @@ impl Default for Custody {
             claimed_did: None,
             sealed: b"sealed-account-secret".to_vec(),
             checksum_over: None,
-            command: ["use", "put", "memory", "cell"]
+            command: ["memory", "publish"]
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
@@ -650,11 +650,19 @@ async fn it_walks_a_device_issued_deposit_back_to_the_customer() -> anyhow::Resu
     let device = Ed25519Signer::generate().await?;
     let link =
         tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did()).await?;
+    let custody_key = Ed25519Signer::generate().await?;
+    let custody = tonk_identity::request::mint_custody_material(
+        &custody_key,
+        &root.did(),
+        b"sealed-account-secret".to_vec(),
+    )
+    .await?;
     let container = tonk_identity::request::build_enroll_invocation(
         device,
         &link,
         &fixture.service.did(),
         "alice@example.com",
+        &custody.borrow(),
     )
     .await?;
     let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());

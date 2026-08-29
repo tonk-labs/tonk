@@ -76,6 +76,7 @@ pub(crate) async fn enroll_customer(
     origin: &url::Url,
     email: Option<String>,
     deposits: &[String],
+    custody: &tonk_identity::request::CustodyMaterial<'_>,
 ) -> Result<Receipt, TonkWorkerError> {
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
@@ -103,7 +104,7 @@ pub(crate) async fn enroll_customer(
     // fallback the service walks back to the customer.
     let body = if deposits.is_empty() {
         let service_did = service_did(origin).await?;
-        build_enroll_invocation(device, &link, &service_did, &email).await
+        build_enroll_invocation(device, &link, &service_did, &email, custody).await
     } else {
         let deposits = deposits
             .iter()
@@ -112,7 +113,7 @@ pub(crate) async fn enroll_customer(
             .map_err(|error| {
                 TonkWorkerError::Router(format!("a ceremony deposit is not hex: {error}"))
             })?;
-        build_enroll_invocation_with_deposits(device, &link, &email, &deposits).await
+        build_enroll_invocation_with_deposits(device, &link, &email, &deposits, custody).await
     }
     .map_err(|error| {
         TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
@@ -132,9 +133,11 @@ pub(crate) async fn enroll_customer(
             Receipt {
                 customer: root_did.clone(),
                 status: CustomerStatus::Active,
-                // Synthesized locally, so it names no service-provided
-                // provider; whatever was recorded before stands.
+                // Synthesized locally, so it names neither a
+                // service-provided provider nor a bookkeeping space;
+                // whatever was recorded before stands.
                 provider: None,
+                customer_space: None,
             }
         }
         Err(error) => return Err(error.into()),
@@ -196,7 +199,20 @@ impl EnrollCustomerHandler {
 /// account's recorded address; empty deposits mean no ceremony is at
 /// hand.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_enrollment(facts: &crate::reactor::EntityFacts) -> Option<(Option<String>, Vec<String>)> {
+/// What a `tonk:enroll` transient carries: the address and deposits, and
+/// the custody material every enrollment must present.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct Enrollment {
+    email: Option<String>,
+    deposits: Vec<String>,
+    custody_did: String,
+    consent_hex: String,
+    publish_invocation_hex: String,
+    sealed_hex: String,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn decode_enrollment(facts: &crate::reactor::EntityFacts) -> Option<Enrollment> {
     use crate::reactor::Decode as _;
     let command = facts
         .first()
@@ -211,7 +227,14 @@ fn decode_enrollment(facts: &crate::reactor::EntityFacts) -> Option<(Option<Stri
         .filter(|deposit| !deposit.is_empty())
         .map(str::to_owned)
         .collect();
-    Some((email, deposits))
+    Some(Enrollment {
+        email,
+        deposits,
+        custody_did: command.custody.0,
+        consent_hex: command.consent.0,
+        publish_invocation_hex: command.recovery.0,
+        sealed_hex: command.sealed.0,
+    })
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -232,7 +255,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustome
         let decoded = decode_enrollment(facts);
         let env = env.clone();
         Box::pin(async move {
-            let Some((email, deposits)) = decoded else {
+            let Some(enrollment) = decoded else {
                 log!("tonk:enroll: unparseable command; skipping");
                 return;
             };
@@ -248,7 +271,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustome
                     return;
                 }
             };
-            match enroll_customer(&tonk, &origin, email, &deposits).await {
+            let custody = tonk_identity::request::CustodyMaterial {
+                custody_did: &enrollment.custody_did,
+                consent_hex: &enrollment.consent_hex,
+                publish_invocation_hex: &enrollment.publish_invocation_hex,
+                sealed_hex: &enrollment.sealed_hex,
+            };
+            match enroll_customer(
+                &tonk,
+                &origin,
+                enrollment.email,
+                &enrollment.deposits,
+                &custody,
+            )
+            .await
+            {
                 Ok(receipt) => log!("tonk:enroll: {} is {:?}", receipt.customer, receipt.status),
                 Err(error) => log!("tonk:enroll failed: {error}"),
             }

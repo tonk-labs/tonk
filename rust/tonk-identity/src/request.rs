@@ -12,10 +12,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use dialog_credentials::Signer;
+use dialog_ucan_core::cid::dagcbor_cid;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{
-    Container, Delegation, DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain,
+    Container, Delegation, DelegationBuilder, DelegationChain, Invocation, InvocationBuilder,
+    InvocationChain,
 };
 use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
@@ -64,6 +66,69 @@ pub async fn build_device_invocation(
         .context("failed to serialize the device invocation")
 }
 
+/// The custody material an enrollment must carry: the passkey's space,
+/// its consent to being provisioned, the pre-signed cell write, and the
+/// sealed envelope that write puts there.
+///
+/// Values, not encodings. Each rides the enrollment as a block in its
+/// container, so the only framing is the one the container itself
+/// applies.
+pub struct CustodyMaterial<'a> {
+    /// The custody space's DID.
+    pub custody: &'a Did,
+    /// The custody key's consent to being provisioned by the account.
+    pub consent: &'a Delegation<AnySignature>,
+    /// The pre-signed cell write, proofless and self-issued.
+    pub recovery: &'a Invocation<AnySignature>,
+    /// The sealed envelope that write publishes.
+    pub sealed: &'a [u8],
+}
+
+/// An owned custody set, for a caller that holds the material rather
+/// than borrowing it from a ceremony's output.
+pub struct OwnedCustodyMaterial {
+    /// The custody space's DID.
+    pub custody: Did,
+    /// The custody key's consent to being provisioned.
+    pub consent: Delegation<AnySignature>,
+    /// The pre-signed cell write.
+    pub recovery: Invocation<AnySignature>,
+    /// The sealed envelope that write publishes.
+    pub sealed: Vec<u8>,
+}
+
+impl OwnedCustodyMaterial {
+    /// Borrow this set as the enrollment builders take it.
+    pub fn borrow(&self) -> CustodyMaterial<'_> {
+        CustodyMaterial {
+            custody: &self.custody,
+            consent: &self.consent,
+            recovery: &self.recovery,
+            sealed: &self.sealed,
+        }
+    }
+}
+
+/// A custody set minted from `key`, for a caller that has no ceremony:
+/// tests, and the access service's own integration harness.
+///
+/// The same signatures over the same cell a ceremony produces, so what
+/// this builds is accepted or refused for the reasons a real enrollment
+/// would be.
+pub async fn mint_custody_material(
+    key: &dialog_credentials::Ed25519Signer,
+    account: &Did,
+    sealed: Vec<u8>,
+) -> Result<OwnedCustodyMaterial> {
+    use dialog_varsig::Principal as _;
+    Ok(OwnedCustodyMaterial {
+        custody: key.did(),
+        consent: crate::custody::sign_custody_consent(key.clone(), account).await?,
+        recovery: crate::custody::sign_deferred_publish_invocation(key.clone(), &sealed).await?,
+        sealed,
+    })
+}
+
 /// Build a `/customer/enroll` container for the access service.
 ///
 /// The invocation is device-signed on the account's subject, exactly as
@@ -81,6 +146,7 @@ pub async fn build_enroll_invocation(
     link: &DelegationChain,
     service: &Did,
     email: &str,
+    custody: &CustodyMaterial<'_>,
 ) -> Result<Vec<u8>> {
     let device: Signer = device.into();
     let root_did = link.issuer().clone();
@@ -101,7 +167,7 @@ pub async fn build_enroll_invocation(
         .into_iter()
         .map(|deposit| (deposit.to_cid(), deposit.encoded().to_vec()))
         .collect();
-    assemble_enroll_container(device, link, email, named).await
+    assemble_enroll_container(device, link, email, named, custody).await
 }
 
 /// Build a `/customer/enroll` container around externally minted
@@ -113,6 +179,7 @@ pub async fn build_enroll_invocation_with_deposits(
     link: &DelegationChain,
     email: &str,
     deposits: &[Vec<u8>],
+    custody: &CustodyMaterial<'_>,
 ) -> Result<Vec<u8>> {
     let named = deposits
         .iter()
@@ -122,7 +189,7 @@ pub async fn build_enroll_invocation_with_deposits(
             Ok((delegation.to_cid(), bytes.clone()))
         })
         .collect::<Result<Vec<_>>>()?;
-    assemble_enroll_container(device, link, email, named).await
+    assemble_enroll_container(device, link, email, named, custody).await
 }
 
 /// Assemble the enroll invocation and append the named deposit tokens.
@@ -131,7 +198,13 @@ async fn assemble_enroll_container(
     link: &DelegationChain,
     email: &str,
     deposits: Vec<(Cid, Vec<u8>)>,
+    custody: &CustodyMaterial<'_>,
 ) -> Result<Vec<u8>> {
+    let recovery = serde_ipld_dagcbor::to_vec(custody.recovery)
+        .context("failed to encode the publish invocation")?;
+    let consent = custody.consent.encoded().to_vec();
+    let sealed = custody.sealed.to_vec();
+
     let arguments = BTreeMap::from([
         ("email".to_string(), Promised::String(email.to_string())),
         (
@@ -143,6 +216,16 @@ async fn assemble_enroll_container(
                     .collect(),
             ),
         ),
+        (
+            "custody".to_string(),
+            Promised::String(custody.custody.to_string()),
+        ),
+        (
+            "recovery".to_string(),
+            Promised::Link(dagcbor_cid(&recovery)),
+        ),
+        ("consent".to_string(), Promised::Link(dagcbor_cid(&consent))),
+        ("sealed".to_string(), Promised::Link(dagcbor_cid(&sealed))),
     ]);
     let invocation = build_device_invocation(
         device,
@@ -157,6 +240,7 @@ async fn assemble_enroll_container(
     for (_, bytes) in deposits {
         tokens.push(bytes);
     }
+    tokens.extend([recovery, consent, sealed]);
     Container::new(tokens)
         .to_bytes()
         .context("failed to encode the enroll container")
@@ -309,14 +393,24 @@ mod tests {
             .map(|deposit| hex::decode(deposit).unwrap())
             .collect();
 
-        let bytes =
-            build_enroll_invocation_with_deposits(device, &link, "a@example.com", &deposits)
-                .await
-                .unwrap();
+        let custody_key = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
+        let custody = mint_custody_material(&custody_key, &root_did, b"sealed".to_vec())
+            .await
+            .unwrap();
+        let bytes = build_enroll_invocation_with_deposits(
+            device,
+            &link,
+            "a@example.com",
+            &deposits,
+            &custody.borrow(),
+        )
+        .await
+        .unwrap();
         let tokens = Container::from_bytes(&bytes).unwrap().into_tokens();
-        // Invocation, the root → device link, and the two deposits.
-        assert_eq!(tokens.len(), 4);
-        for token in &tokens[2..] {
+        // Invocation, the root → device link, the two deposits, and the
+        // three custody blocks.
+        assert_eq!(tokens.len(), 7);
+        for token in &tokens[2..4] {
             let deposit: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(token).unwrap();
             assert_eq!(
                 deposit.issuer(),

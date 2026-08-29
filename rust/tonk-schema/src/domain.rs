@@ -652,6 +652,35 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.enroll")]
         pub struct Deposits(pub String);
+
+        /// The passkey custody space's DID, which the carried recovery
+        /// invocation acts on: derived attribute
+        /// `xyz.tonk.enroll/custody`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Custody(pub String);
+
+        /// The custody space's consent to being provisioned by this
+        /// account, hex: derived attribute `xyz.tonk.enroll/consent`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Consent(pub String);
+
+        /// The pre-signed cell write the ceremony minted, hex: derived
+        /// attribute `xyz.tonk.enroll/recovery`.
+        ///
+        /// Enrollment verifies it and activation performs it, so a
+        /// signup finishes in one act rather than leaving custody to a
+        /// step that can be missed.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Recovery(pub String);
+
+        /// The sealed account secret the recovery write publishes, hex:
+        /// derived attribute `xyz.tonk.enroll/sealed`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Sealed(pub String);
     }
 
     pub mod promote {

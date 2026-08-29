@@ -121,8 +121,24 @@ impl AccessServiceAddress {
             .iter()
             .map(hex::decode)
             .collect::<Result<Vec<_>, _>>()?;
+        // No ceremony here, so the harness mints its own custody set:
+        // every enrollment must present one, and these tests are about
+        // the customer lifecycle rather than custody itself.
+        let custody_key = dialog_credentials::Ed25519Signer::generate()
+            .await
+            .map_err(|error| anyhow::anyhow!("custody signer: {error:?}"))?;
+        let custody = tonk_identity::request::mint_custody_material(
+            &custody_key,
+            &customer.did(),
+            b"sealed-account-secret".to_vec(),
+        )
+        .await?;
         let container = tonk_identity::request::build_enroll_invocation_with_deposits(
-            device, &link, email, &deposits,
+            device,
+            &link,
+            email,
+            &deposits,
+            &custody.borrow(),
         )
         .await?;
 
