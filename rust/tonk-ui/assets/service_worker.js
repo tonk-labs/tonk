@@ -1,5 +1,22 @@
 import init, { activate } from "./worker.js";
 
+// ---- Build identity --------------------------------------------------
+//
+// Both constants are REWRITTEN IN PLACE by `scripts/hash-guest.sh` at
+// post-build. The values below are the dev placeholders; a built dist
+// always carries real hashes.
+//
+// `BUILD_ID` covers the whole worker artifact set (glue + wasm), so this
+// script's bytes change whenever either half does — which is what makes
+// the browser's byte-comparison update check fire. It also names the
+// per-version caches, so two builds can never share cache state.
+//
+// `WORKER_WASM_HASH` is the sha256 prefix of `worker_bg.wasm` as built
+// ALONGSIDE this exact glue. `oninstall` verifies the wasm it precaches
+// against it, which is what keeps the two halves from drifting apart.
+const BUILD_ID = "dev";
+const WORKER_WASM_HASH = "dev";
+
 const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 
 // ---- Introspection -------------------------------------------------
@@ -62,10 +79,26 @@ function healthResponse() {
     );
 }
 
-// Shell cache name. Kept in step with `cache.rs`'s `SHELL_CACHE`.
-// Declared up here (not beside `serveNavigation`) because
-// `oninstall` precaches the shell into it.
-const SHELL_CACHE = "TONK_SHELL_v1";
+// ---- Caches ----------------------------------------------------------
+//
+// Both caches are named per BUILD, not per schema version. Two workers
+// from different builds therefore never read or write the same cache:
+// an install populates its OWN cache, and `onactivate`'s purge drops
+// everyone else's. That makes an install atomic — a half-populated
+// incoming cache can't be observed by the still-serving old worker,
+// which previously could hand out the new shell beside the old build's
+// hashed assets during the swap window.
+//
+// The Rust side derives the same names from the build id handed to it
+// at activate time (see `cache.rs`), so the name is injected once here
+// rather than hand-synced across two languages.
+const SHELL_CACHE = `TONK_SHELL_${BUILD_ID}`;
+
+// Where this worker's own wasm lives. Separate from the shell cache so
+// the shell's build-change prune can't evict the bytes this worker
+// needs to boot.
+const WORKER_CACHE = `TONK_WORKER_${BUILD_ID}`;
+const WORKER_WASM_URL = new URL("./worker_bg.wasm", self.location.href).href;
 
 let tonkServiceWorkerResolves;
 
@@ -82,6 +115,90 @@ let tonkServiceWorkerResolves;
 // retries from scratch.
 const INIT_RETRY_HOLDOFF_MS = 5000;
 
+// ---- Worker wasm: one atomic artifact set ----------------------------
+//
+// `service_worker.js` and its static import `worker.js` are pinned in
+// the browser's SW script resource map at install time: the browser
+// re-runs those exact bytes for the registration's lifetime. But
+// `worker_bg.wasm` used to be fetched by `init()` at RUNTIME from a
+// fixed URL, through the ordinary HTTP cache — which always answers
+// with the newest deployed bytes.
+//
+// So after every deploy, any not-yet-updated worker that cold-started
+// ran OLD GLUE AGAINST NEW WASM. Glue and wasm are tightly coupled
+// (export indices, shim names), so that is an init failure at best and
+// silent miswiring at worst. Safari terminates idle workers within
+// seconds, which made the cold boot — and the skew — near-certain
+// there: "stuck on a broken old version no matter what".
+//
+// The fix is to make the worker self-contained. At install we fetch the
+// wasm, verify it against the hash stamped alongside THIS glue, and
+// store it in a per-build cache. `init()` then instantiates from those
+// cached bytes and never touches the network, so glue and wasm are the
+// pair that was built together for as long as this worker lives.
+
+/// sha256 prefix of `bytes`, in the same 16-hex-char form `hash_of` in
+/// `hash-guest.sh` produces.
+async function digestOf(bytes) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("")
+        .slice(0, 16);
+}
+
+/// Fetch this build's wasm and store it in the per-build worker cache,
+/// verified against the stamped hash. Throws if the fetch fails or the
+/// bytes don't match — `oninstall` propagates that, so a worker that
+/// cannot assemble a coherent artifact set never installs and the old
+/// (internally consistent) worker keeps running.
+async function precacheWorkerWasm() {
+    const cache = await caches.open(WORKER_CACHE);
+    if (await cache.match(WORKER_WASM_URL)) return;
+
+    // `no-store`: this must be the bytes on the origin right now, not
+    // whatever an intermediate cache is holding.
+    const response = await fetch(WORKER_WASM_URL, { cache: "no-store" });
+    if (!response.ok) {
+        throw new Error(`worker wasm fetch failed: ${response.status}`);
+    }
+    const bytes = await response.arrayBuffer();
+
+    // A dev build carries the placeholder and has nothing to verify
+    // against; a stamped build must match exactly.
+    if (WORKER_WASM_HASH !== "dev") {
+        const actual = await digestOf(bytes);
+        if (actual !== WORKER_WASM_HASH) {
+            throw new Error(
+                `worker wasm hash mismatch: expected ${WORKER_WASM_HASH}, got ${actual}`,
+            );
+        }
+    }
+
+    await cache.put(
+        WORKER_WASM_URL,
+        new Response(bytes, {
+            headers: { "content-type": "application/wasm" },
+        }),
+    );
+}
+
+/// The wasm bytes this worker boots from: the copy precached at
+/// install. Falls back to a direct fetch only when the cache entry is
+/// gone (storage pressure can evict it), which is still correct — a
+/// worker whose install succeeded has already proven the deployed wasm
+/// matched its glue at that moment.
+async function workerWasmModule() {
+    const cache = await caches.open(WORKER_CACHE);
+    const cached = await cache.match(WORKER_WASM_URL);
+    if (cached) return cached.arrayBuffer();
+    log("Worker wasm missing from cache — refetching");
+    await precacheWorkerWasm();
+    const refreshed = await (await caches.open(WORKER_CACHE)).match(WORKER_WASM_URL);
+    if (!refreshed) throw new Error("worker wasm unavailable");
+    return refreshed.arrayBuffer();
+}
+
 async function activateWorker() {
     if (tonkServiceWorkerResolves == null) {
         const now = Date.now();
@@ -94,8 +211,9 @@ async function activateWorker() {
         workerHealth.state = "initializing";
         workerHealth.attempts += 1;
         workerHealth.lastAttemptAt = now;
-        tonkServiceWorkerResolves = init()
-            .then(() => activate())
+        tonkServiceWorkerResolves = workerWasmModule()
+            .then(module_or_path => init({ module_or_path }))
+            .then(() => activate(BUILD_ID))
             .then(worker => {
                 workerHealth.state = "ok";
                 workerHealth.error = null;
@@ -116,6 +234,81 @@ async function activateWorker() {
     return tonkServiceWorkerResolves;
 }
 
+// ---- Remote kill switch ----------------------------------------------
+//
+// A worker that is broken in a way no page can recover from is the case
+// nothing else here covers: the escape hatch on the failure page needs
+// the user to reach that page and press a button, and a worker broken
+// in a subtler way (serving, but wrong) never shows it at all.
+//
+// So: a tiny `no-store` flag file the worker checks at install and
+// activate. When it names this build, the worker unregisters itself and
+// clears its caches, and pages fall back to the network on their next
+// load. Publishing a one-line JSON file is then enough to pull a bad
+// deploy back out of every browser that already installed it — no user
+// action, and no waiting for a normal update to be detected.
+//
+// Absent, unreachable, or malformed, it does nothing at all: the check
+// is best-effort by construction, and a network blip must never
+// unregister a healthy worker.
+const KILL_SWITCH_URL = "/kill-switch.json";
+
+async function killSwitchEngaged() {
+    try {
+        const response = await fetch(KILL_SWITCH_URL, { cache: "no-store" });
+        if (!response.ok) return false;
+        // An SPA host answers an unknown path with the shell HTML and a
+        // 200, so "absent" arrives looking like success. Parse
+        // defensively and treat anything that isn't the expected shape
+        // as "no flag" — never as a reason to unregister.
+        const text = await response.text();
+        let revoked;
+        try {
+            ({ revoked } = JSON.parse(text));
+        } catch {
+            return false;
+        }
+        if (!Array.isArray(revoked)) return false;
+        return revoked.includes(BUILD_ID);
+    } catch {
+        return false;
+    }
+}
+
+/// Unregister this worker and drop every cache it owns. Pages already
+/// open keep being served until they go away; their next navigation is
+/// uncontrolled and goes straight to the network.
+async function selfDestruct() {
+    log(`Kill switch engaged for build ${BUILD_ID} — unregistering`);
+    try {
+        const names = await caches.keys();
+        await Promise.all(
+            names
+                .filter(name => name.startsWith("TONK_SHELL_") || name.startsWith("TONK_WORKER_"))
+                .map(name => caches.delete(name)),
+        );
+    } catch (err) {
+        log("Kill-switch cache purge failed:", err);
+    }
+    try {
+        await self.registration.unregister();
+    } catch (err) {
+        log("Kill-switch unregister failed:", err);
+    }
+    // Deliberately NOT navigating the open clients.
+    //
+    // Reloading them here looks helpful and is a trap: the fresh page
+    // runs the registration script, installs this same revoked build
+    // again, which activates, re-reads the flag, unregisters, and
+    // reloads — a navigation loop that is worse than the bad worker.
+    //
+    // Unregistering is enough. This worker keeps serving the pages it
+    // already controls until they go away, and their NEXT navigation
+    // is uncontrolled and goes straight to the network. The page's own
+    // update probe (`version.json`) is what tells the user to reload.
+    log("Kill switch complete — this worker is unregistered");
+}
+
 self.oninstall = event => {
     // Promote this worker straight from `installing` to `activating`
     // without parking in `waiting`. Earlier this call sat at the top
@@ -131,6 +324,16 @@ self.oninstall = event => {
     // key, so a first-visit-online install populates the shell
     // every later navigation falls back to.
     event.waitUntil((async () => {
+        // The worker's own wasm FIRST, and un-caught: an install that
+        // cannot assemble a coherent glue+wasm pair must fail, leaving
+        // the old worker (which has a coherent pair of its own) in
+        // place. Installing anyway is what produced a bricked worker
+        // that no reload could clear.
+        await precacheWorkerWasm();
+
+        // The shell is best-effort by contrast — a worker with no
+        // precached shell still serves; `serveNavigation` fetches on
+        // the cold-cache path.
         try {
             const cache = await caches.open(SHELL_CACHE);
             await cache.add("/");
@@ -156,6 +359,13 @@ self.onactivate = event => {
     // in-flight fetches hang, the lock never frees, and this worker pins in
     // `activating` while every page waits on it.
     (async () => {
+        // Before doing any work as the new controller: has this build
+        // been revoked? Checked here rather than only at install so a
+        // build already installed everywhere can still be pulled.
+        if (await killSwitchEngaged()) {
+            await selfDestruct();
+            return;
+        }
         try {
             const worker = await activateWorker();
             await worker.onactivate?.();
@@ -255,6 +465,29 @@ async function serveNavigation(event) {
     const cache = await caches.open(SHELL_CACHE);
     const cached = await cache.match("/");
 
+    // Stale-while-revalidate leaves the page structurally ONE BUILD
+    // BEHIND: it serves the cached shell and only refreshes it for next
+    // time, so converging on a new build takes two reloads even when
+    // everything else works. That's tolerable as a steady state and
+    // wrong at the one moment the user is actively trying to update.
+    //
+    // So when a successor is already waiting, go network-first: the
+    // reload the user just performed (very likely from the "update
+    // ready" prompt) then lands on the new shell immediately. Falls
+    // back to the cached shell if the network doesn't answer, because a
+    // navigation must never hard-fail on a shell we already hold.
+    if (self.registration.waiting) {
+        try {
+            const fresh = await fetch("/");
+            if (fresh.ok && fresh.type !== "opaque") {
+                event?.waitUntil?.(cache.put("/", fresh.clone()).catch(() => {}));
+                return fresh;
+            }
+        } catch {
+            // offline — fall through to the cached shell below
+        }
+    }
+
     // Background refresh. Only ever mutates the cache with a fresh shell
     // ALREADY IN HAND — never deletes before it can replace, so an offline
     // or failed fetch leaves the cached shell untouched (the app must stay
@@ -332,6 +565,12 @@ function isShellCacheable(request, path) {
     if (request.method !== "GET") return false;
     if (request.mode === "navigate") return false;
     if (path.startsWith("/api/")) return false;
+    // Same-origin only. Excluding opaque responses isn't enough: a
+    // CORS-enabled cross-origin GET yields a perfectly ordinary
+    // `basic`-looking success that would be stored in — and later
+    // served from — the app's own shell cache, which has no business
+    // holding another origin's resources.
+    if (new URL(request.url).origin !== self.location.origin) return false;
     // A guest-iframe subresource is rewritten to a branch-scoped `/api/...`
     // path by the Rust worker; those must not be served as top-level assets.
     // They carry a client id the shim can't see, so exclude by the one
@@ -398,7 +637,14 @@ async function serveAsset(event) {
 
 /// A real error page for a worker that cannot start: the actual error,
 /// a retry, and a pointer at /api/health — never an endless spinner.
+/// After this many consecutive failed initializations, stop offering
+/// only a retry — the cause is not transient, and a user reloading into
+/// the same failure indefinitely is the reported "no matter what"
+/// experience. Offer the reset ladder alongside it.
+const STUCK_AFTER_ATTEMPTS = 3;
+
 function failurePage() {
+    const stuck = workerHealth.attempts >= STUCK_AFTER_ATTEMPTS;
     const detail = String(workerHealth.error || "unknown error");
     const escaped = detail
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -424,9 +670,60 @@ function failurePage() {
 <p>The storage worker could not initialize. Attempt ${workerHealth.attempts}.</p>
 <pre>${escaped}</pre>
 <button onclick="location.reload()">Try again</button>
+${stuck ? `<button id="reset">Reset and reload</button>` : ""}
 <p class="hint">Diagnostics: <code>/api/health</code> has the full log ring.</p>
-</main></body></html>`,
+${stuck ? `<p class="hint">Repeated failures usually mean a bad cached worker.
+Resetting clears Tonk's caches and unregisters the worker, then reloads.
+Your data is stored separately and is not affected.</p>` : ""}
+</main>
+<script>
+  // The recovery ladder, reachable from the page that actually needs
+  // it. This page is NOT the boot shell, so the shell's own stall
+  // watchdog (which does the same clear-and-unregister) never runs
+  // here — "Try again" just reloads into the same failing init, with
+  // the same pinned glue, forever. That made the one mechanism able
+  // to heal a wedged worker unreachable from the only state where it
+  // mattered.
+  document.getElementById("reset")?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Resetting…";
+    try {
+      const registrations =
+        await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map(r => r.unregister()));
+      const names = await caches.keys();
+      await Promise.all(names.map(name => caches.delete(name)));
+    } catch (err) {
+      console.error("reset failed", err);
+    }
+    // Bypass the HTTP cache too, so the reload refetches the worker
+    // script rather than replaying whatever put us here.
+    location.replace(location.pathname + "?reset=" + Date.now());
+  });
+</script>
+</body></html>`,
         { status: 503, headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+}
+
+/// How often a running worker re-checks the kill switch. The check at
+/// activate only covers a worker that newly activates — but the worker
+/// that most needs revoking is one already installed and activated
+/// everywhere, which may not activate again for days. So re-check
+/// periodically off the fetch path (which is free: it piggybacks on
+/// traffic the worker is already serving).
+const KILL_SWITCH_INTERVAL_MS = 30 * 60 * 1000;
+let killSwitchCheckedAt = 0;
+
+function maybeCheckKillSwitch(event) {
+    const now = Date.now();
+    if (now - killSwitchCheckedAt < KILL_SWITCH_INTERVAL_MS) return;
+    killSwitchCheckedAt = now;
+    event.waitUntil?.(
+        (async () => {
+            if (await killSwitchEngaged()) await selfDestruct();
+        })(),
     );
 }
 
@@ -473,6 +770,25 @@ self.onfetch = event => {
     // installed.
     if (path === "/@" || path.startsWith("/@/")) {
         return;
+    }
+    // Control files: the update probe and the kill switch. NOT
+    // intercepted at all, deliberately.
+    //
+    // Both exist to be readable when the worker is the thing that is
+    // wrong, so routing them through the worker defeats their purpose.
+    // Worse, an SPA host answers an unknown path with the shell, so a
+    // missing `kill-switch.json` came back as HTML — which parsed as
+    // neither JSON nor a valid absence. Letting the browser fetch them
+    // directly keeps a real 404 a real 404.
+    if (path === "/version.json" || path === KILL_SWITCH_URL) {
+        return;
+    }
+    // Piggyback the periodic revocation check on a navigation — the
+    // moment a self-unregister is cheapest, since the page is loading
+    // anyway. Placed AFTER the control-file early-out so the probe can
+    // never trigger itself.
+    if (event.request.mode === "navigate") {
+        maybeCheckKillSwitch(event);
     }
     if (event.request.mode === "navigate") {
         // `/api/*` navigations are real data-plane requests, not SPA
