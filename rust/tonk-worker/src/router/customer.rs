@@ -469,7 +469,21 @@ async fn record_custody_cell(
 /// `Registered`, so that refusal is not a failure here — it is the
 /// expected answer during the window between enrolling and clicking the
 /// emailed link. The entry replays from the status probe that notices
-/// activation. Every other refusal propagates.
+/// activation.
+///
+/// `CustomerInactive` is not the only answer a replay resolves, and
+/// treating it as the only one is what stranded accounts. Enrollment is
+/// dispatched as a command and completes asynchronously, so a
+/// provisioning call raced ahead of it reaches a service with no
+/// customer row at all and is refused `UnknownCustomer`; a phone on a
+/// flaky connection gets a timeout or a transport failure. Each of those
+/// is a moment in time, not a verdict, and each used to drop the
+/// consent — which for a custody space is unrecoverable, since only a
+/// live passkey assertion can mint it.
+///
+/// So the queue is the default and only a refusal about the request
+/// itself is terminal: a malformed consent, or a space another customer
+/// already provides. Those do not become true by waiting.
 pub(crate) async fn provision_or_defer(
     state: &crate::worker::TonkState,
     consumer: &dialog_varsig::Did,
@@ -477,10 +491,8 @@ pub(crate) async fn provision_or_defer(
     kind: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
     match provision_consumer(state, consumer, consent, kind).await {
-        Err(TonkWorkerError::Upstream { ref code, .. })
-            if code.as_deref() == Some("CustomerInactive") =>
-        {
-            log!("{consumer} queued until the account confirms its email");
+        Err(error) if is_retryable(&error) => {
+            log!("{consumer} queued after a retryable refusal: {error}");
             defer(
                 state,
                 PendingWork::Provision {
@@ -494,6 +506,39 @@ pub(crate) async fn provision_or_defer(
             .await
         }
         other => other,
+    }
+}
+
+/// Whether a failed provisioning is worth replaying later.
+///
+/// Terminal are the refusals about the request itself — a consent that
+/// does not verify, a consumer someone else provides, an argument that
+/// does not parse. Everything else is about *when* the call happened:
+/// the customer row not written yet, an unconfirmed email, a service
+/// that was unreachable. Those clear on their own, and the drain is
+/// idempotent, so queuing a call that turns out to be unnecessary costs
+/// one round trip while dropping one costs the account.
+fn is_retryable(error: &TonkWorkerError) -> bool {
+    match error {
+        TonkWorkerError::Upstream { code, status, .. } => match code.as_deref() {
+            // The service's own state, not this request: the customer row
+            // is not written yet, or the email is unconfirmed. Both clear
+            // without anyone changing the call. Named rather than inferred
+            // from the status, because both answer 4xx — which is what
+            // made the status alone the wrong test.
+            Some("UnknownCustomer" | "CustomerInactive") => true,
+            // About the request, and no truer later: a consent that does
+            // not verify, a consumer someone else provides, an argument
+            // that does not parse, a suspension only an operator lifts.
+            Some(
+                "Forbidden" | "Unauthorized" | "Invalid" | "ConsumerProvided" | "CustomerSuspended"
+                | "CustomerActive" | "UnknownConsumer",
+            ) => false,
+            // A refusal this client does not know: retry only when the
+            // status says the service, not the request, was the problem.
+            Some(_) | None => *status >= 500 || *status == 408 || *status == 429,
+        },
+        _ => false,
     }
 }
 
@@ -1063,4 +1108,84 @@ pub(crate) async fn clear_customer(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to clear the customer record: {error}"))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal(status: u16, code: Option<&str>) -> TonkWorkerError {
+        TonkWorkerError::Upstream {
+            status,
+            code: code.map(str::to_owned),
+            message: "refused".to_string(),
+        }
+    }
+
+    /// The refusal that stranded accounts: enrollment is dispatched as a
+    /// command and lands asynchronously, so a provisioning call that
+    /// overtakes it meets a service with no customer row and is refused
+    /// `UnknownCustomer`. Dropping the consent there is unrecoverable for
+    /// a custody space, so it must queue exactly like the inactive case.
+    #[test]
+    fn it_queues_a_provisioning_that_raced_ahead_of_enrollment() {
+        assert!(is_retryable(&refusal(404, Some("UnknownCustomer"))));
+        assert!(is_retryable(&refusal(409, Some("CustomerInactive"))));
+    }
+
+    /// A phone on a flaky connection must not lose its consent either.
+    /// Timeouts and transport failures arrive as `Upstream` with the
+    /// codes `From<HttpError>` assigns them.
+    #[test]
+    fn it_queues_a_provisioning_the_network_refused() {
+        assert!(is_retryable(&refusal(504, Some("UPSTREAM_TIMEOUT"))));
+        assert!(is_retryable(&refusal(503, Some("UPSTREAM_UNAVAILABLE"))));
+    }
+
+    /// Refusals about the request itself do not become true by waiting,
+    /// so they propagate rather than filling the queue with work that can
+    /// never complete — and, ahead of a custody publish, block it.
+    #[test]
+    fn it_propagates_a_refusal_waiting_cannot_resolve() {
+        assert!(!is_retryable(&refusal(403, Some("Forbidden"))));
+        assert!(!is_retryable(&refusal(409, Some("ConsumerProvided"))));
+        assert!(!is_retryable(&refusal(400, Some("Invalid"))));
+    }
+
+    /// The two retryable refusals both answer 4xx, so a status-only test
+    /// would drop exactly the consents this fix exists to keep. Pinned
+    /// because that is the mistake the first version of `is_retryable`
+    /// made.
+    #[test]
+    fn it_does_not_judge_the_retryable_refusals_by_status_alone() {
+        for (status, code) in [(404, "UnknownCustomer"), (409, "CustomerInactive")] {
+            assert!(
+                is_retryable(&refusal(status, Some(code))),
+                "{code} answers {status} and must still queue"
+            );
+            assert!(
+                !is_retryable(&refusal(status, None)),
+                "the same status without the code is not retryable"
+            );
+        }
+    }
+
+    /// An unrecognized code is judged by its status: the service failing
+    /// is worth retrying, the request being rejected is not.
+    #[test]
+    fn it_judges_an_unknown_refusal_by_its_status() {
+        assert!(is_retryable(&refusal(500, Some("SomethingNew"))));
+        assert!(is_retryable(&refusal(429, None)));
+        assert!(!is_retryable(&refusal(400, None)));
+        assert!(!is_retryable(&refusal(403, None)));
+    }
+
+    /// Only upstream refusals are provisioning outcomes at all; a local
+    /// failure is this worker's own bug and must surface.
+    #[test]
+    fn it_does_not_queue_a_local_failure() {
+        assert!(!is_retryable(&TonkWorkerError::Internal(
+            "consent does not encode".to_string()
+        )));
+    }
 }
