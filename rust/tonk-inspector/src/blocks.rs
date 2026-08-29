@@ -133,6 +133,53 @@ pub fn split(document: &str) -> Vec<String> {
     blocks
 }
 
+/// The chunk range each block covers, as `(first, count)` over the
+/// document's top-level nodes.
+///
+/// [`split`] returns block TEXT; this returns the same grouping as spans,
+/// so a caret sitting in the n-th top-level node can be traced back to the
+/// block that contains it. A block is a contiguous run — a heading with the
+/// content it introduces — which is why the caret's own node index is not
+/// enough on its own.
+pub fn block_spans(document: &str) -> Vec<(usize, usize)> {
+    let chunks = split_chunks(document);
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    let mut start = 0usize;
+
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        if is_heading(&chunk) {
+            if pending.iter().any(|held| !is_heading(held)) {
+                spans.push((start, pending.len()));
+                pending.clear();
+                start = index;
+            }
+            if pending.is_empty() {
+                start = index;
+            }
+            pending.push(chunk);
+        } else if pending.iter().any(|held| is_heading(held)) {
+            pending.push(chunk);
+            spans.push((start, pending.len()));
+            pending.clear();
+        } else {
+            spans.push((index, 1));
+        }
+    }
+
+    if !pending.is_empty() {
+        spans.push((start, pending.len()));
+    }
+    spans
+}
+
+/// The span covering the top-level node at `index`, if any.
+pub fn span_at(document: &str, index: usize) -> Option<(usize, usize)> {
+    block_spans(document)
+        .into_iter()
+        .find(|(start, len)| index >= *start && index < start + len)
+}
+
 /// Split a document at blank lines outside fenced regions — the raw
 /// markdown block boundaries, before headings are grouped with their content.
 fn split_chunks(document: &str) -> Vec<String> {
@@ -394,6 +441,66 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Spans cover the same grouping `split` does: one entry per block,
+    /// each naming the run of top-level nodes it occupies. The highlight
+    /// reads these to light a whole block rather than one paragraph of it.
+    #[dialog_common::test]
+    fn it_spans_the_nodes_each_block_covers() {
+        let doc = "intro\n\n# Heading\n\nunder it\n\ntrailing";
+        assert_eq!(
+            split(doc),
+            vec![
+                "intro".to_owned(),
+                "# Heading\n\nunder it".to_owned(),
+                "trailing".to_owned(),
+            ]
+        );
+        assert_eq!(
+            block_spans(doc),
+            vec![(0, 1), (1, 2), (3, 1)],
+            "the heading block covers two nodes; its neighbours one each"
+        );
+    }
+
+    /// Consecutive headings ride with the same content, so the span covers
+    /// all three nodes.
+    #[dialog_common::test]
+    fn it_spans_a_heading_run_with_its_content() {
+        let doc = "# Title\n\n## Subtitle\n\nbody";
+        assert_eq!(split(doc).len(), 1, "one block");
+        assert_eq!(block_spans(doc), vec![(0, 3)]);
+    }
+
+    /// Every node maps back to the block containing it — that is the
+    /// lookup the caret uses.
+    #[dialog_common::test]
+    fn it_finds_the_span_containing_a_node() {
+        let doc = "intro\n\n# Heading\n\nunder it\n\ntrailing";
+        assert_eq!(span_at(doc, 0), Some((0, 1)));
+        assert_eq!(span_at(doc, 1), Some((1, 2)), "the heading itself");
+        assert_eq!(span_at(doc, 2), Some((1, 2)), "its content, same block");
+        assert_eq!(span_at(doc, 3), Some((3, 1)));
+        assert_eq!(span_at(doc, 9), None, "past the end");
+    }
+
+    /// A span per block, always — whatever the document.
+    #[dialog_common::test]
+    fn it_spans_every_block_exactly_once() {
+        for doc in [
+            "one",
+            "one\n\ntwo",
+            "# a\n\nb\n\n# c\n\nd",
+            "```dialog\nconcept:\n```\n\nafter",
+            "# only a heading",
+        ] {
+            assert_eq!(
+                block_spans(doc).len(),
+                split(doc).len(),
+                "span count matches block count for {doc:?}"
+            );
+        }
+    }
 
     use super::*;
 

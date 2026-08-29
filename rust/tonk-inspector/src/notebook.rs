@@ -92,6 +92,32 @@ const OUTPUT_CSS: &str = r#"
 }
 .md-code-block { margin: 0.5rem 0; }
 
+/* The block the caret is in — the unit a commit writes.
+   A block can span several nodes (a heading and the content under it), so
+   the mark goes on each of them and they read as one band: the padding
+   bleeds into the gutter on both sides, and only the outer edges of the run
+   are rounded, so a multi-node block looks like one shape rather than a
+   stack of separate ones.
+
+   Quieter than the focused code cell above, deliberately: this says "you
+   are here", not "this is selected". */
+.nb-block-active {
+  background: rgba(127, 127, 127, 0.055);
+  background: color-mix(in srgb, currentColor 5.5%, transparent);
+  box-shadow: -0.6rem 0 0 0 currentColor, 0.6rem 0 0 0 currentColor;
+  box-shadow:
+    -0.6rem 0 0 0 color-mix(in srgb, currentColor 5.5%, transparent),
+    0.6rem 0 0 0 color-mix(in srgb, currentColor 5.5%, transparent);
+}
+.nb-block-active:not(.nb-block-active + .nb-block-active) {
+  border-start-start-radius: 0.25rem;
+  border-start-end-radius: 0.25rem;
+}
+.nb-block-active:not(:has(+ .nb-block-active)) {
+  border-end-start-radius: 0.25rem;
+  border-end-end-radius: 0.25rem;
+}
+
 .notebook-cell-result { display: block; margin: 0.25rem 0 0.75rem; }
 .nb-out {
   font-size: 0.8125rem;
@@ -169,6 +195,10 @@ type MutationClosure = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 
 /// The retained MutationObserver itself.
 type ObserverCell = Rc<RefCell<Option<MutationObserver>>>;
+
+/// A single retained event closure, kept alive for as long as the listener
+/// it backs stays registered.
+type ListenerCell = RefCell<Option<Closure<dyn FnMut(Event)>>>;
 
 /// The custom element.
 #[derive(Default)]
@@ -353,6 +383,9 @@ fn mount(
             projected: RefCell::new(String::new()),
             next_cell: std::cell::Cell::new(0),
             projected_once: std::cell::Cell::new(false),
+            marked: std::cell::Cell::new(-1),
+            selection_listener: RefCell::new(None),
+            selection_bound: std::cell::Cell::new(false),
             settling: std::cell::Cell::new(false),
         });
 
@@ -408,6 +441,16 @@ struct Notebook {
     /// Whether the store's blocks have been projected into the editor yet.
     /// Until they have, an edit has nothing truthful to diff against.
     projected_once: std::cell::Cell<bool>,
+    /// The block index the highlight currently marks, so marking is a no-op
+    /// when the caret has not left its block. Writing `class` is a DOM
+    /// mutation that re-fires `selectionchange`; without this the marker
+    /// re-enters itself and spins.
+    marked: std::cell::Cell<i32>,
+    /// The `selectionchange` closure, kept alive and re-registered on the
+    /// prose shadow root once the lazy-loaded editor creates one.
+    selection_listener: ListenerCell,
+    /// Whether that root listener has been added, so it is added once.
+    selection_bound: std::cell::Cell<bool>,
     /// True while this element is mutating its own DOM. The observer watches
     /// the editor subtree, and binding a fence writes into it (a result slot,
     /// a `source` attribute), so without this each bind re-enters the
@@ -923,11 +966,39 @@ impl Notebook {
                 notebook.clone().commit_when_settled();
             }
             tracked.set(index);
+            notebook.mark_active_block();
         }) as Box<dyn FnMut(Event)>);
         let _ = self
             .prose
             .add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
         self.closures.borrow_mut().push(on_change);
+
+        // Moving the caret without typing still moves the block, so the
+        // highlight tracks `selectionchange` too.
+        //
+        // On the SHADOW ROOT, not on `document`: the editor's content lives
+        // inside `<tonk-prose>`'s shadow tree, and a selection there fires
+        // `selectionchange` on the root that contains it. A listener on the
+        // document sees the initial focus and nothing after — every caret
+        // move within the editor is invisible to it.
+        let notebook = self.clone();
+        let on_selection = Closure::wrap(Box::new(move |_event: Event| {
+            notebook.mark_active_block();
+        }) as Box<dyn FnMut(Event)>);
+        // On the DOCUMENT, and on the shadow root once it exists.
+        //
+        // A selection inside a shadow tree fires `selectionchange` on that
+        // root, not on the document — but the prose core is lazy-loaded, so
+        // at construction there is no root to attach to yet. Registering on
+        // the document covers the pre-upgrade window; `retarget_selection`
+        // adds the root listener the first time one is seen.
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            let _ = document.add_event_listener_with_callback(
+                "selectionchange",
+                on_selection.as_ref().unchecked_ref(),
+            );
+        }
+        self.selection_listener.borrow_mut().replace(on_selection);
 
         // Leaving the editor is also leaving the block. `focusout` (not
         // `blur`) because blur does not bubble out of the editor's inner
@@ -1016,6 +1087,74 @@ impl Notebook {
             .unwrap_or_else(|| self.prose.clone())
     }
 
+    /// Mark the top-level nodes of the block the caret sits in.
+    ///
+    /// A notebook block is the commit unit, and it can span several nodes —
+    /// a heading rides with the content under it. ProseMirror's own
+    /// selection classes are per node, so on their own they show a heading
+    /// lit while the paragraph it introduces stays dark, even though the
+    /// two save together. This marks the whole run instead, so what is
+    /// highlighted is what a commit will write.
+    fn mark_active_block(&self) {
+        // Writing `class` on a node is itself a DOM mutation, and mutating
+        // inside the editor re-fires `selectionchange` — so marking
+        // unconditionally re-enters this immediately and spins. Only touch
+        // the DOM when the span actually moved.
+        let caret = self.caret_block_index().unwrap_or(-1);
+        if self.marked.get() == caret {
+            return;
+        }
+        self.marked.set(caret);
+
+        let root = self.editor_root();
+        let Ok(nodes) = root.query_selector_all(".md-doc > *") else {
+            return;
+        };
+        // Clear first: the caret leaving a block has to unmark it even when
+        // the new position resolves to nothing.
+        for index in 0..nodes.length() {
+            if let Some(node) = nodes.item(index).and_then(|n| n.dyn_into::<Element>().ok()) {
+                let _ = node.class_list().remove_1("nb-block-active");
+            }
+        }
+        if caret < 0 {
+            return;
+        }
+        let document = self.projected.borrow().clone();
+        let Some((start, len)) = crate::blocks::span_at(&document, caret as usize) else {
+            return;
+        };
+        for index in start..start + len {
+            if let Some(node) = nodes
+                .item(index as u32)
+                .and_then(|n| n.dyn_into::<Element>().ok())
+            {
+                let _ = node.class_list().add_1("nb-block-active");
+            }
+        }
+    }
+
+    /// Attach the `selectionchange` listener to the prose shadow root, once
+    /// it exists. The editor is lazy-loaded, so the root is absent when the
+    /// element is constructed and a document listener alone never sees a
+    /// caret move inside it.
+    fn retarget_selection(&self) {
+        if self.selection_bound.get() {
+            return;
+        }
+        let Some(root) = self.prose.shadow_root() else {
+            return;
+        };
+        let listener = self.selection_listener.borrow();
+        let Some(listener) = listener.as_ref() else {
+            return;
+        };
+        let target: web_sys::EventTarget = root.into();
+        let _ = target
+            .add_event_listener_with_callback("selectionchange", listener.as_ref().unchecked_ref());
+        self.selection_bound.set(true);
+    }
+
     /// Find every `dialog` fence in the document and bind the ones not yet
     /// bound. Idempotent — the stamped id is what makes a re-scan cheap.
     fn bind_fences(self: &Rc<Self>) {
@@ -1023,6 +1162,7 @@ impl Notebook {
             return;
         };
         self.adopt_page_styles();
+        self.retarget_selection();
         for index in 0..wrappers.length() {
             let Some(wrapper) = wrappers
                 .item(index)
