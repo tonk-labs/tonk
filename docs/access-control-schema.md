@@ -77,32 +77,28 @@ a second subscription or a cancelled one has to be kept.
 `provisioning::screen` runs before every presign and asks only about the
 **subject**, never the command.
 
-Every subject is served on the strength of **some customer's status** —
-its own if it is an account, otherwise its provider's. Finding that
-customer is all the branching does:
+Every subject is a consumer, and every consumer is served on the
+strength of its provider's status:
 
 ```mermaid
 flowchart TD
-    A[subject] --> B{"is the subject itself a customer?"}
-    B -->|yes| S["the customer is the subject"]
-    B -->|no| D{"consumer row?"}
-    D -->|no| E["denied: not provisioned"]
+    A["subject"] --> D{"a consumer?"}
+    D -->|no| E["denied"]
     D -->|yes| F{"reservation still held?"}
     F -->|yes| G["denied, retryable: reserved, not provisioned"]
-    F -->|no| H{"provider set?"}
-    H -->|no| I["denied: no provider"]
-    H -->|yes| P["the customer is the provider"]
-    S --> Z{"that customer's status"}
-    P --> Z
+    F -->|no| H{"has a provider?"}
+    H -->|no| I["denied"]
+    H -->|yes| Z{"the provider's status"}
     Z -->|Active| K["served"]
     Z -->|Registered| L["denied, retryable: awaits email activation"]
-    Z -->|Suspended| M["denied: suspended"]
+    Z -->|Suspended| M["denied"]
 ```
 
-The two paths converge because both end at a customer. An account is
-asked about first only to save a lookup: it also holds a self-consumer
-row (`did = provider = owner`), so the consumer path would reach the
-same customer one query later.
+An account is not a special case here: enrollment writes it a
+self-provided consumer row (`did = provider = owner`), so "the
+provider's status" is its own. `screen` does look the subject up as a
+customer first, but only to save a hop — the consumer path reaches the
+same verdict one join later.
 
 This is **one query** (`SELECT_SERVABILITY`): a `LEFT JOIN` from the
 asked-for DID to `customer`, to `consumer`, and on to the provider's
