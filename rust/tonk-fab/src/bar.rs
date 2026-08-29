@@ -816,7 +816,7 @@ pub(crate) fn update(this: &HtmlElement) {
         }));
     }
     if let Ok(Some(mode)) = this.query_selector("[data-overflow-mode]") {
-        let _ = mode.set_attribute("aria-checked", &shadow::is_dark(this).to_string());
+        let _ = mode.set_attribute("pressed", &shadow::is_dark(this).to_string());
     }
     update_more_glyph(this);
     update_sync_condition(this);

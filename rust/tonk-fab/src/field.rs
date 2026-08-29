@@ -37,6 +37,10 @@ const CSS: &str = r#"
   :host([changeable]) .noun-current{ display:none; }
   :host([changeable]) .noun-change{ display:inline-flex; align-items:flex-end; }
 }
+@media (max-width:519px), (pointer:coarse){
+  .row{ height:44px; }
+  .value{ font-size:16px; }
+}
 @media (prefers-reduced-motion:reduce){
   .row.rejecting{ animation:none; }
   .cur{ animation:none; }
@@ -306,6 +310,9 @@ mod tests {
         assert!(CSS.contains("height:36px"));
         assert!(CSS.contains(":host([settled])"));
         assert!(CSS.contains(":host([filter=digits])"));
+        assert!(CSS.contains("@media (max-width:519px), (pointer:coarse)"));
+        assert!(CSS.contains(".row{ height:44px; }"));
+        assert!(CSS.contains(".value{ font-size:16px; }"));
     }
 
     #[test]

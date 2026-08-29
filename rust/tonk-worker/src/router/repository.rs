@@ -5661,9 +5661,14 @@ mod tests {
             CORE.contains("tonk-display > [slot][hidden]"),
             "inactive pending and refusal slots should not survive a ready result",
         );
-        assert!(CORE.contains("local spot &middot; no sync remote"));
+        assert!(CORE.contains("sharing unavailable"));
         assert!(
-            CORE.contains("Use connect in the condition banner, then create the agent link again.")
+            !CORE.contains("Use connect in the condition banner"),
+            "the refusal must not prescribe a repair that is absent or inappropriate"
+        );
+        assert!(
+            CORE.contains("<p>{detail}</p>"),
+            "the worker-owned complete sentence is the only refusal body"
         );
     }
 

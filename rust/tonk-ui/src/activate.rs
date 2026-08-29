@@ -6,19 +6,25 @@
 //! accept button posts the decoded bytes to the same-origin `/ucan/`
 //! endpoint and reports the outcome.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use custom_elements::CustomElement;
 use js_sys::Reflect;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{HtmlElement, window};
+use web_sys::{HtmlButtonElement, HtmlElement, window};
 
 const STYLE_ID: &str = "tonk-activate-styles";
 
 /// The top-document activation element.
 #[derive(Default)]
-struct TonkActivate;
+struct TonkActivate {
+    pending: Rc<Cell<bool>>,
+    terminal: Rc<Cell<bool>>,
+}
 
 impl CustomElement for TonkActivate {
     fn shadow() -> bool {
@@ -42,7 +48,7 @@ impl CustomElement for TonkActivate {
             return;
         }
         let _ = Reflect::set(this.as_ref(), &"__tonkActivateBound".into(), &JsValue::TRUE);
-        bind(this);
+        bind(this, self.pending.clone(), self.terminal.clone());
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {}
@@ -111,6 +117,28 @@ fn show_error(host: &HtmlElement, message: &str) {
     set_status(host, "");
 }
 
+fn clear_error(host: &HtmlElement) {
+    if let Ok(Some(error)) = host.query_selector("#activate-error") {
+        error.set_text_content(None);
+        let _ = error.set_attribute("hidden", "");
+    }
+}
+
+fn set_busy(host: &HtmlElement, busy: bool, keep_disabled: bool) {
+    if let Ok(Some(section)) = host.query_selector("#activate-confirm") {
+        if busy {
+            let _ = section.set_attribute("aria-busy", "true");
+        } else {
+            let _ = section.remove_attribute("aria-busy");
+        }
+    }
+    if let Ok(Some(button)) = host.query_selector("#activate-accept")
+        && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
+    {
+        button.set_disabled(busy || keep_disabled);
+    }
+}
+
 fn show_panel(host: &HtmlElement, selector: &str) {
     for panel in ["#activate-confirm", "#activate-done"] {
         if let Ok(Some(element)) = host.query_selector(panel) {
@@ -124,7 +152,7 @@ fn show_panel(host: &HtmlElement, selector: &str) {
     }
 }
 
-fn bind(host: &HtmlElement) {
+fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
     // A damaged link is visible before the button is pressed rather than
     // after: the page's one job is presenting the invocation it carries.
     if let Err(error) = link_invocation() {
@@ -134,12 +162,25 @@ fn bind(host: &HtmlElement) {
     show_panel(host, "#activate-confirm");
 
     let target = host.clone();
+    let action_pending = pending.clone();
+    let action_terminal = terminal.clone();
     let onclick = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        if action_terminal.get() || action_pending.replace(true) {
+            return;
+        }
         let host = target.clone();
+        let pending = action_pending.clone();
+        let terminal = action_terminal.clone();
+        clear_error(&host);
+        set_busy(&host, true, false);
         spawn_local(async move {
             let invocation = match link_invocation() {
                 Ok(bytes) => bytes,
-                Err(error) => return show_error(&host, &error),
+                Err(error) => {
+                    pending.set(false);
+                    set_busy(&host, false, false);
+                    return show_error(&host, &error);
+                }
             };
             set_status(&host, "Activating…");
             let response = reqwest::Client::new()
@@ -151,12 +192,22 @@ fn bind(host: &HtmlElement) {
             let response = match response {
                 Ok(response) => response,
                 Err(_) => {
+                    pending.set(false);
+                    set_busy(&host, false, false);
                     return show_error(&host, "The service could not be reached. Try again.");
                 }
             };
             let status = response.status();
             let body: serde_json::Value = response.json().await.unwrap_or_default();
+            if terminal.get() {
+                return;
+            }
             if status.is_success() {
+                // The service has consumed the one-use link. Claim the
+                // terminal outcome before recording the receipt can yield,
+                // so no later completion can replace success with an error.
+                terminal.set(true);
+                pending.set(false);
                 // Hand the receipt to the worker before declaring
                 // success. The service names the provider serving this
                 // account here, and this page is the only place that
@@ -169,14 +220,21 @@ fn bind(host: &HtmlElement) {
                         &format!("activation receipt not recorded: {error}").into(),
                     );
                 }
+                set_busy(&host, false, true);
+                clear_error(&host);
                 set_status(&host, "");
                 show_panel(&host, "#activate-done");
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {
+                terminal.set(true);
+                pending.set(false);
+                set_busy(&host, false, true);
                 show_error(
                     &host,
                     "This activation link has expired. Sign in on your device to get a fresh one.",
                 );
             } else {
+                pending.set(false);
+                set_busy(&host, false, false);
                 let message = body["error"]["message"]
                     .as_str()
                     .unwrap_or("Activation failed. Try again.")
