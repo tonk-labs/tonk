@@ -35,6 +35,7 @@ web-sys = { workspace = true, features = [
     "Event",
     "EventTarget",
     "Headers",
+    "HtmlCollection",
     "HtmlElement",
     "KeyboardEvent",
     "Location",
@@ -46,6 +47,7 @@ web-sys = { workspace = true, features = [
     "RequestInit",
     "RequestMode",
     "Response",
+    "Selection",
     "Window",
 ] }
 

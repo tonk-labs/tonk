@@ -1098,6 +1098,18 @@ impl Notebook {
     /// two save together. This marks the whole run instead, so what is
     /// highlighted is what a commit will write.
     fn mark_active_block(&self) {
+        // Only mark when the caret is actually in THIS notebook.
+        //
+        // The listener is document-wide, and a notebook nests: every result
+        // card renders a `<tonk-display>` whose view is itself a notebook, so
+        // one document can hold dozens, each with its own listener. Without
+        // this check every one of them runs on every caret move and clears
+        // `.md-doc > *` — including the marks the notebook the caret is
+        // actually in just set. The band appeared and was wiped in the same
+        // tick, so nothing ever rendered.
+        if !self.holds_selection() {
+            return;
+        }
         // Writing `class` on a node is itself a DOM mutation, and mutating
         // inside the editor re-fires `selectionchange` — so marking
         // unconditionally re-enters this immediately and spins. Only touch
@@ -1108,14 +1120,22 @@ impl Notebook {
         }
         self.marked.set(caret);
 
-        let root = self.editor_root();
-        let Ok(nodes) = root.query_selector_all(".md-doc > *") else {
+        // THIS editor's document, and its children only.
+        //
+        // `query_selector_all(".md-doc > *")` on the shadow root matches every
+        // `.md-doc` under it — and a notebook nests, so the six notebooks a
+        // result gallery renders each contribute their own. The node list then
+        // runs past this document's blocks and its indices no longer line up
+        // with `projected`, so the span marked the wrong nodes and the clear
+        // reached into other notebooks' documents.
+        let Ok(Some(md_doc)) = self.editor_root().query_selector(".md-doc") else {
             return;
         };
+        let nodes = md_doc.children();
         // Clear first: the caret leaving a block has to unmark it even when
         // the new position resolves to nothing.
         for index in 0..nodes.length() {
-            if let Some(node) = nodes.item(index).and_then(|n| n.dyn_into::<Element>().ok()) {
+            if let Some(node) = nodes.item(index) {
                 let _ = node.class_list().remove_1("nb-block-active");
             }
         }
@@ -1127,13 +1147,28 @@ impl Notebook {
             return;
         };
         for index in start..start + len {
-            if let Some(node) = nodes
-                .item(index as u32)
-                .and_then(|n| n.dyn_into::<Element>().ok())
-            {
+            if let Some(node) = nodes.item(index as u32) {
                 let _ = node.class_list().add_1("nb-block-active");
             }
         }
+    }
+
+    /// Whether the selection sits inside this notebook's editor.
+    ///
+    /// Tested against the EDITOR ROOT, not the `<tonk-prose>` host:
+    /// `Node.contains` does not cross a shadow boundary, and the anchor the
+    /// selection reports is the text node inside prose's shadow tree — so a
+    /// containment test on the host is false even when the caret is right
+    /// there. The shadow root does contain it.
+    fn holds_selection(&self) -> bool {
+        let Some(selection) = window().and_then(|w| w.get_selection().ok().flatten()) else {
+            return false;
+        };
+        let Some(anchor) = selection.anchor_node() else {
+            return false;
+        };
+        let root: web_sys::Node = self.editor_root().into();
+        root.contains(Some(&anchor))
     }
 
     /// Attach the `selectionchange` listener to the prose shadow root, once
