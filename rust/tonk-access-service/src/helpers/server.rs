@@ -467,7 +467,7 @@ async fn handle_request(
                         // A status probe reports stored state; the space
                         // is minted by enroll and activate, which are the
                         // answers a client records it from.
-                        customer_space: None,
+                        ledger: None,
                         provider: (customer.status == CustomerStatus::Active).then(|| {
                             format!("{}/ucan/", registration.origin.trim_end_matches('/'))
                         }),

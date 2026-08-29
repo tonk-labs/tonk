@@ -303,26 +303,26 @@ pub struct Receipt {
     /// provider": a client that already recorded one keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The bookkeeping space this service owns for the customer, and a
+    /// The ledger space this service owns for the customer, and a
     /// `/use/get` delegation letting the account read it.
     ///
     /// The service writes metering and billing there and the account
     /// only reads, so a client cannot rewrite its own record. Owning it
-    /// is also what keeps the service's bookkeeping out of the
+    /// is also what keeps the service's ledger out of the
     /// customer's reach: a delegation the client granted, the client
     /// could withdraw.
     ///
     /// Optional so a receipt from a service that predates this still
     /// decodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub customer_space: Option<CustomerSpace>,
+    pub ledger: Option<Ledger>,
 }
 
-/// The service-owned bookkeeping space named in a [`Receipt`], with the
+/// The service-owned ledger space named in a [`Receipt`], with the
 /// authority to read it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CustomerSpace {
+pub struct Ledger {
     /// The space's DID: the subject a client points a remote at.
     pub did: Did,
     /// Hex-encoded `/use/get` delegation chain, issued by the space to

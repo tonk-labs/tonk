@@ -12,7 +12,8 @@ use super::{
     ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
     INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
     RESERVE_CONSUMER, SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER,
-    SELECT_CUSTOMER_BY_EMAIL, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, Servability, Store, StoreError,
+    UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -178,6 +179,35 @@ impl Store for SqliteStore {
             })
         })
         .transpose()
+    }
+
+    async fn servability(&self, did: &str) -> Result<Servability, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let row = conn
+            .query_row(SELECT_SERVABILITY, params![did], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .optional()
+            .map_err(map_err)?;
+        // The `(SELECT ?1)` on the left of every join always yields a
+        // row, so `None` here means the query itself found nothing —
+        // treated the same as a subject with no rows at all.
+        let Some((own, consumer, provider, reserved_until, provider_status)) = row else {
+            return Ok(Servability::default());
+        };
+        Ok(Servability {
+            own: own.as_deref().map(parse_status).transpose()?,
+            consumer: consumer.is_some(),
+            provided: provider.is_some(),
+            reserved_until: reserved_until.map(|value| value as u64),
+            provider: provider_status.as_deref().map(parse_status).transpose()?,
+        })
     }
 
     async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError> {

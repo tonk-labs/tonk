@@ -134,10 +134,10 @@ pub(crate) async fn enroll_customer(
                 customer: root_did.clone(),
                 status: CustomerStatus::Active,
                 // Synthesized locally, so it names neither a
-                // service-provided provider nor a bookkeeping space;
+                // service-provided provider nor a ledger space;
                 // whatever was recorded before stands.
                 provider: None,
-                customer_space: None,
+                ledger: None,
             }
         }
         Err(error) => return Err(error.into()),

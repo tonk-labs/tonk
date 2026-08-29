@@ -73,30 +73,43 @@ pub async fn screen<S: Store>(
     subject: &str,
     now: u64,
 ) -> Result<Result<(), AuthorizeError>, StoreError> {
-    if let Some(customer) = store.customer(subject).await? {
-        return Ok(servable(customer.status, "the subject's own registration"));
+    // One query, not three. This runs before every presign, and read in
+    // three separate steps it could see a customer that activates
+    // between the first and the last.
+    let subject = store.servability(subject).await?;
+
+    // An account is both a customer and its own consumer, so its own
+    // registration answers without consulting the consumer half.
+    if let Some(status) = subject.own {
+        return Ok(servable(status, "the subject's own registration"));
     }
-    let Some(consumer) = store.consumer(subject).await? else {
+    if !subject.consumer {
         return Ok(Err(denial(
             Recourse::None,
             "the subject is not provisioned",
         )));
-    };
+    }
     // A live reservation holds the name and nothing more. The row carries
     // a provider so the claim can be checked, which would otherwise read
     // here as provisioned — so the reservation is what this asks about
     // first. Retryable: the provisioning that follows is what serves it.
-    if consumer.reserved_until.is_some_and(|until| until > now) {
+    if subject.reserved_until.is_some_and(|until| until > now) {
         return Ok(Err(denial(
             Recourse::Retry,
             "the subject is reserved but not yet provisioned",
         )));
     }
-    let Some(provider) = consumer.provider else {
+    if !subject.provided {
         return Ok(Err(denial(Recourse::None, "the subject has no provider")));
-    };
-    match store.customer(&provider).await? {
-        Some(customer) => Ok(servable(customer.status, "the provider's registration")),
+    }
+    match subject.provider {
+        Some(status) => Ok(servable(status, "the provider's registration")),
+        // A provider named by a consumer row but absent from `customer`.
+        // Unreachable under SQLite, which enforces the foreign key and
+        // refuses to delete a customer any consumer still names — but D1
+        // does not enforce foreign keys, so this refuses rather than
+        // assuming the state cannot arise. Untested for the same reason:
+        // the fixture store will not construct it.
         None => Ok(Err(denial(
             Recourse::None,
             "the provider is not a customer",

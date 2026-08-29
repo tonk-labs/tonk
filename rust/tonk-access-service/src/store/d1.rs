@@ -17,7 +17,8 @@ use crate::store::{
     ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
     INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
     RESERVE_CONSUMER, SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER,
-    SELECT_CUSTOMER_BY_EMAIL, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, Servability, Store, StoreError,
+    UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -65,6 +66,35 @@ impl TryFrom<CustomerRowD1> for Customer {
             plan: row.plan,
             verified: row.verified as u64,
             terms_version: row.terms_version,
+        })
+    }
+}
+
+/// The gate's joined row, by the aliases `SELECT_SERVABILITY` gives its
+/// columns: two `status` columns share a name without them.
+#[derive(Deserialize)]
+struct ServabilityRowD1 {
+    own_status: Option<String>,
+    consumer_did: Option<String>,
+    consumer_provider: Option<String>,
+    consumer_reserved_until: Option<f64>,
+    provider_status: Option<String>,
+}
+
+impl TryFrom<ServabilityRowD1> for Servability {
+    type Error = StoreError;
+
+    fn try_from(row: ServabilityRowD1) -> Result<Self, Self::Error> {
+        Ok(Servability {
+            own: row.own_status.as_deref().map(parse_status).transpose()?,
+            consumer: row.consumer_did.is_some(),
+            provided: row.consumer_provider.is_some(),
+            reserved_until: row.consumer_reserved_until.map(|value| value as u64),
+            provider: row
+                .provider_status
+                .as_deref()
+                .map(parse_status)
+                .transpose()?,
         })
     }
 }
@@ -123,6 +153,22 @@ impl Store for D1Store {
             .await
             .map_err(map_err)?;
         row.map(Customer::try_from).transpose()
+    }
+
+    async fn servability(&self, did: &str) -> Result<Servability, StoreError> {
+        let row: Option<ServabilityRowD1> = self
+            .0
+            .prepare(SELECT_SERVABILITY)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        // `(SELECT ?1)` always yields a row, so an absent one means the
+        // query found nothing — the same answer as a subject with no rows.
+        row.map(Servability::try_from)
+            .transpose()
+            .map(Option::unwrap_or_default)
     }
 
     async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError> {

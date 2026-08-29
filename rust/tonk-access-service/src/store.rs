@@ -58,6 +58,24 @@ pub struct Customer {
     pub terms_version: Option<String>,
 }
 
+/// What the provisioning gate reads about one subject.
+///
+/// Rows rather than a verdict: deciding is `provisioning::screen`'s job,
+/// and keeping the policy there means the store stays a store.
+#[derive(Debug, Clone, Default)]
+pub struct Servability {
+    /// The subject's own registration, when the subject is a customer.
+    pub own: Option<CustomerStatus>,
+    /// Whether a consumer row exists for the subject at all.
+    pub consumer: bool,
+    /// Whether that consumer names a provider.
+    pub provided: bool,
+    /// The consumer's reservation, when it holds one.
+    pub reserved_until: Option<u64>,
+    /// The provider's registration, when the provider is a customer.
+    pub provider: Option<CustomerStatus>,
+}
+
 /// A space the service replicates, servable only while `provider` names
 /// an active customer.
 #[derive(Debug, Clone)]
@@ -165,6 +183,9 @@ pub trait Store {
     /// Look up a consumer by DID.
     async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError>;
 
+    /// Read everything the provisioning gate decides on, in one query.
+    async fn servability(&self, did: &str) -> Result<Servability, StoreError>;
+
     /// List every consumer originally provided by one account, including
     /// deleted rows whose live provider has been cleared.
     async fn consumers_by_owner(&self, owner: &str) -> Result<Vec<Consumer>, StoreError>;
@@ -252,6 +273,27 @@ pub const SELECT_CONSUMER: &str = r#"
 SELECT did, provider, owner, registered, kind, deletion_state, deleted_at,
        reserved_until
   FROM consumer WHERE did = ?1
+"#;
+
+/// Everything the provisioning gate decides on, in one round trip.
+///
+/// The gate runs before every presign, and answered from three separate
+/// selects it could read a customer that activates before the third one
+/// runs. One statement removes both the round trips and that window.
+///
+/// A subject may be a customer, a consumer, or both — an account is both,
+/// since enrollment writes it a self-provided consumer row. Every column
+/// is therefore nullable and the caller decides; this only gathers.
+pub const SELECT_SERVABILITY: &str = r#"
+SELECT own.status           AS own_status,
+       sub.did              AS consumer_did,
+       sub.provider         AS consumer_provider,
+       sub.reserved_until   AS consumer_reserved_until,
+       provider.status      AS provider_status
+  FROM (SELECT ?1 AS did) AS asked
+  LEFT JOIN customer own      ON own.did = asked.did
+  LEFT JOIN consumer sub      ON sub.did = asked.did
+  LEFT JOIN customer provider ON provider.did = sub.provider
 "#;
 
 pub const SELECT_CONSUMERS_BY_OWNER: &str = r#"

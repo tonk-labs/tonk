@@ -38,7 +38,7 @@ use ipld_core::serde::from_ipld;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tonk_account::customer::{
-    Activate, Add, ConsumerReceipt, Customer, CustomerSpace, CustomerStatus, Enroll,
+    Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Ledger,
     Provider as ProviderRole, Receipt, RegistrationError, deposit_scopes,
 };
 
@@ -274,7 +274,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         // to prevent.
         self.verify_deposits(&effect.access, &customer).await?;
         let material = self.verify_custody(&effect, &customer).await?;
-        let space = self.customer_space(&customer).await?;
+        let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer, &material).await?;
         // What gets stored is everything the deposit needs to be
         // exercised later: the scoped heads together with the chain
@@ -341,7 +341,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             // allocated, so it exists as soon as the account does, and a
             // client that records it here needs nothing from activation
             // to know where its own record will live.
-            customer_space: Some(space),
+            ledger: Some(space),
         })
     }
 
@@ -363,12 +363,12 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             .await
             .map_err(internal)?
         {
-            let customer_space = Some(self.customer_space(&customer).await?);
+            let ledger = Some(self.ledger(&customer).await?);
             return Ok(Receipt {
                 customer,
                 status: CustomerStatus::Active,
                 provider: Some(self.provider_address()),
-                customer_space,
+                ledger,
             });
         }
         match self
@@ -378,12 +378,12 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             .map_err(internal)?
         {
             Some(existing) if existing.status == CustomerStatus::Active => {
-                let customer_space = Some(self.customer_space(&customer).await?);
+                let ledger = Some(self.ledger(&customer).await?);
                 Ok(Receipt {
                     customer,
                     status: CustomerStatus::Active,
                     provider: Some(self.provider_address()),
-                    customer_space,
+                    ledger,
                 })
             }
             Some(_) => Err(RegistrationError::CustomerSuspended),
@@ -675,8 +675,8 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         })
     }
 
-    /// The bookkeeping space for `account`, and the account's authority
-    /// to read it.
+    /// The ledger space for `account`, and the account's authority to
+    /// read it.
     ///
     /// The space is derived from the service seed, so nothing is stored
     /// and the same account always resolves to the same DID. The
@@ -685,8 +685,8 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
     /// account can see its own record but never rewrite it, and cannot
     /// withdraw the service's own access the way a client-granted
     /// delegation could be withdrawn.
-    async fn customer_space(&self, account: &Did) -> Result<CustomerSpace, RegistrationError> {
-        let space = crate::service::customer_space_signer(self.service_seed, account)
+    async fn ledger(&self, account: &Did) -> Result<Ledger, RegistrationError> {
+        let space = crate::service::ledger_signer(self.service_seed, account)
             .map_err(|message| RegistrationError::Internal { message })?;
         let did = space.did();
         let delegation = DelegationBuilder::new()
@@ -704,7 +704,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
                 message: format!("encoding the customer space read failed: {err}"),
             }
         })?;
-        Ok(CustomerSpace {
+        Ok(Ledger {
             did,
             read_hex: hex::encode(bytes),
         })

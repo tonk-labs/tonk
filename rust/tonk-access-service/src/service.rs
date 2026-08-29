@@ -30,10 +30,10 @@ pub fn signer_from_hex(seed_hex: &str) -> Result<Ed25519Signer, String> {
 /// HKDF info for a customer space's signing seed. Bumping the version
 /// re-derives every customer space, so it is a deliberate rotation
 /// rather than a routine change.
-const CUSTOMER_SPACE_CONTEXT: &[u8] = b"tonk/customer/space/v1";
+const LEDGER_CONTEXT: &[u8] = b"tonk/customer/ledger/v1";
 
-/// Derive the signer for `account`'s customer space — the bookkeeping
-/// space this service owns and writes metering into.
+/// Derive the signer for `account`'s ledger — the space this service
+/// owns and replicates its metering and billing into.
 ///
 /// Derived rather than generated so nothing has to be stored: no key at
 /// rest, no sealing, no rotation table, and the DID is recomputable from
@@ -46,13 +46,13 @@ const CUSTOMER_SPACE_CONTEXT: &[u8] = b"tonk/customer/space/v1";
 /// Binding the account DID into the info means one customer cannot
 /// derive another's space key even knowing this construction, since the
 /// service seed is the only unknown.
-pub fn customer_space_signer(seed_hex: &str, account: &Did) -> Result<Ed25519Signer, String> {
+pub fn ledger_signer(seed_hex: &str, account: &Did) -> Result<Ed25519Signer, String> {
     let seed = hex::decode(seed_hex.trim())
         .map_err(|err| format!("SERVICE_SECRET_KEY is not valid hex: {err}"))?;
     let hkdf = Hkdf::<Sha256>::new(None, &seed);
     let mut derived = [0u8; 32];
     hkdf.expand(
-        &[CUSTOMER_SPACE_CONTEXT, account.to_string().as_bytes()].concat(),
+        &[LEDGER_CONTEXT, account.to_string().as_bytes()].concat(),
         &mut derived,
     )
     .map_err(|err| format!("customer space derivation failed: {err}"))?;
@@ -153,13 +153,13 @@ mod tests {
     /// account always yields the same space, so nothing has to be
     /// persisted to find it again.
     #[dialog_common::test]
-    fn it_derives_the_same_customer_space_every_time() {
+    fn it_derives_the_same_ledger_every_time() {
         let seed = "11".repeat(32);
         let account: Did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
             .parse()
             .unwrap();
-        let once = customer_space_signer(&seed, &account).unwrap();
-        let again = customer_space_signer(&seed, &account).unwrap();
+        let once = ledger_signer(&seed, &account).unwrap();
+        let again = ledger_signer(&seed, &account).unwrap();
         assert_eq!(once.did(), again.did());
     }
 
@@ -174,8 +174,8 @@ mod tests {
         let bob: Did = "did:key:z6MkrZ1r5XBFZjBU34qyD8fueMbMRkKw17BZaq2ivKFjnz2z"
             .parse()
             .unwrap();
-        let alice_space = customer_space_signer(&seed, &alice).unwrap();
-        let bob_space = customer_space_signer(&seed, &bob).unwrap();
+        let alice_space = ledger_signer(&seed, &alice).unwrap();
+        let bob_space = ledger_signer(&seed, &bob).unwrap();
         assert_ne!(alice_space.did(), bob_space.did());
         assert_ne!(
             alice_space.did(),
@@ -188,12 +188,12 @@ mod tests {
     /// deployment cannot reach another's — and a seed rotation is a
     /// deliberate act with visible consequences.
     #[dialog_common::test]
-    fn it_binds_the_customer_space_to_the_service_seed() {
+    fn it_binds_the_ledger_to_the_service_seed() {
         let account: Did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
             .parse()
             .unwrap();
-        let one = customer_space_signer(&"11".repeat(32), &account).unwrap();
-        let other = customer_space_signer(&"22".repeat(32), &account).unwrap();
+        let one = ledger_signer(&"11".repeat(32), &account).unwrap();
+        let other = ledger_signer(&"22".repeat(32), &account).unwrap();
         assert_ne!(one.did(), other.did());
     }
 

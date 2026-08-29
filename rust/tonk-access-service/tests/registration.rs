@@ -1382,7 +1382,7 @@ mod custody {
             panic!("a valid enrollment is accepted");
         };
         let space = receipt
-            .customer_space
+            .ledger
             .expect("the receipt names the customer space");
         assert!(
             !space.read_hex.is_empty(),
