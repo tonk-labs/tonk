@@ -609,3 +609,54 @@ describe("periodic revocation check", () => {
     assert.equal(probes, 1, "the interval gate collapses a burst to one probe");
   });
 });
+
+describe("retiring on a waiting successor", () => {
+  // Finding 2 again, from the angle the first fix missed. `updatefound`
+  // is an EVENT, and a service worker is killed and restarted
+  // constantly — so the event fires into a dead worker whenever the
+  // successor installs while this one is asleep. Worse, a worker
+  // holding an open SSE stream is never killed (the stream keeps it
+  // alive), so it also never restarts to notice. Both gaps leave the
+  // successor stuck in `waiting` with reloads landing on the old active
+  // worker: the "waiting to activate" state that never clears.
+
+  test("checks the registration at startup, not just on the event", () => {
+    // The registration is durable where the event is not.
+    const swSource = readFileSync(SW_PATH, "utf8");
+    const beforeListener = swSource.slice(
+      0,
+      swSource.indexOf('addEventListener?.("updatefound"'),
+    );
+    assert.match(
+      beforeListener,
+      /if \(self\.registration\.waiting\)/,
+      "a worker that slept through updatefound must still notice at startup",
+    );
+  });
+
+  test("also checks on the fetch path", () => {
+    // A worker pinned by its own streams never restarts, so startup
+    // alone is not enough; fetches are its only remaining contact.
+    const swSource = readFileSync(SW_PATH, "utf8");
+    const onfetch = swSource.slice(swSource.indexOf("self.onfetch = event =>"));
+    assert.match(
+      onfetch,
+      /retireIfSuperseded\(event\)/,
+      "the fetch path must check too — a stream-pinned worker never restarts",
+    );
+  });
+
+  test("declares its state before every use", () => {
+    // A `let` read before its declaration is a runtime TDZ error, not a
+    // hoist — and `node --check` does not catch it, exactly like the
+    // cross-module `isRevoked` bug.
+    const swSource = readFileSync(SW_PATH, "utf8");
+    const decl = swSource.indexOf("let retired = false;");
+    assert.ok(decl > 0, "expected a `retired` declaration");
+    const firstUse = swSource.search(/\bretired\s*=\s*true|\bif \(retired\b/);
+    assert.ok(
+      firstUse > decl,
+      "`retired` is used before it is declared — a TDZ error at runtime",
+    );
+  });
+});
