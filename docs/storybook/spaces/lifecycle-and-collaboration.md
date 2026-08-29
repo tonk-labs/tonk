@@ -97,9 +97,11 @@ name, and collisions before registration.
 ### Exit early
 
 List, status, help, dry-run, and notation-preview paths do not mutate the space.
-`space rm` confirmation decline, `space unbind` with no exact binding, identical
-data writes, already-configured idempotent migrations, and rejected ownership
-changes finish without unrelated writes.
+`space rm` confirmation decline, Hub removal cancellation, `space unbind` with
+no exact binding, identical data writes, already-configured idempotent
+migrations, and rejected ownership changes finish without unrelated writes. In
+the Hub, Escape closes the confirmation and restores focus to the remove action
+for the same row.
 
 Invalid names, missing selection, stale bindings, ambiguous account-space
 names, invalid invite URLs/DIDs, wrong recipients, absent upstreams, and
@@ -131,9 +133,10 @@ registers the repository locally. Revocation crosses when the immutable
 revocation is published, not when a local UI row disappears.
 
 Local `space rm` crosses a filesystem boundary; `--keep-data` deliberately
-crosses only registry/binding boundaries. Hosted-space deletion crosses an
-account-service boundary for an exact repository subject and is described with
-account deletion review.
+crosses only registry/binding boundaries. The Hub crosses the same local
+removal boundary only when the confirmation action for that row is submitted.
+Hosted-space deletion crosses an account-service boundary for an exact
+repository subject and is described with account deletion review.
 
 ### Remain in flight
 
@@ -172,7 +175,8 @@ not permission to rewrite refs.
 Unbind settles with data and registration unchanged. `rm --keep-data` settles
 with an adoptable, unregistered site. Destructive local removal settles only
 after data and registry/binding state agree, or reports an explicit partial
-state that recovery can inspect.
+state that recovery can inspect. A successful Hub confirmation removes the
+exact subject from the profile listing and then removes its row from the Hub.
 
 ## Modifiers
 
