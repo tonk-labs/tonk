@@ -196,7 +196,7 @@ impl Default for Custody {
             claimed_did: None,
             sealed: b"sealed-account-secret".to_vec(),
             checksum_over: None,
-            command: ["memory", "publish"]
+            command: ["use", "put", "memory", "cell"]
                 .iter()
                 .map(ToString::to_string)
                 .collect(),

@@ -94,7 +94,7 @@ fn cell_arguments() -> BTreeMap<String, Promised> {
     ])
 }
 
-/// Build a `/memory/publish` container for the wrapped-secret cell.
+/// Build a `/use/put/memory/cell` container for the wrapped-secret cell.
 ///
 /// The invocation names the content by checksum; the bytes themselves
 /// travel in the presigned PUT the permit authorizes. `when` carries
@@ -128,7 +128,12 @@ pub async fn sign_publish_invocation(
     }
     sign_self_invocation(
         custody,
-        vec!["memory".to_string(), "publish".to_string()],
+        vec![
+            "use".to_string(),
+            "put".to_string(),
+            "memory".to_string(),
+            "cell".to_string(),
+        ],
         arguments,
         expiration,
     )
@@ -160,11 +165,16 @@ pub async fn sign_deferred_publish_invocation(
     sign_publish_invocation(custody, content, None, expiration).await
 }
 
-/// Build a `/memory/resolve` container for the wrapped-secret cell.
+/// Build a `/use/get/memory/cell` container for the wrapped-secret cell.
 pub async fn build_resolve_invocation(custody: Ed25519Signer) -> Result<Vec<u8>> {
     build_self_invocation(
         custody,
-        vec!["memory".to_string(), "resolve".to_string()],
+        vec![
+            "use".to_string(),
+            "get".to_string(),
+            "memory".to_string(),
+            "cell".to_string(),
+        ],
         cell_arguments(),
         Timestamp::five_minutes_from_now(),
     )
@@ -418,7 +428,12 @@ mod tests {
         assert_eq!(chain.subject(), &did);
         assert_eq!(
             chain.command().0,
-            vec!["memory".to_string(), "publish".to_string()],
+            vec![
+                "use".to_string(),
+                "put".to_string(),
+                "memory".to_string(),
+                "cell".to_string()
+            ],
         );
         let arguments = chain.invocation.arguments();
         assert_eq!(
@@ -472,7 +487,12 @@ mod tests {
         assert_eq!(chain.issuer(), &did);
         assert_eq!(
             chain.command().0,
-            vec!["memory".to_string(), "resolve".to_string()],
+            vec![
+                "use".to_string(),
+                "get".to_string(),
+                "memory".to_string(),
+                "cell".to_string()
+            ],
         );
     }
 
