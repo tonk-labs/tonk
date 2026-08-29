@@ -388,6 +388,50 @@ self.onactivate = event => {
 // and drops the LSP push channel's sender. Receivers see EOF,
 // browser side resumes via the existing reconnect loop against
 // the new worker.
+/// Whether this worker has already released its streams for a waiting
+/// successor. Per worker instance, which is what we want: a restarted
+/// worker re-checks. Declared here, above every use — a `let` read
+/// before its declaration is a runtime TDZ error, not a hoist.
+let retired = false;
+
+/// Release this worker's long-lived streams because a successor is
+/// waiting. Idempotent: safe to run from the `updatefound` event and
+/// again at startup.
+async function retire(reason) {
+    log(`Retiring — ${reason}`);
+    try {
+        const worker = await activateWorker();
+        // Stop the sync loop and release long-lived streams so this
+        // instance winds down. Serving continues until the successor
+        // claims the pages — the two may overlap briefly, which storage
+        // is designed to tolerate (CAS commits over content-addressed
+        // blocks; transaction settling is race-armed). Nothing here may
+        // couple the successor's startup to this worker's death: worker
+        // lifecycles belong to the browser.
+        await worker.onupdatefound?.();
+    } catch (err) {
+        log("Failed to release streams:", err);
+    }
+}
+
+// Catch-up check, run at every script evaluation.
+//
+// `updatefound` is an EVENT, and a service worker is killed and
+// restarted constantly — so the event fires into a dead worker whenever
+// the successor installs while this one is asleep. The listener below
+// is then re-registered on restart having already missed its only
+// notice, and this worker goes on holding streams open forever: the
+// successor sits in `waiting`, reloads keep landing on the old active
+// worker, and nothing ever breaks the deadlock. That is precisely the
+// "waiting to activate" state that never clears.
+//
+// The registration itself is durable where the event is not, so ask it
+// directly on every startup instead of trusting that we were awake.
+if (self.registration.waiting) {
+    retired = true;
+    retire("a successor was already waiting at startup");
+}
+
 self.registration.addEventListener?.("updatefound", async () => {
     // The event fires on the REGISTRATION, so every worker running this script
     // hears it — including the newly-installing worker, about its own arrival.
@@ -403,20 +447,7 @@ self.registration.addEventListener?.("updatefound", async () => {
         log("Update found — that is us installing; staying live");
         return;
     }
-    log("Update found — stopping background work; the successor runs independently");
-    try {
-      const worker = await activateWorker();
-      // Stop the sync loop and release long-lived streams so this
-      // instance winds down. Serving continues until the successor
-      // claims the pages — the two may overlap briefly, which storage
-      // is designed to tolerate (CAS commits over content-addressed
-      // blocks; transaction settling is race-armed). Nothing here may
-      // couple the successor's startup to this worker's death: worker
-      // lifecycles belong to the browser.
-      await worker.onupdatefound?.();
-    } catch (err) {
-        log("Failed to forward updatefound:", err);
-    }
+    await retire("a newer worker is installing");
 });
 
 // Connectivity transitions. The Rust side reads `navigator.onLine` itself
@@ -716,6 +747,20 @@ Your data is stored separately and is not affected.</p>` : ""}
 const KILL_SWITCH_INTERVAL_MS = 30 * 60 * 1000;
 let killSwitchCheckedAt = 0;
 
+/// Release streams if a successor is waiting and we have not already.
+///
+/// Called from the fetch path because that is the one thing guaranteed
+/// to run. A worker holding an open SSE stream is never killed — the
+/// stream keeps it alive — so it never restarts, never re-evaluates
+/// this script, and never reaches the startup catch-up above. Its only
+/// remaining contact with the outside world is the fetches it serves,
+/// so the check has to live here too.
+function retireIfSuperseded(event) {
+    if (retired || !self.registration.waiting) return;
+    retired = true;
+    event.waitUntil?.(retire("a successor is waiting"));
+}
+
 function maybeCheckKillSwitch(event) {
     const now = Date.now();
     if (now - killSwitchCheckedAt < KILL_SWITCH_INTERVAL_MS) return;
@@ -729,6 +774,10 @@ function maybeCheckKillSwitch(event) {
 
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    // A waiting successor means this worker is retiring. Checked on the
+    // fetch path because a worker pinned by its own open streams never
+    // restarts to run the startup check.
+    retireIfSuperseded(event);
     // Answered from this glue, never the wasm worker: health must be
     // readable precisely when the worker cannot answer for itself.
     if (path === "/api/health") {
