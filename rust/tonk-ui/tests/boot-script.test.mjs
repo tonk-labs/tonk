@@ -173,6 +173,38 @@ describe("boot script contract with the worker", () => {
     assert.match(registering, /registration\.update\(\)/);
   });
 
+  test("decides staleness by comparing builds, not by listening for events", () => {
+    // `registration` is shared across every tab on the origin, so
+    // `updatefound` fires in all of them — including tabs already
+    // running the new build, and including the install a sibling tab's
+    // reload just triggered. Announcing on that event made two tabs
+    // ping-pong: reload A, B prompts; reload B, A prompts; forever.
+    //
+    // Gating on `registration.waiting` did not fix it either: the
+    // worker calls `skipWaiting()`, so a successor goes
+    // `installing -> activating` and barely touches that slot.
+    //
+    // The honest question is a state each tab answers for itself: is
+    // the served build different from the one this page loaded?
+    const registering = moduleBlocks().find((b) =>
+      b.includes("serviceWorker.register"),
+    );
+    const code = registering
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+
+    assert.match(
+      code,
+      /build\s*!==\s*ourBuild/,
+      "staleness must be a build comparison against this page's own build",
+    );
+    assert.ok(
+      !/updatefound[\s\S]{0,400}?announceUpdate\(\)/.test(code),
+      "announcing from the `updatefound` event makes sibling tabs prompt " +
+        "each other in a loop",
+    );
+  });
+
   test("reads the version and kill-switch probes uncached", () => {
     // Both exist to answer correctly when the worker's own update
     // machinery is wedged; a cached answer defeats that entirely.
