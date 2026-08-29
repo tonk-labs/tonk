@@ -148,7 +148,7 @@ pub enum Answer {
     /// `/customer/enroll` and `/customer/activate` answer the customer.
     Customer(Receipt),
     /// `/provider/add` answers the provisioned consumer.
-    Consumer(ConsumerReceipt),
+    Subscription(ConsumerReceipt),
 }
 
 /// The environment a registration invocation executes against: storage,
@@ -210,7 +210,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
                     .verified_chain(&PROVIDER_ADD_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
                     .await?;
                 let effect: Add = deserialize_arguments(chain.arguments())?;
-                Ok(Answer::Consumer(
+                Ok(Answer::Subscription(
                     Subject::from(chain.subject().clone())
                         .attenuate(ProviderRole)
                         .invoke(effect)
@@ -424,8 +424,8 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         self.verify_consent(&consent.delegation, &effect.consumer, &provider)
             .await?;
         let kind = match effect.kind.as_deref() {
-            None | Some("space") => crate::store::ConsumerKind::Space,
-            Some("custody") => crate::store::ConsumerKind::Custody,
+            None | Some("space") => crate::store::SubscriptionKind::Space,
+            Some("custody") => crate::store::SubscriptionKind::Custody,
             Some(other) => {
                 return Err(RegistrationError::Forbidden {
                     message: format!("unknown consumer kind: {other}"),
@@ -434,7 +434,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         };
         if !self
             .store
-            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now, kind)
+            .add_subscription(effect.consumer.as_str(), provider.as_str(), self.now, kind)
             .await
             .map_err(internal)?
         {
@@ -647,7 +647,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         if expires_at < self.now + self.activation_ttl {
             return Err(RegistrationError::Unauthorized {
                 message: format!(
-                    "`recovery` expires at {expires_at}, before the activation link it would be \
+                    "`recovery` expires_at at {expires_at}, before the activation link it would be \
                      carried by"
                 ),
             });

@@ -8,12 +8,13 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
-    ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
-    INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
-    RESERVE_CONSUMER, SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER,
-    SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, Servability, Store, StoreError,
-    UPDATE_REGISTERED_EMAIL, parse_status,
+    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, ANONYMIZE_DELETED_SUBSCRIPTIONS, Customer,
+    DELETE_CUSTOMER, DELETE_SELF_SUBSCRIPTION, FINISH_SUBSCRIPTION_DELETION, INSERT_CUSTOMER,
+    INSERT_SELF_SUBSCRIPTION, MARK_SELF_SUBSCRIPTION_DELETING, MARK_SUBSCRIPTION_DELETING,
+    RESERVE_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
+    SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, Servability, Store, StoreError,
+    Subscription, SubscriptionDeletionState, SubscriptionKind, UPDATE_REGISTERED_EMAIL,
+    parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -40,7 +41,7 @@ impl SqliteStore {
             .lock()
             .expect("store mutex poisoned")
             .execute(
-                "UPDATE customer SET status = 'Suspended' WHERE did = ?1",
+                "UPDATE customer SET status = 'Suspended' WHERE account = ?1",
                 params![did],
             )
             .expect("the status is written");
@@ -102,6 +103,7 @@ impl SqliteStore {
             .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 6)
                 .map_err(map_err)?;
+            version = 6;
         }
         Ok(Self(Mutex::new(conn)))
     }
@@ -140,13 +142,13 @@ impl Store for SqliteStore {
             })
             .optional()
             .map_err(map_err)?;
-        row.map(|(did, email, status, plan, verified, terms_version)| {
+        row.map(|(did, email, status, plan, verified_at, terms_version)| {
             Ok(Customer {
-                did,
+                account: did,
                 email,
                 status: parse_status(&status)?,
                 plan,
-                verified: verified as u64,
+                verified_at: verified_at as u64,
                 terms_version,
             })
         })
@@ -168,13 +170,13 @@ impl Store for SqliteStore {
             })
             .optional()
             .map_err(map_err)?;
-        row.map(|(did, email, status, plan, verified, terms_version)| {
+        row.map(|(did, email, status, plan, verified_at, terms_version)| {
             Ok(Customer {
-                did,
+                account: did,
                 email,
                 status: parse_status(&status)?,
                 plan,
-                verified: verified as u64,
+                verified_at: verified_at as u64,
                 terms_version,
             })
         })
@@ -198,22 +200,22 @@ impl Store for SqliteStore {
         // The `(SELECT ?1)` on the left of every join always yields a
         // row, so `None` here means the query itself found nothing —
         // treated the same as a subject with no rows at all.
-        let Some((own, consumer, provider, reserved_until, provider_status)) = row else {
+        let Some((own, consumer, provider, expires_at, provider_status)) = row else {
             return Ok(Servability::default());
         };
         Ok(Servability {
             own: own.as_deref().map(parse_status).transpose()?,
             consumer: consumer.is_some(),
             provided: provider.is_some(),
-            reserved_until: reserved_until.map(|value| value as u64),
+            expires_at: expires_at.map(|value| value as u64),
             provider: provider_status.as_deref().map(parse_status).transpose()?,
         })
     }
 
-    async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError> {
+    async fn consumer(&self, did: &str) -> Result<Option<Subscription>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let row = conn
-            .query_row(SELECT_CONSUMER, params![did], |row| {
+            .query_row(SELECT_SUBSCRIPTION, params![did], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
@@ -228,25 +230,27 @@ impl Store for SqliteStore {
             .optional()
             .map_err(map_err)?;
         row.map(
-            |(did, provider, owner, registered, kind, state, deleted_at, reserved_until)| {
-                Ok(Consumer {
-                    did,
+            |(did, provider, owner, registered_at, kind, state, deleted_at, expires_at)| {
+                Ok(Subscription {
+                    consumer: did,
                     provider,
                     owner,
-                    registered: registered as u64,
-                    kind: ConsumerKind::parse(&kind)?,
-                    deletion_state: ConsumerDeletionState::parse(&state)?,
+                    registered_at: registered_at as u64,
+                    kind: SubscriptionKind::parse(&kind)?,
+                    deletion_state: SubscriptionDeletionState::parse(&state)?,
                     deleted_at: deleted_at.map(|value| value as u64),
-                    reserved_until: reserved_until.map(|value| value as u64),
+                    expires_at: expires_at.map(|value| value as u64),
                 })
             },
         )
         .transpose()
     }
 
-    async fn consumers_by_owner(&self, owner: &str) -> Result<Vec<Consumer>, StoreError> {
+    async fn subscriptions_by_owner(&self, owner: &str) -> Result<Vec<Subscription>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        let mut statement = conn.prepare(SELECT_CONSUMERS_BY_OWNER).map_err(map_err)?;
+        let mut statement = conn
+            .prepare(SELECT_SUBSCRIPTIONS_BY_OWNER)
+            .map_err(map_err)?;
         let rows = statement
             .query_map(params![owner], |row| {
                 Ok((
@@ -262,17 +266,17 @@ impl Store for SqliteStore {
             })
             .map_err(map_err)?;
         rows.map(|row| {
-            let (did, provider, owner, registered, kind, state, deleted_at, reserved_until) =
+            let (did, provider, owner, registered_at, kind, state, deleted_at, expires_at) =
                 row.map_err(map_err)?;
-            Ok(Consumer {
-                did,
+            Ok(Subscription {
+                consumer: did,
                 provider,
                 owner,
-                registered: registered as u64,
-                kind: ConsumerKind::parse(&kind)?,
-                deletion_state: ConsumerDeletionState::parse(&state)?,
+                registered_at: registered_at as u64,
+                kind: SubscriptionKind::parse(&kind)?,
+                deletion_state: SubscriptionDeletionState::parse(&state)?,
                 deleted_at: deleted_at.map(|value| value as u64),
-                reserved_until: reserved_until.map(|value| value as u64),
+                expires_at: expires_at.map(|value| value as u64),
             })
         })
         .collect()
@@ -293,7 +297,7 @@ impl Store for SqliteStore {
             params![did, email, plan, now as i64, access],
         )
         .map_err(map_err)?;
-        tx.execute(INSERT_SELF_CONSUMER, params![did, now as i64])
+        tx.execute(INSERT_SELF_SUBSCRIPTION, params![did, now as i64])
             .map_err(map_err)?;
         tx.commit().map_err(map_err)
     }
@@ -306,42 +310,36 @@ impl Store for SqliteStore {
         Ok(changed > 0)
     }
 
-    async fn add_consumer(
+    async fn add_subscription(
         &self,
         did: &str,
         provider: &str,
         now: u64,
-        kind: ConsumerKind,
+        kind: SubscriptionKind,
     ) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(
-                ADD_CONSUMER,
+                ADD_SUBSCRIPTION,
                 params![did, provider, now as i64, kind.as_str()],
             )
             .map_err(map_err)?;
         Ok(changed > 0)
     }
 
-    async fn reserve_consumer(
+    async fn reserve_subscription(
         &self,
         did: &str,
         provider: &str,
         now: u64,
-        kind: ConsumerKind,
-        reserved_until: u64,
+        kind: SubscriptionKind,
+        expires_at: u64,
     ) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(
-                RESERVE_CONSUMER,
-                params![
-                    did,
-                    provider,
-                    now as i64,
-                    kind.as_str(),
-                    reserved_until as i64
-                ],
+                RESERVE_SUBSCRIPTION,
+                params![did, provider, now as i64, kind.as_str(), expires_at as i64],
             )
             .map_err(map_err)?;
         Ok(changed > 0)
@@ -350,7 +348,7 @@ impl Store for SqliteStore {
     async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
-            .execute(MARK_CONSUMER_DELETING, params![did])
+            .execute(MARK_SUBSCRIPTION_DELETING, params![did])
             .map_err(map_err)?;
         Ok(changed > 0)
     }
@@ -358,7 +356,7 @@ impl Store for SqliteStore {
     async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
-            .execute(FINISH_CONSUMER_DELETION, params![did, now as i64])
+            .execute(FINISH_SUBSCRIPTION_DELETION, params![did, now as i64])
             .map_err(map_err)?;
         Ok(changed > 0)
     }
@@ -366,7 +364,7 @@ impl Store for SqliteStore {
     async fn mark_self_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         Ok(conn
-            .execute(MARK_SELF_CONSUMER_DELETING, params![did])
+            .execute(MARK_SELF_SUBSCRIPTION_DELETING, params![did])
             .map_err(map_err)?
             > 0)
     }
@@ -374,9 +372,9 @@ impl Store for SqliteStore {
     async fn delete_customer(&self, did: &str) -> Result<bool, StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
-        tx.execute(ANONYMIZE_DELETED_CONSUMERS, params![did])
+        tx.execute(ANONYMIZE_DELETED_SUBSCRIPTIONS, params![did])
             .map_err(map_err)?;
-        tx.execute(DELETE_SELF_CONSUMER, params![did])
+        tx.execute(DELETE_SELF_SUBSCRIPTION, params![did])
             .map_err(map_err)?;
         let changed = tx.execute(DELETE_CUSTOMER, params![did]).map_err(map_err)?;
         tx.commit().map_err(map_err)?;
@@ -420,7 +418,7 @@ mod tests {
             .await
             .expect("lookup succeeds")
             .expect("the enrolled customer is found");
-        assert_eq!(found.did, "did:key:zA");
+        assert_eq!(found.account, "did:key:zA");
         assert_eq!(found.status, CustomerStatus::Registered);
     }
 
@@ -492,7 +490,7 @@ mod tests {
             .lock()
             .expect("store mutex poisoned")
             .execute(
-                "UPDATE customer SET status = 'Suspended' WHERE did = ?1",
+                "UPDATE customer SET status = 'Suspended' WHERE account = ?1",
                 params!["did:key:zA"],
             )
             .expect("the status is written");

@@ -5,7 +5,7 @@
 -- One nullable column carries the whole state. A timestamp holds the DID
 -- until then and it is claimable after; NULL never lapses, which is also
 -- what a claimed row looks like — so there is no separate status column
--- and no "claimed" flag to keep in step. Matches `suspend_until` in the
+-- and no "claimed" flag to keep in step. Matches `suspend_until_at` in the
 -- same table, where null already means indefinite.
 --
 -- Custody reservations must carry a real deadline rather than NULL. A
@@ -14,4 +14,4 @@
 -- which is the recovery this exists for. Holding it forever would strand
 -- the passkey. Nothing squats it in the meantime, since only the passkey
 -- holder can produce that DID at all.
-ALTER TABLE consumer ADD COLUMN reserved_until INTEGER;
+ALTER TABLE subscription ADD COLUMN expires_at INTEGER;

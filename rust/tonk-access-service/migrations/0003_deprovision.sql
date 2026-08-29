@@ -3,5 +3,5 @@
 -- registered-grant columns from 0002 carried per-space /space/delete
 -- artifacts and are retired; the denial-first deletion lifecycle
 -- (deletion_state, deleted_at) and the owner index stay.
-ALTER TABLE consumer DROP COLUMN deletion_grant_cid;
-ALTER TABLE consumer DROP COLUMN deletion_grant_kind;
+ALTER TABLE subscription DROP COLUMN deletion_grant_cid;
+ALTER TABLE subscription DROP COLUMN deletion_grant_kind;

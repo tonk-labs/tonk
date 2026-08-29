@@ -458,7 +458,7 @@ async fn handle_request(
         use tonk_account::customer::{CustomerStatus, Receipt, RegistrationError};
 
         let response = match registration.store.customer(did).await {
-            Ok(Some(customer)) => match customer.did.parse() {
+            Ok(Some(customer)) => match customer.account.parse() {
                 Ok(parsed) => {
                     let receipt = Receipt {
                         customer: parsed,
@@ -690,9 +690,9 @@ async fn handle_request(
     if outcome.is_ok()
         && let Some(subject) = crate::deletion::subject(&body_bytes)
     {
-        use crate::store::{ConsumerDeletionState, Store};
+        use crate::store::{Store, SubscriptionDeletionState};
         match registration.store.consumer(subject.as_str()).await {
-            Ok(Some(consumer)) if consumer.deletion_state != ConsumerDeletionState::Active => {
+            Ok(Some(consumer)) if consumer.deletion_state != SubscriptionDeletionState::Active => {
                 return Ok(cors_response(
                     Response::builder()
                         .status(StatusCode::FORBIDDEN)
@@ -836,7 +836,7 @@ fn unix_now() -> u64 {
 /// provisioning gate serves it. Idempotent, and derived from the
 /// subject so two subjects never collide on one provider row.
 async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Result<()> {
-    use crate::store::{ConsumerKind, SIGNUP_PLAN, Store};
+    use crate::store::{SIGNUP_PLAN, Store, SubscriptionKind};
 
     let provider = format!("did:test:provider-for-{subject}");
     if store
@@ -855,7 +855,7 @@ async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Resu
             .map_err(|error| anyhow::anyhow!("{error}"))?;
     }
     store
-        .add_consumer(subject, &provider, 0, ConsumerKind::Space)
+        .add_subscription(subject, &provider, 0, SubscriptionKind::Space)
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(())
@@ -972,8 +972,8 @@ async fn serve_shortcut(
             .unwrap()
     };
     match shortcuts.read().await.get(&key) {
-        Some((expires, target)) => {
-            let remaining = expires.saturating_sub(unix_now());
+        Some((expires_at, target)) => {
+            let remaining = expires_at.saturating_sub(unix_now());
             if remaining == 0 {
                 return not_found();
             }

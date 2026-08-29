@@ -122,8 +122,8 @@ pub fn did_document(host: &str, signer: &Ed25519Signer) -> Value {
 /// document: a suspension is reversible, and dropping the mapping would
 /// make a resumed customer unresolvable to anyone holding the old answer.
 pub fn customer_document(id: &str, customer: &Customer, deactivated: bool) -> Value {
-    let mut document = document(id, [customer.did.clone()]);
-    document["alsoKnownAs"] = json!([customer.did]);
+    let mut document = document(id, [customer.account.clone()]);
+    document["alsoKnownAs"] = json!([customer.account]);
     document["status"] = json!(customer.status.as_str());
     if deactivated {
         document["deactivated"] = Value::Bool(true);

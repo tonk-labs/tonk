@@ -126,7 +126,7 @@ impl Fixture {
 fn as_customer(answer: Answer) -> Receipt {
     match answer {
         Answer::Customer(receipt) => receipt,
-        Answer::Consumer(receipt) => panic!("expected a customer receipt, got {receipt:?}"),
+        Answer::Subscription(receipt) => panic!("expected a customer receipt, got {receipt:?}"),
     }
 }
 
@@ -496,7 +496,7 @@ async fn it_activates_by_presenting_the_emailed_invocation_from_any_device() -> 
         .unwrap()
         .expect("customer row exists");
     assert_eq!(stored.terms_version.as_deref(), Some(SIGNUP_TERMS));
-    assert!(stored.verified > 0);
+    assert!(stored.verified_at > 0);
 
     // Clicking twice leaves the customer active and writes no duplicate
     // state.
@@ -756,7 +756,8 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .await;
 
     let container = add_container(&customer, &space, &customer.did()).await;
-    let Answer::Consumer(receipt) = fixture.registration(&container).handle().await.unwrap() else {
+    let Answer::Subscription(receipt) = fixture.registration(&container).handle().await.unwrap()
+    else {
         panic!("expected a consumer receipt");
     };
     assert_eq!(receipt.consumer, space.did());
@@ -774,9 +775,10 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
     // nothing: clients retry provisioning freely (a queued entry
     // replayed twice, two devices racing), so it must be idempotent
     // rather than a conflict.
-    let registered_at = consumer.registered;
+    let registered_at = consumer.registered_at;
     let container = add_container(&customer, &space, &customer.did()).await;
-    let Answer::Consumer(receipt) = fixture.registration(&container).handle().await.unwrap() else {
+    let Answer::Subscription(receipt) = fixture.registration(&container).handle().await.unwrap()
+    else {
         panic!("expected a consumer receipt");
     };
     assert_eq!(receipt.provider, customer.did());
@@ -788,7 +790,7 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .expect("the consumer row still exists");
     assert_eq!(again.provider.as_deref(), Some(customer.did().as_str()));
     assert_eq!(
-        again.registered, registered_at,
+        again.registered_at, registered_at,
         "re-provisioning must not re-register the consumer"
     );
     Ok(())

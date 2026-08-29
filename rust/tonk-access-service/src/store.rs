@@ -43,8 +43,8 @@ pub fn parse_status(value: &str) -> Result<CustomerStatus, StoreError> {
 /// consumer.
 #[derive(Debug, Clone)]
 pub struct Customer {
-    /// The customer's DID.
-    pub did: String,
+    /// The account this subscription is for.
+    pub account: String,
     /// The email activation was (or will be) sent to.
     pub email: String,
     /// Lifecycle state.
@@ -53,7 +53,7 @@ pub struct Customer {
     pub plan: String,
     /// Activation time as a unix timestamp in seconds; zero while
     /// `Registered`.
-    pub verified: u64,
+    pub verified_at: u64,
     /// Terms version accepted at activation.
     pub terms_version: Option<String>,
 }
@@ -71,7 +71,7 @@ pub struct Servability {
     /// Whether that consumer names a provider.
     pub provided: bool,
     /// The consumer's reservation, when it holds one.
-    pub reserved_until: Option<u64>,
+    pub expires_at: Option<u64>,
     /// The provider's registration, when the provider is a customer.
     pub provider: Option<CustomerStatus>,
 }
@@ -79,31 +79,31 @@ pub struct Servability {
 /// A space the service replicates, servable only while `provider` names
 /// an active customer.
 #[derive(Debug, Clone)]
-pub struct Consumer {
-    /// The consumer space's DID.
-    pub did: String,
+pub struct Subscription {
+    /// The DID this subscription is for.
+    pub consumer: String,
     /// The customer paying for this consumer; null means not servable.
     pub provider: Option<String>,
     /// Original account provider, retained after hosted deletion for inventory.
     pub owner: Option<String>,
     /// Registration time as a unix timestamp in seconds.
-    pub registered: u64,
+    pub registered_at: u64,
     /// What this consumer is: a user's data space, or a custody
     /// namespace the account provisions for its own key material.
-    pub kind: ConsumerKind,
+    pub kind: SubscriptionKind,
     /// Denial-first hosted deletion lifecycle.
-    pub deletion_state: ConsumerDeletionState,
+    pub deletion_state: SubscriptionDeletionState,
     /// Completed deletion time, when any.
     pub deleted_at: Option<u64>,
     /// While set and in the future, this DID is only held — the name is
     /// claimed but nothing is served under it. Null once provisioned,
     /// which is what a claimed row looks like.
-    pub reserved_until: Option<u64>,
+    pub expires_at: Option<u64>,
 }
 
 /// What a consumer namespace holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsumerKind {
+pub enum SubscriptionKind {
     /// A user's data space — reviewable, individually deletable.
     Space,
     /// A passkey's custody namespace — account plumbing. Never shown in
@@ -113,7 +113,7 @@ pub enum ConsumerKind {
     Custody,
 }
 
-impl ConsumerKind {
+impl SubscriptionKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Space => "space",
@@ -134,13 +134,13 @@ impl ConsumerKind {
 
 /// Whether a consumer still accepts storage operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsumerDeletionState {
+pub enum SubscriptionDeletionState {
     Active,
     Deleting,
     Deleted,
 }
 
-impl ConsumerDeletionState {
+impl SubscriptionDeletionState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
@@ -181,14 +181,14 @@ pub trait Store {
     async fn customer_by_email(&self, email: &str) -> Result<Option<Customer>, StoreError>;
 
     /// Look up a consumer by DID.
-    async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError>;
+    async fn consumer(&self, did: &str) -> Result<Option<Subscription>, StoreError>;
 
     /// Read everything the provisioning gate decides on, in one query.
     async fn servability(&self, did: &str) -> Result<Servability, StoreError>;
 
     /// List every consumer originally provided by one account, including
     /// deleted rows whose live provider has been cleared.
-    async fn consumers_by_owner(&self, owner: &str) -> Result<Vec<Consumer>, StoreError>;
+    async fn subscriptions_by_owner(&self, owner: &str) -> Result<Vec<Subscription>, StoreError>;
 
     /// Atomically write a new customer row together with its self-provided
     /// account consumer. Two steps would leave a window in which a
@@ -209,25 +209,25 @@ pub trait Store {
     /// Provision `did` as a consumer under `provider`. Idempotent for the
     /// same provider; answers false when a different customer already
     /// provides it, which the caller reports as a conflict.
-    async fn add_consumer(
+    async fn add_subscription(
         &self,
         did: &str,
         provider: &str,
         now: u64,
-        kind: ConsumerKind,
+        kind: SubscriptionKind,
     ) -> Result<bool, StoreError>;
 
-    /// Hold `did` for `provider` until `reserved_until`, so nothing else
+    /// Hold `did` for `provider` until `expires_at`, so nothing else
     /// claims it before the provisioning that follows. Answers false when
     /// another customer holds a reservation that has not lapsed, or
     /// provides the consumer outright.
-    async fn reserve_consumer(
+    async fn reserve_subscription(
         &self,
         did: &str,
         provider: &str,
         now: u64,
-        kind: ConsumerKind,
-        reserved_until: u64,
+        kind: SubscriptionKind,
+        expires_at: u64,
     ) -> Result<bool, StoreError>;
 
     /// Atomically deny future storage operations before object removal.
@@ -259,20 +259,20 @@ pub trait Store {
 // SQL and differ only in row decoding and error mapping.
 
 pub const SELECT_CUSTOMER: &str = r#"
-SELECT did, email, status, plan, verified, terms_version
-  FROM customer WHERE did = ?1
+SELECT account, email, status, plan, verified_at, terms_version
+  FROM customer WHERE account = ?1
 "#;
 
 /// Lookup by address, which `customer_email` makes unique.
 pub const SELECT_CUSTOMER_BY_EMAIL: &str = r#"
-SELECT did, email, status, plan, verified, terms_version
+SELECT account, email, status, plan, verified_at, terms_version
   FROM customer WHERE email = ?1
 "#;
 
-pub const SELECT_CONSUMER: &str = r#"
-SELECT did, provider, owner, registered, kind, deletion_state, deleted_at,
-       reserved_until
-  FROM consumer WHERE did = ?1
+pub const SELECT_SUBSCRIPTION: &str = r#"
+SELECT consumer, provider, owner, registered_at, kind, deletion_state,
+       deleted_at, expires_at
+  FROM subscription WHERE consumer = ?1
 "#;
 
 /// Everything the provisioning gate decides on, in one round trip.
@@ -286,34 +286,34 @@ SELECT did, provider, owner, registered, kind, deletion_state, deleted_at,
 /// is therefore nullable and the caller decides; this only gathers.
 pub const SELECT_SERVABILITY: &str = r#"
 SELECT own.status           AS own_status,
-       sub.did              AS consumer_did,
+       sub.consumer         AS consumer_did,
        sub.provider         AS consumer_provider,
-       sub.reserved_until   AS consumer_reserved_until,
+       sub.expires_at       AS consumer_expires_at,
        provider.status      AS provider_status
   FROM (SELECT ?1 AS did) AS asked
-  LEFT JOIN customer own      ON own.did = asked.did
-  LEFT JOIN consumer sub      ON sub.did = asked.did
-  LEFT JOIN customer provider ON provider.did = sub.provider
+  LEFT JOIN customer own      ON own.account = asked.did
+  LEFT JOIN subscription sub  ON sub.consumer = asked.did
+  LEFT JOIN customer provider ON provider.account = sub.provider
 "#;
 
-pub const SELECT_CONSUMERS_BY_OWNER: &str = r#"
-SELECT did, provider, owner, registered, kind, deletion_state, deleted_at,
-       reserved_until
-  FROM consumer WHERE owner = ?1 ORDER BY registered, did
+pub const SELECT_SUBSCRIPTIONS_BY_OWNER: &str = r#"
+SELECT consumer, provider, owner, registered_at, kind, deletion_state,
+       deleted_at, expires_at
+  FROM subscription WHERE owner = ?1 ORDER BY registered_at, consumer
 "#;
 
 pub const INSERT_CUSTOMER: &str = r#"
-INSERT INTO customer (did, email, status, plan, cycle_anchor, access)
+INSERT INTO customer (account, email, status, plan, cycle_anchor_at, access)
 VALUES (?1, ?2, 'Registered', ?3, ?4, ?5)
 "#;
 
 /// The customer's own account space is a consumer like any other, and the
 /// customer provides it. `ON CONFLICT DO NOTHING` keeps re-enrollment
 /// idempotent when the consumer row survived an earlier attempt.
-pub const INSERT_SELF_CONSUMER: &str = r#"
-INSERT INTO consumer (did, provider, owner, registered)
+pub const INSERT_SELF_SUBSCRIPTION: &str = r#"
+INSERT INTO subscription (consumer, provider, owner, registered_at)
 VALUES (?1, ?1, ?1, ?2)
-ON CONFLICT (did) DO NOTHING
+ON CONFLICT (consumer) DO NOTHING
 "#;
 
 /// Provisioning is idempotent per provider: re-adding under the same
@@ -323,94 +323,94 @@ ON CONFLICT (did) DO NOTHING
 /// A reservation another customer holds is refused for as long as it
 /// stands, and claimable once it lapses — `?3` is the current time, so
 /// the comparison is against this call rather than a swept state.
-/// Claiming clears `reserved_until`, which is what a provisioned row
+/// Claiming clears `expires_at`, which is what a provisioned row
 /// looks like: null never lapses.
-pub const ADD_CONSUMER: &str = r#"
-INSERT INTO consumer (did, provider, owner, registered, kind)
+pub const ADD_SUBSCRIPTION: &str = r#"
+INSERT INTO subscription (consumer, provider, owner, registered_at, kind)
 VALUES (?1, ?2, ?2, ?3, ?4)
-ON CONFLICT (did) DO UPDATE SET
+ON CONFLICT (consumer) DO UPDATE SET
   provider = excluded.provider,
   kind = excluded.kind,
-  reserved_until = NULL
-WHERE (consumer.provider IS NULL
-       OR consumer.provider = excluded.provider
-       OR (consumer.reserved_until IS NOT NULL AND consumer.reserved_until <= ?3))
-  AND consumer.deletion_state = 'active'
+  expires_at = NULL
+WHERE (subscription.provider IS NULL
+       OR subscription.provider = excluded.provider
+       OR (subscription.expires_at IS NOT NULL AND subscription.expires_at <= ?3))
+  AND subscription.deletion_state = 'active'
 "#;
 
-/// Reserve `did` for `provider` until `reserved_until`, so the window
+/// Reserve `did` for `provider` until `expires_at`, so the window
 /// between naming a space and provisioning it cannot be raced.
 ///
-/// The same guard as [`ADD_CONSUMER`]: a free DID, one this provider
+/// The same guard as [`ADD_SUBSCRIPTION`]: a free DID, one this provider
 /// already holds, or one whose reservation has lapsed. Re-reserving
 /// extends the deadline, which is what a passkey re-enrolling on a new
 /// device does.
-pub const RESERVE_CONSUMER: &str = r#"
-INSERT INTO consumer (did, provider, owner, registered, kind, reserved_until)
+pub const RESERVE_SUBSCRIPTION: &str = r#"
+INSERT INTO subscription (consumer, provider, owner, registered_at, kind, expires_at)
 VALUES (?1, ?2, ?2, ?3, ?4, ?5)
-ON CONFLICT (did) DO UPDATE SET
+ON CONFLICT (consumer) DO UPDATE SET
   provider = excluded.provider,
   kind = excluded.kind,
-  reserved_until = excluded.reserved_until
-WHERE (consumer.provider IS NULL
-       OR consumer.provider = excluded.provider
-       OR (consumer.reserved_until IS NOT NULL AND consumer.reserved_until <= ?3))
-  AND consumer.deletion_state = 'active'
+  expires_at = excluded.expires_at
+WHERE (subscription.provider IS NULL
+       OR subscription.provider = excluded.provider
+       OR (subscription.expires_at IS NOT NULL AND subscription.expires_at <= ?3))
+  AND subscription.deletion_state = 'active'
 "#;
 
 pub const UPDATE_REGISTERED_EMAIL: &str = r#"
-UPDATE customer SET email = ?2 WHERE did = ?1 AND status = 'Registered'
+UPDATE customer SET email = ?2 WHERE account = ?1 AND status = 'Registered'
 "#;
 
 pub const ACTIVATE_CUSTOMER: &str = r#"
 UPDATE customer
    SET status = 'Active',
-       verified = ?2,
+       verified_at = ?2,
        terms_version = ?3,
        terms_accepted_at = ?2,
-       cycle_anchor = ?2
- WHERE did = ?1 AND status = 'Registered'
+       cycle_anchor_at = ?2
+ WHERE account = ?1 AND status = 'Registered'
 "#;
 
-pub const MARK_CONSUMER_DELETING: &str = r#"
-UPDATE consumer SET deletion_state = 'deleting'
- WHERE did = ?1 AND deletion_state = 'active'
+pub const MARK_SUBSCRIPTION_DELETING: &str = r#"
+UPDATE subscription SET deletion_state = 'deleting'
+ WHERE consumer = ?1 AND deletion_state = 'active'
 "#;
 
-pub const FINISH_CONSUMER_DELETION: &str = r#"
-UPDATE consumer
+pub const FINISH_SUBSCRIPTION_DELETION: &str = r#"
+UPDATE subscription
    SET deletion_state = 'deleted', deleted_at = ?2, provider = NULL
- WHERE did = ?1 AND deletion_state = 'deleting'
+ WHERE consumer = ?1 AND deletion_state = 'deleting'
 "#;
 
-pub const MARK_SELF_CONSUMER_DELETING: &str = r#"
-UPDATE consumer SET deletion_state = 'deleting'
- WHERE did = ?1 AND owner = ?1 AND deletion_state = 'active'
+pub const MARK_SELF_SUBSCRIPTION_DELETING: &str = r#"
+UPDATE subscription SET deletion_state = 'deleting'
+ WHERE consumer = ?1 AND owner = ?1 AND deletion_state = 'active'
 "#;
 
 /// Detach completed denial markers from the deleted customer while retaining
 /// the minimum state that prevents a stale replica from provisioning the same
 /// space again.
-pub const ANONYMIZE_DELETED_CONSUMERS: &str = r#"
-UPDATE consumer
+pub const ANONYMIZE_DELETED_SUBSCRIPTIONS: &str = r#"
+UPDATE subscription
    SET provider = NULL,
        owner = NULL
  WHERE owner = ?1
-   AND did <> ?1
+   AND consumer <> ?1
    AND deletion_state = 'deleted'
 "#;
 
-pub const DELETE_SELF_CONSUMER: &str = r#"
-DELETE FROM consumer
- WHERE did = ?1
+pub const DELETE_SELF_SUBSCRIPTION: &str = r#"
+DELETE FROM subscription
+ WHERE consumer = ?1
    AND owner = ?1
    AND deletion_state IN ('deleting', 'deleted')
 "#;
 
 pub const DELETE_CUSTOMER: &str = r#"
 DELETE FROM customer
- WHERE did = ?1
-   AND NOT EXISTS (SELECT 1 FROM consumer WHERE owner = ?1)
+ WHERE account = ?1
+   AND NOT EXISTS (SELECT 1 FROM subscription WHERE owner = ?1)
 "#;
 
 pub mod ingest;

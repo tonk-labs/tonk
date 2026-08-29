@@ -5,7 +5,7 @@
 //! subject; this gate asks whether the subject is anyone's to serve.
 //! A subject is servable when it is an active customer itself, or a
 //! provisioned consumer whose provider is an active customer — the
-//! rule the `Consumer` row has always documented. Without it, any
+//! rule the `Subscription` row has always documented. Without it, any
 //! self-minted keypair stores bytes under its own namespace unbilled.
 //!
 //! Always enforced, on both the worker and the native server: a flag
@@ -93,7 +93,7 @@ pub async fn screen<S: Store>(
     // a provider so the claim can be checked, which would otherwise read
     // here as provisioned — so the reservation is what this asks about
     // first. Retryable: the provisioning that follows is what serves it.
-    if subject.reserved_until.is_some_and(|until| until > now) {
+    if subject.expires_at.is_some_and(|until| until > now) {
         return Ok(Err(denial(
             Recourse::Retry,
             "the subject is reserved but not yet provisioned",
@@ -165,7 +165,7 @@ mod tests {
         }
         for (consumer, provider) in consumers {
             store
-                .add_consumer(consumer, provider, 0, crate::store::ConsumerKind::Space)
+                .add_subscription(consumer, provider, 0, crate::store::SubscriptionKind::Space)
                 .await
                 .expect("consumer");
         }
@@ -309,11 +309,11 @@ mod tests {
     async fn it_refuses_a_reserved_subject_until_it_is_provisioned() {
         let store = store_with(&[("did:key:zCustomer", CustomerStatus::Active)], &[]).await;
         store
-            .reserve_consumer(
+            .reserve_subscription(
                 "did:key:zHeld",
                 "did:key:zCustomer",
                 0,
-                crate::store::ConsumerKind::Custody,
+                crate::store::SubscriptionKind::Custody,
                 NOW + 1,
             )
             .await
@@ -327,11 +327,11 @@ mod tests {
 
         // Claiming it clears the hold, and the same subject is served.
         store
-            .add_consumer(
+            .add_subscription(
                 "did:key:zHeld",
                 "did:key:zCustomer",
                 0,
-                crate::store::ConsumerKind::Custody,
+                crate::store::SubscriptionKind::Custody,
             )
             .await
             .expect("claim");
@@ -345,11 +345,11 @@ mod tests {
     async fn it_stops_holding_a_subject_once_the_reservation_lapses() {
         let store = store_with(&[("did:key:zCustomer", CustomerStatus::Active)], &[]).await;
         store
-            .reserve_consumer(
+            .reserve_subscription(
                 "did:key:zLapsed",
                 "did:key:zCustomer",
                 0,
-                crate::store::ConsumerKind::Custody,
+                crate::store::SubscriptionKind::Custody,
                 NOW - 1,
             )
             .await

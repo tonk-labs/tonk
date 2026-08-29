@@ -18,7 +18,7 @@ use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{ConsumerDeletionState, ConsumerKind, Store};
+use crate::store::{Store, SubscriptionDeletionState, SubscriptionKind};
 
 /// The deprovisioning command: the reverse of `/provider/add`.
 pub const COMMAND: [&str; 2] = ["provider", "remove"];
@@ -205,7 +205,7 @@ pub async fn delete<S: Store, P: SpacePurger>(
     if consumer.owner.as_deref() != Some(customer.as_str()) {
         return Err(Error::Forbidden);
     }
-    if consumer.kind == ConsumerKind::Custody {
+    if consumer.kind == SubscriptionKind::Custody {
         // Custody namespaces hold the account's own sealed key
         // material. They are purged by customer finalization, last —
         // deprovisioning one earlier would destroy the account's
@@ -213,10 +213,10 @@ pub async fn delete<S: Store, P: SpacePurger>(
         return Err(Error::Forbidden);
     }
 
-    if consumer.deletion_state == ConsumerDeletionState::Deleted {
+    if consumer.deletion_state == SubscriptionDeletionState::Deleted {
         return Ok(receipt(&space, consumer.deleted_at.unwrap_or_default()));
     }
-    if consumer.deletion_state == ConsumerDeletionState::Active
+    if consumer.deletion_state == SubscriptionDeletionState::Active
         && !store
             .mark_consumer_deleting(space.as_str())
             .await
@@ -227,10 +227,10 @@ pub async fn delete<S: Store, P: SpacePurger>(
             .await
             .map_err(|error| Error::Internal(error.to_string()))?
             .ok_or(Error::NotRegistered)?;
-        if current.deletion_state == ConsumerDeletionState::Deleted {
+        if current.deletion_state == SubscriptionDeletionState::Deleted {
             return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
         }
-        if current.deletion_state != ConsumerDeletionState::Deleting {
+        if current.deletion_state != SubscriptionDeletionState::Deleting {
             return Err(Error::Internal(
                 "could not enter deletion denial state".into(),
             ));
@@ -251,7 +251,7 @@ pub async fn delete<S: Store, P: SpacePurger>(
             .await
             .map_err(|error| Error::Internal(error.to_string()))?
             .ok_or(Error::NotRegistered)?;
-        if current.deletion_state != ConsumerDeletionState::Deleted {
+        if current.deletion_state != SubscriptionDeletionState::Deleted {
             return Err(Error::Internal("could not finalize deletion state".into()));
         }
         return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
@@ -282,13 +282,15 @@ pub async fn customer_plan<S: Store>(
     let customer =
         verify_customer_command(store, container, &CUSTOMER_PLAN_COMMAND, now, true).await?;
     let spaces = store
-        .consumers_by_owner(customer.as_str())
+        .subscriptions_by_owner(customer.as_str())
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .into_iter()
-        .filter(|consumer| consumer.did != customer && consumer.kind == ConsumerKind::Space)
+        .filter(|consumer| {
+            consumer.consumer != customer && consumer.kind == SubscriptionKind::Space
+        })
         .map(|consumer| HostedSpace {
-            space: consumer.did,
+            space: consumer.consumer,
             deletion_state: consumer.deletion_state.as_str().to_string(),
         })
         .collect();
@@ -306,17 +308,17 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     let customer =
         verify_customer_command(store, container, &CUSTOMER_DELETE_COMMAND, now, true).await?;
     let consumers = store
-        .consumers_by_owner(&customer)
+        .subscriptions_by_owner(&customer)
         .await
         .map_err(|error| Error::Internal(error.to_string()))?;
     let remaining: Vec<_> = consumers
         .iter()
         .filter(|consumer| {
-            consumer.did != customer
-                && consumer.kind == ConsumerKind::Space
-                && consumer.deletion_state != ConsumerDeletionState::Deleted
+            consumer.consumer != customer
+                && consumer.kind == SubscriptionKind::Space
+                && consumer.deletion_state != SubscriptionDeletionState::Deleted
         })
-        .map(|consumer| consumer.did.clone())
+        .map(|consumer| consumer.consumer.clone())
         .collect();
     if !remaining.is_empty() {
         return Err(Error::OwnedSpacesRemain(remaining));
@@ -327,23 +329,23 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     // could still need the account's key material can be left waiting
     // on it. Denial-first like any other purge, and idempotent.
     for consumer in &consumers {
-        if consumer.kind != ConsumerKind::Custody
-            || consumer.deletion_state == ConsumerDeletionState::Deleted
+        if consumer.kind != SubscriptionKind::Custody
+            || consumer.deletion_state == SubscriptionDeletionState::Deleted
         {
             continue;
         }
-        if consumer.deletion_state == ConsumerDeletionState::Active {
+        if consumer.deletion_state == SubscriptionDeletionState::Active {
             let _ = store
-                .mark_consumer_deleting(&consumer.did)
+                .mark_consumer_deleting(&consumer.consumer)
                 .await
                 .map_err(|error| Error::Internal(error.to_string()))?;
         }
         purger
-            .purge(&format!("{}/", consumer.did))
+            .purge(&format!("{}/", consumer.consumer))
             .await
             .map_err(Error::Incomplete)?;
         let _ = store
-            .finish_consumer_deletion(&consumer.did, now)
+            .finish_consumer_deletion(&consumer.consumer, now)
             .await
             .map_err(|error| Error::Internal(error.to_string()))?;
     }
@@ -353,7 +355,7 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .ok_or(Error::NotRegistered)?;
-    if self_consumer.deletion_state == ConsumerDeletionState::Active
+    if self_consumer.deletion_state == SubscriptionDeletionState::Active
         && !store
             .mark_self_consumer_deleting(&customer)
             .await
@@ -736,11 +738,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 space.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Space,
+                SubscriptionKind::Space,
             )
             .await
             .unwrap();
@@ -755,13 +757,13 @@ mod tests {
             Err(Error::Incomplete(_))
         ));
         let denied = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(denied.deletion_state, ConsumerDeletionState::Deleting);
+        assert_eq!(denied.deletion_state, SubscriptionDeletionState::Deleting);
         assert_eq!(denied.provider.as_deref(), Some(root.did().as_str()));
 
         let receipt = delete(&store, &purger, &invocation, at + 2).await.unwrap();
         assert_eq!(receipt.space, space.did());
         let deleted = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(deleted.deletion_state, ConsumerDeletionState::Deleted);
+        assert_eq!(deleted.deletion_state, SubscriptionDeletionState::Deleted);
         assert!(deleted.provider.is_none());
 
         let replay = delete(&store, &purger, &invocation, at + 3).await.unwrap();
@@ -798,20 +800,20 @@ mod tests {
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 space.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Space,
+                SubscriptionKind::Space,
             )
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 custody.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Custody,
+                SubscriptionKind::Custody,
             )
             .await
             .unwrap();
@@ -857,7 +859,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(purged.deletion_state, ConsumerDeletionState::Deleted);
+        assert_eq!(purged.deletion_state, SubscriptionDeletionState::Deleted);
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),
             &[
@@ -886,11 +888,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 space.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Space,
+                SubscriptionKind::Space,
             )
             .await
             .unwrap();
@@ -939,22 +941,22 @@ mod tests {
         assert!(store.customer(root.did().as_str()).await.unwrap().is_none());
         assert!(
             store
-                .consumers_by_owner(root.did().as_str())
+                .subscriptions_by_owner(root.did().as_str())
                 .await
                 .unwrap()
                 .is_empty()
         );
         let denial = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(denial.deletion_state, ConsumerDeletionState::Deleted);
+        assert_eq!(denial.deletion_state, SubscriptionDeletionState::Deleted);
         assert!(denial.provider.is_none());
         assert!(denial.owner.is_none());
         assert!(
             !store
-                .add_consumer(
+                .add_subscription(
                     space.did().as_str(),
                     root.did().as_str(),
                     at + 4,
-                    ConsumerKind::Space,
+                    SubscriptionKind::Space,
                 )
                 .await
                 .unwrap()
@@ -966,7 +968,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .deletion_state,
-            ConsumerDeletionState::Deleted
+            SubscriptionDeletionState::Deleted
         );
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),
