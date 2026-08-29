@@ -14,8 +14,8 @@ history, this is the shape.
 erDiagram
     plan ||--o{ customer : prices
     account ||--|| customer : subscribes
-    customer ||--o{ consumer : provides
-    account ||--o{ consumer : owns
+    customer ||--o{ subscription : provides
+    account ||--o{ subscription : owns
 
     plan {
         TEXT id PK "not a DID: an opaque plan id like trial@2026-08"
@@ -32,32 +32,32 @@ erDiagram
     }
 
     customer {
-        TEXT did PK "DID (did:key) of the ACCOUNT: identity and subscription are fused"
+        TEXT account PK "DID (did:key) of the ACCOUNT: identity and subscription are fused"
         TEXT email UK
         TEXT ledger "DID (did:key), nullable: the space this service replicates metering into"
         TEXT status "enum: Registered | Active | Suspended"
         TEXT plan FK "plan.id, not a DID"
-        INTEGER verified "activation time, 0 while Registered"
+        INTEGER verified_at "activation time, 0 while Registered"
         TEXT terms_version
         INTEGER terms_accepted_at
         INTEGER credit_limit "override, null uses the plan"
-        INTEGER cycle_anchor "periods derive from it"
+        INTEGER cycle_anchor_at "periods derive from it"
         TEXT limit_code "null when under limit"
-        INTEGER limit_resets
+        INTEGER limit_resets_at
         TEXT stripe_customer "Stripe id, not a DID"
     }
 
-    consumer {
-        TEXT did PK "DID (did:key) of the space or custody principal"
+    subscription {
+        TEXT consumer PK "DID (did:key) this subscription is for"
         TEXT provider FK "DID (did:key): the customer who pays; null is not servable"
         TEXT owner "DID (did:key): the account whose data this is"
         TEXT kind "enum: space | customer | custody"
-        INTEGER registered
-        INTEGER expires "reservation lapse; null never lapses"
+        INTEGER registered_at
+        INTEGER expires_at "reservation lapse; null never lapses"
         INTEGER archived_at
         TEXT suspend_code
         TEXT suspend_message
-        INTEGER suspend_until "null with a code set: indefinite"
+        INTEGER suspend_until_at "null with a code set: indefinite"
         INTEGER size "last measurement"
         INTEGER measured_at
         TEXT deletion_state "enum: active | deleting | deleted"
@@ -77,32 +77,32 @@ a second subscription or a cancelled one has to be kept.
 `provisioning::screen` runs before every presign and asks only about the
 **subject**, never the command.
 
-Every subject is a consumer, and every consumer is served on the
-strength of its provider's status:
+Every subject has a subscription, and every subscription is served on
+the strength of its provider's status:
 
 ```mermaid
 flowchart TD
-    A["subject"] --> D{"a consumer?"}
+    A["subject"] --> D{"has a subscription?"}
     D -->|no| E["denied"]
-    D -->|yes| F{"reservation still held?"}
-    F -->|yes| G["denied, retryable: reserved, not provisioned"]
+    D -->|yes| F{"still only a reservation?"}
+    F -->|yes| G["denied, retryable: the name is held, not claimed"]
     F -->|no| H{"has a provider?"}
     H -->|no| I["denied"]
     H -->|yes| Z{"the provider's status"}
     Z -->|Active| K["served"]
-    Z -->|Registered| L["denied, retryable: awaits email activation"]
+    Z -->|"Registered (email unconfirmed)"| L["denied, retryable"]
     Z -->|Suspended| M["denied"]
 ```
 
 An account is not a special case here: enrollment writes it a
-self-provided consumer row (`did = provider = owner`), so "the
+self-provided subscription row (`consumer = provider = owner`), so "the
 provider's status" is its own. `screen` does look the subject up as a
-customer first, but only to save a hop — the consumer path reaches the
-same verdict one join later.
+customer first, but only to save a hop — the subscription path reaches
+the same verdict one join later.
 
 This is **one query** (`SELECT_SERVABILITY`): a `LEFT JOIN` from the
-asked-for DID to `customer`, to `consumer`, and on to the provider's
-`customer`. Read in three separate steps it could see a customer that
+asked-for DID to `customer`, to `subscription`, and on to the
+provider's `customer`. Read in three separate steps it could see a customer that
 activates between the first and the last, and it would cost three round
 trips on a path that runs before every presign.
 
@@ -140,8 +140,8 @@ Three relationships that a single word would blur:
 
 | Role | Column | Meaning | Cardinality |
 |---|---|---|---|
-| Account | `consumer.owner` | whose data this is | one per consumer |
-| Provider | `consumer.provider` | who pays for it | exactly one, required to serve |
+| Account | `subscription.owner` | whose data this is | one per consumer |
+| Provider | `subscription.provider` | who pays for it | exactly one, required to serve |
 | Sponsor | *(not yet built)* | pledges credits to a consumer it does not provide | zero or more |
 
 `owner` and `provider` are seeded identical and diverge only when a
@@ -151,6 +151,14 @@ provider changes.
 
 `plan/Access metering.md` specifies `sponsorship`, `usage`, `ledger`,
 and `run`. They arrive with the increments that read them.
+
+A `space` table (`subject` PK, `account`) is deferred. Ownership lives
+on `subscription.owner` today, which is sound only while `consumer` is
+the subscription's primary key — one space, one subscription, so there
+is one copy of the owner and nothing to drift. It moves out when a space
+may have several providers, and `subject` is the key there rather than
+`(subject, account)`: one space has one owner, and a composite key would
+quietly permit co-ownership.
 
 Note that `ledger` names two different things: the planned D1 table
 (authoritative accounting) and `customer.ledger` (the space this service
@@ -164,7 +172,7 @@ answer for an already-active customer — names neither a provider nor a
 ledger, because it learned about neither. Absent means "not stated
 here", never "none exists".
 
-## Kinds of consumer
+## Kinds of subscription
 
 - `space` — an ordinary tonk space. The default.
 - `customer` — the account's own space, written at enrollment.
