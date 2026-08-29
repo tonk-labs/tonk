@@ -1211,11 +1211,7 @@ fn render_field_hover(field: &str, attr: &AttributeDescriptor) -> String {
         Some(t) => format_type(&t),
         None => "any".to_owned(),
     };
-    let mut out = format!(
-        "**{field}** _(field)_\n\n`{}/{}` : {ty} — {card}",
-        attr.domain(),
-        attr.name(),
-    );
+    let mut out = format!("**{field}** _(field)_\n\n`{}` : {ty} — {card}", attr.the(),);
     let d = attr.description();
     if !d.is_empty() {
         out.push_str("\n\n");

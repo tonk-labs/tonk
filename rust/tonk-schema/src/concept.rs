@@ -41,6 +41,7 @@ pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescr
 use crate::builtin::concept_registry;
 use crate::query_source::Source;
 use crate::rule_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
+use dialog_query::attribute::Relation;
 use tonk_core::meta::AnonymousAttribute;
 
 /// Domain prefix for required-field claims.
@@ -467,9 +468,17 @@ impl AttributeByName {
 /// internal `Type` ↔ string mapping.
 fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDescriptor, String> {
     let mut shape = serde_json::Map::new();
+    // The stored id spells the relation: `domain/name` for an
+    // attribute, `domain/[position]` or `domain/[symbol]` for a
+    // keyed collection.
+    let relation: Relation = facts
+        .id
+        .0
+        .parse()
+        .map_err(|e| format!("could not parse attribute id {:?}: {e}", facts.id.0))?;
     shape.insert(
         "the".to_owned(),
-        serde_json::Value::String(facts.id.0.clone()),
+        serde_json::to_value(relation).map_err(|e| e.to_string())?,
     );
     if !facts.r#type.0.is_empty() {
         shape.insert(
@@ -1806,11 +1815,7 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/id")
                     .of(attr_entity.clone())
-                    .is(format!(
-                        "{}/{}",
-                        attr_descriptor.domain(),
-                        attr_descriptor.name()
-                    )),
+                    .is(attr_descriptor.the().to_string()),
             )
             .assert(
                 dialog_query::the!("db.attribute/type")
@@ -1905,11 +1910,11 @@ mod tests {
         for (_, field) in descriptor.with().iter() {
             let attr_entity: Entity = field.to_uri().parse()?;
             txn = txn
-                .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
-                    "{}/{}",
-                    field.domain(),
-                    field.name()
-                )))
+                .assert(
+                    the!("db.attribute/id")
+                        .of(attr_entity.clone())
+                        .is(field.the().to_string()),
+                )
                 .assert(
                     the!("db.attribute/type")
                         .of(attr_entity.clone())
@@ -2004,7 +2009,7 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/id")
                     .of(t_attr_entity.clone())
-                    .is(format!("{}/{}", t_attr.domain(), t_attr.name())),
+                    .is(t_attr.the().to_string()),
             )
             .assert(
                 dialog_query::the!("db.attribute/type")
@@ -2025,7 +2030,7 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/id")
                     .of(d_attr_entity.clone())
-                    .is(format!("{}/{}", d_attr.domain(), d_attr.name())),
+                    .is(d_attr.the().to_string()),
             )
             .assert(
                 dialog_query::the!("db.attribute/type")
@@ -2139,7 +2144,7 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/id")
                     .of(c_attr_entity.clone())
-                    .is(format!("{}/{}", c_attr.domain(), c_attr.name())),
+                    .is(c_attr.the().to_string()),
             )
             .assert(
                 dialog_query::the!("db.attribute/type")
@@ -2159,7 +2164,7 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/id")
                     .of(d_attr_entity.clone())
-                    .is(format!("{}/{}", d_attr.domain(), d_attr.name())),
+                    .is(d_attr.the().to_string()),
             )
             .assert(
                 dialog_query::the!("db.attribute/type")

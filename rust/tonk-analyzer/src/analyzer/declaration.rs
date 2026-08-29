@@ -553,13 +553,12 @@ pub(crate) fn attribute_application(
 ) -> Application {
     let mut terms = Parameters::new();
     terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    // `domain/name` for an attribute; a collection spells its key
+    // kind in the name slot, `domain/[position]`, which is how the
+    // read side tells the two apart.
     terms.insert(
         "id".into(),
-        Term::Constant(Value::String(format!(
-            "{}/{}",
-            descriptor.domain(),
-            descriptor.name()
-        ))),
+        Term::Constant(Value::String(descriptor.the().to_string())),
     );
     let type_name = descriptor
         .content_type()
