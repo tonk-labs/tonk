@@ -155,16 +155,18 @@ pub fn context_headers() -> Vec<(&'static str, String)> {
 }
 
 /// This document's build id, published by the boot script as
-/// `window.tonk.build` from the same `version.json` the worker is
-/// stamped with. `None` in a context that has no bridge and no stamp,
-/// where the handshake simply does not apply.
+/// `window.tonkBuild` from the same `version.json` the worker is
+/// stamped with. `None` in a context with no stamp (a sealed guest,
+/// which never sets it), where the handshake does not apply.
+///
+/// Deliberately NOT `window.tonk.build`. That object is the sealed
+/// guest's bridge, and [`crate::page_effect::forward`] tests for its
+/// presence to decide whether it is running inside a guest — so
+/// creating it on the top page makes the host believe it is a guest
+/// and silently swallows every navigation.
 pub fn build_id() -> Option<String> {
     let win = window()?;
-    let tonk = Reflect::get(&win, &JsValue::from_str("tonk")).ok()?;
-    if tonk.is_undefined() || tonk.is_null() {
-        return None;
-    }
-    Reflect::get(&tonk, &JsValue::from_str("build"))
+    Reflect::get(&win, &JsValue::from_str("tonkBuild"))
         .ok()?
         .as_string()
         .filter(|s| !s.is_empty())

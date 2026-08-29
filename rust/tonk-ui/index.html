@@ -995,9 +995,16 @@
                 // `claim` swap the worker underneath a running page, so
                 // without this the page cannot tell that the worker
                 // answering it belongs to a different build.
+                //
+                // NOT on `window.tonk`. That name is the sealed guest's
+                // bridge object, and `page_effect::forward` tests for its
+                // presence to decide "am I running inside a guest?" —
+                // creating it on the TOP page made the host believe it was
+                // a guest, so every `navigate_to` forwarded to a
+                // `navigate` method that does not exist here and returned
+                // early. Links and menu buttons silently stopped working.
                 const publishBuild = (build) => {
-                    globalThis.tonk = globalThis.tonk || {};
-                    globalThis.tonk.build = build;
+                    globalThis.tonkBuild = build;
                 };
                 const probeVersion = async () => {
                     try {
