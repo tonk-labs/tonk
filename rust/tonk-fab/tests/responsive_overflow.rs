@@ -326,9 +326,10 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
             .as_deref(),
         None
     );
+    let mode_is_dark = (fab.get_attribute("mode").as_deref() == Some("dark")).to_string();
     assert_eq!(
         mode_row.get_attribute("aria-pressed").as_deref(),
-        Some("false")
+        Some(mode_is_dark.as_str())
     );
     shadow_element(&fab, "[data-cell=share]")
         .unchecked_into::<HtmlElement>()
