@@ -108,12 +108,34 @@ async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
         .as_string()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
     if !resp.ok() {
+        // `409` from the version handshake means this page is talking to
+        // a worker from a different build (`skipWaiting` + `claim` swap
+        // the worker underneath a running page). Nothing the caller can
+        // do about it, and retrying will fail identically — so raise the
+        // same update prompt the version probe raises and let the user
+        // reload onto a matched pair.
+        if resp.status() == 409 && body_text.contains("stale-build") {
+            announce_update();
+        }
         return Err(ErrorDetail::http(
             resp.status(),
             format!("HTTP {}: {body_text}", resp.status()),
         ));
     }
     Ok(body_text)
+}
+
+/// Raise the boot script's "update ready" prompt.
+///
+/// Dispatched as an event rather than called directly because the
+/// prompt lives in `index.html`'s boot script — deliberately outside
+/// the app wasm, since the app wasm is one of the things that can be
+/// the stale half.
+fn announce_update() {
+    let Some(win) = window() else { return };
+    if let Ok(event) = web_sys::Event::new("tonk-update-available") {
+        let _ = win.dispatch_event(&event);
+    }
 }
 
 /// `POST /api/site` to register this document's site and read back the assigned

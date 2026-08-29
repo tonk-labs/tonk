@@ -945,6 +945,14 @@
                     document.body.appendChild(bar);
                 };
 
+                // The app raises this when the worker answers a `409`
+                // from the version handshake — it is talking to a
+                // worker from a different build, which only a reload
+                // can resolve.
+                window.addEventListener("tonk-update-available", () => {
+                    announceUpdate();
+                });
+
                 // ---- Update discovery ------------------------------------
                 //
                 // The browser only checks for a new worker on navigation (and
@@ -981,6 +989,16 @@
                 // announce it; `<tonk-site>` renders the reload affordance.
                 const BUILD_PROBE_MS = 15 * 60 * 1000;
                 let knownBuild = null;
+
+                // Publish this document's build so the host layer can
+                // send it on every `/api/*` request. `skipWaiting` +
+                // `claim` swap the worker underneath a running page, so
+                // without this the page cannot tell that the worker
+                // answering it belongs to a different build.
+                const publishBuild = (build) => {
+                    globalThis.tonk = globalThis.tonk || {};
+                    globalThis.tonk.build = build;
+                };
                 const probeVersion = async () => {
                     try {
                         const response = await fetch("/version.json", {
@@ -991,6 +1009,7 @@
                         if (!build) return;
                         if (knownBuild === null) {
                             knownBuild = build;
+                            publishBuild(build);
                             return;
                         }
                         if (build !== knownBuild) {

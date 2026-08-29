@@ -39,6 +39,14 @@ fn build_id() -> &'static str {
     BUILD_ID.get().map(String::as_str).unwrap_or("dev")
 }
 
+/// The build this worker was stamped with, or `None` when it has not
+/// been set (a dev build, or a native test). Used by the version
+/// handshake, which must not classify anything when it has no identity
+/// of its own to compare against.
+pub fn current_build_id() -> Option<String> {
+    BUILD_ID.get().cloned()
+}
+
 /// This build's shell cache name.
 fn shell_cache() -> String {
     format!("{SHELL_PREFIX}{}", build_id())
