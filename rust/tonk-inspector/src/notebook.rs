@@ -772,13 +772,14 @@ impl Notebook {
             self.dispatch_edit(entity, source);
         }
         // A created block needs an entity before it can be written. Mint one
-        // from the notebook's own subject plus a counter, so re-running an
+        // from the notebook's own entity plus a counter, so re-running an
         // identical edit does not mint a second entity for the same block.
-        let subject = self
-            .host
-            .dataset()
-            .get("subject")
-            .unwrap_or_else(|| "id:notebook".to_owned());
+        //
+        // NOT from `data-subject`: `dispatch_edit` above repoints that at
+        // whichever block it is currently writing, so reading it here picks
+        // up the LAST block edited and mints the new one as its child —
+        // `…/block-4-0/block-6-1/block-7-0/…`, deeper on every edit.
+        let subject = self.notebook_entity();
         let mut minted: Vec<String> = Vec::new();
         for (nth, source) in edit.created.iter().enumerate() {
             let entity = format!("{subject}/block-{}-{nth}", edit.order.len());
