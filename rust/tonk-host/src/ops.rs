@@ -217,8 +217,26 @@ where
     InstalledListener { _closure: closure }
 }
 
-/// The dispatching element, for `with` resolution.
+/// The element that actually dispatched the event.
+///
+/// NOT `ev.target()`. These events are `composed`, so they escape a shadow
+/// root — and crossing that boundary RETARGETS `target` to the shadow host.
+/// A `<tonk-display>` inside `<tonk-prose>`'s shadow root therefore arrives
+/// here reported as `<tonk-prose>`, and every frame this handler routes back
+/// by calling `reset` on the "consumer" lands on the host element, which has
+/// no such method. The display stays at `data-state="loading"` forever while
+/// its data is delivered to something that drops it on the floor.
+///
+/// `composedPath()[0]` is the un-retargeted origin, so it names the real
+/// consumer on both sides of a shadow boundary. Falls back to `target` for
+/// an event whose path is empty (one already finished dispatching).
 fn event_origin(ev: &CustomEvent) -> Option<Element> {
+    let path = ev.composed_path();
+    if path.length() > 0
+        && let Ok(element) = path.get(0).dyn_into::<Element>()
+    {
+        return Some(element);
+    }
     ev.target().and_then(|t| t.dyn_into::<Element>().ok())
 }
 
@@ -952,7 +970,7 @@ mod tests {
     use js_sys::Array;
     use wasm_bindgen::prelude::Closure;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
-    use web_sys::window;
+    use web_sys::{CustomEventInit, ShadowRootInit, ShadowRootMode, window};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -1199,5 +1217,52 @@ mod tests {
             field(&opts_of(&delta), "reconnect").is_undefined(),
             "a delta must never be marked reconnect, even on reconnect"
         );
+    }
+
+    /// A consumer inside a shadow root must be recognized as ITSELF.
+    ///
+    /// The operation events are `composed`, so they escape a shadow root —
+    /// and crossing that boundary retargets `event.target` to the shadow
+    /// HOST. Reading `target` therefore named `<tonk-prose>` for a
+    /// `<tonk-display>` mounted in its shadow root, and every frame was
+    /// then delivered by calling `reset` on the prose element, which has no
+    /// such method. The display sat at `data-state="loading"` forever with
+    /// its data going to an element that dropped it.
+    #[dialog_common::test]
+    async fn it_finds_a_consumer_inside_a_shadow_root() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("tonk-shadow-outer").expect("outer");
+        document
+            .body()
+            .expect("body")
+            .append_child(&outer)
+            .expect("attach");
+        let root = outer
+            .attach_shadow(&ShadowRootInit::new(ShadowRootMode::Open))
+            .expect("shadow root");
+        let inner = document.create_element("tonk-shadow-inner").expect("inner");
+        root.append_child(&inner).expect("append");
+
+        // Listen where the real host listens: outside the shadow boundary.
+        let seen = Rc::new(RefCell::new(Option::<String>::None));
+        let seen_for_closure = seen.clone();
+        let closure = Closure::wrap(Box::new(move |ev: CustomEvent| {
+            *seen_for_closure.borrow_mut() = event_origin(&ev).map(|element| element.local_name());
+        }) as Box<dyn FnMut(CustomEvent)>);
+        let _ = document
+            .add_event_listener_with_callback(events::SUBSCRIBE, closure.as_ref().unchecked_ref());
+
+        let init = CustomEventInit::new();
+        init.set_bubbles(true);
+        init.set_composed(true);
+        let ev = CustomEvent::new_with_event_init_dict(events::SUBSCRIBE, &init).expect("event");
+        let _ = inner.dispatch_event(&ev);
+
+        assert_eq!(
+            seen.borrow().as_deref(),
+            Some("tonk-shadow-inner"),
+            "the dispatching element, not the shadow host `target` retargets to"
+        );
+        outer.remove();
     }
 }

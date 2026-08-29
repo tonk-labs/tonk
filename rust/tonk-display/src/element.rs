@@ -1989,6 +1989,7 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 ///   `<tonk-view>` straight into the host so the user's template
 ///   flows in its natural layout — no aspect ratio, no
 ///   carousel-imposed sizing.
+///
 /// Forward the display host's OWN routing context (`with`) onto the view
 /// it just mounted — so a view whose content resolves its own context
 /// (`<tonk-tree>`, `<tonk-inspector>`, a nested `<ui-sync-status>`) sees
