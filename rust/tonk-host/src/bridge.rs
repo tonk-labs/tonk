@@ -140,7 +140,34 @@ pub fn context_headers() -> Vec<(&'static str, String)> {
     if let Some(hash) = hash {
         headers.push(("x-tonk-hash", hash));
     }
+    // The build this page was loaded from. `skipWaiting` + `claim` swap
+    // the worker underneath a running page, so the page can end up
+    // talking to a worker from a different build than its own wasm. The
+    // storage layer tolerates that by design, but the HTTP surface is
+    // not versioned — a renamed route or a changed DTO would surface as
+    // a confusing 404 or parse error in a page with no idea it is
+    // stale. Sending the build lets the worker answer a structured 409
+    // instead, which the host turns into "reload to update".
+    if let Some(build) = build_id() {
+        headers.push(("x-tonk-build", build));
+    }
     headers
+}
+
+/// This document's build id, published by the boot script as
+/// `window.tonk.build` from the same `version.json` the worker is
+/// stamped with. `None` in a context that has no bridge and no stamp,
+/// where the handshake simply does not apply.
+pub fn build_id() -> Option<String> {
+    let win = window()?;
+    let tonk = Reflect::get(&win, &JsValue::from_str("tonk")).ok()?;
+    if tonk.is_undefined() || tonk.is_null() {
+        return None;
+    }
+    Reflect::get(&tonk, &JsValue::from_str("build"))
+        .ok()?
+        .as_string()
+        .filter(|s| !s.is_empty())
 }
 
 /// GET a host-relative path and return its body text. One transport

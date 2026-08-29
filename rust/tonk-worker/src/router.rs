@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use ::axum::{
-    Router,
+    Json, Router,
     extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    response::IntoResponse,
     routing::get,
     routing::post,
     routing::put,
@@ -182,6 +184,76 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
 /// so this caps that buffer, not just the wire size. Keep this conservative
 /// until the browser upload and remote sync paths stream end to end.
 pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
+
+/// The build header the page sends on every `/api/*` request.
+const BUILD_HEADER: &str = "x-tonk-build";
+
+/// This worker's stamped build id. Only the browser build has one —
+/// natively there is no service worker to be out of step with, so the
+/// handshake is inert there.
+fn current_build_id() -> Option<String> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        crate::cache::current_build_id()
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    None
+}
+
+/// Whether a request should be refused as coming from a stale page,
+/// returning the pair to report when it should.
+///
+/// Split out from the middleware so the decision is testable without a
+/// service-worker global. Both ids must be present and differ: an
+/// absent header (a sealed guest, an older page) and an unstamped
+/// worker (dev, native) are both "cannot classify", and a request that
+/// cannot be classified must never be blocked.
+fn stale_build(ours: Option<&str>, theirs: Option<&str>) -> Option<(String, String)> {
+    let (ours, theirs) = (ours?, theirs?);
+    (ours != theirs).then(|| (ours.to_owned(), theirs.to_owned()))
+}
+
+/// Refuse a request from a page built against a different version of
+/// this worker's HTTP surface.
+///
+/// `skipWaiting` + `clients.claim()` swap the worker underneath running
+/// pages, so a page's wasm and the worker answering it can come from
+/// different builds. Storage is engineered for that overlap (CAS over
+/// content-addressed blocks), but the HTTP surface is not versioned: a
+/// renamed route or a changed DTO shows up as a confusing 404 or parse
+/// error in a page that has no idea it is stale.
+///
+/// A structured `409` turns that mystery into a reload prompt. Absent
+/// or unknown build ids pass through untouched — the header is a hint,
+/// and a request that cannot be classified must not be blocked (a
+/// sealed guest, an older page, or a context with no stamp at all).
+async fn reject_stale_build(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let theirs = request
+        .headers()
+        .get(BUILD_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+
+    let Some((ours, theirs)) = stale_build(current_build_id().as_deref(), theirs.as_deref()) else {
+        return next.run(request).await;
+    };
+
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "error": {
+                "kind": "stale-build",
+                "message": "this page was built against a different worker version",
+                "page": theirs,
+                "worker": ours,
+            }
+        })),
+    )
+        .into_response()
+}
 
 /// Variant of [`api_router`] that also surfaces the wrapped
 /// [`AppState`] handle. The worker uses this so it can consult
@@ -425,7 +497,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // LSP routes carry their own state (`Extension<LspHub>`) so
         // they don't need to know about `AppState`. Merging keeps
         // the language-server lifetime tied to the worker.
-        .merge(lsp_routes);
+        .merge(lsp_routes)
+        // Version handshake. Applied to the whole `/api` surface rather
+        // than per-route: the point is to catch a route or DTO this
+        // page does not know about, which by definition can be any of
+        // them.
+        .layer(axum::middleware::from_fn(reject_stale_build));
     (router, lsp_hub)
 }
 
@@ -4847,5 +4924,47 @@ person!:
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::stale_build;
+
+    /// The whole point: a page and a worker from different builds must
+    /// be caught, because `skipWaiting` + `claim` swap the worker
+    /// underneath a running page and the HTTP surface is not versioned.
+    #[dialog_common::test]
+    fn it_refuses_a_page_from_another_build() {
+        assert_eq!(
+            stale_build(Some("worker-build"), Some("page-build")),
+            Some(("worker-build".to_owned(), "page-build".to_owned())),
+        );
+    }
+
+    /// The matched case is the overwhelmingly common one and must be
+    /// completely transparent.
+    #[dialog_common::test]
+    fn it_passes_a_matching_build_through() {
+        assert_eq!(stale_build(Some("same"), Some("same")), None);
+    }
+
+    /// A request that cannot be classified must never be blocked.
+    /// Blocking on a missing header would break every context that
+    /// does not send one — a sealed guest, an older page still in a
+    /// tab — turning a diagnostic into an outage.
+    #[dialog_common::test]
+    fn it_never_blocks_what_it_cannot_classify() {
+        assert_eq!(
+            stale_build(Some("worker-build"), None),
+            None,
+            "a page that sends no build is not therefore stale"
+        );
+        assert_eq!(
+            stale_build(None, Some("page-build")),
+            None,
+            "an unstamped worker has no identity to compare against"
+        );
+        assert_eq!(stale_build(None, None), None);
     }
 }
