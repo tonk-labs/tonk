@@ -13,8 +13,8 @@ use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
-    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, ANONYMIZE_DELETED_SUBSCRIPTIONS, Customer,
-    DELETE_CUSTOMER, DELETE_SELF_SUBSCRIPTION, FINISH_SUBSCRIPTION_DELETION, INSERT_CUSTOMER,
+    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, Customer, DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS,
+    DELETE_SELF_SUBSCRIPTION, FINISH_SUBSCRIPTION_DELETION, INSERT_CUSTOMER,
     INSERT_SELF_SUBSCRIPTION, MARK_SELF_SUBSCRIPTION_DELETING, MARK_SUBSCRIPTION_DELETING,
     RESERVE_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
     SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, Servability, Store, StoreError,
@@ -184,7 +184,10 @@ impl Store for D1Store {
         row.map(Subscription::try_from).transpose()
     }
 
-    async fn subscriptions_by_owner(&self, owner: &str) -> Result<Vec<Subscription>, StoreError> {
+    async fn subscriptions_by_provider(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<Subscription>, StoreError> {
         let result = self
             .0
             .prepare(SELECT_SUBSCRIPTIONS_BY_OWNER)
@@ -334,7 +337,7 @@ impl Store for D1Store {
     async fn delete_customer(&self, did: &str) -> Result<bool, StoreError> {
         let anonymize = self
             .0
-            .prepare(ANONYMIZE_DELETED_SUBSCRIPTIONS)
+            .prepare(DELETE_PURGED_SUBSCRIPTIONS)
             .bind(&[JsValue::from(did)])
             .map_err(map_err)?;
         let self_consumer = self

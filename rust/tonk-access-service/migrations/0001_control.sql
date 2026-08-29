@@ -38,7 +38,7 @@ CREATE TABLE customer (
 
 CREATE TABLE subscription (
   consumer        TEXT PRIMARY KEY, -- the DID this subscription is for
-  provider        TEXT REFERENCES customer(account), -- null means not servable
+  provider        TEXT NOT NULL REFERENCES customer(account), -- the customer who pays
   registered_at      INTEGER NOT NULL,
   archived_at     INTEGER,
   suspend_code    TEXT,

@@ -202,7 +202,7 @@ pub async fn delete<S: Store, P: SpacePurger>(
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .ok_or(Error::NotRegistered)?;
-    if consumer.owner.as_deref() != Some(customer.as_str()) {
+    if consumer.provider != customer.as_str() {
         return Err(Error::Forbidden);
     }
     if consumer.kind == SubscriptionKind::Custody {
@@ -282,7 +282,7 @@ pub async fn customer_plan<S: Store>(
     let customer =
         verify_customer_command(store, container, &CUSTOMER_PLAN_COMMAND, now, true).await?;
     let spaces = store
-        .subscriptions_by_owner(customer.as_str())
+        .subscriptions_by_provider(customer.as_str())
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .into_iter()
@@ -308,7 +308,7 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     let customer =
         verify_customer_command(store, container, &CUSTOMER_DELETE_COMMAND, now, true).await?;
     let consumers = store
-        .subscriptions_by_owner(&customer)
+        .subscriptions_by_provider(&customer)
         .await
         .map_err(|error| Error::Internal(error.to_string()))?;
     let remaining: Vec<_> = consumers
@@ -758,13 +758,13 @@ mod tests {
         ));
         let denied = store.consumer(space.did().as_str()).await.unwrap().unwrap();
         assert_eq!(denied.deletion_state, SubscriptionDeletionState::Deleting);
-        assert_eq!(denied.provider.as_deref(), Some(root.did().as_str()));
+        assert_eq!(denied.provider, root.did().to_string());
 
         let receipt = delete(&store, &purger, &invocation, at + 2).await.unwrap();
         assert_eq!(receipt.space, space.did());
         let deleted = store.consumer(space.did().as_str()).await.unwrap().unwrap();
         assert_eq!(deleted.deletion_state, SubscriptionDeletionState::Deleted);
-        assert!(deleted.provider.is_none());
+        assert_eq!(deleted.provider, root.did().to_string());
 
         let replay = delete(&store, &purger, &invocation, at + 3).await.unwrap();
         assert_eq!(replay.deleted_at, receipt.deleted_at);
@@ -854,12 +854,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(receipt.customer, root.did().to_string());
-        let purged = store
-            .consumer(custody.did().as_str())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(purged.deletion_state, SubscriptionDeletionState::Deleted);
+        // Finalization takes the subscription rows with the customer:
+        // a subscription names who pays for it, and nobody does now.
+        assert!(
+            store
+                .consumer(custody.did().as_str())
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),
             &[
@@ -941,34 +944,23 @@ mod tests {
         assert!(store.customer(root.did().as_str()).await.unwrap().is_none());
         assert!(
             store
-                .subscriptions_by_owner(root.did().as_str())
+                .subscriptions_by_provider(root.did().as_str())
                 .await
                 .unwrap()
                 .is_empty()
         );
-        let denial = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(denial.deletion_state, SubscriptionDeletionState::Deleted);
-        assert!(denial.provider.is_none());
-        assert!(denial.owner.is_none());
+        // Finalization leaves nothing behind: the subscription rows go
+        // with the customer that paid for them. Nothing marks the space
+        // DID as spent, so provisioning it again succeeds — only the
+        // holder of that space's key can present the DID, and a customer
+        // who deletes their account and comes back with the same space
+        // is a customer rather than an attacker.
         assert!(
-            !store
-                .add_subscription(
-                    space.did().as_str(),
-                    root.did().as_str(),
-                    at + 4,
-                    SubscriptionKind::Space,
-                )
-                .await
-                .unwrap()
-        );
-        assert_eq!(
             store
                 .consumer(space.did().as_str())
                 .await
                 .unwrap()
-                .unwrap()
-                .deletion_state,
-            SubscriptionDeletionState::Deleted
+                .is_none()
         );
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),

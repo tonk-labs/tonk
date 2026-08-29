@@ -15,7 +15,6 @@ erDiagram
     plan ||--o{ customer : prices
     account ||--|| customer : subscribes
     customer ||--o{ subscription : provides
-    account ||--o{ subscription : owns
 
     plan {
         TEXT id PK "not a DID: an opaque plan id like trial@2026-08"
@@ -49,8 +48,7 @@ erDiagram
 
     subscription {
         TEXT consumer PK "DID (did:key) this subscription is for"
-        TEXT provider FK "DID (did:key): the customer who pays; null is not servable"
-        TEXT owner "DID (did:key): the account whose data this is"
+        TEXT provider FK "DID (did:key): the customer who pays; required"
         TEXT kind "enum: space | customer | custody"
         INTEGER registered_at
         INTEGER expires_at "reservation lapse; null never lapses"
@@ -95,7 +93,7 @@ flowchart TD
 ```
 
 An account is not a special case here: enrollment writes it a
-self-provided subscription row (`consumer = provider = owner`), so "the
+self-provided subscription row (`consumer = provider`), so "the
 provider's status" is its own. `screen` does look the subject up as a
 customer first, but only to save a hop — the subscription path reaches
 the same verdict one join later.
@@ -140,34 +138,32 @@ Three relationships that a single word would blur:
 
 | Role | Column | Meaning | Cardinality |
 |---|---|---|---|
-| Account | `subscription.owner` | whose data this is | one per consumer |
-| Provider | `subscription.provider` | who pays for it | exactly one, required to serve |
-| Sponsor | *(not yet built)* | pledges credits to a consumer it does not provide | zero or more |
+| Provider | `subscription.provider` | who pays for it | exactly one, required |
+| Sponsor | *(not yet built)* | pledges credits to a subscription it does not provide | zero or more |
 
-`owner` and `provider` hold the same value on every write today:
-nothing transfers a space to a different payer, so no code path sets
-them apart. `owner` is kept anyway because it answers a different
-question — the deletion check asks "is this your space?", which stays
-right when third-party payment makes the answer stop coinciding with
-"do you pay for it?". Collapsing them now would encode the coincidence,
-and the bug would surface only on the day a space gets a second payer.
+There is no separate owner. Nothing transfers a space to a different
+payer, so the customer paying for one is the account whose data it is,
+and a second column would hold the same value on every write. Deletion
+authority and inventory both read `provider`.
 
-That day is also when ownership moves to its own `space` table
-(`subject` PK, `account`): several subscriptions per space means several
-copies of `owner` with nothing keeping them in step.
+`provider` is required. A subscription names who pays for it, so a row
+with nobody paying is not one — deleting a customer takes its
+subscriptions with it rather than blanking them. Nothing therefore marks
+a purged space DID as spent, and provisioning it again succeeds: only
+the holder of that space's key can present the DID at all.
 
 ## Not yet built
 
 `plan/Access metering.md` specifies `sponsorship`, `usage`, `ledger`,
 and `run`. They arrive with the increments that read them.
 
-A `space` table (`subject` PK, `account`) is deferred. Ownership lives
-on `subscription.owner` today, which is sound only while `consumer` is
-the subscription's primary key — one space, one subscription, so there
-is one copy of the owner and nothing to drift. It moves out when a space
-may have several providers, and `subject` is the key there rather than
-`(subject, account)`: one space has one owner, and a composite key would
-quietly permit co-ownership.
+A `space` table (`subject` PK, `account`) arrives the day owner and
+provider are allowed to differ — when someone may pay for a space they
+do not own, or a space may have several providers. Ownership then has
+nowhere to live on a subscription row: several subscriptions per space
+would each carry a copy with nothing keeping them in step. Its key is
+`subject` alone rather than `(subject, account)`, since one space has
+one owner and a composite key would quietly permit co-ownership.
 
 Note that `ledger` names two different things: the planned D1 table
 (authoritative accounting) and `customer.ledger` (the space this service

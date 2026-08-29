@@ -82,10 +82,8 @@ pub struct Servability {
 pub struct Subscription {
     /// The DID this subscription is for.
     pub consumer: String,
-    /// The customer paying for this consumer; null means not servable.
-    pub provider: Option<String>,
-    /// Original account provider, retained after hosted deletion for inventory.
-    pub owner: Option<String>,
+    /// The customer paying for this subscription.
+    pub provider: String,
     /// Registration time as a unix timestamp in seconds.
     pub registered_at: u64,
     /// What this consumer is: a user's data space, or a custody
@@ -188,7 +186,10 @@ pub trait Store {
 
     /// List every consumer originally provided by one account, including
     /// deleted rows whose live provider has been cleared.
-    async fn subscriptions_by_owner(&self, owner: &str) -> Result<Vec<Subscription>, StoreError>;
+    async fn subscriptions_by_provider(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<Subscription>, StoreError>;
 
     /// Atomically write a new customer row together with its self-provided
     /// account consumer. Two steps would leave a window in which a
@@ -270,7 +271,7 @@ SELECT account, email, status, plan, verified_at, terms_version
 "#;
 
 pub const SELECT_SUBSCRIPTION: &str = r#"
-SELECT consumer, provider, owner, registered_at, kind, deletion_state,
+SELECT consumer, provider, registered_at, kind, deletion_state,
        deleted_at, expires_at
   FROM subscription WHERE consumer = ?1
 "#;
@@ -297,9 +298,9 @@ SELECT own.status           AS own_status,
 "#;
 
 pub const SELECT_SUBSCRIPTIONS_BY_OWNER: &str = r#"
-SELECT consumer, provider, owner, registered_at, kind, deletion_state,
+SELECT consumer, provider, registered_at, kind, deletion_state,
        deleted_at, expires_at
-  FROM subscription WHERE owner = ?1 ORDER BY registered_at, consumer
+  FROM subscription WHERE provider = ?1 ORDER BY registered_at, consumer
 "#;
 
 pub const INSERT_CUSTOMER: &str = r#"
@@ -311,8 +312,8 @@ VALUES (?1, ?2, 'Registered', ?3, ?4, ?5)
 /// customer provides it. `ON CONFLICT DO NOTHING` keeps re-enrollment
 /// idempotent when the consumer row survived an earlier attempt.
 pub const INSERT_SELF_SUBSCRIPTION: &str = r#"
-INSERT INTO subscription (consumer, provider, owner, registered_at)
-VALUES (?1, ?1, ?1, ?2)
+INSERT INTO subscription (consumer, provider, registered_at)
+VALUES (?1, ?1, ?2)
 ON CONFLICT (consumer) DO NOTHING
 "#;
 
@@ -326,14 +327,13 @@ ON CONFLICT (consumer) DO NOTHING
 /// Claiming clears `expires_at`, which is what a provisioned row
 /// looks like: null never lapses.
 pub const ADD_SUBSCRIPTION: &str = r#"
-INSERT INTO subscription (consumer, provider, owner, registered_at, kind)
-VALUES (?1, ?2, ?2, ?3, ?4)
+INSERT INTO subscription (consumer, provider, registered_at, kind)
+VALUES (?1, ?2, ?3, ?4)
 ON CONFLICT (consumer) DO UPDATE SET
   provider = excluded.provider,
   kind = excluded.kind,
   expires_at = NULL
-WHERE (subscription.provider IS NULL
-       OR subscription.provider = excluded.provider
+WHERE (subscription.provider = excluded.provider
        OR (subscription.expires_at IS NOT NULL AND subscription.expires_at <= ?3))
   AND subscription.deletion_state = 'active'
 "#;
@@ -346,14 +346,13 @@ WHERE (subscription.provider IS NULL
 /// extends the deadline, which is what a passkey re-enrolling on a new
 /// device does.
 pub const RESERVE_SUBSCRIPTION: &str = r#"
-INSERT INTO subscription (consumer, provider, owner, registered_at, kind, expires_at)
-VALUES (?1, ?2, ?2, ?3, ?4, ?5)
+INSERT INTO subscription (consumer, provider, registered_at, kind, expires_at)
+VALUES (?1, ?2, ?3, ?4, ?5)
 ON CONFLICT (consumer) DO UPDATE SET
   provider = excluded.provider,
   kind = excluded.kind,
   expires_at = excluded.expires_at
-WHERE (subscription.provider IS NULL
-       OR subscription.provider = excluded.provider
+WHERE (subscription.provider = excluded.provider
        OR (subscription.expires_at IS NOT NULL AND subscription.expires_at <= ?3))
   AND subscription.deletion_state = 'active'
 "#;
@@ -379,23 +378,26 @@ UPDATE subscription SET deletion_state = 'deleting'
 
 pub const FINISH_SUBSCRIPTION_DELETION: &str = r#"
 UPDATE subscription
-   SET deletion_state = 'deleted', deleted_at = ?2, provider = NULL
+   SET deletion_state = 'deleted', deleted_at = ?2
  WHERE consumer = ?1 AND deletion_state = 'deleting'
 "#;
 
 pub const MARK_SELF_SUBSCRIPTION_DELETING: &str = r#"
 UPDATE subscription SET deletion_state = 'deleting'
- WHERE consumer = ?1 AND owner = ?1 AND deletion_state = 'active'
+ WHERE consumer = ?1 AND provider = ?1 AND deletion_state = 'active'
 "#;
 
-/// Detach completed denial markers from the deleted customer while retaining
-/// the minimum state that prevents a stale replica from provisioning the same
-/// space again.
-pub const ANONYMIZE_DELETED_SUBSCRIPTIONS: &str = r#"
-UPDATE subscription
-   SET provider = NULL,
-       owner = NULL
- WHERE owner = ?1
+/// Drop the purged subscriptions of a deleted customer.
+///
+/// They used to be kept, with the provider blanked, so nothing could
+/// provision the same space DID again. That marker cannot survive a
+/// required provider, and it was guarding little: only the holder of a
+/// space's key can present its DID at all, and a customer who deletes
+/// their account and returns with the same space is a customer, not an
+/// attacker.
+pub const DELETE_PURGED_SUBSCRIPTIONS: &str = r#"
+DELETE FROM subscription
+ WHERE provider = ?1
    AND consumer <> ?1
    AND deletion_state = 'deleted'
 "#;
@@ -403,14 +405,14 @@ UPDATE subscription
 pub const DELETE_SELF_SUBSCRIPTION: &str = r#"
 DELETE FROM subscription
  WHERE consumer = ?1
-   AND owner = ?1
+   AND provider = ?1
    AND deletion_state IN ('deleting', 'deleted')
 "#;
 
 pub const DELETE_CUSTOMER: &str = r#"
 DELETE FROM customer
  WHERE account = ?1
-   AND NOT EXISTS (SELECT 1 FROM subscription WHERE owner = ?1)
+   AND NOT EXISTS (SELECT 1 FROM subscription WHERE provider = ?1)
 "#;
 
 pub mod ingest;

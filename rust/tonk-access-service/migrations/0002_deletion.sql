@@ -7,8 +7,10 @@ ALTER TABLE subscription ADD COLUMN deletion_grant_kind TEXT
 ALTER TABLE subscription ADD COLUMN deletion_state TEXT NOT NULL DEFAULT 'active'
   CHECK (deletion_state IN ('active', 'deleting', 'deleted'));
 ALTER TABLE subscription ADD COLUMN deleted_at INTEGER;
--- Immutable creator/provider identity used only to enumerate deletion work.
--- Authorization still comes exclusively from the registered proof.
-ALTER TABLE subscription ADD COLUMN owner TEXT;
-UPDATE subscription SET owner = provider WHERE owner IS NULL;
-CREATE INDEX subscription_owner ON subscription(owner);
+-- Deletion work is enumerated by provider. Nothing transfers a space to
+-- a different payer, so the customer who pays for one is the account
+-- whose data it is; a separate `owner` would hold the same value on
+-- every write. It arrives with the `space` table, when a space may have
+-- several providers and ownership stops being derivable from any of
+-- them.
+CREATE INDEX subscription_provider ON subscription(provider);

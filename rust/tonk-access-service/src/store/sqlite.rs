@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, ANONYMIZE_DELETED_SUBSCRIPTIONS, Customer,
-    DELETE_CUSTOMER, DELETE_SELF_SUBSCRIPTION, FINISH_SUBSCRIPTION_DELETION, INSERT_CUSTOMER,
+    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, Customer, DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS,
+    DELETE_SELF_SUBSCRIPTION, FINISH_SUBSCRIPTION_DELETION, INSERT_CUSTOMER,
     INSERT_SELF_SUBSCRIPTION, MARK_SELF_SUBSCRIPTION_DELETING, MARK_SUBSCRIPTION_DELETING,
     RESERVE_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
     SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, Servability, Store, StoreError,
@@ -218,23 +218,21 @@ impl Store for SqliteStore {
             .query_row(SELECT_SUBSCRIPTION, params![did], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
         row.map(
-            |(did, provider, owner, registered_at, kind, state, deleted_at, expires_at)| {
+            |(did, provider, registered_at, kind, state, deleted_at, expires_at)| {
                 Ok(Subscription {
                     consumer: did,
                     provider,
-                    owner,
                     registered_at: registered_at as u64,
                     kind: SubscriptionKind::parse(&kind)?,
                     deletion_state: SubscriptionDeletionState::parse(&state)?,
@@ -246,32 +244,33 @@ impl Store for SqliteStore {
         .transpose()
     }
 
-    async fn subscriptions_by_owner(&self, owner: &str) -> Result<Vec<Subscription>, StoreError> {
+    async fn subscriptions_by_provider(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<Subscription>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let mut statement = conn
             .prepare(SELECT_SUBSCRIPTIONS_BY_OWNER)
             .map_err(map_err)?;
         let rows = statement
-            .query_map(params![owner], |row| {
+            .query_map(params![provider], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
                 ))
             })
             .map_err(map_err)?;
         rows.map(|row| {
-            let (did, provider, owner, registered_at, kind, state, deleted_at, expires_at) =
+            let (did, provider, registered_at, kind, state, deleted_at, expires_at) =
                 row.map_err(map_err)?;
             Ok(Subscription {
                 consumer: did,
                 provider,
-                owner,
                 registered_at: registered_at as u64,
                 kind: SubscriptionKind::parse(&kind)?,
                 deletion_state: SubscriptionDeletionState::parse(&state)?,
@@ -372,7 +371,7 @@ impl Store for SqliteStore {
     async fn delete_customer(&self, did: &str) -> Result<bool, StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
-        tx.execute(ANONYMIZE_DELETED_SUBSCRIPTIONS, params![did])
+        tx.execute(DELETE_PURGED_SUBSCRIPTIONS, params![did])
             .map_err(map_err)?;
         tx.execute(DELETE_SELF_SUBSCRIPTION, params![did])
             .map_err(map_err)?;

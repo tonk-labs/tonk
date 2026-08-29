@@ -700,7 +700,7 @@ async fn it_registers_the_account_consumer_atomically_with_the_customer() -> any
         .await
         .unwrap()
         .expect("the account space is a consumer");
-    assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
+    assert_eq!(consumer.provider, customer.did().to_string());
     Ok(())
 }
 
@@ -769,7 +769,7 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .await
         .unwrap()
         .expect("the consumer row exists");
-    assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
+    assert_eq!(consumer.provider, customer.did().to_string());
 
     // Re-provisioning under the same customer succeeds and changes
     // nothing: clients retry provisioning freely (a queued entry
@@ -788,7 +788,7 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
         .await
         .unwrap()
         .expect("the consumer row still exists");
-    assert_eq!(again.provider.as_deref(), Some(customer.did().as_str()));
+    assert_eq!(again.provider, customer.did().to_string());
     assert_eq!(
         again.registered_at, registered_at,
         "re-provisioning must not re-register the consumer"
@@ -857,8 +857,8 @@ async fn it_refuses_provisioning_someone_elses_consumer() -> anyhow::Result<()> 
         .unwrap()
         .expect("the consumer row exists");
     assert_eq!(
-        consumer.provider.as_deref(),
-        Some(alice.did().as_str()),
+        consumer.provider,
+        alice.did().to_string(),
         "a refused takeover must leave the original provider paying"
     );
     Ok(())
