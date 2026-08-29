@@ -1,0 +1,79 @@
+# Cache policy for the served dist (Cloudflare Workers Assets `_headers`).
+#
+# Everything was previously served `max-age=0, must-revalidate`, which
+# fights the caching strategy from both ends: content-hashed assets pay a
+# revalidation round-trip on every load even though their URL can never
+# change meaning, while the service-worker chain — the one thing that must
+# never be served from a stale HTTP cache — got no stronger guarantee than
+# anything else.
+
+# ---- Service-worker chain: never cached -----------------------------
+#
+# `no-store` rather than `no-cache`: WebKit has a history of HTTP-cache
+# interactions with service-worker script fetches, and this is the engine
+# whose stuck workers are hardest to clear. The bytes are small and fetched
+# rarely; there is nothing to gain by caching them and a stranded user to
+# lose.
+/service_worker.js
+  Cache-Control: no-store
+
+/worker.js
+  Cache-Control: no-store
+
+/worker_bg.wasm
+  Cache-Control: no-store
+
+# The update probe and the kill switch are only useful if they are never
+# answered from a cache.
+/version.json
+  Cache-Control: no-store
+
+/kill-switch.json
+  Cache-Control: no-store
+
+# ---- Entry points: always revalidated -------------------------------
+#
+# The shell names content-hashed assets, so it must not be served stale by
+# an intermediary; the service worker layers its own stale-while-revalidate
+# on top of this.
+/
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache
+
+# ---- Content-hashed assets: immutable -------------------------------
+#
+# Trunk stamps a content hash into these names, and `hash-guest.sh` does the
+# same for the guest bundle. A change to the content is a change to the URL,
+# so the response can never go stale — cache it for a year and skip the
+# revalidation entirely.
+/ui-*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/ui-*_bg.wasm
+  Cache-Control: public, max-age=31536000, immutable
+
+/snippets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/guest/guest-*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/guest/guest_bg-*.wasm
+  Cache-Control: public, max-age=31536000, immutable
+
+/guest/wa-*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/guest/wa-*.css
+  Cache-Control: public, max-age=31536000, immutable
+
+# The guest manifest maps logical names to the hashed ones above, so it is
+# the one file in that directory that must stay fresh.
+/guest/manifest.json
+  Cache-Control: no-cache
+
+# Fonts are versioned by their own filenames and effectively never change.
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable

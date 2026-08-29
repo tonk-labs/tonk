@@ -279,7 +279,28 @@
             };
 
             self.serviceWorkerActivates = async () => {
-                if (!("serviceWorker" in navigator)) {
+                /// Whether the currently deployed build has been revoked.
+            /// Read from the same `no-store` flag the worker checks, so
+            /// the page and the worker agree on what is pulled.
+            /// Anything unparseable, missing, or unreachable means "not
+            /// revoked" — a network blip must never cost the user their
+            /// service worker.
+            async function isRevoked() {
+                try {
+                    const [flagResponse, versionResponse] = await Promise.all([
+                        fetch("/kill-switch.json", { cache: "no-store" }),
+                        fetch("/version.json", { cache: "no-store" }),
+                    ]);
+                    if (!flagResponse.ok || !versionResponse.ok) return false;
+                    const { revoked } = JSON.parse(await flagResponse.text());
+                    const { build } = JSON.parse(await versionResponse.text());
+                    return Array.isArray(revoked) && revoked.includes(build);
+                } catch {
+                    return false;
+                }
+            }
+
+            if (!("serviceWorker" in navigator)) {
                     throw new Error(
                         "Service workers not supported; Tonk will not work!",
                     );
@@ -504,6 +525,12 @@
             data-target-path="__tonk"
         />
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
+        <!-- Cache policy for Cloudflare Workers Assets. `immutable` on the
+       content-hashed bundles, `no-store` on the service-worker chain and
+       the version/kill-switch probes. Milestone 1 of
+       `plan/offline-support.md` called for this; it had never been wired,
+       so everything was served `max-age=0, must-revalidate`. -->
+        <link data-trunk rel="copy-file" href="./assets/_headers" />
         <!-- Dev-only hot reload control. Copied to dist so it's
        available under `trunk serve`, but the loading `<script>` is
        injected only in debug builds by the UI shell (see ui.rs,
@@ -635,15 +662,180 @@
         </div>
 
         <script type="module">
-            if ("serviceWorker" in navigator) {
-                await navigator.serviceWorker.register("/service_worker.js", {
-                    type: "module",
-                    updateViaCache: "none",
-                });
-            } else {
+            if (!("serviceWorker" in navigator)) {
                 console.error(
                     "Service workers not supported; Tonk will not work!",
                 );
+            } else if (await isRevoked()) {
+                // The worker for this build has been pulled. Do not
+                // register it again: a revoked worker that unregisters
+                // itself while the page keeps re-registering it is a
+                // navigation loop, which is worse than the bad build.
+                //
+                // Unregister anything already installed and run
+                // uncontrolled — the app fetches straight from the
+                // network, which is exactly what a rollback wants.
+                console.warn("This build has been revoked; running without a service worker.");
+                for (const reg of await navigator.serviceWorker.getRegistrations()) {
+                    await reg.unregister().catch(() => {});
+                }
+            } else {
+                let registration;
+                try {
+                    registration = await navigator.serviceWorker.register(
+                        "/service_worker.js",
+                        { type: "module", updateViaCache: "none" },
+                    );
+                } catch (err) {
+                    // A module service worker needs Safari 16.4+. On older
+                    // Safari this rejects, and every downstream await simply
+                    // never resolves — boot stalls and the watchdog
+                    // eventually shows a generic failure that says nothing
+                    // about the actual cause. Say the real thing instead.
+                    console.error("Service worker registration failed:", err);
+                    const status = document.querySelector("[data-boot-status]");
+                    if (status) {
+                        status.textContent =
+                            /module|type/i.test(String(err?.message || err))
+                                ? "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox."
+                                : "Tonk could not start: " + (err?.message || err);
+                    }
+                    throw err;
+                }
+
+                // ---- "Update ready" affordance ---------------------------
+                //
+                // Until now there was no user-visible update signal at all —
+                // no toast, no version anywhere — so a user stuck on a stale
+                // build had no path forward but folklore (clear website
+                // data). This is deliberately built here, in the boot script,
+                // rather than in the app: the app's own wasm is one of the
+                // things that can be stale, and the affordance has to work
+                // exactly when the app doesn't.
+                let announced = false;
+                const announceUpdate = () => {
+                    if (announced) return;
+                    announced = true;
+
+                    const bar = document.createElement("div");
+                    bar.setAttribute("role", "status");
+                    bar.style.cssText = [
+                        "position:fixed", "inset-inline:0", "bottom:0",
+                        "z-index:2147483647", "display:flex", "gap:0.75rem",
+                        "align-items:center", "justify-content:center",
+                        "padding:0.75rem 1rem",
+                        "font:14px/1.4 system-ui, sans-serif",
+                        "background:Canvas", "color:CanvasText",
+                        "border-top:1px solid color-mix(in srgb, CanvasText 20%, transparent)",
+                    ].join(";");
+
+                    const label = document.createElement("span");
+                    label.textContent = "A new version of Tonk is ready.";
+
+                    const reload = document.createElement("button");
+                    reload.textContent = "Reload";
+                    reload.style.cssText = [
+                        "font:inherit", "padding:0.35rem 1rem",
+                        "border-radius:6px", "cursor:pointer",
+                        "border:1px solid color-mix(in srgb, CanvasText 30%, transparent)",
+                        "background:color-mix(in srgb, CanvasText 8%, Canvas)",
+                        "color:inherit",
+                    ].join(";");
+                    reload.addEventListener("click", () => {
+                        // Ask the waiting worker to take over before
+                        // reloading, so ONE reload converges instead of two.
+                        registration.waiting?.postMessage({ type: "claim" });
+                        location.reload();
+                    });
+
+                    const dismiss = document.createElement("button");
+                    dismiss.textContent = "Not now";
+                    dismiss.setAttribute("aria-label", "Dismiss update notice");
+                    dismiss.style.cssText = [
+                        "font:inherit", "padding:0.35rem 0.75rem",
+                        "border:0", "background:none", "cursor:pointer",
+                        "color:inherit", "opacity:0.7",
+                    ].join(";");
+                    dismiss.addEventListener("click", () => bar.remove());
+
+                    bar.append(label, reload, dismiss);
+                    document.body.appendChild(bar);
+                };
+
+                // ---- Update discovery ------------------------------------
+                //
+                // The browser only checks for a new worker on navigation (and
+                // at register time). This is a single-page app: it navigates
+                // with pushState, its tabs live for days, and a bfcache
+                // restore doesn't re-run this script — so the check can
+                // simply never happen. Safari is both the laziest checker and
+                // the engine where a stuck worker is hardest to clear, which
+                // is how a user ends up stranded on an old build with no
+                // recourse but clearing website data.
+                //
+                // So ask explicitly, at the moments an update is both likely
+                // and cheap to apply: coming back to the tab, regaining
+                // connectivity, and hourly for a tab left open.
+                const checkForUpdate = () => {
+                    registration.update().catch(() => {
+                        // Offline or throttled — the next trigger retries.
+                    });
+                };
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "visible") checkForUpdate();
+                });
+                window.addEventListener("online", checkForUpdate);
+                setInterval(checkForUpdate, 60 * 60 * 1000);
+
+                // ---- Version probe ---------------------------------------
+                //
+                // `version.json` is written by the build (see
+                // `scripts/hash-guest.sh`) and served `no-store`. Polling it
+                // detects a new deploy WITHOUT depending on service-worker
+                // update machinery — which matters precisely because that
+                // machinery being wedged is the failure being solved. When it
+                // reports a build other than the one this worker is running,
+                // announce it; `<tonk-site>` renders the reload affordance.
+                const BUILD_PROBE_MS = 15 * 60 * 1000;
+                let knownBuild = null;
+                const probeVersion = async () => {
+                    try {
+                        const response = await fetch("/version.json", {
+                            cache: "no-store",
+                        });
+                        if (!response.ok) return;
+                        const { build } = await response.json();
+                        if (!build) return;
+                        if (knownBuild === null) {
+                            knownBuild = build;
+                            return;
+                        }
+                        if (build !== knownBuild) {
+                            knownBuild = build;
+                            // Pair the signal with a real update check, so
+                            // the new worker is actually installing by the
+                            // time the user acts on the prompt.
+                            checkForUpdate();
+                            announceUpdate();
+                        }
+                    } catch {
+                        // Offline — nothing to report.
+                    }
+                };
+                void probeVersion();
+                setInterval(probeVersion, BUILD_PROBE_MS);
+
+                // A worker that reaches `installed` while this page already
+                // has a controller is a NEW build waiting to take over. Same
+                // announcement, from the other direction — this one fires
+                // even when the version probe is blocked.
+                registration.addEventListener("updatefound", () => {
+                    const installing = registration.installing;
+                    if (!installing || !navigator.serviceWorker.controller) return;
+                    installing.addEventListener("statechange", () => {
+                        if (installing.state === "installed") announceUpdate();
+                    });
+                });
             }
         </script>
     </body>
