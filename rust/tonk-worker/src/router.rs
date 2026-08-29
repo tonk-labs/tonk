@@ -200,6 +200,18 @@ fn current_build_id() -> Option<String> {
     None
 }
 
+/// Whether this request changes state, and so must be refused when the
+/// page is from another build.
+///
+/// Deliberately NOT "is it a POST": the data plane posts to read as
+/// well (a `query` carries its body, and a subscription is a `POST`
+/// that streams), so method alone would refuse every read too. Match
+/// the write routes by path instead.
+fn is_mutating(request: &axum::extract::Request) -> bool {
+    let path = request.uri().path();
+    path.ends_with("/transact") || path.ends_with("/evaluate")
+}
+
 /// Whether a request should be refused as coming from a stale page,
 /// returning the pair to report when it should.
 ///
@@ -236,6 +248,20 @@ async fn reject_stale_build(
         .get(BUILD_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+
+    // Only ever refuse a WRITE. A stale page reading is harmless — it
+    // gets data it can render — but a stale page that cannot write is
+    // also a page that cannot subscribe, and killing its subscriptions
+    // leaves it frozen with no way to notice. Observed in practice: a
+    // `409` on `POST …/query` (a subscription, despite the verb) took
+    // out the page's live updates during an ordinary worker swap.
+    //
+    // The point of the handshake is to explain a confusing failure, not
+    // to manufacture one. Reads pass; the prompt still reaches the user
+    // on their next write.
+    if !is_mutating(&request) {
+        return next.run(request).await;
+    }
 
     let Some((ours, theirs)) = stale_build(current_build_id().as_deref(), theirs.as_deref()) else {
         return next.run(request).await;
@@ -4929,7 +4955,7 @@ person!:
 
 #[cfg(test)]
 mod handshake_tests {
-    use super::stale_build;
+    use super::{is_mutating, stale_build};
 
     /// The whole point: a page and a worker from different builds must
     /// be caught, because `skipWaiting` + `claim` swap the worker
@@ -4947,6 +4973,40 @@ mod handshake_tests {
     #[dialog_common::test]
     fn it_passes_a_matching_build_through() {
         assert_eq!(stale_build(Some("same"), Some("same")), None);
+    }
+
+    /// Reads must survive a build mismatch. Observed in a browser: a
+    /// `POST …/query` — a SUBSCRIPTION, despite the verb — came back
+    /// `409` during an ordinary worker swap, so the page lost its live
+    /// updates and had no way to notice. A stale page reading is
+    /// harmless; a stale page with dead subscriptions is frozen.
+    #[dialog_common::test]
+    fn it_refuses_only_writes() {
+        use axum::extract::Request;
+
+        let read = Request::builder()
+            .uri("/api/profile/branch/main/query")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(
+            !is_mutating(&read),
+            "a query/subscribe must pass through even from another build"
+        );
+
+        for write in [
+            "/api/profile/branch/main/transact",
+            "/api/repository/x/branch/main/transact",
+            "/api/profile/branch/main/evaluate",
+        ] {
+            let request = Request::builder()
+                .uri(write)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(
+                is_mutating(&request),
+                "{write} changes state and must be gated"
+            );
+        }
     }
 
     /// A request that cannot be classified must never be blocked.
