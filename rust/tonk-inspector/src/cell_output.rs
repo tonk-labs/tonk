@@ -13,9 +13,11 @@
 //! - **A gallery of cards**, one per result, capped. Each card names its
 //!   entity and its fields, and a card is small enough that a dozen fit in
 //!   the space the notation dump gave to one.
-//! - **`<tonk-display>` per card when the result has a model**, so a result
-//!   that a space knows how to draw is drawn rather than described. This is
-//!   the part that makes an output feel live rather than printed.
+//! - **`<tonk-display>` per card**, so a result is drawn by its concept's
+//!   own view when the space defines one, and by the display's notation
+//!   fallback when it does not. The model comes from the query's label, so
+//!   this is the ordinary case rather than a special one — and a concept
+//!   that gains a view later starts using it without a change here.
 //! - **Nothing at all for an empty result** beyond the summary, so a cell
 //!   that matches nothing stays one line.
 //!
@@ -100,7 +102,7 @@ fn render_block(block: &QueryMatchBlock) -> String {
         .results
         .iter()
         .take(CARD_CAP)
-        .map(render_card)
+        .map(|result| render_card(result, &block.label))
         .collect();
     // State what was dropped. A silently truncated gallery reads as the whole
     // answer, which is worse than a long one.
@@ -119,11 +121,17 @@ fn render_block(block: &QueryMatchBlock) -> String {
 
 /// One result as a card.
 ///
-/// When the result carries a `model`, the card hands the entity to a
-/// `<tonk-display>` so the space's own view draws it. Otherwise the fields
-/// are listed, which is the honest fallback for a result nothing knows how to
-/// present.
-fn render_card(result: &QueryResult) -> String {
+/// The entity goes to a `<tonk-display>`, which resolves the model's view
+/// and — when nothing defines one — falls back to a notation dump of its
+/// own. That fallback is the reason this does not list fields itself: the
+/// display already knows how to present a result nothing has a view for,
+/// and doing it here means a concept that LATER gains a view keeps
+/// rendering as a field list.
+///
+/// The model comes from the query's own label (`person ?alice:` → `person`)
+/// when the result does not name one itself, so an ordinary query gets its
+/// concept's view rather than the generic listing.
+fn render_card(result: &QueryResult, label: &str) -> String {
     // Prefer a `name` over the entity URI: `db:attribute` and `attribute`
     // are the same row, and the readable one belongs in the title. The URI
     // stays as the tooltip, so nothing is lost.
@@ -134,7 +142,7 @@ fn render_card(result: &QueryResult) -> String {
         .map(str::trim)
         .filter(|name| !name.is_empty());
     let title = esc(named.unwrap_or_else(|| short_entity(&result.this)));
-    if let Some(model) = model_of(&result.fields) {
+    if let Some(model) = model_of(&result.fields).or_else(|| model_from_label(label)) {
         return format!(
             "<div class=\"nb-card nb-card--display\">\
                <div class=\"nb-card__title\">{title}</div>\
@@ -176,6 +184,20 @@ fn render_card(result: &QueryResult) -> String {
          </div>",
         esc(&result.this)
     )
+}
+
+/// The model a query's label names, when it is one a view could be defined
+/// for. A label is the source expression's head (`person ?alice:` →
+/// `person`); the built-in meta heads are excluded because their rows are
+/// schema, not domain data, and a `<tonk-display>` for them would resolve
+/// nothing and render its own dump twice over.
+fn model_from_label(label: &str) -> Option<String> {
+    const META: [&str; 6] = ["concept", "attribute", "command", "rule", "name", "view"];
+    let label = label.trim();
+    if label.is_empty() || META.contains(&label) {
+        return None;
+    }
+    Some(label.to_owned())
 }
 
 /// The `model` a result names, if it names one — the cue that a
@@ -308,21 +330,47 @@ mod tests {
     /// A result naming a model is drawn by the space's own view.
     #[dialog_common::test]
     fn it_hands_a_modelled_result_to_a_display() {
-        let html = render_card(&result(
-            "id:notebook/scratch",
-            &[("model", json!("tonk:notebook"))],
-        ));
+        let html = render_card(
+            &result("id:notebook/scratch", &[("model", json!("tonk:notebook"))]),
+            "concept",
+        );
         assert!(html.contains("<tonk-display"));
         assert!(html.contains("entity=\"id:notebook/scratch\""));
         assert!(html.contains("model=\"tonk:notebook\""));
     }
 
-    /// Without a model there is nothing to draw, so list the fields.
+    /// A meta head's rows are schema, not domain data: no view is defined
+    /// for `concept` or `attribute`, so the card lists fields rather than
+    /// mounting a display that would only dump them again.
     #[dialog_common::test]
-    fn it_lists_fields_when_there_is_no_model() {
-        let html = render_card(&result("id:x", &[("name", json!("Alice"))]));
+    fn it_lists_fields_for_a_meta_head() {
+        let html = render_card(&result("id:x", &[("name", json!("Alice"))]), "concept");
         assert!(!html.contains("<tonk-display"));
         assert!(html.contains("Alice"));
+    }
+
+    /// An ordinary query's label IS its model, so the result goes to a
+    /// `<tonk-display>` — which draws the concept's view when one is
+    /// defined and falls back to its own notation dump when none is.
+    /// Listing the fields here instead would freeze the result as a field
+    /// list even after someone defines a view for it.
+    #[dialog_common::test]
+    fn it_hands_a_result_to_a_display_by_its_query_label() {
+        let html = render_card(&result("id:alice", &[("name", json!("Alice"))]), "person");
+        assert!(html.contains("<tonk-display"));
+        assert!(html.contains("entity=\"id:alice\""));
+        assert!(html.contains("model=\"person\""));
+    }
+
+    /// A result naming its own model keeps it: the field is more specific
+    /// than the label the query happened to use.
+    #[dialog_common::test]
+    fn it_prefers_a_named_model_over_the_label() {
+        let html = render_card(
+            &result("id:x", &[("model", json!("tonk:notebook"))]),
+            "person",
+        );
+        assert!(html.contains("model=\"tonk:notebook\""));
     }
 
     /// A description would otherwise blow the card open.
@@ -346,10 +394,13 @@ mod tests {
     /// belongs in the title, and repeating it as a field wastes a line.
     #[dialog_common::test]
     fn it_titles_a_card_by_its_name() {
-        let html = render_card(&result(
-            "db:attribute",
-            &[("name", json!("attribute")), ("transient", json!(false))],
-        ));
+        let html = render_card(
+            &result(
+                "db:attribute",
+                &[("name", json!("attribute")), ("transient", json!(false))],
+            ),
+            "concept",
+        );
         assert!(html.contains(">attribute</div>"));
         assert!(
             !html.contains("nb-card__key\">name"),
