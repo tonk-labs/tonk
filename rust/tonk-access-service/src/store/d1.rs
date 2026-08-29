@@ -14,11 +14,10 @@ use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
     ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, Customer, DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS,
-    DELETE_SELF_SUBSCRIPTION, FINISH_SUBSCRIPTION_DELETION, INSERT_CUSTOMER,
-    INSERT_SELF_SUBSCRIPTION, MARK_SELF_SUBSCRIPTION_DELETING, MARK_SUBSCRIPTION_DELETING,
-    RESERVE_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
-    SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, Servability, Store, StoreError,
-    Subscription, SubscriptionDeletionState, SubscriptionKind, UPDATE_REGISTERED_EMAIL,
+    DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER, INSERT_SELF_SUBSCRIPTION, REMOVE_SUBSCRIPTION,
+    SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
+    SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
+    Servability, Store, StoreError, Subscription, SubscriptionKind, UPDATE_REGISTERED_EMAIL,
     parse_status,
 };
 
@@ -77,7 +76,6 @@ impl TryFrom<CustomerRowD1> for Customer {
 struct ServabilityRowD1 {
     own_status: Option<String>,
     consumer_did: Option<String>,
-    consumer_provider: Option<String>,
     consumer_expires_at: Option<f64>,
     provider_status: Option<String>,
 }
@@ -89,7 +87,6 @@ impl TryFrom<ServabilityRowD1> for Servability {
         Ok(Servability {
             own: row.own_status.as_deref().map(parse_status).transpose()?,
             consumer: row.consumer_did.is_some(),
-            provided: row.consumer_provider.is_some(),
             expires_at: row.consumer_expires_at.map(|value| value as u64),
             provider: row
                 .provider_status
@@ -123,7 +120,7 @@ impl TryFrom<SubscriptionRowD1> for Subscription {
             owner: row.owner,
             registered_at: row.registered_at as u64,
             kind: SubscriptionKind::parse(&row.kind)?,
-            deletion_state: SubscriptionDeletionState::parse(&row.deletion_state)?,
+            deletion_state: ::parse(&row.deletion_state)?,
             deleted_at: row.deleted_at.map(|value| value as u64),
             expires_at: row.expires_at.map(|value| value as u64),
         })
@@ -208,13 +205,11 @@ impl Store for D1Store {
         &self,
         did: &str,
         email: &str,
-        access: &[u8],
         plan: &str,
         now: u64,
     ) -> Result<(), StoreError> {
         // D1 batches run as a single transaction: either every statement
         // commits or none does.
-        let access = js_sys::Uint8Array::from(access);
         let insert_customer = self
             .0
             .prepare(INSERT_CUSTOMER)
@@ -223,7 +218,6 @@ impl Store for D1Store {
                 JsValue::from(email),
                 JsValue::from(plan),
                 JsValue::from_f64(now as f64),
-                access.into(),
             ])
             .map_err(map_err)?;
         let insert_consumer = self
@@ -273,35 +267,10 @@ impl Store for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 
-    async fn reserve_subscription(
-        &self,
-        did: &str,
-        provider: &str,
-        now: u64,
-        kind: SubscriptionKind,
-        expires_at: u64,
-    ) -> Result<bool, StoreError> {
+    async fn mark_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {
         let result = self
             .0
-            .prepare(RESERVE_SUBSCRIPTION)
-            .bind(&[
-                JsValue::from(did),
-                JsValue::from(provider),
-                JsValue::from_f64(now as f64),
-                JsValue::from(kind.as_str()),
-                JsValue::from_f64(expires_at as f64),
-            ])
-            .map_err(map_err)?
-            .run()
-            .await
-            .map_err(map_err)?;
-        Ok(changed_rows(&result) > 0)
-    }
-
-    async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
-        let result = self
-            .0
-            .prepare(MARK_SUBSCRIPTION_DELETING)
+            .prepare(START_SUBSCRIPTION_DELETION)
             .bind(&[JsValue::from(did)])
             .map_err(map_err)?
             .run()
@@ -310,10 +279,10 @@ impl Store for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 
-    async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+    async fn finish_consumer_deletion(&self, did: &str) -> Result<bool, StoreError> {
         let result = self
             .0
-            .prepare(FINISH_SUBSCRIPTION_DELETION)
+            .prepare(REMOVE_SUBSCRIPTION)
             .bind(&[JsValue::from(did), JsValue::from_f64(now as f64)])
             .map_err(map_err)?
             .run()
@@ -322,10 +291,10 @@ impl Store for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 
-    async fn mark_self_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
+    async fn mark_self_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {
         let result = self
             .0
-            .prepare(MARK_SELF_SUBSCRIPTION_DELETING)
+            .prepare(START_SELF_SUBSCRIPTION_DELETION)
             .bind(&[JsValue::from(did)])
             .map_err(map_err)?
             .run()

@@ -2,6 +2,6 @@
 -- invoked as /provider/remove — the reverse of /provider/add. The
 -- registered-grant columns from 0002 carried per-space /space/delete
 -- artifacts and are retired; the denial-first deletion lifecycle
--- (deletion_state, deleted_at) and the provider index stay.
+-- (deleted_at) and the provider index stay.
 ALTER TABLE subscription DROP COLUMN deletion_grant_cid;
 ALTER TABLE subscription DROP COLUMN deletion_grant_kind;

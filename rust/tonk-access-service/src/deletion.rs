@@ -18,7 +18,7 @@ use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Store, SubscriptionDeletionState, SubscriptionKind};
+use crate::store::{Store, SubscriptionKind};
 
 /// The deprovisioning command: the reverse of `/provider/add`.
 pub const COMMAND: [&str; 2] = ["provider", "remove"];
@@ -41,7 +41,11 @@ pub struct Receipt {
 #[serde(rename_all = "camelCase")]
 pub struct HostedSpace {
     pub space: String,
-    pub deletion_state: String,
+    /// When deletion began, if a purge is already in flight. A finished
+    /// deletion takes the row with it, so such a space is simply absent
+    /// from the plan rather than listed as gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleting_since: Option<u64>,
 }
 
 /// Authoritative access-service inventory of the customer's owned
@@ -197,11 +201,17 @@ pub async fn delete<S: Store, P: SpacePurger>(
         // `/customer/delete`, after every other owned space is gone.
         return Err(Error::Forbidden);
     }
-    let consumer = store
+    // No row is the finished state: deletion takes it with the data, so
+    // a retry after one completed lands here. Idempotent-successful,
+    // reporting this attempt's clock — the original moment went with the
+    // row, and nothing reads the field.
+    let Some(consumer) = store
         .consumer(space.as_str())
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
-        .ok_or(Error::NotRegistered)?;
+    else {
+        return Ok(receipt(&space, now));
+    };
     if consumer.provider != customer.as_str() {
         return Err(Error::Forbidden);
     }
@@ -213,50 +223,41 @@ pub async fn delete<S: Store, P: SpacePurger>(
         return Err(Error::Forbidden);
     }
 
-    if consumer.deletion_state == SubscriptionDeletionState::Deleted {
-        return Ok(receipt(&space, consumer.deleted_at.unwrap_or_default()));
-    }
-    if consumer.deletion_state == SubscriptionDeletionState::Active
-        && !store
-            .mark_consumer_deleting(space.as_str())
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?
-    {
-        let current = store
-            .consumer(space.as_str())
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?
-            .ok_or(Error::NotRegistered)?;
-        if current.deletion_state == SubscriptionDeletionState::Deleted {
-            return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
+    // Stop serving before any object goes: purging is neither atomic nor
+    // certain to finish in one attempt, and a client must not read a
+    // half-purged space. The write is a compare-and-set, so a second
+    // request arriving now finds the deletion already begun and joins it
+    // rather than starting its own.
+    let began = match consumer.deleted_at {
+        Some(began) => began,
+        None => {
+            store
+                .mark_consumer_deleting(space.as_str(), now)
+                .await
+                .map_err(|error| Error::Internal(error.to_string()))?;
+            // Whoever won the race, the row now carries the moment
+            // deletion began, and the receipt reports that rather than
+            // this attempt's clock.
+            store
+                .consumer(space.as_str())
+                .await
+                .map_err(|error| Error::Internal(error.to_string()))?
+                .and_then(|current| current.deleted_at)
+                .unwrap_or(now)
         }
-        if current.deletion_state != SubscriptionDeletionState::Deleting {
-            return Err(Error::Internal(
-                "could not enter deletion denial state".into(),
-            ));
-        }
-    }
+    };
 
     purger
         .purge(&format!("{space}/"))
         .await
         .map_err(Error::Incomplete)?;
-    if !store
-        .finish_consumer_deletion(space.as_str(), now)
+    // The row goes with the data. A retry after this finds no row and is
+    // answered by the caller above as already deleted.
+    store
+        .finish_consumer_deletion(space.as_str())
         .await
-        .map_err(|error| Error::Internal(error.to_string()))?
-    {
-        let current = store
-            .consumer(space.as_str())
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?
-            .ok_or(Error::NotRegistered)?;
-        if current.deletion_state != SubscriptionDeletionState::Deleted {
-            return Err(Error::Internal("could not finalize deletion state".into()));
-        }
-        return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
-    }
-    Ok(receipt(&space, now))
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    Ok(receipt(&space, began))
 }
 
 /// The `consumer` argument naming which hosted space to deprovision.
@@ -291,7 +292,7 @@ pub async fn customer_plan<S: Store>(
         })
         .map(|consumer| HostedSpace {
             space: consumer.consumer,
-            deletion_state: consumer.deletion_state.as_str().to_string(),
+            deleting_since: consumer.deleted_at,
         })
         .collect();
     Ok(CustomerDeletionPlan { customer, spaces })
@@ -314,9 +315,7 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     let remaining: Vec<_> = consumers
         .iter()
         .filter(|consumer| {
-            consumer.consumer != customer
-                && consumer.kind == SubscriptionKind::Space
-                && consumer.deletion_state != SubscriptionDeletionState::Deleted
+            consumer.consumer != customer && consumer.kind == SubscriptionKind::Space
         })
         .map(|consumer| consumer.consumer.clone())
         .collect();
@@ -329,14 +328,12 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     // could still need the account's key material can be left waiting
     // on it. Denial-first like any other purge, and idempotent.
     for consumer in &consumers {
-        if consumer.kind != SubscriptionKind::Custody
-            || consumer.deletion_state == SubscriptionDeletionState::Deleted
-        {
+        if consumer.kind != SubscriptionKind::Custody {
             continue;
         }
-        if consumer.deletion_state == SubscriptionDeletionState::Active {
+        if consumer.deleted_at.is_none() {
             let _ = store
-                .mark_consumer_deleting(&consumer.consumer)
+                .mark_consumer_deleting(&consumer.consumer, now)
                 .await
                 .map_err(|error| Error::Internal(error.to_string()))?;
         }
@@ -345,7 +342,7 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
             .await
             .map_err(Error::Incomplete)?;
         let _ = store
-            .finish_consumer_deletion(&consumer.consumer, now)
+            .finish_consumer_deletion(&consumer.consumer)
             .await
             .map_err(|error| Error::Internal(error.to_string()))?;
     }
@@ -355,9 +352,9 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .ok_or(Error::NotRegistered)?;
-    if self_consumer.deletion_state == SubscriptionDeletionState::Active
+    if self_consumer.deleted_at.is_none()
         && !store
-            .mark_self_consumer_deleting(&customer)
+            .mark_self_consumer_deleting(&customer, now)
             .await
             .map_err(|error| Error::Internal(error.to_string()))?
     {
@@ -728,13 +725,7 @@ mod tests {
         let space = Ed25519Signer::import(&[72; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "owner@example.com",
-                b"access",
-                SIGNUP_PLAN,
-                at,
-            )
+            .enroll_customer(root.did().as_str(), "owner@example.com", SIGNUP_PLAN, at)
             .await
             .unwrap();
         store
@@ -756,18 +747,26 @@ mod tests {
             delete(&store, &purger, &invocation, at + 1).await,
             Err(Error::Incomplete(_))
         ));
+        // The purge failed, so the row stays and carries the moment
+        // deletion began: service is already refused.
         let denied = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(denied.deletion_state, SubscriptionDeletionState::Deleting);
+        assert_eq!(denied.deleted_at, Some(at + 1));
         assert_eq!(denied.provider, root.did().to_string());
 
         let receipt = delete(&store, &purger, &invocation, at + 2).await.unwrap();
         assert_eq!(receipt.space, space.did());
-        let deleted = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(deleted.deletion_state, SubscriptionDeletionState::Deleted);
-        assert_eq!(deleted.provider, root.did().to_string());
+        // A finished deletion takes the row with the data.
+        assert!(
+            store
+                .consumer(space.did().as_str())
+                .await
+                .unwrap()
+                .is_none()
+        );
 
+        // Replaying is still successful: nothing is left to delete.
         let replay = delete(&store, &purger, &invocation, at + 3).await.unwrap();
-        assert_eq!(replay.deleted_at, receipt.deleted_at);
+        assert_eq!(replay.space, receipt.space);
         assert_eq!(
             purger.prefixes.lock().unwrap().as_slice(),
             &[format!("{}/", space.did()), format!("{}/", space.did())]
@@ -790,13 +789,7 @@ mod tests {
         let custody = Ed25519Signer::import(&[94; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "custody@example.com",
-                b"access",
-                SIGNUP_PLAN,
-                at,
-            )
+            .enroll_customer(root.did().as_str(), "custody@example.com", SIGNUP_PLAN, at)
             .await
             .unwrap();
         store
@@ -881,13 +874,7 @@ mod tests {
         let space = Ed25519Signer::import(&[82; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "delete@example.com",
-                b"access",
-                SIGNUP_PLAN,
-                at,
-            )
+            .enroll_customer(root.did().as_str(), "delete@example.com", SIGNUP_PLAN, at)
             .await
             .unwrap();
         store

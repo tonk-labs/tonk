@@ -33,7 +33,7 @@ CREATE TABLE customer (
   limit_code        TEXT,             -- null when under limit
   limit_resets_at      INTEGER,          -- null with code set: cleared by event
   stripe_customer   TEXT,             -- null until payment is set up
-  access            BLOB NOT NULL     -- deposited delegation to the service over the account space
+  ledger            TEXT              -- DID of the space this service replicates its accounting into; null until one exists
 );
 
 CREATE TABLE subscription (

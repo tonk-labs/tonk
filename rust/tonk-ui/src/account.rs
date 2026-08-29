@@ -2847,11 +2847,12 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
     let destructive: Vec<_> = plan
         .spaces
         .iter()
+        // Every space the plan lists is still there: a finished
+        // deletion takes its record with it.
         .filter(|space| {
-            space.state != "deleted"
-                && requested
-                    .as_deref()
-                    .is_none_or(|subject| space.subject == subject)
+            requested
+                .as_deref()
+                .is_none_or(|subject| space.subject == subject)
         })
         .cloned()
         .collect();

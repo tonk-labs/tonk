@@ -9,11 +9,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, Customer, DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS,
-    DELETE_SELF_SUBSCRIPTION, FINISH_SUBSCRIPTION_DELETION, INSERT_CUSTOMER,
-    INSERT_SELF_SUBSCRIPTION, MARK_SELF_SUBSCRIPTION_DELETING, MARK_SUBSCRIPTION_DELETING,
-    RESERVE_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
-    SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, Servability, Store, StoreError,
-    Subscription, SubscriptionDeletionState, SubscriptionKind, UPDATE_REGISTERED_EMAIL,
+    DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER, INSERT_SELF_SUBSCRIPTION, REMOVE_SUBSCRIPTION,
+    SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
+    SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
+    Servability, Store, StoreError, Subscription, SubscriptionKind, UPDATE_REGISTERED_EMAIL,
     parse_status,
 };
 
@@ -35,6 +34,23 @@ impl SqliteStore {
     /// administrative act and the service has no endpoint for it yet.
     /// The screening gate still has to answer for it, so tests need a
     /// way to produce one.
+    #[cfg(test)]
+    /// Set a subscription's expiry, which nothing writes in production
+    /// yet: renewal is the increment that will.
+    pub(crate) async fn expire_for_test(&self, consumer: &str, at: u64) {
+        self.0
+            .lock()
+            .expect("store mutex poisoned")
+            .execute(
+                "UPDATE subscription SET expires_at = ?2 WHERE consumer = ?1",
+                params![consumer, at as i64],
+            )
+            .expect("the expiry is written");
+    }
+
+    /// Suspend a customer, which nothing writes in production yet:
+    /// there is no admin path, so the fixture sets the column the way
+    /// one eventually will.
     #[cfg(test)]
     pub(crate) async fn suspend_for_test(&self, did: &str) {
         self.0
@@ -98,12 +114,11 @@ impl SqliteStore {
         }
         if version < 6 {
             conn.execute_batch(include_str!(
-                "../../migrations/0006_consumer_reservation.sql"
+                "../../migrations/0006_subscription_expiry.sql"
             ))
             .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 6)
                 .map_err(map_err)?;
-            version = 6;
         }
         Ok(Self(Mutex::new(conn)))
     }
@@ -134,24 +149,28 @@ impl Store for SqliteStore {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
-        row.map(|(did, email, status, plan, verified_at, terms_version)| {
-            Ok(Customer {
-                account: did,
-                email,
-                status: parse_status(&status)?,
-                plan,
-                verified_at: verified_at as u64,
-                terms_version,
-            })
-        })
+        row.map(
+            |(did, email, ledger, status, plan, verified_at, terms_version)| {
+                Ok(Customer {
+                    account: did,
+                    email,
+                    ledger,
+                    status: parse_status(&status)?,
+                    plan,
+                    verified_at: verified_at as u64,
+                    terms_version,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -162,24 +181,28 @@ impl Store for SqliteStore {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
-        row.map(|(did, email, status, plan, verified_at, terms_version)| {
-            Ok(Customer {
-                account: did,
-                email,
-                status: parse_status(&status)?,
-                plan,
-                verified_at: verified_at as u64,
-                terms_version,
-            })
-        })
+        row.map(
+            |(did, email, ledger, status, plan, verified_at, terms_version)| {
+                Ok(Customer {
+                    account: did,
+                    email,
+                    ledger,
+                    status: parse_status(&status)?,
+                    plan,
+                    verified_at: verified_at as u64,
+                    terms_version,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -190,9 +213,8 @@ impl Store for SqliteStore {
                 Ok((
                     row.get::<_, Option<String>>(0)?,
                     row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             })
             .optional()
@@ -200,13 +222,12 @@ impl Store for SqliteStore {
         // The `(SELECT ?1)` on the left of every join always yields a
         // row, so `None` here means the query itself found nothing —
         // treated the same as a subject with no rows at all.
-        let Some((own, consumer, provider, expires_at, provider_status)) = row else {
+        let Some((own, consumer, expires_at, provider_status)) = row else {
             return Ok(Servability::default());
         };
         Ok(Servability {
             own: own.as_deref().map(parse_status).transpose()?,
             consumer: consumer.is_some(),
-            provided: provider.is_some(),
             expires_at: expires_at.map(|value| value as u64),
             provider: provider_status.as_deref().map(parse_status).transpose()?,
         })
@@ -221,21 +242,19 @@ impl Store for SqliteStore {
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
         row.map(
-            |(did, provider, registered_at, kind, state, deleted_at, expires_at)| {
+            |(did, provider, registered_at, kind, deleted_at, expires_at)| {
                 Ok(Subscription {
                     consumer: did,
                     provider,
                     registered_at: registered_at as u64,
                     kind: SubscriptionKind::parse(&kind)?,
-                    deletion_state: SubscriptionDeletionState::parse(&state)?,
                     deleted_at: deleted_at.map(|value| value as u64),
                     expires_at: expires_at.map(|value| value as u64),
                 })
@@ -259,21 +278,19 @@ impl Store for SqliteStore {
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
                 ))
             })
             .map_err(map_err)?;
         rows.map(|row| {
-            let (did, provider, registered_at, kind, state, deleted_at, expires_at) =
+            let (did, provider, registered_at, kind, deleted_at, expires_at) =
                 row.map_err(map_err)?;
             Ok(Subscription {
                 consumer: did,
                 provider,
                 registered_at: registered_at as u64,
                 kind: SubscriptionKind::parse(&kind)?,
-                deletion_state: SubscriptionDeletionState::parse(&state)?,
                 deleted_at: deleted_at.map(|value| value as u64),
                 expires_at: expires_at.map(|value| value as u64),
             })
@@ -285,17 +302,13 @@ impl Store for SqliteStore {
         &self,
         did: &str,
         email: &str,
-        access: &[u8],
         plan: &str,
         now: u64,
     ) -> Result<(), StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
-        tx.execute(
-            INSERT_CUSTOMER,
-            params![did, email, plan, now as i64, access],
-        )
-        .map_err(map_err)?;
+        tx.execute(INSERT_CUSTOMER, params![did, email, plan, now as i64])
+            .map_err(map_err)?;
         tx.execute(INSERT_SELF_SUBSCRIPTION, params![did, now as i64])
             .map_err(map_err)?;
         tx.commit().map_err(map_err)
@@ -326,44 +339,26 @@ impl Store for SqliteStore {
         Ok(changed > 0)
     }
 
-    async fn reserve_subscription(
-        &self,
-        did: &str,
-        provider: &str,
-        now: u64,
-        kind: SubscriptionKind,
-        expires_at: u64,
-    ) -> Result<bool, StoreError> {
+    async fn mark_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
-            .execute(
-                RESERVE_SUBSCRIPTION,
-                params![did, provider, now as i64, kind.as_str(), expires_at as i64],
-            )
+            .execute(START_SUBSCRIPTION_DELETION, params![did, now as i64])
             .map_err(map_err)?;
         Ok(changed > 0)
     }
 
-    async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
+    async fn finish_consumer_deletion(&self, did: &str) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
-            .execute(MARK_SUBSCRIPTION_DELETING, params![did])
+            .execute(REMOVE_SUBSCRIPTION, params![did])
             .map_err(map_err)?;
         Ok(changed > 0)
     }
 
-    async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        let changed = conn
-            .execute(FINISH_SUBSCRIPTION_DELETION, params![did, now as i64])
-            .map_err(map_err)?;
-        Ok(changed > 0)
-    }
-
-    async fn mark_self_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
+    async fn mark_self_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         Ok(conn
-            .execute(MARK_SELF_SUBSCRIPTION_DELETING, params![did])
+            .execute(START_SELF_SUBSCRIPTION_DELETION, params![did, now as i64])
             .map_err(map_err)?
             > 0)
     }
@@ -402,7 +397,7 @@ mod tests {
 
     async fn enrolled(store: &SqliteStore, did: &str, email: &str) {
         store
-            .enroll_customer(did, email, &[], SIGNUP_PLAN, 1_700_000_000)
+            .enroll_customer(did, email, SIGNUP_PLAN, 1_700_000_000)
             .await
             .expect("enrollment writes a customer");
     }
@@ -447,7 +442,6 @@ mod tests {
             .enroll_customer(
                 "did:key:zB",
                 "jsmith@example.com",
-                &[],
                 SIGNUP_PLAN,
                 1_700_000_001,
             )

@@ -16,6 +16,7 @@ pub mod pending;
 /// Provider-neutral account space backup artifacts.
 pub mod prefix;
 mod provider;
+pub mod subscription;
 
 pub use descriptor::{AccountRepositoryDescriptorV1, DescriptorError};
 pub use provider::{AccountProviderError, AccountProviderRecord};

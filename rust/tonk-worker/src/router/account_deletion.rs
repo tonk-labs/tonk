@@ -31,7 +31,8 @@ struct AccessPlan {
 #[serde(rename_all = "camelCase")]
 struct AccessSpace {
     space: String,
-    deletion_state: String,
+    #[serde(default)]
+    deleting_since: Option<u64>,
 }
 
 async fn load_plan(
@@ -115,7 +116,7 @@ async fn load_plan(
         spaces.push(AccountDeletionSpace {
             name: names.get(&hosted.space).cloned(),
             subject: hosted.space,
-            state: hosted.deletion_state,
+            deleting_since: hosted.deleting_since,
         });
     }
     Ok(AccountDeletionPlan {
@@ -151,16 +152,13 @@ pub async fn delete_space(
         let state = state.read().await;
         load_plan(&state, origin.url()).await?
     };
-    let selected = current
+    // The lookup is the ownership check: a space this account does not
+    // own is not in its plan.
+    current
         .spaces
         .iter()
         .find(|space| space.subject == request.subject)
         .ok_or_else(|| TonkWorkerError::Forbidden("space is not owned by this account".into()))?;
-    if selected.state == "deleted" {
-        return Ok(Json(HostedSpaceDeletionResult {
-            subject: request.subject,
-        }));
-    }
     let subject: dialog_varsig::Did = request.subject.parse().map_err(|error| {
         TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
     })?;
@@ -190,7 +188,6 @@ pub async fn delete(
     let required: BTreeSet<_> = current
         .spaces
         .iter()
-        .filter(|space| space.state != "deleted")
         .map(|space| space.subject.clone())
         .collect();
     let supplied: BTreeSet<_> = request

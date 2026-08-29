@@ -690,9 +690,9 @@ async fn handle_request(
     if outcome.is_ok()
         && let Some(subject) = crate::deletion::subject(&body_bytes)
     {
-        use crate::store::{Store, SubscriptionDeletionState};
+        use crate::store::Store;
         match registration.store.consumer(subject.as_str()).await {
-            Ok(Some(consumer)) if consumer.deletion_state != SubscriptionDeletionState::Active => {
+            Ok(Some(consumer)) if consumer.deleted_at.is_some() => {
                 return Ok(cors_response(
                     Response::builder()
                         .status(StatusCode::FORBIDDEN)
@@ -846,7 +846,7 @@ async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Resu
         .is_none()
     {
         store
-            .enroll_customer(&provider, "tests@example.com", b"", SIGNUP_PLAN, 0)
+            .enroll_customer(&provider, "tests@example.com", SIGNUP_PLAN, 0)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         store

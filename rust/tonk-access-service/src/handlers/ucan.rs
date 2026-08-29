@@ -188,7 +188,7 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
 
 #[cfg(target_arch = "wasm32")]
 async fn screen_consumer_state(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
-    use crate::store::{Store, SubscriptionDeletionState, d1::D1Store};
+    use crate::store::{Store, d1::D1Store};
 
     let Some(subject) = crate::deletion::subject(body_bytes) else {
         return Ok(());
@@ -199,7 +199,7 @@ async fn screen_consumer_state(body_bytes: &[u8], env: &Env) -> std::result::Res
         .await
         .map_err(|_| unavailable())?
     {
-        Some(consumer) if consumer.deletion_state != SubscriptionDeletionState::Active => {
+        Some(consumer) if consumer.deletion_state != ::Active => {
             Err(AuthorizeError::Revoked { subject }.into())
         }
         _ => Ok(()),

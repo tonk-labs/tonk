@@ -276,21 +276,6 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         let material = self.verify_custody(&effect, &customer).await?;
         let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer, &material).await?;
-        // What gets stored is everything the deposit needs to be
-        // exercised later: the scoped heads together with the chain
-        // links that walk them back to the customer, re-encoded as a
-        // container of their exact bytes.
-        let access = Container::new(
-            self.delegation_tokens()?
-                .into_iter()
-                .map(|token| token.bytes)
-                .collect(),
-        )
-        .to_bytes()
-        .map_err(|err| RegistrationError::Internal {
-            message: format!("encoding the access deposit failed: {err}"),
-        })?;
-
         match self
             .store
             .customer(customer.as_str())
@@ -299,7 +284,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         {
             None => {
                 self.store
-                    .enroll_customer(customer.as_str(), &address, &access, SIGNUP_PLAN, self.now)
+                    .enroll_customer(customer.as_str(), &address, SIGNUP_PLAN, self.now)
                     .await
                     .map_err(internal)?;
             }
@@ -421,7 +406,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             },
         }
         let consent = self.deposited_delegation(&effect.consent.to_string())?;
-        self.verify_consent(&consent.delegation, &effect.consumer, &provider)
+        self.verify_consent(&consent, &effect.consumer, &provider)
             .await?;
         let kind = match effect.kind.as_deref() {
             None | Some("space") => crate::store::SubscriptionKind::Space,
@@ -854,7 +839,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
     /// present is checked where it is named — a deposit the `access`
     /// argument names and the container does not carry is an error at
     /// that point, which is where the reader can see which one it was.
-    fn delegation_tokens(&self) -> Result<Vec<DelegationToken>, RegistrationError> {
+    fn delegation_tokens(&self) -> Result<Vec<Delegation<AnySignature>>, RegistrationError> {
         Ok(Container::from_bytes(self.container)
             .map_err(|err| RegistrationError::Invalid {
                 message: format!("bad container: {err}"),
@@ -863,18 +848,19 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             .into_iter()
             .skip(1)
             .filter_map(|bytes| {
-                serde_ipld_dagcbor::from_slice::<Delegation<AnySignature>>(&bytes)
-                    .ok()
-                    .map(|delegation| DelegationToken { delegation, bytes })
+                serde_ipld_dagcbor::from_slice::<Delegation<AnySignature>>(&bytes).ok()
             })
             .collect())
     }
 
     /// Find the deposited access delegation the `access` argument names.
-    fn deposited_delegation(&self, cid: &str) -> Result<DelegationToken, RegistrationError> {
+    fn deposited_delegation(
+        &self,
+        cid: &str,
+    ) -> Result<Delegation<AnySignature>, RegistrationError> {
         self.delegation_tokens()?
             .into_iter()
-            .find(|token| token.delegation.to_cid().to_string() == cid)
+            .find(|delegation| delegation.to_cid().to_string() == cid)
             .ok_or_else(|| RegistrationError::Invalid {
                 message: format!(
                     "the access argument names {cid}, which the container does not carry"
@@ -898,19 +884,19 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         for cid in access {
             let deposit = self.deposited_delegation(&cid.to_string())?;
             let matched = expected.iter().position(|scope| {
-                deposit.delegation.command().segments() == scope.command.segments()
-                    && deposit.delegation.policy() == &scope.policy()
+                deposit.command().segments() == scope.command.segments()
+                    && deposit.policy() == &scope.policy()
             });
             let Some(index) = matched else {
                 return Err(RegistrationError::Forbidden {
                     message: format!(
                         "deposit /{} is broader than the scopes enrollment accepts",
-                        deposit.delegation.command().segments().join("/")
+                        deposit.command().segments().join("/")
                     ),
                 });
             };
             covered[index] = true;
-            self.verify_deposit(&deposit.delegation, customer).await?;
+            self.verify_deposit(&deposit, customer).await?;
         }
         if covered != [true; 2] {
             return Err(RegistrationError::Forbidden {
@@ -960,15 +946,15 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
             }
             let link = links
                 .iter()
-                .find(|token| token.delegation.audience() == &issuer)
+                .find(|token| token.audience() == &issuer)
                 .ok_or_else(|| RegistrationError::Forbidden {
                     message: format!(
                         "access delegation is not issued under {customer}: nothing in the \
                          container grants {issuer}"
                     ),
                 })?;
-            self.check_deposit_link(&link.delegation, customer).await?;
-            issuer = link.delegation.issuer().clone();
+            self.check_deposit_link(link, customer).await?;
+            issuer = link.issuer().clone();
         }
         Ok(())
     }
@@ -1062,13 +1048,6 @@ where
     async fn execute(&self, input: Capability<Add>) -> Result<ConsumerReceipt, RegistrationError> {
         self.add(input).await
     }
-}
-
-/// A delegation token as it appeared in the container: the decoded
-/// delegation together with its exact bytes.
-struct DelegationToken {
-    delegation: Delegation<AnySignature>,
-    bytes: Vec<u8>,
 }
 
 /// Decode a capability's caveats from an invocation's argument map.

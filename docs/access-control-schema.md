@@ -33,7 +33,7 @@ erDiagram
     customer {
         TEXT account PK "DID (did:key) of the ACCOUNT: identity and subscription are fused"
         TEXT email UK
-        BLOB access "the customer-to-service delegation; not yet read by anything"
+        TEXT ledger "DID (did:key), nullable: the space this service replicates accounting into"
         TEXT status "enum: Registered | Active | Suspended"
         TEXT plan FK "plan.id, not a DID"
         INTEGER verified_at "activation time, 0 while Registered"
@@ -51,15 +51,14 @@ erDiagram
         TEXT provider FK "DID (did:key): the customer who pays; required"
         TEXT kind "enum: space | customer | custody"
         INTEGER registered_at
-        INTEGER expires_at "reservation lapse; null never lapses"
+        INTEGER expires_at "when the subscription runs out; null never does"
         INTEGER archived_at
         TEXT suspend_code
         TEXT suspend_message
         INTEGER suspend_until_at "null with a code set: indefinite"
         INTEGER size "last measurement"
         INTEGER measured_at
-        TEXT deletion_state "enum: active | deleting | deleted"
-        INTEGER deleted_at
+        INTEGER deleted_at "when deletion began; the row goes when it finishes"
     }
 ```
 
@@ -80,15 +79,15 @@ the strength of its provider's status:
 
 ```mermaid
 flowchart TD
-    A["subject"] --> D{"has a subscription?"}
-    D -->|no| E["denied"]
-    D -->|yes| F{"still only a reservation?"}
-    F -->|yes| G["denied, retryable: the name is held, not claimed"]
-    F -->|no| H{"has a provider?"}
-    H -->|no| I["denied"]
-    H -->|yes| Z{"the provider's status"}
+    A["subject DID"] --> D{"subscription row?"}
+    D -->|none| E["denied"]
+    D -->|found| X{"deleted_at set?"}
+    X -->|yes, purging| Y["denied: the space is being deleted"]
+    X -->|no| F{"expires_at passed?"}
+    F -->|yes| G["denied: the subscription ran out"]
+    F -->|"no, or null"| Z{"customer.status of its provider"}
     Z -->|Active| K["served"]
-    Z -->|"Registered (email unconfirmed)"| L["denied, retryable"]
+    Z -->|Registered| L["denied, retryable: awaiting email activation"]
     Z -->|Suspended| M["denied"]
 ```
 

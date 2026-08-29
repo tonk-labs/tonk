@@ -15,7 +15,7 @@ use tonk_account::customer::{RegistrationError, RevokeReceipt};
 use tonk_identity::revocation::{VerifyError, verify};
 
 use crate::revocation::index::RevocationIndex;
-use crate::store::{Store, StoreError, SubscriptionDeletionState};
+use crate::store::{Store, StoreError};
 
 /// The command path, as it appears in an invocation.
 pub const REVOKE_COMMAND: [&str; 2] = ["ucan", "revoke"];
@@ -73,18 +73,16 @@ pub async fn revoke<S: Store, I: RevocationIndex>(
     // revoker, and asking the old one would look up a device rather than
     // the space whose data is at stake.
     let subject = verified.subject.to_string();
-    match store
+    // Nothing here to protect, and an unbounded write surface if we
+    // accepted it. A purged space leaves no row, so this covers one we
+    // deleted as well as one we never held.
+    if store
         .consumer(verified.revoked_subject.as_ref())
         .await
         .map_err(internal)?
+        .is_none()
     {
-        // Nothing here to protect, and an unbounded write surface if we
-        // accepted it.
-        None => return Err(RegistrationError::UnknownConsumer),
-        Some(consumer) if consumer.deletion_state == SubscriptionDeletionState::Deleted => {
-            return Err(RegistrationError::UnknownConsumer);
-        }
-        Some(_) => {}
+        return Err(RegistrationError::UnknownConsumer);
     }
 
     let recorded = index
@@ -136,23 +134,16 @@ mod tests {
     }
 
     /// A store holding `subject` as a consumer in `state`.
-    async fn store_holding(subject: &str, state: SubscriptionDeletionState) -> SqliteStore {
+    async fn store_holding(subject: &str) -> SqliteStore {
         let store = SqliteStore::in_memory().expect("in-memory store");
         store
-            .enroll_customer(subject, "holder@example.com", b"", SIGNUP_PLAN, 0)
+            .enroll_customer(subject, "holder@example.com", SIGNUP_PLAN, 0)
             .await
             .expect("customer");
         store
             .add_subscription(subject, subject, 0, SubscriptionKind::Space)
             .await
             .expect("consumer");
-        if state == SubscriptionDeletionState::Deleted {
-            store.mark_consumer_deleting(subject).await.expect("deny");
-            store
-                .finish_consumer_deletion(subject, 1)
-                .await
-                .expect("purge");
-        }
         store
     }
 
@@ -160,7 +151,7 @@ mod tests {
     async fn it_records_a_revocation_for_a_subject_we_hold() {
         let (space, bytes) = revocation().await;
         let subject = space.did().to_string();
-        let store = store_holding(&subject, SubscriptionDeletionState::Active).await;
+        let store = store_holding(&subject).await;
         let index = MemoryRevocationIndex::default();
 
         let receipt = revoke(&store, &index, &bytes).await.expect("recorded");
@@ -181,7 +172,7 @@ mod tests {
         // Revocation is idempotent, so presenting the same artifact
         // again succeeds and says it changed nothing.
         let (space, bytes) = revocation().await;
-        let store = store_holding(space.did().as_ref(), SubscriptionDeletionState::Active).await;
+        let store = store_holding(space.did().as_ref()).await;
         let index = MemoryRevocationIndex::default();
 
         assert!(revoke(&store, &index, &bytes).await.unwrap().recorded);
@@ -227,7 +218,7 @@ mod tests {
 
         // Only the space is a consumer. A lookup keyed on the revoker
         // would refuse this.
-        let store = store_holding(space.did().as_ref(), SubscriptionDeletionState::Active).await;
+        let store = store_holding(space.did().as_ref()).await;
         let index = MemoryRevocationIndex::default();
         revoke(&store, &index, &bytes)
             .await
@@ -248,10 +239,22 @@ mod tests {
         ));
     }
 
+    /// A purged space leaves no row, so a revocation about it is
+    /// refused for the same reason as one about a space we never held:
+    /// there is nothing left for it to protect, and recording it would
+    /// be an unbounded write surface.
     #[dialog_common::test]
     async fn it_refuses_a_subject_whose_data_we_purged() {
         let (space, bytes) = revocation().await;
-        let store = store_holding(space.did().as_ref(), SubscriptionDeletionState::Deleted).await;
+        let store = store_holding(space.did().as_ref()).await;
+        store
+            .mark_consumer_deleting(space.did().as_ref(), 1)
+            .await
+            .expect("deletion begins");
+        store
+            .finish_consumer_deletion(space.did().as_ref())
+            .await
+            .expect("the row goes with the data");
         let index = MemoryRevocationIndex::default();
 
         assert!(matches!(
@@ -268,7 +271,7 @@ mod tests {
         let subject = space.did().to_string();
         let store = SqliteStore::in_memory().expect("in-memory store");
         store
-            .enroll_customer(&subject, "pending@example.com", b"", SIGNUP_PLAN, 0)
+            .enroll_customer(&subject, "pending@example.com", SIGNUP_PLAN, 0)
             .await
             .expect("customer stays Registered");
         store
@@ -283,7 +286,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_refuses_a_container_that_is_not_a_revocation() {
         let (space, _) = revocation().await;
-        let store = store_holding(space.did().as_ref(), SubscriptionDeletionState::Active).await;
+        let store = store_holding(space.did().as_ref()).await;
         let index = MemoryRevocationIndex::default();
 
         assert!(revoke(&store, &index, b"not a container").await.is_err());

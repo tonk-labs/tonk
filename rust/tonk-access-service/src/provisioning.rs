@@ -89,27 +89,22 @@ pub async fn screen<S: Store>(
             "the subject is not provisioned",
         )));
     }
-    // A live reservation holds the name and nothing more. The row carries
-    // a provider so the claim can be checked, which would otherwise read
-    // here as provisioned — so the reservation is what this asks about
-    // first. Retryable: the provisioning that follows is what serves it.
-    if subject.expires_at.is_some_and(|until| until > now) {
-        return Ok(Err(denial(
-            Recourse::Retry,
-            "the subject is reserved but not yet provisioned",
-        )));
-    }
-    if !subject.provided {
-        return Ok(Err(denial(Recourse::None, "the subject has no provider")));
+    // A subscription that has run out serves nothing, whatever the
+    // customer behind it is doing. Null never expires.
+    if subject
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= now)
+    {
+        return Ok(Err(denial(Recourse::None, "the subscription has expired")));
     }
     match subject.provider {
         Some(status) => Ok(servable(status, "the provider's registration")),
-        // A provider named by a consumer row but absent from `customer`.
-        // Unreachable under SQLite, which enforces the foreign key and
-        // refuses to delete a customer any consumer still names — but D1
-        // does not enforce foreign keys, so this refuses rather than
-        // assuming the state cannot arise. Untested for the same reason:
-        // the fixture store will not construct it.
+        // A subscription always names a provider, so this is that
+        // customer having gone missing. Unreachable under SQLite, which
+        // enforces the foreign key and refuses to delete a customer any
+        // subscription still names — but D1 does not enforce foreign
+        // keys, so this refuses rather than assuming it cannot arise.
+        // Untested for the same reason: the fixture will not build it.
         None => Ok(Err(denial(
             Recourse::None,
             "the provider is not a customer",
@@ -146,7 +141,7 @@ mod tests {
         let store = SqliteStore::in_memory().expect("in-memory store");
         for (did, status) in customers {
             store
-                .enroll_customer(did, &format!("{did}@example.com"), b"", "trial@2026-08", 0)
+                .enroll_customer(did, &format!("{did}@example.com"), "trial@2026-08", 0)
                 .await
                 .expect("customer");
             match status {
@@ -301,60 +296,43 @@ mod tests {
         assert_eq!(recourse_of(&store, "did:key:zCustomer").await, None);
     }
 
-    /// A reservation holds the name and serves nothing. The row carries
-    /// a provider so the claim can be checked, which without this gate
-    /// would read as provisioned and serve a space nobody has paid for
-    /// yet.
+    /// An expired subscription serves nothing, however healthy the
+    /// customer behind it is. `None` never expires, which is what every
+    /// subscription carries today.
     #[dialog_common::test]
-    async fn it_refuses_a_reserved_subject_until_it_is_provisioned() {
-        let store = store_with(&[("did:key:zCustomer", CustomerStatus::Active)], &[]).await;
-        store
-            .reserve_subscription(
-                "did:key:zHeld",
-                "did:key:zCustomer",
-                0,
-                crate::store::SubscriptionKind::Custody,
-                NOW + 1,
-            )
-            .await
-            .expect("reservation");
+    async fn it_refuses_a_subscription_that_has_run_out() {
+        let store = store_with(
+            &[("did:key:zCustomer", CustomerStatus::Active)],
+            &[("did:key:zSpace", "did:key:zCustomer")],
+        )
+        .await;
+        assert_eq!(recourse_of(&store, "did:key:zSpace").await, None);
 
+        store.expire_for_test("did:key:zSpace", NOW - 1).await;
         assert_eq!(
-            recourse_of(&store, "did:key:zHeld").await,
-            Some(Recourse::Retry),
-            "the provisioning that follows is what serves it, so the client retries"
+            recourse_of(&store, "did:key:zSpace").await,
+            Some(Recourse::None),
+            "an expired subscription is not worth retrying: it needs renewing"
         );
-
-        // Claiming it clears the hold, and the same subject is served.
-        store
-            .add_subscription(
-                "did:key:zHeld",
-                "did:key:zCustomer",
-                0,
-                crate::store::SubscriptionKind::Custody,
-            )
-            .await
-            .expect("claim");
-        assert_eq!(recourse_of(&store, "did:key:zHeld").await, None);
     }
 
-    /// A reservation that has lapsed no longer holds anything back: the
-    /// row is claimable, and until someone claims it the subject is
-    /// judged by its provider like any other.
+    /// The boundary: a subscription is served up to the moment it
+    /// expires, not up to the moment before.
     #[dialog_common::test]
-    async fn it_stops_holding_a_subject_once_the_reservation_lapses() {
-        let store = store_with(&[("did:key:zCustomer", CustomerStatus::Active)], &[]).await;
-        store
-            .reserve_subscription(
-                "did:key:zLapsed",
-                "did:key:zCustomer",
-                0,
-                crate::store::SubscriptionKind::Custody,
-                NOW - 1,
-            )
-            .await
-            .expect("reservation");
-        assert_eq!(recourse_of(&store, "did:key:zLapsed").await, None);
+    async fn it_serves_a_subscription_until_the_instant_it_expires() {
+        let store = store_with(
+            &[("did:key:zCustomer", CustomerStatus::Active)],
+            &[("did:key:zSpace", "did:key:zCustomer")],
+        )
+        .await;
+        store.expire_for_test("did:key:zSpace", NOW + 1).await;
+        assert_eq!(recourse_of(&store, "did:key:zSpace").await, None);
+
+        store.expire_for_test("did:key:zSpace", NOW).await;
+        assert_eq!(
+            recourse_of(&store, "did:key:zSpace").await,
+            Some(Recourse::None)
+        );
     }
 
     /// The sentence is for a person, not a client. It is asserted here

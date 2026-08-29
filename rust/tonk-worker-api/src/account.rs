@@ -25,8 +25,11 @@ pub struct AccountDeletionSpace {
     pub subject: String,
     /// Display name from the account directory, when recorded.
     pub name: Option<String>,
-    /// Access-service lifecycle state.
-    pub state: String,
+    /// When the access service began purging this space, if it has. A
+    /// finished deletion leaves no record, so such a space is absent
+    /// from the plan rather than listed as already gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleting_since: Option<u64>,
 }
 
 /// Reviewable destructive scope loaded before asking for a passkey.

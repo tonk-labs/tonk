@@ -4,8 +4,13 @@
 ALTER TABLE subscription ADD COLUMN deletion_grant_cid TEXT;
 ALTER TABLE subscription ADD COLUMN deletion_grant_kind TEXT
   CHECK (deletion_grant_kind IN ('exact', 'legacy-direct'));
-ALTER TABLE subscription ADD COLUMN deletion_state TEXT NOT NULL DEFAULT 'active'
-  CHECK (deletion_state IN ('active', 'deleting', 'deleted'));
+-- When deletion began. Null means it has not, and the row disappears
+-- when it finishes, so there is no third state to keep in step.
+--
+-- Purging R2 is neither atomic nor guaranteed to finish in one attempt,
+-- so service has to stop before the objects do: a client must not read a
+-- half-purged space. Setting this is what stops it, and the write is a
+-- compare-and-set, so two concurrent deletions cannot both start one.
 ALTER TABLE subscription ADD COLUMN deleted_at INTEGER;
 -- Deletion work is enumerated by provider. Nothing transfers a space to
 -- a different payer, so the customer who pays for one is the account
