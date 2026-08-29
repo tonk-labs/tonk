@@ -125,6 +125,29 @@ describe("boot script module scoping", () => {
 });
 
 describe("boot script contract with the worker", () => {
+  test("never creates window.tonk on the top page", () => {
+    // `window.tonk` is the SEALED GUEST's bridge object, and
+    // `page_effect::forward` tests for its presence to decide "am I
+    // running inside a guest?". Creating it on the top page made the
+    // host believe it was a guest: every `navigate_to` forwarded to a
+    // `navigate` method that does not exist there and returned early,
+    // so links and menu buttons silently did nothing while the rest of
+    // the app looked fine.
+    //
+    // The boot script must publish its build under its own name.
+    for (const [index, block] of moduleBlocks().entries()) {
+      const code = block
+        .replace(/\/\*[\s\S]*?\*\//g, " ")
+        .replace(/\/\/[^\n]*/g, " ");
+      assert.ok(
+        !/(?:globalThis|window|self)\s*\.\s*tonk\s*(?:=|\.|\[)/.test(code),
+        `module block ${index} assigns to window.tonk. That name belongs ` +
+          `to the guest bridge; writing it on the top page makes the host ` +
+          `look like a guest and silently breaks all navigation.`,
+      );
+    }
+  });
+
   test("publishes the build id the version handshake sends", () => {
     // The host reads `window.tonk.build` and sends it on every /api/*
     // request; the worker compares it against its own. If the boot
@@ -134,10 +157,9 @@ describe("boot script contract with the worker", () => {
     const registering = blocks.find((b) => b.includes("serviceWorker.register"));
     assert.match(
       registering,
-      /globalThis\.tonk\s*=\s*globalThis\.tonk\s*\|\|\s*\{\}/,
-      "must not clobber an existing window.tonk",
+      /globalThis\.tonkBuild\s*=/,
+      "the build id is published under its own name, not on window.tonk",
     );
-    assert.match(registering, /\.build\s*=/);
   });
 
   test("asks for updates on the triggers an SPA actually gets", () => {
