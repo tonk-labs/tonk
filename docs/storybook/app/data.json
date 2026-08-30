@@ -460,12 +460,12 @@
       "variants": "Signed out; same/different owner; creating profile absent with repository signer retained; same-owner retry after sharing; customer states; provider offline."
     },
     {
-      "evidence": "Eleven account_spaces tests cover many list/pull cases.",
-      "gaps": "Process JSON/error matrix, concurrent rename/delete, corrupted local account branch.",
+      "evidence": "Eleven account_spaces tests cover many list/pull cases; focused FABB query and browser-DOM frame regressions cover current directory rows, name mirrors, active exclusion, and vintage unnamed entries.",
+      "gaps": "Process JSON/error matrix, concurrent rename/delete, corrupted local account branch, and whole-browser cross-device directory convergence.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SPACE-11",
-      "title": "List spaces from the account directory.",
-      "variants": "Empty; duplicate names; joined/owned; offline cached; stale deletion."
+      "title": "List spaces from the account directory in the CLI, Hub, or FABB.",
+      "variants": "Empty; duplicate names; joined/owned; active space excluded; unreplicated target; offline cached; stale deletion."
     },
     {
       "evidence": "Broad account_spaces integration coverage.",
@@ -724,7 +724,7 @@
       "variants": "Root missing/provider-free/registered; customer states; revoked."
     },
     {
-      "evidence": "Rendering/portal coverage, inspector renderer tests, and some E2E paths.",
+      "evidence": "Rendering/portal coverage, inspector renderer tests, some E2E paths, and structural coverage for the actionable Tonk edge wall on an absent-space route.",
       "gaps": "Top-level real-browser route matrix, configured-upstream probe, and interactive behavior beyond headless render.",
       "group": "Browser shell and runtime",
       "id": "UI-04",
@@ -828,7 +828,7 @@
         "rust/tonk-fab/src/skin.rs"
       ],
       "status": "captured",
-      "summary": "The expanded floating action bar names the current space and exposes switching, renaming, sharing, sync, and appearance actions.",
+      "summary": "The expanded floating action bar names the current space and lists every other account-directory space alongside renaming, sharing, sync, and appearance actions.",
       "surface": "browser"
     },
     {
@@ -850,7 +850,7 @@
         "rust/tonk-fab/src/share.rs"
       ],
       "status": "captured",
-      "summary": "Invite claim, accountless accreditation, share, and access-loss states explain what will change before authority moves.",
+      "summary": "Invite claim, accountless accreditation, share, and absent-space access states explain what will change and retain actionable Tonk navigation before authority moves.",
       "surface": "browser"
     },
     {
@@ -1951,8 +1951,8 @@
       "result": "—"
     },
     {
-      "claim": "Account directory list/pull handles duplicates, offline cache, missing/stale and exact subjects (Resolve).",
-      "device": "cli + offline",
+      "claim": "Account directory list/pull and the FABB switcher handle duplicates, offline cache, missing/stale and exact subjects (Space-switcher and absent-space presentation decision).",
+      "device": "cli + browser + offline",
       "file": "verification/cli-spaces-ui.md",
       "id": "SPACE-10",
       "priority": "P1",

@@ -14,11 +14,11 @@
 # definitions below are self-contained: the directory view's
 # `model: space` resolves to the `&space` anchor here.
 
-# A space (replica) the profile has access to. These records live on
-# the profile repository's main branch — one per repository this device
-# has joined or created. The Hub queries them on the profile main branch
-# (the top site's `with="main@profile:tonk"` context) so the user can pick
-# which space to open.
+# A space the account has access to. These convergent directory records live
+# on the profile repository's main branch — one per repository across the
+# account, with `local` overlaid by each device. The Hub queries them in the
+# top site's `with="main@profile:tonk"` context so the user can pick which
+# space to open or replicate locally.
 concept!: &space
   this: tonk:space
   description: A space on this account.
@@ -1073,17 +1073,62 @@ view!: &space-view
          share and roster in this case (see fab.css's
          `[data-unknown-space]`), since those act on a space that
          is not here. */
-      .space-unknown { display: flex; flex-direction: column; gap: 12px;
-        align-items: center; text-align: center; margin: 15vh auto 0;
-        width: min(460px, 90%); }
-      .space-unknown h1 { margin: 0; line-height: 36px; text-wrap: balance; }
-      .space-unknown p { color: var(--wa-color-text-quiet); margin: 0; }
-      .space-unknown-join { display: inline-flex; align-items: center;
-        padding: 8px 20px; border-radius: var(--wa-border-radius-pill);
-        background: var(--wa-color-brand-fill-loud);
-        color: var(--wa-color-brand-on-loud); text-decoration: none;
-        font-weight: 500; }
-      .space-unknown-join:hover { opacity: .85; }
+      /* The absent-space state is profile chrome, not space content. It uses
+         the same edge wall, palette, typography, and compact geometry as the
+         `/join` ceremony instead of inheriting Web Awesome's pill skin. */
+      .space-unknown {
+        --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
+        --edge-soft:#5b4953; --edge-card:#f7f6f5;
+        --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+        position:fixed; inset:0; min-height:100vh; min-height:100dvh;
+        overflow:auto; padding:1px; background:var(--edge-page);
+        color:var(--edge-ink); font-family:'IBM Plex Sans Condensed',
+          'Bahnschrift','Arial Narrow',system-ui,sans-serif;
+        font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased; }
+      :root.wa-dark .space-unknown {
+        --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
+        --edge-soft:#c8c3bf; --edge-card:#1b1718;
+        --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15); }
+      .space-unknown *, .space-unknown *::before, .space-unknown *::after {
+        box-sizing:border-box; }
+      .space-unknown ::selection { background:var(--edge-ink); color:var(--edge-on); }
+      .space-unknown :focus-visible { outline:none;
+        box-shadow:inset 0 0 0 2px var(--edge-on),
+          inset 0 0 0 4px var(--edge-ink); }
+      .space-unknown-mast { position:fixed; left:48px; top:48px; width:132px;
+        color:var(--edge-ink); z-index:2; }
+      .space-unknown-mast img { display:block; width:100%; height:auto; }
+      :root.wa-dark .space-unknown-mast img { filter:invert(1); }
+      .space-unknown-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
+        margin-top:43px; display:flex; flex-direction:column; gap:7px; }
+      .space-unknown-statement, .space-unknown-narrator { min-height:36px;
+        margin:0; background:var(--edge-card);
+        box-shadow:0 0 0 1px var(--edge-ring); }
+      .space-unknown-statement { padding:10px 14px; display:flex; align-items:flex-end;
+        color:var(--edge-ink);
+        font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+        font-weight:600; line-height:1.55; text-wrap:balance; }
+      .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
+        font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
+        font-weight:400; line-height:1.55; text-wrap:pretty; }
+      .space-unknown-run { display:flex; }
+      .space-unknown-join { width:100%; min-height:40px; padding:8px 10px;
+        display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+        background:var(--edge-ink); color:var(--edge-on); text-decoration:none;
+        text-transform:lowercase; cursor:pointer; transition-property:scale;
+        transition-duration:150ms; transition-timing-function:ease-out; }
+      .space-unknown-join:hover {
+        background:linear-gradient(var(--edge-wash),var(--edge-wash)), var(--edge-ink); }
+      .space-unknown-join:active { scale:.96; }
+      @media (max-width:680px) {
+        .space-unknown-mast { left:16px; top:18px; width:98px; min-height:44px;
+          display:flex; align-items:center; }
+        .space-unknown-wall { margin-left:16px; margin-top:132px; }
+        .space-unknown-join { min-height:44px; }
+      }
+      @media (prefers-reduced-motion:reduce) {
+        .space-unknown-join { transition:none; }
+      }
       /* Keyed off the display's own state, NOT a wrapper element: wrapping
          these siblings in a container changed which element the template
          engine picks as the repeat node (the outermost subject-referencing
@@ -1115,8 +1160,10 @@ view!: &space-view
            someone whose actual problem is that they were never invited. -->
       <div slot="no-model" class="space-unknown">
         <tonk-title text="Not here — Tonk"></tonk-title>
-        <h1>You don't have this spot</h1>
-        <p>It isn't on this device, and this account has no access to it. If someone shared it with you, open their share link to join.</p>
+        <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+        <div class="space-unknown-wall">
+          <h1 class="space-unknown-statement">you don't have this spot</h1>
+          <p class="space-unknown-narrator">It isn't on this device, and this account has no access to it. If someone shared it with you, open their share link to join.</p>
         <!-- A plain top-level path. The guest classifies this as in-app
              (it resolves against the synthetic per-space origin) and asks
              the host to navigate; the host recognises `/join` as a
@@ -1130,7 +1177,10 @@ view!: &space-view
              sealed FRAME to /join instead of the host navigating the top
              window — the join page booting inside an opaque origin with no
              service worker. Styled as a button below. -->
-        <a class="space-unknown-join" href="/join">Join a spot</a>
+          <div class="space-unknown-run">
+            <a class="space-unknown-join" href="/join">join a spot<span aria-hidden="true">&#9656;</span></a>
+          </div>
+        </div>
       </div>
       <!-- A spot created before `tonk:view/title` existed has no
            `view/title!:` row on its branch, so `view=tonk:view/title`

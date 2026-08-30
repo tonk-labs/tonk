@@ -220,6 +220,47 @@ fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
 }
 
 #[test]
+fn it_styles_the_absent_space_as_tonk_edge_chrome() {
+    let absent = PROFILE_LIBRARY
+        .split("/* The absent-space state")
+        .nth(1)
+        .and_then(|source| source.split("/* Keyed off the display's own state").next())
+        .expect("profile library must contain the absent-space style block");
+    for contract in [
+        "--edge-page:#e8e6e4",
+        "--edge-ink:#38182a",
+        "--edge-page:#161313",
+        "--edge-ink:#e2dfdd",
+        "font-family:'IBM Plex Sans Condensed'",
+        "box-shadow:0 0 0 1px var(--edge-ring)",
+        "min-height:44px",
+        "transition-property:scale",
+    ] {
+        assert!(
+            absent.contains(contract),
+            "the absent-space state must preserve the Tonk edge contract `{contract}`"
+        );
+    }
+    assert!(
+        !absent.contains("var(--wa-color-brand-fill-loud)"),
+        "the absent-space action must not retain the outdated Web Awesome pill skin"
+    );
+    assert!(
+        css_rule(absent, ".space-unknown-statement {").contains("color:var(--edge-ink)"),
+        "the absent-space statement must override the global heading skin with local mode ink"
+    );
+    for contract in [
+        "class=\"space-unknown-mast\"",
+        "class=\"space-unknown-wall\"",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the absent-space markup must preserve `{contract}`"
+        );
+    }
+}
+
+#[test]
 fn it_keeps_the_hub_on_the_complete_stone_token_contract() {
     for token in [
         "--panel:",
