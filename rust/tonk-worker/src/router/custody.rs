@@ -525,8 +525,12 @@ async fn create(
             .map_err(|error| format!("the account root was not recorded: {error}"))?;
     }
 
-    post_ceremony(&creation.provider, &ceremony.account.invocation_hex).await?;
-
+    // No account-service request: what it did was claim the address in
+    // a table of its own, and enrollment claims the same address in the
+    // customer row it already writes — one authority instead of two,
+    // and the duplicate refused a second signup for an address the
+    // access service had never heard of.
+    //
     // The link: until it is written this profile has no account, and
     // everything downstream — enrollment included — reports one as
     // missing.
@@ -569,30 +573,6 @@ async fn link_account(
     crate::router::account::persist_link(&tonk, &request)
         .await
         .map_err(|error| format!("the account link was not saved: {error}"))
-}
-
-/// Submit a signed account-service request.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn post_ceremony(provider: &str, invocation_hex: &str) -> Result<Vec<u8>, String> {
-    post_ceremony_at(provider, "/accounts", invocation_hex).await
-}
-
-/// Submit a signed request to one of the account service's routes.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn post_ceremony_at(
-    provider: &str,
-    path: &str,
-    invocation_hex: &str,
-) -> Result<Vec<u8>, String> {
-    let body = hex::decode(invocation_hex)
-        .map_err(|error| format!("the account request is not hex: {error}"))?;
-    let url: url::Url = format!("{}{path}", provider.trim_end_matches('/'))
-        .parse()
-        .map_err(|error| format!("the account service URL does not parse: {error}"))?;
-    let response = crate::router::http::post_cbor(&url, &body)
-        .await
-        .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
-    Ok(response.body)
 }
 
 /// Rebuild the custodian from the two posted handles.
