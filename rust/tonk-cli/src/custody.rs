@@ -62,10 +62,11 @@ pub async fn custody_space_seed(
     seed: &Zeroizing<[u8; 32]>,
     operator: &Operator<NativeSpace>,
 ) -> Result<()> {
-    let key = RecipientKey::from_did(recipient)
+    let key = RecipientKey::try_from(recipient)
         .map_err(|error| anyhow::anyhow!("the account encryption key is unusable: {error}"))?;
     let sealed = key
-        .seal(seed, subject)
+        .secret()
+        .conceal(seed, subject)
         .map_err(|error| anyhow::anyhow!("failed to seal the space seed: {error}"))?
         .encode();
     account
@@ -290,7 +291,7 @@ pub async fn rotate_from_onboarding(
     let Some(secret) = crate::onboarding::read_if_openable_in(&profile, &operator).await? else {
         return Ok(Vec::new());
     };
-    let old_key = secret.encryption_key();
+
     let branch =
         match crate::account_state::open_account_branch_in(&profile, &operator, store).await? {
             Some(branch) => branch,
@@ -302,13 +303,13 @@ pub async fn rotate_from_onboarding(
             "the account has not published its encryption key yet; \
              open /account in a signed-in browser once, then run `tonk account status`",
         )?;
-    let new_key = tonk_identity::sealed::RecipientKey::from_did(&new_recipient)
+    let new_key = tonk_identity::sealed::RecipientKey::try_from(&new_recipient)
         .map_err(|error| anyhow::anyhow!("the account encryption key is unusable: {error}"))?;
 
     let outcome = tonk_schema::custody::rotate(
         &branch,
-        &old_key,
-        &new_key,
+        secret.secret(),
+        new_key,
         &operator,
         async |kind, signer, row, replacement| match kind {
             SeedKind::Space => {

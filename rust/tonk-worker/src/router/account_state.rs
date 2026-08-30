@@ -1160,8 +1160,8 @@ pub(crate) async fn custody_seed(
             return false;
         }
     };
-    let sealed = match RecipientKey::from_did(&recipient) {
-        Ok(key) => match key.seal(&seed, subject) {
+    let sealed = match RecipientKey::try_from(&recipient) {
+        Ok(key) => match key.secret().conceal(&seed, subject) {
             Ok(sealed) => sealed.encode(),
             Err(error) => {
                 log!("seed for {subject} not custodied: {error}");
@@ -1240,7 +1240,7 @@ async fn custody_recipient(
         }
         Err(TonkWorkerError::RootRequired) => {
             let secret = crate::onboarding::account(tonk).await?;
-            let recipient = secret.encryption_key().recipient().did();
+            let recipient = secret.secret().did();
             let account = secret
                 .signer()
                 .await
@@ -1939,7 +1939,7 @@ mod tests {
 
         // A ceremony that held the secret re-saves the root with the recipient.
         let account = AccountSecret::from_bytes(Zeroizing::new([5u8; 32]));
-        let recipient = account.encryption_key().recipient().did();
+        let recipient = account.secret().did();
         let grant =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &state.profile.did())
                 .await
@@ -1988,7 +1988,7 @@ mod tests {
         assert_eq!(rows[0].kind.0.to_string(), SeedKind::SPACE);
         assert_eq!(rows[0].recipient.0, recipient.this());
         let sealed = Sealed::decode(&rows[0].sealed.0).unwrap();
-        let opened = account.encryption_key().open(&sealed, &subject).unwrap();
+        let opened = account.secret().reveal(&sealed, &subject).unwrap();
         assert_eq!(*opened, [7u8; 32]);
 
         service.stop().await.unwrap();

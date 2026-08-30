@@ -202,8 +202,7 @@ impl AccountFixture {
             let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
                 zeroize::Zeroizing::new(root_prf),
             )
-            .encryption_key()
-            .recipient()
+            .secret()
             .did();
             let root_did: dialog_varsig::Did = ceremony.root_did.parse()?;
             if let Some(account) =

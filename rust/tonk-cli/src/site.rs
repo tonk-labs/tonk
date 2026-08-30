@@ -648,7 +648,7 @@ async fn bootstrap_repository(
         // Unlinked: the seed seals to the onboarding key on the local
         // account branch — the same branch the account mounts once the
         // device signs in, so the rows ride straight into rotation.
-        let recipient = secret.encryption_key().recipient().did();
+        let recipient = secret.secret().did();
         let account = crate::custody::open_local_account_branch(profile, &store_operator).await?;
         crate::custody::custody_space_seed(
             &account,

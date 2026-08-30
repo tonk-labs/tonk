@@ -288,8 +288,8 @@ pub enum RotateError {
 /// recipient, so a later pass resumes exactly where this one stopped.
 pub async fn rotate<Env>(
     branch: &dialog_repository::Branch,
-    old: &tonk_identity::sealed::EncryptionKey,
-    new: &tonk_identity::sealed::RecipientKey,
+    old: tonk_identity::sealed::AccountSecretKey<'_>,
+    new: impl Into<tonk_identity::sealed::AccountSeal>,
     env: &Env,
     mut reissue: impl AsyncFnMut(
         SeedKind,
@@ -314,8 +314,10 @@ where
         + 'static,
 {
     use dialog_query::{Output as _, Query, Term};
+    use dialog_varsig::Principal as _;
 
-    let old_recipient = old.recipient().did();
+    let new = new.into();
+    let old_recipient = old.did();
     let rows: Vec<CustodiedSeed> = branch
         .query()
         .select(Query::<CustodiedSeed> {
@@ -351,8 +353,8 @@ where
 }
 
 async fn rotate_seed(
-    old: &tonk_identity::sealed::EncryptionKey,
-    new: &tonk_identity::sealed::RecipientKey,
+    old: tonk_identity::sealed::AccountSecretKey<'_>,
+    new: tonk_identity::sealed::AccountSeal,
     reissue: &mut impl AsyncFnMut(
         SeedKind,
         dialog_credentials::Ed25519Signer,
@@ -372,7 +374,7 @@ async fn rotate_seed(
     let sealed =
         tonk_identity::sealed::Sealed::decode(&row.sealed.0).map_err(|error| error.to_string())?;
     let seed = old
-        .open(&sealed, subject)
+        .reveal(&sealed, subject)
         .map_err(|error| error.to_string())?;
     let signer = dialog_credentials::Ed25519Signer::import(&*seed)
         .await
@@ -381,7 +383,7 @@ async fn rotate_seed(
         return Err(format!("the custodied seed derives {}", signer.did()));
     }
     let resealed = new
-        .seal(&seed, subject)
+        .conceal(&seed, subject)
         .map_err(|error| format!("reseal: {error}"))?
         .encode();
     let replacement = CustodiedSeed::new(subject.clone(), kind, new.did(), resealed);

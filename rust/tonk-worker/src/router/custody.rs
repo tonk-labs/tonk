@@ -154,8 +154,7 @@ mod tests {
         let receiver = wait_for_key();
         let recipient =
             tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([9u8; 32]))
-                .encryption_key()
-                .recipient()
+                .secret()
                 .did();
         let root = super::super::identity::local_root(&state).await.unwrap();
         super::super::identity::persist_root(

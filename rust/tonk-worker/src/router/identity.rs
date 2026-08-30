@@ -334,7 +334,7 @@ fn parse_encryption_key(did: &str) -> Result<dialog_varsig::Did, TonkWorkerError
     let did: dialog_varsig::Did = did
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid encryptionKey: {error}")))?;
-    tonk_identity::sealed::RecipientKey::from_did(&did)
+    tonk_identity::sealed::RecipientKey::try_from(&did)
         .map_err(|error| TonkWorkerError::Router(format!("invalid encryptionKey: {error}")))?;
     Ok(did)
 }
@@ -432,8 +432,7 @@ mod tests {
 
     fn recipient_did(byte: u8) -> dialog_varsig::Did {
         tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([byte; 32]))
-            .encryption_key()
-            .recipient()
+            .secret()
             .did()
     }
 

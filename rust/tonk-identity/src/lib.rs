@@ -9,6 +9,7 @@
 //! Devices act through a subject-open `root → device` UCAN delegation;
 //! day-to-day operation never touches the root key.
 
+pub mod account;
 pub mod ceremony;
 pub mod clearance;
 pub mod custodian;

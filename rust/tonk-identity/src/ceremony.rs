@@ -285,7 +285,7 @@ pub async fn create_custody_account(
         Some(service) => mint_service_deposits(&root, service).await?,
         None => Vec::new(),
     };
-    let encryption_key = secret.encryption_key().recipient().did().to_string();
+    let encryption_key = secret.secret().did().to_string();
     let root_ceremony = root_ceremony(
         root.clone(),
         credential_id.clone(),
@@ -341,9 +341,10 @@ async fn assert_unlock(
         .context("the authenticator returned no PRF outputs")?;
     let custody = custody_signer(&evaluation.key).await?;
     let kek = custody_kek(&evaluation.kek);
-    let sealed = crate::custody::resolve_secret(custody, endpoint)
-        .await?
-        .context("no account custody is published for this passkey")?;
+    let sealed =
+        crate::custody::resolve_secret(dialog_credentials::Signer::from(custody), endpoint)
+            .await?
+            .context("no account custody is published for this passkey")?;
     let envelope = Envelope::decode(&sealed)
         .map_err(|error| anyhow::anyhow!("the custody cell is unreadable: {error}"))?;
     let secret = kek
@@ -369,7 +370,7 @@ pub async fn publish_encryption_key(
     credential_id: Option<&[u8]>,
 ) -> Result<String> {
     let (secret, _) = assert_unlock(endpoint, credential_id).await?;
-    Ok(secret.encryption_key().recipient().did().to_string())
+    Ok(secret.secret().did().to_string())
 }
 
 /// A custody passkey enrollment's outcome: the custody DID and consent
@@ -445,7 +446,12 @@ pub async fn enroll_custody(
         // The cell may already exist: the same credential re-enrolled
         // names the same space. Anything that opens to this account is
         // that case, and needs no republish; anything else waits.
-        match crate::custody::resolve_secret(custody.clone(), endpoint).await {
+        match crate::custody::resolve_secret(
+            dialog_credentials::Signer::from(custody.clone()),
+            endpoint,
+        )
+        .await
+        {
             Ok(Some(existing)) => {
                 let published = Envelope::decode(&existing)
                     .ok()
@@ -514,7 +520,7 @@ pub async fn unlock_account(
 ) -> Result<CustodyUnlock> {
     let (secret, credential_id) = assert_unlock(endpoint, None).await?;
     let root = secret.signer().await?;
-    let encryption_key = secret.encryption_key().recipient().did().to_string();
+    let encryption_key = secret.secret().did().to_string();
     let deposits_hex = match service {
         Some(service) => mint_service_deposits(&root, service).await?,
         None => Vec::new(),

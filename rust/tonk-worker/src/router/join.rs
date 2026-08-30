@@ -3058,8 +3058,8 @@ pub(crate) mod tests {
         let opened = crate::onboarding::account(&tonk)
             .await
             .unwrap()
-            .encryption_key()
-            .open(&sealed, &principal)
+            .secret()
+            .reveal(&sealed, &principal)
             .expect("the onboarding account opens its custodied seed");
         let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
             .await

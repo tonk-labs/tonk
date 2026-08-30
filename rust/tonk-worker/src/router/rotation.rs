@@ -47,7 +47,6 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     let Ok(secret) = crate::onboarding::account(tonk).await else {
         return;
     };
-    let old_key = secret.encryption_key();
     // The published fact is the account's word; the root record is the
     // ceremony's. Either names the same recipient, and the record is
     // available even while the account repository is still unhydrated
@@ -68,7 +67,7 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
                 return;
             }
         };
-    let new_key = match RecipientKey::from_did(&new_recipient) {
+    let new_key = match RecipientKey::try_from(&new_recipient) {
         Ok(key) => key,
         Err(error) => {
             log!("account rotation deferred: {error}");
@@ -95,8 +94,8 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     // adapter's.
     let outcome = match tonk_schema::custody::rotate(
         branch.handle(),
-        &old_key,
-        &new_key,
+        secret.secret(),
+        new_key,
         &tonk.operator,
         async |kind, signer, row, replacement| {
             match kind {
@@ -744,8 +743,7 @@ mod tests {
         let old_recipient = crate::onboarding::account(&tonk)
             .await
             .unwrap()
-            .encryption_key()
-            .recipient()
+            .secret()
             .did();
         assert_eq!(sealed_to(&tonk, &old_recipient).await.unwrap().len(), 2);
 
@@ -939,8 +937,7 @@ mod tests {
         let old_recipient = crate::onboarding::account(&tonk)
             .await
             .unwrap()
-            .encryption_key()
-            .recipient()
+            .secret()
             .did();
 
         // Save the root record with its recipient, without asserting the
@@ -955,8 +952,7 @@ mod tests {
         let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
             zeroize::Zeroizing::new(test_root_seed(&tonk.profile_name)),
         )
-        .encryption_key()
-        .recipient()
+        .secret()
         .did();
         super::super::identity::persist_root(
             &tonk,

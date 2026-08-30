@@ -12,6 +12,8 @@
 //! trait would cost indirection for callers that always know which they
 //! hold.
 
+use dialog_credentials::Signer;
+
 use crate::clearance::Recovery;
 use crate::envelope::Kek;
 use crate::envelope::capability::{Opening, Sealing};
@@ -31,11 +33,14 @@ pub enum Custodian {
 impl Custodian {
     /// The signer that names this custodian's custody space.
     ///
+    /// Dialog's algorithm-agnostic [`Signer`], not the concrete Ed25519
+    /// one: every builder downstream takes it, and what algorithm a
+    /// custodian happens to use is not a caller's business.
+    ///
     /// No `seed` beside it: a passkey derives one on the way here, but
     /// a native custodian is a stored non-extractable credential and has
-    /// no seed to give back. The signer is what every caller wants
-    /// anyway.
-    pub async fn signer(&self) -> anyhow::Result<dialog_credentials::Ed25519Signer> {
+    /// no seed to give back.
+    pub async fn signer(&self) -> anyhow::Result<Signer> {
         match self {
             Self::Native(custodian) => custodian.signer().await,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -55,6 +60,18 @@ impl Custodian {
         }
     }
 
+    /// The account this custodian holds.
+    ///
+    /// A builder rather than a value because the ways to reach one are
+    /// not interchangeable: `create` makes a new account, `import`
+    /// opens one already sealed under this custodian, `adopt` seals an
+    /// existing account under it, and `load` fetches the custody cell.
+    /// Naming the custodian first is what makes it impossible to seal
+    /// under one and open with another.
+    pub fn account(&self) -> crate::account::AccountBuilder<'_> {
+        crate::account::AccountBuilder(self)
+    }
+
     /// A KEK that seals under this custodian.
     pub async fn sealer(&self) -> anyhow::Result<Kek<Recovery, Sealing>> {
         match self {
@@ -71,7 +88,7 @@ impl Custodian {
 /// A custodian backed by a keypair this device holds.
 pub mod native {
     use anyhow::Result;
-    use dialog_credentials::Ed25519Signer;
+    use dialog_credentials::{Ed25519Signer, Signer};
 
     use crate::clearance::Recovery;
     use crate::envelope::Kek;
@@ -97,8 +114,8 @@ pub mod native {
             Self { signer, kek }
         }
 
-        pub(super) async fn signer(&self) -> Result<Ed25519Signer> {
-            Ok(self.signer.clone())
+        pub(super) async fn signer(&self) -> Result<Signer> {
+            Ok(Signer::from(self.signer.clone()))
         }
 
         pub(super) async fn opener(&self) -> Result<Kek<Recovery, Opening>> {

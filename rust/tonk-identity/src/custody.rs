@@ -40,14 +40,14 @@ fn sha256_multihash(content: &[u8]) -> Vec<u8> {
 /// in someone else's container has no use for framing, and one posting
 /// it to the service wraps it with [`into_container`].
 async fn sign_self_invocation(
-    custody: Ed25519Signer,
+    custody: Signer,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
     expiration: Timestamp,
 ) -> Result<Invocation<AnySignature>> {
     let did = custody.did();
     InvocationBuilder::new()
-        .issuer(Signer::from(custody))
+        .issuer(custody)
         .audience(&did)
         .subject(&did)
         .command(command)
@@ -68,7 +68,7 @@ pub fn into_container(invocation: Invocation<AnySignature>) -> Result<Vec<u8>> {
 }
 
 async fn build_self_invocation(
-    custody: Ed25519Signer,
+    custody: Signer,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
     expiration: Timestamp,
@@ -127,7 +127,7 @@ pub async fn sign_publish_invocation(
         arguments.insert("when".to_string(), Promised::Bytes(version.to_vec()));
     }
     sign_self_invocation(
-        custody,
+        Signer::from(custody),
         vec![
             "use".to_string(),
             "put".to_string(),
@@ -166,7 +166,7 @@ pub async fn sign_deferred_publish_invocation(
 }
 
 /// Build a `/use/get/memory/cell` container for the wrapped-secret cell.
-pub async fn build_resolve_invocation(custody: Ed25519Signer) -> Result<Vec<u8>> {
+pub async fn build_resolve_invocation(custody: Signer) -> Result<Vec<u8>> {
     build_self_invocation(
         custody,
         vec![
@@ -213,7 +213,7 @@ pub async fn sign_custody_consent(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web {
     use anyhow::{Context, Result, anyhow};
-    use dialog_credentials::Ed25519Signer;
+    use dialog_credentials::{Ed25519Signer, Signer};
     use js_sys::Uint8Array;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -331,7 +331,7 @@ mod web {
 
     /// Resolve the custody space's cell: `Ok(None)` when no wrapping
     /// was ever published there.
-    pub async fn resolve_secret(custody: Ed25519Signer, endpoint: &str) -> Result<Option<Vec<u8>>> {
+    pub async fn resolve_secret(custody: Signer, endpoint: &str) -> Result<Option<Vec<u8>>> {
         let container = super::build_resolve_invocation(custody).await?;
         let permit = redeem(endpoint, container).await?;
         let (status, body) = execute(permit, None).await?;
@@ -472,7 +472,9 @@ mod tests {
     async fn it_builds_a_self_issued_resolve() {
         let custody = custody().await;
         let did = custody.did();
-        let bytes = build_resolve_invocation(custody).await.unwrap();
+        let bytes = build_resolve_invocation(Signer::from(custody))
+            .await
+            .unwrap();
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
             .verify(&dialog_ucan_core::verification::VerificationContext::new(

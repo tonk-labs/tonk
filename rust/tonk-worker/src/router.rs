@@ -620,8 +620,7 @@ pub mod tests {
         let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
             zeroize::Zeroizing::new(test_root_seed(&state.profile_name)),
         )
-        .encryption_key()
-        .recipient()
+        .secret()
         .did();
         super::identity::persist_root(
             state,
