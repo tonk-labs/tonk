@@ -474,10 +474,38 @@ impl Notebook {
             if notebook.settling.get() {
                 return;
             }
-            notebook.settling.set(true);
-            notebook.project_blocks();
-            notebook.bind_fences();
-            notebook.settling.set(false);
+            // Project on a fresh task, never inline.
+            //
+            // A MutationObserver callback runs SYNCHRONOUSLY inside the DOM
+            // write that triggered it — and ProseMirror writes the editor's
+            // DOM from `dispatchTransaction`. Projecting inline therefore
+            // called `setMarkdown` in the middle of a ProseMirror
+            // transaction, replacing the document under the transaction that
+            // was still applying: "TextSelection endpoint not pointing into
+            // a node with inline content", then "no position after the
+            // top-level node" on the next keypress, with the caret landing
+            // past the end of a document that had been swapped beneath it.
+            //
+            // `settling` guards re-entry from our OWN writes; it cannot
+            // guard this, because the re-entry comes from ProseMirror's
+            // update rather than ours. Deferring lets the transaction finish
+            // and applies the projection to a settled editor.
+            let deferred_notebook = notebook.clone();
+            let deferred = Closure::once_into_js(move || {
+                if deferred_notebook.settling.get() {
+                    return;
+                }
+                deferred_notebook.settling.set(true);
+                deferred_notebook.project_blocks();
+                deferred_notebook.bind_fences();
+                deferred_notebook.settling.set(false);
+            });
+            if let Some(window) = window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    deferred.unchecked_ref(),
+                    0,
+                );
+            }
             // Re-register the shadow watch every tick: the root only exists
             // once the editor has mounted, which is after this observer was
             // created. Observing an already-observed target with the same
