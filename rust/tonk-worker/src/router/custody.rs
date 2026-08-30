@@ -390,6 +390,25 @@ async fn enroll(
     let origin = crate::router::customer::service_origin().map_err(|error| format!("{error}"))?;
     let email = email.filter(|value| !value.trim().is_empty());
 
+    // The envelope, as a fact, before it is sent anywhere. The vault
+    // copy bootstraps a brand-new browser, but it is written at
+    // enrollment and served only once a customer activates — so a
+    // device that enrolls and restarts before the emailed link is
+    // clicked would otherwise have nothing to reopen its own account
+    // with. Recorded first for the same reason enrollment writes the
+    // cell before the customer row: what cannot be recovered must not
+    // depend on the step after it succeeding.
+    {
+        let tonk = state.read().await;
+        crate::router::customer::record_custody_cell(
+            &tonk,
+            &material.custody.to_string(),
+            &hex::encode(&material.sealed),
+        )
+        .await
+        .map_err(|error| format!("the custody cell was not recorded: {error}"))?;
+    }
+
     let tonk = state.read().await;
     let receipt =
         crate::router::customer::enroll_customer(&tonk, &origin, email, &material.borrow())
@@ -686,6 +705,64 @@ mod tests {
         assert!(
             custodian_from(&partial.into()).is_err(),
             "a handoff missing the KEK handle is refused"
+        );
+    }
+
+    /// Minting the custody material records the envelope as a fact
+    /// before anything is sent, so the account survives a restart that
+    /// happens before activation.
+    #[dialog_common::test]
+    async fn it_records_the_envelope_as_a_fact_when_it_mints_one() {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Principal as _;
+
+        let state = Arc::new(RwLock::new(test_state().await));
+        let custodian = tonk_identity::custodian::Custodian::Passkey(
+            tonk_identity::webcrypto_kek::Custodian::adopt(vec![3], &[13u8; 32], &[23u8; 32])
+                .await
+                .expect("handles import"),
+        );
+        let account = open(&custodian).await.expect("an account seals");
+        let material = custody_material(&custodian, &account)
+            .await
+            .expect("the custody set mints");
+
+        {
+            let tonk = state.read().await;
+            crate::router::customer::record_custody_cell(
+                &tonk,
+                &material.custody.to_string(),
+                &hex::encode(&material.sealed),
+            )
+            .await
+            .expect("the envelope records");
+        }
+
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile main acquires");
+        let rows: Vec<tonk_schema::CustodyCell> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::CustodyCell> {
+                this: Term::var("this"),
+                account: Term::var("account"),
+                cell: Term::var("cell"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("the branch answers");
+
+        assert_eq!(rows.len(), 1, "one row per passkey");
+        assert_eq!(
+            rows[0].cell.0, material.sealed,
+            "the row carries the sealed envelope, not a reference to one"
         );
     }
 

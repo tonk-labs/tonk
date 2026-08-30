@@ -416,7 +416,7 @@ pub async fn queue_custody(
 /// Record `custody`'s sealed cell on profile main, so the account's own
 /// sync carries the recovery envelope to every device that holds the
 /// profile.
-async fn record_custody_cell(
+pub(crate) async fn record_custody_cell(
     state: &crate::worker::TonkState,
     custody: &str,
     sealed_hex: &str,
