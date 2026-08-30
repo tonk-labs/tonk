@@ -13,13 +13,19 @@
 // document they were editing. A construction-time flag makes that
 // impossible rather than merely unlikely.
 
-import autocomplete, {
+// The NAMED export, not the default: the package is CJS, and its default
+// does not survive the bundler's interop — `default(...)` throws
+// "not a function or its return value is not iterable", which takes the
+// whole plugin set down and leaves the editor blank.
+import {
   ActionKind,
+  autocomplete,
   closeAutocomplete,
   openAutocomplete,
   type AutocompleteAction,
 } from "prosemirror-autocomplete";
-import { Plugin, TextSelection } from "prosemirror-state";
+import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
+import type { EditorState } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import { schema } from "./schema";
 import { fuzzy } from "./fuzzy";
@@ -103,16 +109,6 @@ export function suggestions(
   return [...found, { title: typed, href: "", spans: [], create: true }];
 }
 
-/** Is the selection inside the document's leading heading? */
-function inLeadingHeading(view: EditorView): boolean {
-  const { $head, empty } = view.state.selection;
-  if (!empty) return false;
-  if ($head.parent.type !== schema.nodes.heading) return false;
-  // The FIRST block only. A `## Section` further down is structure, not the
-  // document's name, and must not offer to navigate away.
-  return $head.before($head.depth) === 0;
-}
-
 /** The heading's TITLE: its text without the `# ` marker.
  *
  *  Markers are materialized as literal text carrying the `markup` mark
@@ -190,47 +186,56 @@ export function headingSwitcher(options: SwitcherOptions): Plugin[] {
     }
   };
 
-  // Drive open/close from WHERE THE CARET IS, not from a trigger
-  // character. The heading has no `@` or `/` to key on: being in it is the
-  // trigger, so the plugin opens the autocomplete imperatively.
-  const caret = new Plugin({
-    view: () => ({
-      update(view: EditorView, previous) {
-        const now = inLeadingHeading(view);
-        const before =
-          previous.selection.empty &&
-          previous.selection.$head.parent.type === schema.nodes.heading &&
-          previous.selection.$head.before(previous.selection.$head.depth) === 0;
-        if (now && !before) {
-          openAutocomplete(view, "", headingTitle(view.state.selection.$head.parent));
-        } else if (!now && before) {
-          closeAutocomplete(view);
-        }
-      },
-    }),
-  });
-
-  // Park the caret AFTER the `# ` marker on mount.
+  // One plugin for both jobs, with an explicit key.
   //
-  // The marker is literal text inside the heading, so the default position
-  // 0 puts the caret before it: you type into `|# ` and get `x# `, which is
-  // not a heading at all. This moves it past the marker once, when the
-  // document is the untouched starting one.
-  const park = new Plugin({
+  // Two unkeyed `new Plugin({})` instances collide: ProseMirror derives the
+  // same key for both and rejects the state with "Adding different
+  // instances of a keyed plugin", which takes the editor down with it.
+  //
+  // It does two things:
+  //
+  //  - Parks the caret after the `# ` marker on mount. The marker is
+  //    literal text inside the heading, so the default position 0 sits
+  //    BEFORE it and typing produces `x# ` rather than a heading.
+  //  - Opens and closes the autocomplete from WHERE THE CARET IS. The
+  //    heading has no `@` or `/` to trigger on: being in it is the trigger.
+  const inHeading = (state: EditorState): boolean => {
+    const { $head, empty } = state.selection;
+    return (
+      empty &&
+      $head.parent.type === schema.nodes.heading &&
+      $head.before($head.depth) === 0
+    );
+  };
+
+  const driver = new Plugin({
+    key: new PluginKey("headingSwitcher"),
     view: (view) => {
-      const { doc } = view.state;
-      const first = doc.firstChild;
+      // Park once, on mount.
+      const first = view.state.doc.firstChild;
       if (first && first.type === schema.nodes.heading) {
-        const end = 1 + first.content.size;
+        const end = Math.min(1 + first.content.size, view.state.doc.content.size);
         view.dispatch(
-          view.state.tr.setSelection(
-            TextSelection.create(doc, Math.min(end, doc.content.size)),
-          ),
+          view.state.tr.setSelection(TextSelection.create(view.state.doc, end)),
         );
       }
-      return {};
+      return {
+        update(view: EditorView, previous: EditorState) {
+          const now = inHeading(view.state);
+          const before = inHeading(previous);
+          if (now && !before) {
+            openAutocomplete(
+              view,
+              "",
+              headingTitle(view.state.selection.$head.parent),
+            );
+          } else if (!now && before) {
+            closeAutocomplete(view);
+          }
+        },
+      };
     },
   });
 
-  return [...autocomplete({ reducer, triggers: [] }), caret, park];
+  return [...autocomplete({ reducer, triggers: [] }), driver];
 }

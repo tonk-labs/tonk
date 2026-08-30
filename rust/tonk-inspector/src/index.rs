@@ -190,6 +190,17 @@ impl CustomElement for TonkNotebookIndexElement {
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             return;
         };
+        // Once. `inject_children` can run again (a re-render, a
+        // reconnect), and a second `<tonk-prose>` would mount a second
+        // editor over the same rows — two carets, two documents.
+        if this
+            .query_selector(".notebook-switcher__input")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
         if let Ok(prose) = document.create_element("tonk-prose") {
             let _ = prose.set_attribute("class", "notebook-switcher__input");
             let _ = prose.set_attribute("switcher", "");
