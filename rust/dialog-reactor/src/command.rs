@@ -624,7 +624,7 @@ mod tests {
         assert!(
             ProfileRename::decode(this, &facts).is_none(),
             "a repo-rename transient must NOT also decode as ProfileRename — \
-             that is the bug: renaming a spot was also renaming the profile"
+             that is the bug: renaming a space was also renaming the profile"
         );
     }
 

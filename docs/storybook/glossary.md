@@ -156,6 +156,6 @@ explain an observable result.
 : The journey's normal, rejected, interrupted, recovery, and durable invariant
   cases are all proven at appropriate layers.
 
-Source audit pinned to Tonk commit `a3f8670b1`. Open question: product copy uses
-“spot” in a few historical tests and comments; this storybook uses the current
-public term “space.”
+Source audit refreshed on the current product branch. Historical tests and
+compatibility fixtures retain retired machine vocabulary; every public surface
+uses “space.”

@@ -59,7 +59,7 @@ concept!: &space
       description: >
         Whether THIS device holds a replica. Overlay-only (the worker
         stamps it at boot and on mount), so it never replicates; a row
-        without it renders as a hollow spot that replicates on first
+        without it renders as a hollow space that replicates on first
         visit.
       the: xyz.tonk.space/local
       cardinality: one
@@ -98,8 +98,8 @@ command!: &space/create
 # asserts this transient; the worker's `RemoveSpaceHandler` retracts the
 # replica record from this branch, evicts the space from the reactor
 # (stopping background sync), and deletes its local storage. Removal is
-# device-local — a synced spot can be rejoined via an invite link; a
-# local-only spot is gone for good, which the confirm copy states.
+# device-local — a synced space can be rejoined via an invite link; a
+# local-only space is gone for good, which the confirm copy states.
 # `subject` reads the form's `data-remove` attribute. Deliberately NOT
 # `data-subject`: `tonk/rename-repository` transients already carry
 # `dataset/subject`, and a remove command matched on that attribute
@@ -448,8 +448,8 @@ view/directory!:
         <!-- Creating asks nothing up front: the space starts "Untitled" (the
              worker uniquifies the sentinel) and is renamed in place with the
              bar's block cursor the moment you land in it. No remote is
-             carried: the worker resolves where a spot syncs from the
-             account's own registration, so a spot created before anyone
+             carried: the worker resolves where a space syncs from the
+             account's own registration, so a space created before anyone
              registers stays local until it is shared. -->
         <form class="snew-form" onsubmit=space/create>
           <input type="hidden" name="name" value="Untitled">
@@ -1061,7 +1061,7 @@ view!: &space-view
   model: tonk:space/chrome
   display: |
     <style>
-      /* A spot this device does not hold answers every query with a
+      /* A space this device does not hold answers every query with a
          404, which `<tonk-display>` classifies as `unknown` — a
          terminal state, unlike `offline`, so nothing retries and
          nothing arrives later. The title display below is the one
@@ -1140,18 +1140,18 @@ view!: &space-view
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
     <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
     <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
-      <!-- `no-model` is now the absent-spot panel below, which sets its
+      <!-- `no-model` is now the absent-space panel below, which sets its
            own title; a second `no-model` child would render alongside it
            and fight over `document.title` (update_slot_children shows
            EVERY matching child, not the first). `no-entity` keeps the
            quiet placeholder: the concept resolved, the row just is not
            here yet. -->
       <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
-      <!-- The absent-spot case. A repository this device has not
+      <!-- The absent-space case. A repository this device has not
            replicated answers every query with the EMPTY SET, so
            `tonk:repository` resolves to nothing and this display lands
            in `no-model` — the same state a not-yet-synced concept
-           reaches, which is exactly right: the spot may arrive later,
+           reaches, which is exactly right: the space may arrive later,
            and when it does the standing subscription delivers a real
            frame and this panel is replaced in place.
 
@@ -1182,14 +1182,14 @@ view!: &space-view
           </div>
         </div>
       </div>
-      <!-- A spot created before `tonk:view/title` existed has no
+      <!-- A space created before `tonk:view/title` existed has no
            `view/title!:` row on its branch, so `view=tonk:view/title`
            resolves nothing and the display enters `no-view` — a `danger`
            state. `update_slot_children` toggles `hidden`, it never adds
            or removes children, so with no matching slot child the
            built-in red `<wa-callout>` fires. This inert child suppresses
            that callout while pushing no title, leaving the tab exactly
-           as it was — the old spot behavior. -->
+           as it was — the behavior for older spaces. -->
       <span slot="no-view"></span>
     </tonk-display>
 

@@ -42,10 +42,10 @@
 //!
 //! ## When the mint is refused
 //!
-//! A spot whose `main` has no sync remote cannot be shared: the worker refuses
+//! A space whose `main` has no sync remote cannot be shared: the worker refuses
 //! to mint rather than hand out an invite that would strand whoever claimed it
 //! in an empty space. It records that refusal as `xyz.tonk.share/{blocked,
-//! detail,time}` on the spot's subject, which this element reads on a SECOND
+//! detail,time}` on the space's subject, which this element reads on a SECOND
 //! subscription (see [`ShareBlockedBehaviour`]) — separate from the link
 //! subscription because a single predicate over both would resolve only when a
 //! refusal AND a link are present, which never happens.
@@ -57,8 +57,8 @@
 //!
 //! Two classes are repairable, and they share the claim but not the wording
 //! (see [`Repair`]). `not-synced` attaches a remote. `missing-revocation-relay`
-//! means the spot syncs fine but its remote carries no relay, so an invite
-//! could never be withdrawn — every spot whose remote predates in-band
+//! means the space syncs fine but its remote carries no relay, so an invite
+//! could never be withdrawn — every space whose remote predates in-band
 //! revocation is in that state; confirming upserts the relay onto the remote
 //! already there, leaving its address and its branch upstream untouched.
 //!
@@ -166,7 +166,7 @@ struct Blocked {
 /// confirm button (see `open_enable_sync_dialog`) on the one class it cannot
 /// repair.
 /// The refusal class the enable-sync prompt can still repair: an account
-/// with a provider, and a spot not yet attached to it.
+/// with a provider, and a space not yet attached to it.
 const BLOCKED_NOT_SYNCED: &str = tonk_worker_api::share::BLOCKED_NOT_SYNCED;
 
 /// The account enrolled but never confirmed the emailed link.
@@ -196,9 +196,9 @@ const TERMINAL_CONFIRM: &str = "copy link";
 /// The prompt serves two repairs that share a claim but not a sentence, plus
 /// a terminal class it only reports. Holding the whole wording per class —
 /// rather than swapping `detail` alone, as it used to — is what keeps a
-/// synced spot from being told to turn on sync: before this, EVERY refusal
+/// synced space from being told to turn on sync: before this, EVERY refusal
 /// re-used the `not-synced` copy, so a missing relay showed a greyed-out
-/// "Turn on sync & copy link" under a sentence about a device-only spot.
+/// "Turn on sync & copy link" under a sentence about a device-only space.
 ///
 /// `None` from [`Repair::for_code`] is the terminal case: report `detail`,
 /// no action line, confirm disabled.
@@ -216,7 +216,7 @@ struct Repair {
 /// What the dialog's confirm button carries out.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RepairOutcome {
-    /// Attach the account's remote to this spot, then mint — the
+    /// Attach the account's remote to this space, then mint — the
     /// one-click path that has always existed.
     EnableSync,
     /// Leave for `/account`, where registration lives. The bar is a
@@ -651,7 +651,7 @@ impl TonkShare {
             // both a `window` and the user gesture WebAuthn wants. This
             // frame has neither the ceremony nor the account UI, so it
             // asks through the portal bridge and the dialog opens over
-            // the spot rather than navigating away from it.
+            // the space rather than navigating away from it.
             //
             // The space rides along so the dialog can finish what this
             // click started: once an account exists, the share it
@@ -761,7 +761,7 @@ fn dispatch_invite(space: &str, time: f64) {
 }
 
 /// Dispatch the `tonk:enable-sync` claim, asking the worker to attach `remote`
-/// to this spot and — because `share` is set — mint the invite the refused
+/// to this space and — because `share` is set — mint the invite the refused
 /// click was after, as soon as the attach lands.
 fn dispatch_enable_sync(space: &str, remote: &str, share: bool, time: f64) {
     dispatch_claim(&enable_sync_claim_json(space, remote, share, time));
@@ -992,7 +992,7 @@ fn handle_link(
 
 /// Act on a refusal, if it answers the click currently awaiting an answer.
 ///
-/// The refusal fact is cardinality-one on the spot's subject, so the overlay
+/// The refusal fact is cardinality-one on the space's subject, so the overlay
 /// keeps the last one and redelivers it on every resubscribe. Matching on the
 /// echoed timestamp is what separates "this click was refused" from "here is
 /// an old refusal again" — without it, one refused share would poison every

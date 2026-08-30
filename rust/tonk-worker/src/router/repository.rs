@@ -327,7 +327,7 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-/// The `tonk:enable-sync` transient's target spot, read from the raw facts.
+/// The `tonk:enable-sync` transient's target space, read from the raw facts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 
@@ -368,7 +368,7 @@ fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) ->
 /// name. The create forms carry it in a hidden `name` input (the wizard
 /// no longer asks for a name up front); the handler uniquifies it
 /// against the existing space labels via [`next_untitled_label`], and
-/// the user renames the spot later (the FAB's inline editable /
+/// the user renames the space later (the FAB's inline editable /
 /// `tonk/rename-repository`).
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const UNTITLED: &str = "Untitled";
@@ -495,7 +495,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
 /// existing space labels ([`next_untitled_label`]) so consecutive
 /// creates read "Untitled", "Untitled 2", …. Once the space is created
 /// and seeded, the handler posts a `navigate` message back to the
-/// originating client so the creator lands inside the new spot. A
+/// originating client so the creator lands inside the new space. A
 /// remote/auth failure leaves a working local space, retryable from the
 /// topbar.
 ///
@@ -799,7 +799,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
     }
 }
 
-/// Attach a sync remote to an existing spot, then mint an invite when the
+/// Attach a sync remote to an existing space, then mint an invite when the
 /// transient asks for one.
 ///
 /// The share control dispatches this when a user accepts the offer to turn
@@ -994,7 +994,7 @@ async fn run_invite(
     }
 
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
-    // remote lands its recipient in a spot that can never fill, so there is
+    // remote lands its recipient in a space that can never fill, so there is
     // nothing worth generating key material for. Refusing here also means a
     // refusal costs no delegation and rotates no credential.
     let remote_execution = match super::create_invite::resolve_remote_url(&tonk, &repository)
@@ -1029,7 +1029,7 @@ async fn run_invite(
             // `not-synced` is not a refusal either: the account has a
             // provider, this space simply has no remote yet, and
             // attaching one is this handler's next step rather than a
-            // question for the caller. Sharing a local-only spot is
+            // question for the caller. Sharing a local-only space is
             // exactly the moment it earns its remote.
             //
             // Without this the click had nowhere to go. The control's
@@ -1227,11 +1227,11 @@ async fn run_invite(
     Ok(RunInvite::Settled)
 }
 
-/// Record why a share click could not mint, on the spot's content-branch
+/// Record why a share click could not mint, on the space's content-branch
 /// session overlay, keyed by the subject.
 ///
 /// Overlay-only, exactly like the `Credential` a successful mint writes: a
-/// refusal is this device's answer to this click, not a property of the spot,
+/// refusal is this device's answer to this click, not a property of the space,
 /// and it must never replicate. The write schedules a poll, so the dispatcher's
 /// drain fans it out to the share control's subscription in the same pass as a
 /// successful mint would have been.
@@ -1308,7 +1308,7 @@ async fn publish_share_blocked(
 /// `remote` is already a ready-to-append `&remote=…` suffix. It is never
 /// empty: a repo with no shareable remote is refused before any of this
 /// runs, because an invite that carries no remote strands its recipient in
-/// a spot that can never fill. This is the shape the share view used to
+/// a space that can never fill. This is the shape the share view used to
 /// concatenate from three overlay fields; building it here gives it one
 /// definition and lets it be shortened.
 ///
@@ -1875,7 +1875,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 ///
 /// 1. Retract its replica record from the profile meta branch
 ///    ([`remove_replica_from_profile`]) — the Hub row's source of
-///    truth, so the spot disappears immediately. This is the commit
+///    truth, so the space disappears immediately. This is the commit
 ///    point; everything after is cleanup.
 /// 2. Evict the repository from the reactor cache
 ///    ([`Reactor::evict`](crate::Reactor::evict)) and forget it in the
@@ -2090,7 +2090,7 @@ async fn remove_replica_from_profile(
     // The account-level directory entry hangs on the repository's own
     // entity, so it needs its own sweep — filtered to the space
     // namespace, because other facts may key on that entity too.
-    // Removing it is what makes "delete spot" account-wide: every
+    // Removing it is what makes "delete space" account-wide: every
     // device's Hub lists the directory, not this device's replica row.
     let directory = meta
         .handle()
@@ -3605,7 +3605,7 @@ pub async fn get_repository(
 
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — same lazy adoption the query
-    // route performs, so a second device can address a spot straight
+    // route performs, so a second device can address a space straight
     // from the synced account directory. A no-op for mounted repos.
     // The outcome rides the not-found error: a swallowed mount failure
     // turns an explainable miss into a bare 404.
@@ -4532,7 +4532,7 @@ mod space_config_tests {
 /// decode) so an older, frozen profile descriptor still triggers it. That
 /// tolerance cuts both ways: a renamed attribute on either side doesn't
 /// fail — the fact simply never matches, the field reads as absent, and
-/// the spot is created missing the remote with nothing logged. Pin both
+/// the space is created missing the remote with nothing logged. Pin both
 /// sides against the seeded document. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod form_attribute_tests {
@@ -4548,12 +4548,12 @@ mod form_attribute_tests {
     ///
     /// It used to: the Hub filled a hidden input from
     /// `<tonk-default-remote auto>`, and this test pinned the two
-    /// spellings together. Then a spot stopped earning its remote at
+    /// spellings together. Then a space stopped earning its remote at
     /// creation — the worker resolves where a space syncs from the
-    /// account's own registration, so a spot made before anyone
+    /// account's own registration, so a space made before anyone
     /// registers stays local until it is shared. A form that names a
     /// remote would wire one anyway, which is the behaviour
-    /// `it_creates_a_local_only_spot_from_the_hub_wizard` refuses.
+    /// `it_creates_a_local_only_space_from_the_hub_wizard` refuses.
     ///
     /// `REMOTE_ATTR` stays readable so a frozen older descriptor that
     /// still declares the field keeps working; it is simply no longer
@@ -4562,7 +4562,7 @@ mod form_attribute_tests {
     fn it_declares_no_remote_on_the_create_form() {
         assert!(
             !PROFILE_LIBRARY.contains(REMOTE_ATTR),
-            "profile.yaml declares `the: {REMOTE_ATTR}` again — a spot \
+            "profile.yaml declares `the: {REMOTE_ATTR}` again — a space \
              would wire a remote at creation instead of earning one when \
              it is shared",
         );
@@ -6156,7 +6156,7 @@ mod tests {
 
     /// The refusal class follows the account's registration state.
     ///
-    /// Same spot, same missing upstream, three different remedies: an
+    /// Same space, same missing upstream, three different remedies: an
     /// account that is served can attach one, an enrolled account is
     /// waiting on its email, and an unregistered one has to register.
     #[dialog_common::test]
@@ -6206,7 +6206,7 @@ mod tests {
         );
     }
 
-    /// A share click on a spot with no upstream mints nothing and leaves a
+    /// A share click on a space with no upstream mints nothing and leaves a
     /// refusal on the overlay instead.
     ///
     /// The class says WHY there is no upstream. This profile has never
@@ -6261,7 +6261,7 @@ mod tests {
     /// POST a remote config to `key`, exactly as the topbar and the share
     /// prompt's confirm do. Unlike [`attach_remote`] it names no relay
     /// unless asked, so a test can produce the pre-in-band-revocation shape:
-    /// a spot that syncs but cannot mint.
+    /// a space that syncs but cannot mint.
     async fn post_remote(
         app: &Router,
         key: &str,
@@ -6302,7 +6302,7 @@ mod tests {
     /// A second attach does not repoint a remote that is already there.
     ///
     /// The share prompt builds its endpoint from the page's origin, which
-    /// need not be the origin the spot actually syncs through, and dialog
+    /// need not be the origin the space actually syncs through, and dialog
     /// leaves an existing remote as-is — so the meta mirror has to keep
     /// describing the remote that is really there rather than adopting the
     /// caller's.
@@ -6384,11 +6384,11 @@ mod tests {
             .collect()
     }
 
-    /// Attaching a remote through the command targets the EXISTING spot. The
+    /// Attaching a remote through the command targets the EXISTING space. The
     /// `space/enable-sync` command in `core.yaml` shares `CreateSpace`'s trigger
-    /// attribute and so mints a new spot instead; this guards against that.
+    /// attribute and so mints a new space instead; this guards against that.
     #[dialog_common::test]
-    async fn it_attaches_the_remote_to_the_existing_spot() {
+    async fn it_attaches_the_remote_to_the_existing_space() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let (key, subject) = put_repo_info(&app, "test-enable-sync").await;
         let before = existing_space_labels(&state).await.len();
@@ -6398,11 +6398,11 @@ mod tests {
         assert_eq!(
             existing_space_labels(&state).await.len(),
             before,
-            "no new spot was created"
+            "no new space was created"
         );
         assert!(
             has_remote_upstream(&state, &key).await,
-            "the existing spot now tracks origin/main"
+            "the existing space now tracks origin/main"
         );
     }
 

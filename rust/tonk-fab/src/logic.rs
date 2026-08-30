@@ -136,7 +136,7 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
 /// A drop persists the nearest one: the vertical half of the viewport picks
 /// top vs bottom, the horizontal half picks left vs right.
 ///
-/// The resting spot is expressed as two CSS classes on `<tonk-fab>` — a vertical
+/// The resting position is expressed as two CSS classes on `<tonk-fab>` — a vertical
 /// one (`fab-dock-top` / `fab-dock-bottom`) and a horizontal one
 /// (`fab-dock-left` / `fab-dock-right`) — and the actual pixel placement + the
 /// submenu open-direction live in the view's stylesheet (profile.yaml). This
@@ -1090,7 +1090,7 @@ pub enum ShareState {
     /// A mint is in flight. The clipboard write is already pending on a
     /// promise this state is waiting to resolve.
     Copying,
-    /// The mint was refused because the spot has no shareable sync remote.
+    /// The mint was refused because the space has no shareable sync remote.
     /// The prompt offering to attach one is up; unlike `Copied`/`Failed` this
     /// does not revert on a timer, because the user is being asked a question.
     Blocked,
@@ -1566,7 +1566,7 @@ mod create_space {
     ///
     /// `remote` is gone for a second reason: the page supplying one made
     /// every create look like a deliberate choice of this server, so a
-    /// spot created before anyone registered was wired to a service that
+    /// space created before anyone registered was wired to a service that
     /// refuses to serve it. The worker resolves it from the account.
     #[test]
     fn it_declares_only_the_field_the_form_carries() {
@@ -1630,7 +1630,7 @@ mod profile_rename {
         // "…dataset/rename" also matches "…dataset/rename-repository", so a
         // marker silently pointed at the repo-rename attribute would still
         // pass. That collision is not hypothetical — both commands once
-        // derived `dataset/rename` and every spot rename also renamed the
+        // derived `dataset/rename` and every space rename also renamed the
         // profile, because decoding matches on which attributes are present
         // and never on their values. `dialog-reactor`'s
         // `it_does_not_decode_a_repo_rename_as_a_profile_rename` pins the
@@ -1802,9 +1802,9 @@ mod invite_link {
 ///
 /// An INLINE predicate over the raw `xyz.tonk.share/*` attributes, for the
 /// same reason [`invite_link_query_body`] is inline: rules and views are
-/// frozen at whatever `core.yaml` seeded a spot with, so reading raw
-/// attributes depends on nothing seeded and works on spots that predate this
-/// feature. `this` binds to the spot's subject DID, the entity the worker
+/// frozen at whatever `core.yaml` seeded a space with, so reading raw
+/// attributes depends on nothing seeded and works on spaces that predate this
+/// feature. `this` binds to the space's subject DID, the entity the worker
 /// keys the refusal by.
 /// Whether this profile's account is registered and served.
 ///

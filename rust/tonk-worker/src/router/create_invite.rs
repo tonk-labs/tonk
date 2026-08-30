@@ -384,7 +384,7 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e}")))
 }
 
-/// Why a spot cannot produce a shareable invite.
+/// Why a space cannot produce a shareable invite.
 ///
 /// Both variants mean an invite that would fail its recipient: one that
 /// can never sync. [`Self::UnshareableRemote`] is terminal;
@@ -440,10 +440,10 @@ impl RemoteRefusal {
     }
 }
 
-/// Say WHY a spot has no upstream, given what this profile's account has
+/// Say WHY a space has no upstream, given what this profile's account has
 /// registered.
 ///
-/// `resolve_remote_url` sees only the repository, so every unsynced spot
+/// `resolve_remote_url` sees only the repository, so every unsynced space
 /// reads as [`RemoteRefusal::NotSynced`] — "attach a remote". That is
 /// the right answer only when there is a provider to attach to. A device
 /// has an account from first boot, so the interesting cases are the ones
@@ -802,7 +802,7 @@ mod tests {
         assert_eq!(invitations[0].inviter.0, root_entity);
     }
 
-    /// A spot created without a remote refuses, and says which case it was.
+    /// A space created without a remote refuses, and says which case it was.
     #[dialog_common::test]
     async fn it_refuses_a_repository_with_no_upstream() {
         use crate::router::create_invite::{RemoteRefusal, RemoteRequirement, resolve_remote_url};

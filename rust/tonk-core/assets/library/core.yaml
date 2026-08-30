@@ -783,7 +783,7 @@ concept!: &tonk/repository
 
 # Agent working context carried by the repository itself. The instance is keyed
 # by the same stable repository subject DID as `tonk/repository`, so it syncs
-# with the spot rather than belonging to one filesystem checkout or replica.
+# with the space rather than belonging to one filesystem checkout or replica.
 attribute!: &tonk/agents-markdown
   the: xyz.tonk.repo/agents
   description: >
@@ -948,7 +948,7 @@ concept!: &view/title
 # The repository's name as the browser tab's title. The space chrome
 # mounts this via `<tonk-display model=tonk:repository entity={id}
 # view=tonk:view/title>` inside a per-space `with={id}` routing context,
-# so the tab names the focused spot (read from that space's
+# so the tab names the focused space (read from that space's
 # `tonk/repository`, the cross-device source of truth). `<tonk-title>`
 # renders nothing — it pushes the text to the host page, which owns
 # `document.title`.

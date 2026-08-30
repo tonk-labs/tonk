@@ -19,7 +19,7 @@
 //! element's `exclude` attribute) is skipped, so the switcher never offers to
 //! navigate to the space you're already on. A surviving row stamps
 //! `data-status` from the directory status so existing CSS can dim a
-//! still-seeding spot.
+//! still-seeding space.
 //!
 //! It renders ONLY the space rows. `new +` and `more ↖` belong to the stack
 //! that hosts this flyout (`markup::STACKS_HTML`), not here — emitting them
@@ -204,7 +204,7 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
 ///
 /// No action rows. The stack that hosts this flyout already carries `new +`
 /// and `more ↖` (see `markup::STACKS_HTML`); emitting them here as well is
-/// what put a second, unstyled "+new" and "all spots" inside the open menu.
+/// what put a second, unstyled "+new" and "all spaces" inside the open menu.
 ///
 /// The list is capped at [`MAX_ROWS`]: up to seven spaces fly out, and `more
 /// ↖` — the stack's own last row — is the way to the rest. The active space

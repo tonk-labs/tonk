@@ -1,6 +1,6 @@
 //! The registration dialog, raised over whatever the user was reading.
 //!
-//! Sharing a spot needs an account, so the share control's refusal
+//! Sharing a space needs an account, so the share control's refusal
 //! (`needs-account`) asks for one here rather than sending the user to
 //! `/account` and losing what they were doing. This is the top page, so
 //! the ceremony can run in place: WebAuthn needs a `window` and a user
@@ -1691,7 +1691,7 @@ pub struct Request {
     /// The refusal class that raised the dialog.
     #[serde(default)]
     pub reason: String,
-    /// The spot the interrupted click was sharing, so it can be
+    /// The space the interrupted click was sharing, so it can be
     /// finished once an account exists.
     #[serde(default)]
     pub space: String,
@@ -1720,7 +1720,7 @@ fn remember_space(space: &str) {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-/// The spot a finished registration should go on to share.
+/// The space a finished registration should go on to share.
 pub(crate) fn pending_share() -> Option<String> {
     web_sys::window()
         .and_then(|window| window.document())

@@ -2172,19 +2172,19 @@ mod tests {
         }
     }
 
-    /// The Hub's own wizard creates a local-only spot before anyone
+    /// The Hub's own wizard creates a local-only space before anyone
     /// registers.
     ///
     /// Every other test here builds the claim in Rust, which skips the
     /// form entirely — so a hidden input that prefills a remote is
     /// invisible to them. This one submits the real wizard, which is how
     /// `<tonk-default-remote auto>` went on wiring `origin + /ucan/`
-    /// onto spots created with no account: the form supplied a remote,
+    /// onto spaces created with no account: the form supplied a remote,
     /// the worker honoured it as a deliberate choice, and the gate that
-    /// keeps a spot local never got a say. The spot then synced to a
+    /// keeps a space local never got a say. The space then synced to a
     /// service that refuses to serve it.
     #[dialog_common::test]
-    async fn it_creates_a_local_only_spot_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
+    async fn it_creates_a_local_only_space_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
         // The authenticator id comes along so the ceremony can be
         // observed: a passkey either got minted or it did not.
         let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
@@ -2209,7 +2209,7 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "the wizard never created a spot; before={before:?} now={now:?}",
+                "the wizard never created a space; before={before:?} now={now:?}",
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
@@ -2218,12 +2218,12 @@ mod tests {
         // "no remote" means it declined rather than that we looked early.
         tokio::time::sleep(Duration::from_secs(3)).await;
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
-        let info = successful_body("read the spot configuration", &info);
+        let info = successful_body("read the space configuration", &info);
         assert!(
             info["remote"]
                 .as_object()
                 .is_none_or(serde_json::Map::is_empty),
-            "a spot created before registering must wire no remote, got {}",
+            "a space created before registering must wire no remote, got {}",
             info["remote"],
         );
         assert!(
@@ -2232,7 +2232,7 @@ mod tests {
             info["branch"]["main"]["upstream"],
         );
 
-        // The spot is local-only, which is what makes sharing it
+        // The space is local-only, which is what makes sharing it
         // refuse. Walk the rest of the flow from that refusal, asserting
         // at each step on WHAT THE USER SEES rather than on the fact
         // behind it.
@@ -2307,7 +2307,7 @@ mod tests {
         click_register_action(&driver).await?;
 
         // ...and THEN the share it interrupted finishes, which is the
-        // feature: the spot gains the remote it refused to share
+        // feature: the space gains the remote it refused to share
         // without, and the invite link arrives.
         await_share_link(&driver, &key).await?;
 
@@ -3130,7 +3130,7 @@ mod tests {
     ///
     /// Read from the SPACE's branch, keyed by the space, because that is
     /// where the mint writes: `enable-sync` attaches the remote and
-    /// asserts `xyz.tonk.invite/url` on the spot it shared. Profile main
+    /// asserts `xyz.tonk.invite/url` on the space it shared. Profile main
     /// never carries it, so asking there answers `[]` for a share that
     /// worked — which is exactly the report this used to give. The
     /// dialog reads the same row to fill the clipboard, so this is the
@@ -4111,7 +4111,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_backs_up_a_claimed_spot_for_another_account_device(
+    async fn it_backs_up_a_claimed_space_for_another_account_device(
         env: TestEnvironment,
     ) -> Result<()> {
         let creator = driver_with_prf(&env).await?;
