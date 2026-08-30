@@ -21,6 +21,7 @@
   "dependencies": {
     "markdown-it": "^14.1.0",
     "markdown-it-mark": "4.0.0",
+    "prosemirror-autocomplete": "0.4.3",
     "prosemirror-commands": "^1.6.0",
     "prosemirror-dropcursor": "^1.8.1",
     "prosemirror-gapcursor": "^1.3.2",

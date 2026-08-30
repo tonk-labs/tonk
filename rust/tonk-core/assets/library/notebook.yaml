@@ -191,42 +191,24 @@ view!:
 
 # EVERY notebook — the directory view, which is what core's `/{*model}` route
 # renders at `/space/{repo}/notebook`. A list of links, one per notebook.
-# EVERY notebook, with one box at the top that both filters and creates.
+# EVERY notebook — the rows the switcher reads.
 #
-# `<tonk-notebook-index>` owns the filtering: it is a view concern, not a
-# fact, so typing must not write anything. Submitting IS a fact, and goes
-# through `notebook/create` like any other command.
+# There is no search form here any more. The index page mounts an empty
+# notebook whose HEADING is the switcher (see `heading-switcher.ts`): typing
+# a title suggests the notebooks that match, and the list carries an
+# explicit "create this" row so Enter always has a visible target.
 #
-# The element wraps the rows rather than replacing them, so the directory
-# still renders as a plain list if its script never loads.
+# These rows are the switcher's candidates as well as the plain list, so an
+# index whose script never loads is still a working set of links.
 view/directory!:
   this: id:notebook/directory
   model: tonk:notebook
   display: |
-    <tonk-notebook-index class="notebook-index">
-      <form class="notebook-index__search" onsubmit=notebook/create>
-        <wa-input
-          class="notebook-index__query"
-          name="title"
-          type="search"
-          autocomplete="off"
-          placeholder="Find a notebook, or type a name to make one"
-          appearance="filled"
-        ></wa-input>
-        <wa-button
-          class="notebook-index__new"
-          type="submit"
-          variant="brand"
-          title="Create a notebook with this name"
-        >New</wa-button>
-      </form>
-      <p class="notebook-index__empty" hidden>
-        Nothing matches. Press <kbd>Enter</kbd> to create it.
-      </p>
+    <div class="notebook-index">
       <a class="notebook-index__item" href="notebook/{this}">
         <span class="notebook-index__title">{title}</span>
       </a>
-    </tonk-notebook-index>
+    </div>
 
 # The block rows the element reads: one per block, its source on the row.
 view/directory!:
@@ -356,26 +338,6 @@ command!: &block/insert
         block consults it; the others take their bound from their successor.
       the: xyz.tonk.notebook.insert/prev
       as: entity
-
-# Create a notebook from the index's search box.
-#
-# The box is one control for two jobs: it filters the list as you type, and
-# submitting it creates a notebook with what you typed as the title. The
-# filtering is the element's business (it is a view concern, not a fact);
-# this command is only the create half.
-command!: &notebook/create
-  description: Create a notebook with a title.
-  with:
-    title:
-      description: |
-        The typed title. Read off the form's own element rather than the
-        event detail: a `wa-input` reports its value through
-        `elements.<name>.value`, and FormData comes back empty for it.
-      the: dom.event.current-target.elements.title/value
-      as: text
-    prevent-default:
-      description: Stop the form submission from reloading the page.
-      the: dom.event.do/prevent-default
 
 # Rename a notebook from its document's own heading.
 #
@@ -592,15 +554,6 @@ rule!:
       where:
         this: ?block
         at: ?block/key
-
-rule!:
-  description: Create a notebook from the index box.
-  assert!: notebook/named
-  when:
-    - assert: notebook/create
-      where:
-        this: ?this
-        title: ?title
 
 rule!:
   description: Retitle a notebook from its heading.
