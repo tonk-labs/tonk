@@ -1276,11 +1276,19 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     Ok(())
 }
 
-/// The deferred variant of the custody publish: the invocation is
-/// pre-signed with the month-long expiration a queued-at-creation
-/// publish carries, and must still redeem — the service bounds
-/// registration ceremonies, not the memory permit an owner signs for
-/// its own cell.
+/// A month-old pre-signed publish still redeems.
+///
+/// The same flow as [`it_adds_a_second_passkey_to_an_existing_account`],
+/// differing in one line: the publish invocation carries the 30-day
+/// expiry a ceremony signs rather than a five-minute one. That is the
+/// whole question — the service bounds registration ceremonies to a
+/// short window, and this pins that the bound does not reach a memory
+/// permit a space signs for its own cell.
+///
+/// It matters because enrollment carries exactly this invocation and
+/// verifies its expiry outlives the activation window. If a long-lived
+/// one stopped redeeming, every signup would verify at enrollment and
+/// fail at the write.
 #[dialog_common::test]
 async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> anyhow::Result<()> {
     use dialog_remote_s3::Permit;
@@ -1294,7 +1302,9 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     let ucan = format!("{base}/ucan/");
     let service_did: Did = env.service_did.parse()?;
 
-    // The account enrolls as a customer.
+    // Setup, identical to the test named above: enroll, activate, and
+    // provision a second passkey's DID. The question is the publish
+    // below, not any of this.
     let account = Ed25519Signer::generate().await?;
     let container = enroll_container(&account, &service_did, "custody@example.com").await;
     let response = client
@@ -1304,18 +1314,10 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
         .send()
         .await?;
     assert_eq!(response.status(), 200, "enrollment refused");
-
-    // Confirming the email is what unlocks everything below: an
-    // unactivated customer provisions nothing and is served nothing.
     activate_over_http(&client, &base).await?;
 
-    // The entry function's two outputs; a PRF would produce these
-    // inside one assertion, at the two custody salts.
     let custody_key = custody_signer(&[21u8; 32]).await?;
     let kek = custody_kek(&[22u8; 32]);
-
-    // The account provisions the custody DID, depositing the consent
-    // the custody key minted — the ordinary provisioning contract.
     let device = Ed25519Signer::generate().await?;
     let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
     let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
@@ -1338,8 +1340,9 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     // Seal the secret and publish the cell: permit, then presigned PUT.
     let secret = AccountSecret::generate()?;
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
-    // The ceremony's pre-signed shape: bounded to a month, redeemed
-    // long after signing — what the worker drains once activation lands.
+    // The ceremony's pre-signed shape: bounded to a month, and redeemed
+    // long after signing. Enrollment now redeems the first passkey's
+    // copy itself; this proves the shape survives the delay either way.
     let publish = custody::build_deferred_publish_invocation(custody_key.clone(), &sealed).await?;
     // The same invocation enrollment verifies, so the command it accepts
     // and the one this endpoint redeems cannot drift apart. Reading it
