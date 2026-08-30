@@ -327,6 +327,106 @@ mod tests {
             .expect("a CryptoKey")
     }
 
+    /// Can the PRF output cross to a worker as a handle, and still
+    /// derive both keys there?
+    ///
+    /// The design this answers: the page runs WebAuthn and posts one
+    /// non-extractable HKDF handle; the worker derives the KEK and the
+    /// custody signer from it and does all the minting. Nothing
+    /// readable crosses, and the PRF output stops being readable
+    /// anywhere at all — today it sits in page memory as bytes.
+    ///
+    /// Two questions in one test, because either failing sinks it:
+    /// whether a `CryptoKey` survives structured clone (what
+    /// `postMessage` performs), and whether one base handle can serve
+    /// both derivations.
+    ///
+    /// Structured clone rather than a real worker because it is the
+    /// same algorithm: `postMessage` serializes by structured clone, so
+    /// a key that survives one survives the other. That also keeps the
+    /// test runnable where service workers are not — Safari in lockdown
+    /// mode refuses them outright.
+    ///
+    /// Note what this does not buy. The KEK stays a handle the whole
+    /// way, but Ed25519 has no `deriveKey` target in WebCrypto, so its
+    /// seed materialises as bytes wherever it is derived. Posting the
+    /// base handle moves those bytes from the page to the worker rather
+    /// than removing them — what it does remove is the PRF output being
+    /// readable anywhere at all.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_carries_a_derivation_handle_across_structured_clone() {
+        let prf = [7u8; 32];
+        let subtle = web_sys::window().unwrap().crypto().unwrap().subtle();
+
+        // What the page would post: the PRF output as an HKDF base,
+        // non-extractable, able to derive and nothing else.
+        let material = js_sys::Uint8Array::from(&prf[..]);
+        let usages = js_sys::Array::new();
+        usages.push(&JsValue::from_str("deriveKey"));
+        usages.push(&JsValue::from_str("deriveBits"));
+        let base: CryptoKey = JsFuture::from(
+            subtle
+                .import_key_with_str("raw", &material, "HKDF", false, &usages)
+                .expect("import starts"),
+        )
+        .await
+        .expect("HKDF import resolves")
+        .dyn_into()
+        .expect("a CryptoKey");
+
+        // The transport itself. `structuredClone` is the algorithm
+        // `postMessage` runs, so this asks the same question without
+        // standing up a worker.
+        let cloned: CryptoKey = js_sys::Reflect::get(
+            &web_sys::window().unwrap(),
+            &JsValue::from_str("structuredClone"),
+        )
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .expect("structuredClone exists")
+        .call1(&JsValue::NULL, &base)
+        .expect("a CryptoKey survives structured clone")
+        .dyn_into()
+        .expect("and arrives as one");
+
+        // Both derivations, from the clone rather than the original.
+        let params = js_sys::Object::new();
+        let set = |key: &str, value: &JsValue| {
+            js_sys::Reflect::set(&params, &JsValue::from_str(key), value).unwrap();
+        };
+        set("name", &JsValue::from_str("HKDF"));
+        set("hash", &JsValue::from_str("SHA-256"));
+        set("salt", js_sys::Uint8Array::new_with_length(32).as_ref());
+        set(
+            "info",
+            js_sys::Uint8Array::from(crate::envelope::CUSTODY_KEY_CONTEXT).as_ref(),
+        );
+        let bits = JsFuture::from(
+            subtle
+                .derive_bits_with_object(&params, &cloned, 256)
+                .expect("deriveBits starts"),
+        )
+        .await
+        .expect("the seed derives from the cloned handle");
+        let seed = js_sys::Uint8Array::new(&bits).to_vec();
+
+        // And it is the same seed the byte path produces, so a signer
+        // built here names the same custody space.
+        assert_eq!(
+            seed.as_slice(),
+            crate::envelope::custody_seed(&prf).as_ref(),
+            "the worker derives the seed the page would have"
+        );
+        assert!(
+            dialog_credentials::Ed25519Signer::import(
+                &<[u8; 32]>::try_from(seed.as_slice()).unwrap()
+            )
+            .await
+            .is_ok(),
+            "and dialog imports it as a signer"
+        );
+    }
+
     /// The whole point: something sealed by the `aes_gcm` path opens
     /// from a key handle that cannot be read.
     #[dialog_common::test]
