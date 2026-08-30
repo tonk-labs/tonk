@@ -3,6 +3,10 @@
 
   inputs = {
     crane.url = "github:ipetkov/crane";
+    dialog-db-src = {
+      url = "github:dialog-db/dialog-db/tonk-2026-08-28";
+      flake = false;
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     nixpkgs-chromedriver.url = "github:NixOS/nixpkgs/master";
     flake-utils.url = "github:numtide/flake-utils";
@@ -21,6 +25,7 @@
     {
       self,
       crane,
+      dialog-db-src,
       nixpkgs,
       nixpkgs-chromedriver,
       flake-utils,
@@ -97,6 +102,16 @@
           wasm-bindgen-cli
           ;
 
+        wbg-pool = import ./nix/wbg-pool.nix {
+          inherit
+            pkgs
+            crane
+            nix-filter
+            rustToolchain
+            dialog-db-src
+            ;
+        };
+
         # PostHog project API key, baked into release binaries at compile
         # time (rust/tonk-analytics reads it via option_env!). Project API
         # keys are public-by-design client keys, so committing one here is
@@ -129,6 +144,7 @@
           wrangler
           rustToolchain
           wasm-bindgen-cli
+          wbg-pool
         ];
 
         devShellEnvVars =
@@ -141,13 +157,16 @@
             "WASM_BINDGEN_BIN" = "${wasm-bindgen-cli}/bin/wasm-bindgen";
             "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
             "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
+            "WBG_POOL_FALLBACK_RUNNER" = "${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner";
           }
           // lib.optionalAttrs stdenv.isLinux {
             "CHROME" = "${chromium}/bin/chromium";
             "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+            "WBG_POOL_NO_SANDBOX" = "1";
           }
           // lib.optionalAttrs stdenv.isDarwin {
             "CHROMEDRIVER" = "${chromedriverDarwin}/bin/chromedriver";
+            "WBG_POOL_BROWSER" = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
           };
 
         # Import menu helpers (e.g., colorful Tonk Shell commands)
@@ -371,9 +390,21 @@
             package = "tests-web-debug";
           };
 
+          "test:web:debug:pooled" = menuTestCommand {
+            description = "Unit tests (wasm32-unknown-unknown, debug, pooled runner)";
+            package = "tests-web-debug";
+            runner = "${wbg-pool}/bin/wbg-pool";
+          };
+
           "test:web:release" = menuTestCommand {
             description = "Unit tests (wasm32-unknown-unknown, release)";
             package = "tests-web-release";
+          };
+
+          "test:web:release:pooled" = menuTestCommand {
+            description = "Unit tests (wasm32-unknown-unknown, release, pooled runner)";
+            package = "tests-web-release";
+            runner = "${wbg-pool}/bin/wbg-pool";
           };
 
           "menu" = {
@@ -383,6 +414,25 @@
         };
 
         menu = makeMenu commands;
+
+        menuArgsTest = makeMenu {
+          "test:menu-args" = menuTestCommand {
+            description = "Exercise menu test argument forwarding";
+            package = "tests-web-fixture";
+            runner = "/nix/store/exact-wbg-pool/bin/wbg-pool";
+          };
+        };
+
+        menuArgsFakeNix = pkgs.writeShellScriptBin "nix" ''
+          if [ "$1" = "eval" ]; then
+            echo /tmp/menu-test-archive
+          fi
+        '';
+
+        menuArgsFakeCargo = pkgs.writeShellScriptBin "cargo" ''
+          printf '%s\n' "$@" > "$MENU_ARGS_CAPTURE"
+          printf '%s\n' "''${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER:-}" > "$MENU_RUNNER_CAPTURE"
+        '';
       in
       {
 
@@ -395,6 +445,33 @@
               ${nixfmt}/bin/nixfmt --check $(find . -name '*.nix' -type f)
               touch $out
             '';
+
+            menu-test-command-args =
+              runCommand "menu-test-command-args"
+                {
+                  nativeBuildInputs = menuArgsTest.commands;
+                }
+                ''
+                  mkdir -p "$out"
+                  export PATH="${menuArgsFakeNix}/bin:${menuArgsFakeCargo}/bin:$PATH"
+                  export MENU_ARGS_CAPTURE="$out/actual-args"
+                  export MENU_RUNNER_CAPTURE="$out/actual-runner"
+
+                  test:menu-args -E 'package(tonk-ui)'
+
+                  printf '%s\n' \
+                    nextest \
+                    run \
+                    --workspace-remap \
+                    ./ \
+                    --archive-file \
+                    /tmp/menu-test-archive/tests-web-fixture.tar.zst \
+                    -E \
+                    'package(tonk-ui)' > "$out/expected-args"
+                  diff -u "$out/expected-args" "$out/actual-args"
+                  printf '%s\n' /nix/store/exact-wbg-pool/bin/wbg-pool > "$out/expected-runner"
+                  diff -u "$out/expected-runner" "$out/actual-runner"
+                '';
           });
 
         devShells = with pkgs; {
@@ -413,6 +490,8 @@
         };
 
         packages = rec {
+          inherit wbg-pool;
+
           # `tonk-account-service/helpers` is package-qualified on purpose.
           # Four crates define a `helpers` feature, and a bare `--features
           # helpers` would switch on all of them — including tonk-ui's, which

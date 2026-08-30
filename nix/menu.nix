@@ -129,15 +129,25 @@ let
       export -f showTonkMenu
     '';
 
-  makeMenuTestCommand = package: ''
-    nix build .#${package}
+  makeMenuTestCommand =
+    {
+      package,
+      runner ? null,
+    }:
+    ''
+          ${pkgs.lib.optionalString (runner != null) ''
+            export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=${pkgs.lib.escapeShellArg runner}
+          ''}
 
-    TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+        nix build .#${package}
 
-    cargo nextest run \
-      --workspace-remap ./ \
-      --archive-file "$TESTS_PATH/${package}.tar.zst" \
-  '';
+        TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+
+      cargo nextest run \
+        --workspace-remap ./ \
+        --archive-file "$TESTS_PATH/${package}.tar.zst" \
+        "$@"
+    '';
 
   menuTestEnv =
     with pkgs;
@@ -150,10 +160,14 @@ let
     };
 
   menuTestCommand =
-    { description, package }:
+    {
+      description,
+      package,
+      runner ? null,
+    }:
     {
       inherit description;
-      command = makeMenuTestCommand package;
+      command = makeMenuTestCommand { inherit package runner; };
       env = menuTestEnv;
     };
 in
