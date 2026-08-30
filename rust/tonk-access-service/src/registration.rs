@@ -231,7 +231,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
     /// against this environment.
     pub async fn handle(&self) -> Result<Answer, RegistrationError>
     where
-        Self: Provider<Enroll> + Provider<Activate> + Provider<Add>,
+        Self: Provider<Activate> + Provider<Add>,
     {
         match registration_command(self.container) {
             Some(RegistrationCommand::Enroll) => {
@@ -239,12 +239,21 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     .verified_chain(&ENROLL_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
                     .await?;
                 let effect: Enroll = deserialize_arguments(chain.arguments())?;
+                // Called directly rather than through `perform`: the
+                // custody material this carries is itself an invocation
+                // and a delegation, and verifying them needs the same
+                // revocation checker the outer chain used. A `Provider`
+                // impl is `async_trait`, whose future must be `Send`,
+                // and the checker's is not — so the verification lives
+                // on this side of the dispatch, where the outer chain's
+                // already does.
                 Ok(Answer::Customer(
-                    Subject::from(chain.subject().clone())
-                        .attenuate(Customer)
-                        .invoke(effect)
-                        .perform(self)
-                        .await?,
+                    self.enroll(
+                        Subject::from(chain.subject().clone())
+                            .attenuate(Customer)
+                            .invoke(effect),
+                    )
+                    .await?,
                 ))
             }
             Some(RegistrationCommand::ProviderAdd) => {
@@ -732,21 +741,31 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         let recovery_bytes = carried(&effect.recovery, "recovery")?;
         let consent_bytes = carried(&effect.consent, "consent")?;
 
-        // The recovery invocation: self-signed by the custody key, so it
-        // verifies against that key alone and any browser can redeem it.
+        // The recovery invocation, with its proofs resolved from the
+        // same container. `resolve_invocation` hands back a chain with
+        // an empty proof store — a carried block is a bare token — so a
+        // recovery issued through a delegate resolves its own chain
+        // from the blocks travelling beside it.
         let recovery = bundle.resolve_invocation(&effect.recovery).map_err(|err| {
             RegistrationError::Invalid {
                 message: format!("`recovery` does not decode as an invocation: {err}"),
             }
         })?;
+        let recovery = InvocationChain::new(
+            recovery.invocation.clone(),
+            self.carried_proofs(&bundle, recovery.invocation.proofs())?,
+        );
         // Proofs are allowed: a passkey may delegate to a profile that
         // issues the recovery setup, so the chain is verified like any
-        // other rather than required to be self-signed.
+        // other rather than required to be self-signed. It verifies
+        // against this service's own revocations — a nested invocation
+        // is an invocation, and a link revoked anywhere above it refuses
+        // the enrollment.
         recovery
             .verify(&VerificationContext::new(&Environment::new(
                 recovery.proof_store(),
                 DidKeyResolver,
-                &dialog_ucan_core::revocation::UnverifiedRevocations,
+                self.revocations,
             )))
             .await
             .map_err(|err| RegistrationError::Unauthorized {
@@ -1021,6 +1040,35 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .collect())
     }
 
+    /// Resolve an invocation's proofs from the blocks its container
+    /// carries, following each delegation's own proofs in turn.
+    ///
+    /// A nested invocation arrives as a bare token, so nothing has
+    /// resolved its chain: this walks it, and a link the container does
+    /// not carry is a refusal rather than a chain that verifies short.
+    fn carried_proofs(
+        &self,
+        bundle: &InvocationBundle,
+        proofs: &[Cid],
+    ) -> Result<
+        std::collections::HashMap<Cid, std::sync::Arc<Delegation<AnySignature>>>,
+        RegistrationError,
+    > {
+        let mut resolved = std::collections::HashMap::new();
+        for link in proofs {
+            let chain =
+                bundle
+                    .resolve_delegation(link)
+                    .map_err(|err| RegistrationError::Invalid {
+                        message: format!(
+                            "`recovery` names proof {link}, which does not resolve: {err}"
+                        ),
+                    })?;
+            resolved.extend(chain.export());
+        }
+        Ok(resolved)
+    }
+
     /// Find a delegation the container carries, by CID.
     fn carried_delegation(&self, cid: &str) -> Result<Delegation<AnySignature>, RegistrationError> {
         self.delegation_tokens()?
@@ -1054,20 +1102,6 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
 // `async_trait` forms as `Provider` itself, so their futures carry the
 // platform-conditional `Send` and one generic impl serves every
 // environment. `ConditionalSync` bounds cover the `&self` captures.
-
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E, R, V> Provider<Enroll> for Registration<'_, S, E, R, V>
-where
-    S: Store + ConditionalSync,
-    E: EmailSender + ConditionalSync,
-    R: RevocationChecker + ConditionalSync,
-    V: Vault + ConditionalSync,
-{
-    async fn execute(&self, input: Capability<Enroll>) -> Result<Receipt, RegistrationError> {
-        self.enroll(input).await
-    }
-}
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

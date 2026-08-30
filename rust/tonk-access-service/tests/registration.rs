@@ -172,12 +172,18 @@ struct Custody {
     /// Drop these blocks from the container, though the arguments still
     /// name them.
     omit: Vec<&'static str>,
+    /// Issue the recovery through a delegate the custody key granted
+    /// to, rather than self-signing it. `None` is the self-signed case.
+    /// The delegation travels in the container as the invocation's
+    /// proof, like any other chain.
+    recovery_delegate: Option<[u8; 32]>,
 }
 
 impl Default for Custody {
     fn default() -> Self {
         Custody {
             key_seed: [9u8; 32],
+            recovery_delegate: None,
             claimed_did: None,
             sealed: b"sealed-account-secret".to_vec(),
             checksum_over: None,
@@ -207,7 +213,9 @@ fn sha256_multihash(content: &[u8]) -> Vec<u8> {
 
 async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) -> Vec<u8> {
     let _ = service;
-    enroll_container_parts(customer, email, &Custody::default()).await
+    enroll_container_parts(customer, email, &Custody::default())
+        .await
+        .0
 }
 
 /// An enrollment carrying `custody`, valid unless a knob says otherwise.
@@ -218,7 +226,7 @@ async fn enroll_container_with_custody(
     custody: &Custody,
 ) -> Vec<u8> {
     let _ = service;
-    enroll_container_parts(customer, email, custody).await
+    enroll_container_parts(customer, email, custody).await.0
 }
 
 /// The one place an enrollment container is assembled.
@@ -226,7 +234,7 @@ async fn enroll_container_parts(
     customer: &Ed25519Signer,
     email: &str,
     custody: &Custody,
-) -> Vec<u8> {
+) -> (Vec<u8>, Option<ipld_core::cid::Cid>) {
     let key = Ed25519Signer::import(&custody.key_seed)
         .await
         .expect("custody signer");
@@ -241,13 +249,30 @@ async fn enroll_container_parts(
     if let Some(when) = &custody.when {
         arguments.insert("when".to_string(), Promised::Bytes(when.clone()));
     }
+    // Self-signed by default; through a delegate when the fixture asks,
+    // which is the shape a passkey-to-profile grant produces.
+    let (recovery_issuer, recovery_proofs, delegation) = match &custody.recovery_delegate {
+        None => (key.clone(), vec![], None),
+        Some(seed) => {
+            let delegate = Ed25519Signer::import(seed).await.expect("delegate signer");
+            let grant = DelegationBuilder::new()
+                .issuer(dialog_credentials::Signer::from(key.clone()))
+                .audience(&delegate.did())
+                .subject(DelegatedSubject::Specific(key.did()))
+                .command(custody.command.clone())
+                .try_build()
+                .await
+                .expect("recovery delegation");
+            (delegate, vec![grant.to_cid()], Some(grant))
+        }
+    };
     let recovery = InvocationBuilder::new()
-        .issuer(dialog_credentials::Signer::from(key.clone()))
+        .issuer(dialog_credentials::Signer::from(recovery_issuer.clone()))
         .audience(&key.did())
         .subject(&key.did())
         .command(custody.command.clone())
         .arguments(arguments)
-        .proofs(vec![])
+        .proofs(recovery_proofs)
         .expiration(
             Timestamp::new(
                 dialog_ucan_core::time::timestamp::SystemTime::now()
@@ -312,9 +337,15 @@ async fn enroll_container_parts(
             tokens.push(bytes);
         }
     }
-    Container::new(tokens)
+    // The recovery's own proof, when it was issued through a delegate:
+    // the chain resolves from the container like any other.
+    if let Some(grant) = &delegation {
+        tokens.push(grant.encoded().to_vec());
+    }
+    let bytes = Container::new(tokens)
         .to_bytes()
-        .expect("container encodes")
+        .expect("container encodes");
+    (bytes, delegation.map(|grant| grant.to_cid()))
 }
 
 /// A `/customer/resend`, self-issued by the service. The account is an
@@ -1599,6 +1630,53 @@ mod custody {
                 "`{missing}` named but not carried must be refused, got {answer:?}"
             );
         }
+        Ok(())
+    }
+
+    /// Recovery need not be self-signed: a passkey may delegate to a
+    /// profile that issues the setup, and the chain verifies like any
+    /// other invocation the endpoint accepts.
+    #[dialog_common::test]
+    async fn it_accepts_a_recovery_issued_through_a_delegate() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            recovery_delegate: Some([21u8; 32]),
+            ..Default::default()
+        })
+        .await;
+        assert!(answer.is_ok(), "got {answer:?}");
+        Ok(())
+    }
+
+    /// A recovery whose delegation was revoked is refused. This is the
+    /// case that proves the nested chain is verified for real rather
+    /// than merely parsed: the same checker the outer chain uses.
+    #[dialog_common::test]
+    async fn it_refuses_a_recovery_whose_delegation_was_revoked() -> anyhow::Result<()> {
+        use tonk_access_service::revocation::index::RevocationIndex as _;
+
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let custody = Custody {
+            recovery_delegate: Some([21u8; 32]),
+            ..Default::default()
+        };
+
+        let (container, grant) =
+            enroll_container_parts(&customer, "alice@example.com", &custody).await;
+        // The exact grant the container carries — a delegation carries a
+        // nonce, so a rebuilt one would name a different CID.
+        let grant = grant.expect("a delegated recovery carries its proof");
+        let key = Ed25519Signer::import(&custody.key_seed).await?;
+        fixture
+            .revocations
+            .0
+            .record(&grant.to_string(), key.did().as_ref())
+            .await?;
+        let answer = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Unauthorized { .. })),
+            "a revoked proof must refuse the enrollment, got {answer:?}"
+        );
         Ok(())
     }
 
