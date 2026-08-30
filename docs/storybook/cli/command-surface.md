@@ -189,6 +189,33 @@ Account login may settle with an active account and a rotation warning. A
 rerun must preserve repository subjects and data, avoid repeating completed
 custody moves, and retry only work whose authority is still unresolved.
 
+Carry migration, invite join, and account-space pull publish canonical site
+directories only after a complete sibling stage has passed its local
+verification. Before the final rename, a returned error removes only that
+marked stage and leaves the canonical name absent; a process killed in flight
+may leave a hidden Tonk-marked sibling, but it neither reserves the canonical
+name nor appears as user-owned orphan data. Arbitrary hidden or visible
+unregistered directories remain visible and are never treated as Tonk cleanup
+state.
+
+Account pull publishes before its guarded registry transaction. If that final
+registration fails, the verified canonical site remains intact and the error
+names its path. The user lists occupied names, verifies the site's repository
+subject, and adopts it under an available name; Tonk never overwrites the
+colliding entry or deletes a complete published replica to make a registry
+error look atomic.
+
+`migrate carry --move` copies and verifies before it removes the source. A
+verification failure leaves the source at its original path and does not create
+`.tonk`. A publication error also leaves the source and never replaces a
+colliding `.tonk`; if that path exists, its repository subject must be verified
+before it is treated as the migrated copy. If source cleanup fails after
+publication, the command fails with both exact paths while retaining the
+verified `.tonk`; both copies must be inspected before retrying only the
+cleanup. `--move` also records the source directory identity before copying and
+refuses cleanup if that path was replaced while the verified destination was
+being built.
+
 ## Modifiers
 
 | Modifier | Set at the start | Changed while in flight |
@@ -220,8 +247,14 @@ cross-process locked. Selected space authority remains distinct. Destructive
 and remote commands validate exact DIDs/subjects/generations.
 
 **Local durability.** Registry, profile, account session, branch, blob, output,
-telemetry, update, and migration files each need atomic/restart tests. Temporary
-fixtures must isolate all state environment variables.
+telemetry, update, and migration files each need atomic/restart tests. Join,
+account pull, and carry migration construct sites in hidden same-filesystem
+siblings and publish with one atomic no-replace rename after closing repository
+handles. A same-name race discards only the losing stage and never replaces or
+removes the winner. A colliding destination may belong to another operation,
+so recovery never overwrites or deletes it and adoption requires repository
+subject verification. Temporary fixtures must isolate all state environment
+variables.
 
 Space-registry reads remain lock-free and observe either the previous or the
 next complete `spaces.json`. Every registry mutation retains an exclusive

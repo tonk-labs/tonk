@@ -67,6 +67,7 @@ pub mod schema;
 pub mod site;
 pub mod space;
 pub mod space_link;
+pub(crate) mod staged_directory;
 pub mod sync;
 pub mod telemetry;
 pub mod transfer;
