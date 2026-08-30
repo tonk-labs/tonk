@@ -356,7 +356,7 @@ rule!:
 # This is what gives the derivation rule its neighbours.
 rule!:
   description: A placed block's position.
-  assert!: block/position
+  assert: block/position
   when:
     - assert: notebook/blocks
       where:
@@ -372,7 +372,7 @@ rule!:
 # it simply matches no block, which is what ends the recursion.
 rule!:
   description: Record an inserted block's successor.
-  assert!: block/chain
+  assert: block/chain
   when:
     - assert: block/insert
       where:
@@ -403,7 +403,7 @@ block/position!:
 # is nothing to come after.
 rule!:
   description: Position the last new block after the block it follows.
-  assert!: block/position
+  assert: block/position
   when:
     - assert: block/chain
       where:
@@ -430,18 +430,31 @@ rule!:
 # and derives this block from it. It terminates because the chain ends at
 # `case:none`, which the rule above positions without recursing.
 #
-# `before: ?next-at` with `after` open, NOT the other way around: a block
-# precedes its successor. Deriving with `after: ?next-at` builds the same
-# chain but numbers it backwards, so a position scan reads the document in
-# reverse.
+# `before: ?next-at`, NOT `after: ?next-at`: a block precedes its successor.
+# Deriving the other way builds the same chain but numbers it backwards, so
+# a position scan reads the document in reverse.
+#
+# BOTH bounds, though. With `after` left open the derived position is only
+# required to sit below the successor, and nothing stops it from sitting
+# below the block the run FOLLOWS as well — a run appended after the third
+# block had its first member land between the second and the third. The
+# lower bound is the run's anchor, which every insert in the run carries.
 rule!:
   description: Position a block before its successor.
-  assert!: block/position
+  assert: block/position
   when:
     - assert: block/chain
       where:
         this: ?this
         next: ?next
+    - assert: block/insert
+      where:
+        this: ?this
+        prev: ?prev
+    - assert: block/position
+      where:
+        this: ?prev
+        at: ?prev-at
     - assert: block/position
       where:
         this: ?next
@@ -449,7 +462,7 @@ rule!:
     - assert: dialog/position
       where:
         member: ?this
-        after: ""
+        after: ?prev-at
         before: ?next-at
         is: ?at
 

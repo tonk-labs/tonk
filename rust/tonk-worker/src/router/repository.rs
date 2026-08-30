@@ -5567,6 +5567,38 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Run a query document and return its result rows, as JSON.
+    async fn rows(
+        state: &AppState,
+        repo: &str,
+        query: &str,
+    ) -> Vec<std::collections::BTreeMap<String, serde_json::Value>> {
+        let guard = state.read().await;
+        let response = evaluate_body(&guard, repo, "main", query.to_owned(), false)
+            .await
+            .unwrap_or_else(|e| panic!("query failed: {e}"));
+        response
+            .matches_after
+            .first()
+            .map(|block| {
+                block
+                    .results
+                    .iter()
+                    .map(|result| {
+                        // `this` is the match's entity, carried beside the
+                        // bound fields rather than among them.
+                        let mut fields = result.fields.clone();
+                        fields.insert(
+                            "this".to_owned(),
+                            serde_json::Value::String(result.this.clone()),
+                        );
+                        fields
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The FAB space-rename must PERSIST. The repository banner writes a
     /// transient `tonk/rename-repository` command (its `subject` is the repo's
     /// own DID, `name` the typed value); the standard-library rule fires on
@@ -5633,6 +5665,114 @@ mod tests {
             count(&state, repo, entries).await,
             3,
             "a removal retracts the entry"
+        );
+    }
+
+    /// A RUN of blocks inserted in ONE transaction lands in document order.
+    ///
+    /// This is the case a per-block command cannot express: block 2's
+    /// position depends on block 3's, which does not exist until the same
+    /// commit derives it. The chain (`next`) plus the recursive position
+    /// rules resolve the whole run in a single round; a design that derived
+    /// each block from its PREDECESSOR needed the predecessor's position to
+    /// survive into a second round, which a transient command does not.
+    #[dialog_common::test]
+    async fn it_inserts_a_run_of_blocks_in_document_order() {
+        let (_app, state, key) = fresh_repo("test-notebook-insert-run").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        // Exactly what `insert_notation` emits for three blocks appended
+        // after the seed's last block: written back to front, chained
+        // forward by variable, every one anchored on the block the run
+        // follows.
+        seed(
+            &state,
+            repo,
+            r#"block/insert!:
+  this: ?b2
+  notebook: id:notebook/scratch
+  source: |-
+    three
+  next: case:none
+  prev: id:notebook/scratch/3
+
+block/insert!:
+  this: ?b1
+  notebook: id:notebook/scratch
+  source: |-
+    two
+  next: ?b2
+  prev: id:notebook/scratch/3
+
+block/insert!:
+  this: ?b0
+  notebook: id:notebook/scratch
+  source: |-
+    one
+  next: ?b1
+  prev: id:notebook/scratch/3
+"#,
+        )
+        .await;
+
+        let entries = "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n";
+        let blocks = count(
+            &state,
+            repo,
+            "notebook/block:\n  this: ?this\n  notebook: id:notebook/scratch\n  source: ?source\n",
+        )
+        .await;
+        let chains = count(&state, repo, "block/chain:\n  this: ?this\n  next: ?next\n").await;
+        let positions = count(&state, repo, "block/position:\n  this: ?this\n  at: ?at\n").await;
+        assert_eq!(
+            count(&state, repo, entries).await,
+            6,
+            "three seeded blocks plus the three inserted ones \
+             (blocks={blocks} chains={chains} positions={positions})"
+        );
+
+        // The sequence scans in POSITION order — an EAV range scan over
+        // `xyz.tonk.notebook/<position>` yields members already sorted — so
+        // the row order IS the document order.
+        let placed = rows(
+            &state,
+            repo,
+            "notebook:\n  this: id:notebook/scratch\n  block: {?block/key: ?block}\n",
+        )
+        .await;
+        let sources = rows(
+            &state,
+            repo,
+            "notebook/block:\n  this: ?this\n  notebook: id:notebook/scratch\n  source: ?source\n",
+        )
+        .await;
+        let source_of: std::collections::BTreeMap<String, String> = sources
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("this")?.as_str()?.to_owned(),
+                    row.get("source")?.as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+
+        let document: Vec<&str> = placed
+            .iter()
+            .filter_map(|row| source_of.get(row.get("block")?.as_str()?))
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(
+            document.len(),
+            6,
+            "every placed block resolves to a source: placed={placed:#?}"
+        );
+        assert_eq!(
+            &document[3..],
+            &["one", "two", "three"],
+            "the run reads in document order, after the seeded blocks: {document:#?}"
         );
     }
 
