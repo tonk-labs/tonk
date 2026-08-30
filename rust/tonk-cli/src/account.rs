@@ -1041,6 +1041,7 @@ pub async fn attach_for_integration_test(
 /// Install one exact provider generation through the production staged
 /// activation path for an external process test.
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub async fn attach_exact_for_process_test(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
