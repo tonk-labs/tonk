@@ -386,8 +386,17 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .map_err(internal)?
         {
             None => {
+                // The subscriptions expire when the activation link
+                // does, so a signup nobody finishes clears itself
+                // rather than leaving rows behind.
                 self.store
-                    .enroll_customer(customer.as_str(), &address, SIGNUP_PLAN, self.now)
+                    .enroll_customer(
+                        customer.as_str(),
+                        &address,
+                        SIGNUP_PLAN,
+                        self.now,
+                        self.now + self.activation_ttl,
+                    )
                     .await
                     .map_err(internal)?;
             }

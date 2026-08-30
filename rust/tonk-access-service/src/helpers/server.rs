@@ -871,7 +871,7 @@ async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Resu
         .is_none()
     {
         store
-            .enroll_customer(&provider, "tests@example.com", SIGNUP_PLAN, 0)
+            .enroll_customer(&provider, "tests@example.com", SIGNUP_PLAN, 0, u64::MAX)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         store

@@ -725,7 +725,13 @@ mod tests {
         let space = Ed25519Signer::import(&[72; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(root.did().as_str(), "owner@example.com", SIGNUP_PLAN, at)
+            .enroll_customer(
+                root.did().as_str(),
+                "owner@example.com",
+                SIGNUP_PLAN,
+                at,
+                u64::MAX,
+            )
             .await
             .unwrap();
         store
@@ -789,7 +795,13 @@ mod tests {
         let custody = Ed25519Signer::import(&[94; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(root.did().as_str(), "custody@example.com", SIGNUP_PLAN, at)
+            .enroll_customer(
+                root.did().as_str(),
+                "custody@example.com",
+                SIGNUP_PLAN,
+                at,
+                u64::MAX,
+            )
             .await
             .unwrap();
         store
@@ -874,7 +886,13 @@ mod tests {
         let space = Ed25519Signer::import(&[82; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(root.did().as_str(), "delete@example.com", SIGNUP_PLAN, at)
+            .enroll_customer(
+                root.did().as_str(),
+                "delete@example.com",
+                SIGNUP_PLAN,
+                at,
+                u64::MAX,
+            )
             .await
             .unwrap();
         store

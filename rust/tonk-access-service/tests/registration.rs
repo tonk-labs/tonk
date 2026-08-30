@@ -1407,6 +1407,7 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
 /// refusal proves the check it names instead of tripping an earlier one.
 mod custody {
     use super::*;
+    use tonk_access_service::provisioning::screen;
 
     async fn enroll(custody: Custody) -> Result<Answer, RegistrationError> {
         let fixture = Fixture::new().await;
@@ -1466,6 +1467,80 @@ mod custody {
                 .expect("the customer row exists")
                 .status,
             tonk_account::customer::CustomerStatus::Registered
+        );
+        Ok(())
+    }
+
+    /// Enrollment writes rows that lapse on their own, and activation
+    /// is what makes them permanent.
+    ///
+    /// The whole state goes in at enrollment — cell, customer,
+    /// subscriptions — and none of it is served while the customer is
+    /// `Registered`. So a link nobody clicks leaves nothing to clean up:
+    /// the rows expire at the same moment the link does.
+    #[dialog_common::test]
+    async fn it_expires_the_subscriptions_a_link_never_activates() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let container = enroll_container_with_custody(
+            &customer,
+            &fixture.service.did(),
+            "alice@example.com",
+            &Custody::default(),
+        )
+        .await;
+        fixture
+            .registration(&container)
+            .handle()
+            .await
+            .expect("the enrollment is accepted");
+
+        let subscription = fixture
+            .store
+            .consumer(customer.did().as_str())
+            .await?
+            .expect("enrolling writes the account's own subscription");
+        let expires_at = subscription
+            .expires_at
+            .expect("it expires when the activation link does");
+
+        // Not served now, and it would not be served later either: the
+        // link is what clears the deadline.
+        assert!(
+            screen(&fixture.store, customer.did().as_str(), expires_at + 1)
+                .await?
+                .is_err(),
+            "past the deadline an unactivated subscription is gone"
+        );
+
+        let activation = activation_invocation(
+            &fixture.service,
+            &fixture.service.did(),
+            &customer.did(),
+            Timestamp::five_minutes_from_now(),
+        )
+        .await;
+        fixture
+            .registration(&activation)
+            .handle()
+            .await
+            .expect("the activation is accepted");
+
+        assert_eq!(
+            fixture
+                .store
+                .consumer(customer.did().as_str())
+                .await?
+                .expect("the subscription survives activation")
+                .expires_at,
+            None,
+            "activating lifts the deadline"
+        );
+        assert!(
+            screen(&fixture.store, customer.did().as_str(), expires_at + 1)
+                .await?
+                .is_ok(),
+            "and the same moment that would have expired it now serves"
         );
         Ok(())
     }

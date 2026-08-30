@@ -175,7 +175,13 @@ mod tests {
         let store = SqliteStore::in_memory().expect("in-memory store");
         for (did, status) in customers {
             store
-                .enroll_customer(did, &format!("{did}@example.com"), "trial@2026-08", 0)
+                .enroll_customer(
+                    did,
+                    &format!("{did}@example.com"),
+                    "trial@2026-08",
+                    0,
+                    u64::MAX,
+                )
                 .await
                 .expect("customer");
             match status {

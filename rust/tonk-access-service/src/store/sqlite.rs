@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer, DELETE_CUSTOMER,
-    DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
+    ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
+    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
     INSERT_SELF_SUBSCRIPTION, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER,
     SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
     SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
@@ -337,13 +337,17 @@ impl Store for SqliteStore {
         email: &str,
         plan: &str,
         now: u64,
+        expires_at: u64,
     ) -> Result<(), StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
         tx.execute(INSERT_CUSTOMER, params![did, email, plan, now as i64])
             .map_err(map_err)?;
-        tx.execute(INSERT_SELF_SUBSCRIPTION, params![did, now as i64])
-            .map_err(map_err)?;
+        tx.execute(
+            INSERT_SELF_SUBSCRIPTION,
+            params![did, now as i64, expires_at as i64],
+        )
+        .map_err(map_err)?;
         tx.commit().map_err(map_err)
     }
 
@@ -447,10 +451,17 @@ impl Store for SqliteStore {
         terms_version: &str,
         now: u64,
     ) -> Result<bool, StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        let changed = conn
+        // Status and expiry together: the subscriptions were written to
+        // lapse if the link was never clicked, and it has been. Half of
+        // this would leave an active customer whose spaces expire.
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        let changed = tx
             .execute(ACTIVATE_CUSTOMER, params![did, now as i64, terms_version])
             .map_err(map_err)?;
+        tx.execute(ACTIVATE_SUBSCRIPTIONS, params![did])
+            .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
         Ok(changed > 0)
     }
 }
@@ -463,7 +474,7 @@ mod tests {
 
     async fn enrolled(store: &SqliteStore, did: &str, email: &str) {
         store
-            .enroll_customer(did, email, SIGNUP_PLAN, 1_700_000_000)
+            .enroll_customer(did, email, SIGNUP_PLAN, 1_700_000_000, u64::MAX)
             .await
             .expect("enrollment writes a customer");
     }
@@ -510,6 +521,7 @@ mod tests {
                 "jsmith@example.com",
                 SIGNUP_PLAN,
                 1_700_000_001,
+                u64::MAX,
             )
             .await;
         assert!(

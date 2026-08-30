@@ -13,8 +13,8 @@ use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
-    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer, DELETE_CUSTOMER,
-    DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
+    ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
+    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
     INSERT_SELF_SUBSCRIPTION, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER,
     SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
     SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
@@ -220,6 +220,7 @@ impl Store for D1Store {
         email: &str,
         plan: &str,
         now: u64,
+        expires_at: u64,
     ) -> Result<(), StoreError> {
         // D1 batches run as a single transaction: either every statement
         // commits or none does.
@@ -236,7 +237,11 @@ impl Store for D1Store {
         let insert_consumer = self
             .0
             .prepare(INSERT_SELF_SUBSCRIPTION)
-            .bind(&[JsValue::from(did), JsValue::from_f64(now as f64)])
+            .bind(&[
+                JsValue::from(did),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(expires_at as f64),
+            ])
             .map_err(map_err)?;
         self.0
             .batch(vec![insert_customer, insert_consumer])
@@ -397,7 +402,11 @@ impl Store for D1Store {
         terms_version: &str,
         now: u64,
     ) -> Result<bool, StoreError> {
-        let result = self
+        // Status and expiry in one batch, which D1 runs as a single
+        // transaction: the subscriptions were written to lapse if the
+        // link was never clicked, and it has been. Half of this would
+        // leave an active customer whose spaces expire.
+        let activate_customer = self
             .0
             .prepare(ACTIVATE_CUSTOMER)
             .bind(&[
@@ -405,11 +414,20 @@ impl Store for D1Store {
                 JsValue::from_f64(now as f64),
                 JsValue::from(terms_version),
             ])
-            .map_err(map_err)?
-            .run()
+            .map_err(map_err)?;
+        let activate_subscriptions = self
+            .0
+            .prepare(ACTIVATE_SUBSCRIPTIONS)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?;
+        let results = self
+            .0
+            .batch(vec![activate_customer, activate_subscriptions])
             .await
             .map_err(map_err)?;
-        Ok(changed_rows(&result) > 0)
+        Ok(results
+            .first()
+            .is_some_and(|result| changed_rows(result) > 0))
     }
 }
 

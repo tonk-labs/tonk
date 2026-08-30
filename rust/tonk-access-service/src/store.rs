@@ -192,6 +192,7 @@ pub trait Store {
         email: &str,
         plan: &str,
         now: u64,
+        expires_at: u64,
     ) -> Result<(), StoreError>;
 
     /// Update the email of a customer still `Registered`. Returns whether
@@ -306,13 +307,31 @@ INSERT INTO customer (account, email, status, plan, cycle_anchor_at)
 VALUES (?1, ?2, 'Registered', ?3, ?4)
 "#;
 
-/// The customer's own account space is a consumer like any other, and the
-/// customer provides it. `ON CONFLICT DO NOTHING` keeps re-enrollment
-/// idempotent when the consumer row survived an earlier attempt.
+/// The customer's own account space is a subscription like any other,
+/// and the customer provides it.
+///
+/// It expires at the activation deadline. Enrollment writes the whole
+/// state up front — cell, customer, subscriptions — and none of it is
+/// served while the customer is `Registered`, so a link nobody clicks
+/// leaves rows that clear themselves rather than an account half made.
+/// Activation lifts the expiry.
+///
+/// `ON CONFLICT DO UPDATE` rather than `DO NOTHING`: re-enrolling
+/// extends the deadline, which is what resending the link means.
 pub const INSERT_SELF_SUBSCRIPTION: &str = r#"
-INSERT INTO subscription (consumer, provider, registered_at)
-VALUES (?1, ?1, ?2)
-ON CONFLICT (consumer) DO NOTHING
+INSERT INTO subscription (consumer, provider, registered_at, expires_at)
+VALUES (?1, ?1, ?2, ?3)
+ON CONFLICT (consumer) DO UPDATE SET expires_at = excluded.expires_at
+ WHERE subscription.deleted_at IS NULL
+"#;
+
+/// Lift the expiry from everything a customer provides, which is what
+/// activation does: the rows were written to lapse if the link was
+/// never clicked, and it has been.
+pub const ACTIVATE_SUBSCRIPTIONS: &str = r#"
+UPDATE subscription
+   SET expires_at = NULL
+ WHERE provider = ?1 AND deleted_at IS NULL
 "#;
 
 /// Provisioning is idempotent per provider: re-adding under the same
