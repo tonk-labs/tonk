@@ -489,10 +489,28 @@ impl Custodian {
         CreateCustodian { name, display_name }
     }
 
-    /// Assert an existing passkey. `None` lets the authenticator choose,
-    /// which is what an open sign-in offers.
-    pub fn load(credential_id: Option<Vec<u8>>) -> LoadCustodian {
-        LoadCustodian { credential_id }
+    /// Assert a known passkey.
+    ///
+    /// `allowCredentials` pins the assertion to it, so an authenticator
+    /// holding several passkeys for this origin cannot offer one that
+    /// derives a different custody space. For a caller that already
+    /// knows which passkey owns the custody it is opening.
+    pub fn load(credential_id: Vec<u8>) -> LoadCustodian {
+        LoadCustodian {
+            credential_id: Some(credential_id),
+        }
+    }
+
+    /// Let the person pick a passkey.
+    ///
+    /// Discoverable: the authenticator lists what it holds for this
+    /// origin. For the flows where choosing the passkey *is* choosing
+    /// the account — signing in, and the creation chase where no id is
+    /// recorded yet.
+    pub fn choose() -> LoadCustodian {
+        LoadCustodian {
+            credential_id: None,
+        }
     }
 
     /// Import a credential's PRF outputs, and let the bytes go.
@@ -538,9 +556,12 @@ impl dialog_capability::Command for CreateCustodian {
     type Output = anyhow::Result<Custodian>;
 }
 
-/// Assert an existing passkey and adopt what it evaluates to.
+/// Assert a passkey. Built by [`Custodian::load`] to name one, or by
+/// [`Custodian::choose`] to let the person pick.
 pub struct LoadCustodian {
-    /// Which credential, or `None` to let the authenticator choose.
+    /// Which credential, or `None` to show what the authenticator holds.
+    /// Two constructors rather than one taking an `Option`, because the
+    /// difference is whether a picker appears.
     pub credential_id: Option<Vec<u8>>,
 }
 
@@ -578,7 +599,8 @@ impl LoadCustodian {
 pub struct Page;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[async_trait::async_trait(?Send)]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<CreateCustodian> for Page {
     async fn execute(&self, input: CreateCustodian) -> anyhow::Result<Custodian> {
         let created = crate::passkey::create_custody_passkey(
@@ -591,7 +613,8 @@ impl dialog_capability::Provider<CreateCustodian> for Page {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[async_trait::async_trait(?Send)]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<LoadCustodian> for Page {
     async fn execute(&self, input: LoadCustodian) -> anyhow::Result<Custodian> {
         let asserted =
@@ -601,78 +624,205 @@ impl dialog_capability::Provider<LoadCustodian> for Page {
 }
 
 /// Reaching the account a [`Custodian`] holds.
-pub struct AccountBuilder<'a>(&'a Custodian);
+///
+/// Every way in is a command carrying the custodian it belongs to, so
+/// the passkey that seals and the passkey that opens are named in the
+/// same value. Performed rather than called, because two of the four
+/// need something the caller has to supply: `load` reaches the network,
+/// and all of them need somewhere WebCrypto lives.
+pub struct AccountBuilder<'a>(pub(crate) &'a Custodian);
 
 impl AccountBuilder<'_> {
     /// Generate an account and seal it under this passkey.
     ///
-    /// The secret exists for the length of this call. Where that is —
+    /// The secret exists for the length of the command. Where that is —
     /// page or worker — is where the handles were sent, which is the
     /// point of sending them: nothing but the envelope survives, and
     /// only this passkey opens it.
-    pub async fn create(&self) -> anyhow::Result<Account> {
-        let secret = crate::envelope::AccountSecret::generate()?;
-        self.seal(secret).await
+    pub fn create(self) -> CreateAccount {
+        CreateAccount(self.0.clone())
     }
 
     /// Seal an account that already exists under this passkey. Used
     /// when a second passkey is enrolled: same account, another way in.
-    pub async fn adopt(&self, secret: crate::envelope::AccountSecret) -> anyhow::Result<Account> {
-        self.seal(secret).await
+    pub fn adopt(self, secret: crate::envelope::AccountSecret) -> AdoptAccount {
+        AdoptAccount(self.0.clone(), secret)
+    }
+
+    /// Open an envelope sealed under this passkey.
+    ///
+    /// Takes the envelope rather than fetching it — where it comes from
+    /// is the caller's business, and it arrives from the custody cell or
+    /// from a profile row depending on who is asking.
+    pub fn import(self, envelope: Envelope<crate::clearance::Recovery>) -> ImportAccount {
+        ImportAccount(self.0.clone(), envelope)
     }
 
     /// Fetch this passkey's custody cell and open what is there.
     ///
-    /// The whole recovery in one call: derive the signer that names the
-    /// space, read the cell, unseal it. A device holding nothing but the
-    /// passkey gets the account back.
-    ///
-    /// `None` when the space holds no cell yet, which is not a failure —
+    /// The whole recovery in one command: derive the signer that names
+    /// the space, read the cell, unseal it. A device holding nothing but
+    /// the passkey gets the account back.
+    pub fn load(self, endpoint: impl Into<String>) -> LoadAccount {
+        LoadAccount(self.0.clone(), endpoint.into())
+    }
+}
+
+/// Generate an account under a custodian. See [`AccountBuilder::create`].
+pub struct CreateAccount(Custodian);
+
+/// Seal an existing account under a custodian. See
+/// [`AccountBuilder::adopt`].
+pub struct AdoptAccount(Custodian, crate::envelope::AccountSecret);
+
+/// Open an envelope under a custodian. See [`AccountBuilder::import`].
+pub struct ImportAccount(Custodian, Envelope<crate::clearance::Recovery>);
+
+/// Fetch and open a custodian's cell. See [`AccountBuilder::load`].
+pub struct LoadAccount(Custodian, String);
+
+impl dialog_capability::Command for CreateAccount {
+    type Input = Self;
+    type Output = anyhow::Result<Account>;
+}
+
+impl dialog_capability::Command for AdoptAccount {
+    type Input = Self;
+    type Output = anyhow::Result<Account>;
+}
+
+impl dialog_capability::Command for ImportAccount {
+    type Input = Self;
+    type Output = anyhow::Result<Account>;
+}
+
+impl dialog_capability::Command for LoadAccount {
+    /// `None` when the space holds no cell yet, which is not a failure:
     /// it is what a passkey enrolled but never published looks like, and
     /// the caller decides whether that is a problem.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub async fn load(&self, endpoint: &str) -> anyhow::Result<Option<Account>> {
-        let signer = self.0.signer().await?;
-        let Some(bytes) = crate::custody::resolve_secret(signer, endpoint).await? else {
+    type Input = Self;
+    type Output = anyhow::Result<Option<Account>>;
+}
+
+impl CreateAccount {
+    /// Run this against a provider that can reach WebCrypto.
+    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Account>
+    where
+        Env: dialog_capability::Provider<Self>,
+    {
+        env.execute(self).await
+    }
+}
+
+impl AdoptAccount {
+    /// Run this against a provider that can reach WebCrypto.
+    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Account>
+    where
+        Env: dialog_capability::Provider<Self>,
+    {
+        env.execute(self).await
+    }
+}
+
+impl ImportAccount {
+    /// Run this against a provider that can reach WebCrypto.
+    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Account>
+    where
+        Env: dialog_capability::Provider<Self>,
+    {
+        env.execute(self).await
+    }
+}
+
+impl LoadAccount {
+    /// Run this against a provider that can reach the access service.
+    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Option<Account>>
+    where
+        Env: dialog_capability::Provider<Self>,
+    {
+        env.execute(self).await
+    }
+}
+
+/// Somewhere WebCrypto lives: a page, or a worker holding handles.
+///
+/// The three sealing commands need nothing else, so anything that can
+/// reach `crypto.subtle` provides them. [`LoadAccount`] additionally
+/// reaches the network, and this provides that too — the endpoint
+/// travels with the command.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub struct Crypto;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<CreateAccount> for Crypto {
+    async fn execute(&self, input: CreateAccount) -> anyhow::Result<Account> {
+        seal_under(&input.0, crate::envelope::AccountSecret::generate()?).await
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<AdoptAccount> for Crypto {
+    async fn execute(&self, input: AdoptAccount) -> anyhow::Result<Account> {
+        seal_under(&input.0, input.1).await
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<ImportAccount> for Crypto {
+    async fn execute(&self, input: ImportAccount) -> anyhow::Result<Account> {
+        open_under(&input.0, input.1).await
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<LoadAccount> for Crypto {
+    async fn execute(&self, input: LoadAccount) -> anyhow::Result<Option<Account>> {
+        let signer = input.0.signer().await?;
+        let Some(bytes) = crate::custody::resolve_secret(signer, &input.1).await? else {
             return Ok(None);
         };
         let envelope = Envelope::decode(&bytes)
             .map_err(|error| anyhow::anyhow!("the custody cell is unreadable: {error}"))?;
-        self.import(&envelope).await.map(Some)
+        open_under(&input.0, envelope).await.map(Some)
     }
+}
 
-    /// Import the account from an envelope sealed under this passkey.
-    ///
-    /// The recovery path: a device holding nothing but the passkey
-    /// derives the opener, reads the envelope it was handed, and has
-    /// the account. Takes the envelope rather than fetching it — where
-    /// it comes from is the caller's business, and it arrives from the
-    /// custody cell or from a profile row depending on who is asking.
-    pub async fn import(
-        &self,
-        envelope: &Envelope<crate::clearance::Recovery>,
-    ) -> anyhow::Result<Account> {
-        let opener = self
-            .0
-            .opener()
-            .await
-            .map_err(|error| anyhow::anyhow!("deriving the opener failed: {error:?}"))?;
-        let seed = open_seed(&opener, envelope).await?;
-        Ok(Account {
-            secret: crate::envelope::AccountSecret::from_bytes(seed),
-            envelope: envelope.clone(),
-        })
-    }
+/// Seal a secret under a custodian, which is what creating and adopting
+/// both come down to.
+async fn seal_under(
+    custodian: &Custodian,
+    secret: crate::envelope::AccountSecret,
+) -> anyhow::Result<Account> {
+    let sealer = custodian
+        .sealer()
+        .await
+        .map_err(|error| anyhow::anyhow!("deriving the sealer failed: {error:?}"))?;
+    let envelope = seal_seed(&sealer, &secret.material(), KekMethod::Passkey).await?;
+    Ok(Account { secret, envelope })
+}
 
-    async fn seal(&self, secret: crate::envelope::AccountSecret) -> anyhow::Result<Account> {
-        let sealer = self
-            .0
-            .sealer()
-            .await
-            .map_err(|error| anyhow::anyhow!("deriving the sealer failed: {error:?}"))?;
-        let envelope = seal_seed(&sealer, &secret.material(), KekMethod::Passkey).await?;
-        Ok(Account { secret, envelope })
-    }
+/// Open an envelope under a custodian.
+async fn open_under(
+    custodian: &Custodian,
+    envelope: Envelope<crate::clearance::Recovery>,
+) -> anyhow::Result<Account> {
+    let opener = custodian
+        .opener()
+        .await
+        .map_err(|error| anyhow::anyhow!("deriving the opener failed: {error:?}"))?;
+    let seed = open_seed(&opener, &envelope).await?;
+    Ok(Account {
+        secret: crate::envelope::AccountSecret::from_bytes(seed),
+        envelope,
+    })
 }
 
 /// An account and the envelope that holds it, kept together.
@@ -967,14 +1117,20 @@ mod tests {
             .await
             .expect("handles import");
 
-        let created = custodian.account().create().await.expect("an account");
+        let created = custodian
+            .account()
+            .create()
+            .perform(&Crypto)
+            .await
+            .expect("an account");
         let signer = created.signer().await.expect("a signer");
 
         // Only the envelope crosses. A device with the same passkey and
         // nothing else gets the same account back.
         let recovered = custodian
             .account()
-            .import(created.envelope())
+            .import(created.envelope().clone())
+            .perform(&Crypto)
             .await
             .expect("the envelope opens under the same passkey");
         assert_eq!(
@@ -1021,9 +1177,19 @@ mod tests {
             .await
             .expect("handles import");
 
-        let account = mine.account().create().await.expect("an account");
+        let account = mine
+            .account()
+            .create()
+            .perform(&Crypto)
+            .await
+            .expect("an account");
         assert!(
-            theirs.account().import(account.envelope()).await.is_err(),
+            theirs
+                .account()
+                .import(account.envelope().clone())
+                .perform(&Crypto)
+                .await
+                .is_err(),
             "another passkey does not open it"
         );
     }
