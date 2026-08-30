@@ -24,6 +24,13 @@
   // core.yaml reseed never reaches it. Without reseeding this too, every
   // profile.yaml edit needs the profile recreated to be seen.
   const PROFILE_LIBRARY_URL = "/library/profile.yaml"
+  // The notebook library. It rides on the CONTENT branch, same as core, but
+  // is served as its own document rather than being folded into core.yaml.
+  // Without it here a notebook.yaml edit needs the space recreated to be
+  // seen — the symptom being a notebook page that renders the version
+  // installed when the space was made, however many times the dev server
+  // rebuilds.
+  const NOTEBOOK_LIBRARY_URL = "/library/notebook.yaml"
 
   // Pill label glyphs: a recycle mark for an in-place standard-library
   // reseed (live update, no reload), an eject mark for a full page
@@ -394,14 +401,18 @@
   // branch it belongs on.
   const LIBRARY_SEPARATOR = "\n#--- hot-swap: profile library ---\n"
   const fetchLibrary = async () => {
-    const [core, profile] = await Promise.all(
-      [LIBRARY_URL, PROFILE_LIBRARY_URL].map(async (url) => {
-        const response = await fetch(url, { cache: "no-store" })
-        if (!response.ok) throw new Error(`GET ${url} -> ${response.status}`)
-        return await response.text()
-      }),
+    const [core, profile, notebook] = await Promise.all(
+      [LIBRARY_URL, PROFILE_LIBRARY_URL, NOTEBOOK_LIBRARY_URL].map(
+        async (url) => {
+          const response = await fetch(url, { cache: "no-store" })
+          if (!response.ok) throw new Error(`GET ${url} -> ${response.status}`)
+          return await response.text()
+        },
+      ),
     )
-    return core + LIBRARY_SEPARATOR + profile
+    // Core and notebook both land on the content branch, so they are joined
+    // into one document and seeded together.
+    return core + "\n" + notebook + LIBRARY_SEPARATOR + profile
   }
   // Split a joined library back into `{ core, profile }`. Tolerates an older
   // cached string with no separator (all of it is core).
@@ -422,13 +433,16 @@
   const cachedLibrary = async () => {
     try {
       const parts = await Promise.all(
-        [LIBRARY_URL, PROFILE_LIBRARY_URL].map(async (url) => {
+        [LIBRARY_URL, PROFILE_LIBRARY_URL, NOTEBOOK_LIBRARY_URL].map(async (url) => {
           const response = await fetch(url, { cache: "force-cache" })
           return response.ok ? await response.text() : null
         }),
       )
       if (parts.some((part) => part === null)) return null
-      return parts.join(LIBRARY_SEPARATOR)
+      // Must match `fetchLibrary`'s shape exactly, or every load reads the
+      // cached copy as different from the served one and reseeds.
+      const [core, profile, notebook] = parts
+      return core + "\n" + notebook + LIBRARY_SEPARATOR + profile
     } catch (_) {
       return null
     }
@@ -439,7 +453,7 @@
   const primeLibraryCache = async () => {
     try {
       await Promise.all(
-        [LIBRARY_URL, PROFILE_LIBRARY_URL].map((url) =>
+        [LIBRARY_URL, PROFILE_LIBRARY_URL, NOTEBOOK_LIBRARY_URL].map((url) =>
           fetch(url, { cache: "reload" }),
         ),
       )
