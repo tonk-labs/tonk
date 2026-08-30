@@ -133,6 +133,47 @@ pub fn split(document: &str) -> Vec<String> {
     blocks
 }
 
+/// The runs of newly created slots in an edit's order, as
+/// `(head, tail, sources)`.
+///
+/// `order` is the document's slots — `Some(entity)` for a block that
+/// survived, `None` for one the author just created. Consecutive `None`s
+/// are ONE run: they were typed or pasted together, they land in one gap,
+/// and they are inserted by one command carrying them in order.
+///
+/// `head` is the surviving block the run follows and `tail` the one it
+/// precedes; either is `None` at the document's edge. Neighbours are the
+/// nearest SURVIVING blocks, never other new ones — a new block has no
+/// identity to anchor against until the rules derive it.
+pub fn insert_runs<'a>(
+    order: &[Option<String>],
+    created: &'a [String],
+) -> Vec<(Option<String>, Option<String>, Vec<&'a str>)> {
+    let mut runs = Vec::new();
+    let mut fresh = created.iter();
+    let mut index = 0;
+    while index < order.len() {
+        if order[index].is_some() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut sources = Vec::new();
+        while index < order.len() && order[index].is_none() {
+            let Some(source) = fresh.next() else { break };
+            sources.push(source.as_str());
+            index += 1;
+        }
+        if sources.is_empty() {
+            break;
+        }
+        let head = order[..start].iter().rev().find_map(|slot| slot.clone());
+        let tail = order[index..].iter().find_map(|slot| slot.clone());
+        runs.push((head, tail, sources));
+    }
+    runs
+}
+
 /// The chunk range each block covers, as `(first, count)` over the
 /// document's top-level nodes.
 ///
@@ -445,6 +486,117 @@ mod tests {
     /// Spans cover the same grouping `split` does: one entry per block,
     /// each naming the run of top-level nodes it occupies. The highlight
     /// reads these to light a whole block rather than one paragraph of it.
+    /// Reproduce the logged document exactly: paragraph, then a fence whose
+    /// body and closing delimiter were reported as SEPARATE blocks with no
+    /// opening delimiter on the body.
+    #[dialog_common::test]
+    fn it_reproduces_the_logged_three_chunk_document() {
+        // What the log showed as the tail of the doc:
+        //   "Now if we view counter it will sho", "I will increment count here now", "```"
+        // For that to be the output, the input must have looked like this.
+        let doc = "Now if we view counter it will show the count\n\nI will increment count here now\n\n```";
+        let blocks = split(doc);
+        assert_eq!(blocks.len(), 3, "{blocks:#?}");
+        assert_eq!(blocks[2], "```", "a bare closing delimiter, alone");
+    }
+
+    /// The exact document that lost a block: a fence with a trailing blank
+    /// line before its closing delimiter.
+    #[dialog_common::test]
+    fn it_keeps_a_fence_with_a_blank_line_before_the_close() {
+        let doc = "Now if we view counter it will show the count\n\n```dialog-yaml\nI will increment count here now\n\n```";
+        let blocks = split(doc);
+        assert_eq!(
+            blocks.len(),
+            2,
+            "the paragraph and the whole fence: {blocks:#?}"
+        );
+    }
+
+    /// The same, when the fence is still being typed and its opening line
+    /// is the language tag alone.
+    #[dialog_common::test]
+    fn it_keeps_a_fence_opened_but_not_yet_closed() {
+        let doc = "Para\n\n```dialog-yaml\ncounter/model!:\n  this: id:counter/1\n\n";
+        let blocks = split(doc);
+        assert_eq!(blocks.len(), 2, "para and the open fence: {blocks:#?}");
+    }
+
+    /// Typing produces one new block between two existing ones.
+    #[dialog_common::test]
+    fn it_finds_a_single_insert_between_neighbours() {
+        let order = vec![Some("a".into()), None, Some("b".into())];
+        let created = vec!["new".to_owned()];
+        assert_eq!(
+            insert_runs(&order, &created),
+            vec![(Some("a".to_owned()), Some("b".to_owned()), vec!["new"])]
+        );
+    }
+
+    /// Pasting produces ONE run of several blocks, in order — not several
+    /// runs, and not several commands. They share a gap, so nothing has to
+    /// name another new block's identity.
+    #[dialog_common::test]
+    fn it_groups_a_pasted_run_into_one_insert() {
+        let order = vec![Some("a".into()), None, None, None, Some("b".into())];
+        let created = vec!["one".to_owned(), "two".to_owned(), "three".to_owned()];
+        assert_eq!(
+            insert_runs(&order, &created),
+            vec![(
+                Some("a".to_owned()),
+                Some("b".to_owned()),
+                vec!["one", "two", "three"]
+            )]
+        );
+    }
+
+    /// Two separate runs stay separate: each has its own neighbours.
+    #[dialog_common::test]
+    fn it_separates_runs_that_are_not_adjacent() {
+        let order = vec![None, Some("a".into()), None, Some("b".into())];
+        let created = vec!["top".to_owned(), "middle".to_owned()];
+        assert_eq!(
+            insert_runs(&order, &created),
+            vec![
+                (None, Some("a".to_owned()), vec!["top"]),
+                (Some("a".to_owned()), Some("b".to_owned()), vec!["middle"]),
+            ]
+        );
+    }
+
+    /// The document's edges have no neighbour on that side.
+    #[dialog_common::test]
+    fn it_reports_no_neighbour_at_the_edges() {
+        let order = vec![None];
+        let created = vec!["only".to_owned()];
+        assert_eq!(
+            insert_runs(&order, &created),
+            vec![(None, None, vec!["only"])]
+        );
+    }
+
+    /// An UNCLOSED fence must stay one block.
+    ///
+    /// While typing, the document momentarily holds a fence whose closing
+    /// delimiter has not been reached — or, as ProseMirror serialises an
+    /// empty code block, an opening line the author is still filling in. If
+    /// `split` treats the blank line inside it as a boundary, one block the
+    /// author is editing becomes two blocks the notebook tries to create.
+    #[dialog_common::test]
+    fn it_keeps_an_unclosed_fence_in_one_block() {
+        let doc = "Before\n\n```dialog-yaml\nI will increment count here now\n";
+        let blocks = split(doc);
+        assert_eq!(blocks.len(), 2, "before, and the open fence: {blocks:#?}");
+    }
+
+    /// A fence whose body contains a blank line stays one block.
+    #[dialog_common::test]
+    fn it_keeps_a_fence_with_an_interior_blank_line_whole() {
+        let doc = "```dialog-yaml\ncounter/model!:\n\n  this: id:counter/1\n```";
+        let blocks = split(doc);
+        assert_eq!(blocks.len(), 1, "one fence, one block: {blocks:#?}");
+    }
+
     #[dialog_common::test]
     fn it_spans_the_nodes_each_block_covers() {
         let doc = "intro\n\n# Heading\n\nunder it\n\ntrailing";

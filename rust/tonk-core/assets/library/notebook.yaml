@@ -67,6 +67,28 @@ concept!: &notebook/blocks
       the: xyz.tonk.notebook
       as: {[position]: entity}
 
+# Where a block sits, whatever the source of that position.
+#
+# One relation covering three cases: a block already placed in the sequence,
+# a block whose position this commit derives, and the document boundary. The
+# derivation rule below reads its neighbours through THIS concept, so it does
+# not care which kind a neighbour is — which is what lets a run of inserted
+# blocks chain off each other without any of them naming an id.
+concept!: &block/position
+  this: tonk:notebook/block-position
+  description: A block's position in its notebook, derived or stored.
+  with:
+    notebook:
+      description: The notebook the position is within.
+      the: xyz.tonk.notebook.block/notebook
+      cardinality: one
+      as: entity
+    at:
+      description: The position itself.
+      the: xyz.tonk.notebook.block/at
+      cardinality: one
+      as: text
+
 # One block of a notebook. Carries a pointer back to its notebook so the
 # block rows the element reads can be scoped, and so a block written before
 # its placement lands still belongs somewhere.
@@ -127,6 +149,7 @@ view!:
       data-notebook={this}
       title={title}
       onblockedit=block/edit
+      oninsert=blocks/insert
       onplace=block/place
       onremove=block/remove
       style="display: block;"
@@ -205,6 +228,48 @@ view!:
 # Commands and rules
 # ---------------------------------------------------------------------------
 
+# Insert blocks. ONE command, however many blocks the edit produced.
+#
+# The element names no entity: a block's identity derives from this
+# command's body, the way every anchor-less assertion's does. It used to
+# mint one from the document's block COUNT
+# (`{notebook}/block-{len}-{nth}`), which is a position wearing an
+# identity's clothes — delete a block and add another and the count repeats,
+# so the new block claimed an entity that already existed.
+#
+# `sources` is a KEYED COLLECTION, not one command per block. Typing
+# produces a single entry; pasting produces many. Carrying them together is
+# what makes the many case work: the entry keys already hold document order,
+# so no block has to reference another block's identity to say it comes
+# after it. Sibling commands could not do that — each would have to name an
+# entity that does not exist until the other is written.
+command!: &blocks/insert
+  description: Insert one or more blocks into a notebook, in document order.
+  with:
+    notebook:
+      description: The notebook the blocks belong to.
+      the: dom.event.detail/notebook
+      as: entity
+    # `inserted`, not `source`: an insert must not share its shape with
+    # `block/edit`, or one event decodes as both commands and every edit
+    # would also create blocks. The analyzer rejects the overlap outright
+    # (`OverlappingTransientCommands`).
+    sources:
+      description: The inserted blocks' markdown, keyed by document order.
+      the: xyz.tonk.notebook.inserted
+      as: {[position]: text}
+  maybe:
+    # The existing blocks the run landed between. Absent at either end of
+    # the document.
+    head:
+      description: The block the run was inserted after.
+      the: dom.event.detail/head
+      as: entity
+    tail:
+      description: The block the run was inserted before.
+      the: dom.event.detail/tail
+      as: entity
+
 command!: &block/edit
   description: Write one notebook block's source.
   with:
@@ -263,6 +328,151 @@ command!: &block/remove
       description: The position the block held.
       the: dom.event.detail/removed
       as: text
+
+# An inserted block exists.
+#
+# `?this` is the ENTRY's entity: the collection binds each entry to its own
+# subject, so one command carrying N sources asserts N blocks, each with the
+# identity derived from its own entry rather than from the document's shape.
+rule!:
+  description: Persist an inserted block.
+  assert!: notebook/block
+  when:
+    - assert: blocks/insert
+      where:
+        notebook: ?notebook
+        sources: {?nth: ?source}
+        this: ?this
+
+# A block already in the sequence is at the position it is stored under.
+# This is what gives the derivation rule below its neighbours.
+rule!:
+  description: A placed block's position.
+  assert!: block/position
+  when:
+    - assert: notebook/blocks
+      where:
+        this: ?notebook
+        block: {?block/key: ?this}
+    - assert: "=="
+      where:
+        this: ?at
+        is: ?block/key
+
+# ...and an inserted block's position is derived between its neighbours'.
+#
+# `member` biases the derived key, so two blocks in the same range disperse
+# rather than collide; the entry key `?nth` orders them, so the run keeps the
+# document order the author typed.
+rule!:
+  description: Derive an inserted block's position.
+  assert!: block/position
+  when:
+    - assert: blocks/insert
+      where:
+        notebook: ?notebook
+        sources: {?nth: ?source}
+        this: ?this
+        head: ?head
+        tail: ?tail
+    - assert: block/position
+      where:
+        this: ?head
+        notebook: ?notebook
+        at: ?head/at
+    - assert: block/position
+      where:
+        this: ?tail
+        notebook: ?notebook
+        at: ?tail/at
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ?head/at
+        before: ?tail/at
+        is: ?at
+
+# The same, at the document's edges.
+#
+# A rule body is a conjunction, so a premise cannot be skipped: naming
+# `head` in the rule above means it never fires for a run inserted at the
+# very top. `""` is the empty bound, which `dialog/position` reads as
+# unbounded — the formula's own convention, not one invented here.
+rule!:
+  description: Derive the position of a run with no predecessor.
+  assert!: block/position
+  when:
+    - assert: blocks/insert
+      where:
+        notebook: ?notebook
+        sources: {?nth: ?source}
+        this: ?this
+        tail: ?tail
+    - assert: block/position
+      where:
+        this: ?tail
+        notebook: ?notebook
+        at: ?tail/at
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ""
+        before: ?tail/at
+        is: ?at
+
+rule!:
+  description: Derive the position of a run with no successor.
+  assert!: block/position
+  when:
+    - assert: blocks/insert
+      where:
+        notebook: ?notebook
+        sources: {?nth: ?source}
+        this: ?this
+        head: ?head
+    - assert: block/position
+      where:
+        this: ?head
+        notebook: ?notebook
+        at: ?head/at
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ?head/at
+        before: ""
+        is: ?at
+
+rule!:
+  description: Derive the position of the first block in an empty notebook.
+  assert!: block/position
+  when:
+    - assert: blocks/insert
+      where:
+        notebook: ?notebook
+        sources: {?nth: ?source}
+        this: ?this
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ""
+        before: ""
+        is: ?at
+
+# The derived position becomes the block's entry in the sequence.
+rule!:
+  description: Place an inserted block.
+  assert!: notebook/blocks
+  when:
+    - assert: blocks/insert
+      where:
+        notebook: ?this
+        sources: {?nth: ?source}
+        this: ?block
+    - assert: block/position
+      where:
+        this: ?block
+        notebook: ?this
+        at: ?block/key
 
 rule!:
   description: Persist a block edit onto its block.
