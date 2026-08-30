@@ -441,7 +441,7 @@ view/directory!:
                 does not delete other members' copies.
               </form>
               <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-              <button class="m-go" slot="actions" type="submit" form="remove-{subject}">remove space</button>
+              <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}">remove space</button>
             </tonk-dialog>
           </ui-space-remove>
         </div>

@@ -428,12 +428,12 @@ window.STORYBOOK_DATA = {
       "variants": "Parent/nested/exact/vanished path."
     },
     {
-      "evidence": "Broad process coverage.",
-      "gaps": "Signal/crash during removal, failed partial filesystem delete, concurrent use/sync.",
+      "evidence": "Broad process coverage plus a whole-browser confirmation/removal regression covering modal focus, form submission, profile removal, and Hub disappearance.",
+      "gaps": "Signal/crash during removal, failed partial filesystem delete, concurrent use/sync, unrelated-space browser boundary.",
       "group": "Spaces: local lifecycle and selection",
       "id": "SPACE-07",
       "title": "Remove a space locally with confirmation.",
-      "variants": "TTY/no TTY; yes/no; owned/listed/local-only; data missing."
+      "variants": "CLI TTY/no TTY; browser keyboard/touch; yes/no; owned/listed/local-only; data missing."
     },
     {
       "evidence": "Whole process coverage.",
@@ -1967,6 +1967,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "Hub confirmation removes its exact local space while cancellation remains an exit-early path (Settle).",
+      "device": "fresh-browser + keyboard",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-12",
+      "priority": "P1",
+      "result": "Pass (local, 2026-08-29): the focused real-browser regression completed every step against the built product."
+    },
+    {
       "claim": "Status reports R0–R6 without mutation (Settle).",
       "device": "two-actor",
       "file": "verification/cli-spaces-ui.md",
@@ -2227,7 +2235,7 @@ window.STORYBOOK_DATA = {
     "blocked": 0,
     "fail": 0,
     "other": 0,
-    "pass": 0,
+    "pass": 1,
     "unrun": 114
   },
   "visualCommit": "49a873a23"
