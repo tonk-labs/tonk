@@ -541,6 +541,13 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
     .map_err(|error| TonkUiError::ApiError(format!("enrollment was not dispatched: {error:?}")))
 }
 
+/// The custody material an enrollment carries, as the ceremony hands it
+/// back.
+///
+/// Four values the worker cannot produce for itself: two of them are
+/// signatures by the custody key, which exists only inside a live
+/// passkey assertion in this page. They ride the command so the worker
+/// can present them to the access service, which writes the cell.
 /// The `TransactRequest` body for the `tonk:enroll` command.
 ///
 /// Both fields are always present because a concept resolves only when

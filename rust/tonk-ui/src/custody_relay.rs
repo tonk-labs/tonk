@@ -224,9 +224,69 @@ pub fn install() {
                 // owns, and the dialog runs its own ceremony.
                 crate::register_dialog::run_signup_ceremony();
             }
+            WebAuthnKind::Custody => {
+                // One assertion, then the handles go to the worker,
+                // which mints and enrolls. The page builds nothing and
+                // holds nothing; it only supplies the gesture WebAuthn
+                // insists on happening in a window.
+                mediate_custody(message.enrollment.unwrap_or_default());
+            }
         }
     });
     let _ = service_worker
         .add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
     listener.forget();
+}
+
+/// Run one custody assertion and hand the worker its derivation
+/// handles.
+///
+/// `usePasskey` posts them and resolves when the worker is done, so a
+/// failure here is the enrollment's failure and is reported as one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn mediate_custody(enrollment: tonk_worker_api::Enrollment) {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(identity) = web_sys::window()
+            .and_then(|window| js_sys::Reflect::get(&window, &"tonkIdentity".into()).ok())
+            .filter(|value| !value.is_undefined())
+        else {
+            web_sys::console::warn_1(&"custody: window.tonkIdentity is not installed".into());
+            return;
+        };
+        let Ok(use_passkey) = js_sys::Reflect::get(&identity, &"usePasskey".into())
+            .and_then(|value| value.dyn_into::<js_sys::Function>())
+        else {
+            web_sys::console::warn_1(&"custody: tonkIdentity.usePasskey is missing".into());
+            return;
+        };
+
+        let input = js_sys::Object::new();
+        match serde_wasm_bindgen::to_value(&enrollment) {
+            Ok(request) => {
+                let _ = js_sys::Reflect::set(&input, &"request".into(), &request);
+            }
+            Err(error) => {
+                web_sys::console::warn_1(
+                    &format!("custody: the enrollment did not serialize: {error}").into(),
+                );
+                return;
+            }
+        }
+
+        let answer = match use_passkey.call1(&JsValue::NULL, &input) {
+            Ok(value) => value,
+            Err(error) => {
+                web_sys::console::warn_1(&format!("custody: {error:?}").into());
+                return;
+            }
+        };
+        let Ok(promise) = answer.dyn_into::<js_sys::Promise>() else {
+            return;
+        };
+        if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
+            web_sys::console::warn_1(&format!("custody: the handoff failed: {error:?}").into());
+        }
+    });
 }

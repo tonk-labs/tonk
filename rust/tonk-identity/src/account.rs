@@ -89,6 +89,7 @@ impl AccountBuilder<'_> {
     /// The whole recovery in one command: derive the signer that names
     /// the space, read the cell, unseal it. A device holding nothing but
     /// the passkey gets the account back.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub fn load(self, endpoint: impl Into<String>) -> LoadAccount {
         LoadAccount(self.0.clone(), endpoint.into())
     }
@@ -105,6 +106,10 @@ pub struct AdoptAccount(Custodian, AccountSecret);
 pub struct ImportAccount(Custodian, Envelope<Recovery>);
 
 /// Fetch and open a custodian's cell. See [`AccountBuilder::load`].
+///
+/// Only where the fetch exists: every other account command is pure
+/// crypto and runs anywhere, but this one reaches the network.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub struct LoadAccount(Custodian, String);
 
 impl dialog_capability::Command for CreateAccount {
@@ -122,6 +127,7 @@ impl dialog_capability::Command for ImportAccount {
     type Output = anyhow::Result<Account>;
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl dialog_capability::Command for LoadAccount {
     /// `None` when the space holds no cell yet, which is not a failure:
     /// it is what a passkey enrolled but never published looks like, and
@@ -160,6 +166,7 @@ impl ImportAccount {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl LoadAccount {
     /// Run this against a provider that can reach the access service.
     pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Option<Account>>

@@ -171,8 +171,16 @@ pub async fn mint_custody_material(
     use dialog_varsig::Principal as _;
     Ok(OwnedCustodyMaterial {
         custody: key.did(),
-        consent: crate::custody::sign_custody_consent(key.clone(), account).await?,
-        recovery: crate::custody::sign_deferred_publish_invocation(key.clone(), &sealed).await?,
+        consent: crate::custody::sign_custody_consent(
+            dialog_credentials::Signer::from(key.clone()),
+            account,
+        )
+        .await?,
+        recovery: crate::custody::sign_deferred_publish_invocation(
+            dialog_credentials::Signer::from(key.clone()),
+            &sealed,
+        )
+        .await?,
         sealed,
     })
 }

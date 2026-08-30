@@ -17,7 +17,7 @@ use tonk_access_service::revocation::index::MemoryRevocationIndex;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::cid::dagcbor_cid;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as DelegatedSubject;
@@ -1035,7 +1035,7 @@ async fn it_denies_presign_until_the_customer_confirms_their_email(
     let custody_key = custody_signer_for(&[31u8; 32]).await?;
 
     // A subject nobody pays for is never served.
-    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let resolve = custody::build_resolve_invocation(Signer::from(custody_key.clone())).await?;
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
@@ -1069,7 +1069,7 @@ async fn it_denies_presign_until_the_customer_confirms_their_email(
         .await?;
     assert_eq!(response.status(), 200, "enrollment refused");
 
-    let account_resolve = custody::build_resolve_invocation(account.clone()).await?;
+    let account_resolve = custody::build_resolve_invocation(Signer::from(account.clone())).await?;
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
@@ -1184,7 +1184,7 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     // The account's own space is not served yet, which is what makes
     // the next step matter rather than being ceremony: `Registered`
     // denies everything behind this customer.
-    let resolve_before = custody::build_resolve_invocation(account.clone()).await?;
+    let resolve_before = custody::build_resolve_invocation(Signer::from(account.clone())).await?;
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
@@ -1223,7 +1223,8 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     // provisioning contract, nothing custody-specific.
     let device = Ed25519Signer::generate().await?;
     let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
-    let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
+    let consent =
+        custody::mint_custody_consent(Signer::from(custody_key.clone()), &account.did()).await?;
     let add = tonk_identity::request::build_provider_add_invocation(
         device,
         &link,
@@ -1247,7 +1248,7 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     let secret = AccountSecret::generate()?;
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
     let publish = custody::build_publish_invocation(
-        custody_key.clone(),
+        Signer::from(custody_key.clone()),
         &sealed,
         None,
         dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
@@ -1270,7 +1271,7 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
 
     // 6. And a device holding only the passkey reads it back. This is
     // the recovery the whole design exists for.
-    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let resolve = custody::build_resolve_invocation(Signer::from(custody_key.clone())).await?;
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
@@ -1291,8 +1292,8 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     // The envelope opens back to the same account.
     let opened = custody_kek(&[22u8; 32]).open(&Envelope::decode(&bytes)?)?;
     assert_eq!(
-        opened.signing_seed().as_ref(),
-        secret.signing_seed().as_ref(),
+        opened.signer().await?.did(),
+        secret.signer().await?.did(),
         "the unwrapped secret derives the same account",
     );
     Ok(())
@@ -1342,7 +1343,8 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     let kek = custody_kek(&[22u8; 32]);
     let device = Ed25519Signer::generate().await?;
     let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
-    let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
+    let consent =
+        custody::mint_custody_consent(Signer::from(custody_key.clone()), &account.did()).await?;
     let add = tonk_identity::request::build_provider_add_invocation(
         device,
         &link,
@@ -1365,7 +1367,9 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     // The ceremony's pre-signed shape: bounded to a month, and redeemed
     // long after signing. Enrollment now redeems the first passkey's
     // copy itself; this proves the shape survives the delay either way.
-    let publish = custody::build_deferred_publish_invocation(custody_key.clone(), &sealed).await?;
+    let publish =
+        custody::build_deferred_publish_invocation(Signer::from(custody_key.clone()), &sealed)
+            .await?;
     // The same invocation enrollment verifies, so the command it accepts
     // and the one this endpoint redeems cannot drift apart. Reading it
     // back from the built container rather than restating it is the
@@ -1391,7 +1395,7 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     );
 
     // A fresh device resolves with nothing but the custody key.
-    let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
+    let resolve = custody::build_resolve_invocation(Signer::from(custody_key.clone())).await?;
     let response = client
         .post(&ucan)
         .header("Content-Type", "application/cbor")
@@ -1412,8 +1416,8 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     // The envelope opens back to the same account.
     let opened = custody_kek(&[22u8; 32]).open(&Envelope::decode(&bytes)?)?;
     assert_eq!(
-        opened.signing_seed().as_ref(),
-        secret.signing_seed().as_ref(),
+        opened.signer().await?.did(),
+        secret.signer().await?.did(),
         "the unwrapped secret derives the same account",
     );
     Ok(())

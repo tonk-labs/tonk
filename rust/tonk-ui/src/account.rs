@@ -862,7 +862,13 @@ fn render_deletion_plan(
             .create_element("li")
             .map_err(|_| "could not render deletion space".to_string())?;
         let label = space.name.as_deref().unwrap_or(&space.subject);
-        item.set_text_content(Some(&format!("{label} — {}", space.state)));
+        // A listed space is either being purged or waiting to be; a
+        // finished deletion leaves no record to show.
+        let state = match space.deleting_since {
+            Some(_) => "deleting",
+            None => "scheduled",
+        };
+        item.set_text_content(Some(&format!("{label} — {state}")));
         let _ = list.append_child(&item);
     }
     if visible.is_empty() {
@@ -3558,7 +3564,7 @@ mod tests {
             spaces: vec![tonk_worker_api::AccountDeletionSpace {
                 subject: "did:key:zSpace".into(),
                 name: Some("Project One".into()),
-                state: "active".into(),
+                deleting_since: None,
             }],
             joined_spaces: 2,
         }

@@ -41,6 +41,111 @@ fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
         .ok_or_else(|| JsValue::from_str(&format!("missing or invalid {name}")))
 }
 
+/// `createPasskey({ name?, displayName? })` → `{ credentialId }`.
+///
+/// Creates a custody passkey, evaluates its PRF, and hands the service
+/// worker the two derivation handles. Nothing but the credential id
+/// comes back to the caller: the handles go straight to the worker,
+/// which is the only place that mints anything.
+async fn create_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let name = optional_string_property(&input, "name");
+    let display_name = optional_string_property(&input, "displayName");
+    let custodian = crate::webcrypto_kek::Custodian::create(name, display_name)
+        .perform(&crate::webcrypto_kek::Page)
+        .await
+        .map_err(js_error)?;
+    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    mediate(custodian, request).await
+}
+
+/// `usePasskey({ credentialId? })` → `{ credentialId }`.
+///
+/// One assertion against an existing passkey — a picker when no
+/// `credentialId` is given — then the same handoff [`create_passkey`]
+/// does.
+async fn use_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let credential_id = match optional_string_property(&input, "credentialId") {
+        Some(encoded) => Some(
+            hex::decode(&encoded)
+                .map_err(|error| JsValue::from_str(&format!("invalid credentialId: {error}")))?,
+        ),
+        None => None,
+    };
+    let custodian = match credential_id {
+        Some(id) => crate::webcrypto_kek::Custodian::load(id),
+        None => crate::webcrypto_kek::Custodian::choose(),
+    }
+    .perform(&crate::webcrypto_kek::Page)
+    .await
+    .map_err(js_error)?;
+    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    mediate(custodian, request).await
+}
+
+/// Hand a custodian's two derivation handles to the service worker and
+/// wait for it to finish.
+///
+/// The page's whole job. `structuredClone` — which is what
+/// `postMessage` runs — carries a non-extractable `CryptoKey` intact,
+/// so the worker receives derivation capability without either side
+/// ever holding bytes.
+///
+/// A fresh `MessageChannel` per call carries the reply. The worker
+/// drops the handles as soon as it is done, so the page must know when
+/// that is; a port answers exactly one request and needs no correlation
+/// id to do it.
+async fn mediate(
+    custodian: crate::webcrypto_kek::Custodian,
+    request: JsValue,
+) -> Result<JsValue, JsValue> {
+    let (key, kek) = custodian.handles();
+    let channel = web_sys::MessageChannel::new()?;
+
+    let message = Object::new();
+    Reflect::set(&message, &"type".into(), &"custody".into())?;
+    Reflect::set(
+        &message,
+        &"credentialId".into(),
+        &hex::encode(&custodian.credential_id).into(),
+    )?;
+    Reflect::set(&message, &"key".into(), key)?;
+    Reflect::set(&message, &"kek".into(), kek)?;
+    Reflect::set(&message, &"request".into(), &request)?;
+
+    let answer = js_sys::Promise::new(&mut |resolve, reject| {
+        let port = channel.port1();
+        let on_message = Closure::once_into_js(move |event: web_sys::MessageEvent| {
+            let data = event.data();
+            match Reflect::get(&data, &"error".into())
+                .ok()
+                .and_then(|e| e.as_string())
+            {
+                Some(error) => {
+                    let _ = reject.call1(&JsValue::NULL, &JsValue::from_str(&error));
+                }
+                None => {
+                    let _ = resolve.call1(&JsValue::NULL, &data);
+                }
+            }
+        });
+        port.set_onmessage(Some(on_message.unchecked_ref()));
+    });
+
+    let worker = web_sys::window()
+        .ok_or_else(|| JsValue::from_str("no window"))?
+        .navigator()
+        .service_worker()
+        .controller()
+        .ok_or_else(|| JsValue::from_str("no service worker controls this page"))?;
+    let transfer = js_sys::Array::new();
+    transfer.push(&channel.port2());
+    worker.post_message_with_transferable(&message, &transfer)?;
+
+    let result = wasm_bindgen_futures::JsFuture::from(answer).await?;
+    channel.port1().set_onmessage(None);
+    Ok(result)
+}
+
 /// `signRevocation({ delegationCid, pathHex, endpoint })` →
 /// `{ revocationHex }`.
 ///
@@ -428,6 +533,26 @@ pub fn install() {
     );
     verify_passkey.forget();
 
+    let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(create_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"createPasskey".into(),
+        create_passkey.as_ref().unchecked_ref(),
+    );
+    create_passkey.forget();
+
+    let use_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(use_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"usePasskey".into(),
+        use_passkey.as_ref().unchecked_ref(),
+    );
+    use_passkey.forget();
+
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
 
@@ -444,6 +569,8 @@ mod tests {
         let window = web_sys::window().unwrap();
         let identity = Reflect::get(&window, &"tonkIdentity".into()).unwrap();
         for name in [
+            "createPasskey",
+            "usePasskey",
             "createAccount",
             "enrollCustodyPasskey",
             "unlockWithPasskey",

@@ -274,7 +274,11 @@ pub async fn create_custody_account(
     let custody = custody_signer(&evaluation.key).await?;
     let kek = custody_kek(&evaluation.kek);
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
-    let consent = crate::custody::mint_custody_consent(custody.clone(), &root.did()).await?;
+    let consent = crate::custody::mint_custody_consent(
+        dialog_credentials::Signer::from(custody.clone()),
+        &root.did(),
+    )
+    .await?;
     let consent_hex = hex::encode(
         consent
             .to_bytes()
@@ -309,8 +313,11 @@ pub async fn create_custody_account(
     // deferred publish here: once activation and provisioning land, the
     // worker redeems this invocation and uploads the sealed bytes — no
     // further assertion, no page, no button.
-    let publish_invocation =
-        crate::custody::build_deferred_publish_invocation(custody.clone(), &sealed).await?;
+    let publish_invocation = crate::custody::build_deferred_publish_invocation(
+        dialog_credentials::Signer::from(custody.clone()),
+        &sealed,
+    )
+    .await?;
     Ok(CustodyAccountCeremony {
         root: root_ceremony,
         account,
@@ -436,9 +443,12 @@ pub async fn enroll_custody(
     // outcome, not a failure. Hand the sealed bytes back to be queued
     // and published once provisioning lands.
     let mut queued = Some(
-        crate::custody::build_deferred_publish_invocation(custody.clone(), &sealed)
-            .await
-            .map(|invocation| hex::encode(&invocation))?,
+        crate::custody::build_deferred_publish_invocation(
+            dialog_credentials::Signer::from(custody.clone()),
+            &sealed,
+        )
+        .await
+        .map(|invocation| hex::encode(&invocation))?,
     );
     if let Err(publish_error) =
         crate::custody::publish_secret(custody.clone(), &sealed, endpoint, None).await
@@ -475,7 +485,11 @@ pub async fn enroll_custody(
         queued = None;
     }
 
-    let consent = crate::custody::mint_custody_consent(custody.clone(), &root.did()).await?;
+    let consent = crate::custody::mint_custody_consent(
+        dialog_credentials::Signer::from(custody.clone()),
+        &root.did(),
+    )
+    .await?;
     let consent_hex = hex::encode(
         consent
             .to_bytes()

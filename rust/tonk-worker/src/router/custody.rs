@@ -15,6 +15,8 @@ use crate::TonkWorkerError;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::router::{AppState, ClientId};
 use dialog_varsig::Did;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_common::log;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
@@ -123,6 +125,187 @@ async fn await_key(
     }
 }
 
+/// Ask the page to mediate a passkey so this worker can mint custody
+/// material.
+///
+/// The worker has no `window`, so the assertion happens on the page
+/// that asked for the enrollment. What comes back is two derivation
+/// handles, not key material, and this enrollment travels with the
+/// request so the handoff knows what it is for.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn request_mediation(
+    client: &ClientId,
+    email: Option<String>,
+    deposits: &[String],
+) {
+    let enrollment = tonk_worker_api::Enrollment {
+        email,
+        deposits: deposits.to_vec(),
+    };
+    if let Err(error) = super::navigate::request_webauthn_with(
+        client,
+        tonk_worker_api::WebAuthnKind::Custody,
+        Some(enrollment),
+    )
+    .await
+    {
+        log!("custody: the page could not be asked to mediate: {error}");
+    }
+}
+
+/// Is this SW-global message a custody handoff?
+///
+/// Read off the raw `JsValue`: the two handles it carries are
+/// `CryptoKey`s, which do not survive a trip through JSON.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn is_custody_envelope(data: &wasm_bindgen::JsValue) -> bool {
+    js_sys::Reflect::get(data, &wasm_bindgen::JsValue::from_str("type"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .is_some_and(|kind| kind == "custody")
+}
+
+/// Take the page's derivation handles, do the work that needs them, and
+/// drop them.
+///
+/// The page mediates WebAuthn and nothing else: it holds no bytes, and
+/// the handles it posts are non-extractable. This is the only place a
+/// custodian exists, and it exists for the length of one request — the
+/// reply goes back over the transferred port, and the custodian is
+/// dropped when this returns.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports: js_sys::Array) {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let Some(port) = ports.get(0).dyn_into::<web_sys::MessagePort>().ok() else {
+        log!("custody: handoff arrived with no reply port; dropping");
+        return;
+    };
+
+    let answer = match custodian_from(&data) {
+        Ok(custodian) => perform(state, &data, custodian).await,
+        Err(error) => Err(error),
+    };
+
+    let reply = js_sys::Object::new();
+    match answer {
+        Ok(value) => {
+            let _ = js_sys::Reflect::set(&reply, &JsValue::from_str("ok"), &value);
+        }
+        Err(error) => {
+            log!("custody: {error}");
+            let _ = js_sys::Reflect::set(
+                &reply,
+                &JsValue::from_str("error"),
+                &JsValue::from_str(&error),
+            );
+        }
+    }
+    if let Err(error) = port.post_message(&reply) {
+        log!("custody: the reply did not post: {error:?}");
+    }
+}
+
+/// Mint the custody material this enrollment needs, then enroll.
+///
+/// What the page used to do and no longer can: generate the account
+/// secret, seal it under the passkey's KEK, mint the custody space's
+/// consent, and pre-sign the cell write. All of it here, so the secret
+/// never exists outside the worker and the four call sites with no
+/// ceremony at hand can enroll like any other.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn perform(
+    state: AppState,
+    data: &wasm_bindgen::JsValue,
+    custodian: tonk_identity::custodian::Custodian,
+) -> Result<wasm_bindgen::JsValue, String> {
+    use dialog_varsig::Principal as _;
+    use wasm_bindgen::JsValue;
+
+    let request =
+        js_sys::Reflect::get(data, &JsValue::from_str("request")).unwrap_or(JsValue::UNDEFINED);
+    let enrollment: tonk_worker_api::Enrollment = serde_wasm_bindgen::from_value(request)
+        .map_err(|error| format!("the handoff carried an unreadable enrollment: {error}"))?;
+    let email = enrollment.email.filter(|value| !value.trim().is_empty());
+
+    let account = custodian
+        .account()
+        .create()
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| format!("the account did not seal under this passkey: {error:#}"))?;
+
+    let custody = custodian
+        .signer()
+        .await
+        .map_err(|error| format!("the custody signer did not derive: {error:#}"))?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+
+    let sealed = account.envelope().encode();
+    let consent = tonk_identity::custody::sign_custody_consent(custody.clone(), &root.did())
+        .await
+        .map_err(|error| format!("the custody consent did not sign: {error:#}"))?;
+    let recovery =
+        tonk_identity::custody::sign_deferred_publish_invocation(custody.clone(), &sealed)
+            .await
+            .map_err(|error| format!("the cell write did not sign: {error:#}"))?;
+
+    let material = tonk_identity::request::CustodyMaterial {
+        custody: &custody.did(),
+        consent: &consent,
+        recovery: &recovery,
+        sealed: &sealed,
+    };
+
+    let origin = crate::router::customer::service_origin().map_err(|error| format!("{error}"))?;
+    let tonk = state.read().await;
+    let receipt = crate::router::customer::enroll_customer(
+        &tonk,
+        &origin,
+        email,
+        &enrollment.deposits,
+        &material,
+    )
+    .await
+    .map_err(|error| format!("{error}"))?;
+
+    let answer = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &answer,
+        &JsValue::from_str("customer"),
+        &JsValue::from_str(&receipt.customer.to_string()),
+    );
+    Ok(answer.into())
+}
+
+/// Rebuild the custodian from the two posted handles.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn custodian_from(
+    data: &wasm_bindgen::JsValue,
+) -> Result<tonk_identity::custodian::Custodian, String> {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let handle = |name: &str| -> Result<web_sys::CryptoKey, String> {
+        js_sys::Reflect::get(data, &JsValue::from_str(name))
+            .ok()
+            .and_then(|value| value.dyn_into::<web_sys::CryptoKey>().ok())
+            .ok_or_else(|| format!("the handoff carried no {name} handle"))
+    };
+    let credential_id = js_sys::Reflect::get(data, &JsValue::from_str("credentialId"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .ok_or_else(|| "the handoff carried no credential id".to_string())?;
+    let credential_id = hex::decode(&credential_id)
+        .map_err(|error| format!("the credential id is not hex: {error}"))?;
+
+    Ok(tonk_identity::custodian::Custodian::Passkey(
+        tonk_identity::webcrypto_kek::Custodian::new(credential_id, handle("key")?, handle("kek")?),
+    ))
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
@@ -152,10 +335,12 @@ mod tests {
     async fn it_wakes_the_waiter_when_the_root_save_records_the_key() {
         let state = test_state_without_account().await;
         let receiver = wait_for_key();
-        let recipient =
+        let recipient = {
+            use dialog_varsig::Principal as _;
             tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([9u8; 32]))
                 .secret()
-                .did();
+                .did()
+        };
         let root = super::super::identity::local_root(&state).await.unwrap();
         super::super::identity::persist_root(
             &state,

@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result};
-use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_credentials::Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::timestamp::Timestamp;
@@ -102,7 +102,7 @@ fn cell_arguments() -> BTreeMap<String, Promised> {
 /// stays `None` for the first write, which the protocol makes
 /// first-write-only.
 pub async fn build_publish_invocation(
-    custody: Ed25519Signer,
+    custody: Signer,
     content: &[u8],
     when: Option<&[u8]>,
     expiration: Timestamp,
@@ -113,7 +113,7 @@ pub async fn build_publish_invocation(
 /// [`build_publish_invocation`] as a value, for a caller carrying it as
 /// a block rather than posting it.
 pub async fn sign_publish_invocation(
-    custody: Ed25519Signer,
+    custody: Signer,
     content: &[u8],
     when: Option<&[u8]>,
     expiration: Timestamp,
@@ -127,7 +127,7 @@ pub async fn sign_publish_invocation(
         arguments.insert("when".to_string(), Promised::Bytes(version.to_vec()));
     }
     sign_self_invocation(
-        Signer::from(custody),
+        custody,
         vec![
             "use".to_string(),
             "put".to_string(),
@@ -145,17 +145,14 @@ pub async fn sign_publish_invocation(
 /// the worker can publish the custody cell once activation lands,
 /// with no further passkey assertion. Least authority: the signature
 /// covers exactly this cell and this content's checksum.
-pub async fn build_deferred_publish_invocation(
-    custody: Ed25519Signer,
-    content: &[u8],
-) -> Result<Vec<u8>> {
+pub async fn build_deferred_publish_invocation(custody: Signer, content: &[u8]) -> Result<Vec<u8>> {
     into_container(sign_deferred_publish_invocation(custody, content).await?)
 }
 
 /// [`build_deferred_publish_invocation`] as a value, for a caller
 /// carrying it as a block rather than posting it.
 pub async fn sign_deferred_publish_invocation(
-    custody: Ed25519Signer,
+    custody: Signer,
     content: &[u8],
 ) -> Result<Invocation<AnySignature>> {
     use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
@@ -184,10 +181,7 @@ pub async fn build_resolve_invocation(custody: Signer) -> Result<Vec<u8>> {
 /// Mint the custody key's consent to being provided by the account —
 /// the consumer powerline `/provider/add` deposits: issuer and subject
 /// are the custody DID, audience is the account, command unrestricted.
-pub async fn mint_custody_consent(
-    custody: Ed25519Signer,
-    account: &Did,
-) -> Result<DelegationChain> {
+pub async fn mint_custody_consent(custody: Signer, account: &Did) -> Result<DelegationChain> {
     Ok(DelegationChain::new(
         sign_custody_consent(custody, account).await?,
     ))
@@ -196,12 +190,12 @@ pub async fn mint_custody_consent(
 /// [`mint_custody_consent`] as a value, for a caller carrying it as a
 /// block rather than as a chain of its own.
 pub async fn sign_custody_consent(
-    custody: Ed25519Signer,
+    custody: Signer,
     account: &Did,
 ) -> Result<Delegation<AnySignature>> {
     let subject = custody.did();
     DelegationBuilder::new()
-        .issuer(Signer::from(custody))
+        .issuer(custody)
         .audience(account)
         .subject(UcanSubject::Specific(subject))
         .command(vec![])
@@ -306,7 +300,7 @@ mod web {
         when: Option<&[u8]>,
     ) -> Result<()> {
         let container = super::build_publish_invocation(
-            custody,
+            Signer::from(custody),
             sealed,
             when,
             dialog_ucan_core::time::timestamp::Timestamp::five_minutes_from_now(),
@@ -352,6 +346,7 @@ pub use web::{publish_secret, resolve_secret, submit_publish};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::promise::Promised;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -398,10 +393,12 @@ mod tests {
         );
     }
 
-    async fn custody() -> Ed25519Signer {
-        Ed25519Signer::import(&*crate::envelope::custody_seed(&[5u8; 32]))
-            .await
-            .unwrap()
+    async fn custody() -> Signer {
+        Signer::from(
+            Ed25519Signer::import(&*crate::envelope::custody_seed(&[5u8; 32]))
+                .await
+                .unwrap(),
+        )
     }
 
     #[dialog_common::test]
@@ -472,9 +469,7 @@ mod tests {
     async fn it_builds_a_self_issued_resolve() {
         let custody = custody().await;
         let did = custody.did();
-        let bytes = build_resolve_invocation(Signer::from(custody))
-            .await
-            .unwrap();
+        let bytes = build_resolve_invocation(custody).await.unwrap();
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         chain
             .verify(&dialog_ucan_core::verification::VerificationContext::new(

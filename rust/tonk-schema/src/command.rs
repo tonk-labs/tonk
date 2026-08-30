@@ -423,14 +423,6 @@ pub struct EnrollCustomer {
     /// Comma-separated hex deposits from a passkey ceremony. Empty means
     /// the worker mints a device-chained set instead.
     pub deposits: crate::domain::command::enroll::Deposits,
-    /// The passkey custody space's DID.
-    pub custody: crate::domain::command::enroll::Custody,
-    /// The custody space's consent to being provisioned, hex.
-    pub consent: crate::domain::command::enroll::Consent,
-    /// The pre-signed custody cell write, hex.
-    pub recovery: crate::domain::command::enroll::Recovery,
-    /// The sealed account secret that write publishes, hex.
-    pub sealed: crate::domain::command::enroll::Sealed,
 }
 
 impl Command for EnrollCustomer {

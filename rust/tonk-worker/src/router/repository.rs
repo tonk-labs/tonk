@@ -4960,8 +4960,8 @@ mod tests {
             crate::router::tests::test_root_seed(&tonk.profile_name),
         ));
         let opened = account
-            .encryption_key()
-            .open(&sealed, &subject)
+            .secret()
+            .reveal(&sealed, &subject)
             .expect("the account key opens the custodied seed");
         let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
             .await

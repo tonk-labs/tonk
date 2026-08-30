@@ -865,8 +865,8 @@ async fn it_custodies_the_created_space_seed() -> Result<()> {
     let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let seed = secret
-        .encryption_key()
-        .open(&sealed, &subject)
+        .secret()
+        .reveal(&sealed, &subject)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
     use dialog_varsig::Principal as _;
@@ -950,8 +950,8 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
     let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let seed = secret
-        .encryption_key()
-        .open(&sealed, &subject)
+        .secret()
+        .reveal(&sealed, &subject)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
     use dialog_varsig::Principal as _;

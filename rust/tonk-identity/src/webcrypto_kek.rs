@@ -80,7 +80,6 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{AesGcmParams, CryptoKey};
 use zeroize::Zeroizing;
 
-use crate::account::Account;
 use crate::clearance::Clearance;
 use crate::envelope::capability::Capability;
 use crate::envelope::capability::{Opening, Sealing};

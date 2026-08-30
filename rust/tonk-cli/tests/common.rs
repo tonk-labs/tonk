@@ -198,6 +198,7 @@ impl AccountFixture {
             // saves it with the root and the account sweep publishes the
             // fact. The fixture publishes directly, so account-backed
             // creates can seal their seeds into custody.
+            use dialog_varsig::Principal as _;
             use tonk_schema::prelude::DidExt as _;
             let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
                 zeroize::Zeroizing::new(root_prf),

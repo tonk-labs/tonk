@@ -205,10 +205,6 @@ impl EnrollCustomerHandler {
 pub(crate) struct Enrollment {
     email: Option<String>,
     deposits: Vec<String>,
-    custody_did: String,
-    consent_hex: String,
-    publish_invocation_hex: String,
-    sealed_hex: String,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -227,14 +223,7 @@ fn decode_enrollment(facts: &crate::reactor::EntityFacts) -> Option<Enrollment> 
         .filter(|deposit| !deposit.is_empty())
         .map(str::to_owned)
         .collect();
-    Some(Enrollment {
-        email,
-        deposits,
-        custody_did: command.custody.0,
-        consent_hex: command.consent.0,
-        publish_invocation_hex: command.recovery.0,
-        sealed_hex: command.sealed.0,
-    })
+    Some(Enrollment { email, deposits })
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -259,36 +248,17 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustome
                 log!("tonk:enroll: unparseable command; skipping");
                 return;
             };
-            let tonk = env.state().read().await;
-            // The access service is same-origin: it serves this page, so
-            // the deployment enrollment registers with is the one the
-            // user is actually on. A command has no request to read that
-            // from, so it comes from the worker's own scope.
-            let origin = match service_origin() {
-                Ok(origin) => origin,
-                Err(error) => {
-                    log!("tonk:enroll: {error}");
-                    return;
-                }
+            // Enrollment must present custody material, and minting it
+            // needs a passkey the worker cannot prompt for. So the page
+            // is asked to mediate: it runs one assertion and posts the
+            // derivation handles back, and the handoff does the rest —
+            // including this enrollment, which travels with it.
+            let Some(client) = env.client().cloned() else {
+                log!("tonk:enroll: no originating client to mediate a passkey; skipping");
+                return;
             };
-            let custody = tonk_identity::request::CustodyMaterial {
-                custody_did: &enrollment.custody_did,
-                consent_hex: &enrollment.consent_hex,
-                publish_invocation_hex: &enrollment.publish_invocation_hex,
-                sealed_hex: &enrollment.sealed_hex,
-            };
-            match enroll_customer(
-                &tonk,
-                &origin,
-                enrollment.email,
-                &enrollment.deposits,
-                &custody,
-            )
-            .await
-            {
-                Ok(receipt) => log!("tonk:enroll: {} is {:?}", receipt.customer, receipt.status),
-                Err(error) => log!("tonk:enroll failed: {error}"),
-            }
+            super::custody::request_mediation(&client, enrollment.email, &enrollment.deposits)
+                .await;
         })
     }
 }
@@ -640,7 +610,7 @@ pub(crate) async fn deprovision_consumer(
 /// The worker's own origin, which the access service serves. Known only
 /// inside a service-worker scope; callers outside one (native tests)
 /// carry an origin of their own through `RequestOrigin` instead.
-fn service_origin() -> Result<Url, TonkWorkerError> {
+pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let origin = super::repository::worker_origin().ok_or_else(|| {
