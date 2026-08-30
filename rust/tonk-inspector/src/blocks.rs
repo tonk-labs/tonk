@@ -569,6 +569,23 @@ mod tests {
 
     /// The invariant the projection rests on: splitting a projection recovers
     /// exactly the blocks it was built from.
+    /// Blank lines inside a paragraph-ish block: does a soft line break
+    /// survive? (`a\nb` is ONE block with a line break, not two.)
+    #[dialog_common::test]
+    fn it_preserves_a_line_break_within_a_block() {
+        let doc = "first line\nsecond line";
+        let blocks = split(doc);
+        assert_eq!(blocks.len(), 1, "one block: {blocks:#?}");
+        assert_eq!(project(&blocks), doc, "the break inside survives");
+    }
+
+    /// Trailing blank lines inside a fence.
+    #[dialog_common::test]
+    fn it_preserves_trailing_blank_lines_inside_a_fence() {
+        let doc = "```dialog-yaml\ncounter/model!:\n  this: id:counter/1\n\n\n```";
+        assert_eq!(project(&split(doc)), doc);
+    }
+
     #[dialog_common::test]
     fn it_round_trips_blocks_through_a_document() {
         // Blocks as `split` itself would produce them: the heading is
