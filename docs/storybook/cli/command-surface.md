@@ -223,6 +223,16 @@ and remote commands validate exact DIDs/subjects/generations.
 telemetry, update, and migration files each need atomic/restart tests. Temporary
 fixtures must isolate all state environment variables.
 
+Space-registry reads remain lock-free and observe either the previous or the
+next complete `spaces.json`. Every registry mutation retains an exclusive
+`spaces.lock` across its read/validate/change/publish transaction, including
+account selection, join registration, creation, binding, unbinding, and
+removal. Publication uses a unique same-directory temporary file, syncs its
+contents, atomically replaces the registry, and syncs the state directory. A
+lock/open failure happens before the command mutates space state; a publish
+failure never exposes partial JSON, while the command's documented recovery
+rules still govern any site work that completed before publication.
+
 **Remote service and sync.** Status is read-only. Auto-sync wraps writes, while
 manual push/pull remains explicit. Remote errors never justify destructive
 local ref replacement.
