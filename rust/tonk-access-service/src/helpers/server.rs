@@ -434,7 +434,10 @@ async fn handle_request(
         let host = request_host(&req);
         let found = match address_from_segments(domain, local) {
             Some(address) => match customer_did(&host, &address) {
-                Some(did) => resolve(&registration.store, &did, &address).await,
+                Some(did) => {
+                    let origin = format!("http://{host}");
+                    resolve(&registration.store, &did, &address, &origin).await
+                }
                 None => Ok(None),
             },
             None => Ok(None),

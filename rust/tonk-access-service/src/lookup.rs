@@ -131,13 +131,14 @@ pub async fn resolve<S: Store>(
     store: &S,
     did: &str,
     address: &str,
+    origin: &str,
 ) -> Result<Option<Found>, StoreError> {
     let Some(customer) = store.customer_by_email(address).await? else {
         return Ok(None);
     };
     let suspended = customer.status == CustomerStatus::Suspended;
     Ok(Some(Found {
-        document: customer_document(did, &customer, suspended),
+        document: customer_document(did, &customer, suspended, origin),
         status: status_of(customer.status),
     }))
 }

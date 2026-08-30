@@ -80,6 +80,36 @@ async fn it_answers_an_activated_customer_with_their_key(
     Ok(())
 }
 
+/// The document says where the account syncs, not just who it is.
+///
+/// A second device holds an email and nothing else: resolving the
+/// address has to yield both the account and its service, or the device
+/// would need an endpoint from somewhere before it could ask for one.
+#[dialog_common::test]
+async fn it_names_the_service_the_account_syncs_with(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    let customer = Ed25519Signer::generate().await?;
+    env.activate_customer(&customer, "jsmith@example.com")
+        .await?;
+
+    let (_, document) = lookup(&env, "jsmith@example.com").await?;
+    let service = &document["service"][0];
+    assert_eq!(service["type"], "TonkAccessService");
+    let endpoint = service["serviceEndpoint"]
+        .as_str()
+        .expect("the document carries a service endpoint");
+    assert!(
+        endpoint.ends_with("/ucan/"),
+        "the endpoint is the service's UCAN address, got {endpoint}"
+    );
+    assert!(
+        endpoint.contains(&host(&env)),
+        "and names the host that answered, got {endpoint}"
+    );
+    Ok(())
+}
+
 /// An enrolled customer who has not clicked the activation link resolves
 /// with `202`: the DID is real, but the address is claimed rather than
 /// confirmed, and a caller about to act on it should be able to tell.

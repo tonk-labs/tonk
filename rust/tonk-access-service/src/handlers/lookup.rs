@@ -100,16 +100,14 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
         }
     };
 
-    let host = req
-        .url()?
-        .host_str()
-        .map(ToString::to_string)
-        .unwrap_or_default();
+    let url = req.url()?;
+    let host = url.host_str().map(ToString::to_string).unwrap_or_default();
+    let origin = url.origin().ascii_serialization();
     let Some(did) = customer_did(&host, &address) else {
         return not_found();
     };
 
-    match resolve(&store, &did, &address).await {
+    match resolve(&store, &did, &address, &origin).await {
         Ok(Some(found)) => {
             let response = Response::from_json(&found.document)?.with_status(found.status);
             let mut response = with_cors(Ok(response))?;

@@ -121,10 +121,19 @@ pub fn did_document(host: &str, signer: &Ed25519Signer) -> Value {
 /// `deactivated` marks a suspended customer. The key stays in the
 /// document: a suspension is reversible, and dropping the mapping would
 /// make a resumed customer unresolvable to anyone holding the old answer.
-pub fn customer_document(id: &str, customer: &Customer, deactivated: bool) -> Value {
+pub fn customer_document(id: &str, customer: &Customer, deactivated: bool, origin: &str) -> Value {
     let mut document = document(id, [customer.account.clone()]);
     document["alsoKnownAs"] = json!([customer.account]);
     document["status"] = json!(customer.status.as_str());
+    // Where this account syncs, in the document that already answers
+    // who it is. A device holding only the address resolves both in one
+    // fetch, so nothing has to publish an endpoint separately or freeze
+    // one at signup.
+    document["service"] = json!([{
+        "id": format!("{id}#sync"),
+        "type": "TonkAccessService",
+        "serviceEndpoint": format!("{}/ucan/", origin.trim_end_matches('/')),
+    }]);
     if deactivated {
         document["deactivated"] = Value::Bool(true);
     }

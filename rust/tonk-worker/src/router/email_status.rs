@@ -131,40 +131,68 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CheckEmailHan
             // itself, leaving two sources of truth that disagree while
             // the lookup runs.
             publish(&env, &email, state::CHECKING).await;
-            let state = lookup(&email).await;
+            let (state, service) = lookup(&email).await;
             publish(&env, &email, state).await;
+            // The document says where the account syncs as well as who
+            // it is, so one lookup answers both. Held for the login
+            // that follows: a device with only an address has nowhere
+            // else to learn the service, and the origin is a guess that
+            // is right only when both devices are on one deployment.
+            if let Some(service) = service {
+                remember_service(&service);
+            }
         })
     }
 }
 
 /// Ask the access service about `email`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn lookup(email: &str) -> &'static str {
+async fn lookup(email: &str) -> (&'static str, Option<String>) {
     use super::http::{HttpError, get};
     use tonk_common::log;
 
     if let Some(state) = state_for_address(email) {
-        return state;
+        return (state, None);
     }
     let Some((domain, local)) = split_address(email) else {
-        return state::INVALID;
+        return (state::INVALID, None);
     };
     let Some(origin) = super::repository::worker_origin() else {
-        return state::UNAVAILABLE;
+        return (state::UNAVAILABLE, None);
     };
     let Ok(endpoint) = format!("{origin}/customer/{domain}/{local}/did.json").parse() else {
-        return state::UNAVAILABLE;
+        return (state::UNAVAILABLE, None);
     };
     match get(&endpoint).await {
-        Ok(response) => state_for_status(response.status),
+        Ok(response) => (
+            state_for_status(response.status),
+            service_endpoint(&response.body),
+        ),
         // A refusal still carries the status that IS the answer: the
         // lookup says "nobody registered this" with a 404.
-        Err(HttpError::Upstream(failure)) => state_for_status(failure.status),
+        Err(HttpError::Upstream(failure)) => (state_for_status(failure.status), None),
         Err(error) => {
             log!("email lookup did not complete: {error}");
-            state::UNAVAILABLE
+            (state::UNAVAILABLE, None)
         }
     }
+}
+
+/// The sync address a resolved DID document names, if it names one.
+///
+/// A document from a service that predates the `service` block simply
+/// has none, and the caller keeps whatever it already knew.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn service_endpoint(body: &[u8]) -> Option<String> {
+    let document: serde_json::Value = serde_json::from_slice(body).ok()?;
+    document
+        .get("service")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("type").and_then(|kind| kind.as_str()) == Some("TonkAccessService"))
+        .and_then(|entry| entry.get("serviceEndpoint"))
+        .and_then(|endpoint| endpoint.as_str())
+        .map(ToString::to_string)
 }
 
 /// Write the answer to the profile overlay, replacing any earlier one.
@@ -394,4 +422,26 @@ mod tests {
         assert_eq!(state_for_status(500), state::UNAVAILABLE);
         assert_eq!(state_for_status(502), state::UNAVAILABLE);
     }
+}
+
+// The sync address the last lookup resolved, for the login that follows
+// it. Thread-local rather than a fact: it is learned before an account
+// exists to hang it on, and it is consumed within the same session by
+// the sign-in the lookup was run for.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+thread_local! {
+    static RESOLVED_SERVICE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Keep the address a lookup resolved.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn remember_service(endpoint: &str) {
+    RESOLVED_SERVICE.with(|cell| *cell.borrow_mut() = Some(endpoint.to_owned()));
+}
+
+/// The address the last lookup resolved, if one did.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn resolved_service() -> Option<String> {
+    RESOLVED_SERVICE.with(|cell| cell.borrow().clone())
 }

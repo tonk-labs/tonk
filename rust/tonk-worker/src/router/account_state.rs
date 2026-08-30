@@ -61,12 +61,12 @@ async fn trusted_marker(tonk: &TonkState) -> Result<Option<Vec<u8>>, TonkWorkerE
 
 async fn mark_trusted(
     tonk: &TonkState,
-    descriptor: &AccountRepositoryDescriptorV1,
+    subject: &dialog_varsig::Did,
 ) -> Result<(), TonkWorkerError> {
     tonk.profile
         .credential()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-        .save(descriptor.content_hash().to_vec())
+        .save(subject.as_str().as_bytes().to_vec())
         .perform(&tonk.operator)
         .await
         .map_err(|error| {
@@ -76,8 +76,42 @@ async fn mark_trusted(
         })
 }
 
-fn marker_matches(marker: Option<&[u8]>, descriptor: &AccountRepositoryDescriptorV1) -> bool {
-    marker == Some(descriptor.content_hash().as_slice())
+/// Whether the trusted base already recorded names this account.
+///
+/// The account DID, not a descriptor hash: what the marker answers is
+/// "did I trust a base for THIS account", and the subject is what says
+/// which account.
+fn marker_matches(marker: Option<&[u8]>, subject: &dialog_varsig::Did) -> bool {
+    marker == Some(subject.as_str().as_bytes())
+}
+
+/// Where the account syncs.
+///
+/// The address the access service named at enrollment, when one is
+/// recorded — that service is the authority on where it serves from.
+/// Otherwise this deployment's own `/ucan/` endpoint: the origin
+/// serving the page IS the access service that serves it, so a device
+/// knows the address before it knows anything about an account, with
+/// nothing fetched and nothing published to learn it.
+async fn account_remote(tonk: &TonkState) -> Result<String, TonkWorkerError> {
+    if let Some(address) = super::customer::provider_address(tonk).await {
+        return Ok(address);
+    }
+    // What the email lookup resolved, before enrollment has recorded
+    // anything: the account's own document naming where it syncs.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if let Some(address) = super::email_status::resolved_service() {
+        return Ok(address);
+    }
+    // The attachment records where this profile linked, which is the
+    // address before enrollment has answered with one.
+    if let Some(descriptor) = super::account::descriptor(tonk).await {
+        return Ok(descriptor.remote().to_string());
+    }
+    Ok(format!(
+        "{}ucan/",
+        super::customer::service_origin()?.as_str()
+    ))
 }
 
 /// The descriptor this profile is configured with, absent when the local link
@@ -88,11 +122,16 @@ async fn configured_descriptor(tonk: &TonkState) -> Option<AccountRepositoryDesc
 
 /// Current durable account-state status, without a network request.
 pub(crate) async fn status(tonk: &TonkState) -> AccountStateStatus {
-    let Some(descriptor) = configured_descriptor(tonk).await else {
+    let Ok(root) = super::identity::local_root(tonk).await else {
         return AccountStateStatus::Unconfigured;
     };
+    if account_remote(tonk).await.is_err() {
+        return AccountStateStatus::Unconfigured;
+    }
     match trusted_marker(tonk).await {
-        Ok(marker) if marker_matches(marker.as_deref(), &descriptor) => AccountStateStatus::Ready,
+        Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
+            AccountStateStatus::Ready
+        }
         Ok(_) => AccountStateStatus::Unhydrated,
         Err(error) => {
             log!("account trusted-base marker unreadable: {error}");
@@ -281,13 +320,13 @@ async fn repoint_remote<C: Principal>(
 /// and no database — exists behind it any more.
 async fn configure_account_upstream(
     tonk: &TonkState,
-    descriptor: &AccountRepositoryDescriptorV1,
+    subject: &dialog_varsig::Did,
 ) -> Result<String, TonkWorkerError> {
-    let subject = descriptor.account_subject().clone();
+    let subject = subject.clone();
     let key = subject.repo_key().to_owned();
     let repository = Repository::from(&tonk.profile);
 
-    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let address = SiteAddress::from(UcanAddress::new(account_remote(tonk).await?.as_str()));
     let remote = match repository
         .remote(tonk_account::ORIGIN_REMOTE)
         .load()
@@ -676,11 +715,18 @@ pub(crate) async fn ensure_account_state_swept(
     static ENSURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _serialized = ENSURE.lock().await;
 
-    let Some(descriptor) = configured_descriptor(tonk).await else {
+    // An account with somewhere to sync. A root exists from the moment
+    // a passkey does, so the root alone does not mean the account is
+    // configured; an address does, and it comes from the customer fact,
+    // the resolved DID document, or the link.
+    let Ok(root) = super::identity::local_root(tonk).await else {
         return (AccountStateStatus::Unconfigured, Ok(()));
     };
+    if account_remote(tonk).await.is_err() {
+        return (AccountStateStatus::Unconfigured, Ok(()));
+    }
 
-    let key = match configure_account_upstream(tonk, &descriptor).await {
+    let key = match configure_account_upstream(tonk, &root.root_did).await {
         Ok(key) => key,
         Err(error) => {
             log!("account upstream configuration failed: {error}");
@@ -702,12 +748,12 @@ pub(crate) async fn ensure_account_state_swept(
     }
 
     match trusted_marker(tonk).await {
-        Ok(marker) if marker_matches(marker.as_deref(), &descriptor) => {
+        Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
             let swept = sync_ready(tonk, &key).await;
             (AccountStateStatus::Ready, swept)
         }
         Ok(_) => match hydrate_untrusted(tonk).await {
-            Ok(()) => match mark_trusted(tonk, &descriptor).await {
+            Ok(()) => match mark_trusted(tonk, &root.root_did).await {
                 Ok(()) => {
                     // The path a freshly created account takes, where the
                     // ready sweep above has not run yet.
@@ -755,16 +801,16 @@ pub(crate) async fn ensure_account_state_swept(
 pub(crate) async fn require_ready_account_state(
     tonk: &TonkState,
 ) -> Result<ReadyAccountBranch, TonkWorkerError> {
-    let descriptor = configured_descriptor(tonk)
+    let root = super::identity::local_root(tonk)
         .await
-        .ok_or_else(|| TonkWorkerError::Conflict("account state is unconfigured".to_string()))?;
+        .map_err(|_| TonkWorkerError::Conflict("account state is unconfigured".to_string()))?;
     let marker = trusted_marker(tonk).await?;
-    if !marker_matches(marker.as_deref(), &descriptor) {
+    if !marker_matches(marker.as_deref(), &root.root_did) {
         return Err(TonkWorkerError::Conflict(
             "account state has no trusted remote base".to_string(),
         ));
     }
-    let subject = descriptor.account_subject().clone();
+    let subject = root.root_did.clone();
     let key = subject.repo_key().to_owned();
     tonk.reactor
         .profile_repository()
@@ -860,7 +906,11 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
     // A remote resolved against the ACCOUNT's DID. A local upstream would
     // resolve against this profile's own subject and could only name a
     // sibling branch, never the account's.
-    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let Ok(remote) = account_remote(tonk).await else {
+        log!("the worker origin is unavailable, so the account has no remote");
+        return false;
+    };
+    let address = SiteAddress::from(UcanAddress::new(remote.as_str()));
     let remote = match repository
         .remote(ACCOUNT_ACCESS_REMOTE)
         .load()
@@ -1531,19 +1581,19 @@ mod tests {
 
     use super::*;
 
+    /// The marker answers "did I trust a base for THIS account", so a
+    /// marker naming another account — or none at all — is not ready.
     #[dialog_common::test]
-    async fn it_requires_the_exact_descriptor_hash_for_readiness() {
-        let root = Ed25519Signer::import(&[7; 32]).await.unwrap();
-        let descriptor =
-            AccountRepositoryDescriptorV1::sign(&root, "https://accounts.example/ucan/")
-                .await
-                .unwrap();
-        let hash = descriptor.content_hash();
-        let different = [9_u8; 32];
+    async fn it_requires_the_marker_to_name_this_account() {
+        use dialog_varsig::Principal as _;
 
-        assert!(marker_matches(Some(&hash), &descriptor));
-        assert!(!marker_matches(None, &descriptor));
-        assert!(!marker_matches(Some(&different), &descriptor));
+        let root = Ed25519Signer::import(&[7; 32]).await.unwrap();
+        let subject = root.did();
+        let other = Ed25519Signer::import(&[9; 32]).await.unwrap().did();
+
+        assert!(marker_matches(Some(subject.as_str().as_bytes()), &subject));
+        assert!(!marker_matches(None, &subject));
+        assert!(!marker_matches(Some(other.as_str().as_bytes()), &subject));
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1590,7 +1640,7 @@ mod tests {
             tonk.profile
                 .credential()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-                .save(descriptor.content_hash().to_vec())
+                .save(descriptor.account_subject().as_ref().as_bytes().to_vec())
                 .perform(&tonk.operator)
                 .await
                 .unwrap();
@@ -1835,7 +1885,7 @@ mod tests {
             .profile
             .credential()
             .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-            .save(vec![0_u8; 32])
+            .save(descriptor.account_subject().as_ref().as_bytes().to_vec())
             .perform(&state.operator)
             .await
             .unwrap();

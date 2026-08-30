@@ -293,9 +293,14 @@ async fn login(
 ) -> Result<wasm_bindgen::JsValue, String> {
     use dialog_varsig::Principal as _;
 
+    // The address the email lookup resolved, when one ran: the DID
+    // document is the account's own word on where it syncs, and the
+    // caller's endpoint is this browser's origin, which is only right
+    // when both devices are on the same deployment.
+    let endpoint = super::email_status::resolved_service().unwrap_or_else(|| link.endpoint.clone());
     let account = custodian
         .account()
-        .load(link.endpoint.clone())
+        .load(endpoint.clone())
         .perform(&tonk_identity::account::Crypto)
         .await
         .map_err(|error| format!("the custody cell did not open: {error:#}"))?
@@ -304,14 +309,10 @@ async fn login(
                 .to_string()
         })?;
 
-    let root = match account
+    let dialog_credentials::Signer::Ed25519(root) = account
         .signer()
         .await
-        .map_err(|error| format!("the account signer did not derive: {error:#}"))?
-    {
-        dialog_credentials::Signer::Ed25519(signer) => signer,
-        _ => return Err("the account signer is not Ed25519".to_string()),
-    };
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
 
     let device = {
         let tonk = state.read().await;
@@ -458,13 +459,9 @@ async fn create(
         .signer()
         .await
         .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
-    let root = match root {
-        dialog_credentials::Signer::Ed25519(signer) => signer,
-        // The account descriptor's format admits no other algorithm,
-        // and the account secret derives Ed25519, so this is
-        // unreachable rather than a case to handle.
-        _ => return Err("the account signer is not Ed25519".to_string()),
-    };
+    // The account secret derives Ed25519, and the account request is
+    // signed with the concrete key.
+    let dialog_credentials::Signer::Ed25519(root) = root;
 
     let device = {
         let tonk = state.read().await;
