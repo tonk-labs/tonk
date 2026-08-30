@@ -1119,13 +1119,19 @@ async fn activate_over_http(client: &reqwest::Client, base: &str) -> anyhow::Res
     Ok(())
 }
 
-/// The custody protocol end to end (`plan/Account custody.md`): an
-/// activated account provisions the custody DID as a consumer, the
-/// custody key publishes the wrapped account secret as a raw memory
-/// cell, and a fresh resolve reads the same bytes back holding nothing
-/// but the custody key. No repository exists anywhere in this flow.
+/// Adding a passkey to an account that already exists, end to end
+/// (`plan/Account custody.md`).
+///
+/// Not the signup path: enrollment writes the first passkey's cell
+/// itself, and the key here is a different one, provisioned afterwards
+/// through `/provider/add`. This is the flow for a second authenticator
+/// — provision its DID, publish the account secret sealed under it, and
+/// read that back from a device holding nothing but the passkey.
+///
+/// Six steps, each against the live service over HTTP. No repository
+/// exists anywhere in this flow: the cell is raw bytes at one address.
 #[dialog_common::test]
-async fn it_publishes_and_resolves_the_custody_cell(
+async fn it_adds_a_second_passkey_to_an_existing_account(
     env: AccessServiceAddress,
 ) -> anyhow::Result<()> {
     use dialog_remote_s3::Permit;
@@ -1139,7 +1145,8 @@ async fn it_publishes_and_resolves_the_custody_cell(
     let ucan = format!("{base}/ucan/");
     let service_did: Did = env.service_did.parse()?;
 
-    // The account enrolls as a customer.
+    // 1. Enroll. The account becomes a customer, `Registered`, and the
+    // service emails an activation link. Nothing is served yet.
     let account = Ed25519Signer::generate().await?;
     let container = enroll_container(&account, &service_did, "custody@example.com").await;
     let response = client
@@ -1152,17 +1159,46 @@ async fn it_publishes_and_resolves_the_custody_cell(
     let body = response.text().await.unwrap_or_default();
     assert_eq!(status, 200, "enrollment refused: {body}");
 
-    // Confirming the email is what unlocks everything below: an
-    // unactivated customer provisions nothing and is served nothing.
+    // The account's own space is not served yet, which is what makes
+    // the next step matter rather than being ceremony: `Registered`
+    // denies everything behind this customer.
+    let resolve_before = custody::build_resolve_invocation(account.clone()).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve_before)
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        403,
+        "an unactivated customer is served nothing"
+    );
+    let refusal = response.text().await.unwrap_or_default();
+    assert!(
+        refusal.contains("awaits email activation"),
+        "and it says so, rather than refusing for some other reason: {refusal}"
+    );
+    assert!(
+        refusal.contains("Retry"),
+        "clicking the link is what fixes it, so the client should try again: {refusal}"
+    );
+
+    // 2. Activate, by presenting the link from that email. This is
+    // where the customer becomes `Active`, and it is what unlocks every
+    // step below. `activate_over_http` reads the captured mail, takes
+    // the invocation out of the link, and posts it back.
     activate_over_http(&client, &base).await?;
 
-    // The entry function's two outputs; a PRF would produce these
-    // inside one assertion, at the two custody salts.
+    // 3. Derive the new passkey's two keys. A real ceremony produces
+    // both inside one PRF assertion, at the two custody salts; the
+    // fixed bytes here stand in for that.
     let custody_key = custody_signer(&[21u8; 32]).await?;
     let kek = custody_kek(&[22u8; 32]);
 
-    // The account provisions the custody DID, depositing the consent
-    // the custody key minted — the ordinary provisioning contract.
+    // 4. Provision the new custody DID as a consumer the account pays
+    // for, depositing the consent that key minted. The ordinary
+    // provisioning contract, nothing custody-specific.
     let device = Ed25519Signer::generate().await?;
     let link = delegation::mint_device_delegation(account.clone(), &device.did()).await?;
     let consent = custody::mint_custody_consent(custody_key.clone(), &account.did()).await?;
@@ -1182,7 +1218,10 @@ async fn it_publishes_and_resolves_the_custody_cell(
         .await?;
     assert_eq!(response.status(), 200, "provisioning refused");
 
-    // Seal the secret and publish the cell: permit, then presigned PUT.
+    // 5. Seal the account secret under the new passkey's KEK and write
+    // it: the invocation buys a presigned permit, the permit carries the
+    // PUT. Two round trips because the service signs but never holds the
+    // bytes.
     let secret = AccountSecret::generate()?;
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
     let publish = custody::build_publish_invocation(
@@ -1207,7 +1246,8 @@ async fn it_publishes_and_resolves_the_custody_cell(
         stored.status(),
     );
 
-    // A fresh device resolves with nothing but the custody key.
+    // 6. And a device holding only the passkey reads it back. This is
+    // the recovery the whole design exists for.
     let resolve = custody::build_resolve_invocation(custody_key.clone()).await?;
     let response = client
         .post(&ucan)
