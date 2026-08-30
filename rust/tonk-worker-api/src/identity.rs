@@ -91,10 +91,6 @@ pub struct Enrollment {
     /// The address to enroll, or `None` for the account's recorded one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    /// Hex deposits from a ceremony, empty when the worker should mint
-    /// a device-chained set instead.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deposits: Vec<String>,
 }
 
 /// The ceremonies a page can be asked to run.

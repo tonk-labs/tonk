@@ -9,10 +9,6 @@
 //! definition.
 
 use dialog_capability::{Attenuate, Attenuation, Effect, Subject};
-use dialog_effects::Use;
-use dialog_effects::archive::{Archive, Catalog};
-use dialog_effects::memory::{Memory, Space};
-use dialog_ucan::Scope;
 use dialog_varsig::Did;
 use ipld_core::cid::Cid;
 use serde::{Deserialize, Serialize};
@@ -33,12 +29,6 @@ impl Attenuation for Customer {
 pub struct Enroll {
     /// Address the activation link is sent to.
     pub email: String,
-    /// The deposited delegations granting the service access to the
-    /// account space, by CID; their bytes travel in the same container.
-    /// Arguments, not proofs: they never extend the invocation's chain.
-    /// The set must cover exactly the [`deposit_scopes`]: the service's
-    /// own branch in memory and the index catalog backing it.
-    pub access: Vec<Cid>,
     /// The passkey's custody space, whose cell holds the sealed account
     /// secret. Named here so every carried block can be checked against
     /// it rather than trusted to agree with itself.
@@ -79,23 +69,6 @@ pub const SERVICE_CATALOG: &str = "index";
 /// into a fresh branch rather than inheriting the old one.
 pub fn service_space(service: &Did) -> String {
     format!("branch/{service}")
-}
-
-/// The scopes an enrollment deposit must grant the service, derived from
-/// capability chains so client and verifier share one definition: the
-/// account's service-named branch in memory, and the index catalog its
-/// pushes and pulls go through. Nothing broader — in particular not `/` —
-/// is accepted as a deposit.
-pub fn deposit_scopes(customer: &Did, service: &Did) -> [Scope; 2] {
-    let memory = Subject::from(customer.clone())
-        .attenuate(Use)
-        .attenuate(Memory)
-        .attenuate(Space::new(service_space(service)));
-    let archive = Subject::from(customer.clone())
-        .attenuate(Use)
-        .attenuate(Archive)
-        .attenuate(Catalog::new(SERVICE_CATALOG));
-    [Scope::from(&memory), Scope::from(&archive)]
 }
 
 /// `/customer/activate` — finalize enrollment. The invocation's subject
@@ -447,7 +420,6 @@ mod tests {
     fn it_derives_the_role_first_command_paths() {
         let enroll: Capability<Enroll> = subject().attenuate(Customer).invoke(Enroll {
             email: "alice@example.com".into(),
-            access: vec![Cid::default()],
             custody: did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
             recovery: Cid::default(),
             consent: Cid::default(),
@@ -478,29 +450,6 @@ mod tests {
 
         let provision: Capability<Provision> = subject().attenuate(Consumer).invoke(Provision);
         assert_eq!(provision.ability(), "/consumer/provision");
-    }
-
-    #[test]
-    fn it_scopes_the_deposit_to_the_service_branch_and_index() {
-        let customer = did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
-        let service = did!("key:z6MkrZ1r5XBFZjBU34qyD8fueMbMRkKw17BZaq2ivKFjnz2z");
-        let [memory, archive] = deposit_scopes(&customer, &service);
-
-        // Both deposits sit at `/use`: what tells them apart is the policy,
-        // and neither is `/`.
-        assert_eq!(memory.command.segments(), &["use".to_string()]);
-        assert_eq!(
-            memory.parameters.as_map().get("space"),
-            Some(&ipld_core::ipld::Ipld::String(format!("branch/{service}")))
-        );
-        assert_eq!(archive.command.segments(), &["use".to_string()]);
-        assert_eq!(
-            archive.parameters.as_map().get("catalog"),
-            Some(&ipld_core::ipld::Ipld::String("index".to_string()))
-        );
-        for scope in [&memory, &archive] {
-            assert_eq!(scope.policy().len(), 1, "one equality predicate per scope");
-        }
     }
 
     #[test]

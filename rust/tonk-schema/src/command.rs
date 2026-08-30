@@ -420,9 +420,6 @@ pub struct EnrollCustomer {
     /// The address to enroll. Empty means the account's recorded one,
     /// which is what the login and resend paths want.
     pub email: crate::domain::command::enroll::Email,
-    /// Comma-separated hex deposits from a passkey ceremony. Empty means
-    /// the worker mints a device-chained set instead.
-    pub deposits: crate::domain::command::enroll::Deposits,
 }
 
 impl Command for EnrollCustomer {

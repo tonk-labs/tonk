@@ -133,15 +133,8 @@ async fn await_key(
 /// handles, not key material, and this enrollment travels with the
 /// request so the handoff knows what it is for.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn request_mediation(
-    client: &ClientId,
-    email: Option<String>,
-    deposits: &[String],
-) {
-    let enrollment = tonk_worker_api::Enrollment {
-        email,
-        deposits: deposits.to_vec(),
-    };
+pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) {
+    let enrollment = tonk_worker_api::Enrollment { email };
     if let Err(error) = super::navigate::request_webauthn_with(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
@@ -262,15 +255,9 @@ async fn perform(
 
     let origin = crate::router::customer::service_origin().map_err(|error| format!("{error}"))?;
     let tonk = state.read().await;
-    let receipt = crate::router::customer::enroll_customer(
-        &tonk,
-        &origin,
-        email,
-        &enrollment.deposits,
-        &material,
-    )
-    .await
-    .map_err(|error| format!("{error}"))?;
+    let receipt = crate::router::customer::enroll_customer(&tonk, &origin, email, &material)
+        .await
+        .map_err(|error| format!("{error}"))?;
 
     let answer = js_sys::Object::new();
     let _ = js_sys::Reflect::set(

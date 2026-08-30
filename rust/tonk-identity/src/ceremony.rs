@@ -11,10 +11,9 @@ use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
 use ipld_core::cid::Cid;
-use tonk_account::customer::deposit_scopes;
 
 use crate::delegation::mint_device_delegation;
 
@@ -64,7 +63,6 @@ pub struct CustodyAccountCeremony {
     pub account: AccountCeremony,
     /// Hex-encoded account-signed access-service deposits, when the
     /// caller named the service; empty otherwise.
-    pub deposits_hex: Vec<String>,
     /// The passkey-derived custody DID — the custody space's subject.
     pub custody_did: String,
     /// Hex-encoded consent chain for `/provider/add`.
@@ -285,10 +283,6 @@ pub async fn create_custody_account(
             .context("failed to serialize the custody consent")?,
     );
 
-    let deposits_hex = match service {
-        Some(service) => mint_service_deposits(&root, service).await?,
-        None => Vec::new(),
-    };
     let encryption_key = secret.secret().did().to_string();
     let root_ceremony = root_ceremony(
         root.clone(),
@@ -321,7 +315,6 @@ pub async fn create_custody_account(
     Ok(CustodyAccountCeremony {
         root: root_ceremony,
         account,
-        deposits_hex,
         custody_did: custody.did().to_string(),
         consent_hex,
         sealed_hex: hex::encode(&sealed),
@@ -515,7 +508,6 @@ pub struct CustodyUnlock {
     pub credential_id: String,
     /// Hex-encoded account-signed access-service deposits, when the
     /// caller named the service; empty otherwise.
-    pub deposits_hex: Vec<String>,
     /// The account's X25519 recipient (`did:key:z6LS…`), for the worker
     /// to publish as `AccountEncryptionKey`.
     pub encryption_key: String,
@@ -535,43 +527,12 @@ pub async fn unlock_account(
     let (secret, credential_id) = assert_unlock(endpoint, None).await?;
     let root = secret.signer().await?;
     let encryption_key = secret.secret().did().to_string();
-    let deposits_hex = match service {
-        Some(service) => mint_service_deposits(&root, service).await?,
-        None => Vec::new(),
-    };
     let account = link_device(root, device_did, device_name).await?;
     Ok(CustodyUnlock {
         account,
         credential_id,
-        deposits_hex,
         encryption_key,
     })
-}
-
-/// Mint the scoped access-service deposits enrollment presents, issued
-/// directly by the account root while a ceremony holds it. An
-/// account-signed deposit outlives the device that carried it: revoking
-/// that device leaves the service's grant standing, where a
-/// device-issued chain would die with its link. Returned hex-encoded so
-/// they cross the JS bridge and ride callback payloads as-is.
-pub async fn mint_service_deposits(
-    root: &Ed25519Signer,
-    service: &dialog_varsig::Did,
-) -> Result<Vec<String>> {
-    let mut deposits = Vec::new();
-    for scope in deposit_scopes(&root.did(), service) {
-        let deposit = DelegationBuilder::new()
-            .issuer(dialog_credentials::Signer::from(root.clone()))
-            .audience(service)
-            .subject(scope.subject.clone())
-            .command(scope.command.segments().clone())
-            .policy(scope.policy())
-            .try_build()
-            .await
-            .context("failed to mint the access-service deposit")?;
-        deposits.push(hex::encode(deposit.encoded()));
-    }
-    Ok(deposits)
 }
 
 /// Build the root-signed request that links a new device to an existing account.

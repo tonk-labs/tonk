@@ -21,7 +21,7 @@ use tonk_account::customer::{CustomerStatus, Receipt};
 use tonk_account::pending::{PendingQueue, PendingWork};
 use tonk_account::{CUSTOMER_CREDENTIAL_SITE, PENDING_WORK_CREDENTIAL_SITE};
 use tonk_common::log;
-use tonk_identity::request::{build_enroll_invocation, build_enroll_invocation_with_deposits};
+use tonk_identity::request::build_enroll_invocation;
 use url::Url;
 
 use super::AppState;
@@ -75,7 +75,6 @@ pub(crate) async fn enroll_customer(
     state: &crate::worker::TonkState,
     origin: &url::Url,
     email: Option<String>,
-    deposits: &[String],
     custody: &tonk_identity::request::CustodyMaterial<'_>,
 ) -> Result<Receipt, TonkWorkerError> {
     let link = super::account::account_link(state).await.ok_or_else(|| {
@@ -97,27 +96,11 @@ pub(crate) async fn enroll_customer(
     };
     let device = state.profile.signer().signer().clone();
 
-    // The deposits — the service's scoped grants into the account
-    // space — ride in the container alongside the invocation. The
-    // account-signed set a ceremony minted is preferred; without one, a
-    // device-issued set chained through the `root → device` grant is the
-    // fallback the service walks back to the customer.
-    let body = if deposits.is_empty() {
-        let service_did = service_did(origin).await?;
-        build_enroll_invocation(device, &link, &service_did, &email, custody).await
-    } else {
-        let deposits = deposits
-            .iter()
-            .map(hex::decode)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                TonkWorkerError::Router(format!("a ceremony deposit is not hex: {error}"))
-            })?;
-        build_enroll_invocation_with_deposits(device, &link, &email, &deposits, custody).await
-    }
-    .map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
-    })?;
+    let body = build_enroll_invocation(device, &link, &email, custody)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
+        })?;
 
     let endpoint = ucan_endpoint(origin)?;
     let receipt = match post_cbor(&endpoint, &body).await {
@@ -204,7 +187,6 @@ impl EnrollCustomerHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct Enrollment {
     email: Option<String>,
-    deposits: Vec<String>,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -215,15 +197,7 @@ fn decode_enrollment(facts: &crate::reactor::EntityFacts) -> Option<Enrollment> 
         .map(|artifact| artifact.of.clone())
         .and_then(|entity| tonk_schema::command::EnrollCustomer::decode(entity, facts))?;
     let email = (!command.email.0.trim().is_empty()).then(|| command.email.0.trim().to_owned());
-    let deposits = command
-        .deposits
-        .0
-        .split(',')
-        .map(str::trim)
-        .filter(|deposit| !deposit.is_empty())
-        .map(str::to_owned)
-        .collect();
-    Some(Enrollment { email, deposits })
+    Some(Enrollment { email })
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -257,8 +231,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustome
                 log!("tonk:enroll: no originating client to mediate a passkey; skipping");
                 return;
             };
-            super::custody::request_mediation(&client, enrollment.email, &enrollment.deposits)
-                .await;
+            super::custody::request_mediation(&client, enrollment.email).await;
         })
     }
 }
@@ -624,27 +597,6 @@ pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
     Err(TonkWorkerError::Internal(
         "the worker origin is only known in a service-worker scope".to_string(),
     ))
-}
-
-/// The service DID from the same-origin deployment configuration.
-async fn service_did(origin: &Url) -> Result<dialog_varsig::Did, TonkWorkerError> {
-    let endpoint = origin
-        .join(".well-known/tonk")
-        .map_err(|error| TonkWorkerError::Internal(format!("deployment config url: {error}")))?;
-    let response = get(&endpoint).await?;
-    let config: tonk_worker_api::DeploymentConfig = serde_json::from_slice(&response.body)
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("deployment configuration is invalid: {error}"))
-        })?;
-    let did = config.service_did.ok_or_else(|| {
-        TonkWorkerError::Internal(
-            "this deployment publishes no service identity, so enrollment cannot address it"
-                .to_string(),
-        )
-    })?;
-    did.parse().map_err(|error| {
-        TonkWorkerError::Internal(format!("deployment service DID is invalid: {error:?}"))
-    })
 }
 
 /// The same-origin `/ucan/` endpoint.

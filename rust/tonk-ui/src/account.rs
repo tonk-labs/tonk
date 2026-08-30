@@ -467,7 +467,7 @@ fn load_activation_notice(host: HtmlElement) {
                 .await
                 .is_ok_and(|config| config.service_did.is_some())
         {
-            match crate::api::enroll_customer(None, &[]).await {
+            match crate::api::enroll_customer(None).await {
                 // Enrollment is a command, so this returns once the
                 // transient is committed, not once the service answers.
                 // Re-reading here would race the handler and paint a
@@ -1789,10 +1789,8 @@ async fn wants_enrollment() -> bool {
     deployment_service_did().await.is_some()
 }
 
-/// The access-service DID this deployment publishes, for ceremonies that
-/// mint account-signed deposits. Absent config or identity is ordinary:
-/// the ceremony then mints nothing and enrollment falls back to a
-/// device-issued deposit.
+/// The access-service DID this deployment publishes. Absent config or
+/// identity is ordinary: the deployment simply serves no enrollment.
 async fn deployment_service_did() -> Option<String> {
     crate::deployment::get()
         .await
@@ -1940,14 +1938,13 @@ pub(crate) async fn run_account_ceremony(
         credential_id: created.credential_id.clone(),
         delegation_hex: created.delegation_hex.clone(),
         invocation_hex: created.invocation_hex.clone(),
-        deposits_hex: created.deposits_hex.clone(),
         encryption_key: created.encryption_key.clone(),
     };
     persist(&provider, &ceremony, descriptor_hex(&response)?, true).await?;
 
     if wants_enrollment().await {
         narrate("Registering with the sync service…");
-        if let Err(error) = crate::api::enroll_customer(Some(email), &created.deposits_hex).await {
+        if let Err(error) = crate::api::enroll_customer(Some(email)).await {
             web_sys::console::warn_1(&format!("customer enrollment failed: {error}").into());
         }
     }
@@ -2037,8 +2034,7 @@ async fn complete_remote(
         // refusal shows up where it belongs: the registration row
         // follows the fact, so it says what actually happened and keeps
         // saying it, instead of a one-shot verdict from this moment.
-        if let Err(error) = crate::api::enroll_customer(enroll_email, &ceremony.deposits_hex).await
-        {
+        if let Err(error) = crate::api::enroll_customer(enroll_email).await {
             web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
             show_error(
                 host,
@@ -2399,7 +2395,6 @@ fn bind(host: &HtmlElement) {
                     credential_id: created.credential_id,
                     delegation_hex: created.delegation_hex,
                     invocation_hex: created.invocation_hex,
-                    deposits_hex: created.deposits_hex,
                     encryption_key: created.encryption_key,
                 };
                 let custody = CustodyRecord {
@@ -2433,9 +2428,8 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Sending another activation email…");
         spawn_local(async move {
             // Enrollment is idempotent while Registered: the rows stand
-            // and the link is sent again. No ceremony is at hand here,
-            // so the deposits are the device-chained fallback.
-            let result = crate::api::enroll_customer(None, &[]).await;
+            // and the link is sent again.
+            let result = crate::api::enroll_customer(None).await;
             set_busy(&host, false, "");
             match result {
                 Ok(_) => set_text(
@@ -2593,13 +2587,9 @@ fn bind(host: &HtmlElement) {
                             .unwrap_or(false);
                         if !known {
                             set_busy(&host, true, "Registering with the sync service…");
-                            crate::api::enroll_customer(None, &[])
-                                .await
-                                .map_err(|error| {
-                                    format!(
-                                        "register with the sync service before linking: {error}"
-                                    )
-                                })?;
+                            crate::api::enroll_customer(None).await.map_err(|error| {
+                                format!("register with the sync service before linking: {error}")
+                            })?;
                         }
                     }
                     set_busy(&host, true, "Waiting for your passkey…");
@@ -3249,7 +3239,6 @@ mod tests {
             credential_id: "new-credential".into(),
             delegation_hex: "11".into(),
             invocation_hex: "22".into(),
-            deposits_hex: Vec::new(),
             encryption_key: None,
         };
 
@@ -3280,7 +3269,6 @@ mod tests {
             credential_id: "ceremony-credential".into(),
             delegation_hex: "11".into(),
             invocation_hex: "22".into(),
-            deposits_hex: Vec::new(),
             encryption_key: None,
         };
 

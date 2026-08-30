@@ -16,13 +16,10 @@ use dialog_ucan_core::cid::dagcbor_cid;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{
-    Container, Delegation, DelegationBuilder, DelegationChain, Invocation, InvocationBuilder,
-    InvocationChain,
+    Container, Delegation, DelegationChain, Invocation, InvocationBuilder, InvocationChain,
 };
 use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
-use ipld_core::cid::Cid;
-use tonk_account::customer::deposit_scopes;
 
 /// Build a device-signed account-service invocation container.
 ///
@@ -187,73 +184,13 @@ pub async fn mint_custody_material(
 
 /// Build a `/customer/enroll` container for the access service.
 ///
-/// The invocation is device-signed on the account's subject, exactly as
-/// [`build_device_invocation`] does, and additionally deposits the
-/// scoped delegations granting `service` access to its own branch of the
-/// account space — the [`deposit_scopes`], nothing broader. The deposits
-/// here are device-issued, the fallback for a device holding no
-/// ceremony-minted set; the service walks them back to the account
-/// through the same `root → device` grant the invocation proves with,
-/// which rides in the same container. Prefer
-/// [`build_enroll_invocation_with_deposits`] with account-signed
-/// deposits when a ceremony produced them.
+/// Device-signed on the account's subject, exactly as
+/// [`build_device_invocation`] does, carrying the custody material the
+/// service verifies before it records anything.
 pub async fn build_enroll_invocation(
     device: impl Into<Signer>,
     link: &DelegationChain,
-    service: &Did,
     email: &str,
-    custody: &CustodyMaterial<'_>,
-) -> Result<Vec<u8>> {
-    let device: Signer = device.into();
-    let root_did = link.issuer().clone();
-    let mut deposits = Vec::new();
-    for scope in deposit_scopes(&root_did, service) {
-        let deposit = DelegationBuilder::new()
-            .issuer(device.clone())
-            .audience(service)
-            .subject(scope.subject.clone())
-            .command(scope.command.segments().clone())
-            .policy(scope.policy())
-            .try_build()
-            .await
-            .context("failed to mint the access deposit")?;
-        deposits.push(deposit);
-    }
-    let named: Vec<(Cid, Vec<u8>)> = deposits
-        .into_iter()
-        .map(|deposit| (deposit.to_cid(), deposit.encoded().to_vec()))
-        .collect();
-    assemble_enroll_container(device, link, email, named, custody).await
-}
-
-/// Build a `/customer/enroll` container around externally minted
-/// deposits — the account-signed set a passkey ceremony produced. These
-/// are issued by the customer directly, so they survive revocation of
-/// the device presenting them.
-pub async fn build_enroll_invocation_with_deposits(
-    device: impl Into<Signer>,
-    link: &DelegationChain,
-    email: &str,
-    deposits: &[Vec<u8>],
-    custody: &CustodyMaterial<'_>,
-) -> Result<Vec<u8>> {
-    let named = deposits
-        .iter()
-        .map(|bytes| {
-            let delegation: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(bytes)
-                .context("a ceremony deposit does not decode as a delegation")?;
-            Ok((delegation.to_cid(), bytes.clone()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    assemble_enroll_container(device, link, email, named, custody).await
-}
-
-/// Assemble the enroll invocation and append the named deposit tokens.
-async fn assemble_enroll_container(
-    device: impl Into<Signer>,
-    link: &DelegationChain,
-    email: &str,
-    deposits: Vec<(Cid, Vec<u8>)>,
     custody: &CustodyMaterial<'_>,
 ) -> Result<Vec<u8>> {
     let recovery = serde_ipld_dagcbor::to_vec(custody.recovery)
@@ -263,15 +200,6 @@ async fn assemble_enroll_container(
 
     let arguments = BTreeMap::from([
         ("email".to_string(), Promised::String(email.to_string())),
-        (
-            "access".to_string(),
-            Promised::List(
-                deposits
-                    .iter()
-                    .map(|(cid, _)| Promised::Link(*cid))
-                    .collect(),
-            ),
-        ),
         (
             "custody".to_string(),
             Promised::String(custody.custody.to_string()),
@@ -293,9 +221,6 @@ async fn assemble_enroll_container(
     let mut tokens = Container::from_bytes(&invocation)
         .context("failed to reopen the enroll container")?
         .into_tokens();
-    for (_, bytes) in deposits {
-        tokens.push(bytes);
-    }
     tokens.extend([recovery, consent, sealed]);
     Container::new(tokens)
         .to_bytes()
@@ -428,52 +353,5 @@ mod tests {
                 "put".to_string()
             ],
         );
-    }
-
-    #[dialog_common::test]
-    async fn it_carries_ceremony_minted_deposits_issued_by_the_account() {
-        let root = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
-        let root_did = root.did();
-        let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
-        let service = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
-        let link = crate::delegation::mint_device_delegation(root.clone(), &device.did())
-            .await
-            .unwrap();
-
-        let minted = crate::ceremony::mint_service_deposits(&root, &service.did())
-            .await
-            .unwrap();
-        assert_eq!(minted.len(), 2, "one deposit per scope");
-        let deposits: Vec<Vec<u8>> = minted
-            .iter()
-            .map(|deposit| hex::decode(deposit).unwrap())
-            .collect();
-
-        let custody_key = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
-        let custody = mint_custody_material(&custody_key, &root_did, b"sealed".to_vec())
-            .await
-            .unwrap();
-        let bytes = build_enroll_invocation_with_deposits(
-            device,
-            &link,
-            "a@example.com",
-            &deposits,
-            &custody.borrow(),
-        )
-        .await
-        .unwrap();
-        let tokens = Container::from_bytes(&bytes).unwrap().into_tokens();
-        // Invocation, the root → device link, the two deposits, and the
-        // three custody blocks.
-        assert_eq!(tokens.len(), 7);
-        for token in &tokens[2..4] {
-            let deposit: Delegation<AnySignature> = serde_ipld_dagcbor::from_slice(token).unwrap();
-            assert_eq!(
-                deposit.issuer(),
-                &root_did,
-                "deposits are issued by the account itself"
-            );
-            assert_eq!(deposit.audience(), &service.did());
-        }
     }
 }

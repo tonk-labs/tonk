@@ -519,7 +519,7 @@ pub async fn save_root(
 /// routeless dispatch because a portal pins its context; nothing pins
 /// one here.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result<(), TonkUiError> {
+pub async fn enroll_customer(email: Option<&str>) -> Result<(), TonkUiError> {
     use wasm_bindgen::JsValue;
 
     tonk_host::ready::wait().await;
@@ -527,7 +527,7 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
         .and_then(|window| window.document())
         .and_then(|document| document.document_element())
         .ok_or_else(|| TonkUiError::ApiError("no document to dispatch from".to_string()))?;
-    let request = js_sys::JSON::parse(&enroll_claim(email, deposits).to_string())
+    let request = js_sys::JSON::parse(&enroll_claim(email).to_string())
         .map_err(|error| TonkUiError::ApiError(format!("enroll claim did not parse: {error:?}")))?;
     tonk_host::consumer::claim_with_route(
         &consumer,
@@ -552,11 +552,9 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
 ///
 /// Both fields are always present because a concept resolves only when
 /// every one of them is, so "unset" is the empty string: no address means
-/// the account's recorded one, and no deposits mean the worker mints a
-/// device-chained set. The deposits join with commas rather than riding
-/// as a list, because a command's fields are scalars.
+/// the account's recorded one.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-fn enroll_claim(email: Option<&str>, deposits: &[String]) -> serde_json::Value {
+fn enroll_claim(email: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "claims": [{
             "op": "assert",
@@ -566,14 +564,12 @@ fn enroll_claim(email: Option<&str>, deposits: &[String]) -> serde_json::Value {
                     "concept": {
                         "description": "Register this account as a customer of the access service.",
                         "with": {
-                            "email": { "the": "xyz.tonk.enroll/email", "cardinality": "one", "as": "Text" },
-                            "deposits": { "the": "xyz.tonk.enroll/deposits", "cardinality": "one", "as": "Text" }
+                            "email": { "the": "xyz.tonk.enroll/email", "cardinality": "one", "as": "Text" }
                         }
                     }
                 },
                 "parameters": {
-                    "email": email.unwrap_or_default(),
-                    "deposits": deposits.join(",")
+                    "email": email.unwrap_or_default()
                 }
             }
         }]
@@ -1156,15 +1152,13 @@ mod tests {
 mod enrollment_claim {
     use super::enroll_claim;
 
-    /// Both fields ride even when unset, because a concept resolves
+    /// The field rides even when unset, because a concept resolves
     /// only when every field is present: a claim that omitted `email`
     /// would never decode, and the command would silently not run.
     #[dialog_common::test]
-    fn it_sends_both_fields_even_when_neither_was_given() {
-        let claim = enroll_claim(None, &[]);
-        let parameters = &claim["claims"][0]["application"]["parameters"];
-        assert_eq!(parameters["email"], "");
-        assert_eq!(parameters["deposits"], "");
+    fn it_sends_the_field_even_when_no_address_was_given() {
+        let claim = enroll_claim(None);
+        assert_eq!(claim["claims"][0]["application"]["parameters"]["email"], "");
     }
 
     /// Empty means "the account's recorded address", which is what the
@@ -1172,21 +1166,10 @@ mod enrollment_claim {
     /// an address that was given.
     #[dialog_common::test]
     fn it_carries_an_address_when_one_was_given() {
-        let claim = enroll_claim(Some("a@example.com"), &[]);
+        let claim = enroll_claim(Some("a@example.com"));
         assert_eq!(
             claim["claims"][0]["application"]["parameters"]["email"],
             "a@example.com"
-        );
-    }
-
-    /// Deposits join with commas because a command's fields are
-    /// scalars, and the worker splits them back apart.
-    #[dialog_common::test]
-    fn it_joins_ceremony_deposits_into_one_field() {
-        let claim = enroll_claim(None, &["ab".to_string(), "cd".to_string()]);
-        assert_eq!(
-            claim["claims"][0]["application"]["parameters"]["deposits"],
-            "ab,cd"
         );
     }
 
@@ -1194,7 +1177,7 @@ mod enrollment_claim {
     /// swept at the commit, never persisted.
     #[dialog_common::test]
     fn it_asserts_a_transient() {
-        let claim = enroll_claim(None, &[]);
+        let claim = enroll_claim(None);
         assert_eq!(claim["claims"][0]["op"], "assert");
         assert_eq!(
             claim["claims"][0]["application"]["predicate"]["kind"],

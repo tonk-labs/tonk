@@ -22,8 +22,7 @@ pub(crate) struct CreateAccountInput {
     /// Browser/OS label recorded with the created passkey.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_on: Option<String>,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
+    /// Access-service DID this deployment names, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_did: Option<String>,
 }
@@ -43,7 +42,6 @@ pub(crate) struct CreateAccountOutput {
     #[serde(default)]
     pub encryption_key: Option<String>,
     #[serde(default)]
-    pub deposits_hex: Vec<String>,
     pub custody_did: String,
     pub consent_hex: String,
     /// The sealed account secret, recorded on profile main and queued
@@ -90,8 +88,7 @@ pub(crate) struct UnlockWithPasskeyInput {
     pub device_name: String,
     /// The access service's `/ucan/` endpoint the cell resolves through.
     pub endpoint: String,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
+    /// Access-service DID this deployment names, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_did: Option<String>,
 }
@@ -104,10 +101,6 @@ pub(crate) struct CeremonyOutput {
     pub credential_id: String,
     pub delegation_hex: String,
     pub invocation_hex: String,
-    /// Hex-encoded account-signed access-service deposits, when the
-    /// input named the service.
-    #[serde(default)]
-    pub deposits_hex: Vec<String>,
     /// The account's X25519 recipient, when the ceremony held the secret.
     #[serde(default)]
     pub encryption_key: Option<String>,

@@ -104,23 +104,12 @@ impl AccessServiceAddress {
     ) -> anyhow::Result<()> {
         use dialog_varsig::Principal as _;
 
-        let service = self
-            .service_did
-            .parse()
-            .map_err(|error| anyhow::anyhow!("the test service DID does not parse: {error:?}"))?;
         let device = dialog_credentials::Ed25519Signer::generate()
             .await
             .map_err(|error| anyhow::anyhow!("device signer: {error:?}"))?;
         let link =
             tonk_identity::delegation::mint_device_delegation(customer.clone(), &device.did())
                 .await?;
-        // The ceremony hands these back hex-encoded, for the JS bridge;
-        // the invocation builder takes the bytes themselves.
-        let deposits = tonk_identity::ceremony::mint_service_deposits(customer, &service)
-            .await?
-            .iter()
-            .map(hex::decode)
-            .collect::<Result<Vec<_>, _>>()?;
         // No ceremony here, so the harness mints its own custody set:
         // every enrollment must present one, and these tests are about
         // the customer lifecycle rather than custody itself.
@@ -133,11 +122,10 @@ impl AccessServiceAddress {
             b"sealed-account-secret".to_vec(),
         )
         .await?;
-        let container = tonk_identity::request::build_enroll_invocation_with_deposits(
+        let container = tonk_identity::request::build_enroll_invocation(
             device,
             &link,
             email,
-            &deposits,
             &custody.borrow(),
         )
         .await?;

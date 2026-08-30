@@ -277,16 +277,6 @@ fn service_did_property(input: &JsValue) -> Result<Option<dialog_varsig::Did>, J
         .transpose()
 }
 
-/// Attach hex-encoded deposits to a ceremony result as `depositsHex`.
-fn set_deposits(result: &JsValue, deposits: &[String]) -> Result<(), JsValue> {
-    let array = js_sys::Array::new();
-    for deposit in deposits {
-        array.push(&JsValue::from_str(deposit));
-    }
-    Reflect::set(result, &"depositsHex".into(), &array)?;
-    Ok(())
-}
-
 /// `createAccount({ email, deviceDid, deviceName, remote, endpoint,
 /// createdOn?, serviceDid? })` → the account-creation artifacts plus
 /// `custodyDid` and `consentHex` for provisioning the custody space.
@@ -320,7 +310,6 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     if let Some(descriptor_hex) = ceremony.account.descriptor_hex {
         Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
     }
-    set_deposits(&result, &ceremony.deposits_hex)?;
     Reflect::set(&result, &"custodyDid".into(), &ceremony.custody_did.into())?;
     Reflect::set(&result, &"consentHex".into(), &ceremony.consent_hex.into())?;
     Reflect::set(&result, &"sealedHex".into(), &ceremony.sealed_hex.into())?;
@@ -419,7 +408,6 @@ async fn unlock_with_passkey(input: JsValue) -> Result<JsValue, JsValue> {
         &"encryptionKey".into(),
         &unlock.encryption_key.into(),
     )?;
-    set_deposits(&result, &unlock.deposits_hex)?;
     Ok(result)
 }
 

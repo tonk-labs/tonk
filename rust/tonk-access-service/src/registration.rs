@@ -39,7 +39,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tonk_account::customer::{
     Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Ledger,
-    Provider as ProviderRole, Receipt, RegistrationError, deposit_scopes,
+    Provider as ProviderRole, Receipt, RegistrationError,
 };
 use tonk_account::customer::{RESEND_INTERVAL_SECONDS, Resend as ResendActivation};
 use tonk_account::subscription::{
@@ -419,7 +419,6 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         // of it is recorded: a customer row whose activation link cannot
         // work is an account stranded exactly the way this flow exists
         // to prevent.
-        self.verify_deposits(&effect.access, &customer).await?;
         let material = self.verify_custody(&effect, &customer).await?;
         let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer).await?;
@@ -581,7 +580,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                 CustomerStatus::Suspended => return Err(RegistrationError::CustomerSuspended),
             },
         }
-        let consent = self.deposited_delegation(&effect.consent.to_string())?;
+        let consent = self.carried_delegation(&effect.consent.to_string())?;
         self.verify_consent(&consent, &effect.consumer, &provider)
             .await?;
         let kind = match effect.kind.as_deref() {
@@ -1009,140 +1008,16 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .collect())
     }
 
-    /// Find the deposited access delegation the `access` argument names.
-    fn deposited_delegation(
-        &self,
-        cid: &str,
-    ) -> Result<Delegation<AnySignature>, RegistrationError> {
+    /// Find a delegation the container carries, by CID.
+    fn carried_delegation(&self, cid: &str) -> Result<Delegation<AnySignature>, RegistrationError> {
         self.delegation_tokens()?
             .into_iter()
             .find(|delegation| delegation.to_cid().to_string() == cid)
             .ok_or_else(|| RegistrationError::Invalid {
-                message: format!(
-                    "the access argument names {cid}, which the container does not carry"
-                ),
+                message: format!("the argument names {cid}, which the container does not carry"),
             })
     }
 
-    /// Validate the deposited access delegations against the expected
-    /// [`deposit_scopes`]: each named deposit must match one scope
-    /// exactly — its command and its policy — and together they must
-    /// cover every scope, so the service ends up holding precisely its
-    /// own branch of the account space and the index catalog backing it.
-    /// A broader grant, `/` included, is refused rather than stored.
-    async fn verify_deposits(
-        &self,
-        access: &[Cid],
-        customer: &Did,
-    ) -> Result<(), RegistrationError> {
-        let expected = deposit_scopes(customer, &self.service.did());
-        let mut covered = [false; 2];
-        for cid in access {
-            let deposit = self.deposited_delegation(&cid.to_string())?;
-            let matched = expected.iter().position(|scope| {
-                deposit.command().segments() == scope.command.segments()
-                    && deposit.policy() == &scope.policy()
-            });
-            let Some(index) = matched else {
-                return Err(RegistrationError::Forbidden {
-                    message: format!(
-                        "deposit /{} is broader than the scopes enrollment accepts",
-                        deposit.command().segments().join("/")
-                    ),
-                });
-            };
-            covered[index] = true;
-            self.verify_deposit(&deposit, customer).await?;
-        }
-        if covered != [true; 2] {
-            return Err(RegistrationError::Forbidden {
-                message: "the deposit must cover the service's branch in memory and the index \
-                          catalog"
-                    .to_string(),
-            });
-        }
-        Ok(())
-    }
-
-    /// Validate one deposited access delegation: issued under the
-    /// customer's authority to this service, signature-valid, and inside
-    /// its own time window. It is an argument being deposited, not a
-    /// proof, so it never extends the invocation's chain.
-    ///
-    /// The head need not be issued by the customer directly: the device
-    /// holds the customer's root through a delegation, so the deposit
-    /// arrives as a chain (customer → device → service) whose links
-    /// travel in the same container. The walk follows issuers back to
-    /// the customer through those links.
-    async fn verify_deposit(
-        &self,
-        deposit: &Delegation<AnySignature>,
-        customer: &Did,
-    ) -> Result<(), RegistrationError> {
-        let service = self.service.did();
-        if deposit.audience() != &service {
-            return Err(RegistrationError::Forbidden {
-                message: format!(
-                    "access delegation must be issued to this service, got {}",
-                    deposit.audience()
-                ),
-            });
-        }
-        self.check_deposit_link(deposit, customer).await?;
-
-        let links = self.delegation_tokens()?;
-        let mut issuer = deposit.issuer().clone();
-        let mut depth = 0;
-        while issuer != *customer {
-            depth += 1;
-            if depth > 4 {
-                return Err(RegistrationError::Forbidden {
-                    message: "access delegation chain is too deep".to_string(),
-                });
-            }
-            let link = links
-                .iter()
-                .find(|token| token.audience() == &issuer)
-                .ok_or_else(|| RegistrationError::Forbidden {
-                    message: format!(
-                        "access delegation is not issued under {customer}: nothing in the \
-                         container grants {issuer}"
-                    ),
-                })?;
-            self.check_deposit_link(link, customer).await?;
-            issuer = link.issuer().clone();
-        }
-        Ok(())
-    }
-
-    /// Validate one link of a deposit chain: its subject covers the
-    /// customer, its window contains the present, and its signature is
-    /// its issuer's.
-    async fn check_deposit_link(
-        &self,
-        delegation: &Delegation<AnySignature>,
-        customer: &Did,
-    ) -> Result<(), RegistrationError> {
-        if let DelegatedSubject::Specific(subject) = delegation.subject()
-            && subject != customer
-        {
-            return Err(RegistrationError::Forbidden {
-                message: format!(
-                    "access delegation must cover the customer's account space, got {subject}"
-                ),
-            });
-        }
-        self.check_window(delegation)?;
-        delegation
-            .verify_signature(&DidKeyResolver)
-            .await
-            .map_err(|err| RegistrationError::Unauthorized {
-                message: format!("access delegation failed to verify: {err}"),
-            })
-    }
-
-    /// Refuse a delegation whose time window does not contain the
-    /// present.
     fn check_window(&self, delegation: &Delegation<AnySignature>) -> Result<(), RegistrationError> {
         if let Some(expiration) = delegation.expiration()
             && expiration.to_unix() < self.now
@@ -1258,7 +1133,6 @@ mod tests {
         );
         let enroll = subject.clone().attenuate(Customer).invoke(Enroll {
             email: "alice@example.com".into(),
-            access: vec![Cid::default()],
             custody: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
                 .parse()
                 .unwrap(),
