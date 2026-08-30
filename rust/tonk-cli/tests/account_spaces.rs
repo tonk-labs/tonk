@@ -12,6 +12,22 @@ use tonk_cli::space::SpaceEntry;
 use tonk_schema::RepositoryName;
 use tonk_schema::prelude::DidExt as _;
 
+fn tonk_stage_entries(store: &tonk_cli::space::SpaceStore) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(store.spaces_root()) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".tonk-stage-"))
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
 #[tokio::test]
 async fn list_reports_named_unnamed_and_pullable_rows() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
@@ -179,6 +195,56 @@ async fn pull_cleans_up_an_unverified_replica_when_initial_sync_is_offline() -> 
     assert!(error.to_string().contains("initial pull"), "{error:#}");
     assert!(!fixture.store.canonical_site("garden").exists());
     assert!(fixture.store.load()?.spaces.is_empty());
+    assert!(
+        tonk_stage_entries(&fixture.store).is_empty(),
+        "returned errors clean their marked stage"
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn pull_does_not_publish_a_replica_that_fails_membership_validation(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    fixture.activate_with(&env).await?;
+    let source_root = fixture.tmp.path().join("published-without-membership");
+    let source = TonkSite::init_at_with(&source_root, fixture.config.clone()).await?;
+    let subject = source.repository.did();
+    env.provision_subject(subject.as_str()).await?;
+    name_repository(&source, "untrusted").await?;
+    tonk_cli::remote::add(
+        &source,
+        "origin",
+        &env.access_service_url,
+        Some(subject.clone()),
+    )
+    .await?;
+    tonk_cli::remote::set_upstream(&source, "origin").await?;
+    tonk_cli::sync::push(&source).await?;
+    // Deliberately omit `record_founder_membership`: remote bytes alone do not
+    // prove that this account is entitled to register the replica.
+    assert_eq!(
+        account_spaces::record_site_in("untrusted", &source, &fixture.store).await?,
+        account_spaces::RecordOutcome::Recorded
+    );
+
+    let error = account_spaces::pull(&fixture.profile, &fixture.store, subject.as_ref(), None)
+        .await
+        .expect_err("membership validation must precede canonical publication");
+
+    assert!(
+        error
+            .to_string()
+            .contains("no signed membership for this account profile"),
+        "{error:#}"
+    );
+    assert!(!fixture.store.canonical_site("untrusted").exists());
+    assert!(fixture.store.load()?.spaces.is_empty());
+    assert!(
+        tonk_stage_entries(&fixture.store).is_empty(),
+        "a failed membership check cleans only its stage"
+    );
     Ok(())
 }
 

@@ -4,17 +4,17 @@
 //! dialog repository named `main`, two branches, identity in the
 //! platform profile dir). The migration is therefore a
 //! file-level copy plus a sanity-check open: locate the source,
-//! refuse if the destination exists, copy or move, then open
-//! the new `.tonk/` to verify the dialog repository loads. A
-//! verification failure rolls back the partial destination so
-//! the caller can retry without manual cleanup.
+//! refuse if the destination exists, copy into a hidden sibling,
+//! then open that stage to verify the dialog repository loads. The
+//! verified directory is published with one rename. `--move`
+//! removes its source only after publication.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use dialog_repository::Repository;
 
 use crate::site::{self, TonkSite};
+use crate::staged_directory::StagedDirectory;
 
 /// Default name of the source directory carry writes to.
 const CARRY_DIRNAME: &str = ".carry";
@@ -37,8 +37,7 @@ pub struct MigrationOutcome {
 pub enum Mode {
     /// Copy the source to the destination; leave the source in place.
     Copy,
-    /// Atomically rename the source to the destination when they
-    /// share a filesystem; otherwise copy then delete the source.
+    /// Copy, verify, and publish the destination before deleting the source.
     Move,
 }
 
@@ -54,9 +53,8 @@ pub async fn run_with(
     run_inner(start, source_override, mode, config).await
 }
 
-/// Drive the migration: locate, refuse-on-conflict, copy/move,
-/// verify by opening the new `.tonk/`, roll back on verification
-/// failure.
+/// Drive the migration: locate, refuse-on-conflict, copy into a sibling,
+/// verify there, publish the new `.tonk/`, and only then clean up a move source.
 pub async fn run(
     start: &Path,
     source_override: Option<&Path>,
@@ -72,6 +70,16 @@ async fn run_inner(
     config: crate::site::SiteConfig,
 ) -> Result<MigrationOutcome> {
     let source = resolve_source(start, source_override)?;
+    let source_identity = if mode == Mode::Move {
+        Some(SourceDirectoryIdentity::capture(&source).with_context(|| {
+            format!(
+                "cannot safely move source {} because its directory identity could not be recorded; the source remains unchanged",
+                source.display()
+            )
+        })?)
+    } else {
+        None
+    };
     let destination = source
         .parent()
         .ok_or_else(|| anyhow!("source has no parent directory: {}", source.display()))?
@@ -84,27 +92,49 @@ async fn run_inner(
         ));
     }
 
-    let moved = perform_transfer(&source, &destination, mode)?;
+    let stage = StagedDirectory::beside(&destination, "migrate-carry")?;
+    copy_dir_recursive(&source, stage.path()).with_context(|| {
+        format!(
+            "failed to copy migration source {} into stage {} for destination {}; the source remains unchanged",
+            source.display(),
+            stage.path().display(),
+            destination.display()
+        )
+    })?;
 
-    // Verify by opening the migrated site. If the repo handle
-    // loads, the migration is sound.
-    match open_for_verify(&destination, config).await {
-        Ok(repository) => Ok(MigrationOutcome {
-            source,
-            destination,
-            repo_did: repository.did().to_string(),
-            moved,
-        }),
-        Err(verify_err) => {
-            // Roll back: remove the partial destination so the
-            // user can retry without manually cleaning up.
-            let _ = std::fs::remove_dir_all(&destination);
-            Err(verify_err.context(format!(
-                "verification failed; rolled back {}",
-                destination.display()
-            )))
-        }
+    let repo_did = open_for_verify(stage.path(), config).await.map_err(|error| {
+        error.context(format!(
+            "verification failed before publication; source remains at {} and canonical destination {} was not created",
+            source.display(),
+            destination.display()
+        ))
+    })?;
+    let destination = stage.publish().with_context(|| {
+        format!(
+            "verified migration publication at {destination} did not settle cleanly; source remains at {source}; if the destination is absent, retry the migration; if it is present, never overwrite or delete it merely to retry—verify its repository subject before deciding whether it is the migrated copy or another operation's destination",
+            destination = destination.display(),
+            source = source.display()
+        )
+    })?;
+
+    let moved = mode == Mode::Move;
+    if moved {
+        remove_source_after_publication(
+            &StdFilesystem,
+            &source,
+            &destination,
+            source_identity
+                .as_ref()
+                .expect("move mode captured a source identity"),
+        )?;
     }
+
+    Ok(MigrationOutcome {
+        source,
+        destination,
+        repo_did,
+        moved,
+    })
 }
 
 /// Walk up from `start` looking for a `.carry/` directory. With
@@ -137,46 +167,94 @@ fn resolve_source(start: &Path, source_override: Option<&Path>) -> Result<PathBu
     }
 }
 
-/// Move (`Mode::Move`) or copy (`Mode::Copy`) `source` to
-/// `destination`. Returns `true` if the source no longer exists
-/// after the call.
-///
-/// `Mode::Move` first tries `std::fs::rename` — atomic on the same
-/// filesystem. If that fails (typically EXDEV cross-device), falls
-/// back to copy-then-delete.
-fn perform_transfer(source: &Path, destination: &Path, mode: Mode) -> Result<bool> {
-    match mode {
-        Mode::Move => {
-            if std::fs::rename(source, destination).is_ok() {
-                return Ok(true);
-            }
-            // Cross-device or other rename failure — fall through
-            // to copy + delete. The copy step's errors surface
-            // unwrapped so the caller sees the real reason rather
-            // than the rename error we swallowed.
-            copy_dir_recursive(source, destination).with_context(|| {
-                format!(
-                    "failed to copy {} to {}",
-                    source.display(),
-                    destination.display()
-                )
-            })?;
-            std::fs::remove_dir_all(source).with_context(|| {
-                format!("failed to remove source {} after copy", source.display())
-            })?;
-            Ok(true)
-        }
-        Mode::Copy => {
-            copy_dir_recursive(source, destination).with_context(|| {
-                format!(
-                    "failed to copy {} to {}",
-                    source.display(),
-                    destination.display()
-                )
-            })?;
-            Ok(false)
-        }
+trait Filesystem {
+    fn directory_identity(&self, path: &Path) -> std::io::Result<SourceDirectoryIdentity>;
+
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()>;
+}
+
+struct StdFilesystem;
+
+impl Filesystem for StdFilesystem {
+    fn directory_identity(&self, path: &Path) -> std::io::Result<SourceDirectoryIdentity> {
+        SourceDirectoryIdentity::capture(path)
     }
+
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_dir_all(path)
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceDirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl SourceDirectoryIdentity {
+    fn capture(path: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a real directory", path.display()),
+            ));
+        }
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceDirectoryIdentity;
+
+#[cfg(not(unix))]
+impl SourceDirectoryIdentity {
+    fn capture(path: &Path) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "directory identity is unavailable for {} on this platform",
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn remove_source_after_publication(
+    filesystem: &impl Filesystem,
+    source: &Path,
+    destination: &Path,
+    expected_identity: &SourceDirectoryIdentity,
+) -> Result<()> {
+    let current_identity = filesystem.directory_identity(source).with_context(|| {
+        format!(
+            "verified destination is published at {}, but the move source {} could not be re-identified; it was not deleted",
+            destination.display(),
+            source.display()
+        )
+    })?;
+    if current_identity != *expected_identity {
+        anyhow::bail!(
+            "verified destination is published at {}, but move source {} changed since migration began; the current source path was not deleted",
+            destination.display(),
+            source.display()
+        );
+    }
+    filesystem.remove_dir_all(source).with_context(|| {
+        format!(
+            "verified destination is published at {}, but failed to remove move source {}; both copies remain, so inspect these paths and retry only the source cleanup",
+            destination.display(),
+            source.display()
+        )
+    })
 }
 
 /// Recursively copy `source` to `destination`, creating
@@ -209,13 +287,134 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Open the migrated `.tonk/` and return the repository handle.
-/// Used as the verification step — if this fails, the migration
-/// is rolled back.
-async fn open_for_verify(
-    destination: &Path,
-    config: crate::site::SiteConfig,
-) -> Result<Repository> {
-    let site = TonkSite::open_with(destination, config).await?;
-    Ok(site.repository)
+/// Open the staged `.tonk/`, capture its subject, then drop every repository
+/// handle before the caller renames the directory.
+async fn open_for_verify(stage: &Path, config: crate::site::SiteConfig) -> Result<String> {
+    let site = TonkSite::open_with(stage, config).await?;
+    let repo_did = site.repository.did().to_string();
+    site.reactor.shutdown();
+    drop(site);
+    Ok(repo_did)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use std::io::{Error, ErrorKind};
+
+    use super::*;
+
+    #[cfg(unix)]
+    struct RefusingFilesystem;
+
+    #[cfg(unix)]
+    impl Filesystem for RefusingFilesystem {
+        fn directory_identity(&self, path: &Path) -> std::io::Result<SourceDirectoryIdentity> {
+            SourceDirectoryIdentity::capture(path)
+        }
+
+        fn remove_dir_all(&self, _path: &Path) -> std::io::Result<()> {
+            Err(Error::new(ErrorKind::PermissionDenied, "injected refusal"))
+        }
+    }
+
+    #[cfg(unix)]
+    struct MismatchingFilesystem {
+        identity: SourceDirectoryIdentity,
+    }
+
+    #[cfg(unix)]
+    impl Filesystem for MismatchingFilesystem {
+        fn directory_identity(&self, _path: &Path) -> std::io::Result<SourceDirectoryIdentity> {
+            Ok(self.identity)
+        }
+
+        fn remove_dir_all(&self, _path: &Path) -> std::io::Result<()> {
+            panic!("an identity mismatch must fail before deletion")
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn it_keeps_the_verified_destination_when_source_cleanup_fails() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join(".carry");
+        let destination = temp.path().join(".tonk");
+        std::fs::create_dir(&source)?;
+        std::fs::create_dir(&destination)?;
+        std::fs::write(source.join("source"), b"source copy")?;
+        std::fs::write(destination.join("verified"), b"verified copy")?;
+        let identity = SourceDirectoryIdentity::capture(&source)?;
+
+        let error =
+            remove_source_after_publication(&RefusingFilesystem, &source, &destination, &identity)
+                .expect_err("source cleanup is injected to fail");
+
+        assert_eq!(std::fs::read(source.join("source"))?, b"source copy");
+        assert_eq!(
+            std::fs::read(destination.join("verified"))?,
+            b"verified copy"
+        );
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("both copies remain"), "{rendered}");
+        assert!(
+            rendered.contains(&source.display().to_string()),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&destination.display().to_string()),
+            "{rendered}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn it_refuses_to_delete_a_move_source_whose_identity_changed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join(".carry");
+        let destination = temp.path().join(".tonk");
+        std::fs::create_dir(&source)?;
+        std::fs::create_dir(&destination)?;
+        std::fs::write(source.join("replacement"), b"replacement source")?;
+        std::fs::write(destination.join("verified"), b"verified copy")?;
+        let expected = SourceDirectoryIdentity::capture(&source)?;
+        let mismatched = SourceDirectoryIdentity {
+            inode: expected.inode.wrapping_add(1),
+            ..expected
+        };
+
+        let error = remove_source_after_publication(
+            &MismatchingFilesystem {
+                identity: mismatched,
+            },
+            &source,
+            &destination,
+            &expected,
+        )
+        .expect_err("a replaced source path must not be deleted");
+
+        assert_eq!(
+            std::fs::read(source.join("replacement"))?,
+            b"replacement source"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("verified"))?,
+            b"verified copy"
+        );
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("changed since migration began"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&source.display().to_string()),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&destination.display().to_string()),
+            "{rendered}"
+        );
+        Ok(())
+    }
 }

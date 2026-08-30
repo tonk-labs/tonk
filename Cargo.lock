@@ -4835,6 +4835,7 @@ dependencies = [
  "os_info",
  "rand 0.9.5",
  "reqwest 0.12.28",
+ "rustix",
  "semver",
  "serde",
  "serde_json",

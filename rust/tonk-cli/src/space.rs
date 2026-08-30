@@ -447,6 +447,7 @@ impl SpaceStore {
         let mut orphans: Vec<PathBuf> = entries
             .flatten()
             .filter(|entry| entry.path().is_dir())
+            .filter(|entry| !crate::staged_directory::is_staged_directory(&entry.path()))
             .map(|entry| canonical(&entry.path()))
             .filter(|path| !registered.contains(path))
             .collect();
@@ -2042,6 +2043,47 @@ mod tests {
             // nothing to report rather than something to fail on.
             let empty = SpaceStore::at(tmp.path().join("nowhere"));
             assert!(empty.orphaned_sites(&registry).is_empty());
+        }
+
+        #[dialog_common::test]
+        fn it_hides_only_marked_tonk_stages_from_orphan_diagnostics() {
+            let (_tmp, store) = store();
+            let registry = Registry::default();
+            let destination = store.canonical_site("retry");
+            let staged =
+                crate::staged_directory::StagedDirectory::beside(&destination, "account-pull")
+                    .expect("stage");
+            std::fs::write(staged.path().join("partial"), b"partial").expect("partial state");
+            let staged_path = staged.path().canonicalize().expect("canonical stage");
+            let hidden_user_data = store.spaces_root().join(".hidden-user-data");
+            let stage_shaped_user_data =
+                store.spaces_root().join(".tonk-stage-account-pull-ABCDEF");
+            let visible_user_data = store.spaces_root().join("visible-user-data");
+            std::fs::create_dir(&hidden_user_data).expect("hidden user directory");
+            std::fs::create_dir(&stage_shaped_user_data).expect("unmarked stage-shaped directory");
+            std::fs::create_dir(&visible_user_data).expect("visible user directory");
+
+            let orphans = store.orphaned_sites(&registry);
+            assert!(
+                !orphans.contains(&staged_path),
+                "an interrupted Tonk stage is internal retry state: {orphans:?}"
+            );
+            assert!(
+                orphans.contains(&hidden_user_data.canonicalize().expect("canonical hidden")),
+                "arbitrary hidden data is still reported: {orphans:?}"
+            );
+            assert!(
+                orphans.contains(
+                    &stage_shaped_user_data
+                        .canonicalize()
+                        .expect("canonical stage-shaped data")
+                ),
+                "a stage-shaped name without its matching marker is still reported: {orphans:?}"
+            );
+            assert!(
+                orphans.contains(&visible_user_data.canonicalize().expect("canonical visible")),
+                "visible unregistered data is still reported: {orphans:?}"
+            );
         }
     }
 

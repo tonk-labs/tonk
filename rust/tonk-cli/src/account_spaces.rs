@@ -21,6 +21,7 @@ use crate::account;
 use crate::remote::{self, DEFAULT_REMOTE};
 use crate::site::TonkSite;
 use crate::space::{self, SpaceStore};
+use crate::staged_directory::StagedDirectory;
 
 /// One row rendered by `tonk account space`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -206,38 +207,6 @@ fn name_error(name: Option<&str>, reason: impl std::fmt::Display) -> anyhow::Err
     anyhow::anyhow!("account space name '{label}' cannot be used: {reason}; pass --name <slug>")
 }
 
-struct FreshPullTarget {
-    path: PathBuf,
-    committed: bool,
-}
-
-impl FreshPullTarget {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            committed: false,
-        }
-    }
-
-    fn commit(&mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for FreshPullTarget {
-    fn drop(&mut self) {
-        if self.committed || !self.path.exists() {
-            return;
-        }
-        if let Err(error) = std::fs::remove_dir_all(&self.path) {
-            eprintln!(
-                "warning: failed to clean up incomplete account space at {}: {error}",
-                self.path.display()
-            );
-        }
-    }
-}
-
 /// Pull exactly one account space into canonical local storage.
 pub async fn pull(
     profile: &Profile,
@@ -372,8 +341,13 @@ pub async fn pull(
         other => bail!("the mount record's remote is not a UCAN site: {other:?}"),
     };
 
-    let mut fresh_target = FreshPullTarget::new(target.clone());
-    let site = crate::site::mount_delegated_at(&target, chain, site_config(profile)?)
+    let stage = StagedDirectory::beside(&target, "account-pull").with_context(|| {
+        format!(
+            "failed to stage account space for canonical site {}",
+            target.display()
+        )
+    })?;
+    let site = crate::site::mount_delegated_in_empty(stage.path(), chain, site_config(profile)?)
         .await
         .context("failed to mount account space")?;
     remote::add_with_revocation(
@@ -403,11 +377,18 @@ pub async fn pull(
     ) {
         bail!("pulled space has no signed membership for this account profile");
     }
-    let canonical_target = target
+    site.reactor.shutdown();
+    drop(site);
+    let published_target = stage.publish().with_context(|| {
+        format!(
+            "verified account-space publication at {target} did not settle cleanly; if that path is absent, retry the pull; if it is present, never overwrite or delete it merely to retry—verify its repository subject, run `tonk space` to inspect occupied names, and adopt it only if it is the expected subject with `tonk space new <available-name> --site {target}`",
+            target = target.display()
+        )
+    })?;
+    let canonical_target = published_target
         .canonicalize()
         .context("failed to canonicalize the mounted account space")?;
-    space::register_existing_unbound(store, &name, &canonical_target)?;
-    fresh_target.commit();
+    register_published(store, &name, &canonical_target)?;
 
     Ok(PullOutcome {
         subject: requested.to_string(),
@@ -415,6 +396,16 @@ pub async fn pull(
         site: canonical_target,
         already_local: false,
         warning: None,
+    })
+}
+
+fn register_published(store: &SpaceStore, name: &str, canonical_target: &Path) -> Result<()> {
+    space::register_existing_unbound(store, name, canonical_target).with_context(|| {
+        format!(
+            "the verified account space is safe at {}, but registering local name '{name}' failed; never overwrite the occupied entry—run `tonk space`, verify the published site's repository subject, then adopt it under an available name with `tonk space new <available-name> --site {}`",
+            canonical_target.display(),
+            canonical_target.display()
+        )
     })
 }
 
@@ -643,23 +634,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fresh_pull_target_removes_partial_state_unless_committed() {
-        let temp = tempfile::tempdir().unwrap();
-        let incomplete = temp.path().join("incomplete");
-        {
-            let _target = FreshPullTarget::new(incomplete.clone());
-            std::fs::create_dir_all(incomplete.join("nested")).unwrap();
-            std::fs::write(incomplete.join("nested/state"), b"partial").unwrap();
-        }
-        assert!(!incomplete.exists());
+    fn a_registration_failure_keeps_the_verified_canonical_site() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = SpaceStore::at(temp.path().join("state"));
+        let canonical = store.canonical_site("garden");
+        std::fs::create_dir_all(&canonical)?;
+        std::fs::write(canonical.join("verified"), b"complete replica")?;
+        let occupied_site = temp.path().join("already-registered");
+        std::fs::create_dir(&occupied_site)?;
+        std::fs::write(occupied_site.join("kept"), b"existing registration")?;
+        let occupied_site = occupied_site.canonicalize()?;
+        let mut registry = space::Registry::default();
+        registry
+            .spaces
+            .insert("garden".to_owned(), space::SpaceEntry::at(&occupied_site));
+        store.save(&registry)?;
 
-        let retained = temp.path().join("retained");
-        {
-            let mut target = FreshPullTarget::new(retained.clone());
-            std::fs::create_dir_all(&retained).unwrap();
-            target.commit();
-        }
-        assert!(retained.exists());
+        let error = register_published(&store, "garden", &canonical)
+            .expect_err("an occupied registry name must not be replaced");
+
+        assert_eq!(
+            std::fs::read(canonical.join("verified"))?,
+            b"complete replica"
+        );
+        let retained = store.load()?;
+        assert_eq!(retained.spaces["garden"].site, occupied_site);
+        assert_eq!(
+            std::fs::read(retained.spaces["garden"].site.join("kept"))?,
+            b"existing registration"
+        );
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("verified account space is safe"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&canonical.display().to_string()),
+            "{rendered}"
+        );
+        assert!(rendered.contains("run `tonk space`"), "{rendered}");
+        assert!(rendered.contains("repository subject"), "{rendered}");
+        assert!(rendered.contains("<available-name>"), "{rendered}");
+        Ok(())
     }
 
     #[test]
