@@ -879,6 +879,61 @@ mod tests {
         );
     }
 
+    /// Deleting a customer releases the address: the row holds it under
+    /// a unique index, so an account that is gone must not keep an email
+    /// claimed. The whole point of releasing it is enrolling again.
+    #[dialog_common::test]
+    async fn deleting_a_customer_frees_the_address_for_another_account() {
+        let store = SqliteStore::in_memory().unwrap();
+        let purger = RecordingPurger(Mutex::new(Vec::new()));
+        let root = Ed25519Signer::generate().await.unwrap();
+        let at = now();
+        store
+            .enroll_customer(
+                root.did().as_str(),
+                "alice@example.com",
+                SIGNUP_PLAN,
+                at,
+                u64::MAX,
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .customer_by_email("alice@example.com")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let invocation = root_container(root.clone(), &CUSTOMER_DELETE_COMMAND).await;
+        delete_customer(&store, &purger, &invocation, at + 1)
+            .await
+            .expect("a customer with no other spaces finalizes");
+
+        assert!(
+            store
+                .customer_by_email("alice@example.com")
+                .await
+                .unwrap()
+                .is_none(),
+            "the address is free once the account holding it is gone"
+        );
+
+        // And a different account may take it.
+        let other = Ed25519Signer::generate().await.unwrap();
+        store
+            .enroll_customer(
+                other.did().as_str(),
+                "alice@example.com",
+                SIGNUP_PLAN,
+                at + 2,
+                u64::MAX,
+            )
+            .await
+            .expect("the released address enrolls again");
+    }
+
     #[dialog_common::test]
     async fn customer_finalization_requires_every_owned_space_then_removes_email_state() {
         let store = SqliteStore::in_memory().unwrap();

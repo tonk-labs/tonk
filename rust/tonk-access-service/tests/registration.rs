@@ -172,6 +172,10 @@ struct Custody {
     /// Drop these blocks from the container, though the arguments still
     /// name them.
     omit: Vec<&'static str>,
+    /// Give the consent an expiration this many seconds from now.
+    /// Negative puts it in the past. `None` leaves it open-ended, which
+    /// is the honest case.
+    consent_expires_in: Option<i64>,
     /// Issue the recovery through a delegate the custody key granted
     /// to, rather than self-signing it. `None` is the self-signed case.
     /// The delegation travels in the container as the invocation's
@@ -184,6 +188,7 @@ impl Default for Custody {
         Custody {
             key_seed: [9u8; 32],
             recovery_delegate: None,
+            consent_expires_in: None,
             claimed_did: None,
             sealed: b"sealed-account-secret".to_vec(),
             checksum_over: None,
@@ -287,14 +292,21 @@ async fn enroll_container_parts(
     // container holds — not a container of its own.
     let recovery_bytes = serde_ipld_dagcbor::to_vec(&recovery).expect("recovery encodes");
 
-    let consent = DelegationBuilder::new()
+    let mut consent = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(key.clone()))
         .audience(custody.consent_audience.as_ref().unwrap_or(&customer.did()))
         .subject(dialog_ucan_core::subject::Subject::Specific(key.did()))
-        .command(custody.consent_command.clone())
-        .try_build()
-        .await
-        .expect("consent");
+        .command(custody.consent_command.clone());
+    if let Some(seconds) = custody.consent_expires_in {
+        let now = dialog_ucan_core::time::timestamp::SystemTime::now();
+        let at = if seconds < 0 {
+            now - dialog_ucan_core::time::timestamp::Duration::from_secs(seconds.unsigned_abs())
+        } else {
+            now + dialog_ucan_core::time::timestamp::Duration::from_secs(seconds as u64)
+        };
+        consent = consent.expiration(Timestamp::new(at).expect("consent expiration"));
+    }
+    let consent = consent.try_build().await.expect("consent");
     let consent_bytes = consent.encoded().to_vec();
 
     let invocation = InvocationBuilder::new()
@@ -1745,6 +1757,86 @@ mod custody {
             enroll_container(&customer, &fixture.service.did(), "alice2@example.com").await;
         let answer = fixture.registration(&container).handle().await;
         assert!(answer.is_ok(), "got {answer:?}");
+        Ok(())
+    }
+
+    /// A consent that has lapsed is refused: activation provisions from
+    /// what enrollment verified, so a consent alive only now would let
+    /// the provisioning it authorizes happen after it expired.
+    #[dialog_common::test]
+    async fn it_refuses_an_expired_consent() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            consent_expires_in: Some(-60),
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Unauthorized { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// An enrollment naming none of the custody arguments is refused
+    /// before anything is recorded — the fields are what make an
+    /// account openable on a second device.
+    #[dialog_common::test]
+    async fn it_refuses_an_enrollment_with_no_custody_arguments() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let invocation = InvocationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(customer.clone()))
+            .audience(&customer.did())
+            .subject(&customer.did())
+            .command(vec!["customer".to_string(), "enroll".to_string()])
+            .arguments(BTreeMap::from([(
+                "email".to_string(),
+                Promised::String("alice@example.com".to_string()),
+            )]))
+            .proofs(vec![])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await?;
+        let container =
+            Container::new(vec![serde_ipld_dagcbor::to_vec(&invocation)?]).to_bytes()?;
+
+        let answer = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Invalid { .. })),
+            "an enrollment naming no custody must be refused, got {answer:?}"
+        );
+        assert!(
+            fixture.vault.sealed().is_empty(),
+            "and writes no cell for it"
+        );
+        Ok(())
+    }
+
+    /// One passkey may hold more than one account: the custody space is
+    /// derived from the credential, and the cell is named within it, so
+    /// two accounts under the same custodian are two enrollments that
+    /// do not collide.
+    #[dialog_common::test]
+    async fn it_enrolls_two_accounts_under_one_custodian() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let custody = Custody::default();
+
+        let first = Ed25519Signer::generate().await?;
+        let (container, _, _) = enroll_container_parts(&first, "alice@example.com", &custody).await;
+        fixture.registration(&container).handle().await?;
+
+        let second = Ed25519Signer::generate().await?;
+        let (container, _, _) = enroll_container_parts(&second, "bob@example.com", &custody).await;
+        let answer = fixture.registration(&container).handle().await;
+        assert!(
+            answer.is_ok(),
+            "a second account under the same custodian enrolls, got {answer:?}"
+        );
+        assert_eq!(
+            fixture.vault.sealed().len(),
+            2,
+            "each enrollment writes its own cell"
+        );
         Ok(())
     }
 
