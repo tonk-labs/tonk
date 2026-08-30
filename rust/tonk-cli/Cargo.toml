@@ -205,7 +205,7 @@ anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 futures-util = { workspace = true }
 rand = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 tonk-account-service = { path = "../tonk-account-service", features = ["helpers"] }
 unicode-width = { workspace = true }

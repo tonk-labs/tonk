@@ -235,7 +235,30 @@ rules still govern any site work that completed before publication.
 
 **Remote service and sync.** Status is read-only. Auto-sync wraps writes, while
 manual push/pull remains explicit. Remote errors never justify destructive
-local ref replacement.
+local ref replacement. Main and metadata push/pull, plus the fetch used by
+status, each have their own deadline. `TONK_REMOTE_TIMEOUT_SECONDS` overrides
+the 120-second default with a positive whole number capped at 300 seconds; an
+invalid value fails with the accepted range instead of silently changing the
+policy. Expiry names the exact phase and target and says the remote outcome may
+be unknown.
+
+`eval` settles its local and remote outcomes in that order. Once evaluation
+commits, the complete notation or JSON receipt is written and flushed to
+stdout before optional push-after begins. A later push failure remains a
+zero-exit warning on stderr: the local eval is saved, the remote outcome may be
+unknown, `tonk push` is the recovery command, and the non-idempotent eval must
+not be repeated.
+
+A signed-in `space new` prints its final `Registered space` receipt only
+after founder, remote, upstream, push, and account-directory publication all
+finish. If one of those stages fails, the command exits non-zero with no final
+receipt on stdout. Stderr names the failed stage, retained local site and DID,
+and `tonk space link <name>` as the single idempotent continuation. A failed
+stage may already have completed, so continuation verifies the existing
+remote, subject, and upstream and fills only what remains. Repeating `space
+new` against that name does not overwrite it: the collision may belong to
+another operation, so output first asks the user to inspect the site and DID,
+then points interrupted work to the same continuation.
 
 **Concurrency and multi-device.** Process tests need real second processes for
 locks/signals and independent repository actors for sync. Async tasks in one
@@ -264,6 +287,15 @@ that may embed secrets.
 - `--dry-run` implies no remote even if an upstream exists.
 - `TONK_NO_SYNC` and `--no-sync` agree; explicit flags and environment
   precedence are stable.
+- `TONK_REMOTE_TIMEOUT_SECONDS` is absent, at both bounds, zero, negative,
+  non-numeric, or above the cap.
+- A remote socket accepts a pull/push/fetch request but never returns bytes;
+  the exact phase expires independently and reports remote uncertainty.
+- SIGINT arrives after an eval receipt is flushed but while push-after remains
+  in flight; a fresh process observes the one local commit and can push it.
+- Signed-in `space new` stops after founder, remote, upstream, push, or
+  account-directory work; every case retains the same site/DID and converges
+  through `space link`.
 - Output path exists, is a directory, is read-only, fills mid-write, or is on a
   different filesystem.
 - Signal arrives during callback wait, local transaction, remote request,
