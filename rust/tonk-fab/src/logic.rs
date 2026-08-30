@@ -1730,7 +1730,7 @@ pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64)
                 "predicate": {
                     "kind": "transient",
                     "concept": {
-                        "description": "Attach a sync remote to a spot, and share it.",
+                        "description": "Attach a sync remote to a space, and share it.",
                         "with": with
                     }
                 },
@@ -1948,6 +1948,10 @@ mod enable_sync_claim {
         assert_eq!(app["parameters"]["share"], "tonk:share");
         assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
         assert_eq!(app["parameters"]["time"], 7.0);
+        assert_eq!(
+            app["predicate"]["concept"]["description"],
+            "Attach a sync remote to a space, and share it."
+        );
 
         // The `with` declaration is what the worker actually matches on: a
         // typo here compiles and passes every assertion on `parameters`

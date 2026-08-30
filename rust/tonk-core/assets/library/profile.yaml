@@ -1162,7 +1162,7 @@ view!: &space-view
         <tonk-title text="Not here — Tonk"></tonk-title>
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
         <div class="space-unknown-wall">
-          <h1 class="space-unknown-statement">you don't have this spot</h1>
+          <h1 class="space-unknown-statement">you don't have this space</h1>
           <p class="space-unknown-narrator">It isn't on this device, and this account has no access to it. If someone shared it with you, open their share link to join.</p>
         <!-- A plain top-level path. The guest classifies this as in-app
              (it resolves against the synthetic per-space origin) and asks
@@ -1178,7 +1178,7 @@ view!: &space-view
              window — the join page booting inside an opaque origin with no
              service worker. Styled as a button below. -->
           <div class="space-unknown-run">
-            <a class="space-unknown-join" href="/join">join a spot<span aria-hidden="true">&#9656;</span></a>
+            <a class="space-unknown-join" href="/join">join a space<span aria-hidden="true">&#9656;</span></a>
           </div>
         </div>
       </div>

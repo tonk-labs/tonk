@@ -1649,7 +1649,7 @@ mod tests {
     fn it_keeps_an_unrepairable_refusals_confirm_visible_and_inert() {
         let bar = mounted_bar();
 
-        open_enable_sync_dialog("This spot's sync server can't be shared.", None);
+        open_enable_sync_dialog("This space's sync server can't be shared.", None);
 
         let confirm = window()
             .and_then(|w| w.document())
@@ -1680,7 +1680,7 @@ mod tests {
             &state,
             Blocked {
                 code: "not-synced".to_owned(),
-                detail: "This spot only exists on this device.".to_owned(),
+                detail: "This space only exists on this device.".to_owned(),
                 time: 42.0,
             },
         );
@@ -1737,7 +1737,7 @@ mod tests {
             &state,
             Blocked {
                 code: "unshareable-remote".to_owned(),
-                detail: "This spot's sync server can't be shared.".to_owned(),
+                detail: "This space's sync server can't be shared.".to_owned(),
                 time: 42.0,
             },
         );
@@ -1826,14 +1826,14 @@ mod tests {
             &state,
             Blocked {
                 code: "unshareable-remote".to_owned(),
-                detail: "This spot's sync server can't be shared.".to_owned(),
+                detail: "This space's sync server can't be shared.".to_owned(),
                 time: 42.0,
             },
         );
 
         assert_eq!(
             detail.text_content().as_deref(),
-            Some("This spot's sync server can't be shared.")
+            Some("This space's sync server can't be shared.")
         );
         assert!(confirm.has_attribute("disabled"));
 
@@ -1886,14 +1886,14 @@ mod tests {
             &state,
             Blocked {
                 code: "not-synced".to_owned(),
-                detail: "This spot only exists on this device.".to_owned(),
+                detail: "This space only exists on this device.".to_owned(),
                 time: 1.0,
             },
         );
 
         assert_eq!(
             detail.text_content().as_deref(),
-            Some("This spot only exists on this device.")
+            Some("This space only exists on this device.")
         );
         assert!(
             !confirm.has_attribute("disabled"),
@@ -1910,12 +1910,12 @@ mod tests {
         let (dialog, _detail, confirm) = dialog_stub();
 
         open_enable_sync_dialog(
-            "This spot only exists on this device.",
+            "This space only exists on this device.",
             Repair::for_code(BLOCKED_NOT_SYNCED),
         );
         assert!(!action_text(&dialog).is_empty(), "the repair promises one");
 
-        open_enable_sync_dialog("This spot's sync server can't be shared.", None);
+        open_enable_sync_dialog("This space's sync server can't be shared.", None);
         let action = action_text(&dialog);
         let confirm_label = confirm.text_content().unwrap_or_default();
         let disabled = confirm.has_attribute("disabled");
@@ -1991,7 +1991,7 @@ mod tests {
             &state,
             Blocked {
                 code: "not-synced".to_owned(),
-                detail: "This spot only exists on this device.".to_owned(),
+                detail: "This space only exists on this device.".to_owned(),
                 time: 42.0,
             },
         );
@@ -2015,7 +2015,7 @@ mod tests {
             &state,
             Blocked {
                 code: "unshareable-remote".to_owned(),
-                detail: "This spot's sync server can't be shared.".to_owned(),
+                detail: "This space's sync server can't be shared.".to_owned(),
                 time: 42.0,
             },
         );

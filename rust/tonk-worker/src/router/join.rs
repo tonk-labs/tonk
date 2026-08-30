@@ -327,9 +327,9 @@ mod failure_vocabulary {
                 "This share link is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
-                "Tonk could not reach this spot. Try again.",
-                "This spot's host declined the invite. Its owner needs to check the spot's plan.",
-                "Tonk could not join this spot.",
+                "Tonk could not reach this space. Try again.",
+                "This space's host declined the invite. Its owner needs to check the space's plan.",
+                "Tonk could not join this space.",
             ],
         );
     }
@@ -394,7 +394,7 @@ mod failure_vocabulary {
 
     /// A policy refusal is the REMOTE's verdict on a chain that proved
     /// out, not a local breakage. It landed in the `_` catch-all and was
-    /// reported as `claim-failed` ("Tonk could not join this spot"),
+    /// reported as `claim-failed` ("Tonk could not join this space"),
     /// which blames this device for a decision taken on the server —
     /// the real one being an unprovisioned subject, which no amount of
     /// retrying or re-inviting fixes.
@@ -1300,7 +1300,7 @@ fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
         // policy predicate on the delegation said no, or the remote
         // declined to serve the subject at all. Nothing on this device
         // is wrong, so `claim-failed` — which says the local claim
-        // broke, and reads as "Tonk could not join this spot" — pointed
+        // broke, and reads as "Tonk could not join this space" — pointed
         // the user at the wrong thing entirely.
         AuthorizeError::PolicyViolation { .. } | AuthorizeError::Declined { .. } => {
             JoinFailure::refused(format!("remote refused: {authorization}"))
