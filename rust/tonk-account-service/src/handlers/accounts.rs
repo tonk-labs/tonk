@@ -2,8 +2,6 @@
 
 use worker::*;
 
-use serde::Deserialize;
-
 use crate::auth::{authorize, authorize_root, optional_passkey_metadata, required_string};
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::deletion::delete_account;

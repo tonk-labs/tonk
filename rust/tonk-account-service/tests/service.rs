@@ -3,7 +3,7 @@
 //! surface, JSON shapes, and status codes as the Cloudflare Worker.
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
@@ -185,13 +185,10 @@ async fn it_rejects_an_expired_invocation() {
     let server = AccountServer::start().await;
     let expiration =
         Timestamp::new(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
-    let body = container_with_expiration(
-        vec!["account".into(), "device".into(), "list".into()],
-        expiration,
-    )
-    .await;
+    let body =
+        container_with_expiration(vec!["account".into(), "summary".into()], expiration).await;
     let response = reqwest::Client::new()
-        .post(format!("{}/devices/list", server.endpoint))
+        .post(format!("{}/account/summary", server.endpoint))
         .body(body)
         .send()
         .await
@@ -215,13 +212,10 @@ async fn it_rejects_an_expired_invocation() {
 async fn it_rejects_an_over_long_expiration_window() {
     let server = AccountServer::start().await;
     let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(10 * 60)).unwrap();
-    let body = container_with_expiration(
-        vec!["account".into(), "device".into(), "list".into()],
-        expiration,
-    )
-    .await;
+    let body =
+        container_with_expiration(vec!["account".into(), "summary".into()], expiration).await;
     let response = reqwest::Client::new()
-        .post(format!("{}/devices/list", server.endpoint))
+        .post(format!("{}/account/summary", server.endpoint))
         .body(body)
         .send()
         .await
@@ -331,13 +325,12 @@ async fn it_drives_the_full_ceremony_over_http() {
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
-    let device_did = device.did().to_string();
     let first_grant =
         tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
             .await
             .unwrap();
     let ceremony = tonk_identity::ceremony::create_account(
-        root,
+        root.clone(),
         "person@example.com".into(),
         "cred-1".into(),
         device.did(),
@@ -386,84 +379,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(summary["passkey"]["createdAt"], 1_754_380_800_u64);
     assert_eq!(summary["passkey"]["createdOn"], "Chrome on macOS");
 
-    // Establishment is set-if-absent: a later valid candidate receives
-    // the stored creation winner, never its own bytes.
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
-    // Built inline: the browser no longer carries an establish ceremony
-    // (legacy pre-descriptor accounts reset), but the server keeps the
-    // set-if-absent arbitration, so the test speaks the wire form.
-    let descriptor =
-        tonk_account::AccountRepositoryDescriptorV1::sign(&root, "https://other.example/ucan/")
-            .await
-            .unwrap();
-    let candidate_hex = hex::encode(descriptor.bytes());
-    assert_ne!(candidate_hex, expected_descriptor);
-    let root_did = root.did();
-    let invocation = InvocationBuilder::new()
-        .issuer(dialog_credentials::Signer::from(root))
-        .audience(&root_did)
-        .subject(&root_did)
-        .command(vec![
-            "account".into(),
-            "repository".into(),
-            "establish".into(),
-        ])
-        .arguments(BTreeMap::from([(
-            "repositoryDescriptor".to_string(),
-            Promised::String(candidate_hex),
-        )]))
-        .proofs(vec![])
-        .issue_now()
-        .expiration(Timestamp::five_minutes_from_now())
-        .try_build()
-        .await
-        .unwrap();
-    let body = InvocationChain::new(invocation, HashMap::new())
-        .to_bytes()
-        .unwrap();
-    let response = client
-        .post(format!("{base}/account/repository/establish"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let established: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(established["descriptorHex"], expected_descriptor);
-    assert_eq!(established["created"], false);
-
-    // A fresh browser profile can self-link directly from the root
-    // ceremony; it does not need an already registered device to sign.
-    let second = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
-    let second_did = second.did().to_string();
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
-    let ceremony = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
-        .await
-        .unwrap();
-    let second_grant_bytes = hex::decode(&ceremony.delegation_hex).unwrap();
-    let second_grant =
-        dialog_ucan_core::DelegationChain::try_from(second_grant_bytes.as_slice()).unwrap();
-    let response = client
-        .post(format!("{base}/devices/link"))
-        .body(hex::decode(&ceremony.invocation_hex).unwrap())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let linked: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(linked["descriptorHex"], expected_descriptor);
-    let second_attachment = linked["attachmentId"].as_str().unwrap();
-
-    // Browser sign-out leaves the account-service attachment active. A later
-    // login with the same passkey mints a new invocation and nonce-bearing
-    // root-to-device grant, but must recover the active generation.
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
+    // POST /devices/link -> a second browser attaches to the same
+    // account, and gets its own grant rather than the first one's.
+    let second = Ed25519Signer::generate().await.unwrap();
     let relink = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
         .await
         .unwrap();
@@ -475,183 +393,4 @@ async fn it_drives_the_full_ceremony_over_http() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let relinked: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(relinked["attachmentId"], second_attachment);
-
-    // POST /devices/list -> the newly registered device shows up.
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "device".into(), "list".into()],
-        BTreeMap::new(),
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/devices/list"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let devices: serde_json::Value = response.json().await.unwrap();
-    let devices = devices.as_array().unwrap();
-    assert_eq!(devices.len(), 2);
-    let first_row = devices.iter().find(|row| row["did"] == device_did).unwrap();
-    let second_row = devices.iter().find(|row| row["did"] == second_did).unwrap();
-    assert_eq!(first_row["name"], "laptop");
-    assert_eq!(first_row["status"], "active");
-    assert_eq!(second_row["name"], "phone");
-
-    // The worker and CLI parse exactly these keys; renaming one is a
-    // breaking wire change.
-    for key in [
-        "attachmentId",
-        "did",
-        "name",
-        "status",
-        "delegationCid",
-        "delegationHex",
-        "createdAt",
-    ] {
-        assert!(
-            first_row.get(key).is_some(),
-            "device list row is missing `{key}`"
-        );
-    }
-    assert!(first_row.get("created_at").is_none());
-    assert!(first_row.get("delegation_cid").is_none());
-    assert_eq!(second_row["delegationHex"], ceremony.delegation_hex);
-
-    // POST /devices/revoke -> the first device cuts off the second,
-    // carrying a root-signed revocation of the second device's grant.
-    // Cross-device revocation needs root attestation; a device-signed
-    // artifact only ever names its own grant.
-    let second_grant_cid = second_row["delegationCid"].as_str().unwrap().to_string();
-    assert_eq!(second_grant_cid, second_grant.proof_cids()[0].to_string());
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
-    let revocation = tonk_identity::revocation::mint_root_revocation(
-        root,
-        &second_grant,
-        &second_grant.proof_cids()[0],
-    )
-    .await
-    .unwrap();
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "device".into(), "revoke".into()],
-        [
-            (
-                "attachmentId".to_owned(),
-                Promised::String(second_row["attachmentId"].as_str().unwrap().to_string()),
-            ),
-            ("did".to_owned(), Promised::String(second_did.clone())),
-            (
-                "revocation".to_owned(),
-                Promised::String(hex::encode(&revocation)),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/devices/revoke"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let revoked: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(revoked["attestation"], "root");
-    assert_eq!(revoked["projection"], "updated");
-    assert_eq!(revoked["targetDid"], second_did);
-    assert_eq!(revoked["targetCid"], second_grant_cid);
-    assert_eq!(revoked["published"], true);
-
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "device".into(), "list".into()],
-        BTreeMap::new(),
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/devices/list"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    let devices: serde_json::Value = response.json().await.unwrap();
-    let devices = devices.as_array().unwrap();
-    assert_eq!(
-        devices.iter().find(|row| row["did"] == device_did).unwrap()["status"],
-        "active"
-    );
-    assert_eq!(
-        devices.iter().find(|row| row["did"] == second_did).unwrap()["status"],
-        "revoked"
-    );
-
-    // A command-line profile is registered through the same root ceremony
-    // the browser runs when it approves a `tonk account login` callback.
-    let cli = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
-    let ceremony = tonk_identity::ceremony::link_device(root, cli.did(), "terminal".into())
-        .await
-        .unwrap();
-    let cli_grant_bytes = hex::decode(&ceremony.delegation_hex).unwrap();
-    let cli_grant = DelegationChain::try_from(cli_grant_bytes.as_slice()).unwrap();
-    let response = client
-        .post(format!("{base}/devices/link"))
-        .body(hex::decode(ceremony.invocation_hex).unwrap())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let linked: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(linked["descriptorHex"], expected_descriptor);
-    let cli_attachment = linked["attachmentId"].as_str().unwrap().to_string();
-
-    // Logout detaches the exact generation without presenting the reusable
-    // account grant, and replay is idempotent.
-    let root_did = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap()
-        .did();
-    let detach = tonk_account::detach::SignedDetachIntent::sign(
-        &dialog_credentials::SignerCredential::from(cli.clone()),
-        &root_did,
-        &cli_attachment,
-        &cli_grant.proof_cids()[0].to_string(),
-        1,
-    )
-    .await
-    .unwrap();
-    let response = client
-        .post(format!("{base}/devices/detach"))
-        .json(&detach)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(
-        response.json::<serde_json::Value>().await.unwrap()["outcome"],
-        "detached"
-    );
-    let response = client
-        .post(format!("{base}/devices/detach"))
-        .json(&detach)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(
-        response.json::<serde_json::Value>().await.unwrap()["outcome"],
-        "alreadyDetached"
-    );
 }

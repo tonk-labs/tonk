@@ -4,7 +4,7 @@ use tonk_identity::revocation::{VerifyError, verify};
 
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
-use crate::store::{Account, DetachStoreOutcome, Device, DeviceStatus, Store, StoreError};
+use crate::store::{Account, Device, DeviceStatus, Store, StoreError};
 
 /// A device row as surfaced to API callers.
 pub struct DeviceView {
@@ -36,21 +36,6 @@ impl From<Device> for DeviceView {
             created_at: device.created_at,
         }
     }
-}
-
-/// List all devices registered under an account, in store order.
-pub async fn list_devices<S: Store>(
-    store: &S,
-    account: &Account,
-) -> Result<Vec<DeviceView>, CeremonyError> {
-    let devices = store.devices(account.id).await?;
-    let mut seen = std::collections::HashSet::new();
-    Ok(devices
-        .into_iter()
-        .filter(|device| device.status != DeviceStatus::Detached)
-        .filter(|device| seen.insert(device.device_did.clone()))
-        .map(DeviceView::from)
-        .collect())
 }
 
 /// Reuse the active generation after a root-authorized browser re-login.
@@ -92,30 +77,6 @@ async fn insert_device_registration<S: Store>(
         })
         .await?;
     Ok(attachment_id)
-}
-
-/// Register a fresh globally active attachment generation.
-pub async fn register_device<S: Store>(
-    store: &S,
-    account: &Account,
-    device_did: &str,
-    device_name: &str,
-    delegation_hex: &str,
-    now: u64,
-) -> Result<String, CeremonyError> {
-    let delegation_cid =
-        check_device_delegation(delegation_hex, &account.root_did, device_did).await?;
-    insert_device_registration(
-        store,
-        account,
-        device_did,
-        device_name,
-        delegation_cid,
-        delegation_hex.to_string(),
-        now,
-    )
-    .await
-    .map_err(Into::into)
 }
 
 /// Link a browser after a root-authorized passkey ceremony.
@@ -173,46 +134,6 @@ pub enum DetachOutcome {
     Superseded,
     /// The exact generation is permanently revoked.
     Revoked,
-}
-
-/// Validate and apply a signed detach intent to exactly one stored generation.
-pub async fn detach_device<S: Store>(
-    store: &S,
-    intent: &tonk_account::detach::SignedDetachIntent,
-) -> Result<DetachOutcome, CeremonyError> {
-    let payload = intent.validate().await.map_err(|error| match error {
-        tonk_account::detach::DetachIntentError::Signature => {
-            CeremonyError::Forbidden(error.to_string())
-        }
-        _ => CeremonyError::Invalid(error.to_string()),
-    })?;
-    let device = store
-        .attachment(&payload.attachment_id)
-        .await?
-        .ok_or_else(|| CeremonyError::NotFound("unknown attachment generation".to_string()))?;
-    let account = store
-        .account_by_root(&payload.account_root)
-        .await?
-        .ok_or_else(|| CeremonyError::Conflict("detach account root does not match".to_string()))?;
-
-    if device.account_id != account.id
-        || device.device_did != payload.device_did
-        || device.delegation_cid != payload.delegation_cid
-    {
-        return Err(CeremonyError::Conflict(
-            "detach payload does not match the stored attachment".to_string(),
-        ));
-    }
-
-    match store.detach_attachment(&payload.attachment_id).await? {
-        DetachStoreOutcome::Detached => Ok(DetachOutcome::Detached),
-        DetachStoreOutcome::AlreadyDetached => Ok(DetachOutcome::AlreadyDetached),
-        DetachStoreOutcome::Superseded => Ok(DetachOutcome::Superseded),
-        DetachStoreOutcome::Revoked => Ok(DetachOutcome::Revoked),
-        DetachStoreOutcome::UnknownAttachment => Err(CeremonyError::NotFound(
-            "unknown attachment generation".to_string(),
-        )),
-    }
 }
 
 /// Which product-level authority published a device revocation.
@@ -433,87 +354,6 @@ mod tests {
         };
         (account, device, root, grant)
     }
-
-    #[dialog_common::test]
-    async fn it_detaches_only_the_exact_signed_generation_idempotently() {
-        let store = SqliteStore::in_memory().unwrap();
-        let (mut account, device, _, _) = fixture().await;
-        account.id = store
-            .create_account(
-                &account.email,
-                &account.root_did,
-                &account.credential_id,
-                account.created_at,
-            )
-            .await
-            .unwrap();
-        let device = Device {
-            account_id: account.id,
-            ..device
-        };
-        store.insert_device(&device).await.unwrap();
-        let signer = dialog_credentials::SignerCredential::from(
-            Ed25519Signer::import(&DEVICE_SEED).await.unwrap(),
-        );
-        let root = account.root_did.parse().unwrap();
-        let intent = tonk_account::detach::SignedDetachIntent::sign(
-            &signer,
-            &root,
-            &device.attachment_id,
-            &device.delegation_cid,
-            10,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            detach_device(&store, &intent).await.unwrap(),
-            DetachOutcome::Detached
-        );
-        assert_eq!(
-            detach_device(&store, &intent).await.unwrap(),
-            DetachOutcome::AlreadyDetached
-        );
-        assert!(list_devices(&store, &account).await.unwrap().is_empty());
-
-        let mut forged = intent;
-        forged.signature[0] ^= 1;
-        assert!(matches!(
-            detach_device(&store, &forged).await,
-            Err(CeremonyError::Forbidden(_))
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn it_registers_a_device_delegated_by_the_account_root() {
-        let store = SqliteStore::in_memory().unwrap();
-        let (mut account, device, _, grant) = fixture().await;
-        account.id = store
-            .create_account(
-                &account.email,
-                &account.root_did,
-                &account.credential_id,
-                account.created_at,
-            )
-            .await
-            .unwrap();
-
-        register_device(
-            &store,
-            &account,
-            &device.device_did,
-            &device.name,
-            &hex::encode(grant.to_bytes().unwrap()),
-            device.created_at,
-        )
-        .await
-        .unwrap();
-
-        let listed = list_devices(&store, &account).await.unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].delegation_cid, device.delegation_cid);
-    }
-
     /// Browser sign-out is local-only, so signing back in with the same
     /// passkey presents the same account and device with a freshly minted
     /// grant while the first attachment is still active. That root-authorized

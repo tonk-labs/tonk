@@ -34,24 +34,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/account/summary", handlers::accounts::handle_options)
         .post_async("/account/delete", handlers::accounts::handle_delete)
         .options_async("/account/delete", handlers::accounts::handle_options)
-        .post_async(
-            "/account/repository/establish",
-            handlers::repository::handle,
-        )
-        .options_async(
-            "/account/repository/establish",
-            handlers::repository::handle_options,
-        )
-        .post_async("/devices/list", handlers::devices::handle_list)
-        .options_async("/devices/list", handlers::devices::handle_options)
-        .post_async("/devices/register", handlers::devices::handle_register)
-        .options_async("/devices/register", handlers::devices::handle_options)
         .post_async("/devices/link", handlers::devices::handle_link)
         .options_async("/devices/link", handlers::devices::handle_options)
-        .post_async("/devices/detach", handlers::devices::handle_detach)
-        .options_async("/devices/detach", handlers::devices::handle_options)
-        .post_async("/devices/revoke", handlers::devices::handle_revoke)
-        .options_async("/devices/revoke", handlers::devices::handle_options)
         .run(req, env)
         .await
 }

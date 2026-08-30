@@ -19,19 +19,13 @@ use hyper::header::{
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::net::TcpListener;
 
-use crate::auth::{
-    authorize, authorize_root, optional_passkey_metadata, optional_revocation, required_string,
-    string_argument,
-};
+use crate::auth::{authorize, authorize_root, optional_passkey_metadata, required_string};
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::deletion::delete_account;
-use crate::core::descriptor::establish_descriptor;
-use crate::core::devices::{
-    DeviceView, detach_device, link_device, list_devices, register_device, revoke_device,
-};
+use crate::core::devices::link_device;
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
@@ -132,14 +126,7 @@ async fn handle_request(
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
         (Method::POST, "/account/delete") => account_delete_route(req, &backends).await,
-        (Method::POST, "/account/repository/establish") => {
-            repository_establish_route(req, &backends).await
-        }
-        (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
-        (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
-        (Method::POST, "/devices/detach") => devices_detach_route(req, &backends).await,
-        (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
         _ => Err(ServiceError::new(
             ErrorCode::NotFound,
             "no such route".to_string(),
@@ -211,34 +198,6 @@ fn health_response() -> Response<Full<Bytes>> {
         .expect("static response is well-formed")
 }
 
-/// A device row as serialized to API callers, matching the worker
-/// handler's wire shape exactly.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DeviceJson {
-    attachment_id: String,
-    did: String,
-    name: String,
-    status: String,
-    delegation_cid: String,
-    delegation_hex: Option<String>,
-    created_at: u64,
-}
-
-impl From<DeviceView> for DeviceJson {
-    fn from(view: DeviceView) -> Self {
-        DeviceJson {
-            attachment_id: view.attachment_id,
-            did: view.did,
-            name: view.name,
-            status: view.status,
-            delegation_cid: view.delegation_cid,
-            delegation_hex: view.delegation_hex,
-            created_at: view.created_at,
-        }
-    }
-}
-
 /// `GET /_test/emails` → a non-draining snapshot of captured codes.
 fn emails_route(backends: &Backends) -> Result<Response<Full<Bytes>>, ServiceError> {
     let emails =
@@ -298,39 +257,6 @@ async fn accounts_route(
     ))
 }
 
-/// `POST /account/repository/establish` → establish one descriptor winner.
-async fn repository_establish_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize_root(&body, &["account", "repository", "establish"])
-        .await
-        .map_err(ceremony_error)?;
-    let account = backends
-        .store
-        .account_by_root(&caller.root_did)
-        .await
-        .map_err(|error| ceremony_error(error.into()))?
-        .ok_or_else(|| {
-            ceremony_error(crate::core::CeremonyError::Unauthorized(
-                "unknown account".to_string(),
-            ))
-        })?;
-    let candidate =
-        required_string(&caller.arguments, "repositoryDescriptor").map_err(ceremony_error)?;
-    let established = establish_descriptor(&backends.store, &account, &candidate)
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({
-            "descriptorHex": hex::encode(established.descriptor),
-            "created": established.created,
-        }),
-    ))
-}
-
 /// `POST /devices/link` → register a device from a root-key ceremony.
 async fn devices_link_route(
     req: Request<Incoming>,
@@ -381,116 +307,6 @@ async fn devices_link_route(
     ))
 }
 
-/// `POST /devices/list` → list the devices registered under an account.
-async fn devices_list_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "device", "list"])
-        .await
-        .map_err(ceremony_error)?;
-
-    let devices: Vec<DeviceJson> = list_devices(&backends.store, &caller.account)
-        .await
-        .map_err(ceremony_error)?
-        .into_iter()
-        .map(DeviceJson::from)
-        .collect();
-
-    Ok(json_response(StatusCode::OK, &devices))
-}
-
-/// `POST /devices/register` → register a new device under an account.
-async fn devices_register_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "device", "register"])
-        .await
-        .map_err(ceremony_error)?;
-
-    let device_did = string_argument(&caller, "did").map_err(ceremony_error)?;
-    let device_name = string_argument(&caller, "name").map_err(ceremony_error)?;
-    let delegation_hex = string_argument(&caller, "delegation").map_err(ceremony_error)?;
-
-    let attachment_id = register_device(
-        &backends.store,
-        &caller.account,
-        &device_did,
-        &device_name,
-        &delegation_hex,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({ "attachmentId": attachment_id }),
-    ))
-}
-
-/// `POST /devices/detach` → detach one exact signed generation.
-async fn devices_detach_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let intent: tonk_account::detach::SignedDetachIntent = parse_json(req).await?;
-    let outcome = detach_device(&backends.store, &intent)
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({ "outcome": outcome }),
-    ))
-}
-
-/// `POST /devices/revoke` → revoke a device under an account.
-async fn devices_revoke_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "device", "revoke"])
-        .await
-        .map_err(ceremony_error)?;
-
-    let attachment_id = string_argument(&caller, "attachmentId").map_err(ceremony_error)?;
-    let device_did = string_argument(&caller, "did").map_err(ceremony_error)?;
-    let revocation = optional_revocation(&caller)
-        .map_err(ceremony_error)?
-        .ok_or_else(|| {
-            ServiceError::new(
-                ErrorCode::InvalidArgument,
-                "a signed revocation artifact is required",
-            )
-        })?;
-    let outcome = revoke_device(
-        &backends.store,
-        &caller.account,
-        &caller.device.device_did,
-        &attachment_id,
-        &device_did,
-        &revocation,
-    )
-    .await
-    .map_err(ceremony_error)?;
-
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({
-            "attestation": outcome.attestation.as_str(),
-            "projection": outcome.projection.as_str(),
-            "targetDid": device_did,
-            "targetCid": outcome.target_cid,
-            "artifactCid": outcome.artifact_cid,
-            "published": true,
-        }),
-    ))
-}
-
 /// Current time as unix seconds.
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -511,19 +327,6 @@ async fn body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, ServiceError> {
                 format!("failed to read request body: {err}"),
             )
         })
-}
-
-/// Collect and parse a request's body as JSON.
-async fn parse_json<T: for<'de> Deserialize<'de>>(
-    req: Request<Incoming>,
-) -> Result<T, ServiceError> {
-    let bytes = body_bytes(req).await?;
-    serde_json::from_slice(&bytes).map_err(|err| {
-        ServiceError::new(
-            ErrorCode::InvalidArgument,
-            format!("failed to parse request body: {err}"),
-        )
-    })
 }
 
 /// Build a JSON response with the given status.

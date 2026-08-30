@@ -10,7 +10,6 @@ pub mod accounts;
 #[cfg(target_arch = "wasm32")]
 pub mod devices;
 #[cfg(target_arch = "wasm32")]
-pub mod repository;
 
 /// Add CORS headers permitting cross-origin requests to a response.
 #[cfg(target_arch = "wasm32")]
