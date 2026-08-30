@@ -36,8 +36,14 @@
 - [x] Add a focused regression test for callback device-list readiness.
 - [x] Make the E2E wait for both the signing browser and linked terminal rows.
 - [x] Run Rust formatting, the focused regression test, and diff checks.
-- [ ] Publish the follow-up commit and confirm the PR's E2E check with CI host routing.
+- [x] Publish the callback fix and prove the previously failing test on CI.
+- [x] Raise the stale E2E job timeout to cover its cold build and test runtime.
+- [ ] Confirm the complete E2E job with CI host routing.
 
 The direct local E2E reached the callback but could not complete because the
 native CLI resolved `tonk.network` publicly; CI supplies the required
 `127.0.0.1 tonk.network` mapping before running the same test harness.
+On the patched CI run, both the regression test and the previously failing
+callback test passed. The otherwise healthy suite was then cancelled at its
+45-minute job limit after a 20-minute cold build, so the limit now allows 60
+minutes while preserving a bound for actual hangs.
