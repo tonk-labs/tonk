@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_treats_an_unmounted_descriptor_record_as_unlinked() {
+    async fn it_treats_an_unmounted_attachment_as_unlinked() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
         // Persist the attachment record directly, without the mount that
         // link performs: the state a crash mid-link leaves behind. The

@@ -525,12 +525,11 @@ async fn create(
             .map_err(|error| format!("the account root was not recorded: {error}"))?;
     }
 
-    let response = post_ceremony(&creation.provider, &ceremony.account.invocation_hex).await?;
+    post_ceremony(&creation.provider, &ceremony.account.invocation_hex).await?;
 
-    // The link, from the descriptor the service selected: until it is
-    // written this profile has no account, and everything downstream —
-    // enrollment included — reports one as missing.
-    let _ = &response;
+    // The link: until it is written this profile has no account, and
+    // everything downstream — enrollment included — reports one as
+    // missing.
     link_account(
         state,
         &creation.provider,
@@ -543,18 +542,6 @@ async fn create(
     .await?;
 
     enroll(state, custodian, &account, Some(creation.email)).await
-}
-
-/// The exact descriptor the account service selected.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn descriptor_from(response: &[u8]) -> Result<String, String> {
-    let response: serde_json::Value = serde_json::from_slice(response)
-        .map_err(|error| format!("the account service answered unreadably: {error}"))?;
-    response
-        .get("descriptorHex")
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
-        .ok_or_else(|| "the account service omitted descriptorHex".to_string())
 }
 
 /// Record the account the service just accepted, so this profile has
