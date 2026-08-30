@@ -472,6 +472,8 @@
                   printf '%s\n' /nix/store/exact-wbg-pool/bin/wbg-pool > "$out/expected-runner"
                   diff -u "$out/expected-runner" "$out/actual-runner"
                 '';
+
+            wbg-pool-unit = wbg-pool.passthru.tests.unit;
           });
 
         devShells = with pkgs; {

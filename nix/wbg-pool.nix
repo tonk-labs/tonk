@@ -36,14 +36,27 @@ let
       pname = "wbg-pool-deps";
     }
   );
+
+  patches = [
+    ./patches/wbg-pool-live-daemon.patch
+    ./patches/wbg-pool-close-http-connections.patch
+    ./patches/wbg-pool-preserve-report-fetch.patch
+  ];
+
+  packageArgs = commonArgs // {
+    inherit cargoArtifacts patches;
+  };
+
+  unitTests = craneLib.cargoTest (
+    packageArgs
+    // {
+      pname = "wbg-pool-unit-tests";
+      doCheck = true;
+    }
+  );
 in
-craneLib.buildPackage (
-  commonArgs
-  // {
-    inherit cargoArtifacts;
-    patches = [
-      ./patches/wbg-pool-live-daemon.patch
-      ./patches/wbg-pool-preserve-report-fetch.patch
-    ];
-  }
-)
+(craneLib.buildPackage packageArgs).overrideAttrs (old: {
+  passthru = (old.passthru or { }) // {
+    tests.unit = unitTests;
+  };
+})

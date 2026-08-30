@@ -22,32 +22,44 @@ comparison was stopped rather than misreported as performance evidence.
 
 Focused compatibility evidence is green: 44 `tonk-ui` tests passed through
 the pooled command, and a broader 172-test `tonk-display` pass completed with
-zero retries and one daemon/browser lifetime. That pass exposed two upstream
-integration defects now covered by local patches: tests can replace
-`window.fetch` before the harness reports its result, and concurrent starts can
-replace a live daemon after a short health-probe miss. The patched runner
-preserves its report channel and waits for a recorded live daemon instead.
+zero retries and one daemon/browser lifetime. Those runs exposed three
+upstream integration defects now covered by local patches: tests can replace
+`window.fetch` before the harness reports its result, every shim can reject a
+live daemon after a short health-probe miss, and closed Chrome tabs retain
+HTTP/1 keep-alive connections to the daemon.
 
-A later complete pooled debug attempt stopped at 144 of 1,438 tests after
-three 60-second timeouts. The same four adjacent `tonk-analyzer` tests passed
-unchanged in 5.3 seconds pooled and 3.9 seconds stock. A 164-test pooled
-`tonk-analyzer` reproduction later lost daemon health after 123 passes while
-the host load average was above 44 and unrelated concurrent Rust builds were
-active. Live inspection found one daemon, the expected four active test tabs,
-and no retained tabs after the run. This remains a failed pilot result; a
-quiet-host reproduction is required before classifying it as runner
-degradation rather than host contention.
+The last defect was the repeatable cause of the apparent pooling failure, not
+host contention. Two unmodified 164-test `tonk-analyzer` reproductions failed
+after test 123 with `/api/run` connection resets. The daemon remained alive,
+Chrome retained no test tabs, but `lsof` showed 254 rows against macOS's
+256-descriptor soft limit, almost all established Chrome-to-daemon sockets.
+Adding `Connection: close` to every daemon response reduced the final
+descriptor-only run's post-run count to 18 rows. The same archive then passed
+all 164 tests in 51.479 seconds with four threads, zero retries, one
+daemon/browser lifetime, and only the expected blank/internal Chrome targets.
+Nextest marked the daemon-starting test leaky because captured output took
+longer than its 200 ms grace to close under load; it did not change the zero
+exit status, and the exact test passed cleanly in 1.951 seconds from another
+fresh daemon. A red/green unit regression covers the connection lifecycle fix;
+the flake check now runs all seven `wbg-pool` unit tests.
+
+A complete pooled debug attempt still stopped at 144 of 1,438 tests after
+three 60-second timeouts while unrelated builds heavily loaded the host. The
+same adjacent `tonk-analyzer` tests pass in the focused green run above. The
+full debug/release parity and performance benchmark remains required before
+changing the default runner.
 
 Tasks 3 and 4 are intentionally not started. They remain conditional on a
 complete passing parity and performance result for both profiles.
 
-Fresh final checks passed for the benchmark's seven CLI regressions, including
-complete terminal-event coverage and descendant process-group cleanup,
-`cargo fmt --all -- --check`, focused Nix formatting, `git diff --check`, the
-complete `nix flake check` build on `aarch64-darwin`, the single-binary package
-contract, and `wbg-pool 0.1.0` in the CI shell. The full flake check built and
-passed nixfmt, shared-workspace-dependency, clippy, menu-command argument, and
-Rust formatting checks after disk headroom recovered.
+Fresh checks after the lifecycle fixes passed the benchmark's seven CLI
+regressions, all seven patched-runner unit tests, `cargo fmt --all -- --check`,
+focused Nix formatting, `git diff --check`, and the complete
+`nix flake check --accept-flake-config path:.` on `aarch64-darwin`. The final
+package contains only `bin/wbg-pool`, reports `wbg-pool 0.1.0`, and resolves to
+that version from the CI shell. The 164-test browser run and descriptor count
+are recorded above; the isolated daemon was stopped through its supported
+command afterward.
 
 **Constraints:**
 
@@ -79,7 +91,12 @@ Rust formatting checks after disk headroom recovered.
   it to dev/CI shells, and expose pooled and stock test commands.
 - `flake.lock`: record the non-flake dialog-db source revision.
 - `nix/wbg-pool.nix`: reproducibly build only the upstream `wbg-pool` package
-  with Tonk's Rust toolchain.
+  with Tonk's Rust toolchain and expose its patched unit-test derivation.
+- `nix/patches/wbg-pool-live-daemon.patch`: wait for a recorded live daemon
+  after a health miss instead of replacing its browser.
+- `nix/patches/wbg-pool-close-http-connections.patch`: prevent closed Chrome
+  tabs from exhausting the daemon's descriptor limit with retained keep-alive
+  sockets.
 - `nix/menu.nix`: allow a web-test command to select an explicit Cargo target
   runner without duplicating archive execution logic.
 - `.config/nextest.toml`: remove the Wasm-wide retry that exists specifically
@@ -120,9 +137,10 @@ Rust formatting checks after disk headroom recovered.
       HTML files under `rust/wbg-pool/src` because the Rust sources load them
       through `include_str!`.
 - [x] Build dependencies and the final binary as separate Crane derivations so
-      Cachix can substitute the dependency layer. Set `doCheck = false` on the
-      package: browser compatibility is proved by Tonk's test archives in Task
-      2, not by pretending the upstream binary has a hermetic Nix unit test.
+      Cachix can substitute the dependency layer. Keep `doCheck = false` on the
+      installable package and expose a separate `passthru.tests.unit`
+      derivation so flake checks cover Tonk's local runner patches without
+      coupling test artifacts to the package output.
 - [x] Add the resulting package to `devShellBuildInputs` and expose it as
       `packages.wbg-pool`. Do not add it to `commonBuildInputs`.
 - [x] Set `WBG_POOL_FALLBACK_RUNNER` to
