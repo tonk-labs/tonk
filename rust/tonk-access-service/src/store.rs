@@ -241,6 +241,17 @@ pub trait Store {
     /// consumers are already deleted. Returns whether the customer was removed.
     async fn delete_customer(&self, did: &str) -> Result<bool, StoreError>;
 
+    /// Claim the right to send this customer's activation link again,
+    /// recording the moment. Answers false when the customer is not
+    /// `Registered` or the last send was too recent — the caller sends
+    /// only when this says yes, so the limit cannot be raced.
+    async fn claim_activation_resend(
+        &self,
+        account: &str,
+        now: u64,
+        not_since: u64,
+    ) -> Result<bool, StoreError>;
+
     /// Promote a `Registered` customer to `Active`, recording the
     /// activation time, terms acceptance, and cycle anchor. Returns false
     /// when no `Registered` row matched, which the caller disambiguates
@@ -323,6 +334,21 @@ INSERT INTO subscription (consumer, provider, registered_at, expires_at)
 VALUES (?1, ?1, ?2, ?3)
 ON CONFLICT (consumer) DO UPDATE SET expires_at = excluded.expires_at
  WHERE subscription.deleted_at IS NULL
+"#;
+
+/// Record that the activation link was sent, but only if enough time
+/// has passed since the last one.
+///
+/// The rate limit is the write: no row changes when it is too soon, so
+/// the caller learns whether to send by whether this took. Doing it as
+/// one statement means two requests arriving together cannot both
+/// decide they are first.
+pub const RECORD_ACTIVATION_SENT: &str = r#"
+UPDATE customer
+   SET activation_sent_at = ?2
+ WHERE account = ?1
+   AND status = 'Registered'
+   AND (activation_sent_at IS NULL OR activation_sent_at <= ?3)
 "#;
 
 /// Lift the expiry from everything a customer provides, which is what

@@ -360,6 +360,28 @@ async fn enroll_container_parts(
         .expect("container encodes")
 }
 
+/// A `/customer/resend`, self-issued by the service. The account is an
+/// argument because nobody waiting for the mail can sign as it.
+async fn resend_container(service: &Ed25519Signer, account: &Did) -> Vec<u8> {
+    let invocation = InvocationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(service.clone()))
+        .audience(&service.did())
+        .subject(&service.did())
+        .command(vec!["customer".to_string(), "resend".to_string()])
+        .arguments(BTreeMap::from([(
+            "account".to_string(),
+            Promised::String(account.to_string()),
+        )]))
+        .proofs(vec![])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .expect("resend invocation");
+    InvocationChain::new(invocation, std::collections::HashMap::new())
+        .to_bytes()
+        .expect("container encodes")
+}
+
 /// Build an enroll container with explicit deposits, optionally leaving
 /// their bytes out of the container.
 /// An enrollment with the given deposits, carrying valid custody
@@ -1408,6 +1430,7 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
 mod custody {
     use super::*;
     use tonk_access_service::provisioning::screen;
+    use tonk_account::customer::RESEND_INTERVAL_SECONDS;
 
     async fn enroll(custody: Custody) -> Result<Answer, RegistrationError> {
         let fixture = Fixture::new().await;
@@ -1542,6 +1565,96 @@ mod custody {
                 .is_ok(),
             "and the same moment that would have expired it now serves"
         );
+        Ok(())
+    }
+
+    /// Resending is what a person does when the mail never arrived, so
+    /// it sends again — and refuses to send twice in a row, because the
+    /// button is right there and they will press it.
+    #[dialog_common::test]
+    async fn it_sends_the_activation_link_again_but_not_twice() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let container = enroll_container_with_custody(
+            &customer,
+            &fixture.service.did(),
+            "alice@example.com",
+            &Custody::default(),
+        )
+        .await;
+        fixture.registration(&container).handle().await.unwrap();
+        assert_eq!(
+            fixture.emails.0.lock().expect("email mutex").len(),
+            1,
+            "enrolling sends the first"
+        );
+
+        let resend = resend_container(&fixture.service, &customer.did()).await;
+        fixture
+            .registration(&resend)
+            .handle()
+            .await
+            .expect("resending is accepted");
+        assert_eq!(
+            fixture.emails.0.lock().expect("email mutex").len(),
+            1,
+            "the enrollment just sent one, so this is too soon"
+        );
+
+        // Past the interval it sends, and to the address on the row
+        // rather than anything the caller supplied.
+        let later = Registration {
+            now: unix_now() + RESEND_INTERVAL_SECONDS + 1,
+            ..fixture.registration(&resend)
+        };
+        later.handle().await.expect("resending is accepted");
+        let sent = fixture.emails.0.lock().expect("email mutex").clone();
+        assert_eq!(sent.len(), 2, "past the interval it sends again");
+        assert_eq!(sent[1].0, "alice@example.com");
+        Ok(())
+    }
+
+    /// An activated customer is never mailed: the link would do nothing,
+    /// and mailing on demand for any account anyone names is a nuisance
+    /// worth closing off.
+    #[dialog_common::test]
+    async fn it_does_not_resend_to_an_active_customer() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        fixture
+            .enroll_and_activate(&customer, "alice@example.com")
+            .await;
+        let before = fixture.emails.0.lock().expect("email mutex").len();
+
+        let resend = resend_container(&fixture.service, &customer.did()).await;
+        let later = Registration {
+            now: unix_now() + RESEND_INTERVAL_SECONDS + 1,
+            ..fixture.registration(&resend)
+        };
+        later.handle().await.expect("resending is accepted");
+        assert_eq!(
+            fixture.emails.0.lock().expect("email mutex").len(),
+            before,
+            "an active customer gets no activation mail"
+        );
+        Ok(())
+    }
+
+    /// An account nobody enrolled is answered the same way as one that
+    /// asked too soon: silently. Refusing would tell a caller which
+    /// addresses have accounts.
+    #[dialog_common::test]
+    async fn it_says_nothing_about_an_account_it_does_not_have() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let stranger = Ed25519Signer::generate().await?;
+        let resend = resend_container(&fixture.service, &stranger.did()).await;
+
+        fixture
+            .registration(&resend)
+            .handle()
+            .await
+            .expect("resending an unknown account is not an error");
+        assert!(fixture.emails.0.lock().expect("email mutex").is_empty());
         Ok(())
     }
 

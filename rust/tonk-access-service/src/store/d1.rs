@@ -15,8 +15,8 @@ use worker::wasm_bindgen::JsValue;
 use crate::store::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
     DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
-    INSERT_SELF_SUBSCRIPTION, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER,
-    SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
+    INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION,
+    SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
     SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
     SUSPEND_SUBSCRIPTION, Servability, Store, StoreError, Subscription, SubscriptionKind,
     Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
@@ -394,6 +394,27 @@ impl Store for D1Store {
             .await
             .map_err(map_err)?;
         Ok(results.last().map(changed_rows).unwrap_or_default() == 1)
+    }
+
+    async fn claim_activation_resend(
+        &self,
+        account: &str,
+        now: u64,
+        not_since: u64,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(RECORD_ACTIVATION_SENT)
+            .bind(&[
+                JsValue::from(account),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(not_since as f64),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
     }
 
     async fn activate_customer(

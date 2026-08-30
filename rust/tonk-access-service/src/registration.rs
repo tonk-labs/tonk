@@ -41,6 +41,7 @@ use tonk_account::customer::{
     Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Ledger,
     Provider as ProviderRole, Receipt, RegistrationError, deposit_scopes,
 };
+use tonk_account::customer::{RESEND_INTERVAL_SECONDS, Resend as ResendActivation};
 use tonk_account::subscription::{
     Archive as ArchiveSubscription, Resume as ResumeSubscription, Suspend as SuspendSubscription,
 };
@@ -57,6 +58,9 @@ pub const ENROLL_COMMAND: [&str; 2] = ["customer", "enroll"];
 
 /// The command path segments of [`Activate`].
 pub const ACTIVATE_COMMAND: [&str; 2] = ["customer", "activate"];
+
+/// The command that sends an activation link again.
+pub const RESEND_COMMAND: [&str; 2] = ["customer", "resend"];
 
 /// The command path segments of [`Add`].
 pub const PROVIDER_ADD_COMMAND: [&str; 2] = ["provider", "add"];
@@ -141,6 +145,8 @@ pub enum RegistrationCommand {
     Resume,
     /// `/use/put/subscription/archive`
     Archive,
+    /// `/customer/resend`
+    Resend,
 }
 
 /// Peek at a container's invocation command without verifying anything.
@@ -158,6 +164,7 @@ pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationComman
         segments if segments == SUSPEND_COMMAND => Some(RegistrationCommand::Suspend),
         segments if segments == RESUME_COMMAND => Some(RegistrationCommand::Resume),
         segments if segments == ARCHIVE_COMMAND => Some(RegistrationCommand::Archive),
+        segments if segments == RESEND_COMMAND => Some(RegistrationCommand::Resend),
         _ => None,
     }
 }
@@ -310,10 +317,60 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     .map_err(internal)?;
                 Ok(Answer::Done)
             }
+            // Resend names the account as an argument rather than the
+            // subject: whoever is waiting for the mail cannot sign as
+            // the account they have not activated yet. Safe because the
+            // link only ever goes to the address already on the row.
+            Some(RegistrationCommand::Resend) => {
+                let chain = self.service_command(&RESEND_COMMAND).await?;
+                let effect: ResendActivation = deserialize_arguments(chain.arguments())?;
+                self.resend(&effect.account).await?;
+                Ok(Answer::Done)
+            }
             None => Err(RegistrationError::Invalid {
                 message: "not a registration invocation".to_string(),
             }),
         }
+    }
+
+    /// Send a customer's activation link again.
+    ///
+    /// Two guards, neither of them about authorization. The customer
+    /// must be `Registered`, so an active account cannot be mailed at
+    /// all; and the last send must be at least
+    /// [`RESEND_INTERVAL_SECONDS`] ago, so pressing the button twice
+    /// sends one mail. The store decides both in one statement, and
+    /// answers whether this caller won — two requests arriving together
+    /// cannot both conclude they were first.
+    ///
+    /// Refusing tells a caller whether an account exists, which is why
+    /// it does not: too soon and unknown answer alike, and the person
+    /// who is genuinely waiting sees the mail rather than a message.
+    async fn resend(&self, account: &Did) -> Result<(), RegistrationError> {
+        let not_since = self.now.saturating_sub(RESEND_INTERVAL_SECONDS);
+        if !self
+            .store
+            .claim_activation_resend(account.as_str(), self.now, not_since)
+            .await
+            .map_err(internal)?
+        {
+            return Ok(());
+        }
+        let Some(customer) = self
+            .store
+            .customer(account.as_str())
+            .await
+            .map_err(internal)?
+        else {
+            return Ok(());
+        };
+        let link = self.activation_link(account).await?;
+        self.email
+            .send_activation(&customer.email, &link)
+            .await
+            .map_err(|err| RegistrationError::Internal {
+                message: format!("activation email failed: {err:?}"),
+            })
     }
 
     /// Verify a command the service issues about itself.
@@ -365,7 +422,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         self.verify_deposits(&effect.access, &customer).await?;
         let material = self.verify_custody(&effect, &customer).await?;
         let space = self.ledger(&customer).await?;
-        let link = self.activation_link(&customer, &material).await?;
+        let link = self.activation_link(&customer).await?;
         // The cell goes in before the customer row. Nothing serves it
         // yet — the customer is `Registered`, and the gate refuses
         // everything behind a provider in that state — so this writes
@@ -414,6 +471,13 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             },
         }
 
+        // Recorded as a send like any other, so resending is rate
+        // limited against this one rather than treating enrollment as
+        // if no mail had gone out.
+        self.store
+            .claim_activation_resend(customer.as_str(), self.now, self.now)
+            .await
+            .map_err(internal)?;
         self.email
             .send_activation(&address, &link)
             .await
@@ -811,11 +875,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
     /// invocation is complete and service-signed: the accept button
     /// presents it as-is, so activation needs no key on the presenting
     /// device and a click on any device finalizes.
-    pub async fn activation_link(
-        &self,
-        customer: &Did,
-        material: &CustodyMaterial,
-    ) -> Result<String, RegistrationError> {
+    pub async fn activation_link(&self, customer: &Did) -> Result<String, RegistrationError> {
         let expiration = timestamp(self.now + self.activation_ttl)?;
         let service = self.service.did();
         let invocation = InvocationBuilder::new()
@@ -842,26 +902,10 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .map_err(|err| RegistrationError::Internal {
                 message: format!("encoding activation failed: {err}"),
             })?;
-        // Exactly the blocks enrollment verified, and nothing else the
-        // enrolling container happened to carry: the link is the
-        // tightest budget in this flow, and unnamed material riding
-        // along is weight nobody checked.
-        let mut tokens = Container::from_bytes(&bytes)
-            .map_err(|err| RegistrationError::Internal {
-                message: format!("reopening the activation container failed: {err}"),
-            })?
-            .into_tokens();
-        tokens.extend([
-            material.recovery.clone(),
-            material.consent.clone(),
-            material.sealed.clone(),
-        ]);
-        let bytes =
-            Container::new(tokens)
-                .to_bytes()
-                .map_err(|err| RegistrationError::Internal {
-                    message: format!("encoding the activation container failed: {err}"),
-                })?;
+        // The invocation alone. It used to carry the custody blocks,
+        // because activation performed the cell write; enrollment does
+        // that now, so the link needs nothing but the customer it names
+        // — which is the whole reason resending one is cheap.
         let link = format!(
             "{}/activate?ucan={}",
             self.origin.trim_end_matches('/'),
