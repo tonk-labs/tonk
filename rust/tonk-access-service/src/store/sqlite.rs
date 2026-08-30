@@ -120,6 +120,13 @@ impl SqliteStore {
             .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 6)
                 .map_err(map_err)?;
+            version = 6;
+        }
+        if version < 7 {
+            conn.execute_batch(include_str!("../../migrations/0007_activation_resend.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 7)
+                .map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
     }

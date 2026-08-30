@@ -242,6 +242,35 @@ impl Effect for Provision {
     type Output = ();
 }
 
+/// `/customer/resend` — send the activation link again.
+///
+/// Self-issued on the service's own subject, and the account is an
+/// argument rather than the subject: nobody presenting this holds the
+/// account's key, which is the whole point — the person waiting for the
+/// email cannot sign as the account they have not activated yet.
+///
+/// That makes it unauthenticated in effect, which is fine because the
+/// mail only ever goes to the address already on the customer row. A
+/// caller who names someone else's account causes mail to an inbox they
+/// do not control. Two guards keep that from being a nuisance: it works
+/// only while the customer is `Registered`, and no more often than
+/// [`RESEND_INTERVAL_SECONDS`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Attenuate)]
+pub struct Resend {
+    /// The account whose activation link to send again.
+    pub account: Did,
+}
+
+impl Effect for Resend {
+    type Of = Customer;
+    type Output = ();
+}
+
+/// How often one customer's activation link may be resent. Short,
+/// because the person is watching an inbox and will press the button
+/// again; long enough that pressing it repeatedly sends one mail.
+pub const RESEND_INTERVAL_SECONDS: u64 = 60;
+
 /// The successful answer to a `/provider/add` invocation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConsumerReceipt {

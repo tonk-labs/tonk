@@ -37,6 +37,7 @@ erDiagram
         TEXT status "enum: Registered | Active | Suspended"
         TEXT plan FK "plan.id, not a DID"
         INTEGER verified_at "activation time, 0 while Registered"
+        INTEGER activation_sent_at "when the link was last emailed; rate-limits resends"
         TEXT terms_version
         INTEGER terms_accepted_at
         INTEGER credit_limit "override, null uses the plan"
