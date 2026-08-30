@@ -2552,6 +2552,16 @@ tonk-code:focus-within {
 /* The switcher. The heading IS the control: an empty document showing
    `# `, with the suggestion list under it. No field, no button — what you
    type is the title, and the list says what pressing Enter will do. */
+/* The rows are DATA, not a list.
+   `<tonk-display model=tonk:notebook>` renders one link per notebook inside
+   the switcher; those links are what the suggestions are built from, and
+   what the page falls back to if the script never loads. Once the switcher
+   is running they must not also render as a list above the input, which is
+   the "why am I looking at Scratch" of it. */
+tonk-notebook-index:has(.notebook-switcher__input) .notebook-index__item {
+  display: none;
+}
+
 .notebook-switcher__input {
   display: block;
   margin: 0 0 var(--wa-space-s, 0.75rem);

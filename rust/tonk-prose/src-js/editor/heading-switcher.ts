@@ -19,7 +19,7 @@ import autocomplete, {
   openAutocomplete,
   type AutocompleteAction,
 } from "prosemirror-autocomplete";
-import { Plugin } from "prosemirror-state";
+import { Plugin, TextSelection } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import { schema } from "./schema";
 import { fuzzy } from "./fuzzy";
@@ -113,6 +113,33 @@ function inLeadingHeading(view: EditorView): boolean {
   return $head.before($head.depth) === 0;
 }
 
+/** The heading's TITLE: its text without the `# ` marker.
+ *
+ *  Markers are materialized as literal text carrying the `markup` mark
+ *  (markup.ts), so `textContent` on a heading node is `"# Title"`, not
+ *  `"Title"`. Filtering on the raw text searches for notebooks whose names
+ *  contain a hash and a space, which is nothing — the whole list would
+ *  silently stay empty. */
+export function headingTitle(node: {
+  descendants: (f: (n: MarkedNode) => boolean) => void;
+}): string {
+  let out = "";
+  node.descendants((child) => {
+    if (child.isText && !child.marks?.some((m) => m.type.name === "markup")) {
+      out += child.text ?? "";
+    }
+    return true;
+  });
+  return out;
+}
+
+/** The parts of a text node this module reads. */
+type MarkedNode = {
+  isText?: boolean;
+  text?: string | null;
+  marks?: readonly { type: { name: string } }[];
+};
+
 /** The plugins implementing the switcher. */
 export function headingSwitcher(options: SwitcherOptions): Plugin[] {
   let active = 0;
@@ -175,7 +202,7 @@ export function headingSwitcher(options: SwitcherOptions): Plugin[] {
           previous.selection.$head.parent.type === schema.nodes.heading &&
           previous.selection.$head.before(previous.selection.$head.depth) === 0;
         if (now && !before) {
-          openAutocomplete(view, "", view.state.selection.$head.parent.textContent);
+          openAutocomplete(view, "", headingTitle(view.state.selection.$head.parent));
         } else if (!now && before) {
           closeAutocomplete(view);
         }
@@ -183,5 +210,27 @@ export function headingSwitcher(options: SwitcherOptions): Plugin[] {
     }),
   });
 
-  return [...autocomplete({ reducer, triggers: [] }), caret];
+  // Park the caret AFTER the `# ` marker on mount.
+  //
+  // The marker is literal text inside the heading, so the default position
+  // 0 puts the caret before it: you type into `|# ` and get `x# `, which is
+  // not a heading at all. This moves it past the marker once, when the
+  // document is the untouched starting one.
+  const park = new Plugin({
+    view: (view) => {
+      const { doc } = view.state;
+      const first = doc.firstChild;
+      if (first && first.type === schema.nodes.heading) {
+        const end = 1 + first.content.size;
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.create(doc, Math.min(end, doc.content.size)),
+          ),
+        );
+      }
+      return {};
+    },
+  });
+
+  return [...autocomplete({ reducer, triggers: [] }), caret, park];
 }
