@@ -319,7 +319,7 @@ async fn login(
         tonk.profile.signer().signer().clone()
     };
     let ceremony =
-        tonk_identity::ceremony::link_device(root, device.did(), link.device_name.clone())
+        tonk_identity::ceremony::link_device(root.clone(), device.did(), link.device_name.clone())
             .await
             .map_err(|error| format!("the device link did not sign: {error:#}"))?;
 
@@ -339,23 +339,28 @@ async fn login(
             .map_err(|error| format!("the account root was not recorded: {error}"))?;
     }
 
-    let response =
-        post_ceremony_at(&link.provider, "/devices/link", &ceremony.invocation_hex).await?;
+    // No request: the roster is DeviceLink facts on the account's own
+    // branch, and the sweep describes this device's row from the root
+    // that was just persisted. Posting the same link to a service was
+    // keeping a second copy of a list that already syncs.
+    //
+    // The descriptor is signed here rather than fetched: this device
+    // holds the account root, so it can name the remote the account
+    // syncs with — which is the address the DID document resolved, not
+    // whatever a service once froze.
+    let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(&root, &link.endpoint)
+        .await
+        .map_err(|error| format!("the account descriptor did not sign: {error}"))?;
     link_account(
         state,
         &link.provider,
-        &account
-            .signer()
-            .await
-            .map_err(|error| format!("{error:#}"))?
-            .did()
-            .to_string(),
+        &root.did().to_string(),
         &custodian
             .credential_id()
             .map(hex::encode)
             .unwrap_or_default(),
         &ceremony.delegation_hex,
-        &response,
+        &hex::encode(descriptor.bytes()),
         false,
     )
     .await?;
@@ -532,18 +537,31 @@ async fn create(
     // The link, from the descriptor the service selected: until it is
     // written this profile has no account, and everything downstream —
     // enrollment included — reports one as missing.
+    let descriptor_hex = descriptor_from(&response)?;
     link_account(
         state,
         &creation.provider,
         &ceremony.root.root_did,
         &ceremony.root.credential_id,
         &ceremony.root.delegation_hex,
-        &response,
+        &descriptor_hex,
         true,
     )
     .await?;
 
     enroll(state, custodian, &account, Some(creation.email)).await
+}
+
+/// The exact descriptor the account service selected.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn descriptor_from(response: &[u8]) -> Result<String, String> {
+    let response: serde_json::Value = serde_json::from_slice(response)
+        .map_err(|error| format!("the account service answered unreadably: {error}"))?;
+    response
+        .get("descriptorHex")
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| "the account service omitted descriptorHex".to_string())
 }
 
 /// Record the account the service just accepted, so this profile has
@@ -556,17 +574,10 @@ async fn link_account(
     root_did: &str,
     credential_id: &str,
     delegation_hex: &str,
-    response: &[u8],
+    descriptor_hex: &str,
     initialize_name: bool,
 ) -> Result<(), String> {
-    let response: serde_json::Value = serde_json::from_slice(response)
-        .map_err(|error| format!("the account service answered unreadably: {error}"))?;
-    let descriptor_hex = response
-        .get("descriptorHex")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "the account service omitted descriptorHex".to_string())?
-        .to_string();
-
+    let descriptor_hex = descriptor_hex.to_string();
     let request = tonk_worker_api::AccountLinkRequest {
         provider: provider.to_string(),
         root_did: root_did.to_string(),

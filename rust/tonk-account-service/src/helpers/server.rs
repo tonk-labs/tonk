@@ -24,7 +24,6 @@ use tokio::net::TcpListener;
 
 use crate::auth::{authorize_root, optional_passkey_metadata, required_string};
 use crate::core::accounts::{CreateAccount, create_account};
-use crate::core::devices::link_device;
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
@@ -123,7 +122,6 @@ async fn handle_request(
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
-        (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         _ => Err(ServiceError::new(
             ErrorCode::NotFound,
             "no such route".to_string(),
@@ -210,56 +208,6 @@ async fn accounts_route(
         StatusCode::CREATED,
         &serde_json::json!({
             "accountId": account_id,
-            "descriptorHex": descriptor_hex,
-        }),
-    ))
-}
-
-/// `POST /devices/link` → register a device from a root-key ceremony.
-async fn devices_link_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize_root(&body, &["account", "device", "link"])
-        .await
-        .map_err(ceremony_error)?;
-    let account = backends
-        .store
-        .account_by_root(&caller.root_did)
-        .await
-        .map_err(|err| ceremony_error(err.into()))?
-        .ok_or_else(|| {
-            ceremony_error(crate::core::CeremonyError::Unauthorized(
-                "unknown account".to_string(),
-            ))
-        })?;
-    let device_did = required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?;
-    let device_name = required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?;
-    let delegation_hex =
-        required_string(&caller.arguments, "delegation").map_err(ceremony_error)?;
-    let descriptor = account.repository_descriptor.as_ref().ok_or_else(|| {
-        ceremony_error(crate::core::CeremonyError::Conflict(
-            tonk_account::UNESTABLISHED_ACCOUNT_CONFLICT.to_string(),
-        ))
-    })?;
-    let descriptor_hex = hex::encode(descriptor);
-
-    let attachment_id = link_device(
-        &backends.store,
-        &account,
-        &device_did,
-        &device_name,
-        &delegation_hex,
-        unix_now(),
-    )
-    .await
-    .map_err(ceremony_error)?;
-
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({
-            "attachmentId": attachment_id,
             "descriptorHex": descriptor_hex,
         }),
     ))

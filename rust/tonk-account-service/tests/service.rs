@@ -185,19 +185,4 @@ async fn it_drives_the_full_ceremony_over_http() {
     let created: serde_json::Value = response.json().await.unwrap();
     assert!(created["accountId"].is_i64());
     assert_eq!(created["descriptorHex"], expected_descriptor);
-
-    // POST /devices/link -> a second browser attaches to the same
-    // account, and gets its own grant rather than the first one's.
-    let second = Ed25519Signer::generate().await.unwrap();
-    let relink = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
-        .await
-        .unwrap();
-    assert_ne!(relink.delegation_hex, ceremony.delegation_hex);
-    let response = client
-        .post(format!("{base}/devices/link"))
-        .body(hex::decode(relink.invocation_hex).unwrap())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
 }
