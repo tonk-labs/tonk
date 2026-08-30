@@ -124,7 +124,6 @@ async fn handle_request(
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
-        (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
         (Method::POST, "/account/delete") => account_delete_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         _ => Err(ServiceError::new(
@@ -154,28 +153,6 @@ async fn account_delete_route(
         .await
         .map_err(ceremony_error)?;
     Ok(json_response(StatusCode::OK, &receipt))
-}
-
-/// `POST /account/summary` → verified account facts for an active device.
-async fn account_summary_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "summary"])
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({
-            "email": caller.account.email,
-            "passkey": caller.account.passkey_created_at.zip(caller.account.passkey_created_on)
-                .map(|(created_at, created_on)| serde_json::json!({
-                    "createdAt": created_at,
-                    "createdOn": created_on,
-                })),
-        }),
-    ))
 }
 
 /// `GET /` → service info. Not CORS-wrapped, matching the worker.

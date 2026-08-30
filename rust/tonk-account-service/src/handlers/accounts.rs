@@ -47,36 +47,6 @@ async fn handle_delete_inner(
     })
 }
 
-/// `POST /account/summary` → verified email and passkey creation facts.
-pub async fn handle_summary(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let response = match handle_summary_inner(&mut req, &ctx).await {
-        Ok(response) => response,
-        Err(err) => err.to_response()?,
-    };
-    Ok(with_cors_headers(response))
-}
-
-async fn handle_summary_inner(
-    req: &mut Request,
-    ctx: &RouteContext<()>,
-) -> std::result::Result<Response, ServiceError> {
-    let store = build_store(ctx)?;
-    let body = read_body(req).await?;
-    let caller = authorize(&store, &body, &["account", "summary"])
-        .await
-        .map_err(ceremony_error)?;
-
-    Response::from_json(&serde_json::json!({
-        "email": caller.account.email,
-        "passkey": caller.account.passkey_created_at.zip(caller.account.passkey_created_on)
-            .map(|(created_at, created_on)| serde_json::json!({
-                "createdAt": created_at,
-                "createdOn": created_on,
-            })),
-    }))
-    .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
-}
-
 /// `POST /accounts` → create a new account.
 pub async fn handle(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match handle_inner(&mut req, &ctx).await {

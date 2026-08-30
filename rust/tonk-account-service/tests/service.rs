@@ -185,10 +185,9 @@ async fn it_rejects_an_expired_invocation() {
     let server = AccountServer::start().await;
     let expiration =
         Timestamp::new(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
-    let body =
-        container_with_expiration(vec!["account".into(), "summary".into()], expiration).await;
+    let body = container_with_expiration(vec!["account".into(), "delete".into()], expiration).await;
     let response = reqwest::Client::new()
-        .post(format!("{}/account/summary", server.endpoint))
+        .post(format!("{}/account/delete", server.endpoint))
         .body(body)
         .send()
         .await
@@ -212,10 +211,9 @@ async fn it_rejects_an_expired_invocation() {
 async fn it_rejects_an_over_long_expiration_window() {
     let server = AccountServer::start().await;
     let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(10 * 60)).unwrap();
-    let body =
-        container_with_expiration(vec!["account".into(), "summary".into()], expiration).await;
+    let body = container_with_expiration(vec!["account".into(), "delete".into()], expiration).await;
     let response = reqwest::Client::new()
-        .post(format!("{}/account/summary", server.endpoint))
+        .post(format!("{}/account/delete", server.endpoint))
         .body(body)
         .send()
         .await
@@ -356,28 +354,6 @@ async fn it_drives_the_full_ceremony_over_http() {
     let created: serde_json::Value = response.json().await.unwrap();
     assert!(created["accountId"].is_i64());
     assert_eq!(created["descriptorHex"], expected_descriptor);
-
-    // The account summary reveals verified account facts only to an active
-    // device. Passkey facts are the values witnessed at credential creation,
-    // not inferred from this account or device registration time.
-    let body = container_with_link(
-        &device,
-        &first_grant,
-        vec!["account".into(), "summary".into()],
-        BTreeMap::new(),
-    )
-    .await;
-    let response = client
-        .post(format!("{base}/account/summary"))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let summary: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(summary["email"], "person@example.com");
-    assert_eq!(summary["passkey"]["createdAt"], 1_754_380_800_u64);
-    assert_eq!(summary["passkey"]["createdOn"], "Chrome on macOS");
 
     // POST /devices/link -> a second browser attaches to the same
     // account, and gets its own grant rather than the first one's.
