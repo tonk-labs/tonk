@@ -61,6 +61,19 @@ fn shell_cache() -> String {
 /// shim handles those directly so navigation TTFB doesn't wait
 /// on the Rust worker boot.
 pub fn is_cacheable(request: &Request, path: &str) -> bool {
+    let Some(origin) = worker_origin() else {
+        return false;
+    };
+    is_cacheable_on_origin(request, path, &origin)
+}
+
+/// Apply the shell-cache policy relative to a trusted app origin.
+///
+/// Reading the origin from the ambient service-worker global stays in
+/// [`is_cacheable`]. Keeping the policy itself independent of that global lets
+/// the browser test harness exercise the production decisions even when the
+/// harness runs in a `Window`.
+fn is_cacheable_on_origin(request: &Request, path: &str, origin: &str) -> bool {
     if request.method() != "GET" {
         return false;
     }
@@ -68,7 +81,7 @@ pub fn is_cacheable(request: &Request, path: &str) -> bool {
     // which this mirrors. Excluding opaque responses isn't enough: a
     // CORS-enabled cross-origin GET succeeds normally and would be
     // stored in the app's own shell cache.
-    if !is_same_origin(&request.url()) {
+    if !is_same_origin(origin, &request.url()) {
         return false;
     }
     if request.mode() == web_sys::RequestMode::Navigate {
@@ -148,7 +161,20 @@ pub async fn purge_old_caches() -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Whether `url` is on this worker's own origin.
+/// The service worker's own origin, or `None` outside a worker scope.
+///
+/// Cache eligibility fails closed when there is no service-worker global or
+/// the worker reports no origin: caching foreign bytes is worse than a network
+/// fetch.
+fn worker_origin() -> Option<String> {
+    js_sys::global()
+        .dyn_into::<ServiceWorkerGlobalScope>()
+        .ok()
+        .map(|global| global.location().origin())
+        .filter(|origin| !origin.is_empty())
+}
+
+/// Whether `url` is on `origin`.
 ///
 /// A request URL is always absolute and already normalized by the
 /// browser, so an origin prefix test is exact here: the character
@@ -156,18 +182,14 @@ pub async fn purge_old_caches() -> Result<(), JsValue> {
 /// appear inside an origin — so `https://evil.test/` cannot match a
 /// base of `https://tonk.network`.
 ///
-/// Anything we can't confirm is treated as foreign: refusing to cache
-/// it costs a network fetch, whereas caching it wrongly puts another
-/// origin's bytes behind our own paths.
-fn is_same_origin(url: &str) -> bool {
-    let Ok(global) = js_sys::global().dyn_into::<ServiceWorkerGlobalScope>() else {
-        return false;
-    };
-    let base = global.location().origin();
-    if base.is_empty() {
+/// Anything we can't confirm is treated as foreign: refusing to cache it costs
+/// a network fetch, whereas caching it wrongly puts another origin's bytes
+/// behind our own paths.
+fn is_same_origin(origin: &str, url: &str) -> bool {
+    if origin.is_empty() {
         return false;
     }
-    match url.strip_prefix(&base) {
+    match url.strip_prefix(origin) {
         Some("") => true,
         Some(rest) => rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#'),
         None => false,
@@ -269,23 +291,14 @@ extern "C" {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
     use web_sys::RequestInit;
 
-    wasm_bindgen_test_configure!(run_in_service_worker);
+    const ORIGIN: &str = "https://tonk.example";
 
     fn get(url: &str) -> Request {
         let init = RequestInit::new();
         init.set_method("GET");
         Request::new_with_str_and_init(url, &init).expect("request")
-    }
-
-    fn origin() -> String {
-        js_sys::global()
-            .dyn_into::<ServiceWorkerGlobalScope>()
-            .expect("service worker scope")
-            .location()
-            .origin()
     }
 
     /// A cross-origin GET must never enter the app's shell cache.
@@ -296,14 +309,14 @@ mod tests {
     #[dialog_common::test]
     async fn it_refuses_to_cache_another_origin() {
         assert!(
-            !is_cacheable(&get("https://evil.test/app.js"), "/app.js"),
+            !is_cacheable_on_origin(&get("https://evil.test/app.js"), "/app.js", ORIGIN),
             "a foreign origin must not be shell-cacheable"
         );
         // A prefix test alone would be fooled by a longer host that
         // starts with ours; the origin must end at a path boundary.
-        let lookalike = format!("{}.evil.test/app.js", origin());
+        let lookalike = format!("{ORIGIN}.evil.test/app.js");
         assert!(
-            !is_cacheable(&get(&lookalike), "/app.js"),
+            !is_cacheable_on_origin(&get(&lookalike), "/app.js", ORIGIN),
             "a host merely PREFIXED by our origin is still foreign"
         );
     }
@@ -312,9 +325,9 @@ mod tests {
     /// check must not have closed the door on the normal path.
     #[dialog_common::test]
     async fn it_still_caches_our_own_assets() {
-        let url = format!("{}/ui-abc123.js", origin());
+        let url = format!("{ORIGIN}/ui-abc123.js");
         assert!(
-            is_cacheable(&get(&url), "/ui-abc123.js"),
+            is_cacheable_on_origin(&get(&url), "/ui-abc123.js", ORIGIN),
             "a same-origin static asset is the whole point of the cache"
         );
     }
@@ -322,8 +335,8 @@ mod tests {
     /// The data plane is never served from cache, same origin or not.
     #[dialog_common::test]
     async fn it_never_caches_the_data_plane() {
-        let url = format!("{}/api/health", origin());
-        assert!(!is_cacheable(&get(&url), "/api/health"));
+        let url = format!("{ORIGIN}/api/health");
+        assert!(!is_cacheable_on_origin(&get(&url), "/api/health", ORIGIN));
     }
 
     /// Cache names carry the build id, so two builds cannot share a
