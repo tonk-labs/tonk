@@ -13,7 +13,7 @@ use tonk_worker_api::{
     RevokeDeviceAcknowledgement,
 };
 
-use crate::identity_bridge::{CeremonyOutput, VerifyPasskeyInput, verify_passkey};
+use crate::identity_bridge::{VerifyPasskeyInput, verify_passkey};
 
 const STYLE_ID: &str = "tonk-account-styles";
 /// Where a pending callback authorization's `(audience, callback)` is parked.
@@ -125,10 +125,9 @@ async fn service(host: &HtmlElement) -> Result<String, String> {
     {
         return Ok(attribute);
     }
-    Ok(crate::deployment::get()
-        .await?
-        .account_service_url
-        .to_string())
+    // The deployment serving this page. It marks the account as
+    // attached; nothing calls it as a service any more.
+    proposed_remote()
 }
 
 fn input(host: &HtmlElement, selector: &str) -> Result<String, String> {
@@ -550,6 +549,39 @@ async fn render_registration(host: &HtmlElement, state: &serde_json::Value) {
     // while Registered and resends the link, which is also the
     // recovery for one that expired.
     let _ = show(host, "#account-resend-activation");
+}
+
+/// Disable the resend button for the interval the service enforces,
+/// showing what is left.
+///
+/// The countdown is local. The service refuses a too-soon resend
+/// silently — telling a caller to wait would tell it the address is
+/// registered — so the wait is displayed by the page that pressed the
+/// button rather than reported by the service.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn count_down_resend(host: HtmlElement) {
+    use tonk_account::customer::RESEND_INTERVAL_SECONDS;
+
+    spawn_local(async move {
+        let Ok(Some(button)) = host.query_selector("#account-resend-activation") else {
+            return;
+        };
+        let label = button
+            .text_content()
+            .unwrap_or_else(|| "Resend".to_string());
+        let _ = button.set_attribute("disabled", "");
+        for remaining in (1..=RESEND_INTERVAL_SECONDS).rev() {
+            button.set_text_content(Some(&format!("Resend in {remaining}s")));
+            wait_for(1_000).await;
+            // The panel may have moved on — activated, signed out —
+            // while this was counting.
+            if !button.is_connected() {
+                return;
+            }
+        }
+        button.set_text_content(Some(&label));
+        let _ = button.remove_attribute("disabled");
+    });
 }
 
 /// Resolve after `ms` milliseconds.
@@ -1713,10 +1745,7 @@ pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), Str
     // One assertion, and the worker does the rest: it opens the account
     // from its custody cell, mints this browser's delegation, records
     // the root and submits the link. The page holds no key material.
-    let provider = crate::deployment::get()
-        .await?
-        .account_service_url
-        .to_string();
+    let provider = proposed_remote()?;
     narrate("Linking this browser…");
     crate::custody_relay::mediate_now(
         "usePasskey",
@@ -1753,10 +1782,7 @@ pub(crate) async fn run_account_ceremony(
     // generates the account secret, seals it under the new passkey's
     // KEK, records the root, signs the creation request and enrolls, so
     // no key material exists in this document at any point.
-    let provider = crate::deployment::get()
-        .await?
-        .account_service_url
-        .to_string();
+    let provider = proposed_remote()?;
     narrate("Creating your account…");
     crate::custody_relay::mediate_now(
         "createPasskey",
@@ -2096,11 +2122,20 @@ fn bind(host: &HtmlElement) {
             let result = crate::api::enroll_customer(None).await;
             set_busy(&host, false, "");
             match result {
-                Ok(_) => set_text(
-                    &host,
-                    "#account-activation-notice",
-                    "Sent. Open the link in your activation email.",
-                ),
+                Ok(_) => {
+                    set_text(
+                        &host,
+                        "#account-activation-notice",
+                        "Sent. Open the link in your activation email.",
+                    );
+                    // Counted here, not answered by the service: a
+                    // refusal that said "wait 40s" would confirm the
+                    // address is registered to anyone who asked, so the
+                    // service answers a resend the same way whether the
+                    // account exists or not. The page knows it just
+                    // pressed the button, which is enough to say so.
+                    count_down_resend(host.clone());
+                }
                 Err(error) => show_error(&host, format!("could not resend: {error}")),
             }
         });
@@ -2111,7 +2146,7 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let (root_did, delegation_hex) = match crate::api::root_status()
+                let (root_did, _delegation_hex) = match crate::api::root_status()
                     .await
                     .map_err(|error| error.to_string())?
                 {

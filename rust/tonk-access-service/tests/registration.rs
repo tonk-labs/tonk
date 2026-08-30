@@ -1622,13 +1622,27 @@ mod custody {
         let space = receipt
             .ledger
             .expect("the receipt names the customer space");
-        assert!(
-            !space.read_hex.is_empty(),
-            "the space carries the account's authority to read it"
-        );
         assert_ne!(
             space.did, receipt.customer,
             "the bookkeeping space is not the account itself"
+        );
+
+        // The authority the receipt hands over, in full: a `/use/get`
+        // the space issued to the account. Read means the service keeps
+        // its own ledger out of the customer's reach.
+        let bytes = hex::decode(&space.read_hex)?;
+        let chain = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())?;
+        let read = chain.proofs().next().expect("the chain carries a grant");
+        assert_eq!(
+            read.command().segments(),
+            &["use".to_string(), "get".to_string()],
+            "the account may read its ledger and nothing more"
+        );
+        assert_eq!(read.audience(), &receipt.customer, "issued to the account");
+        assert_eq!(
+            read.subject(),
+            &DelegatedSubject::Specific(space.did.clone()),
+            "over the ledger space"
         );
         Ok(())
     }

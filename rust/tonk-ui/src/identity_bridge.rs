@@ -1,24 +1,11 @@
 //! Typed boundary to the top-document passkey ceremony API.
 
 use js_sys::{Function, Promise, Reflect};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-
-/// Account ceremony output sent to the account service.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CeremonyOutput {
-    pub root_did: String,
-    pub credential_id: String,
-    pub delegation_hex: String,
-    pub invocation_hex: String,
-    /// The account's X25519 recipient, when the ceremony held the secret.
-    #[serde(default)]
-    pub encryption_key: Option<String>,
-}
 
 /// Verification-only assertion input: the account passkey to assert
 /// against, hex-encoded exactly as [`tonk_worker_api::RootStatus`]
