@@ -9,7 +9,9 @@
 //! worker uses.
 
 use dialog_capability::AuthorizeError;
-use dialog_repository::{FetchError, PullError, PushError, Revision, TreeReference};
+use dialog_repository::{
+    Branch, FetchError, PullError, PushError, Revision, TreeReference, Upstream,
+};
 use thiserror::Error;
 use tonk_schema::{SyncState, classify};
 
@@ -75,6 +77,24 @@ pub enum SyncError {
         /// The access decision, as the service stated it.
         reason: String,
     },
+    /// The local deadline expired before one remote phase answered.
+    ///
+    /// Cancellation ends this process's wait but cannot prove whether the
+    /// remote accepted a request whose response was lost. Keeping phase,
+    /// target, and uncertainty typed prevents callers from reporting a plain
+    /// transport failure or suggesting a blind mutation replay.
+    #[error(
+        "{operation} to {target} timed out after {seconds} seconds; \
+         the remote outcome may be unknown"
+    )]
+    Timeout {
+        /// Exact repository phase that expired.
+        operation: String,
+        /// Configured upstream branch targeted by the phase.
+        target: String,
+        /// Whole seconds allowed for the phase.
+        seconds: u64,
+    },
     /// Anything else — network, storage, decode. Surfaced
     /// verbatim so the caller can pick the underlying message
     /// up in stderr.
@@ -88,7 +108,8 @@ impl crate::Coded for SyncError {
         match self {
             SyncError::UpstreamNotConfigured { .. }
             | SyncError::Io(_)
-            | SyncError::Rejected { .. } => ExitCode::IoError,
+            | SyncError::Rejected { .. }
+            | SyncError::Timeout { .. } => ExitCode::IoError,
             SyncError::NonFastForward => ExitCode::CommitError,
         }
     }
@@ -174,11 +195,13 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
     let before = branch.revision();
-    let upstream_after = branch
-        .push()
-        .perform(&site.operator)
-        .await
-        .map_err(map_push_error)?;
+    let upstream_after = run_remote(
+        "push main",
+        upstream_target(branch),
+        branch.push().perform(&site.operator),
+        map_push_error,
+    )
+    .await?;
     let meta = site
         .repository
         .branch(crate::remote::META_BRANCH)
@@ -187,10 +210,13 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .await
         .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
     if meta.upstream().is_some() {
-        meta.push()
-            .perform(&site.operator)
-            .await
-            .map_err(map_push_error)?;
+        run_remote(
+            "push metadata",
+            upstream_target(&meta),
+            meta.push().perform(&site.operator),
+            map_push_error,
+        )
+        .await?;
     }
     Ok(SyncOutcome {
         before: before.clone(),
@@ -207,11 +233,13 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
     let before = branch.revision();
-    let merged = branch
-        .pull()
-        .perform(&site.operator)
-        .await
-        .map_err(map_pull_error)?;
+    let merged = run_remote(
+        "pull main",
+        upstream_target(branch),
+        branch.pull().perform(&site.operator),
+        map_pull_error,
+    )
+    .await?;
     let meta = site
         .repository
         .branch(crate::remote::META_BRANCH)
@@ -220,10 +248,13 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .await
         .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
     if meta.upstream().is_some() {
-        meta.pull()
-            .perform(&site.operator)
-            .await
-            .map_err(map_pull_error)?;
+        run_remote(
+            "pull metadata",
+            upstream_target(&meta),
+            meta.pull().perform(&site.operator),
+            map_pull_error,
+        )
+        .await?;
     }
     let after = branch.revision();
     Ok(SyncOutcome {
@@ -262,11 +293,13 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
             hash,
         });
     }
-    let remote = branch
-        .fetch()
-        .perform(&site.operator)
-        .await
-        .map_err(map_fetch_error)?;
+    let remote = run_remote(
+        "fetch status",
+        upstream_target(branch),
+        branch.fetch().perform(&site.operator),
+        map_fetch_error,
+    )
+    .await?;
     Ok(SyncStatus {
         state: classify(local.as_ref(), remote.as_ref()).into(),
         hash,
@@ -364,6 +397,40 @@ fn map_fetch_error(error: FetchError) -> SyncError {
     }
 }
 
+async fn run_remote<T, E>(
+    operation: &'static str,
+    target: String,
+    future: impl std::future::Future<Output = Result<T, E>>,
+    map_operation: impl FnOnce(E) -> SyncError,
+) -> Result<T, SyncError> {
+    crate::remote_deadline::run(operation, target, future)
+        .await
+        .map_err(|error| map_run_error(error, map_operation))
+}
+
+fn map_run_error<E>(
+    error: crate::remote_deadline::RunError<E>,
+    map_operation: impl FnOnce(E) -> SyncError,
+) -> SyncError {
+    match error {
+        crate::remote_deadline::RunError::Operation(error) => map_operation(error),
+        crate::remote_deadline::RunError::Timeout(timeout) => SyncError::Timeout {
+            operation: timeout.operation,
+            target: timeout.target,
+            seconds: timeout.seconds,
+        },
+        crate::remote_deadline::RunError::Configuration(error) => SyncError::Io(error.to_string()),
+    }
+}
+
+fn upstream_target(branch: &Branch) -> String {
+    match branch.upstream() {
+        Some(Upstream::Remote { remote, branch, .. }) => format!("{remote}/{branch}"),
+        Some(Upstream::Local { branch, .. }) => format!("local/{branch}"),
+        None => format!("configured upstream for {}", branch.name()),
+    }
+}
+
 fn map_push_error(error: PushError) -> SyncError {
     match error {
         PushError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },
@@ -430,6 +497,44 @@ mod tests {
                     matches!(map_push_error(error), SyncError::Io(_)),
                     "an unanswered request must not read as a denial"
                 );
+            }
+        }
+    }
+
+    mod classifying_a_deadline {
+        use super::*;
+
+        #[dialog_common::test]
+        fn every_sync_phase_retains_its_exact_name_and_remote_uncertainty() {
+            for operation in [
+                "push main",
+                "push metadata",
+                "pull main",
+                "pull metadata",
+                "fetch status",
+            ] {
+                let error = map_run_error(
+                    crate::remote_deadline::RunError::<()>::Timeout(
+                        crate::remote_deadline::Timeout {
+                            operation: operation.to_owned(),
+                            target: "origin/main".to_owned(),
+                            seconds: 17,
+                        },
+                    ),
+                    |()| unreachable!("a timeout has no operation error"),
+                );
+                let SyncError::Timeout {
+                    operation: actual,
+                    target,
+                    seconds,
+                } = &error
+                else {
+                    panic!("deadline must remain typed: {error}");
+                };
+                assert_eq!(actual, operation);
+                assert_eq!(target, "origin/main");
+                assert_eq!(*seconds, 17);
+                assert!(error.to_string().contains("remote outcome may be unknown"));
             }
         }
     }

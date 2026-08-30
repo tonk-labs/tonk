@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Branch, SiteAddress, Upstream};
+use dialog_repository::{Branch, LoadRemoteError, SiteAddress, Upstream};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -148,12 +148,86 @@ pub async fn add_with_revocation(
         .await
         .map_err(|e| RemoteError::Io(format!("failed to create dialog remote: {e}")))?;
 
+    record_metadata(site, name, subject.clone(), &address, revocation_url).await?;
+
+    Ok(AddOutcome {
+        name: name.to_owned(),
+        subject,
+        endpoint: endpoint.to_owned(),
+        revocation_url: revocation_url.map(str::to_owned),
+    })
+}
+
+/// Ensure one exact remote exists across both Dialog's address cell and the
+/// metadata branch.
+///
+/// Account publication uses this instead of [`add`]: an interrupted first
+/// attempt may have persisted the address cell but not its browser-visible
+/// metadata. A retry verifies that immutable address/subject pair and repairs
+/// metadata without treating the existing cell as a replaceable remote.
+pub(crate) async fn ensure(
+    site: &TonkSite,
+    name: &str,
+    endpoint: &str,
+    subject: Did,
+) -> Result<AddOutcome, RemoteError> {
+    let address = SiteAddress::from(UcanAddress::new(endpoint));
+    match site
+        .repository
+        .remote(name)
+        .load()
+        .perform(&site.operator)
+        .await
+    {
+        Ok(existing) => {
+            let existing = existing.address();
+            if existing.site() != &address || existing.subject() != &subject {
+                return Err(RemoteError::Io(format!(
+                    "remote '{name}' already exists with a different endpoint or subject; \
+                     refusing to replace it"
+                )));
+            }
+        }
+        Err(LoadRemoteError::NotFound { .. }) => {
+            site.repository
+                .remote(name)
+                .create(address.clone())
+                .subject(subject.clone())
+                .perform(&site.operator)
+                .await
+                .map_err(|error| {
+                    RemoteError::Io(format!("failed to create dialog remote: {error}"))
+                })?;
+        }
+        Err(error) => {
+            return Err(RemoteError::Io(format!(
+                "failed to inspect dialog remote '{name}': {error}"
+            )));
+        }
+    }
+
+    record_metadata(site, name, subject.clone(), &address, None).await?;
+    Ok(AddOutcome {
+        name: name.to_owned(),
+        subject,
+        endpoint: endpoint.to_owned(),
+        revocation_url: None,
+    })
+}
+
+async fn record_metadata(
+    site: &TonkSite,
+    name: &str,
+    subject: Did,
+    address: &SiteAddress,
+    revocation_url: Option<&str>,
+) -> Result<(), RemoteError> {
     // Meta-branch side: assert Replica + Remote so tonk-ui's
     // GET /api/repository/{name} surfaces this remote without
     // additional configuration.
     let meta = open_meta(site).await?;
     let replica = local_replica(site);
-    let remote_concept = replica.remote(name, subject.clone(), &address);
+    let remote_concept = replica.remote(name, subject, address);
 
     let mut transaction = meta
         .transaction()
@@ -167,13 +241,7 @@ pub async fn add_with_revocation(
         .perform(&site.operator)
         .await
         .map_err(|e| RemoteError::Io(format!("failed to write meta records: {e}")))?;
-
-    Ok(AddOutcome {
-        name: name.to_owned(),
-        subject,
-        endpoint: endpoint.to_owned(),
-        revocation_url: revocation_url.map(str::to_owned),
-    })
+    Ok(())
 }
 
 /// True when the local `main` branch already tracks an upstream.

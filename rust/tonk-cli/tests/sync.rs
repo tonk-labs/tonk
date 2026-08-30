@@ -278,6 +278,225 @@ mod when_minting_an_invite {
     }
 }
 
+/// Process-level ordering at the stdout/remote boundary.
+///
+/// The server accepts every TCP connection and never answers it. That is
+/// deliberately different from a closed port: a closed port fails fast and
+/// cannot prove either the deadline or the point at which stdout becomes
+/// visible. The child-only timeout value avoids mutating this test process's
+/// environment while other tests run.
+mod when_a_remote_accepts_but_never_answers {
+    use std::io::{BufRead as _, Read as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn tonk_bin() -> std::path::PathBuf {
+        std::env::var_os("NEXTEST_BIN_EXE_tonk")
+            .map(Into::into)
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into())
+    }
+
+    fn tonk_cmd(state: &std::path::Path, args: &[&str]) -> Command {
+        let mut command = Command::new(tonk_bin());
+        command
+            .args(args)
+            .current_dir(state)
+            .env("HOME", state)
+            .env("XDG_DATA_HOME", state.join("data"))
+            .env("TONK_SPACES_STATE", state)
+            .env("TONK_TELEMETRY_STATE", state)
+            .env("TONK_UPDATE_STATE", state)
+            .env("TONK_NO_UPDATE_CHECK", "1")
+            .env("DO_NOT_TRACK", "1")
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
+            .env_remove("TONK_TELEMETRY")
+            .env_remove("TONK_SPACE");
+        command
+    }
+
+    fn run(state: &std::path::Path, args: &[&str]) -> std::process::Output {
+        tonk_cmd(state, args).output().expect("tonk binary runs")
+    }
+
+    struct HangingServer {
+        endpoint: String,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl HangingServer {
+        fn start() -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind hanging server");
+            listener
+                .set_nonblocking(true)
+                .expect("make hanging server stoppable");
+            let endpoint = format!(
+                "http://127.0.0.1:{}/ucan/",
+                listener
+                    .local_addr()
+                    .expect("hanging server address")
+                    .port()
+            );
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_stop = stop.clone();
+            let thread = thread::spawn(move || {
+                let mut accepted: Vec<TcpStream> = Vec::new();
+                while !thread_stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => accepted.push(stream),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                endpoint,
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for HangingServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("hanging server stops");
+            }
+        }
+    }
+
+    fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait().expect("inspect tonk eval") {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn terminate(child: &mut Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn eval_flushes_its_local_receipt_before_a_timed_out_push_finishes() {
+        let state = tempfile::tempdir().expect("isolated CLI state");
+        let created = run(state.path(), &["space", "new", "demo"]);
+        assert!(
+            created.status.success(),
+            "space new failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+
+        let remote = HangingServer::start();
+        let added = run(state.path(), &["remote", "add", "origin", &remote.endpoint]);
+        assert!(
+            added.status.success(),
+            "remote add failed: {}",
+            String::from_utf8_lossy(&added.stderr)
+        );
+
+        let declaration = r#"attribute!: &deadline-proof
+  description: "deadline proof"
+  the: xyz.tonk.test/deadline-proof
+  as: text
+  cardinality: one
+"#;
+        let mut child = tonk_cmd(state.path(), &["eval", "--quiet", "-c", declaration])
+            .env("TONK_REMOTE_TIMEOUT_SECONDS", "2")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn tonk eval");
+
+        let stdout = child.stdout.take().expect("piped eval stdout");
+        let (line_tx, line_rx) = mpsc::channel();
+        let stdout_reader = thread::spawn(move || {
+            let mut captured = String::new();
+            for line in std::io::BufReader::new(stdout).lines() {
+                let line = line.expect("read eval stdout line");
+                captured.push_str(&line);
+                captured.push('\n');
+                let _ = line_tx.send(line);
+            }
+            captured
+        });
+
+        let receipt_deadline = Instant::now() + Duration::from_secs(4);
+        let mut receipt_lines = Vec::new();
+        loop {
+            let now = Instant::now();
+            if now >= receipt_deadline {
+                terminate(&mut child);
+                let stdout = stdout_reader.join().expect("join eval stdout reader");
+                panic!(
+                    "eval did not flush a local receipt before push completion; stdout: {stdout}"
+                );
+            }
+            let line = match line_rx.recv_timeout(receipt_deadline - now) {
+                Ok(line) => line,
+                Err(error) => {
+                    terminate(&mut child);
+                    let stdout = stdout_reader.join().expect("join eval stdout reader");
+                    panic!(
+                        "eval did not flush a local receipt before push completion ({error}); stdout: {stdout}"
+                    );
+                }
+            };
+            let complete = line.trim_start().starts_with("deadline-proof:");
+            receipt_lines.push(line);
+            if complete {
+                break;
+            }
+        }
+
+        assert!(
+            receipt_lines
+                .iter()
+                .any(|line| line.starts_with("revision-after:")),
+            "receipt must name the durable local revision: {receipt_lines:?}"
+        );
+        assert!(
+            child.try_wait().expect("inspect in-flight push").is_none(),
+            "eval exited before the observed receipt could precede its blocked push"
+        );
+
+        let status = wait_for_exit(&mut child, Duration::from_secs(6)).unwrap_or_else(|| {
+            terminate(&mut child);
+            panic!("eval did not exit after its configured remote deadlines")
+        });
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("piped eval stderr")
+            .read_to_string(&mut stderr)
+            .expect("read eval stderr");
+        let stdout = stdout_reader.join().expect("join eval stdout reader");
+
+        assert!(status.success(), "stderr: {stderr}");
+        assert!(stdout.contains("revision-after:"), "{stdout}");
+        assert!(stderr.contains("local eval was saved"), "{stderr}");
+        assert!(stderr.contains("remote outcome may be unknown"), "{stderr}");
+        assert!(stderr.contains("`tonk push`"), "{stderr}");
+        assert!(stderr.contains("do not repeat the eval"), "{stderr}");
+    }
+}
+
 mod when_claiming_an_invite {
     use super::*;
     use tonk_cli::inventory::{self, SpaceRole};

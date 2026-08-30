@@ -4,6 +4,9 @@
 //! error text a human or an agent actually sees — not just the
 //! `space` module's in-process ops (covered by `tests/space.rs`).
 
+#[cfg(feature = "integration-tests")]
+mod common;
+
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -222,6 +225,235 @@ mod when_no_account_is_signed_in {
             spaces["account"].is_null(),
             "no account is signed in: {spaces}"
         );
+    }
+}
+
+#[cfg(feature = "integration-tests")]
+mod when_a_signed_in_space_creation_is_interrupted {
+    use std::io::{BufRead as _, Read as _};
+    use std::process::Command;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use anyhow::{Context as _, Result, bail};
+    use tonk_access_service::helpers::AccessServiceAddress;
+
+    use super::*;
+
+    fn production_cmd(state: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Command {
+        let mut command = tonk_cmd(state, args, extra_env);
+        command
+            .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT")
+            .env("NO_PROXY", "127.0.0.1,localhost");
+        command
+    }
+
+    async fn run_production(state: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+        let mut command = production_cmd(state, args, extra_env);
+        tokio::task::spawn_blocking(move || command.output())
+            .await
+            .expect("tonk command task joins")
+            .expect("tonk binary runs")
+    }
+
+    /// Authorize the real child CLI profile, then leave the child with a
+    /// hydrated account and an explicit content endpoint. The approval page
+    /// intentionally has no deployment-discovery route, so the test writes
+    /// the already-authorized endpoint into the isolated registry after the
+    /// login. This changes no authority and reaches no global environment.
+    async fn sign_in(state: &Path, fixture: &common::AccountFixture, remote: &str) -> Result<()> {
+        let page =
+            common::authorizing_page(fixture.root_signer().await?, remote.to_owned()).await?;
+        let mut child = production_cmd(
+            state,
+            &[
+                "account",
+                "login",
+                "--no-open",
+                "--via",
+                &page.url,
+                "--service-url",
+                &fixture.server.endpoint,
+            ],
+            &[],
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn account login")?;
+
+        let stdout = child.stdout.take().context("account login stdout")?;
+        let stderr = child.stderr.take().context("account login stderr")?;
+        let (url_tx, url_rx) = mpsc::channel();
+        let stdout_reader = thread::spawn(move || {
+            let mut captured = String::new();
+            for line in std::io::BufReader::new(stdout).lines() {
+                let line = line.expect("read account login stdout");
+                if line.starts_with("http") {
+                    let _ = url_tx.send(line.clone());
+                }
+                captured.push_str(&line);
+                captured.push('\n');
+            }
+            captured
+        });
+        let stderr_reader = thread::spawn(move || {
+            let mut captured = String::new();
+            std::io::BufReader::new(stderr)
+                .read_to_string(&mut captured)
+                .expect("read account login stderr");
+            captured
+        });
+
+        let approval =
+            tokio::task::spawn_blocking(move || url_rx.recv_timeout(Duration::from_secs(30)))
+                .await
+                .context("approval URL task")?
+                .context("account login did not print an approval URL")?;
+        reqwest::Client::new()
+            .get(approval)
+            .send()
+            .await
+            .context("approve the child account login")?
+            .error_for_status()
+            .context("approval page rejected the login")?;
+
+        let status = tokio::task::spawn_blocking(move || child.wait())
+            .await
+            .context("account login wait task")??;
+        let stdout = stdout_reader.join().expect("join account login stdout");
+        let stderr = stderr_reader.join().expect("join account login stderr");
+        if !status.success() {
+            bail!("account login failed\nstdout: {stdout}\nstderr: {stderr}");
+        }
+
+        let path = state.join("spaces.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).context("read the child space registry")?)
+                .context("parse the child space registry")?;
+        registry["account"]["accessRemote"] = serde_json::json!(remote);
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&registry).context("encode the child space registry")?,
+        )
+        .context("write the child space registry")?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn every_partial_stage_keeps_the_local_space_and_names_one_recovery_path(
+        env: AccessServiceAddress,
+    ) -> Result<()> {
+        let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+        let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+        fixture.activate_with(&env).await?;
+        let operator = fixture.operator().await?;
+        fixture
+            .account_branch()
+            .await?
+            .push()
+            .perform(&operator)
+            .await
+            .context("publish the account fixture before the child logs in")?;
+
+        let state = tempfile::tempdir()?;
+        sign_in(state.path(), &fixture, &remote).await?;
+
+        for stage in ["founder", "remote", "upstream", "push", "accountDirectory"] {
+            let name = format!("partial-{}", stage.to_ascii_lowercase());
+            let site = state.path().join(format!("{name}-site"));
+            let output = run_production(
+                state.path(),
+                &[
+                    "space",
+                    "new",
+                    &name,
+                    "--site",
+                    site.to_str().context("UTF-8 site path")?,
+                ],
+                &[("TONK_TEST_SPACE_NEW_FAIL_STAGE", stage)],
+            )
+            .await;
+
+            assert!(
+                !output.status.success(),
+                "stage {stage} unexpectedly succeeded"
+            );
+            let stdout = stdout_of(&output);
+            let stderr = stderr_of(&output);
+            assert!(
+                stdout.trim().is_empty(),
+                "a partial {stage} result must not print a final receipt: {stdout}"
+            );
+            assert!(stderr.contains(&format!("stage '{stage}'")), "{stderr}");
+            assert!(stderr.contains("local space is safe"), "{stderr}");
+            assert!(site.exists(), "partial {stage} removed {}", site.display());
+            let canonical_site = site
+                .canonicalize()
+                .with_context(|| format!("canonicalize retained {stage} site"))?;
+            assert!(
+                stderr.contains(&format!("site: {}", canonical_site.display())),
+                "{stderr}"
+            );
+            assert!(stderr.contains("DID: did:key:"), "{stderr}");
+            assert!(
+                stderr.contains(&format!("tonk space link {name}")),
+                "{stderr}"
+            );
+            let registry: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(state.path().join("spaces.json"))?)?;
+            assert!(
+                registry["spaces"][&name].is_object(),
+                "partial {stage} lost its registry entry: {registry}"
+            );
+
+            let resumed = run_production(state.path(), &["space", "link", &name], &[]).await;
+            assert!(
+                resumed.status.success(),
+                "stage {stage} did not converge through space link: {}",
+                stderr_of(&resumed)
+            );
+        }
+
+        let complete_site = state.path().join("complete-site");
+        let complete = run_production(
+            state.path(),
+            &[
+                "space",
+                "new",
+                "complete",
+                "--site",
+                complete_site.to_str().context("UTF-8 complete site")?,
+            ],
+            &[],
+        )
+        .await;
+        assert!(complete.status.success(), "{}", stderr_of(&complete));
+        let receipt = stdout_of(&complete);
+        assert!(
+            receipt.starts_with("Registered space 'complete'\n"),
+            "{receipt}"
+        );
+        assert!(receipt.contains("site: "), "{receipt}");
+        assert!(receipt.contains("DID: did:key:"), "{receipt}");
+        assert!(receipt.contains("binding: "), "{receipt}");
+        assert!(receipt.contains("account: did:key:"), "{receipt}");
+
+        let retry = run_production(state.path(), &["space", "new", "complete"], &[]).await;
+        assert!(!retry.status.success());
+        assert!(stdout_of(&retry).trim().is_empty());
+        let retry_error = stderr_of(&retry);
+        assert!(
+            retry_error.contains("existing space was not changed"),
+            "{retry_error}"
+        );
+        assert!(
+            retry_error.contains("tonk space link complete"),
+            "{retry_error}"
+        );
+        assert!(!retry_error.contains("creation failed"), "{retry_error}");
+        Ok(())
     }
 }
 
