@@ -2549,16 +2549,39 @@ tonk-code:focus-within {
 .notebook-index__title { font-weight: 500; }
 .notebook-index .notebook-block-rows { display: none; }
 
-/* The search-and-create row. One control doing two jobs, so it reads as one
-   control: the field takes the width and the button sits against it. */
-.notebook-index__search {
-  display: flex;
-  gap: var(--wa-space-s, 0.75rem);
-  align-items: center;
-  margin: 0 0 var(--wa-space-m, 1rem);
+/* The switcher. The heading IS the control: an empty document showing
+   `# `, with the suggestion list under it. No field, no button — what you
+   type is the title, and the list says what pressing Enter will do. */
+.notebook-switcher__input {
+  display: block;
+  margin: 0 0 var(--wa-space-s, 0.75rem);
+  font-size: var(--wa-font-size-xl, 1.5rem);
 }
-.notebook-index__query { flex: 1 1 auto; min-width: 0; }
-.notebook-index__new { flex: 0 0 auto; }
+.notebook-switcher__panel {
+  margin: 0 0 var(--wa-space-l, 1.5rem);
+  border: 1px solid var(--wa-color-surface-border);
+  border-radius: var(--wa-border-radius-m, 0.375rem);
+  overflow: hidden;
+}
+.notebook-switcher__row {
+  padding: var(--wa-space-s, 0.75rem) var(--wa-space-m, 1rem);
+  cursor: pointer;
+}
+.notebook-switcher__row--active {
+  background: var(--wa-color-neutral-fill-quiet);
+}
+/* The matched characters, so the reason a row is here is visible. */
+.notebook-switcher__row mark {
+  background: none;
+  color: var(--wa-color-brand-fill-loud, currentColor);
+  font-weight: 600;
+}
+/* The create row is an action, not a document: quieter, and set apart. */
+.notebook-switcher__row--create {
+  border-top: 1px solid var(--wa-color-surface-border);
+  color: var(--wa-color-text-quiet);
+  font-size: var(--wa-font-size-s, 0.875rem);
+}
 
 /* Rows read as a list, separated rather than boxed: the index is a way
    through to a notebook, not a place to linger. */

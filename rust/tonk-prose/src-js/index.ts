@@ -66,6 +66,7 @@ const OBSERVED = [
   "readonly",
   "placeholder",
   "auto-focus",
+  "switcher",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
@@ -152,6 +153,13 @@ class TonkProseElement extends HTMLElement {
 
   /** Mount point handed to the editor core. */
   readonly #mount: HTMLDivElement;
+  /** Documents the heading switcher can offer, set by the host.
+   *
+   *  A property rather than an attribute: this is a list, read on every
+   *  keystroke, and serializing it through the DOM would be both lossy and
+   *  slow. The host assigns it; the switcher reads it fresh each time, so a
+   *  document created elsewhere appears without remounting. */
+  candidates: { title: string; href: string }[] = [];
 
   /** Live editor handle once the core chunk resolved and the view
    *  mounted. Null while loading and after teardown. */
@@ -296,6 +304,17 @@ class TonkProseElement extends HTMLElement {
       onChange: (value) => {
         this.#scheduleChange(value);
       },
+      // The heading acts as a document switcher only where the host says
+      // so. Read once, at construction: an editor that could gain the
+      // behaviour later could navigate away from a document being renamed.
+      switcher: this.hasAttribute("switcher")
+        ? {
+            candidates: () => this.candidates,
+            onOpen: (candidate) => this.#emit("switch", candidate),
+            onCreate: (title) => this.#emit("create", { title }),
+            onSuggest: (rows, active) => this.#emit("suggest", { rows, active }),
+          }
+        : undefined,
     });
     this.#pendingValue = null;
     this.#editor = editor;
@@ -315,6 +334,15 @@ class TonkProseElement extends HTMLElement {
         if (this.#editor === editor) editor.focus();
       }, 0);
     }
+  }
+
+  /** Dispatch a bubbling, composed event carrying `detail`. Composed so
+   *  it crosses this element's shadow boundary to the host listening
+   *  outside it. */
+  #emit(name: string, detail: unknown) {
+    this.dispatchEvent(
+      new CustomEvent(name, { detail, bubbles: true, composed: true }),
+    );
   }
 
   /** Record the latest edited markdown and (re)arm the debounce. The

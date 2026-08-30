@@ -5776,6 +5776,74 @@ block/insert!:
         );
     }
 
+    /// The switcher's create row writes a notebook the index can list.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_from_the_switcher() {
+        let (_app, state, key) = fresh_repo("test-notebook-switcher-create").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        seed(&state, repo, "notebook/create!:\n  title: \"Groceries\"\n").await;
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        let titles: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(
+            titles.contains(&"Groceries"),
+            "the create row writes a titled notebook: {named:#?}"
+        );
+    }
+
+    /// A rename must not also CREATE. Both commands are transient and both
+    /// carry a title, so they decode from the same event unless their
+    /// attributes differ.
+    #[dialog_common::test]
+    async fn it_does_not_create_a_notebook_when_retitling() {
+        let (_app, state, key) = fresh_repo("test-notebook-retitle-only").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let before = count(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+
+        seed(
+            &state,
+            repo,
+            "notebook/retitle!:\n  subject: id:notebook/scratch\n  title: \"Renamed\"\n",
+        )
+        .await;
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        assert_eq!(
+            named.len(),
+            before,
+            "a rename renames in place, it does not add one: {named:#?}"
+        );
+        let titles: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(titles.contains(&"Renamed"), "and it took: {named:#?}");
+    }
+
     #[dialog_common::test]
     async fn it_persists_a_space_rename() {
         use dialog_repository::RepositoryExt as _;

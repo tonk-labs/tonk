@@ -23,6 +23,7 @@ import { placeholder, placeholderKey } from "./placeholder";
 import { imagePreview } from "./image-preview";
 import { taskList } from "./task-list";
 import { codeBlocks } from "./code-block";
+import { headingSwitcher } from "./heading-switcher";
 import type { EditorOptions, ProseEditor } from "./api";
 
 /** Parse pasted plain text as markdown — Typora's paste behavior —
@@ -137,6 +138,12 @@ export function createEditor(
       // reads it. Order among the rest is not load-bearing except
       // code-block arrow keys before the base keymap.
       reparse(),
+      // Before the keymaps, and only when the host asked for it.
+      // `handleKeyDown` runs in plugin order, so the switcher has to come
+      // first to claim Enter and the arrows while its list is open —
+      // appended last, the base keymap would split the heading before the
+      // switcher ever saw the key.
+      ...(options.switcher ? headingSwitcher(options.switcher) : []),
       reveal(),
       buildInputRules(schema),
       ...codeBlocks(),

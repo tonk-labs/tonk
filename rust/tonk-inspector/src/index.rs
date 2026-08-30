@@ -1,61 +1,44 @@
-//! `<tonk-notebook-index>` — the notebook directory's search-and-create box.
+//! `<tonk-notebook-index>` — the notebook index, where the heading is how
+//! you get to a notebook.
 //!
-//! The directory view renders one `.notebook-index__item` link per notebook
-//! plus a form at the top. This element makes that form do two jobs at once:
+//! The page mounts an empty `<tonk-prose switcher>` showing `# `. Typing a
+//! title suggests the notebooks that match; the list carries an explicit
+//! "create this" row, so pressing Enter always has a visible target rather
+//! than creating as the silent consequence of matching nothing.
 //!
-//! - **Filter.** Typing hides the rows that do not match. This is a VIEW
-//!   concern: nothing is written, so a search must never produce a fact.
-//! - **Create.** Submitting asserts `notebook/create` with the typed title,
-//!   which is an ordinary command and goes through the library like any
-//!   other.
+//! The suggestion ranking, the create row, and the keyboard handling all
+//! live in the editor bundle (`heading-switcher.ts`, `fuzzy.ts`) because
+//! they are ProseMirror concerns. This element is the app half: it supplies
+//! the candidate notebooks, renders the panel, and performs the navigation.
 //!
-//! The element wraps the rows rather than generating them, so if its script
-//! never loads the directory still renders as a plain, working list of
-//! links — the filter is an enhancement, not a dependency.
+//! The rows it reads come from the directory view, which renders one link
+//! per notebook. They are also the fallback: with no script at all the
+//! index is still a working list of links.
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{Element, Event, HtmlElement};
+use web_sys::{CustomEvent, Element, HtmlElement};
 
 use custom_elements::CustomElement;
 
-/// Whether a notebook titled `title` should show while `query` is typed.
-///
-/// Case-insensitive substring, not a prefix: a notebook is as often
-/// remembered by a word in the middle of its name as by how it starts.
-/// A blank query matches everything, so clearing the box restores the list.
-pub fn matches(title: &str, query: &str) -> bool {
-    let query = query.trim();
-    if query.is_empty() {
-        return true;
-    }
-    title.to_lowercase().contains(&query.to_lowercase())
+/// The document the index editor starts with: a heading and nothing else.
+/// The trailing space is what puts the caret after the `#` marker rather
+/// than on it.
+const EMPTY: &str = "# ";
+
+/// One notebook the switcher can offer.
+struct Candidate {
+    title: String,
+    href: String,
 }
 
-/// Whether the typed query names an EXISTING notebook exactly.
-///
-/// Submitting is "open it if it exists, else create it", and that hinges on
-/// an exact (case- and space-insensitive) title match rather than on whether
-/// anything is still visible: typing `Not` while `Notes` exists should
-/// create `Not`, not open `Notes`.
-pub fn exact<'a>(titles: impl Iterator<Item = (&'a str, &'a str)>, query: &str) -> Option<String> {
-    let needle = query.trim().to_lowercase();
-    if needle.is_empty() {
-        return None;
-    }
-    titles
-        .filter(|(title, _)| title.trim().to_lowercase() == needle)
-        .map(|(_, href)| href.to_owned())
-        .next()
-}
-
-/// The directory's search box.
+/// The index page.
 #[derive(Default)]
 pub struct TonkNotebookIndexElement;
 
 impl TonkNotebookIndexElement {
-    /// The rows the view rendered, as `(title, href)` plus the row element.
-    fn rows(host: &HtmlElement) -> Vec<(String, String, HtmlElement)> {
+    /// The notebooks the directory rendered, as `(title, href)`.
+    fn candidates(host: &HtmlElement) -> Vec<Candidate> {
         let Ok(items) = host.query_selector_all(".notebook-index__item") else {
             return Vec::new();
         };
@@ -71,114 +54,214 @@ impl TonkNotebookIndexElement {
                 .query_selector(".notebook-index__title")
                 .ok()
                 .flatten()
-                .map(|el| el.text_content().unwrap_or_default())
-                .unwrap_or_default();
+                .and_then(|el| el.text_content())
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
             let href = row.get_attribute("href").unwrap_or_default();
-            out.push((title, href, row));
+            if !title.is_empty() && !href.is_empty() {
+                out.push(Candidate { title, href });
+            }
         }
         out
     }
 
-    /// The current query, read off the `wa-input`.
+    /// Hand the editor the current candidate list.
     ///
-    /// Through `value` on the element itself, not `FormData`: a `wa-input`
-    /// is a form-associated custom element and FormData reads back empty
-    /// for it.
-    fn query(host: &HtmlElement) -> String {
-        host.query_selector(".notebook-index__query")
-            .ok()
-            .flatten()
-            .and_then(|el| js_sys::Reflect::get(&el, &"value".into()).ok())
-            .and_then(|value| value.as_string())
-            .unwrap_or_default()
+    /// Assigned as a PROPERTY, not an attribute: it is a list read on every
+    /// keystroke, and round-tripping it through the DOM would be lossy and
+    /// slow.
+    fn publish(host: &HtmlElement) {
+        let Ok(Some(prose)) = host.query_selector("tonk-prose") else {
+            return;
+        };
+        let list = js_sys::Array::new();
+        for candidate in Self::candidates(host) {
+            let entry = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&entry, &"title".into(), &candidate.title.into());
+            let _ = js_sys::Reflect::set(&entry, &"href".into(), &candidate.href.into());
+            list.push(&entry);
+        }
+        let _ = js_sys::Reflect::set(&prose, &"candidates".into(), &list);
     }
 
-    /// Show the rows that match and hide the rest, and say so when none do.
-    fn filter(host: &HtmlElement) {
-        let query = Self::query(host);
-        let mut shown = 0usize;
-        for (title, _, row) in Self::rows(host) {
-            let visible = matches(&title, &query);
-            if visible {
-                shown += 1;
-            }
-            let _ = row.set_attribute("hidden", "");
-            if visible {
-                let _ = row.remove_attribute("hidden");
-            }
+    /// Draw the suggestion list, with the matched characters marked.
+    fn render_panel(host: &HtmlElement, rows: &JsValue, active: i32) {
+        let Ok(Some(panel)) = host.query_selector(".notebook-switcher__panel") else {
+            return;
+        };
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        panel.set_inner_html("");
+        let Ok(rows) = rows.clone().dyn_into::<js_sys::Array>() else {
+            let _ = panel.set_attribute("hidden", "");
+            return;
+        };
+        if rows.length() == 0 {
+            let _ = panel.set_attribute("hidden", "");
+            return;
         }
-        // The "nothing matches" hint belongs to a non-empty query only: an
-        // empty space with an empty box is not a failed search.
-        if let Ok(Some(empty)) = host.query_selector(".notebook-index__empty") {
-            let show = shown == 0 && !query.trim().is_empty();
-            let _ = empty.set_attribute("hidden", "");
-            if show {
-                let _ = empty.remove_attribute("hidden");
+        let _ = panel.remove_attribute("hidden");
+
+        for index in 0..rows.length() {
+            let row = rows.get(index);
+            let title = js_sys::Reflect::get(&row, &"title".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            let create = js_sys::Reflect::get(&row, &"create".into())
+                .ok()
+                .map(|v| v.is_truthy())
+                .unwrap_or(false);
+            let Ok(item) = document.create_element("div") else {
+                continue;
+            };
+            let mut class = String::from("notebook-switcher__row");
+            if index as i32 == active {
+                class.push_str(" notebook-switcher__row--active");
             }
+            if create {
+                class.push_str(" notebook-switcher__row--create");
+            }
+            let _ = item.set_attribute("class", &class);
+            let _ = item.set_attribute("data-index", &index.to_string());
+
+            if create {
+                // Say what will happen, in the words the author typed.
+                item.set_text_content(Some(&format!("Create \u{201c}{title}\u{201d}")));
+            } else {
+                // Mark the characters the query matched, so the reason a row
+                // is here is visible.
+                let spans = js_sys::Reflect::get(&row, &"spans".into())
+                    .ok()
+                    .and_then(|v| v.dyn_into::<js_sys::Array>().ok());
+                let marked: Vec<usize> = spans
+                    .map(|arr| {
+                        (0..arr.length())
+                            .filter_map(|i| arr.get(i).as_f64().map(|n| n as usize))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Runs, not characters: a `<mark>` (or plain `<span>`) per
+                // contiguous stretch, so "Weekly" matched at 0..2 is one
+                // element rather than two, and the text stays selectable as
+                // ordinary words.
+                let mut at = 0usize;
+                let chars: Vec<char> = title.chars().collect();
+                while at < chars.len() {
+                    let hit = marked.contains(&at);
+                    let mut end = at;
+                    while end < chars.len() && marked.contains(&end) == hit {
+                        end += 1;
+                    }
+                    let run: String = chars[at..end].iter().collect();
+                    let tag = if hit { "mark" } else { "span" };
+                    if let Ok(part) = document.create_element(tag) {
+                        part.set_text_content(Some(&run));
+                        let _ = item.append_child(&part);
+                    }
+                    at = end;
+                }
+            }
+            let _ = panel.append_child(&item);
+        }
+    }
+
+    /// Go to a notebook.
+    fn navigate(href: &str) {
+        if let Some(window) = web_sys::window() {
+            let _ = window.location().set_href(href);
         }
     }
 }
 
 impl CustomElement for TonkNotebookIndexElement {
     fn shadow() -> bool {
-        // Light DOM: the rows are rendered by `<tonk-display>` into this
-        // element's children, and the app stylesheet styles them.
+        // Light DOM: the directory rows are rendered into this element's
+        // children by `<tonk-display>`, and the app stylesheet styles them.
         false
     }
 
-    fn inject_children(&mut self, _this: &HtmlElement) {}
+    fn inject_children(&mut self, this: &HtmlElement) {
+        // The editor and the panel. Appended rather than replacing the
+        // children, because the rows `<tonk-display>` renders are this
+        // element's content and the switcher's data both.
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        if let Ok(prose) = document.create_element("tonk-prose") {
+            let _ = prose.set_attribute("class", "notebook-switcher__input");
+            let _ = prose.set_attribute("switcher", "");
+            let _ = prose.set_attribute("auto-focus", "");
+            let _ = prose.set_attribute("value", EMPTY);
+            let _ = this.append_child(&prose);
+        }
+        if let Ok(panel) = document.create_element("div") {
+            let _ = panel.set_attribute("class", "notebook-switcher__panel");
+            let _ = panel.set_attribute("hidden", "");
+            let _ = this.append_child(&panel);
+        }
+    }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         let host = this.clone();
 
-        // Filter as the box changes. `input` (not `change`) so the list
-        // narrows while typing rather than on blur.
-        let typing = host.clone();
-        let on_input = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
-            TonkNotebookIndexElement::filter(&typing);
+        // Suggestions: draw the panel.
+        let drawing = host.clone();
+        let on_suggest = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            let detail = event.detail();
+            let rows = js_sys::Reflect::get(&detail, &"rows".into()).unwrap_or(JsValue::NULL);
+            let active = js_sys::Reflect::get(&detail, &"active".into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as i32;
+            TonkNotebookIndexElement::render_panel(&drawing, &rows, active);
         });
-        let _ = host.add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref());
-        on_input.forget();
+        let _ =
+            host.add_event_listener_with_callback("suggest", on_suggest.as_ref().unchecked_ref());
+        on_suggest.forget();
 
-        // Submitting opens an exact match instead of creating a duplicate.
-        //
-        // The library's `notebook/create` fires on this same submit, so when
-        // the title already exists we must stop the event reaching it —
-        // otherwise looking up a notebook silently creates a second one with
-        // the same name.
-        let submitting = host.clone();
-        let on_submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
-            let query = TonkNotebookIndexElement::query(&submitting);
-            let rows = TonkNotebookIndexElement::rows(&submitting);
-            let existing = exact(
-                rows.iter()
-                    .map(|(title, href, _)| (title.as_str(), href.as_str())),
-                &query,
-            );
-            if let Some(href) = existing {
-                event.prevent_default();
-                event.stop_propagation();
-                if let Some(window) = web_sys::window() {
-                    let _ = window.location().set_href(&href);
-                }
+        // Choosing an existing notebook.
+        let on_switch = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            if let Some(href) = js_sys::Reflect::get(&event.detail(), &"href".into())
+                .ok()
+                .and_then(|v| v.as_string())
+            {
+                TonkNotebookIndexElement::navigate(&href);
             }
         });
-        // CAPTURE phase: the command handler is bound on the form, and a
-        // bubbling listener here would run after it has already created the
-        // notebook.
-        let _ = host.add_event_listener_with_callback_and_bool(
-            "submit",
-            on_submit.as_ref().unchecked_ref(),
-            true,
-        );
-        on_submit.forget();
+        let _ = host.add_event_listener_with_callback("switch", on_switch.as_ref().unchecked_ref());
+        on_switch.forget();
+
+        // Creating one. The notebook is written by the same command a
+        // rename uses: a title is a title, however it got there.
+        let creating = host.clone();
+        let on_create = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            let Some(title) = js_sys::Reflect::get(&event.detail(), &"title".into())
+                .ok()
+                .and_then(|v| v.as_string())
+            else {
+                return;
+            };
+            let detail = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&detail, &"created-title".into(), &title.into());
+            let init = web_sys::CustomEventInit::new();
+            init.set_detail(&detail);
+            init.set_bubbles(true);
+            init.set_composed(true);
+            if let Ok(event) = CustomEvent::new_with_event_init_dict("notebookcreate", &init) {
+                let _ = creating.dispatch_event(&event);
+            }
+        });
+        let _ = host.add_event_listener_with_callback("create", on_create.as_ref().unchecked_ref());
+        on_create.forget();
 
         // The rows arrive from a `<tonk-display>` render that may land after
-        // this callback, so re-filter whenever the child list changes —
-        // otherwise a query typed before the data lands is ignored.
+        // this callback, so republish whenever the child list changes.
         let observing = host.clone();
         let on_mutate = Closure::<dyn FnMut(js_sys::Array)>::new(move |_: js_sys::Array| {
-            TonkNotebookIndexElement::filter(&observing);
+            TonkNotebookIndexElement::publish(&observing);
         });
         if let Ok(observer) = web_sys::MutationObserver::new(on_mutate.as_ref().unchecked_ref()) {
             let options = web_sys::MutationObserverInit::new();
@@ -188,7 +271,7 @@ impl CustomElement for TonkNotebookIndexElement {
         }
         on_mutate.forget();
 
-        Self::filter(&host);
+        Self::publish(&host);
     }
 }
 
@@ -199,59 +282,9 @@ mod tests {
 
     use super::*;
 
-    /// A blank box shows everything, so clearing the query restores the list.
+    /// The starting document parks the caret in a heading.
     #[dialog_common::test]
-    fn it_matches_everything_on_a_blank_query() {
-        assert!(matches("Notes", ""));
-        assert!(matches("Notes", "   "));
-    }
-
-    /// Substring, not prefix: a notebook is as often remembered by a word in
-    /// the middle of its name.
-    #[dialog_common::test]
-    fn it_matches_a_word_inside_the_title() {
-        assert!(matches("Weekly Planning", "plan"));
-        assert!(!matches("Weekly Planning", "zzz"));
-    }
-
-    #[dialog_common::test]
-    fn it_matches_regardless_of_case() {
-        assert!(matches("Weekly Planning", "WEEKLY"));
-        assert!(matches("weekly planning", "Planning"));
-    }
-
-    /// An exact title opens rather than creating a duplicate.
-    #[dialog_common::test]
-    fn it_finds_an_exact_title() {
-        let rows = [("Notes", "notebook/id:a"), ("Plans", "notebook/id:b")];
-        assert_eq!(
-            exact(rows.iter().copied(), "Notes"),
-            Some("notebook/id:a".to_owned())
-        );
-    }
-
-    /// Exact means exact: a prefix creates a new notebook rather than
-    /// opening the one it happens to be a prefix of.
-    #[dialog_common::test]
-    fn it_finds_no_exact_title_for_a_prefix() {
-        let rows = [("Notes", "notebook/id:a")];
-        assert_eq!(exact(rows.iter().copied(), "Not"), None);
-    }
-
-    /// Case and surrounding space do not make a different notebook.
-    #[dialog_common::test]
-    fn it_finds_an_exact_title_ignoring_case_and_space() {
-        let rows = [("Notes", "notebook/id:a")];
-        assert_eq!(
-            exact(rows.iter().copied(), "  notes "),
-            Some("notebook/id:a".to_owned())
-        );
-    }
-
-    /// A blank query never opens anything.
-    #[dialog_common::test]
-    fn it_finds_no_exact_title_for_a_blank_query() {
-        let rows = [("Notes", "notebook/id:a")];
-        assert_eq!(exact(rows.iter().copied(), "  "), None);
+    fn it_starts_with_an_empty_heading() {
+        assert_eq!(EMPTY, "# ");
     }
 }

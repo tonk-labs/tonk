@@ -16,6 +16,31 @@ export type EditorOptions = {
   /** Called after every user edit with the markdown serialization
    *  of the new document. Not called for programmatic writes. */
   onChange: (markdown: string) => void;
+  /** Turn the leading heading into a document switcher.
+   *
+   *  Opt-in per editor, and deliberately not a runtime condition: on an
+   *  empty index the heading picks or names a document, but inside an
+   *  existing one it may only rename. Were the switcher live there, a
+   *  rename onto an existing title would navigate the author away from
+   *  the document they were editing. */
+  switcher?: SwitcherHooks;
+};
+
+/** What the host supplies for the heading switcher. */
+export type SwitcherHooks = {
+  /** The documents available, read fresh per keystroke. */
+  candidates: () => { title: string; href: string }[];
+  /** Go to an existing document. */
+  onOpen: (candidate: { title: string; href: string }) => void;
+  /** Create a document with this title and go to it. */
+  onCreate: (title: string) => void;
+  /** Render the suggestion list; `null` closes it. */
+  onSuggest: (
+    rows:
+      | { title: string; href: string; spans: number[]; create?: true }[]
+      | null,
+    active: number,
+  ) => void;
 };
 
 /** Live editor handle returned by `createEditor`. */

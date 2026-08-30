@@ -260,7 +260,9 @@ view!:
   this: id:notebook/index/route/view
   model: tonk:notebook/index-route
   display: |
-    <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
+    <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
+      <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
+    </tonk-notebook-index>
 
 route!: &route/notebook
   this: id:notebook/route
@@ -338,6 +340,24 @@ command!: &block/insert
         block consults it; the others take their bound from their successor.
       the: xyz.tonk.notebook.insert/prev
       as: entity
+
+# Create a notebook from the index's heading switcher.
+#
+# The switcher's "create" row fires this. It carries only a title: the
+# notebook's first block is written by the ordinary insert path once the
+# author types into the body, so a notebook begins as a name and nothing
+# else.
+command!: &notebook/create
+  description: Create a notebook with a title.
+  with:
+    title:
+      description: |
+        The title typed into the index's heading. Its OWN attribute, not
+        `detail/title`: a retitle carries that one, and two transient
+        commands reading the same attribute both decode from one event, so
+        every rename would also create a notebook.
+      the: dom.event.detail/created-title
+      as: text
 
 # Rename a notebook from its document's own heading.
 #
@@ -554,6 +574,15 @@ rule!:
       where:
         this: ?block
         at: ?block/key
+
+rule!:
+  description: Create a notebook from the switcher.
+  assert!: notebook/named
+  when:
+    - assert: notebook/create
+      where:
+        this: ?this
+        title: ?title
 
 rule!:
   description: Retitle a notebook from its heading.
