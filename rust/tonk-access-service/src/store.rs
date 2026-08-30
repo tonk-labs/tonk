@@ -130,6 +130,12 @@ pub enum SubscriptionKind {
     /// deletion machinery cannot destroy the account's own key custody
     /// while anything might still need it.
     Custody,
+    /// The service's own bookkeeping space for a customer. Written at
+    /// enrollment beside the customer's subscription, because the
+    /// receipt hands the account a grant to read it and the gate serves
+    /// nothing for an unprovisioned subject. Like custody, it is the
+    /// account's plumbing rather than a space the user made.
+    Ledger,
 }
 
 impl SubscriptionKind {
@@ -137,6 +143,7 @@ impl SubscriptionKind {
         match self {
             Self::Space => "space",
             Self::Custody => "custody",
+            Self::Ledger => "ledger",
         }
     }
 
@@ -144,6 +151,7 @@ impl SubscriptionKind {
         match value {
             "space" => Ok(Self::Space),
             "custody" => Ok(Self::Custody),
+            "ledger" => Ok(Self::Ledger),
             other => Err(StoreError::Internal(format!(
                 "unknown consumer kind: {other}"
             ))),
@@ -191,6 +199,7 @@ pub trait Store {
         did: &str,
         email: &str,
         plan: &str,
+        ledger: &str,
         now: u64,
         expires_at: u64,
     ) -> Result<(), StoreError>;
@@ -332,6 +341,23 @@ VALUES (?1, ?2, 'Registered', ?3, ?4)
 pub const INSERT_SELF_SUBSCRIPTION: &str = r#"
 INSERT INTO subscription (consumer, provider, registered_at, expires_at)
 VALUES (?1, ?1, ?2, ?3)
+ON CONFLICT (consumer) DO UPDATE SET expires_at = excluded.expires_at
+ WHERE subscription.deleted_at IS NULL
+"#;
+
+/// The customer's ledger space, provisioned under them.
+///
+/// Enrollment hands the account a `/use/get` over this space, and the
+/// gate serves nothing for an unprovisioned subject — so the grant
+/// would name a space the service then refused to read. Written in the
+/// same transaction as the customer, on the same expiry, because it is
+/// as much a part of the account as the account's own subscription.
+///
+/// `kind = 'ledger'` so deletion can tell the service's own bookkeeping
+/// from a space the user made.
+pub const INSERT_LEDGER_SUBSCRIPTION: &str = r#"
+INSERT INTO subscription (consumer, provider, registered_at, expires_at, kind)
+VALUES (?1, ?2, ?3, ?4, 'ledger')
 ON CONFLICT (consumer) DO UPDATE SET expires_at = excluded.expires_at
  WHERE subscription.deleted_at IS NULL
 "#;

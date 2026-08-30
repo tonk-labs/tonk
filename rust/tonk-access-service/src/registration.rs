@@ -485,6 +485,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                         customer.as_str(),
                         &address,
                         SIGNUP_PLAN,
+                        space.did.as_str(),
                         self.now,
                         self.now + self.activation_ttl,
                     )

@@ -10,11 +10,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
     DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
-    INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION,
-    SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
-    SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
-    SUSPEND_SUBSCRIPTION, Servability, Store, StoreError, Subscription, SubscriptionKind,
-    Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
+    INSERT_LEDGER_SUBSCRIPTION, INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT,
+    REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL,
+    SELECT_SERVABILITY, SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER,
+    START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION,
+    Servability, Store, StoreError, Subscription, SubscriptionKind, Suspension,
+    UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -336,6 +337,7 @@ impl Store for SqliteStore {
         did: &str,
         email: &str,
         plan: &str,
+        ledger: &str,
         now: u64,
         expires_at: u64,
     ) -> Result<(), StoreError> {
@@ -346,6 +348,11 @@ impl Store for SqliteStore {
         tx.execute(
             INSERT_SELF_SUBSCRIPTION,
             params![did, now as i64, expires_at as i64],
+        )
+        .map_err(map_err)?;
+        tx.execute(
+            INSERT_LEDGER_SUBSCRIPTION,
+            params![ledger, did, now as i64, expires_at as i64],
         )
         .map_err(map_err)?;
         tx.commit().map_err(map_err)
@@ -490,7 +497,7 @@ mod tests {
 
     async fn enrolled(store: &SqliteStore, did: &str, email: &str) {
         store
-            .enroll_customer(did, email, SIGNUP_PLAN, 1_700_000_000, u64::MAX)
+            .enroll_customer(did, email, SIGNUP_PLAN, did, 1_700_000_000, u64::MAX)
             .await
             .expect("enrollment writes a customer");
     }
@@ -536,6 +543,7 @@ mod tests {
                 "did:key:zB",
                 "jsmith@example.com",
                 SIGNUP_PLAN,
+                "did:key:zB",
                 1_700_000_001,
                 u64::MAX,
             )

@@ -729,6 +729,7 @@ mod tests {
                 root.did().as_str(),
                 "owner@example.com",
                 SIGNUP_PLAN,
+                root.did().as_str(),
                 at,
                 u64::MAX,
             )
@@ -799,6 +800,7 @@ mod tests {
                 root.did().as_str(),
                 "custody@example.com",
                 SIGNUP_PLAN,
+                root.did().as_str(),
                 at,
                 u64::MAX,
             )
@@ -893,6 +895,7 @@ mod tests {
                 root.did().as_str(),
                 "alice@example.com",
                 SIGNUP_PLAN,
+                root.did().as_str(),
                 at,
                 u64::MAX,
             )
@@ -927,6 +930,7 @@ mod tests {
                 other.did().as_str(),
                 "alice@example.com",
                 SIGNUP_PLAN,
+                other.did().as_str(),
                 at + 2,
                 u64::MAX,
             )
@@ -945,6 +949,7 @@ mod tests {
                 root.did().as_str(),
                 "delete@example.com",
                 SIGNUP_PLAN,
+                root.did().as_str(),
                 at,
                 u64::MAX,
             )

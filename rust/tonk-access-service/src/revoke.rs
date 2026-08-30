@@ -137,7 +137,14 @@ mod tests {
     async fn store_holding(subject: &str) -> SqliteStore {
         let store = SqliteStore::in_memory().expect("in-memory store");
         store
-            .enroll_customer(subject, "holder@example.com", SIGNUP_PLAN, 0, u64::MAX)
+            .enroll_customer(
+                subject,
+                "holder@example.com",
+                SIGNUP_PLAN,
+                subject,
+                0,
+                u64::MAX,
+            )
             .await
             .expect("customer");
         store
@@ -271,7 +278,14 @@ mod tests {
         let subject = space.did().to_string();
         let store = SqliteStore::in_memory().expect("in-memory store");
         store
-            .enroll_customer(&subject, "pending@example.com", SIGNUP_PLAN, 0, u64::MAX)
+            .enroll_customer(
+                &subject,
+                "pending@example.com",
+                SIGNUP_PLAN,
+                &subject,
+                0,
+                u64::MAX,
+            )
             .await
             .expect("customer stays Registered");
         store

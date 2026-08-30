@@ -15,11 +15,12 @@ use worker::wasm_bindgen::JsValue;
 use crate::store::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
     DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
-    INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION,
-    SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
-    SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
-    SUSPEND_SUBSCRIPTION, Servability, Store, StoreError, Subscription, SubscriptionKind,
-    Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
+    INSERT_LEDGER_SUBSCRIPTION, INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT,
+    REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL,
+    SELECT_SERVABILITY, SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER,
+    START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION,
+    Servability, Store, StoreError, Subscription, SubscriptionKind, Suspension,
+    UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -219,6 +220,7 @@ impl Store for D1Store {
         did: &str,
         email: &str,
         plan: &str,
+        ledger: &str,
         now: u64,
         expires_at: u64,
     ) -> Result<(), StoreError> {
@@ -243,8 +245,18 @@ impl Store for D1Store {
                 JsValue::from_f64(expires_at as f64),
             ])
             .map_err(map_err)?;
+        let insert_ledger = self
+            .0
+            .prepare(INSERT_LEDGER_SUBSCRIPTION)
+            .bind(&[
+                JsValue::from(ledger),
+                JsValue::from(did),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(expires_at as f64),
+            ])
+            .map_err(map_err)?;
         self.0
-            .batch(vec![insert_customer, insert_consumer])
+            .batch(vec![insert_customer, insert_consumer, insert_ledger])
             .await
             .map_err(map_err)?;
         Ok(())

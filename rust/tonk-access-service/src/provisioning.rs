@@ -179,6 +179,7 @@ mod tests {
                     did,
                     &format!("{did}@example.com"),
                     "trial@2026-08",
+                    did,
                     0,
                     u64::MAX,
                 )

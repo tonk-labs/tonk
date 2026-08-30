@@ -1052,6 +1052,73 @@ async fn activate_over_http(client: &reqwest::Client, base: &str) -> anyhow::Res
     Ok(())
 }
 
+/// The ledger grant in the receipt is authority that works.
+///
+/// Enrollment hands back a `/use/get` over a space the service owns,
+/// and the point of it is reading the record kept there. So: enroll,
+/// activate, then present that exact delegation and get a presigned
+/// URL. A receipt naming a grant the gate then refuses would be worse
+/// than naming none.
+#[dialog_common::test]
+async fn it_presigns_a_ledger_read_with_the_grant_the_receipt_named(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+
+    let account = Ed25519Signer::generate().await?;
+    let container = enroll_container(&account, &service_did, "ledger@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "enrollment refused");
+    let receipt: Receipt = response.json().await?;
+    let ledger = receipt.ledger.expect("the receipt names the ledger");
+
+    activate_over_http(&client, &base).await?;
+
+    // The account invokes `/use/get` on the ledger space, proving with
+    // the grant the receipt handed it.
+    let grant =
+        dialog_ucan_core::DelegationChain::try_from(hex::decode(&ledger.read_hex)?.as_slice())?;
+    let read = tonk_identity::request::build_device_invocation(
+        account.clone(),
+        &grant,
+        vec![
+            "use".to_string(),
+            "get".to_string(),
+            "memory".to_string(),
+            "cell".to_string(),
+        ],
+        BTreeMap::from([
+            (
+                "space".to_string(),
+                Promised::String(ledger.did.to_string()),
+            ),
+            ("cell".to_string(), Promised::String("state".to_string())),
+        ]),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(read)
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        200,
+        "the grant the receipt named must presign a read of the space it named: {}",
+        response.text().await.unwrap_or_default()
+    );
+    Ok(())
+}
+
 /// Adding a passkey to an account that already exists, end to end
 /// (`plan/Account custody.md`).
 ///
