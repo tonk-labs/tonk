@@ -3760,6 +3760,31 @@ mod tests {
         browser && terminal
     }
 
+    async fn wait_for_callback_device_rows(
+        profile: &TempDir,
+        env: &TestEnvironment,
+    ) -> Result<(CliOutput, Vec<CliDeviceRow>)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let output = devices(profile, env).await?;
+            if !output.status.success() {
+                return Err(anyhow!("devices failed: {}", output.stderr));
+            }
+            let rows = device_rows(&output.stdout)?;
+            if callback_device_rows_ready(&rows) {
+                return Ok((output, rows));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the callback device list never converged to the signing browser and linked terminal: {}\n--- devices stderr ---\n{}",
+                    output.stdout,
+                    output.stderr
+                ));
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
     #[test]
     fn callback_device_readiness_rejects_the_terminal_only_intermediate_state() {
         let terminal = CliDeviceRow {
@@ -4714,26 +4739,7 @@ mod tests {
         // its terminal row can appear before the signing browser's remote
         // row. Each `devices` call pulls again: wait for BOTH sides rather
         // than exiting on that guaranteed local row.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let (devices, device_rows) = loop {
-            let devices = devices(&linked.profile, &env).await?;
-            assert!(
-                devices.status.success(),
-                "devices failed: {}",
-                devices.stderr
-            );
-            let rows = device_rows(&devices.stdout)?;
-            if callback_device_rows_ready(&rows) {
-                break (devices, rows);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                panic!(
-                    "the callback device list never converged to the signing browser and linked terminal: {}\n--- devices stderr ---\n{}",
-                    devices.stdout, devices.stderr
-                );
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        };
+        let (devices, device_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
         assert!(
             device_rows
                 .iter()
@@ -5220,9 +5226,10 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
         let linked = link_cli(&driver, &env).await?;
-        let listed = devices(&linked.profile, &env).await?;
-        assert!(listed.status.success(), "devices failed: {}", listed.stderr);
-        let listed_rows = device_rows(&listed.stdout)?;
+        // Cache the complete callback view before revocation. The CLI creates
+        // its own row locally, so a terminal-only list does not prove it has
+        // pulled the browser row that must remain visible in its stale cache.
+        let (_listed, listed_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
         let cli_did = did_for_device(&listed_rows, "e2e terminal")
             .context("CLI device was absent from the account device list")?
             .to_string();

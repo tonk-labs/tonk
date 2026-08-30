@@ -38,6 +38,7 @@
 - [x] Run Rust formatting, the focused regression test, and diff checks.
 - [x] Publish the callback fix and prove the previously failing test on CI.
 - [x] Raise the stale E2E job timeout to cover its cold build and test runtime.
+- [x] Reuse the complete callback wait before the device-revocation assertion.
 - [ ] Confirm the complete E2E job with CI host routing.
 
 The direct local E2E reached the callback but could not complete because the
@@ -47,3 +48,6 @@ On the patched CI run, both the regression test and the previously failing
 callback test passed. The otherwise healthy suite was then cancelled at its
 45-minute job limit after a 20-minute cold build, so the limit now allows 60
 minutes while preserving a bound for actual hangs.
+The next run passed the original callback test and completed within 38 minutes,
+then exposed the same terminal-only race in the revocation test: it revoked
+before the CLI had cached the browser row whose stale visibility it asserts.
