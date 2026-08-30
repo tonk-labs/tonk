@@ -40,7 +40,7 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, assign_keys, project, reconcile, split};
+use crate::blocks::{Block, assign_keys, insert_notation, project, reconcile, split};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -844,41 +844,56 @@ impl Notebook {
         for (entity, source) in &edit.changed {
             self.dispatch_edit(entity, source);
         }
-        // A created block needs an entity before it can be written. Mint one
-        // from the notebook's own entity plus a counter, so re-running an
-        // identical edit does not mint a second entity for the same block.
+        // A created block is INSERTED, and the element names no entity.
         //
-        // NOT from `data-subject`: `dispatch_edit` above repoints that at
-        // whichever block it is currently writing, so reading it here picks
-        // up the LAST block edited and mints the new one as its child —
-        // `…/block-4-0/block-6-1/block-7-0/…`, deeper on every edit.
-        let subject = self.notebook_entity();
-        let mut minted: Vec<String> = Vec::new();
-        for (nth, source) in edit.created.iter().enumerate() {
-            let entity = format!("{subject}/block-{}-{nth}", edit.order.len());
-            self.dispatch_edit(&entity, source);
-            minted.push(entity);
+        // Identity derives from the command body; the position derives from
+        // the predecessor's. The element used to mint the entity itself,
+        // from the document's block COUNT — a position wearing an identity's
+        // clothes, which repeats whenever the count returns to a value it
+        // held, so a new block claimed one that already existed and
+        // `reconcile` wrote one block's source onto another.
+        //
+        // Each insert names the block it FOLLOWS. For a run of new blocks
+        // only the first has a stored predecessor; the rest follow the block
+        // before them in the document, which is itself new. That resolves
+        // because the rule reads the predecessor through `block/position`,
+        // which covers a position derived in this same commit as readily as
+        // a stored one — so the element never has to name an entity that
+        // does not exist yet.
+        let notebook = self.notebook_entity();
+        let stored = self.blocks.borrow();
+        // Inserts go as NOTATION, not as one command event per block.
+        //
+        // A run of new blocks has to say which follows which, and a block
+        // created in the same transaction has no entity to name. Notation
+        // can name it by variable — `this: ?b0` on one assertion, `head:
+        // ?b0` on the next — which an event cannot carry. Backward
+        // references are the only kind that analyze, and a run only ever
+        // needs to look back.
+        if let Some(document) = insert_notation(&notebook, &edit.order, &edit.created) {
+            let consumer = self.host.clone();
+            spawn_local(async move {
+                if let Err(message) = evaluate(&consumer, &document, true).await {
+                    web_sys::console::error_1(
+                        &format!("notebook: insert failed: {message}").into(),
+                    );
+                }
+            });
         }
 
-        // Placement is per block: each block that moved, was created, or
-        // never had an entry gets a position between its neighbours, and
-        // each removed block has its entry retracted. Blocks that stayed in
-        // order keep their keys, so a reorder touches only what moved.
-        let stored = self.blocks.borrow();
-        let notebook = self.notebook_entity();
-        let mut fresh = minted.iter();
+        // Placement is for blocks that MOVED. A created block is placed by
+        // the insert rules, so re-keying it here would place it twice.
         let order: Vec<(String, Option<String>)> = edit
             .order
             .iter()
-            .filter_map(|slot| match slot {
-                Some(entity) => {
+            .filter_map(|slot| {
+                slot.as_ref().map(|entity| {
                     let key = stored
                         .iter()
                         .find(|block| &block.entity == entity)
                         .and_then(|block| block.key.clone());
-                    Some((entity.clone(), key))
-                }
-                None => fresh.next().map(|entity| (entity.clone(), None)),
+                    (entity.clone(), key)
+                })
             })
             .collect();
         for (entity, key) in assign_keys(&order) {

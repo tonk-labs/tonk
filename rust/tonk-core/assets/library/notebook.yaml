@@ -67,6 +67,28 @@ concept!: &notebook/blocks
       the: xyz.tonk.notebook
       as: {[position]: entity}
 
+# Where a block sits, whatever the source of that position.
+#
+# ONE relation over three cases: a block already in the sequence, a block
+# whose position this commit derives, and the document edge. The derivation
+# rule reads its neighbours through this concept, so it does not care which
+# kind a neighbour is — which is what lets an inserted block take its place
+# from a neighbour that was itself just inserted.
+concept!: &block/position
+  this: tonk:notebook/block-position
+  description: A block's position in its notebook, derived or stored.
+  with:
+    notebook:
+      description: The notebook the position is within.
+      the: xyz.tonk.notebook.block/notebook
+      cardinality: one
+      as: entity
+    at:
+      description: The position itself.
+      the: xyz.tonk.notebook.block/at
+      cardinality: one
+      as: text
+
 # One block of a notebook. Carries a pointer back to its notebook so the
 # block rows the element reads can be scoped, and so a block written before
 # its placement lands still belongs somewhere.
@@ -205,6 +227,40 @@ view!:
 # Commands and rules
 # ---------------------------------------------------------------------------
 
+# Insert one block. The element names no entity.
+#
+# A block's identity derives from this command's body the way every
+# anchor-less assertion's does. It used to be minted from the document's
+# block COUNT (`{notebook}/block-{len}-{nth}`) — a position wearing an
+# identity's clothes: delete a block and add another and the count repeats,
+# so the new block claims an entity that already exists and `reconcile`
+# writes one block's source onto another.
+#
+# `after` is the block this one follows, BY ENTITY. Its position is looked
+# up rather than sent, so a block inserted after another block inserted in
+# the same commit still resolves — the lookup goes through
+# `block/position`, which covers derived positions as well as stored ones.
+command!: &block/insert
+  description: Insert one block into a notebook, between two others.
+  with:
+    notebook:
+      description: The notebook the block belongs to.
+      the: xyz.tonk.notebook.block/notebook
+      as: entity
+    source:
+      description: The block's markdown source.
+      the: xyz.tonk.notebook.block/source
+      as: text
+  maybe:
+    head:
+      description: The block this one follows; absent at the document head.
+      the: xyz.tonk.notebook.block/head
+      as: entity
+    tail:
+      description: The block this one precedes; absent at the document tail.
+      the: xyz.tonk.notebook.block/tail
+      as: entity
+
 command!: &block/edit
   description: Write one notebook block's source.
   with:
@@ -263,6 +319,99 @@ command!: &block/remove
       description: The position the block held.
       the: dom.event.detail/removed
       as: text
+
+# An inserted block exists.
+rule!:
+  description: Persist an inserted block.
+  assert!: notebook/block
+  when:
+    - assert: block/insert
+      where:
+        this: ?this
+        notebook: ?notebook
+        source: ?source
+
+# A block already in the sequence is at the position it is stored under.
+# This is what gives the derivation rule its neighbours.
+rule!:
+  description: A placed block's position.
+  assert!: block/position
+  when:
+    - assert: notebook/blocks
+      where:
+        this: ?notebook
+        block: {?block/key: ?this}
+    - assert: "=="
+      where:
+        this: ?at
+        is: ?block/key
+
+# The document's edge HAS a position: the empty one.
+#
+# That is what keeps the derivation below to a single rule. Without it a
+# rule body naming `head` never fires for a block at the top, and one
+# variant per present/absent combination is needed instead.
+block/position!:
+  this: tonk:notebook/edge
+  notebook: tonk:notebook/edge
+  at: ""
+
+# ...and an inserted block's position is derived between its neighbours'.
+#
+# Neighbours are read through `block/position`, NOT through the stored
+# sequence — so a block inserted next to another block inserted in the same
+# commit resolves against that one's derived position. `coalesce` supplies
+# the edge sentinel where a neighbour is absent, so head, tail and middle
+# are one rule rather than three.
+rule!:
+  description: Derive an inserted block's position.
+  assert!: block/position
+  when:
+    - assert: block/insert
+      where:
+        this: ?this
+        notebook: ?notebook
+        head: ?maybe-head
+        tail: ?maybe-tail
+    - assert: coalesce
+      where:
+        source: ?maybe-head
+        fallback: tonk:notebook/edge
+        is: ?head
+    - assert: coalesce
+      where:
+        source: ?maybe-tail
+        fallback: tonk:notebook/edge
+        is: ?tail
+    - assert: block/position
+      where:
+        this: ?head
+        at: ?head-at
+    - assert: block/position
+      where:
+        this: ?tail
+        at: ?tail-at
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ?head-at
+        before: ?tail-at
+        is: ?at
+
+# The derived position becomes the block's entry in the sequence.
+rule!:
+  description: Place an inserted block.
+  assert!: notebook/blocks
+  when:
+    - assert: block/insert
+      where:
+        this: ?block
+        notebook: ?this
+    - assert: block/position
+      where:
+        this: ?block
+        notebook: ?this
+        at: ?block/key
 
 rule!:
   description: Persist a block edit onto its block.

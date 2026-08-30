@@ -133,6 +133,78 @@ pub fn split(document: &str) -> Vec<String> {
     blocks
 }
 
+/// Build the notation that inserts an edit's new blocks.
+///
+/// One `block/insert!` per created block, in document order, each naming
+/// the block it follows. A block that follows another NEW block names it by
+/// VARIABLE (`head: ?b0`), which is why this is notation rather than one
+/// command event per block: an event can only carry an entity, and a block
+/// created in the same transaction does not have one yet. A variable bound
+/// by an earlier assertion's `this` can be referenced by a later one — a
+/// backward reference, which is all a run of blocks needs.
+///
+/// Returns `None` when the edit creates nothing.
+pub fn insert_notation(
+    notebook: &str,
+    order: &[Option<String>],
+    created: &[String],
+) -> Option<String> {
+    if created.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    let mut fresh = created.iter();
+    // The variable naming the previous slot, when that slot was itself new.
+    let mut previous_var: Option<String> = None;
+    let mut nth = 0usize;
+    for (index, slot) in order.iter().enumerate() {
+        let Some(source) = (match slot {
+            Some(_) => {
+                previous_var = None;
+                None
+            }
+            None => fresh.next(),
+        }) else {
+            continue;
+        };
+        let var = format!("b{nth}");
+        out.push_str("block/insert!:\n");
+        out.push_str(&format!("  this: ?{var}\n"));
+        out.push_str(&format!("  notebook: {notebook}\n"));
+        out.push_str(&format!("  source: {}\n", yaml_block(source)));
+        // The predecessor: another new block by variable, else the nearest
+        // surviving block by entity, else nothing (the document's head).
+        if let Some(previous) = &previous_var {
+            out.push_str(&format!("  head: ?{previous}\n"));
+        } else if let Some(head) = order[..index].iter().rev().find_map(|s| s.clone()) {
+            out.push_str(&format!("  head: {head}\n"));
+        }
+        // The successor is only ever an EXISTING block: a later new block
+        // would be a forward reference, which does not analyze.
+        if let Some(tail) = order[index + 1..].iter().find_map(|s| s.clone()) {
+            out.push_str(&format!("  tail: {tail}\n"));
+        }
+        out.push('\n');
+        previous_var = Some(var);
+        nth += 1;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A source as a YAML block scalar, so markdown with newlines, colons and
+/// backticks survives without escaping.
+fn yaml_block(source: &str) -> String {
+    let mut out = String::from("|-\n");
+    for line in source.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    // Trim the trailing newline: the caller adds one.
+    out.pop();
+    out
+}
+
 /// The chunk range each block covers, as `(first, count)` over the
 /// document's top-level nodes.
 ///
@@ -584,6 +656,66 @@ mod tests {
     fn it_preserves_trailing_blank_lines_inside_a_fence() {
         let doc = "```dialog-yaml\ncounter/model!:\n  this: id:counter/1\n\n\n```";
         assert_eq!(project(&split(doc)), doc);
+    }
+
+    /// A single new block names its surviving neighbours by entity.
+    #[dialog_common::test]
+    fn it_writes_notation_for_one_inserted_block() {
+        let order = vec![Some("id:a".into()), None, Some("id:b".into())];
+        let created = vec!["hello".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("this: ?b0"), "{text}");
+        assert!(text.contains("head: id:a"), "{text}");
+        assert!(text.contains("tail: id:b"), "{text}");
+    }
+
+    /// A RUN of new blocks chains: the second names the first by variable,
+    /// which is a backward reference and the only kind that analyzes.
+    #[dialog_common::test]
+    fn it_chains_a_run_of_inserted_blocks_by_variable() {
+        let order = vec![Some("id:a".into()), None, None, Some("id:b".into())];
+        let created = vec!["one".to_owned(), "two".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("this: ?b0"), "{text}");
+        assert!(text.contains("this: ?b1"), "{text}");
+        assert!(
+            text.contains("head: id:a"),
+            "the first follows the stored block: {text}"
+        );
+        assert!(
+            text.contains("head: ?b0"),
+            "the second follows the first: {text}"
+        );
+        // The second must NOT forward-reference a later new block.
+        assert!(!text.contains("tail: ?"), "no forward references: {text}");
+    }
+
+    /// A block at the document head has no predecessor.
+    #[dialog_common::test]
+    fn it_omits_the_head_at_the_start_of_a_document() {
+        let order = vec![None, Some("id:b".into())];
+        let created = vec!["first".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(!text.contains("head:"), "{text}");
+        assert!(text.contains("tail: id:b"), "{text}");
+    }
+
+    /// Markdown survives: newlines, colons and backticks are carried in a
+    /// block scalar rather than escaped.
+    #[dialog_common::test]
+    fn it_carries_markdown_verbatim() {
+        let order = vec![None];
+        let created = vec!["```dialog\nnotebook:\n  title: ?t\n```".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("source: |-"), "{text}");
+        assert!(text.contains("    ```dialog"), "{text}");
+        assert!(text.contains("      title: ?t"), "{text}");
+    }
+
+    /// Nothing created, nothing to send.
+    #[dialog_common::test]
+    fn it_writes_no_notation_when_nothing_was_created() {
+        assert!(insert_notation("id:nb", &[Some("id:a".into())], &[]).is_none());
     }
 
     #[dialog_common::test]
