@@ -62,6 +62,12 @@ pub const ACTIVATE_COMMAND: [&str; 2] = ["customer", "activate"];
 /// The command that sends an activation link again.
 pub const RESEND_COMMAND: [&str; 2] = ["customer", "resend"];
 
+/// The largest sealed account secret an enrollment may carry.
+///
+/// The real envelope is 68 bytes and fixed; this is headroom for a
+/// format change, not capacity.
+pub const MAX_SEALED_BYTES: usize = 256;
+
 /// The command path segments of [`Add`].
 pub const PROVIDER_ADD_COMMAND: [&str; 2] = ["provider", "add"];
 
@@ -660,7 +666,8 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .await
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("consent failed to verify: {err}"),
-            })
+            })?;
+        Ok(())
     }
 
     /// This service's own address as a provider — the UCAN endpoint its
@@ -708,6 +715,20 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                 })
         };
         let sealed = carried(&effect.sealed, "sealed")?;
+        // A sealed account secret is 68 bytes: an 8-byte header, a
+        // 12-byte nonce, and 48 bytes of ciphertext over a 32-byte
+        // secret. The bound leaves room for a version bump or a wider
+        // nonce and nothing else — the cell is written before the
+        // customer is served, so a generous limit here would be a
+        // write-anything store that costs nothing to use.
+        if sealed.len() > MAX_SEALED_BYTES {
+            return Err(RegistrationError::Invalid {
+                message: format!(
+                    "`sealed` is {} bytes, over the {MAX_SEALED_BYTES}-byte limit",
+                    sealed.len()
+                ),
+            });
+        }
         let recovery_bytes = carried(&effect.recovery, "recovery")?;
         let consent_bytes = carried(&effect.consent, "consent")?;
 
@@ -718,17 +739,9 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                 message: format!("`recovery` does not decode as an invocation: {err}"),
             }
         })?;
-        // Proofless by construction — issuer, audience and subject are
-        // all the custody key — so this must carry no delegations, and
-        // there is nothing for a revocation query to ask about. Checked
-        // rather than assumed: a chain that did carry proofs would be
-        // verified here without its revocations being consulted.
-        if !recovery.invocation.proofs().is_empty() {
-            return Err(RegistrationError::Forbidden {
-                message: "`recovery` must be self-signed by the custody key and carry no proofs"
-                    .to_string(),
-            });
-        }
+        // Proofs are allowed: a passkey may delegate to a profile that
+        // issues the recovery setup, so the chain is verified like any
+        // other rather than required to be self-signed.
         recovery
             .verify(&VerificationContext::new(&Environment::new(
                 recovery.proof_store(),

@@ -804,6 +804,34 @@ async fn it_keeps_state_across_restarts_with_a_state_dir() -> anyhow::Result<()>
     Ok(())
 }
 
+/// A body over the limit is refused on size, before anything decodes
+/// it: running the parser over an oversized request is the work the
+/// limit exists to avoid, so the answer must not depend on the bytes
+/// being a valid UCAN.
+#[dialog_common::test]
+async fn it_refuses_a_request_body_over_the_limit(env: AccessServiceAddress) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+
+    // Not a container, not signed, not anything: only large.
+    let response = client
+        .post(format!("{base}/ucan/"))
+        .header("Content-Type", "application/cbor")
+        .body(vec![0u8; 64 * 1024 + 1])
+        .send()
+        .await?;
+    assert_eq!(response.status(), 413, "an oversized body is refused");
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["error"]["code"], "PAYLOAD_TOO_LARGE");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("65536")),
+        "the refusal names the limit, got {body}"
+    );
+    Ok(())
+}
+
 #[dialog_common::test]
 async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
@@ -1571,6 +1599,36 @@ mod custody {
                 "`{missing}` named but not carried must be refused, got {answer:?}"
             );
         }
+        Ok(())
+    }
+
+    /// The cell is written before the customer is served, so an
+    /// unbounded `sealed` would be a store anyone could write to for
+    /// free. A real envelope is 68 bytes.
+    #[dialog_common::test]
+    async fn it_refuses_a_sealed_secret_over_the_limit() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            sealed: vec![0u8; 257],
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Invalid { .. })),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// The bound is headroom for a format change, so an envelope at the
+    /// limit is still accepted.
+    #[dialog_common::test]
+    async fn it_accepts_a_sealed_secret_at_the_limit() -> anyhow::Result<()> {
+        let answer = enroll(Custody {
+            sealed: vec![0u8; 256],
+            ..Default::default()
+        })
+        .await;
+        assert!(answer.is_ok(), "got {answer:?}");
         Ok(())
     }
 

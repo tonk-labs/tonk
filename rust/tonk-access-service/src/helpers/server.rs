@@ -270,6 +270,28 @@ fn request_host(req: &Request<Incoming>) -> String {
         .unwrap_or_default()
 }
 
+/// The largest `/ucan/` body the harness accepts, matching the worker's default.
+const MAX_BODY_BYTES: u64 = 64 * 1024;
+
+/// `413`, naming the limit so a caller can act on it.
+fn too_large_response() -> Response<http_body_util::Full<bytes::Bytes>> {
+    Response::builder()
+        .status(StatusCode::PAYLOAD_TOO_LARGE)
+        .header(CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            serde_json::json!({
+                "error": {
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": format!(
+                        "request body exceeds the {MAX_BODY_BYTES}-byte limit for /ucan/"
+                    ),
+                }
+            })
+            .to_string(),
+        )))
+        .expect("a static response builds")
+}
+
 /// Handle an incoming UCAN access service request.
 ///
 /// This implements the same logic as the Cloudflare Worker handler:
@@ -551,6 +573,19 @@ async fn handle_request(
         ));
     }
 
+    // Refused on size alone, before anything is decoded — the same
+    // limit the worker applies, so a request rejected in production is
+    // rejected here too.
+    if let Some(declared) = req
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        && declared > MAX_BODY_BYTES
+    {
+        return Ok(cors_response(too_large_response()));
+    }
+
     // Read request body
     use http_body_util::BodyExt;
     let body_bytes = match req.into_body().collect().await {
@@ -567,6 +602,9 @@ async fn handle_request(
             ));
         }
     };
+    if body_bytes.len() as u64 > MAX_BODY_BYTES {
+        return Ok(cors_response(too_large_response()));
+    }
 
     // Registration commands ride the same endpoint; anything else falls
     // through to the presign path untouched. Mirrors the Worker handler.
