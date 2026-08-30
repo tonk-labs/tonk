@@ -449,6 +449,18 @@ impl Custodian {
         (&self.key, &self.kek)
     }
 
+    /// The account this passkey custodies.
+    ///
+    /// A builder rather than a value because there are three ways to
+    /// reach one and they are not interchangeable: `create` makes a new
+    /// account, `import` opens one already sealed under this passkey,
+    /// and `adopt` seals an existing account under it. Naming the
+    /// custodian first is what makes it impossible to seal under one
+    /// passkey and open with another.
+    pub fn account(&self) -> AccountBuilder<'_> {
+        AccountBuilder(self)
+    }
+
     /// Create a passkey and adopt what it evaluates to.
     ///
     /// One of the two things a page does. Everything downstream — the
@@ -495,6 +507,88 @@ impl Custodian {
         Self::adopt(id, &evaluation.key, &evaluation.kek)
             .await
             .map_err(|error| anyhow::anyhow!("importing the custody handles failed: {error:?}"))
+    }
+}
+
+/// Reaching the account a [`Custodian`] holds.
+pub struct AccountBuilder<'a>(&'a Custodian);
+
+impl AccountBuilder<'_> {
+    /// Generate an account and seal it under this passkey.
+    ///
+    /// The secret exists for the length of this call. Where that is —
+    /// page or worker — is where the handles were sent, which is the
+    /// point of sending them: nothing but the envelope survives, and
+    /// only this passkey opens it.
+    pub async fn create(&self) -> anyhow::Result<Account> {
+        let secret = crate::envelope::AccountSecret::generate()?;
+        self.seal(secret).await
+    }
+
+    /// Seal an account that already exists under this passkey. Used
+    /// when a second passkey is enrolled: same account, another way in.
+    pub async fn adopt(&self, secret: crate::envelope::AccountSecret) -> anyhow::Result<Account> {
+        self.seal(secret).await
+    }
+
+    /// Import the account from an envelope sealed under this passkey.
+    ///
+    /// The recovery path: a device holding nothing but the passkey
+    /// derives the opener, reads the envelope it was handed, and has
+    /// the account. Takes the envelope rather than fetching it — where
+    /// it comes from is the caller's business, and it arrives from the
+    /// custody cell or from a profile row depending on who is asking.
+    pub async fn import(
+        &self,
+        envelope: &Envelope<crate::clearance::Recovery>,
+    ) -> anyhow::Result<Account> {
+        let opener = self
+            .0
+            .opener()
+            .await
+            .map_err(|error| anyhow::anyhow!("deriving the opener failed: {error:?}"))?;
+        let seed = open_seed(&opener, envelope).await?;
+        Ok(Account {
+            secret: crate::envelope::AccountSecret::from_bytes(seed),
+            envelope: envelope.clone(),
+        })
+    }
+
+    async fn seal(&self, secret: crate::envelope::AccountSecret) -> anyhow::Result<Account> {
+        let sealer = self
+            .0
+            .sealer()
+            .await
+            .map_err(|error| anyhow::anyhow!("deriving the sealer failed: {error:?}"))?;
+        let envelope = seal_seed(&sealer, &secret.material(), KekMethod::Passkey).await?;
+        Ok(Account { secret, envelope })
+    }
+}
+
+/// An account and the envelope that holds it, kept together.
+///
+/// The envelope is what gets published to the custody cell; the secret
+/// is what signs while this value lives. Pairing them means a caller
+/// cannot publish an envelope for one account and sign as another.
+pub struct Account {
+    secret: crate::envelope::AccountSecret,
+    envelope: Envelope<crate::clearance::Recovery>,
+}
+
+impl Account {
+    /// The account's signer.
+    pub async fn signer(&self) -> anyhow::Result<dialog_credentials::Ed25519Signer> {
+        self.secret.signer().await
+    }
+
+    /// The sealed form, for the custody cell.
+    pub fn envelope(&self) -> &Envelope<crate::clearance::Recovery> {
+        &self.envelope
+    }
+
+    /// The secret itself, for the derivations that need it.
+    pub fn secret(&self) -> &crate::envelope::AccountSecret {
+        &self.secret
     }
 }
 
@@ -746,6 +840,58 @@ mod tests {
             .await
             .expect("and opens what the byte path sealed");
         assert_eq!(&*opened, &*secret);
+    }
+
+    /// Create an account under a passkey, then load it back from the
+    /// envelope alone — which is what a second device does.
+    ///
+    /// The secret never leaves this call on either side: `create`
+    /// generates and seals it, `load` opens it, and between them only
+    /// the envelope exists. That is the property that makes it safe to
+    /// do this in the worker.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_creates_an_account_and_loads_it_back() {
+        use dialog_varsig::Principal as _;
+
+        let custodian = Custodian::adopt(vec![1], &[11u8; 32], &[22u8; 32])
+            .await
+            .expect("handles import");
+
+        let created = custodian.account().create().await.expect("an account");
+        let signer = created.signer().await.expect("a signer");
+
+        // Only the envelope crosses. A device with the same passkey and
+        // nothing else gets the same account back.
+        let recovered = custodian
+            .account()
+            .import(created.envelope())
+            .await
+            .expect("the envelope opens under the same passkey");
+        assert_eq!(
+            recovered.signer().await.expect("a signer").did(),
+            signer.did(),
+            "the same account comes back"
+        );
+    }
+
+    /// An envelope sealed under one passkey does not open under another.
+    ///
+    /// The failure this design must have: a wrong custodian is refused
+    /// by the tag check rather than yielding something plausible.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_refuses_an_account_sealed_under_another_passkey() {
+        let mine = Custodian::adopt(vec![1], &[11u8; 32], &[22u8; 32])
+            .await
+            .expect("handles import");
+        let theirs = Custodian::adopt(vec![2], &[33u8; 32], &[44u8; 32])
+            .await
+            .expect("handles import");
+
+        let account = mine.account().create().await.expect("an account");
+        assert!(
+            theirs.account().import(account.envelope()).await.is_err(),
+            "another passkey does not open it"
+        );
     }
 
     /// The whole point: something sealed by the `aes_gcm` path opens

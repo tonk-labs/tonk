@@ -96,6 +96,17 @@ impl AccountSecret {
         Self(bytes)
     }
 
+    /// The secret's own bytes, for sealing it through a handle.
+    ///
+    /// [`Kek::seal`] reaches them directly, which a `CryptoKey`-backed
+    /// KEK cannot: sealing there goes through
+    /// [`crate::webcrypto_kek::seal_seed`], which takes bytes. Not the
+    /// signing seed — that is derived *from* this, and an envelope
+    /// holding it would recover a signer and nothing else.
+    pub(crate) fn material(&self) -> Zeroizing<[u8; 32]> {
+        self.0.clone()
+    }
+
     /// The Ed25519 signing seed, via [`SIGNING_CONTEXT`].
     pub fn signing_seed(&self) -> Zeroizing<[u8; 32]> {
         expand(&self.0, SIGNING_CONTEXT)
