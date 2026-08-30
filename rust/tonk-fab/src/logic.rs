@@ -1353,21 +1353,20 @@ mod member_roster {
 
 /// The subscribe body for the profile's space list.
 ///
-/// Reads the PROFILE branch's replica records by raw attribute. `name` is
-/// deliberately absent: each row renders the space's OWN repo name via
-/// `<ui-space-name>`, since the profile-side replica name goes stale.
-/// Directory mode (`this` unbound), so every replica record returns as a row.
+/// Reads the PROFILE branch's account-level space directory by raw attribute.
+/// Directory mode (`this` unbound), so every convergent space entry returns as
+/// a row. `name` is optional for vintage entries that predate the mirror.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "subject": { "the": "xyz.tonk.replica/subject", "as": "Entity", "cardinality": "one" },
-            "kind":    { "the": "xyz.tonk.replica/kind",    "as": "Entity", "cardinality": "one" },
-            "status":  { "the": "xyz.tonk.replica/status",  "as": "Entity", "cardinality": "one" }
+            "subject": { "the": "xyz.tonk.space/subject", "as": "Entity", "cardinality": "one" },
+            "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
+            "status":  { "the": "xyz.tonk.space/status",  "as": "Entity", "cardinality": "one" }
         } },
         "terms": {
             "this":    { "?": { "name": "this" } },
             "subject": { "?": { "name": "subject" } },
-            "kind":    { "?": { "name": "kind" } },
+            "name":    { "?": { "name": "name" } },
             "status":  { "?": { "name": "status" } }
         }
     })
@@ -1394,30 +1393,37 @@ mod space_list {
     use super::*;
 
     #[test]
-    fn it_queries_the_profile_space_list_by_raw_attribute() {
+    fn it_queries_the_account_space_directory_by_raw_attribute() {
         let body = space_list_query_body();
-        assert!(body.contains("xyz.tonk.replica/subject"));
-        assert!(body.contains("xyz.tonk.replica/kind"));
-        assert!(body.contains("xyz.tonk.replica/status"));
-        // Directory mode over every replica record.
+        assert!(body.contains("xyz.tonk.space/subject"));
+        assert!(body.contains("xyz.tonk.space/name"));
+        assert!(body.contains("xyz.tonk.space/status"));
+        assert!(
+            !body.contains("xyz.tonk.replica/"),
+            "the account directory replaced per-device replica rows: {body}"
+        );
+        // Directory mode over every account space entry.
         assert!(body.contains("\"this\":{\"?\""));
-        // No concept named — nothing seeded is consulted.
-        assert!(!body.contains("tonk:space"));
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            parsed["predicate"]["with"]["name"]["optional"], true,
+            "a vintage directory entry without a name must remain listable"
+        );
     }
 
     #[test]
-    fn a_reset_keeps_one_row_per_replica_entity() {
+    fn a_reset_keeps_one_row_per_directory_entity() {
         let mut rows = vec![("stale".to_owned(), "stale")];
 
         reset_keyed_rows(
             &mut rows,
             [
-                ("replica:space".to_owned(), "first"),
-                ("replica:space".to_owned(), "latest"),
+                ("directory:space".to_owned(), "first"),
+                ("directory:space".to_owned(), "latest"),
             ],
         );
 
-        assert_eq!(rows, vec![("replica:space".to_owned(), "latest")]);
+        assert_eq!(rows, vec![("directory:space".to_owned(), "latest")]);
     }
 }
 

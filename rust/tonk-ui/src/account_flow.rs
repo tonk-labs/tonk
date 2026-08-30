@@ -3746,6 +3746,64 @@ mod tests {
         Ok(report.rows)
     }
 
+    /// The callback roundtrip is settled only when the linked CLI sees both
+    /// sides of the handoff. The CLI self-describes its own row locally, so a
+    /// terminal-only list is an intermediate state, not proof that the
+    /// signing browser's account facts have converged.
+    fn callback_device_rows_ready(rows: &[CliDeviceRow]) -> bool {
+        let browser = rows
+            .iter()
+            .any(|row| row.status == "active" && row.name.starts_with("Chrome on "));
+        let terminal = rows
+            .iter()
+            .any(|row| row.status == "active" && row.name == "e2e terminal" && row.this_device);
+        browser && terminal
+    }
+
+    async fn wait_for_callback_device_rows(
+        profile: &TempDir,
+        env: &TestEnvironment,
+    ) -> Result<(CliOutput, Vec<CliDeviceRow>)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let output = devices(profile, env).await?;
+            if !output.status.success() {
+                return Err(anyhow!("devices failed: {}", output.stderr));
+            }
+            let rows = device_rows(&output.stdout)?;
+            if callback_device_rows_ready(&rows) {
+                return Ok((output, rows));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the callback device list never converged to the signing browser and linked terminal: {}\n--- devices stderr ---\n{}",
+                    output.stdout,
+                    output.stderr
+                ));
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    #[test]
+    fn callback_device_readiness_rejects_the_terminal_only_intermediate_state() {
+        let terminal = CliDeviceRow {
+            status: "active".into(),
+            name: "e2e terminal".into(),
+            did: "did:key:zTerminal".into(),
+            this_device: true,
+        };
+        assert!(!callback_device_rows_ready(std::slice::from_ref(&terminal)));
+
+        let browser = CliDeviceRow {
+            status: "active".into(),
+            name: "Chrome on Linux".into(),
+            did: "did:key:zBrowser".into(),
+            this_device: false,
+        };
+        assert!(callback_device_rows_ready(&[terminal, browser]));
+    }
+
     fn account_space_subjects(output: &str) -> Result<Vec<String>> {
         let report: JsonRows<CliAccountSpaceRow> =
             serde_json::from_str(output).context("account space output was not valid JSON")?;
@@ -4676,29 +4734,12 @@ mod tests {
 
         // The approving page describes the terminal's row and pushes the
         // account branch best-effort before it delivers the grant; a push
-        // that loses the race to the CLI's own bounded pull leaves the
-        // row for the next sync sweep. Each `devices` call pulls again, so
-        // wait for the row rather than reading the list once.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let (devices, device_rows) = loop {
-            let devices = devices(&linked.profile, &env).await?;
-            assert!(
-                devices.status.success(),
-                "devices failed: {}",
-                devices.stderr
-            );
-            let rows = device_rows(&devices.stdout)?;
-            if rows.iter().any(|row| row.name == "e2e terminal") {
-                break (devices, rows);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                panic!(
-                    "the linked terminal never appeared in the device list: {}\n--- devices stderr ---\n{}",
-                    devices.stdout, devices.stderr
-                );
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        };
+        // that loses the race to the CLI's own bounded pull leaves one side
+        // for the next sync sweep. The CLI also self-describes locally, so
+        // its terminal row can appear before the signing browser's remote
+        // row. Each `devices` call pulls again: wait for BOTH sides rather
+        // than exiting on that guaranteed local row.
+        let (devices, device_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
         assert!(
             device_rows
                 .iter()
@@ -5185,9 +5226,10 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
         let linked = link_cli(&driver, &env).await?;
-        let listed = devices(&linked.profile, &env).await?;
-        assert!(listed.status.success(), "devices failed: {}", listed.stderr);
-        let listed_rows = device_rows(&listed.stdout)?;
+        // Cache the complete callback view before revocation. The CLI creates
+        // its own row locally, so a terminal-only list does not prove it has
+        // pulled the browser row that must remain visible in its stale cache.
+        let (_listed, listed_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
         let cli_did = did_for_device(&listed_rows, "e2e terminal")
             .context("CLI device was absent from the account device list")?
             .to_string();
