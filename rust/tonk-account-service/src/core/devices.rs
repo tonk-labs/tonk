@@ -8,6 +8,8 @@ use crate::store::{
     Account, DetachStoreOutcome, Device, DeviceStatus, RegisteredDevice, Store, StoreError,
 };
 
+const ACTIVE_DEVICE_OTHER_ACCOUNT: &str = "this device is already active on another account";
+
 /// A device row as surfaced to API callers.
 pub struct DeviceView {
     /// Exact attachment generation.
@@ -85,6 +87,17 @@ async fn insert_device_registration<S: Store>(
         .await
 }
 
+/// Preserve the one storage conflict this ceremony can explain accurately.
+/// Every other storage detail remains behind the global masked conversion.
+fn link_device_error(error: StoreError) -> CeremonyError {
+    match error {
+        StoreError::Conflict(detail) if detail == ACTIVE_DEVICE_OTHER_ACCOUNT => {
+            CeremonyError::Conflict(detail)
+        }
+        other => other.into(),
+    }
+}
+
 /// Register this device or recover its same-account active generation.
 pub async fn register_device<S: Store>(
     store: &S,
@@ -155,7 +168,7 @@ pub async fn link_device<S: Store>(
         now,
     )
     .await
-    .map_err(Into::into)
+    .map_err(link_device_error)
 }
 
 /// Terminal result of processing a signed generation-bound detach intent.
@@ -819,6 +832,23 @@ mod tests {
             .await,
             Err(CeremonyError::Conflict(detail))
                 if detail == "this device is already active on another account"
+        ));
+    }
+
+    #[test]
+    fn it_exposes_only_the_curated_cross_account_link_conflict() {
+        assert!(matches!(
+            link_device_error(StoreError::Conflict(
+                "this device is already active on another account".into()
+            )),
+            CeremonyError::Conflict(detail)
+                if detail == "this device is already active on another account"
+        ));
+        assert!(matches!(
+            link_device_error(StoreError::Conflict(
+                "UNIQUE constraint failed: devices.device_did".into()
+            )),
+            CeremonyError::Conflict(detail) if detail == crate::core::GENERIC_CONFLICT
         ));
     }
 
