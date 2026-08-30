@@ -142,10 +142,11 @@ pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Res
     match store.customer(did).await {
         Ok(Some(customer)) => {
             let receipt = Receipt {
-                customer: customer.did.parse().map_err(|err| {
+                customer: customer.account.parse().map_err(|err| {
                     worker::Error::RustError(format!("stored customer did is malformed: {err:?}"))
                 })?,
                 status: customer.status,
+                ledger: None,
                 // Only for a customer this service actually serves. The
                 // probe is what notices activation, so it must answer
                 // the address then — but naming one for a customer

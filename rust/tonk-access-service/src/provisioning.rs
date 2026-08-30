@@ -89,6 +89,40 @@ pub async fn screen<S: Store>(
             "the subject is not provisioned",
         )));
     }
+    // A purge in flight refuses first: the objects may already be
+    // half gone, and reading a partly deleted space is worse than
+    // reading none of it.
+    if subject.deleted_at.is_some() {
+        return Ok(Err(denial(
+            Recourse::None,
+            "the subscription is being deleted",
+        )));
+    }
+    // Archived data is gone by definition; the row survives only so what
+    // it accrued can still be billed.
+    if subject.archived_at.is_some() {
+        return Ok(Err(denial(Recourse::None, "the subscription is archived")));
+    }
+    // A suspension with a deadline lifts itself: past that moment the
+    // row still carries the reason, and it no longer applies. Retryable
+    // for the same reason — waiting is what clears it.
+    if let Some(suspension) = &subject.suspension {
+        match suspension.until {
+            Some(until) if until <= now => {}
+            Some(_) => {
+                return Ok(Err(denial(
+                    Recourse::Retry,
+                    &format!("the subscription is suspended: {}", suspension.message),
+                )));
+            }
+            None => {
+                return Ok(Err(denial(
+                    Recourse::None,
+                    &format!("the subscription is suspended: {}", suspension.message),
+                )));
+            }
+        }
+    }
     // A subscription that has run out serves nothing, whatever the
     // customer behind it is doing. Null never expires.
     if subject

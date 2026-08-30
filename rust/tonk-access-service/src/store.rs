@@ -71,10 +71,31 @@ pub struct Servability {
     pub own: Option<CustomerStatus>,
     /// Whether a consumer row exists for the subject at all.
     pub consumer: bool,
-    /// The consumer's reservation, when it holds one.
+    /// When the subscription runs out, if it does.
     pub expires_at: Option<u64>,
+    /// When a purge began, if one has.
+    pub deleted_at: Option<u64>,
+    /// The suspension on this subscription, if it carries one.
+    pub suspension: Option<Suspension>,
+    /// When the data was dropped for non-payment, if it was.
+    pub archived_at: Option<u64>,
     /// The provider's registration, when the provider is a customer.
     pub provider: Option<CustomerStatus>,
+}
+
+/// A suspension recorded against one subscription.
+///
+/// The code is what a client matches on and the message is what a person
+/// reads; both are written together so a suspension can always explain
+/// itself. `until` absent means indefinite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suspension {
+    /// Machine-readable reason.
+    pub code: String,
+    /// What to tell a person.
+    pub message: String,
+    /// When it lifts on its own, if it does.
+    pub until: Option<u64>,
 }
 
 /// A space the service replicates, servable only while `provider` names
@@ -188,6 +209,24 @@ pub trait Store {
         kind: SubscriptionKind,
     ) -> Result<bool, StoreError>;
 
+    /// Record a suspension against one subscription, replacing any that
+    /// stands. Answers false when no live subscription matched.
+    async fn suspend_subscription(
+        &self,
+        consumer: &str,
+        code: &str,
+        message: &str,
+        until: Option<u64>,
+    ) -> Result<bool, StoreError>;
+
+    /// Lift a suspension. Answers false when no live subscription
+    /// matched; lifting one that is not suspended is not an error.
+    async fn resume_subscription(&self, consumer: &str) -> Result<bool, StoreError>;
+
+    /// Drop a subscription's data, keeping the row for billing. Answers
+    /// false when no live, unarchived subscription matched.
+    async fn archive_subscription(&self, consumer: &str, now: u64) -> Result<bool, StoreError>;
+
     /// Atomically deny future storage operations before object removal.
     async fn mark_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError>;
 
@@ -245,6 +284,11 @@ pub const SELECT_SERVABILITY: &str = r#"
 SELECT own.status           AS own_status,
        sub.consumer         AS consumer_did,
        sub.expires_at       AS consumer_expires_at,
+       sub.deleted_at       AS consumer_deleted_at,
+       sub.suspend_code     AS consumer_suspend_code,
+       sub.suspend_message  AS consumer_suspend_message,
+       sub.suspend_until_at AS consumer_suspend_until_at,
+       sub.archived_at      AS consumer_archived_at,
        provider.status      AS provider_status
   FROM (SELECT ?1 AS did) AS asked
   LEFT JOIN customer own      ON own.account = asked.did
@@ -310,6 +354,31 @@ UPDATE customer
        terms_accepted_at = ?2,
        cycle_anchor_at = ?2
  WHERE account = ?1 AND status = 'Registered'
+"#;
+
+/// Record a suspension. Overwrites any suspension already standing:
+/// re-suspending with a new reason replaces the old one rather than
+/// layering, so a row always carries exactly the reason in force.
+pub const SUSPEND_SUBSCRIPTION: &str = r#"
+UPDATE subscription
+   SET suspend_code = ?2, suspend_message = ?3, suspend_until_at = ?4
+ WHERE consumer = ?1 AND deleted_at IS NULL
+"#;
+
+/// Lift a suspension, clearing the reason with it: a row that says it is
+/// suspended and cannot say why is one nothing can explain.
+pub const RESUME_SUBSCRIPTION: &str = r#"
+UPDATE subscription
+   SET suspend_code = NULL, suspend_message = NULL, suspend_until_at = NULL
+ WHERE consumer = ?1 AND deleted_at IS NULL
+"#;
+
+/// Drop a subscription's data while keeping the row, because what it
+/// accrued still has to be billed.
+pub const ARCHIVE_SUBSCRIPTION: &str = r#"
+UPDATE subscription
+   SET archived_at = ?2
+ WHERE consumer = ?1 AND deleted_at IS NULL AND archived_at IS NULL
 "#;
 
 pub const START_SUBSCRIPTION_DELETION: &str = r#"

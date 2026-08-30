@@ -8,12 +8,13 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, Customer, DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS,
-    DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER, INSERT_SELF_SUBSCRIPTION, REMOVE_SUBSCRIPTION,
-    SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
+    ACTIVATE_CUSTOMER, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer, DELETE_CUSTOMER,
+    DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
+    INSERT_SELF_SUBSCRIPTION, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER,
+    SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
     SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION,
-    Servability, Store, StoreError, Subscription, SubscriptionKind, UPDATE_REGISTERED_EMAIL,
-    parse_status,
+    SUSPEND_SUBSCRIPTION, Servability, Store, StoreError, Subscription, SubscriptionKind,
+    Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -214,7 +215,12 @@ impl Store for SqliteStore {
                     row.get::<_, Option<String>>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })
             .optional()
@@ -222,13 +228,33 @@ impl Store for SqliteStore {
         // The `(SELECT ?1)` on the left of every join always yields a
         // row, so `None` here means the query itself found nothing —
         // treated the same as a subject with no rows at all.
-        let Some((own, consumer, expires_at, provider_status)) = row else {
+        let Some((
+            own,
+            consumer,
+            expires_at,
+            deleted_at,
+            suspend_code,
+            suspend_message,
+            suspend_until_at,
+            archived_at,
+            provider_status,
+        )) = row
+        else {
             return Ok(Servability::default());
         };
         Ok(Servability {
             own: own.as_deref().map(parse_status).transpose()?,
             consumer: consumer.is_some(),
             expires_at: expires_at.map(|value| value as u64),
+            deleted_at: deleted_at.map(|value| value as u64),
+            // The code and the message are written together, so one
+            // without the other is a row nothing could explain.
+            suspension: suspend_code.map(|code| Suspension {
+                message: suspend_message.unwrap_or_default(),
+                code,
+                until: suspend_until_at.map(|value| value as u64),
+            }),
+            archived_at: archived_at.map(|value| value as u64),
             provider: provider_status.as_deref().map(parse_status).transpose()?,
         })
     }
@@ -337,6 +363,39 @@ impl Store for SqliteStore {
             )
             .map_err(map_err)?;
         Ok(changed > 0)
+    }
+
+    async fn suspend_subscription(
+        &self,
+        consumer: &str,
+        code: &str,
+        message: &str,
+        until: Option<u64>,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(
+                SUSPEND_SUBSCRIPTION,
+                params![consumer, code, message, until.map(|at| at as i64)],
+            )
+            .map_err(map_err)?
+            > 0)
+    }
+
+    async fn resume_subscription(&self, consumer: &str) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(RESUME_SUBSCRIPTION, params![consumer])
+            .map_err(map_err)?
+            > 0)
+    }
+
+    async fn archive_subscription(&self, consumer: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(ARCHIVE_SUBSCRIPTION, params![consumer, now as i64])
+            .map_err(map_err)?
+            > 0)
     }
 
     async fn mark_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {

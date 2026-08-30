@@ -162,8 +162,6 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
         .map_err(map_access_error)?;
 
     #[cfg(target_arch = "wasm32")]
-    screen_consumer_state(body_bytes, env).await?;
-    #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
 
     // Write permits carry the declared size as a signed Content-Length,
@@ -184,26 +182,6 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
             (r.with_headers(headers), bytes)
         })
         .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn screen_consumer_state(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
-    use crate::store::{Store, d1::D1Store};
-
-    let Some(subject) = crate::deletion::subject(body_bytes) else {
-        return Ok(());
-    };
-    let store = D1Store::new(env.d1("CONTROL").map_err(|_| unavailable())?);
-    match store
-        .consumer(subject.as_str())
-        .await
-        .map_err(|_| unavailable())?
-    {
-        Some(consumer) if consumer.deletion_state != ::Active => {
-            Err(AuthorizeError::Revoked { subject }.into())
-        }
-        _ => Ok(()),
-    }
 }
 
 /// Screen the subject against the provisioning gate: a space is served

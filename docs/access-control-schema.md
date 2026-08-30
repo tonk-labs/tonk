@@ -52,10 +52,10 @@ erDiagram
         TEXT kind "enum: space | customer | custody"
         INTEGER registered_at
         INTEGER expires_at "when the subscription runs out; null never does"
-        INTEGER archived_at
-        TEXT suspend_code
-        TEXT suspend_message
-        INTEGER suspend_until_at "null with a code set: indefinite"
+        INTEGER archived_at "when the data was dropped for non-payment; the row stays for billing"
+        TEXT suspend_code "set while suspended; the reason a client matches on"
+        TEXT suspend_message "what to tell a person"
+        INTEGER suspend_until_at "when the suspension lifts itself; null with a code set is indefinite"
         INTEGER size "last measurement"
         INTEGER measured_at
         INTEGER deleted_at "when deletion began; the row goes when it finishes"
@@ -82,10 +82,14 @@ flowchart TD
     A["subject DID"] --> D{"subscription row?"}
     D -->|none| E["denied"]
     D -->|found| X{"deleted_at set?"}
-    X -->|yes, purging| Y["denied: the space is being deleted"]
-    X -->|no| F{"expires_at passed?"}
-    F -->|yes| G["denied: the subscription ran out"]
-    F -->|"no, or null"| Z{"customer.status of its provider"}
+    X -->|yes| G1["denied: being deleted"]
+    X -->|no| AR{"archived_at set?"}
+    AR -->|yes| G2["denied: archived"]
+    AR -->|no| SU{"suspend_code set?"}
+    SU -->|"yes, and suspend_until_at not passed"| G3["denied: suspended, with the reason"]
+    SU -->|"no, or the deadline passed"| F{"expires_at passed?"}
+    F -->|yes| G4["denied: the subscription ran out"]
+    F -->|no| Z{"customer.status of its provider"}
     Z -->|Active| K["served"]
     Z -->|Registered| L["denied, retryable: awaiting email activation"]
     Z -->|Suspended| M["denied"]
@@ -114,6 +118,21 @@ not have to wait for it.
 Because the gate is subject-level, it cannot serve a read while refusing
 a write. Anything needing that distinction has to come from the
 delegation chain, not from a status column.
+
+## Operator commands
+
+Three things a service does to one subscription, on its own DID as
+subject — they are its decisions about a customer, not anything the
+customer authorizes, so only a key it delegated to can invoke one.
+
+| Command | Data | Row | Comes back |
+|---|---|---|---|
+| `/use/put/subscription/suspend` | kept | kept | on resume, or when `suspend_until_at` passes |
+| `/use/put/subscription/archive` | dropped | kept, for billing | on re-provisioning |
+| `/customer/deletion/*` | dropped | removed | no |
+
+Deletion is the customer's own request rather than an operator's, which
+is why it is not in the `/use/put/subscription` namespace.
 
 ## Registration lifecycle
 

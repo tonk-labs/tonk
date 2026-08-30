@@ -41,6 +41,9 @@ use tonk_account::customer::{
     Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Ledger,
     Provider as ProviderRole, Receipt, RegistrationError, deposit_scopes,
 };
+use tonk_account::subscription::{
+    Archive as ArchiveSubscription, Resume as ResumeSubscription, Suspend as SuspendSubscription,
+};
 
 use crate::email::{EmailSender, normalize_email};
 use crate::store::{SIGNUP_PLAN, Store, StoreError};
@@ -56,6 +59,15 @@ pub const ACTIVATE_COMMAND: [&str; 2] = ["customer", "activate"];
 
 /// The command path segments of [`Add`].
 pub const PROVIDER_ADD_COMMAND: [&str; 2] = ["provider", "add"];
+
+/// The operator commands on a subscription. Their subject is the
+/// service's own DID, so only a key the service delegated to can invoke
+/// one.
+pub const SUSPEND_COMMAND: [&str; 4] = ["use", "put", "subscription", "suspend"];
+/// See [`SUSPEND_COMMAND`].
+pub const RESUME_COMMAND: [&str; 4] = ["use", "put", "subscription", "resume"];
+/// See [`SUSPEND_COMMAND`].
+pub const ARCHIVE_COMMAND: [&str; 4] = ["use", "put", "subscription", "archive"];
 
 /// The command path a consent delegation must grant, or a prefix of it.
 pub const CONSUMER_PROVISION_COMMAND: [&str; 2] = ["consumer", "provision"];
@@ -122,6 +134,12 @@ pub enum RegistrationCommand {
     Activate,
     /// `/provider/add`
     ProviderAdd,
+    /// `/use/put/subscription/suspend`
+    Suspend,
+    /// `/use/put/subscription/resume`
+    Resume,
+    /// `/use/put/subscription/archive`
+    Archive,
 }
 
 /// Peek at a container's invocation command without verifying anything.
@@ -136,6 +154,9 @@ pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationComman
         segments if segments == ENROLL_COMMAND => Some(RegistrationCommand::Enroll),
         segments if segments == ACTIVATE_COMMAND => Some(RegistrationCommand::Activate),
         segments if segments == PROVIDER_ADD_COMMAND => Some(RegistrationCommand::ProviderAdd),
+        segments if segments == SUSPEND_COMMAND => Some(RegistrationCommand::Suspend),
+        segments if segments == RESUME_COMMAND => Some(RegistrationCommand::Resume),
+        segments if segments == ARCHIVE_COMMAND => Some(RegistrationCommand::Archive),
         _ => None,
     }
 }
@@ -149,6 +170,9 @@ pub enum Answer {
     Customer(Receipt),
     /// `/provider/add` answers the provisioned consumer.
     Subscription(ConsumerReceipt),
+    /// The operator commands answer with nothing to say: the effect is
+    /// the row, and the gate is where it shows.
+    Done,
 }
 
 /// The environment a registration invocation executes against: storage,
@@ -245,10 +269,71 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
                         .await?,
                 ))
             }
+            // The operator commands. Their subject is this service, so
+            // the chain must root here: `verify` refuses any other
+            // issuer for a proofless chain on this subject, and a
+            // delegated one still has to walk back to this key.
+            Some(RegistrationCommand::Suspend) => {
+                let chain = self.service_command(&SUSPEND_COMMAND).await?;
+                let effect: SuspendSubscription = deserialize_arguments(chain.arguments())?;
+                self.store
+                    .suspend_subscription(
+                        effect.consumer.as_str(),
+                        &effect.code,
+                        &effect.reason,
+                        effect.until,
+                    )
+                    .await
+                    .map_err(internal)?;
+                Ok(Answer::Done)
+            }
+            Some(RegistrationCommand::Resume) => {
+                let chain = self.service_command(&RESUME_COMMAND).await?;
+                let effect: ResumeSubscription = deserialize_arguments(chain.arguments())?;
+                self.store
+                    .resume_subscription(effect.consumer.as_str())
+                    .await
+                    .map_err(internal)?;
+                Ok(Answer::Done)
+            }
+            Some(RegistrationCommand::Archive) => {
+                let chain = self.service_command(&ARCHIVE_COMMAND).await?;
+                let effect: ArchiveSubscription = deserialize_arguments(chain.arguments())?;
+                self.store
+                    .archive_subscription(effect.consumer.as_str(), self.now)
+                    .await
+                    .map_err(internal)?;
+                Ok(Answer::Done)
+            }
             None => Err(RegistrationError::Invalid {
                 message: "not a registration invocation".to_string(),
             }),
         }
+    }
+
+    /// Verify a command the service issues about itself.
+    ///
+    /// The subject is this service, so a chain that does not root here
+    /// is not one of ours however well formed it is. Refusing on the
+    /// subject rather than on the issuer leaves room for a delegated
+    /// operator key, which still has to walk back to this one.
+    async fn service_command(
+        &self,
+        command: &[&str],
+    ) -> Result<InvocationChain<AnySignature>, RegistrationError> {
+        let chain = self
+            .verified_chain(command, Some(CEREMONY_WINDOW_SECONDS))
+            .await?;
+        let service = self.service.did();
+        if chain.subject() != &service {
+            return Err(RegistrationError::Forbidden {
+                message: format!(
+                    "an operator command acts on this service, got subject {}",
+                    chain.subject()
+                ),
+            });
+        }
+        Ok(chain)
     }
 
     /// Execute a verified `/customer/enroll`: validate the deposited

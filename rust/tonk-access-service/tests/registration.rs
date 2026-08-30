@@ -127,6 +127,7 @@ fn as_customer(answer: Answer) -> Receipt {
     match answer {
         Answer::Customer(receipt) => receipt,
         Answer::Subscription(receipt) => panic!("expected a customer receipt, got {receipt:?}"),
+        Answer::Done => panic!("expected a customer receipt, got an operator command's answer"),
     }
 }
 
@@ -1588,6 +1589,324 @@ mod custody {
                 .expect("captured email mutex poisoned")
                 .is_empty(),
             "a refused enrollment sends no activation email"
+        );
+        Ok(())
+    }
+}
+
+/// The operator commands, driven the way an operator tool drives them:
+/// a signed invocation on the service's own subject, posted through the
+/// same handler as everything else.
+///
+/// These are about the gate, so each one suspends or archives and then
+/// asks `screen` what a client would be told. Poking the columns
+/// directly would test the column rather than the command.
+mod operator {
+    use super::*;
+    use dialog_capability::access::{AuthorizeError, Recourse};
+    use tonk_access_service::provisioning::screen;
+    use tonk_access_service::registration::{ARCHIVE_COMMAND, RESUME_COMMAND, SUSPEND_COMMAND};
+
+    /// Sign an operator command on the service's own subject.
+    async fn operator_container(
+        service: &Ed25519Signer,
+        command: [&str; 4],
+        arguments: BTreeMap<String, Promised>,
+    ) -> Vec<u8> {
+        let invocation = InvocationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(service.clone()))
+            .audience(&service.did())
+            .subject(&service.did())
+            .command(command.iter().map(ToString::to_string).collect())
+            .arguments(arguments)
+            .proofs(vec![])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await
+            .expect("operator invocation");
+        InvocationChain::new(invocation, std::collections::HashMap::new())
+            .to_bytes()
+            .expect("container encodes")
+    }
+
+    fn consumer_argument(consumer: &Did) -> BTreeMap<String, Promised> {
+        BTreeMap::from([(
+            "consumer".to_string(),
+            Promised::String(consumer.to_string()),
+        )])
+    }
+
+    /// An active customer with one provisioned space, which is what
+    /// every case here starts from.
+    async fn served_space(fixture: &Fixture) -> (Ed25519Signer, Ed25519Signer) {
+        let customer = Ed25519Signer::generate().await.expect("customer key");
+        let space = Ed25519Signer::generate().await.expect("space key");
+        fixture
+            .enroll_and_activate(&customer, "alice@example.com")
+            .await;
+        let container = add_container(&customer, &space, &customer.did()).await;
+        fixture
+            .registration(&container)
+            .handle()
+            .await
+            .expect("the space is provisioned");
+        (customer, space)
+    }
+
+    /// What the gate says about `space` at `now`.
+    async fn verdict(
+        fixture: &Fixture,
+        space: &Ed25519Signer,
+        now: u64,
+    ) -> Option<(Recourse, String)> {
+        match screen(&fixture.store, space.did().as_str(), now)
+            .await
+            .expect("the store answers")
+        {
+            Ok(()) => None,
+            Err(AuthorizeError::Declined { recourse, reason }) => Some((recourse, reason)),
+            Err(other) => panic!("the gate refused with {other:?}, not a declined request"),
+        }
+    }
+
+    /// The round trip: a served space, suspended, refused with the
+    /// reason the operator gave, then resumed and served again.
+    #[dialog_common::test]
+    async fn it_suspends_a_subscription_and_resumes_it() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let (_, space) = served_space(&fixture).await;
+        let now = unix_now();
+        assert_eq!(verdict(&fixture, &space, now).await, None);
+
+        let suspend = operator_container(
+            &fixture.service,
+            SUSPEND_COMMAND,
+            BTreeMap::from([
+                (
+                    "consumer".to_string(),
+                    Promised::String(space.did().to_string()),
+                ),
+                ("code".to_string(), Promised::String("unpaid".to_string())),
+                (
+                    "reason".to_string(),
+                    Promised::String("the subscription is past due".to_string()),
+                ),
+            ]),
+        )
+        .await;
+        fixture
+            .registration(&suspend)
+            .handle()
+            .await
+            .expect("the suspension is recorded");
+
+        let (recourse, reason) = verdict(&fixture, &space, now)
+            .await
+            .expect("a suspended space is not served");
+        assert_eq!(
+            recourse,
+            Recourse::None,
+            "an indefinite suspension is not worth retrying"
+        );
+        assert!(
+            reason.contains("past due"),
+            "the refusal carries the operator's own words, got: {reason}"
+        );
+
+        let resume = operator_container(
+            &fixture.service,
+            RESUME_COMMAND,
+            consumer_argument(&space.did()),
+        )
+        .await;
+        fixture
+            .registration(&resume)
+            .handle()
+            .await
+            .expect("the suspension is lifted");
+        assert_eq!(
+            verdict(&fixture, &space, now).await,
+            None,
+            "resuming serves the space again"
+        );
+        Ok(())
+    }
+
+    /// A deadline lifts the suspension by itself. The row still carries
+    /// the reason afterwards; what changed is that it no longer applies.
+    #[dialog_common::test]
+    async fn it_lifts_a_suspension_once_its_deadline_passes() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let (_, space) = served_space(&fixture).await;
+        let now = unix_now();
+
+        let suspend = operator_container(
+            &fixture.service,
+            SUSPEND_COMMAND,
+            BTreeMap::from([
+                (
+                    "consumer".to_string(),
+                    Promised::String(space.did().to_string()),
+                ),
+                ("code".to_string(), Promised::String("review".to_string())),
+                (
+                    "reason".to_string(),
+                    Promised::String("under review until tomorrow".to_string()),
+                ),
+                ("until".to_string(), Promised::Integer((now + 60) as i128)),
+            ]),
+        )
+        .await;
+        fixture
+            .registration(&suspend)
+            .handle()
+            .await
+            .expect("the suspension is recorded");
+
+        let (recourse, _) = verdict(&fixture, &space, now)
+            .await
+            .expect("the deadline has not passed");
+        assert_eq!(
+            recourse,
+            Recourse::Retry,
+            "a suspension that lifts itself is worth waiting out"
+        );
+
+        assert_eq!(
+            verdict(&fixture, &space, now + 61).await,
+            None,
+            "past its deadline the suspension no longer applies"
+        );
+        Ok(())
+    }
+
+    /// A suspension already past when it is written never applies. The
+    /// operator gets no error: recording a lapsed deadline is a
+    /// statement about the past, not a failed command.
+    #[dialog_common::test]
+    async fn it_serves_a_subscription_suspended_until_a_past_moment() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let (_, space) = served_space(&fixture).await;
+        let now = unix_now();
+
+        let suspend = operator_container(
+            &fixture.service,
+            SUSPEND_COMMAND,
+            BTreeMap::from([
+                (
+                    "consumer".to_string(),
+                    Promised::String(space.did().to_string()),
+                ),
+                ("code".to_string(), Promised::String("stale".to_string())),
+                (
+                    "reason".to_string(),
+                    Promised::String("a hold that has already run out".to_string()),
+                ),
+                ("until".to_string(), Promised::Integer((now - 1) as i128)),
+            ]),
+        )
+        .await;
+        fixture
+            .registration(&suspend)
+            .handle()
+            .await
+            .expect("the suspension is recorded");
+
+        assert_eq!(
+            verdict(&fixture, &space, now).await,
+            None,
+            "a deadline in the past withholds nothing"
+        );
+        Ok(())
+    }
+
+    /// Archival drops the data, so the space stops being served and
+    /// stays that way: unlike a suspension, nothing lifts it.
+    #[dialog_common::test]
+    async fn it_stops_serving_an_archived_subscription() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let (_, space) = served_space(&fixture).await;
+        let now = unix_now();
+
+        let archive = operator_container(
+            &fixture.service,
+            ARCHIVE_COMMAND,
+            consumer_argument(&space.did()),
+        )
+        .await;
+        fixture
+            .registration(&archive)
+            .handle()
+            .await
+            .expect("the archival is recorded");
+
+        let (recourse, reason) = verdict(&fixture, &space, now)
+            .await
+            .expect("an archived space is not served");
+        assert_eq!(recourse, Recourse::None);
+        assert!(
+            reason.contains("archived"),
+            "the refusal says what happened, got: {reason}"
+        );
+
+        // Resuming is about suspension, and this is not one.
+        let resume = operator_container(
+            &fixture.service,
+            RESUME_COMMAND,
+            consumer_argument(&space.did()),
+        )
+        .await;
+        fixture
+            .registration(&resume)
+            .handle()
+            .await
+            .expect("resume is accepted");
+        assert!(
+            verdict(&fixture, &space, now).await.is_some(),
+            "resuming does not bring archived data back"
+        );
+        Ok(())
+    }
+
+    /// The subject is the service, so a customer cannot suspend anyone
+    /// — including themselves, and including a space they own.
+    #[dialog_common::test]
+    async fn it_refuses_an_operator_command_from_a_customer() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let (customer, space) = served_space(&fixture).await;
+
+        let invocation = InvocationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(customer.clone()))
+            .audience(&customer.did())
+            .subject(&customer.did())
+            .command(SUSPEND_COMMAND.iter().map(ToString::to_string).collect())
+            .arguments(BTreeMap::from([
+                (
+                    "consumer".to_string(),
+                    Promised::String(space.did().to_string()),
+                ),
+                ("code".to_string(), Promised::String("mine".to_string())),
+                (
+                    "reason".to_string(),
+                    Promised::String("I say so".to_string()),
+                ),
+            ]))
+            .proofs(vec![])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await?;
+        let container = InvocationChain::new(invocation, std::collections::HashMap::new())
+            .to_bytes()
+            .expect("container encodes");
+
+        assert!(
+            fixture.registration(&container).handle().await.is_err(),
+            "an operator command on any subject but the service is refused"
+        );
+        assert_eq!(
+            verdict(&fixture, &space, unix_now()).await,
+            None,
+            "and the space is still served"
         );
         Ok(())
     }
