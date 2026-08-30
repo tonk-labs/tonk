@@ -75,24 +75,34 @@ a second subscription or a cancelled one has to be kept.
 **subject**, never the command.
 
 Every subject has a subscription, and every subscription is served on
-the strength of its provider's status:
+the strength of its provider's status. Green is served, amber is a
+refusal the client should retry (`Recourse::Retry`), red is one it
+should not (`Recourse::None`):
 
 ```mermaid
 flowchart TD
     A["subject DID"] --> D{"subscription row?"}
-    D -->|none| E["denied"]
+    D -->|none| E["denied: not provisioned"]
     D -->|found| X{"deleted_at set?"}
     X -->|yes| G1["denied: being deleted"]
     X -->|no| AR{"archived_at set?"}
     AR -->|yes| G2["denied: archived"]
     AR -->|no| SU{"suspend_code set?"}
-    SU -->|"yes, and suspend_until_at not passed"| G3["denied: suspended, with the reason"]
+    SU -->|"yes, deadline not passed"| G3["suspended: retry after the deadline"]
+    SU -->|"yes, indefinitely"| G5["denied: suspended, with the reason"]
     SU -->|"no, or the deadline passed"| F{"expires_at passed?"}
     F -->|yes| G4["denied: the subscription expired"]
     F -->|no| Z{"customer.status of its provider"}
     Z -->|Active| K["served"]
-    Z -->|Registered| L["denied, retryable: awaiting email activation"]
-    Z -->|Suspended| M["denied"]
+    Z -->|Registered| L["awaiting activation: retry after the email"]
+    Z -->|Suspended| M["denied: the customer is suspended"]
+
+    classDef ok fill:#1f6f43,stroke:#124a2c,color:#ffffff
+    classDef retry fill:#8a6d3b,stroke:#5d4826,color:#ffffff
+    classDef denied fill:#8c2f2f,stroke:#5e1f1f,color:#ffffff
+    class K ok
+    class G3,L retry
+    class E,G1,G2,G4,G5,M denied
 ```
 
 An account is not a special case here: enrollment writes it a
