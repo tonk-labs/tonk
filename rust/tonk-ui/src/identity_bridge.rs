@@ -22,9 +22,6 @@ pub(crate) struct CreateAccountInput {
     /// Browser/OS label recorded with the created passkey.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_on: Option<String>,
-    /// Access-service DID this deployment names, when it has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
 }
 
 /// Account-creation output: persistence and submission material, plus
@@ -88,9 +85,6 @@ pub(crate) struct UnlockWithPasskeyInput {
     pub device_name: String,
     /// The access service's `/ucan/` endpoint the cell resolves through.
     pub endpoint: String,
-    /// Access-service DID this deployment names, when it has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
 }
 
 /// Account ceremony output sent to the account service.
@@ -312,7 +306,6 @@ mod tests {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
                 endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -325,7 +318,6 @@ mod tests {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
                 endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -340,7 +332,6 @@ mod tests {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
                 endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -353,7 +344,6 @@ mod tests {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
                 endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -369,7 +359,6 @@ mod tests {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
                 endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -387,7 +376,6 @@ mod tests {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
                 endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
             })
             .await
             .unwrap_err(),
@@ -400,7 +388,6 @@ mod tests {
                 device_did: "device".into(),
                 device_name: "Browser".into(),
                 endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
             })
             .await
             .unwrap_err(),

@@ -1851,7 +1851,6 @@ pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), Str
         device_did,
         device_name: crate::device_name::current(),
         endpoint: proposed_remote()?,
-        service_did: deployment_service_did().await,
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -1910,7 +1909,6 @@ pub(crate) async fn run_account_ceremony(
         device_name: crate::device_name::current(),
         remote: proposed_remote()?,
         created_on: Some(crate::device_name::current()),
-        service_did: deployment_service_did().await,
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -2378,7 +2376,6 @@ fn bind(host: &HtmlElement) {
                     device_name,
                     remote: proposed_remote()?,
                     created_on: Some(crate::device_name::current()),
-                    service_did: deployment_service_did().await,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -2546,7 +2543,6 @@ fn bind(host: &HtmlElement) {
                     device_did,
                     device_name,
                     endpoint: proposed_remote()?,
-                    service_did: deployment_service_did().await,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
