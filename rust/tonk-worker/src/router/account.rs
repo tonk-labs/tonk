@@ -392,13 +392,6 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
 pub(crate) async fn tests_matching_request(
     state: &crate::worker::TonkState,
 ) -> tonk_worker_api::AccountLinkRequest {
-    // `test_state` persists a root derived from this profile's seed, so a test
-    // can re-derive it to sign a descriptor the local root will accept.
-    let signer = dialog_credentials::Ed25519Signer::import(&crate::router::tests::test_root_seed(
-        &state.profile_name,
-    ))
-    .await
-    .expect("the test root seed imports");
     let root = super::identity::local_root(state).await.unwrap();
     tonk_worker_api::AccountLinkRequest {
         provider: TEST_ACCOUNT_PROVIDER.into(),

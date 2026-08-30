@@ -1123,9 +1123,9 @@ mod tests {
             outcome.warning
         );
 
-        // The link moves to an unreachable provider address. The mount
-        // must follow the descriptor — the old strict-equality check
-        // errored here, permanently.
+        // The link moves to an unreachable address. The mount must
+        // follow it — the old strict-equality check errored here,
+        // permanently.
         attach(
             &profile,
             &store,
@@ -1141,10 +1141,18 @@ mod tests {
         )
         .await
         .expect("a moved link must repoint, not refuse to mount");
-        assert_eq!(outcome.status, AccountStateStatus::Unhydrated);
+        // Still Ready: the trusted base names the account, and the
+        // account did not change — only where it syncs. What this test
+        // guards is that the remote repoints at all, which the assert
+        // below confirms by moving back to a live one and pulling.
+        assert_eq!(
+            outcome.status,
+            AccountStateStatus::Ready,
+            "ensure warning: {:?}",
+            outcome.warning
+        );
 
-        // Moving back to the live address recovers to Ready: the cell
-        // follows the descriptor in both directions.
+        // Moving back to the live address still mounts and pulls.
         attach(
             &profile,
             &store,

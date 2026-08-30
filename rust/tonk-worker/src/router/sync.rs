@@ -1648,7 +1648,6 @@ mod renewal_tests {
     use crate::router::{AppState, api_router_with_state};
 
     async fn operator_did(state: &AppState) -> String {
-        use dialog_varsig::Principal as _;
         state.read().await.operator.did().to_string()
     }
 

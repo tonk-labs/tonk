@@ -240,7 +240,7 @@ async fn it_installs_authority_from_a_callback_authorization(
             .await?;
     let payload = serde_json::json!({
         "delegationHex": authorized.delegation_hex,
-        "descriptorHex": authorized.descriptor_hex,
+        "remote": remote,
         "credentialId": authorized.root_did,
         "attachmentId": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
     })

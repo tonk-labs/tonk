@@ -377,23 +377,19 @@
         };
 
         packages = rec {
-          # `tonk-account-service/helpers` is package-qualified on purpose.
-          # Four crates define a `helpers` feature, and a bare `--features
-          # helpers` would switch on all of them — including tonk-ui's, which
-          # pulls a WebDriver client. This one gates the account service's
-          # native backends (bundled rusqlite, in-memory chains, captured
-          # email, a hyper server serving the Worker's routes), which its
-          # `tests/service.rs` is `#![cfg]`'d on: without the feature that file
-          # compiles to zero tests, so its HTTP-level ceremony coverage never
-          # ran here.
+          # Several crates define a `helpers` feature, and a bare
+          # `--features helpers` would switch on all of them — including
+          # tonk-ui's, which pulls a WebDriver client. `integration-tests`
+          # names the ones that stand up a live service, which the
+          # access service's HTTP-level tests are `#![cfg]`'d on.
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests,tonk-account-service/helpers";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
           };
 
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests,tonk-account-service/helpers --release";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --release";
           };
 
           tests-web-debug = buildTestArchive {
@@ -444,21 +440,6 @@
             '';
           };
 
-          tonk-account-service = buildWasmCrate {
-            pname = "tonk-account-service";
-
-            buildPhase = ''
-              cd rust/tonk-account-service
-              worker-build --release
-              echo "fin"
-            '';
-
-            installPhase = ''
-              mkdir -p $out
-              cp -r ./build/* $out/
-            '';
-          };
-
           # The user guide (mdBook), built to static HTML. Served under
           # /guide/ on the deployed site, so `site-url` in book.toml must
           # match that prefix.
@@ -497,7 +478,6 @@
             buildPhase = ''
               mkdir -p ./build
               cp -r ${tonk-access-service} ./build/tonk-access-service
-              cp -r ${tonk-account-service} ./build/tonk-account-service
               cp -r ${tonk-ui} ./build/tonk-ui
               # Files copied from the read-only nix store keep their
               # read-only perms, so make the tonk-ui tree writable before

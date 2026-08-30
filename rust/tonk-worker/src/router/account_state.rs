@@ -1629,15 +1629,9 @@ mod tests {
         {
             let tonk = state.read().await;
             let matching = crate::router::account::tests_matching_request(&tonk).await;
-            crate::router::account::persist_link(
-                &tonk,
-                &tonk_worker_api::AccountLinkRequest {
-                    remote: crate::router::account::TEST_ACCOUNT_REMOTE.to_string(),
-                    ..matching
-                },
-            )
-            .await
-            .unwrap();
+            crate::router::account::persist_link(&tonk, &matching)
+                .await
+                .unwrap();
             tonk.profile
                 .credential()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
@@ -1841,8 +1835,10 @@ mod tests {
             .activate_customer(&root, "worker-account-state@example.com")
             .await
             .unwrap();
+        // The endpoint the account syncs against, not the service root:
+        // the remote is the address a link names, and that is `/ucan/`.
         let remote = format!(
-            "{}/",
+            "{}/ucan/",
             service.address.access_service_url.trim_end_matches('/')
         );
         let root_did = root.did().to_string();
@@ -1872,7 +1868,7 @@ mod tests {
                 root_did,
                 credential_id,
                 delegation_hex,
-                remote: crate::router::account::TEST_ACCOUNT_REMOTE.to_string(),
+                remote: remote.clone(),
                 initialize_name: false,
             },
         )

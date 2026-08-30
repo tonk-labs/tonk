@@ -441,7 +441,7 @@ pub async fn authorizing_page(
         };
         let payload = serde_json::json!({
             "delegationHex": authorized.delegation_hex,
-            "descriptorHex": authorized.descriptor_hex,
+            "remote": remote,
             "credentialId": authorized.root_did,
             "attachmentId": "0707070707070707070707070707070707070707070707070707070707070707",
         })
