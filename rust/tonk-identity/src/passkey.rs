@@ -42,6 +42,62 @@ pub struct CustodyCredential {
     pub evaluation: Option<CustodyEvaluation>,
 }
 
+/// Why a passkey ceremony did not produce a credential.
+///
+/// The browser answers with a `DOMException` whose `name` is the whole
+/// story — `NotAllowedError` for a cancelled prompt, `InvalidStateError`
+/// for a credential this authenticator already holds — and a caller
+/// wanting to distinguish them should not be matching on prose. The
+/// name becomes a variant; what the browser actually said is kept
+/// alongside it, because the name alone rarely explains the failure.
+#[derive(Debug, thiserror::Error)]
+#[error("{context}: {detail}")]
+pub struct CeremonyError {
+    /// Which ceremony was refused.
+    pub context: String,
+    /// Why, as far as the browser named it.
+    pub reason: CeremonyRefusal,
+    /// What the browser said, verbatim.
+    pub detail: String,
+}
+
+/// The `DOMException` name a ceremony was refused with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CeremonyRefusal {
+    /// The user dismissed the prompt, or it timed out. The ordinary way
+    /// a ceremony ends when someone changes their mind.
+    NotAllowed,
+    /// This authenticator already holds a credential the request
+    /// excluded. Creation only.
+    InvalidState,
+    /// The request named something this browser or authenticator does
+    /// not implement.
+    NotSupported,
+    /// The origin may not act for this relying party — usually a
+    /// mismatched `rp.id` or an insecure context.
+    Security,
+    /// The ceremony ran and the authenticator evaluated no PRF, so this
+    /// platform cannot hold custody at all.
+    NoPrf,
+    /// Anything else the browser reported.
+    Other,
+}
+
+impl CeremonyRefusal {
+    /// The `DOMException` name this refusal came back as, for handing
+    /// across the JS boundary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAllowed => "NotAllowedError",
+            Self::InvalidState => "InvalidStateError",
+            Self::NotSupported => "NotSupportedError",
+            Self::Security => "SecurityError",
+            Self::NoPrf => "NoPrfError",
+            Self::Other => "Error",
+        }
+    }
+}
+
 fn ceremony_error(context: &str, value: JsValue) -> anyhow::Error {
     let property = |name: &str| {
         Reflect::get(&value, &name.into())
@@ -60,7 +116,19 @@ fn ceremony_error(context: &str, value: JsValue) -> anyhow::Error {
         }
     };
     let detail: String = detail.chars().take(512).collect();
-    anyhow!("{context}: {detail}")
+    let reason = match property("name").as_deref() {
+        Some("NotAllowedError") => CeremonyRefusal::NotAllowed,
+        Some("InvalidStateError") => CeremonyRefusal::InvalidState,
+        Some("NotSupportedError") => CeremonyRefusal::NotSupported,
+        Some("SecurityError") => CeremonyRefusal::Security,
+        _ => CeremonyRefusal::Other,
+    };
+    CeremonyError {
+        context: context.to_string(),
+        reason,
+        detail,
+    }
+    .into()
 }
 
 fn credentials() -> Result<CredentialsContainer> {
@@ -298,7 +366,13 @@ pub async fn evaluate_custody_passkey(credential_id: Option<&[u8]>) -> Result<Cu
         .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
     let id = Uint8Array::new(&credential.raw_id()).to_vec();
     let evaluation = extract_custody(&credential).ok_or_else(|| {
-        anyhow!("the authenticator returned no PRF outputs; this platform cannot unlock custody")
+        anyhow::Error::from(CeremonyError {
+            context: "custody assertion failed".to_string(),
+            reason: CeremonyRefusal::NoPrf,
+            detail: "the authenticator returned no PRF outputs; this platform cannot unlock \
+                         custody"
+                .to_string(),
+        })
     })?;
     Ok(CustodyCredential {
         id,
@@ -312,6 +386,46 @@ mod tests {
     use js_sys::{Reflect, Uint8Array};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A `DOMException` name becomes a variant, so a caller can tell a
+    /// dismissed prompt from a real failure without reading prose.
+    #[dialog_common::test]
+    fn it_names_the_reason_a_ceremony_was_refused() {
+        let refusal = |name: &str| {
+            let error = js_sys::Error::new("the operation was refused");
+            error.set_name(name);
+            ceremony_error("test ceremony", error.into())
+        };
+
+        let reason = |name: &str| {
+            refusal(name)
+                .downcast_ref::<CeremonyError>()
+                .expect("a ceremony refusal")
+                .reason
+        };
+        assert_eq!(reason("NotAllowedError"), CeremonyRefusal::NotAllowed);
+        assert_eq!(reason("InvalidStateError"), CeremonyRefusal::InvalidState);
+        assert_eq!(reason("NotSupportedError"), CeremonyRefusal::NotSupported);
+        assert_eq!(reason("SecurityError"), CeremonyRefusal::Security);
+    }
+
+    /// Anything unrecognised keeps what the browser said rather than
+    /// being flattened into one opaque failure.
+    #[dialog_common::test]
+    fn it_keeps_the_detail_of_an_unrecognised_refusal() {
+        let error = js_sys::Error::new("something novel went wrong");
+        error.set_name("SomeFutureError");
+        let refusal = ceremony_error("test ceremony", error.into());
+        let refusal = refusal
+            .downcast_ref::<CeremonyError>()
+            .expect("a ceremony refusal");
+        assert_eq!(refusal.reason, CeremonyRefusal::Other);
+        assert!(
+            refusal.detail.contains("something novel went wrong"),
+            "{}",
+            refusal.detail
+        );
+    }
 
     #[dialog_common::test]
     fn it_requests_both_custody_salts() {

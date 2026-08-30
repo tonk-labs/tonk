@@ -22,7 +22,17 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 fn js_error(error: anyhow::Error) -> JsValue {
-    JsValue::from_str(&format!("{error:#}"))
+    // A ceremony refusal carries its DOM error name as a variant; hand
+    // that back as a `name` property so a caller can tell a dismissed
+    // prompt from a real failure without matching on prose.
+    let name = error
+        .downcast_ref::<crate::passkey::CeremonyError>()
+        .map(|refusal| refusal.reason.as_str());
+    let value = js_sys::Error::new(&format!("{error:#}"));
+    if let Some(name) = name {
+        value.set_name(name);
+    }
+    value.into()
 }
 
 /// An optional string property: absent, empty, or not a string all read as
@@ -266,17 +276,6 @@ fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue
     Ok(result.into())
 }
 
-/// Parse the optional access-service DID a ceremony mints deposits for.
-fn service_did_property(input: &JsValue) -> Result<Option<dialog_varsig::Did>, JsValue> {
-    optional_string_property(input, "serviceDid")
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|error| JsValue::from_str(&format!("invalid serviceDid: {error}")))
-        })
-        .transpose()
-}
-
 /// `createAccount({ email, deviceDid, deviceName, remote, endpoint,
 /// createdOn?, serviceDid? })` → the account-creation artifacts plus
 /// `custodyDid` and `consentHex` for provisioning the custody space.
@@ -290,14 +289,12 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     let device_name = string_property(&input, "deviceName")?;
     let remote = string_property(&input, "remote")?;
     let created_on = optional_string_property(&input, "createdOn");
-    let service = service_did_property(&input)?;
     let ceremony = crate::ceremony::create_custody_account(
         email,
         device_did,
         device_name,
         remote,
         created_on.as_deref(),
-        service.as_ref(),
     )
     .await
     .map_err(js_error)?;
@@ -392,11 +389,9 @@ async fn unlock_with_passkey(input: JsValue) -> Result<JsValue, JsValue> {
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
     let endpoint = string_property(&input, "endpoint")?;
-    let service = service_did_property(&input)?;
-    let unlock =
-        crate::ceremony::unlock_account(device_did, device_name, &endpoint, service.as_ref())
-            .await
-            .map_err(js_error)?;
+    let unlock = crate::ceremony::unlock_account(device_did, device_name, &endpoint)
+        .await
+        .map_err(js_error)?;
     let result = ceremony_result(unlock.account)?;
     Reflect::set(
         &result,

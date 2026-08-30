@@ -250,7 +250,6 @@ pub async fn create_custody_account(
     device_name: String,
     remote: String,
     created_on: Option<&str>,
-    service: Option<&dialog_varsig::Did>,
 ) -> Result<CustodyAccountCeremony> {
     use crate::envelope::{AccountSecret, KekMethod, custody_kek, custody_signer};
 
@@ -522,7 +521,6 @@ pub async fn unlock_account(
     device_did: dialog_varsig::Did,
     device_name: String,
     endpoint: &str,
-    service: Option<&dialog_varsig::Did>,
 ) -> Result<CustodyUnlock> {
     let (secret, credential_id) = assert_unlock(endpoint, None).await?;
     let root = secret.signer().await?;

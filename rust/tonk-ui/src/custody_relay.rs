@@ -286,7 +286,17 @@ fn mediate_custody(enrollment: tonk_worker_api::Enrollment) {
             return;
         };
         if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
-            web_sys::console::warn_1(&format!("custody: the handoff failed: {error:?}").into());
+            // A dismissed prompt is a decision, not a fault: someone
+            // declined the passkey, and enrollment simply did not
+            // happen. Anything else is worth a warning.
+            let name = js_sys::Reflect::get(&error, &"name".into())
+                .ok()
+                .and_then(|value| value.as_string());
+            if name.as_deref() == Some("NotAllowedError") {
+                web_sys::console::debug_1(&"custody: the passkey prompt was dismissed".into());
+            } else {
+                web_sys::console::warn_1(&format!("custody: the handoff failed: {error:?}").into());
+            }
         }
     });
 }
