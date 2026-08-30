@@ -135,7 +135,7 @@ pub struct ActiveAccount {
     /// Exact root-to-device grant bytes, hex encoded.
     pub delegation_hex: String,
     /// Exact account repository descriptor bytes, hex encoded.
-    pub descriptor_hex: Option<String>,
+    pub remote: Option<String>,
     /// Service-generated attachment generation.
     pub attachment_id: String,
     /// Provider attachment time.
@@ -287,7 +287,7 @@ async fn projected_active(
     let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
         return Ok(None);
     };
-    let root_did: Did = root
+    let _root_did: Did = root
         .root_did
         .parse()
         .context("stored root DID is invalid")?;
@@ -305,8 +305,7 @@ async fn projected_active(
     if bytes.is_empty() {
         return Ok(None);
     }
-    let Some(provider) = tonk_account::AccountProviderRecord::decode(&bytes, &root_did)
-        .await
+    let Some(provider) = tonk_account::AccountProviderRecord::decode(&bytes)
         .context("stored provider record is unusable")?
     else {
         return Ok(None);
@@ -317,9 +316,7 @@ async fn projected_active(
         root_did: root.root_did,
         delegation_cid: root.delegation_cid.clone(),
         delegation_hex: root.delegation_hex,
-        descriptor_hex: provider
-            .descriptor()
-            .map(|value| hex::encode(value.bytes())),
+        remote: provider.remote().map(ToOwned::to_owned),
         attachment_id: root.delegation_cid,
         attached_at: provider.attached_at().unwrap_or_default(),
     }))
@@ -541,7 +538,7 @@ mod tests {
             root_did: "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX".to_string(),
             delegation_cid: "bafk-delegation".to_string(),
             delegation_hex: "00".to_string(),
-            descriptor_hex: Some("01".to_string()),
+            remote: Some("https://accounts.example/ucan/".to_string()),
             attachment_id: attachment_id.to_string(),
             attached_at: 42,
         }

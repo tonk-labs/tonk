@@ -605,7 +605,7 @@ pub async fn save_account_link(
     root_did: String,
     credential_id: String,
     delegation_hex: String,
-    descriptor_hex: String,
+    remote: String,
     initialize_name: bool,
 ) -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -616,7 +616,7 @@ pub async fn save_account_link(
             root_did,
             credential_id,
             delegation_hex,
-            descriptor_hex,
+            remote,
             initialize_name,
         })
         .send()

@@ -2308,12 +2308,7 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
 /// space syncs.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
-    match super::customer::provider_address(tonk).await {
-        Some(provider) => Some(provider),
-        None => super::account::descriptor(tonk)
-            .await
-            .map(|descriptor| descriptor.remote().to_string()),
-    }
+    super::account_state::account_remote(tonk).await.ok()
 }
 
 /// Create a space local-only, split out so its `?` errors are logged

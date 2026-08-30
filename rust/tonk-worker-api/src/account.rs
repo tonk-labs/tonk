@@ -101,8 +101,13 @@ pub struct AccountLinkRequest {
     pub credential_id: String,
     /// Exact existing root → device grant bytes.
     pub delegation_hex: String,
-    /// Hex-encoded root-signed account repository descriptor.
-    pub descriptor_hex: String,
+    /// Where the account syncs: the access service's `/ucan/` address.
+    ///
+    /// Named by whoever links, because they are the party talking to
+    /// the service. It replaces a root-signed descriptor whose remote
+    /// was the linking browser's own origin, frozen at signup — the
+    /// same value, without the signature that made a guess permanent.
+    pub remote: String,
     /// Seed the current profile name only for a new-account creation winner.
     #[serde(default)]
     pub initialize_name: bool,
@@ -235,13 +240,13 @@ mod tests {
             root_did: "did:key:root".into(),
             credential_id: "cred".into(),
             delegation_hex: "aa".into(),
-            descriptor_hex: "bb".into(),
+            remote: "https://accounts.example/ucan/".into(),
             initialize_name: true,
         })
         .unwrap();
         assert_eq!(link["credentialId"], "cred");
         assert_eq!(link["delegationHex"], "aa");
-        assert_eq!(link["descriptorHex"], "bb");
+        assert_eq!(link["remote"], "https://accounts.example/ucan/");
         assert_eq!(link["initializeName"], true);
     }
 

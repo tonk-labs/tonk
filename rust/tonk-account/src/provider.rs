@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{AccountRepositoryDescriptorV1, DescriptorError};
+use crate::DescriptorError;
 
 const RECORD_VERSION: u8 = 1;
 
@@ -28,7 +28,7 @@ struct Wire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attached_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    descriptor: Option<Vec<u8>>,
+    remote: Option<String>,
 }
 
 /// A provider attachment, with the account repository descriptor it owns.
@@ -36,66 +36,33 @@ struct Wire {
 pub struct AccountProviderRecord {
     provider: String,
     attached_at: Option<u64>,
-    descriptor: Option<AccountRepositoryDescriptorV1>,
+    remote: Option<String>,
 }
 
 impl AccountProviderRecord {
-    /// Attach `provider`, binding `descriptor_bytes` to `root_did`.
-    pub async fn attach(
+    /// Attach `provider` to this account, syncing at `remote`.
+    ///
+    /// The remote is where the account's data lives — the access
+    /// service's `/ucan/` address — and is separate from the provider,
+    /// which is the account service. An empty one is absent: the
+    /// address is derivable from the origin, so recording nothing is a
+    /// fallback rather than a failure.
+    pub fn attach(
         provider: &str,
-        descriptor_bytes: &[u8],
-        root_did: &dialog_varsig::Did,
-        attached_at: u64,
-    ) -> Result<Self, AccountProviderError> {
-        let provider = canonical_provider(provider)?;
-        Ok(Self {
-            provider,
-            attached_at: Some(attached_at),
-            descriptor: Some(checked_descriptor(descriptor_bytes, root_did).await?),
-        })
-    }
-
-    /// Attach `provider` for an account whose repository is not established
-    /// yet. Only a legacy account reaches this state; new accounts always
-    /// carry a descriptor from their creation ceremony.
-    pub fn attach_unconfigured(
-        provider: &str,
+        remote: &str,
         attached_at: u64,
     ) -> Result<Self, AccountProviderError> {
         Ok(Self {
             provider: canonical_provider(provider)?,
             attached_at: Some(attached_at),
-            descriptor: None,
-        })
-    }
-
-    /// Establish the descriptor on an attachment that has none.
-    ///
-    /// The descriptor is immutable in version 1: one account subject, one
-    /// remote. Replacing an established one would repoint this device's
-    /// account history, so it is refused rather than overwritten.
-    pub async fn establish(
-        &self,
-        descriptor_bytes: &[u8],
-        root_did: &dialog_varsig::Did,
-    ) -> Result<Self, AccountProviderError> {
-        if self.descriptor.is_some() {
-            return Err(AccountProviderError::DescriptorEstablished);
-        }
-        Ok(Self {
-            provider: self.provider.clone(),
-            attached_at: self.attached_at,
-            descriptor: Some(checked_descriptor(descriptor_bytes, root_did).await?),
+            remote: Some(remote.trim().to_owned()).filter(|value| !value.is_empty()),
         })
     }
 
     /// Decode a stored credential value against `root_did`. Empty bytes are
     /// the detach tombstone: the credential store has no delete, so unlinking
     /// writes an empty value.
-    pub async fn decode(
-        bytes: &[u8],
-        root_did: &dialog_varsig::Did,
-    ) -> Result<Option<Self>, AccountProviderError> {
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, AccountProviderError> {
         if bytes.is_empty() {
             return Ok(None);
         }
@@ -104,14 +71,10 @@ impl AccountProviderRecord {
         if wire.version != RECORD_VERSION {
             return Err(AccountProviderError::UnsupportedVersion(wire.version));
         }
-        let descriptor = match wire.descriptor.as_deref() {
-            Some(bytes) => Some(checked_descriptor(bytes, root_did).await?),
-            None => None,
-        };
         Ok(Some(Self {
             provider: wire.provider,
             attached_at: wire.attached_at,
-            descriptor,
+            remote: wire.remote,
         }))
     }
 
@@ -121,7 +84,7 @@ impl AccountProviderRecord {
             version: RECORD_VERSION,
             provider: self.provider.clone(),
             attached_at: self.attached_at,
-            descriptor: self.descriptor.as_ref().map(|d| d.bytes().to_vec()),
+            remote: self.remote.clone(),
         })
         .map_err(|error| AccountProviderError::Encoding(error.to_string()))
     }
@@ -131,9 +94,9 @@ impl AccountProviderRecord {
         &self.provider
     }
 
-    /// The account repository descriptor, absent until established.
-    pub fn descriptor(&self) -> Option<&AccountRepositoryDescriptorV1> {
-        self.descriptor.as_ref()
+    /// Where the account syncs, when the link named it.
+    pub fn remote(&self) -> Option<&str> {
+        self.remote.as_deref()
     }
 
     /// When the provider was attached, for records that recorded it.
@@ -148,17 +111,6 @@ fn canonical_provider(provider: &str) -> Result<String, AccountProviderError> {
         return Err(AccountProviderError::EmptyProvider);
     }
     Ok(provider.to_owned())
-}
-
-async fn checked_descriptor(
-    bytes: &[u8],
-    root_did: &dialog_varsig::Did,
-) -> Result<AccountRepositoryDescriptorV1, AccountProviderError> {
-    let descriptor = AccountRepositoryDescriptorV1::validate(bytes).await?;
-    if descriptor.account_subject() != root_did {
-        return Err(AccountProviderError::DescriptorSubject);
-    }
-    Ok(descriptor)
 }
 
 /// Local provider-attachment validation failure.
@@ -186,8 +138,6 @@ pub enum AccountProviderError {
 
 #[cfg(test)]
 mod tests {
-    use dialog_credentials::Ed25519Signer;
-    use dialog_varsig::Principal as _;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
@@ -198,129 +148,41 @@ mod tests {
     const PROVIDER: &str = "https://accounts.example";
     const REMOTE: &str = "https://accounts.example/ucan/";
 
-    async fn root(seed: u8) -> (Ed25519Signer, dialog_varsig::Did) {
-        let signer = Ed25519Signer::import(&[seed; 32]).await.unwrap();
-        let did = signer.did();
-        (signer, did)
-    }
-
+    /// The record is provider plus when it was attached; the address an
+    /// account syncs with is resolved, not stored here.
     #[dialog_common::test]
-    async fn it_round_trips_an_attachment_with_its_descriptor() {
-        let (signer, did) = root(7).await;
-        let descriptor = AccountRepositoryDescriptorV1::sign(&signer, REMOTE)
-            .await
-            .unwrap();
-        let record = AccountProviderRecord::attach(PROVIDER, descriptor.bytes(), &did, 42)
-            .await
-            .unwrap();
-        let decoded = AccountProviderRecord::decode(&record.encode().unwrap(), &did)
-            .await
+    fn it_round_trips_an_attachment() {
+        let record = AccountProviderRecord::attach(PROVIDER, REMOTE, 42).unwrap();
+        let decoded = AccountProviderRecord::decode(&record.encode().unwrap())
             .unwrap()
             .unwrap();
-
         assert_eq!(decoded.provider(), PROVIDER);
+        assert_eq!(decoded.remote(), Some(REMOTE));
         assert_eq!(decoded.attached_at(), Some(42));
-        assert_eq!(decoded.descriptor().unwrap().bytes(), descriptor.bytes());
     }
 
     #[dialog_common::test]
-    async fn it_trims_a_trailing_slash_and_rejects_a_blank_provider() {
-        let (signer, did) = root(7).await;
-        let descriptor = AccountRepositoryDescriptorV1::sign(&signer, REMOTE)
-            .await
-            .unwrap();
-        let record =
-            AccountProviderRecord::attach("https://accounts.example/", descriptor.bytes(), &did, 1)
-                .await
-                .unwrap();
+    fn it_trims_a_trailing_slash_and_rejects_a_blank_provider() {
+        let record = AccountProviderRecord::attach("https://accounts.example/", REMOTE, 1).unwrap();
         assert_eq!(record.provider(), PROVIDER);
         assert_eq!(
-            AccountProviderRecord::attach_unconfigured("   ", 1).unwrap_err(),
+            AccountProviderRecord::attach("   ", REMOTE, 1).unwrap_err(),
             AccountProviderError::EmptyProvider
         );
     }
 
+    /// A record written before the descriptor was dropped still decodes:
+    /// the field it carried is ignored rather than refused.
     #[dialog_common::test]
-    async fn it_rejects_a_descriptor_belonging_to_another_root() {
-        let (_, did) = root(7).await;
-        let (other, _) = root(9).await;
-        let descriptor = AccountRepositoryDescriptorV1::sign(&other, REMOTE)
-            .await
-            .unwrap();
-        assert_eq!(
-            AccountProviderRecord::attach(PROVIDER, descriptor.bytes(), &did, 1)
-                .await
-                .unwrap_err(),
-            AccountProviderError::DescriptorSubject
-        );
-
-        // ...and refuses to read one back, so a record tampered with in place
-        // cannot repoint account state either.
-        let mine = AccountProviderRecord::attach_unconfigured(PROVIDER, 1).unwrap();
-        let smuggled = serde_json::to_vec(&Wire {
-            version: RECORD_VERSION,
-            provider: mine.provider().to_owned(),
-            attached_at: None,
-            descriptor: Some(descriptor.bytes().to_vec()),
-        })
-        .unwrap();
-        assert_eq!(
-            AccountProviderRecord::decode(&smuggled, &did)
-                .await
-                .unwrap_err(),
-            AccountProviderError::DescriptorSubject
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_reads_a_pre_descriptor_record_as_attached_but_unconfigured() {
-        let (_, did) = root(7).await;
-        // Exactly what a browser linked before descriptors existed still holds.
-        let legacy = br#"{"version":1,"provider":"https://accounts.example","attached_at":9}"#;
-        let decoded = AccountProviderRecord::decode(legacy, &did)
-            .await
-            .unwrap()
-            .unwrap();
+    fn it_reads_a_record_that_still_carries_a_descriptor() {
+        let legacy = br#"{"version":1,"provider":"https://accounts.example","attached_at":9,"descriptor":[1,2,3]}"#;
+        let decoded = AccountProviderRecord::decode(legacy).unwrap().unwrap();
         assert_eq!(decoded.provider(), PROVIDER);
-        assert!(decoded.descriptor().is_none());
+        assert_eq!(decoded.attached_at(), Some(9));
     }
 
     #[dialog_common::test]
-    async fn it_treats_empty_bytes_as_the_detach_tombstone() {
-        let (_, did) = root(7).await;
-        assert!(
-            AccountProviderRecord::decode(&[], &did)
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_establishes_a_descriptor_once_and_refuses_to_replace_it() {
-        let (signer, did) = root(7).await;
-        let descriptor = AccountRepositoryDescriptorV1::sign(&signer, REMOTE)
-            .await
-            .unwrap();
-        let unconfigured = AccountProviderRecord::attach_unconfigured(PROVIDER, 1).unwrap();
-        let established = unconfigured
-            .establish(descriptor.bytes(), &did)
-            .await
-            .unwrap();
-        assert_eq!(
-            established.descriptor().unwrap().bytes(),
-            descriptor.bytes()
-        );
-
-        let other = AccountRepositoryDescriptorV1::sign(&signer, "https://elsewhere.example/ucan/")
-            .await
-            .unwrap();
-        assert_eq!(
-            established
-                .establish(other.bytes(), &did)
-                .await
-                .unwrap_err(),
-            AccountProviderError::DescriptorEstablished
-        );
+    fn it_treats_empty_bytes_as_the_detach_tombstone() {
+        assert!(AccountProviderRecord::decode(&[]).unwrap().is_none());
     }
 }

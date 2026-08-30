@@ -344,13 +344,6 @@ async fn login(
     // that was just persisted. Posting the same link to a service was
     // keeping a second copy of a list that already syncs.
     //
-    // The descriptor is signed here rather than fetched: this device
-    // holds the account root, so it can name the remote the account
-    // syncs with — which is the address the DID document resolved, not
-    // whatever a service once froze.
-    let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(&root, &link.endpoint)
-        .await
-        .map_err(|error| format!("the account descriptor did not sign: {error}"))?;
     link_account(
         state,
         &link.provider,
@@ -360,7 +353,7 @@ async fn login(
             .map(hex::encode)
             .unwrap_or_default(),
         &ceremony.delegation_hex,
-        &hex::encode(descriptor.bytes()),
+        &endpoint,
         false,
     )
     .await?;
@@ -503,7 +496,7 @@ async fn create(
             device_did,
             email: creation.email.clone(),
             device_name: creation.device_name,
-            remote: creation.remote,
+            remote: creation.remote.clone(),
             created_on: creation.created_on,
             encryption_key: account.secret().did().to_string(),
         },
@@ -537,14 +530,14 @@ async fn create(
     // The link, from the descriptor the service selected: until it is
     // written this profile has no account, and everything downstream —
     // enrollment included — reports one as missing.
-    let descriptor_hex = descriptor_from(&response)?;
+    let _ = &response;
     link_account(
         state,
         &creation.provider,
         &ceremony.root.root_did,
         &ceremony.root.credential_id,
         &ceremony.root.delegation_hex,
-        &descriptor_hex,
+        &creation.remote,
         true,
     )
     .await?;
@@ -574,16 +567,15 @@ async fn link_account(
     root_did: &str,
     credential_id: &str,
     delegation_hex: &str,
-    descriptor_hex: &str,
+    remote: &str,
     initialize_name: bool,
 ) -> Result<(), String> {
-    let descriptor_hex = descriptor_hex.to_string();
     let request = tonk_worker_api::AccountLinkRequest {
         provider: provider.to_string(),
         root_did: root_did.to_string(),
         credential_id: credential_id.to_string(),
         delegation_hex: delegation_hex.to_string(),
-        descriptor_hex,
+        remote: remote.to_string(),
         initialize_name,
     };
     let tonk = state.read().await;

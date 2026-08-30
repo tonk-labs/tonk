@@ -94,7 +94,6 @@ pub struct AccountFixture {
     pub store: tonk_cli::space::SpaceStore,
     pub link: dialog_ucan_core::DelegationChain,
     pub config: SiteConfig,
-    pub descriptor: Vec<u8>,
     pub root_prf: [u8; 32],
     pub tmp: TempDir,
 }
@@ -151,12 +150,6 @@ impl AccountFixture {
             .send()
             .await?
             .error_for_status()?;
-        let descriptor = hex::decode(
-            ceremony
-                .descriptor_hex
-                .as_deref()
-                .expect("creation establishes a descriptor"),
-        )?;
         tonk_cli::account::attach_for_integration_test(
             &profile,
             &test.site.operator,
@@ -164,7 +157,7 @@ impl AccountFixture {
             &server.endpoint,
             "fixture-credential",
             link.clone(),
-            &descriptor,
+            &format!("{}/ucan/", server.endpoint.trim_end_matches('/')),
         )
         .await?;
 
@@ -185,12 +178,10 @@ impl AccountFixture {
             // that has hydrated its account rather than one that has only
             // linked it. Without this the account reads as unhydrated and
             // nothing will mount its repository.
-            let validated =
-                tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor).await?;
             profile
                 .credential()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-                .save(validated.content_hash().to_vec())
+                .save(link.issuer().as_str().as_bytes().to_vec())
                 .perform(&test.site.operator)
                 .await?;
 
@@ -229,7 +220,6 @@ impl AccountFixture {
             store,
             link,
             config: test.config,
-            descriptor,
             root_prf,
             tmp: test.tmp,
         })

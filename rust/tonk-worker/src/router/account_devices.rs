@@ -371,14 +371,10 @@ pub(super) async fn publish_revocation(
 
     let mut endpoints: BTreeSet<String> = BTreeSet::new();
 
-    // The account's own service, from its signed descriptor rather than
-    // from configuration.
-    if let Some(descriptor) = super::account::descriptor(state).await {
-        endpoints.insert(
-            UcanAddress::new(descriptor.remote().as_str())
-                .endpoint()
-                .to_string(),
-        );
+    // The account's own service: the address enrollment recorded, or
+    // this deployment's own when nothing has answered yet.
+    if let Ok(remote) = super::account_state::account_remote(state).await {
+        endpoints.insert(UcanAddress::new(remote.as_str()).endpoint().to_string());
     }
 
     // And every service a space in the directory syncs through.

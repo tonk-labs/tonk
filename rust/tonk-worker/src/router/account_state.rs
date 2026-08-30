@@ -16,8 +16,7 @@ use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal;
 use tonk_account::{
-    AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
-    probe_remote_main, publish_genesis_if_absent,
+    AccountStateStatus, CreateGenesis, RemotePresence, probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_common::log;
 use tonk_identity::sealed::RecipientKey;
@@ -93,7 +92,7 @@ fn marker_matches(marker: Option<&[u8]>, subject: &dialog_varsig::Did) -> bool {
 /// serving the page IS the access service that serves it, so a device
 /// knows the address before it knows anything about an account, with
 /// nothing fetched and nothing published to learn it.
-async fn account_remote(tonk: &TonkState) -> Result<String, TonkWorkerError> {
+pub(crate) async fn account_remote(tonk: &TonkState) -> Result<String, TonkWorkerError> {
     if let Some(address) = super::customer::provider_address(tonk).await {
         return Ok(address);
     }
@@ -103,21 +102,30 @@ async fn account_remote(tonk: &TonkState) -> Result<String, TonkWorkerError> {
     if let Some(address) = super::email_status::resolved_service() {
         return Ok(address);
     }
-    // The attachment records where this profile linked, which is the
-    // address before enrollment has answered with one.
-    if let Some(descriptor) = super::account::descriptor(tonk).await {
-        return Ok(descriptor.remote().to_string());
+    // What the link named, which is where the linking party was
+    // actually talking to the service.
+    if let Some(remote) = super::account::attachment(tonk)
+        .await
+        .and_then(|record| record.remote().map(ToOwned::to_owned))
+    {
+        return Ok(remote);
     }
+    // This deployment's own endpoint. The origin serving the page IS
+    // the access service that serves it, so a device knows where to
+    // sync before it knows anything about an account.
     Ok(format!(
         "{}ucan/",
         super::customer::service_origin()?.as_str()
     ))
 }
 
-/// The descriptor this profile is configured with, absent when the local link
-/// is missing, unreadable, or still a legacy raw delegation.
-async fn configured_descriptor(tonk: &TonkState) -> Option<AccountRepositoryDescriptorV1> {
-    super::account::descriptor(tonk).await
+/// Whether this profile has an account to sync at all.
+///
+/// The attachment, not an address: every device can name an address
+/// (its own origin, at worst), so the address does not say whether
+/// there is an account behind it. The attachment does.
+async fn account_configured(tonk: &TonkState) -> bool {
+    super::account::attachment(tonk).await.is_some()
 }
 
 /// Current durable account-state status, without a network request.
@@ -125,7 +133,7 @@ pub(crate) async fn status(tonk: &TonkState) -> AccountStateStatus {
     let Ok(root) = super::identity::local_root(tonk).await else {
         return AccountStateStatus::Unconfigured;
     };
-    if account_remote(tonk).await.is_err() {
+    if !account_configured(tonk).await {
         return AccountStateStatus::Unconfigured;
     }
     match trusted_marker(tonk).await {
@@ -186,14 +194,10 @@ pub(crate) async fn is_account_key(tonk: &TonkState, key: &str) -> bool {
     matched
 }
 
-/// Every routing key that names this profile's account: the configured
-/// descriptor's subject, plus the local root itself — the account
-/// subject is the root, so its key is derivable without an attachment.
+/// Every routing key that names this profile's account. The account
+/// subject IS the local root, so one key derives from it.
 async fn resolve_account_keys(tonk: &TonkState) -> HashSet<String> {
     let mut keys = HashSet::new();
-    if let Some(descriptor) = configured_descriptor(tonk).await {
-        keys.insert(descriptor.account_subject().repo_key().to_owned());
-    }
     if let Ok(root) = super::identity::local_root(tonk).await {
         keys.insert(root.root_did.repo_key().to_owned());
     }
@@ -722,7 +726,7 @@ pub(crate) async fn ensure_account_state_swept(
     let Ok(root) = super::identity::local_root(tonk).await else {
         return (AccountStateStatus::Unconfigured, Ok(()));
     };
-    if account_remote(tonk).await.is_err() {
+    if !account_configured(tonk).await {
         return (AccountStateStatus::Unconfigured, Ok(()));
     }
 
@@ -885,10 +889,10 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
 /// cannot reach the account keeps whatever authority it already holds.
 /// Returns whether it adopted, and logs every reason it did not.
 pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
-    let Ok(descriptor) = configured_descriptor(tonk).await.ok_or(()) else {
+    let Ok(root) = super::identity::local_root(tonk).await else {
         return false;
     };
-    let subject = descriptor.account_subject().clone();
+    let subject = root.root_did.clone();
     let repository = Repository::from(&tonk.profile);
     let access = match repository
         .branch(dialog_repository::ACCESS_BRANCH)
@@ -1620,9 +1624,6 @@ mod tests {
             crate::router::tests::test_root_seed(&tonk.profile_name)
         };
         let root = Ed25519Signer::import(&seed).await.unwrap();
-        let descriptor = AccountRepositoryDescriptorV1::sign(&root, "http://127.0.0.1:9/")
-            .await
-            .unwrap();
         let missing = Ed25519Signer::import(&[77; 32]).await.unwrap().did();
         let missing_key = missing.repo_key().to_owned();
         {
@@ -1631,7 +1632,7 @@ mod tests {
             crate::router::account::persist_link(
                 &tonk,
                 &tonk_worker_api::AccountLinkRequest {
-                    descriptor_hex: hex::encode(descriptor.bytes()),
+                    remote: crate::router::account::TEST_ACCOUNT_REMOTE.to_string(),
                     ..matching
                 },
             )
@@ -1640,7 +1641,7 @@ mod tests {
             tonk.profile
                 .credential()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-                .save(descriptor.account_subject().as_ref().as_bytes().to_vec())
+                .save(root.did().as_str().as_bytes().to_vec())
                 .perform(&tonk.operator)
                 .await
                 .unwrap();
@@ -1792,7 +1793,6 @@ mod tests {
             tonk_access_service::helpers::AccessServiceAddress,
             tonk_access_service::helpers::AccessServer,
         >,
-        AccountRepositoryDescriptorV1,
         Ed25519Signer,
         String,
     ) {
@@ -1845,9 +1845,6 @@ mod tests {
             "{}/",
             service.address.access_service_url.trim_end_matches('/')
         );
-        let descriptor = AccountRepositoryDescriptorV1::sign(&root, &remote)
-            .await
-            .unwrap();
         let root_did = root.did().to_string();
         let credential_id = "account-state-test-credential".to_string();
         let delegation =
@@ -1875,7 +1872,7 @@ mod tests {
                 root_did,
                 credential_id,
                 delegation_hex,
-                descriptor_hex: hex::encode(descriptor.bytes()),
+                remote: crate::router::account::TEST_ACCOUNT_REMOTE.to_string(),
                 initialize_name: false,
             },
         )
@@ -1885,12 +1882,12 @@ mod tests {
             .profile
             .credential()
             .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-            .save(descriptor.account_subject().as_ref().as_bytes().to_vec())
+            .save(root_signer.did().as_str().as_bytes().to_vec())
             .perform(&state.operator)
             .await
             .unwrap();
 
-        (state, service, descriptor, root_signer, remote)
+        (state, service, root_signer, remote)
     }
 
     /// Every recorded creation fact on the ready account branch.
@@ -1933,7 +1930,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_seeds_passkey_creation_facts_from_the_local_root() {
-        let (state, service, _descriptor, _root, _remote) =
+        let (state, service, _root, _remote) =
             ready_account_state(Some(tonk_worker_api::PasskeyMetadata {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".to_string(),
@@ -1974,7 +1971,7 @@ mod tests {
         use tonk_identity::envelope::AccountSecret;
         use tonk_identity::sealed::Sealed;
 
-        let (state, service, _descriptor, root, _remote) = ready_account_state(None).await;
+        let (state, service, root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
@@ -2051,7 +2048,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_describes_this_device_on_the_account_sweep() {
-        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, _root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
@@ -2090,7 +2087,7 @@ mod tests {
         use dialog_ucan_core::subject::Subject as UcanSubject;
         use dialog_varsig::Principal as _;
 
-        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, _root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
@@ -2172,7 +2169,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_seeds_nothing_when_the_local_root_has_no_passkey_metadata() {
-        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, _root, _remote) = ready_account_state(None).await;
 
         assert_eq!(
             ensure_account_state(&state).await,
@@ -2191,7 +2188,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_mounts_hydrates_and_keeps_readiness_offline() {
-        let (state, service, descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, root, _remote) = ready_account_state(None).await;
 
         let renamed = rename_display_name(&state, "linked-name")
             .await
@@ -2204,7 +2201,7 @@ mod tests {
             AccountStateStatus::Ready
         );
         let ready = require_ready_account_state(&state).await.unwrap();
-        assert_eq!(ready.subject, descriptor.account_subject().clone());
+        assert_eq!(ready.subject, root.did());
         assert!(
             !state.reactor.repos().read().contains_key(&ready.key),
             "the account key routes the sweep; no repository — and no \
