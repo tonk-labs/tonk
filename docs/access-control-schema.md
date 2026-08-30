@@ -146,11 +146,15 @@ customer invoking `suspend` on a space they own is refused.
 | `/use/put/subscription/resume` | clears all three | kept | kept | — |
 | `/use/put/subscription/archive` | `archived_at` | dropped | kept, for billing | on re-provisioning |
 | `/provider/add` | the row itself | — | created | — |
-| `/customer/deletion/*` | `deleted_at`, then removes the row | dropped | removed | no |
+| `/provider/remove` | `deleted_at`, then removes the row | dropped | removed | no |
+| `/customer/delete` | the same, for every space at once | dropped | removed | no |
 
 Deletion is the customer's own request rather than an operator's, which
-is why it is not in the `/use/put/subscription` namespace. `expires_at`
-has no command yet: renewal is the increment that will write it.
+is why it lives under `/provider` and `/customer` rather than in the
+`/use/put/subscription` namespace. `/customer/deletion/plan` reads the
+scope without changing anything: it is what the confirmation screen
+shows before you agree. `expires_at` has no command yet: renewal is the
+increment that will write it.
 
 ```mermaid
 stateDiagram-v2
@@ -160,9 +164,9 @@ stateDiagram-v2
     Suspended --> Served: suspend_until_at passes
     Served --> Archived: /use/put/subscription/archive
     Archived --> Served: /provider/add
-    Served --> Deleting: /customer/deletion/space
-    Suspended --> Deleting: /customer/deletion/space
-    Archived --> Deleting: /customer/deletion/space
+    Served --> Deleting: /provider/remove
+    Suspended --> Deleting: /provider/remove
+    Archived --> Deleting: /provider/remove
     Deleting --> [*]: the purge finishes and the row goes
 ```
 
