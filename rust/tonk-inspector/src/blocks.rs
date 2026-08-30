@@ -135,13 +135,16 @@ pub fn split(document: &str) -> Vec<String> {
 
 /// Build the notation that inserts an edit's new blocks.
 ///
-/// One `block/insert!` per created block, in document order, each naming
-/// the block it follows. A block that follows another NEW block names it by
-/// VARIABLE (`head: ?b0`), which is why this is notation rather than one
-/// command event per block: an event can only carry an entity, and a block
-/// created in the same transaction does not have one yet. A variable bound
-/// by an earlier assertion's `this` can be referenced by a later one — a
-/// backward reference, which is all a run of blocks needs.
+/// One `block/insert!` per created block, emitted in REVERSE document
+/// order, each naming the block it precedes (`next: ?b0`). Reverse,
+/// because a variable can only be referenced by an assertion that comes
+/// AFTER the one binding it: chaining forward means the successor has to
+/// already be named, so the successor is written first.
+///
+/// The chain ends at `next: case:none`, and that last-written block (the
+/// FIRST in document order) also carries `prev`: the existing block the run
+/// follows, or `tonk:notebook/edge` at the document head. Positions then
+/// derive by recursion from that anchor without needing a second round.
 ///
 /// Returns `None` when the edit creates nothing.
 pub fn insert_notation(
@@ -152,41 +155,72 @@ pub fn insert_notation(
     if created.is_empty() {
         return None;
     }
-    let mut out = String::new();
+    // The new blocks, paired with the slot they occupy, in document order.
     let mut fresh = created.iter();
-    // The variable naming the previous slot, when that slot was itself new.
-    let mut previous_var: Option<String> = None;
-    let mut nth = 0usize;
+    let mut slots: Vec<(usize, &String)> = Vec::new();
     for (index, slot) in order.iter().enumerate() {
-        let Some(source) = (match slot {
-            Some(_) => {
-                previous_var = None;
-                None
+        if slot.is_none()
+            && let Some(source) = fresh.next()
+        {
+            slots.push((index, source));
+        }
+    }
+    if slots.is_empty() {
+        return None;
+    }
+
+    // Runs of ADJACENT new blocks chain together; a surviving block between
+    // two new ones breaks the chain, because that block's stored position is
+    // a better anchor than a chain reaching across it.
+    let mut runs: Vec<Vec<(usize, &String)>> = Vec::new();
+    for slot in slots {
+        match runs.last_mut() {
+            Some(run) if run.last().is_some_and(|(i, _)| i + 1 == slot.0) => run.push(slot),
+            _ => runs.push(vec![slot]),
+        }
+    }
+
+    let mut out = String::new();
+    let mut nth = 0usize;
+    for run in &runs {
+        // Written last-to-first so each `next` is a backward reference.
+        let base = nth;
+        // What the whole run follows: the nearest surviving block before it.
+        let run_prev = run
+            .first()
+            .and_then(|(index, _)| order[..*index].iter().rev().find_map(|s| s.clone()));
+        let mut vars: Vec<String> = Vec::new();
+        for offset in 0..run.len() {
+            vars.push(format!("b{}", base + offset));
+        }
+        for (offset, (index, source)) in run.iter().enumerate().rev() {
+            let var = &vars[offset];
+            out.push_str("block/insert!:\n");
+            out.push_str(&format!("  this: ?{var}\n"));
+            out.push_str(&format!("  notebook: {notebook}\n"));
+            out.push_str(&format!("  source: {}\n", yaml_block(source)));
+            // The successor: the next block in this run by variable, else
+            // the nearest surviving block after the run, else the tail.
+            if offset + 1 < run.len() {
+                out.push_str(&format!("  next: ?{}\n", vars[offset + 1]));
+            } else if let Some(next) = order[index + 1..].iter().find_map(|s| s.clone()) {
+                out.push_str(&format!("  next: {next}\n"));
+            } else {
+                out.push_str("  next: case:none\n");
             }
-            None => fresh.next(),
-        }) else {
-            continue;
-        };
-        let var = format!("b{nth}");
-        out.push_str("block/insert!:\n");
-        out.push_str(&format!("  this: ?{var}\n"));
-        out.push_str(&format!("  notebook: {notebook}\n"));
-        out.push_str(&format!("  source: {}\n", yaml_block(source)));
-        // The predecessor: another new block by variable, else the nearest
-        // surviving block by entity, else nothing (the document's head).
-        if let Some(previous) = &previous_var {
-            out.push_str(&format!("  head: ?{previous}\n"));
-        } else if let Some(head) = order[..index].iter().rev().find_map(|s| s.clone()) {
-            out.push_str(&format!("  head: {head}\n"));
+            // The EXISTING block this run follows, carried on every block
+            // in the run and so the same entity for all of them. Only the
+            // run's last block (`next: case:none`) consults it, and that
+            // block's own predecessors are new, with no stored position —
+            // so the anchor has to reach past them to something placed.
+            let _ = index;
+            match &run_prev {
+                Some(prev) => out.push_str(&format!("  prev: {prev}\n")),
+                None => out.push_str("  prev: tonk:notebook/edge\n"),
+            }
+            out.push('\n');
+            nth += 1;
         }
-        // The successor is only ever an EXISTING block: a later new block
-        // would be a forward reference, which does not analyze.
-        if let Some(tail) = order[index + 1..].iter().find_map(|s| s.clone()) {
-            out.push_str(&format!("  tail: {tail}\n"));
-        }
-        out.push('\n');
-        previous_var = Some(var);
-        nth += 1;
     }
     (!out.is_empty()).then_some(out)
 }
@@ -665,12 +699,13 @@ mod tests {
         let created = vec!["hello".to_owned()];
         let text = insert_notation("id:nb", &order, &created).expect("notation");
         assert!(text.contains("this: ?b0"), "{text}");
-        assert!(text.contains("head: id:a"), "{text}");
-        assert!(text.contains("tail: id:b"), "{text}");
+        assert!(text.contains("next: id:b"), "{text}");
+        assert!(text.contains("prev: id:a"), "{text}");
     }
 
-    /// A RUN of new blocks chains: the second names the first by variable,
-    /// which is a backward reference and the only kind that analyzes.
+    /// A RUN of new blocks chains FORWARD, and so is emitted back to front:
+    /// the earlier block names the later one by variable, which only
+    /// analyzes if the later one was bound first.
     #[dialog_common::test]
     fn it_chains_a_run_of_inserted_blocks_by_variable() {
         let order = vec![Some("id:a".into()), None, None, Some("id:b".into())];
@@ -679,25 +714,39 @@ mod tests {
         assert!(text.contains("this: ?b0"), "{text}");
         assert!(text.contains("this: ?b1"), "{text}");
         assert!(
-            text.contains("head: id:a"),
-            "the first follows the stored block: {text}"
+            text.contains("next: ?b1"),
+            "the first precedes the second: {text}"
         );
         assert!(
-            text.contains("head: ?b0"),
-            "the second follows the first: {text}"
+            text.contains("next: id:b"),
+            "the last precedes the stored block: {text}"
         );
-        // The second must NOT forward-reference a later new block.
-        assert!(!text.contains("tail: ?"), "no forward references: {text}");
+        // `?b1` must be BOUND before `?b0` names it.
+        let bind = text.find("this: ?b1").expect("b1 bound");
+        let use_ = text.find("next: ?b1").expect("b1 used");
+        assert!(bind < use_, "backward reference only: {text}");
     }
 
-    /// A block at the document head has no predecessor.
+    /// A run appended at the end of a document terminates its chain at the
+    /// sentinel rather than at a following block.
     #[dialog_common::test]
-    fn it_omits_the_head_at_the_start_of_a_document() {
+    fn it_ends_the_chain_at_the_document_tail() {
+        let order = vec![Some("id:a".into()), None];
+        let created = vec!["last".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("next: case:none"), "{text}");
+        assert!(text.contains("prev: id:a"), "{text}");
+    }
+
+    /// A block at the document head follows the edge sentinel, so the
+    /// anchoring rule still matches.
+    #[dialog_common::test]
+    fn it_anchors_on_the_edge_at_the_start_of_a_document() {
         let order = vec![None, Some("id:b".into())];
         let created = vec!["first".to_owned()];
         let text = insert_notation("id:nb", &order, &created).expect("notation");
-        assert!(!text.contains("head:"), "{text}");
-        assert!(text.contains("tail: id:b"), "{text}");
+        assert!(text.contains("prev: tonk:notebook/edge"), "{text}");
+        assert!(text.contains("next: id:b"), "{text}");
     }
 
     /// Markdown survives: newlines, colons and backticks are carried in a

@@ -102,6 +102,26 @@ concept!: &notebook/block
       cardinality: one
       as: text
 
+# A block and the block that FOLLOWS it, or `case:none` at the document tail.
+#
+# This is what lets a run of blocks inserted in one commit resolve their
+# positions in a single pass. A block's position is derived from its
+# SUCCESSOR's, and the tail anchors the chain against the document edge, so
+# the recursion terminates at a fact rather than needing a second round.
+#
+# Its own concept, not a field of `notebook/block`: a block whose successor
+# is retracted is still a block, and a rule reading the chain must not have
+# to bind a source it does not care about.
+concept!: &block/chain
+  this: tonk:notebook/block-chain
+  description: A block and the block that follows it.
+  with:
+    next:
+      description: The following block, or `case:none` at the tail.
+      the: xyz.tonk.notebook.block/next
+      cardinality: one
+      as: entity
+
 # ---------------------------------------------------------------------------
 # The space shell.
 #
@@ -231,12 +251,13 @@ view!:
 # so the new block claims an entity that already exists and `reconcile`
 # writes one block's source onto another.
 #
-# `after` is the block this one follows, BY ENTITY. Its position is looked
-# up rather than sent, so a block inserted after another block inserted in
-# the same commit still resolves — the lookup goes through
-# `block/position`, which covers derived positions as well as stored ones.
+# `next` is the block this one PRECEDES, by entity, or `case:none` at the
+# document tail. Forward, not backward: positions derive by recursion down
+# the chain from the tail, and the tail is the end that has a fixed anchor.
+# A block inserted before another block inserted in the same commit resolves
+# against that one's derived position, in the same round.
 command!: &block/insert
-  description: Insert one block into a notebook, between two others.
+  description: Insert one block into a notebook, before another.
   with:
     # The command's own attributes, distinct from `notebook/block`'s: a
     # command that wrote the block's attributes directly would BE the block,
@@ -249,14 +270,16 @@ command!: &block/insert
       description: The block's markdown source.
       the: xyz.tonk.notebook.insert/source
       as: text
-  maybe:
-    head:
-      description: The block this one follows; absent at the document head.
-      the: xyz.tonk.notebook.insert/head
+    next:
+      description: The block this one precedes, or `case:none` at the tail.
+      the: xyz.tonk.notebook.insert/next
       as: entity
-    tail:
-      description: The block this one precedes; absent at the document tail.
-      the: xyz.tonk.notebook.insert/tail
+    prev:
+      description: |
+        The existing block this run of inserts follows, or
+        `tonk:notebook/edge` at the document head. Only the chain's last
+        block consults it; the others take their bound from their successor.
+      the: xyz.tonk.notebook.insert/prev
       as: entity
 
 command!: &block/edit
@@ -344,59 +367,90 @@ rule!:
         this: ?at
         is: ?block/key
 
-# The document's edge HAS a position: the empty one.
-#
-# That is what keeps the derivation below to a single rule. Without it a
-# rule body naming `head` never fires for a block at the top, and one
-# variant per present/absent combination is needed instead.
-block/position!:
-  this: tonk:notebook/edge
-  at: ""
-
-# ...and an inserted block's position is derived between its neighbours'.
-#
-# Neighbours are read through `block/position`, NOT through the stored
-# sequence — so a block inserted next to another block inserted in the same
-# commit resolves against that one's derived position. `coalesce` supplies
-# the edge sentinel where a neighbour is absent, so head, tail and middle
-# are one rule rather than three.
+# An inserted block's successor, kept as a fact so the position rules can
+# recurse over it. `case:none` at the tail is an ordinary sentinel entity —
+# it simply matches no block, which is what ends the recursion.
 rule!:
-  description: Derive an inserted block's position.
-  assert!: block/position
+  description: Record an inserted block's successor.
+  assert!: block/chain
   when:
     - assert: block/insert
       where:
         this: ?this
-        notebook: ?notebook
-        head: ?maybe-head
-        tail: ?maybe-tail
-    - assert: coalesce
+        next: ?next
+
+# The document's edge HAS a position: the empty one, which
+# `dialog/position` reads as an open bound.
+#
+# That is what keeps the tail rule to a single rule: without it, a body
+# naming `prev` never fires for a run inserted into an empty notebook, and a
+# second present/absent variant is needed instead.
+block/position!:
+  this: tonk:notebook/edge
+  at: ""
+
+# The chain's TAIL anchors against the block it FOLLOWS.
+#
+# A run of new blocks is a chain: each knows its successor, and the last one
+# knows the existing block it comes after (`prev`), or nothing when it is
+# appended to an empty notebook. That existing block's position is stored,
+# so the anchor is a lookup, not an aggregate — which matters, because a
+# reducer over the sequence would sit in the same dependency cycle as the
+# recursion that concludes into it, and dialog rejects that as unstratified.
+#
+# `dialog/position` maps `""` to an OPEN bound, so an absent `prev` gives
+# `create(major::ZERO, ..)`: the start of the range, correct only when there
+# is nothing to come after.
+rule!:
+  description: Position the last new block after the block it follows.
+  assert!: block/position
+  when:
+    - assert: block/chain
       where:
-        source: ?maybe-head
-        fallback: tonk:notebook/edge
-        is: ?head
-    - assert: coalesce
+        this: ?this
+        next: case:none
+    - assert: block/insert
       where:
-        source: ?maybe-tail
-        fallback: tonk:notebook/edge
-        is: ?tail
-    # Scoped to THIS notebook, or a neighbour lookup matches a block of
-    # the same name in another notebook — or the edge, which belongs to
-    # none. The edge is exempt: it is one shared sentinel, so it carries
-    # whatever notebook is asked of it.
+        this: ?this
+        prev: ?prev
     - assert: block/position
       where:
-        this: ?head
-        at: ?head-at
-    - assert: block/position
-      where:
-        this: ?tail
-        at: ?tail-at
+        this: ?prev
+        at: ?prev-at
     - assert: dialog/position
       where:
         member: ?this
-        after: ?head-at
-        before: ?tail-at
+        after: ?prev-at
+        before: ""
+        is: ?at
+
+# ...and every other block sits BEFORE its successor.
+#
+# This is the recursion: the rule reads its own conclusion for the successor
+# and derives this block from it. It terminates because the chain ends at
+# `case:none`, which the rule above positions without recursing.
+#
+# `before: ?next-at` with `after` open, NOT the other way around: a block
+# precedes its successor. Deriving with `after: ?next-at` builds the same
+# chain but numbers it backwards, so a position scan reads the document in
+# reverse.
+rule!:
+  description: Position a block before its successor.
+  assert!: block/position
+  when:
+    - assert: block/chain
+      where:
+        this: ?this
+        next: ?next
+    - assert: block/position
+      where:
+        this: ?next
+        at: ?next-at
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ""
+        before: ?next-at
         is: ?at
 
 # The derived position becomes the block's entry in the sequence.
