@@ -258,9 +258,7 @@ pub async fn create_custody_account(
 
     let secret = AccountSecret::generate()?;
     let root = secret.signer().await?;
-    let account_did = root.did().to_string();
-
-    let created = crate::passkey::create_custody_passkey(Some(&email), &account_did).await?;
+    let created = crate::passkey::create_custody_passkey(Some(&email), None).await?;
     let credential_id = hex::encode(&created.id);
     let passkey = created_on.map(|created_on| PasskeyCreationMetadata {
         created_at: (js_sys::Date::now() / 1000.0) as u64,
@@ -418,7 +416,7 @@ pub async fn enroll_custody(
         anyhow::bail!("the asserted passkey unlocks a different account");
     }
 
-    let created = crate::passkey::create_custody_passkey(label, account_did).await?;
+    let created = crate::passkey::create_custody_passkey(label, None).await?;
     let credential_id = hex::encode(&created.id);
     let evaluation = match created.evaluation {
         Some(evaluation) => evaluation,

@@ -429,6 +429,21 @@ impl Custodian {
         derive_custody_seed(&self.key).await
     }
 
+    /// The signer that names this passkey's custody space.
+    ///
+    /// Derived through the seed, so the bytes exist for the length of
+    /// this call — WebCrypto cannot derive an Ed25519 key, and X25519
+    /// needs the seed anyway.
+    pub async fn signer(&self) -> anyhow::Result<dialog_credentials::Ed25519Signer> {
+        let seed = self
+            .seed()
+            .await
+            .map_err(|error| anyhow::anyhow!("deriving the custody seed failed: {error:?}"))?;
+        dialog_credentials::Ed25519Signer::import(&*seed)
+            .await
+            .map_err(|error| anyhow::anyhow!("importing the custody seed failed: {error}"))
+    }
+
     /// A KEK that can open this passkey's envelopes and not seal one.
     pub async fn opener(&self) -> Result<Kek<crate::clearance::Recovery, Opening>, JsValue> {
         Ok(Kek::from_handle(
@@ -461,28 +476,23 @@ impl Custodian {
         AccountBuilder(self)
     }
 
-    /// Create a passkey and adopt what it evaluates to.
+    /// Create a passkey. A command, performed against whatever can run
+    /// WebAuthn — which is a page and never a worker.
     ///
-    /// One of the two things a page does. Everything downstream — the
-    /// account secret, the sealing, the delegations — happens wherever
-    /// the handles are sent.
+    /// Needs no account: there is not one yet when a signup runs this,
+    /// and the account is made afterwards from the handles this yields.
     ///
-    /// Window-only: WebAuthn is not available to a worker, which is the
-    /// whole reason the page is in this at all.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub async fn create(label: Option<&str>, account_did: &str) -> anyhow::Result<Self> {
-        let created = crate::passkey::create_custody_passkey(label, account_did).await?;
-        Self::from_credential(created).await
+    /// `name` and `display_name` are what a passkey manager shows, and
+    /// with a per-credential user handle they are the only thing telling
+    /// two entries apart.
+    pub fn create(name: Option<String>, display_name: Option<String>) -> CreateCustodian {
+        CreateCustodian { name, display_name }
     }
 
-    /// Assert an existing passkey and adopt what it evaluates to.
-    ///
-    /// The other thing a page does. `None` lets the authenticator
-    /// choose, which is what a sign-in offers.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub async fn load(credential_id: Option<&[u8]>) -> anyhow::Result<Self> {
-        let asserted = crate::passkey::evaluate_custody_passkey(credential_id).await?;
-        Self::from_credential(asserted).await
+    /// Assert an existing passkey. `None` lets the authenticator choose,
+    /// which is what an open sign-in offers.
+    pub fn load(credential_id: Option<Vec<u8>>) -> LoadCustodian {
+        LoadCustodian { credential_id }
     }
 
     /// Import a credential's PRF outputs, and let the bytes go.
@@ -510,6 +520,86 @@ impl Custodian {
     }
 }
 
+/// Create a passkey and adopt what it evaluates to.
+///
+/// Performed rather than called, so the thing that runs WebAuthn is
+/// named at the call site: `Custodian::create(..).perform(&page)`. The
+/// worker cannot provide it, and saying so in a type beats finding out
+/// at runtime.
+pub struct CreateCustodian {
+    /// What a passkey manager lists it as.
+    pub name: Option<String>,
+    /// The longer form, where a manager shows one.
+    pub display_name: Option<String>,
+}
+
+impl dialog_capability::Command for CreateCustodian {
+    type Input = Self;
+    type Output = anyhow::Result<Custodian>;
+}
+
+/// Assert an existing passkey and adopt what it evaluates to.
+pub struct LoadCustodian {
+    /// Which credential, or `None` to let the authenticator choose.
+    pub credential_id: Option<Vec<u8>>,
+}
+
+impl dialog_capability::Command for LoadCustodian {
+    type Input = Self;
+    type Output = anyhow::Result<Custodian>;
+}
+
+impl CreateCustodian {
+    /// Run this against a provider that can reach WebAuthn.
+    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Custodian>
+    where
+        Env: dialog_capability::Provider<CreateCustodian>,
+    {
+        env.execute(self).await
+    }
+}
+
+impl LoadCustodian {
+    /// Run this against a provider that can reach WebAuthn.
+    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Custodian>
+    where
+        Env: dialog_capability::Provider<LoadCustodian>,
+    {
+        env.execute(self).await
+    }
+}
+
+/// The browsing context, which is the only thing that can run WebAuthn.
+///
+/// A unit type rather than a handle to anything: the ceremony reaches
+/// `navigator.credentials` itself. It exists to be the provider, so a
+/// caller in the worker cannot name it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub struct Page;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[async_trait::async_trait(?Send)]
+impl dialog_capability::Provider<CreateCustodian> for Page {
+    async fn execute(&self, input: CreateCustodian) -> anyhow::Result<Custodian> {
+        let created = crate::passkey::create_custody_passkey(
+            input.name.as_deref(),
+            input.display_name.as_deref(),
+        )
+        .await?;
+        Custodian::from_credential(created).await
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[async_trait::async_trait(?Send)]
+impl dialog_capability::Provider<LoadCustodian> for Page {
+    async fn execute(&self, input: LoadCustodian) -> anyhow::Result<Custodian> {
+        let asserted =
+            crate::passkey::evaluate_custody_passkey(input.credential_id.as_deref()).await?;
+        Custodian::from_credential(asserted).await
+    }
+}
+
 /// Reaching the account a [`Custodian`] holds.
 pub struct AccountBuilder<'a>(&'a Custodian);
 
@@ -529,6 +619,26 @@ impl AccountBuilder<'_> {
     /// when a second passkey is enrolled: same account, another way in.
     pub async fn adopt(&self, secret: crate::envelope::AccountSecret) -> anyhow::Result<Account> {
         self.seal(secret).await
+    }
+
+    /// Fetch this passkey's custody cell and open what is there.
+    ///
+    /// The whole recovery in one call: derive the signer that names the
+    /// space, read the cell, unseal it. A device holding nothing but the
+    /// passkey gets the account back.
+    ///
+    /// `None` when the space holds no cell yet, which is not a failure —
+    /// it is what a passkey enrolled but never published looks like, and
+    /// the caller decides whether that is a problem.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub async fn load(&self, endpoint: &str) -> anyhow::Result<Option<Account>> {
+        let signer = self.0.signer().await?;
+        let Some(bytes) = crate::custody::resolve_secret(signer, endpoint).await? else {
+            return Ok(None);
+        };
+        let envelope = Envelope::decode(&bytes)
+            .map_err(|error| anyhow::anyhow!("the custody cell is unreadable: {error}"))?;
+        self.import(&envelope).await.map(Some)
     }
 
     /// Import the account from an envelope sealed under this passkey.
@@ -871,6 +981,30 @@ mod tests {
             recovered.signer().await.expect("a signer").did(),
             signer.did(),
             "the same account comes back"
+        );
+    }
+
+    /// The signer a `Custodian` derives names the same space the byte
+    /// path does.
+    ///
+    /// This is what `load` resolves against, so a drift here would send
+    /// a recovering device to an empty space rather than failing.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_names_the_same_custody_space_as_the_byte_path() {
+        use dialog_varsig::Principal as _;
+
+        let prf = [11u8; 32];
+        let custodian = Custodian::adopt(vec![1], &prf, &[22u8; 32])
+            .await
+            .expect("handles import");
+
+        assert_eq!(
+            custodian.signer().await.expect("a signer").did(),
+            crate::envelope::custody_signer(&prf)
+                .await
+                .expect("the byte path signer")
+                .did(),
+            "a recovering device resolves the space its cell is in"
         );
     }
 
