@@ -40,7 +40,7 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, assign_keys, insert_notation, project, reconcile, split};
+use crate::blocks::{Block, assign_keys, insert_notation, project, reconcile, split, title_of};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -383,6 +383,7 @@ fn mount(
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),
             projected: RefCell::new(String::new()),
+            title: RefCell::new(None),
             next_cell: std::cell::Cell::new(0),
             projected_once: std::cell::Cell::new(false),
             marked: std::cell::Cell::new(-1),
@@ -438,6 +439,9 @@ struct Notebook {
     /// The document text last handed to the editor. Guards against writing
     /// back the editor's own echo of a store update.
     projected: RefCell<String>,
+    /// The title last emitted, so a commit that leaves the heading alone
+    /// does not rewrite the notebook's name.
+    title: RefCell<Option<String>>,
     /// Next cell id. Monotonic, so an id is never reused by a later fence.
     next_cell: std::cell::Cell<u32>,
     /// Whether the store's blocks have been projected into the editor yet.
@@ -844,6 +848,17 @@ impl Notebook {
         for (entity, source) in &edit.changed {
             self.dispatch_edit(entity, source);
         }
+
+        // The document's heading IS the notebook's title, so an edit that
+        // changes the heading renames the notebook. Emitted only when it
+        // actually changed: a rename on every commit would write a fact per
+        // keystroke-flush, and the title is the one field the index reads.
+        if let Some(title) = title_of(&document)
+            && self.title.borrow().as_deref() != Some(title.as_str())
+        {
+            self.dispatch_retitle(&title);
+            *self.title.borrow_mut() = Some(title);
+        }
         // A created block is INSERTED, and the element names no entity.
         //
         // Identity derives from the command body; the position derives from
@@ -931,6 +946,16 @@ impl Notebook {
         let notebook = self.notebook_entity();
         let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.as_str().into());
         self.emit("blockedit", &detail);
+    }
+
+    /// Emit `titlechange`, which the library's `notebook/retitle` command
+    /// reads to rename the notebook.
+    fn dispatch_retitle(&self, title: &str) {
+        let detail = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&detail, &"title".into(), &title.into());
+        let notebook = self.notebook_entity();
+        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.as_str().into());
+        self.emit("titlechange", &detail);
     }
 
     /// The notebook these blocks belong to.

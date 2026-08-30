@@ -57,6 +57,18 @@ concept!: &notebook
       cardinality: many
       as: {[position]: entity}
 
+# The title alone, so a create or a rename writes one field rather than
+# re-binding the notebook's every field (the same reason `notebook/blocks`
+# exists). Asserting `notebook` itself would require a `block` too, and a
+# notebook with no blocks yet has none.
+concept!: &notebook/named
+  description: A notebook's title, on its own.
+  with:
+    title:
+      description: The notebook's title.
+      the: xyz.tonk.notebook/title
+      as: text
+
 # The sequence alone, so a placement writes one entry rather than
 # re-binding the notebook's every field (the wiki/board pattern).
 concept!: &notebook/blocks
@@ -166,6 +178,7 @@ view!:
       onblockedit=block/edit
       onplace=block/place
       onremove=block/remove
+      ontitlechange=notebook/retitle
       style="display: block;"
     >
       <div class="notebook-data" hidden>
@@ -178,15 +191,42 @@ view!:
 
 # EVERY notebook — the directory view, which is what core's `/{*model}` route
 # renders at `/space/{repo}/notebook`. A list of links, one per notebook.
+# EVERY notebook, with one box at the top that both filters and creates.
+#
+# `<tonk-notebook-index>` owns the filtering: it is a view concern, not a
+# fact, so typing must not write anything. Submitting IS a fact, and goes
+# through `notebook/create` like any other command.
+#
+# The element wraps the rows rather than replacing them, so the directory
+# still renders as a plain list if its script never loads.
 view/directory!:
   this: id:notebook/directory
   model: tonk:notebook
   display: |
-    <div class="notebook-index">
+    <tonk-notebook-index class="notebook-index">
+      <form class="notebook-index__search" onsubmit=notebook/create>
+        <wa-input
+          class="notebook-index__query"
+          name="title"
+          type="search"
+          autocomplete="off"
+          placeholder="Find a notebook, or type a name to make one"
+          appearance="filled"
+        ></wa-input>
+        <wa-button
+          class="notebook-index__new"
+          type="submit"
+          variant="brand"
+          title="Create a notebook with this name"
+        >New</wa-button>
+      </form>
+      <p class="notebook-index__empty" hidden>
+        Nothing matches. Press <kbd>Enter</kbd> to create it.
+      </p>
       <a class="notebook-index__item" href="notebook/{this}">
         <span class="notebook-index__title">{title}</span>
       </a>
-    </div>
+    </tonk-notebook-index>
 
 # The block rows the element reads: one per block, its source on the row.
 view/directory!:
@@ -204,6 +244,41 @@ view/directory!:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+# The index — `/space/{repo}/notebook`, with no entity.
+#
+# Its own route and its own concept, NOT the entity route with an optional
+# field. Every route concept reads the same site entity, so a concept that
+# merely *tolerates* a missing `entity` still resolves on the index page and
+# renders an entity-less notebook; and one that requires it reports
+# "Concept mismatch: required attribute missing" beside the working list.
+# A literal path wins over `/{*model}` under the router's specificity rules
+# (fewer broad params first), so this claims the URL outright.
+route!: &route/notebook/index
+  this: id:notebook/index/route
+  path: "/notebook"
+  concept: tonk:notebook/index-route
+
+concept!: &notebook/index-route
+  this: tonk:notebook/index-route
+  description: The notebook index (`/space/{repo}/notebook`).
+  with:
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+view!:
+  this: id:notebook/index/route/view
+  model: tonk:notebook/index-route
+  display: |
+    <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
 
 route!: &route/notebook
   this: id:notebook/route
@@ -281,6 +356,44 @@ command!: &block/insert
         block consults it; the others take their bound from their successor.
       the: xyz.tonk.notebook.insert/prev
       as: entity
+
+# Create a notebook from the index's search box.
+#
+# The box is one control for two jobs: it filters the list as you type, and
+# submitting it creates a notebook with what you typed as the title. The
+# filtering is the element's business (it is a view concern, not a fact);
+# this command is only the create half.
+command!: &notebook/create
+  description: Create a notebook with a title.
+  with:
+    title:
+      description: |
+        The typed title. Read off the form's own element rather than the
+        event detail: a `wa-input` reports its value through
+        `elements.<name>.value`, and FormData comes back empty for it.
+      the: dom.event.current-target.elements.title/value
+      as: text
+    prevent-default:
+      description: Stop the form submission from reloading the page.
+      the: dom.event.do/prevent-default
+
+# Rename a notebook from its document's own heading.
+#
+# The title is not a separate field the user maintains: it IS the first
+# heading of the document. The element watches the projected document and
+# emits `titlechange` when that heading changes, so renaming a notebook is
+# just editing its `# Heading`.
+command!: &notebook/retitle
+  description: Set a notebook's title from its leading heading.
+  with:
+    subject:
+      description: The notebook entity.
+      the: dom.event.detail/notebook
+      as: entity
+    title:
+      description: The heading text, without its `#` markers.
+      the: dom.event.detail/title
+      as: text
 
 command!: &block/edit
   description: Write one notebook block's source.
@@ -479,6 +592,24 @@ rule!:
       where:
         this: ?block
         at: ?block/key
+
+rule!:
+  description: Create a notebook from the index box.
+  assert!: notebook/named
+  when:
+    - assert: notebook/create
+      where:
+        this: ?this
+        title: ?title
+
+rule!:
+  description: Retitle a notebook from its heading.
+  assert!: notebook/named
+  when:
+    - assert: notebook/retitle
+      where:
+        subject: ?this
+        title: ?title
 
 rule!:
   description: Persist a block edit onto its block.

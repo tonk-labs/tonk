@@ -133,6 +133,28 @@ pub fn split(document: &str) -> Vec<String> {
     blocks
 }
 
+/// The document's title: the text of its first ATX heading.
+///
+/// A notebook's title is not a field the author maintains beside the
+/// document. It IS the document's leading heading, so renaming a notebook
+/// is editing that line and nothing has to stay in sync by hand.
+///
+/// Returns `None` when the document opens with something other than a
+/// heading — an untitled notebook keeps whatever title it had rather than
+/// being renamed to its first paragraph.
+pub fn title_of(document: &str) -> Option<String> {
+    let first = document.trim_start().lines().next()?;
+    let trimmed = first.trim_start_matches(' ');
+    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let text = trimmed[hashes..].trim();
+    // A closing run of `#` is decoration in ATX headings, not content.
+    let text = text.trim_end_matches('#').trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 /// Build the notation that inserts an edit's new blocks.
 ///
 /// One `block/insert!` per created block, emitted in REVERSE document
@@ -759,6 +781,41 @@ mod tests {
         assert!(text.contains("source: |-"), "{text}");
         assert!(text.contains("    ```dialog"), "{text}");
         assert!(text.contains("      title: ?t"), "{text}");
+    }
+
+    /// The title is the leading heading's text.
+    #[dialog_common::test]
+    fn it_reads_the_title_from_the_leading_heading() {
+        assert_eq!(title_of("# Notes\n\nbody"), Some("Notes".to_owned()));
+    }
+
+    /// Any ATX level titles the document; a notebook titled with `##` is
+    /// still titled.
+    #[dialog_common::test]
+    fn it_reads_a_deeper_heading_as_the_title() {
+        assert_eq!(title_of("### Deep\n\nbody"), Some("Deep".to_owned()));
+    }
+
+    /// A closing `#` run is decoration, not part of the name.
+    #[dialog_common::test]
+    fn it_strips_a_closing_hash_run() {
+        assert_eq!(title_of("# Notes #\n"), Some("Notes".to_owned()));
+    }
+
+    /// A document that does not open with a heading has no title, so the
+    /// notebook keeps the one it has rather than being renamed to a
+    /// paragraph.
+    #[dialog_common::test]
+    fn it_reads_no_title_from_a_headingless_document() {
+        assert_eq!(title_of("just a paragraph\n\n# Later"), None);
+    }
+
+    /// `#hashtag` is not a heading (no space), and an empty heading names
+    /// nothing.
+    #[dialog_common::test]
+    fn it_reads_no_title_from_a_bare_hash() {
+        assert_eq!(title_of("#\n"), None);
+        assert_eq!(title_of("####### seven\n"), None);
     }
 
     /// Nothing created, nothing to send.

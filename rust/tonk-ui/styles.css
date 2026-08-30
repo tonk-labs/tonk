@@ -2548,6 +2548,36 @@ tonk-code:focus-within {
 }
 .notebook-index__title { font-weight: 500; }
 .notebook-index .notebook-block-rows { display: none; }
+
+/* The search-and-create row. One control doing two jobs, so it reads as one
+   control: the field takes the width and the button sits against it. */
+.notebook-index__search {
+  display: flex;
+  gap: var(--wa-space-s, 0.75rem);
+  align-items: center;
+  margin: 0 0 var(--wa-space-m, 1rem);
+}
+.notebook-index__query { flex: 1 1 auto; min-width: 0; }
+.notebook-index__new { flex: 0 0 auto; }
+
+/* Rows read as a list, separated rather than boxed: the index is a way
+   through to a notebook, not a place to linger. */
+.notebook-index__item + .notebook-index__item {
+  border-top: 1px solid var(--wa-color-surface-border);
+}
+.notebook-index__empty {
+  margin: 0;
+  padding: var(--wa-space-m, 1rem);
+  color: var(--wa-color-text-quiet);
+  font-size: var(--wa-font-size-s, 0.875rem);
+}
+.notebook-index__empty kbd {
+  font-family: var(--wa-font-family-code, monospace);
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border: 1px solid var(--wa-color-surface-border);
+  border-radius: var(--wa-border-radius-s, 0.25rem);
+}
 /* ── The ceremony cluster ──────────────────────────────────────────
  *
  * A column of blocks over a dimmed page, from `fabb/onboard.html`:
