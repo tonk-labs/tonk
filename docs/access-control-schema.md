@@ -119,20 +119,46 @@ Because the gate is subject-level, it cannot serve a read while refusing
 a write. Anything needing that distinction has to come from the
 delegation chain, not from a status column.
 
-## Operator commands
+## Changing a subscription
 
-Three things a service does to one subscription, on its own DID as
-subject — they are its decisions about a customer, not anything the
-customer authorizes, so only a key it delegated to can invoke one.
+Nothing edits these rows directly. Every column the gate reads is
+written by a command, and each command is a UCAN invocation arriving at
+the same `/ucan/` endpoint as everything else.
 
-| Command | Data | Row | Comes back |
-|---|---|---|---|
-| `/use/put/subscription/suspend` | kept | kept | on resume, or when `suspend_until_at` passes |
-| `/use/put/subscription/archive` | dropped | kept, for billing | on re-provisioning |
-| `/customer/deletion/*` | dropped | removed | no |
+The three operator commands take the service's own DID as subject: they
+are its decisions about a customer, not anything the customer
+authorizes, so only a key the service delegated to can invoke one. A
+customer invoking `suspend` on a space they own is refused.
+
+| Command | Writes | Data | Row | Comes back |
+|---|---|---|---|---|
+| `/use/put/subscription/suspend` | `suspend_code`, `suspend_message`, `suspend_until_at` | kept | kept | on resume, or when the deadline passes |
+| `/use/put/subscription/resume` | clears all three | kept | kept | — |
+| `/use/put/subscription/archive` | `archived_at` | dropped | kept, for billing | on re-provisioning |
+| `/provider/add` | the row itself | — | created | — |
+| `/customer/deletion/*` | `deleted_at`, then removes the row | dropped | removed | no |
 
 Deletion is the customer's own request rather than an operator's, which
-is why it is not in the `/use/put/subscription` namespace.
+is why it is not in the `/use/put/subscription` namespace. `expires_at`
+has no command yet: renewal is the increment that will write it.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Served: /provider/add
+    Served --> Suspended: /use/put/subscription/suspend
+    Suspended --> Served: /use/put/subscription/resume
+    Suspended --> Served: suspend_until_at passes
+    Served --> Archived: /use/put/subscription/archive
+    Archived --> Served: /provider/add
+    Served --> Deleting: /customer/deletion/space
+    Suspended --> Deleting: /customer/deletion/space
+    Archived --> Deleting: /customer/deletion/space
+    Deleting --> [*]: the purge finishes and the row goes
+```
+
+Served here means the subscription itself raises no objection. Whether a
+request is actually answered still depends on the provider's
+`customer.status`, which the gate reads last.
 
 ## Registration lifecycle
 
@@ -141,9 +167,15 @@ stateDiagram-v2
     [*] --> Registered: /customer/enroll
     Registered --> Registered: resend the activation link
     Registered --> Active: /customer/activate
-    Active --> Suspended: service withdrawn
-    Suspended --> Active: restored
+    Active --> Suspended: no command yet
+    Suspended --> Active: no command yet
 ```
+
+Suspending a whole customer withdraws service from everything they
+provide, where `/use/put/subscription/suspend` withdraws it from one
+space. Nothing writes it: there is no handler, so the state is reachable
+only by editing the column. Its command belongs beside the subscription
+ones when it arrives.
 
 `Registered` means enrolled with the activation link unopened. Nothing
 is served in that state — not the customer's own account space, not any
