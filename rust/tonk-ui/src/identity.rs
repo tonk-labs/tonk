@@ -31,9 +31,12 @@ mod tests {
             .await?;
         let result = result.json();
         assert_eq!(result["status"], 200);
-        assert_eq!(
-            result["body"]["accountServiceUrl"].as_str(),
-            Some(env.account_service.as_str())
+        // A deployment advertises the service that serves it and
+        // nothing else: the account service it used to name is gone.
+        assert!(result["body"]["accountServiceUrl"].is_null());
+        assert!(
+            result["body"]["serviceDid"].as_str().is_some(),
+            "discovery names the access service's identity"
         );
 
         driver.quit().await?;

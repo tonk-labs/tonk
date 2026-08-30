@@ -1243,7 +1243,7 @@ mod tests {
             env.tonk_web.join("settings/link")?.as_str(),
         ]);
         if service == AccountService::Named {
-            command.args(["--service-url", env.account_service.as_str()]);
+            command.args(["--service-url", env.access_service.as_str()]);
         }
         command
             .stdout(Stdio::piped())
@@ -1378,7 +1378,7 @@ mod tests {
                     "account",
                     "devices",
                     "--service-url",
-                    env.account_service.as_str(),
+                    env.access_service.as_str(),
                     "--json",
                 ])
                 .env("TONK_TRACE", "1")
@@ -3796,7 +3796,7 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.account_service);
+        assert_eq!(url::Url::parse(provider)?, env.access_service);
         assert!(linked.link.stdout.contains("signed in"));
 
         // The approving page describes the terminal's row and pushes the
@@ -3900,7 +3900,7 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.account_service);
+        assert_eq!(url::Url::parse(provider)?, env.access_service);
 
         // The endpoints are what `space new` and `space link` need; the
         // registry is where they are read from, and status does not print
@@ -4387,7 +4387,7 @@ mod tests {
                 "#,
                 vec![
                     serde_json::json!(device_did),
-                    serde_json::json!(env.account_service.as_str()),
+                    serde_json::json!(env.access_service.as_str()),
                 ],
             )
             .await?
@@ -4415,7 +4415,7 @@ mod tests {
             driver,
             "/api/account/attach",
             serde_json::json!({
-                "provider": env.account_service.as_str(),
+                "provider": env.access_service.as_str(),
                 "rootDid": ceremony["ceremony"]["rootDid"],
                 "credentialId": ceremony["ceremony"]["credentialId"],
                 "delegationHex": ceremony["ceremony"]["delegationHex"],

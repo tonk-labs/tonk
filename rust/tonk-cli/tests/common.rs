@@ -89,7 +89,6 @@ pub struct AccountFixture {
     /// A site this profile created before the account existed, so its
     /// repository authority reaches no account root.
     pub pre_account_site: TonkSite,
-    pub server: tonk_account_service::helpers::AccountServer,
     pub profile: dialog_operator::Profile,
     pub store: tonk_cli::space::SpaceStore,
     pub link: dialog_ucan_core::DelegationChain,
@@ -127,7 +126,6 @@ impl AccountFixture {
         // and the space registry all live in the same place the site config
         // opens sites through.
         let store = test.config.account_store.clone();
-        let server = tonk_account_service::helpers::AccountServer::start().await;
         let root_prf = [77; 32];
         let root = dialog_credentials::Ed25519Signer::import(&root_prf).await?;
         let link =
@@ -144,20 +142,14 @@ impl AccountFixture {
             None,
         )
         .await?;
-        reqwest::Client::new()
-            .post(format!("{}/accounts", server.endpoint))
-            .body(hex::decode(&ceremony.invocation_hex)?)
-            .send()
-            .await?
-            .error_for_status()?;
         tonk_cli::account::attach_for_integration_test(
             &profile,
             &test.site.operator,
             test.config.clone(),
-            &server.endpoint,
+            remote,
             "fixture-credential",
             link.clone(),
-            &format!("{}/ucan/", server.endpoint.trim_end_matches('/')),
+            remote,
         )
         .await?;
 
@@ -215,7 +207,6 @@ impl AccountFixture {
 
         Ok(Self {
             pre_account_site: test.site,
-            server,
             profile,
             store,
             link,

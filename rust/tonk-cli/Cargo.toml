@@ -207,6 +207,5 @@ futures-util = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 tonk-access-service = { workspace = true, features = ["helpers"] }
-tonk-account-service = { path = "../tonk-account-service", features = ["helpers"] }
 unicode-width = { workspace = true }
 wasm-bindgen-test = { workspace = true }

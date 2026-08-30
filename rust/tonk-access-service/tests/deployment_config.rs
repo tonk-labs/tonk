@@ -5,10 +5,7 @@ use tonk_worker_api::DeploymentConfig;
 
 #[dialog_common::test]
 async fn it_serves_deployment_config_when_configured() -> anyhow::Result<()> {
-    let expected = DeploymentConfig {
-        account_service_url: "http://127.0.0.1:4100".parse()?,
-        service_did: None,
-    };
+    let expected = DeploymentConfig::default();
     let service = access_service(AccessServiceSettings {
         deployment: Some(expected.clone()),
         ..Default::default()
@@ -23,7 +20,10 @@ async fn it_serves_deployment_config_when_configured() -> anyhow::Result<()> {
     .error_for_status()?
     .json()
     .await?;
-    assert_eq!(actual.account_service_url, expected.account_service_url);
+    assert_eq!(
+        actual.account_service_url, None,
+        "a deployment advertises no account service"
+    );
     // The server fills discovery with its own generated identity.
     assert_eq!(
         actual.service_did.as_deref(),

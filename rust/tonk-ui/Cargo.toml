@@ -14,7 +14,6 @@ helpers = [
     "dep:thirtyfour",
     "dep:port_check",
     "dep:tonk-access-service",
-    "dep:tonk-account-service",
 ]
 integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
 web-integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
@@ -54,7 +53,6 @@ dialog-common = { workspace = true, optional = true }
 port_check = { workspace = true, optional = true }
 thirtyfour = { workspace = true, optional = true }
 tonk-access-service = { workspace = true, features = ["helpers"], optional = true }
-tonk-account-service = { workspace = true, features = ["helpers"], optional = true }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = [
@@ -74,7 +72,6 @@ dialog-ucan-core = { workspace = true }
 port_check = { workspace = true }
 thirtyfour = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
-tonk-account-service = { workspace = true, features = ["helpers"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "process"] }
 
