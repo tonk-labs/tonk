@@ -1,9 +1,9 @@
--- When a subscription runs out.
+-- When a subscription expires.
 --
 -- Null never expires, which is what every subscription carries today:
 -- nothing writes this yet, and renewal is the increment that will. The
 -- gate reads it so an expired subscription stops being served the moment
--- it lapses, rather than waiting for a sweep to notice.
+-- it expires, rather than waiting for a sweep to notice.
 --
 -- Expiry is not the same as a customer who has not confirmed their email.
 -- That state is `customer.status = 'Registered'`, read through the

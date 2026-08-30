@@ -51,7 +51,7 @@ erDiagram
         TEXT provider FK "DID (did:key): the customer who pays; required"
         TEXT kind "enum: space | customer | custody"
         INTEGER registered_at
-        INTEGER expires_at "when the subscription runs out; null never does"
+        INTEGER expires_at "when the subscription expires; null never does"
         INTEGER archived_at "when the data was dropped for non-payment; the row stays for billing"
         TEXT suspend_code "set while suspended; the reason a client matches on"
         TEXT suspend_message "what to tell a person"
@@ -88,7 +88,7 @@ flowchart TD
     AR -->|no| SU{"suspend_code set?"}
     SU -->|"yes, and suspend_until_at not passed"| G3["denied: suspended, with the reason"]
     SU -->|"no, or the deadline passed"| F{"expires_at passed?"}
-    F -->|yes| G4["denied: the subscription ran out"]
+    F -->|yes| G4["denied: the subscription expired"]
     F -->|no| Z{"customer.status of its provider"}
     Z -->|Active| K["served"]
     Z -->|Registered| L["denied, retryable: awaiting email activation"]

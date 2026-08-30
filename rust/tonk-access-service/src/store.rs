@@ -71,7 +71,7 @@ pub struct Servability {
     pub own: Option<CustomerStatus>,
     /// Whether a consumer row exists for the subject at all.
     pub consumer: bool,
-    /// When the subscription runs out, if it does.
+    /// When the subscription expires, if it does.
     pub expires_at: Option<u64>,
     /// When a purge began, if one has.
     pub deleted_at: Option<u64>,

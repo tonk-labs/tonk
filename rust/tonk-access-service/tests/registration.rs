@@ -1800,7 +1800,7 @@ mod operator {
                 ("code".to_string(), Promised::String("stale".to_string())),
                 (
                     "reason".to_string(),
-                    Promised::String("a hold that has already run out".to_string()),
+                    Promised::String("a hold that has already expired".to_string()),
                 ),
                 ("until".to_string(), Promised::Integer((now - 1) as i128)),
             ]),

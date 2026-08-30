@@ -123,8 +123,8 @@ pub async fn screen<S: Store>(
             }
         }
     }
-    // A subscription that has run out serves nothing, whatever the
-    // customer behind it is doing. Null never expires.
+    // An expired subscription serves nothing, whatever the customer
+    // behind it is doing. Null never expires.
     if subject
         .expires_at
         .is_some_and(|expires_at| expires_at <= now)
@@ -334,7 +334,7 @@ mod tests {
     /// customer behind it is. `None` never expires, which is what every
     /// subscription carries today.
     #[dialog_common::test]
-    async fn it_refuses_a_subscription_that_has_run_out() {
+    async fn it_refuses_an_expired_subscription() {
         let store = store_with(
             &[("did:key:zCustomer", CustomerStatus::Active)],
             &[("did:key:zSpace", "did:key:zCustomer")],
