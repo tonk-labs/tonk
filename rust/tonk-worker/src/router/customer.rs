@@ -432,7 +432,7 @@ pub(crate) async fn record_custody_cell(
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
-        .assert(tonk_schema::CustodyCell::new(custody, account, cell))
+        .assert(tonk_schema::AccountCustody::new(custody, account, cell))
         .commit()
         .perform(&state.operator)
         .await

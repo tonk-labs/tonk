@@ -221,27 +221,30 @@ mod tests {
     }
 }
 
-/// A passkey's custody cell, recorded in the account space beside the
-/// vault copy.
+/// What holds an account: its secret, sealed under one passkey's KEK.
 ///
-/// The cell is the account secret sealed under one passkey's KEK
-/// (`tonk_identity::envelope::Envelope`) — ciphertext only a fresh
-/// assertion of that passkey can open. The vault copy bootstraps a
-/// brand-new browser, which has no profile branch yet; this row rides
-/// the account's own sync, so every device already holding the profile
-/// carries the recovery envelope too.
+/// A fact on the account's own branch, not a cell in a store — the
+/// envelope (`tonk_identity::envelope::Envelope`) is ciphertext only a
+/// fresh assertion of that passkey can open, so it replicates like any
+/// other row and its safety is the seal. The vault copy in the custody
+/// space is the separate thing that bootstraps a brand-new browser,
+/// which has no profile branch to read this from yet.
+///
+/// One row per passkey: enrolling a second adds a row rather than
+/// replacing the first, which is what "either credential opens the
+/// account" means.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustodyCell {
+pub struct AccountCustody {
     /// The custody space's DID — the passkey-derived principal.
     pub this: Entity,
-    /// The account this cell recovers.
+    /// The account this envelope recovers.
     pub account: Account,
     /// The sealed envelope bytes.
     pub cell: Cell,
 }
 
-impl CustodyCell {
-    /// Record `cell` as `custody`'s envelope for `account`.
+impl AccountCustody {
+    /// Record `cell` as the envelope `custody` holds for `account`.
     pub fn new(custody: Did, account: Did, cell: Vec<u8>) -> Self {
         Self {
             this: custody.this(),

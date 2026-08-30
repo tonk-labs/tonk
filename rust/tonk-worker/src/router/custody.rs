@@ -714,7 +714,6 @@ mod tests {
     #[dialog_common::test]
     async fn it_records_the_envelope_as_a_fact_when_it_mints_one() {
         use dialog_query::{Output as _, Query, Term};
-        use dialog_varsig::Principal as _;
 
         let state = Arc::new(RwLock::new(test_state().await));
         let custodian = tonk_identity::custodian::Custodian::Passkey(
@@ -746,10 +745,10 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .expect("profile main acquires");
-        let rows: Vec<tonk_schema::CustodyCell> = branch
+        let rows: Vec<tonk_schema::AccountCustody> = branch
             .handle()
             .query()
-            .select(Query::<tonk_schema::CustodyCell> {
+            .select(Query::<tonk_schema::AccountCustody> {
                 this: Term::var("this"),
                 account: Term::var("account"),
                 cell: Term::var("cell"),
