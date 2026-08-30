@@ -680,6 +680,11 @@ impl<C: Clearance> Kek<C, Sealing> {
     ///
     /// Returns an error if the platform has no entropy for the KEK, or
     /// the custodian's identity yields no agreement key to seal to.
+    ///
+    /// The concrete signer: sealing goes through
+    /// `secret(context).conceal`, which reaches an X25519 agreement key
+    /// derived from an Ed25519 one. Dialog's algorithm-agnostic `Signer`
+    /// offers no such thing.
     pub async fn seal_to_custodian(custodian: &Ed25519Signer) -> Result<(Self, SealedSecret)> {
         let mut bytes = Zeroizing::new([0u8; 32]);
         getrandom::fill(bytes.as_mut())

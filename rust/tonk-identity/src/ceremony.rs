@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result};
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
@@ -164,7 +164,7 @@ async fn build(
 /// resulting artifact carries the exact signed path and can be verified
 /// without an account provider.
 pub async fn sign_revocation(
-    root: Ed25519Signer,
+    root: impl Into<Signer>,
     path: &DelegationChain,
     target: &Cid,
 ) -> Result<String> {

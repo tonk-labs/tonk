@@ -26,6 +26,12 @@ pub struct AccountRepositoryDescriptorV1 {
 
 impl AccountRepositoryDescriptorV1 {
     /// Sign a V1 descriptor with the account's passkey-derived root signer.
+    ///
+    /// The concrete signer, not dialog's algorithm-agnostic one:
+    /// [`Self::validate`] parses the subject as an `Ed25519Verifier` and
+    /// the signature as an `Ed25519Signature`, so this format admits no
+    /// other algorithm. Widening here would mint descriptors that never
+    /// validate.
     pub async fn sign(root: &Ed25519Signer, remote: &str) -> Result<Self, DescriptorError> {
         let account_subject = root.did().to_string();
         let remote = canonical_remote(remote)?;
