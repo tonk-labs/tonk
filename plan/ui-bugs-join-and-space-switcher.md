@@ -29,3 +29,15 @@
 - `git diff --check` — pass.
 - Running product, isolated Chrome: created two local spaces; while `Untitled 2` was active, FABB listed only `Untitled`, and selecting it navigated to that sibling subject. The absent-space route rendered legibly in dark mode at desktop and `390x844x2,mobile,touch`, with Home and Join present in the accessibility tree.
 - Environment note: the first `dev:web` attempt inherited `NO_COLOR=1`, which current mdBook rejects; restarting with the repository-documented `env -u NO_COLOR` workaround served the app. The first broad wrapper invocation did not forward the intended nextest filter and was interrupted after 24 unrelated passes; all reported green browser evidence above comes from the exact archive/filter command.
+
+## CI follow-up: callback device convergence
+
+- [x] Trace the failing callback assertion and identify the terminal-only intermediate state.
+- [x] Add a focused regression test for callback device-list readiness.
+- [x] Make the E2E wait for both the signing browser and linked terminal rows.
+- [x] Run Rust formatting, the focused regression test, and diff checks.
+- [ ] Publish the follow-up commit and confirm the PR's E2E check with CI host routing.
+
+The direct local E2E reached the callback but could not complete because the
+native CLI resolved `tonk.network` publicly; CI supplies the required
+`127.0.0.1 tonk.network` mapping before running the same test harness.
