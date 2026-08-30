@@ -887,6 +887,22 @@ async fn start_downstream(
     descriptor_json: String,
     downstream_generation: u64,
 ) -> Result<(), ErrorDetail> {
+    // Refuse to render a model inside ITSELF.
+    //
+    // Not a depth limit and not a ban on nesting: a model nested inside a
+    // different model is fine however deep, and bounding the depth would
+    // only make the churn slower. A view that mounts a display of its own
+    // model re-enters the same view unconditionally, so the only stable
+    // number of levels is one.
+    //
+    // Fall back to the notation dump rather than rendering nothing: the
+    // entity's data is still worth showing, and a card that silently
+    // disappears is worse than one that shows what it holds.
+    if renders_itself(host, &model_entity) {
+        state::set(host, State::NoView);
+        return Ok(());
+    }
+
     let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
     let directory = entity.is_none();
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
@@ -2002,6 +2018,47 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 /// views: `<tonk-display with="{branch}@{repo}">`). With none, the view
 /// inherits the site's pinned context like any other consumer, and there
 /// is nothing to forward.
+/// The attribute carrying the chain of models rendered above an element.
+///
+/// A display stamps its own model onto the view it mounts, appended to
+/// whatever its ancestors stamped. A nested display then reads the nearest
+/// one to know what is already being rendered above it.
+const MODEL_CHAIN: &str = "data-tonk-models";
+
+/// The models being rendered above `host`, innermost last.
+fn model_chain(host: &Element) -> Vec<String> {
+    host.closest(&format!("[{MODEL_CHAIN}]"))
+        .ok()
+        .flatten()
+        .and_then(|el| el.get_attribute(MODEL_CHAIN))
+        .map(|chain| chain.split('\u{1f}').map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Whether rendering `model` here would render it inside ITSELF.
+///
+/// Nesting is fine and common — a board of tiles, a workspace of sheets.
+/// What is not fine is a model whose view mounts a display of the same
+/// model, because that view mounts the same view again, forever. A notebook
+/// whose cell queries `notebook:` is the case that found this: each result
+/// card mounted a `<tonk-notebook>`, which bound editors, ran the cell, and
+/// produced the results that mounted the next generation — ~200 queries a
+/// second on an idle page, with the cards visibly flipping between the
+/// nested notebook and a bare name as each frame replaced the last.
+///
+/// Only self-recursion is refused. A different model nested inside this one
+/// is left alone however deep it goes.
+fn renders_itself(host: &Element, model: &str) -> bool {
+    model_chain(host).iter().any(|seen| seen == model)
+}
+
+/// Record `model` as rendered, for the displays mounted inside `view_el`.
+fn stamp_model_chain(host: &Element, view_el: &Element, model: &str) {
+    let mut chain = model_chain(host);
+    chain.push(model.to_owned());
+    let _ = view_el.set_attribute(MODEL_CHAIN, &chain.join("\u{1f}"));
+}
+
 fn forward_with(host: &Element, view_el: &Element) {
     let Some(context) = host.get_attribute("with").filter(|v| !v.is_empty()) else {
         return;
@@ -2050,6 +2107,11 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
     }
     view_el.set_inner_html(display);
     forward_with(host, &view_el);
+    // Record what is being rendered here, so a display mounted inside this
+    // view can tell whether it would be re-entering its own model.
+    if let Some(model) = inner.model_entity.as_deref() {
+        stamp_model_chain(host, &view_el, model);
+    }
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -2373,6 +2435,71 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A model nested inside a DIFFERENT model is not recursion.
+    ///
+    /// Nesting is the normal case — a board of tiles, a workspace of
+    /// sheets — and must keep working however deep it goes.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_allows_a_different_model_nested_inside_another() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("div").expect("outer");
+        let _ = outer.set_attribute(MODEL_CHAIN, "tonk:board");
+        let inner = document.create_element("div").expect("inner");
+        outer.append_child(&inner).expect("append");
+
+        assert!(
+            !renders_itself(&inner, "tonk:notebook"),
+            "a different model nested inside one is ordinary nesting"
+        );
+    }
+
+    /// A model rendered inside ITSELF is refused.
+    ///
+    /// A view that mounts a display of its own model re-enters the same
+    /// view unconditionally, so it never terminates. This is what made a
+    /// notebook whose cell queried `notebook:` mount a notebook per result
+    /// card, each running the cell that produced the cards.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_refuses_a_model_rendered_inside_itself() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("div").expect("outer");
+        let _ = outer.set_attribute(MODEL_CHAIN, "tonk:notebook");
+        let inner = document.create_element("div").expect("inner");
+        outer.append_child(&inner).expect("append");
+
+        assert!(
+            renders_itself(&inner, "tonk:notebook"),
+            "a model already being rendered above must not render again"
+        );
+    }
+
+    /// The chain accumulates, so recursion is caught at any depth — not
+    /// only when the repeat is the immediate parent.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_catches_recursion_below_an_unrelated_model() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("div").expect("outer");
+        let _ = outer.set_attribute(MODEL_CHAIN, "tonk:notebook");
+        let middle = document.create_element("div").expect("middle");
+        outer.append_child(&middle).expect("append");
+        // A board rendered inside the notebook extends the chain.
+        stamp_model_chain(&middle, &middle, "tonk:board");
+        let inner = document.create_element("div").expect("inner");
+        middle.append_child(&inner).expect("append");
+
+        assert!(
+            renders_itself(&inner, "tonk:notebook"),
+            "the notebook is still above, two levels up"
+        );
+        assert!(
+            !renders_itself(&inner, "tonk:workspace"),
+            "an unrelated model is unaffected"
+        );
+    }
 
     fn host_field(key: &str, value: &str) -> BTreeMap<String, Ipld> {
         let mut fields = BTreeMap::new();
