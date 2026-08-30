@@ -76,13 +76,8 @@ concept!: &notebook/blocks
 # from a neighbour that was itself just inserted.
 concept!: &block/position
   this: tonk:notebook/block-position
-  description: A block's position in its notebook, derived or stored.
+  description: A block's position, derived or stored.
   with:
-    notebook:
-      description: The notebook the position is within.
-      the: xyz.tonk.notebook.block/notebook
-      cardinality: one
-      as: entity
     at:
       description: The position itself.
       the: xyz.tonk.notebook.block/at
@@ -243,22 +238,25 @@ view!:
 command!: &block/insert
   description: Insert one block into a notebook, between two others.
   with:
+    # The command's own attributes, distinct from `notebook/block`'s: a
+    # command that wrote the block's attributes directly would BE the block,
+    # and the rule that derives one from it would be tautological.
     notebook:
       description: The notebook the block belongs to.
-      the: xyz.tonk.notebook.block/notebook
+      the: xyz.tonk.notebook.insert/notebook
       as: entity
     source:
       description: The block's markdown source.
-      the: xyz.tonk.notebook.block/source
+      the: xyz.tonk.notebook.insert/source
       as: text
   maybe:
     head:
       description: The block this one follows; absent at the document head.
-      the: xyz.tonk.notebook.block/head
+      the: xyz.tonk.notebook.insert/head
       as: entity
     tail:
       description: The block this one precedes; absent at the document tail.
-      the: xyz.tonk.notebook.block/tail
+      the: xyz.tonk.notebook.insert/tail
       as: entity
 
 command!: &block/edit
@@ -353,7 +351,6 @@ rule!:
 # variant per present/absent combination is needed instead.
 block/position!:
   this: tonk:notebook/edge
-  notebook: tonk:notebook/edge
   at: ""
 
 # ...and an inserted block's position is derived between its neighbours'.
@@ -383,6 +380,10 @@ rule!:
         source: ?maybe-tail
         fallback: tonk:notebook/edge
         is: ?tail
+    # Scoped to THIS notebook, or a neighbour lookup matches a block of
+    # the same name in another notebook — or the edge, which belongs to
+    # none. The edge is exempt: it is one shared sentinel, so it carries
+    # whatever notebook is asked of it.
     - assert: block/position
       where:
         this: ?head
@@ -410,7 +411,6 @@ rule!:
     - assert: block/position
       where:
         this: ?block
-        notebook: ?this
         at: ?block/key
 
 rule!:
