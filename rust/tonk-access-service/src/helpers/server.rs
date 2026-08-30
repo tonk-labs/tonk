@@ -75,6 +75,29 @@ struct RegistrationState {
     /// worker's KV namespace is. Shared with the authorizer, which
     /// reads it back while verifying every presented chain.
     revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
+    /// Redeems the enrollment's recovery invocation for a presigned
+    /// request, so the custody cell is written the way any other cell
+    /// write is authorized.
+    authorizer: Arc<tokio::sync::RwLock<ServerAuthorizer>>,
+}
+
+/// The dev server's [`Redeemer`]: the same authorizer that answers
+/// `/ucan/`, asked directly rather than over HTTP.
+struct ServerRedeemer(Arc<tokio::sync::RwLock<ServerAuthorizer>>);
+
+#[async_trait::async_trait]
+impl crate::vault::Redeemer for ServerRedeemer {
+    async fn redeem(
+        &self,
+        container: &[u8],
+    ) -> Result<dialog_remote_s3::Permit, crate::vault::VaultError> {
+        self.0
+            .read()
+            .await
+            .authorize(container)
+            .await
+            .map_err(|error| crate::vault::VaultError::Unavailable(error.to_string()))
+    }
 }
 
 /// Captures activation emails and announces them on stdout, so a human
@@ -178,6 +201,7 @@ impl AccessServer {
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
             purger,
             revocations,
+            authorizer: authorizer.clone(),
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -638,6 +662,7 @@ async fn handle_request(
         let env = Registration {
             store: &registration.store,
             email: &registration.sender,
+            vault: &crate::vault::AuthorizedVault(ServerRedeemer(registration.authorizer.clone())),
             service: &registration.service,
             service_seed: &registration.service_seed,
             origin: &registration.origin,

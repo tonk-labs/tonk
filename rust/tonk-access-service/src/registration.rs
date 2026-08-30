@@ -47,6 +47,7 @@ use tonk_account::subscription::{
 
 use crate::email::{EmailSender, normalize_email};
 use crate::store::{SIGNUP_PLAN, Store, StoreError};
+use crate::vault::Vault;
 use dialog_ucan_core::revocation::RevocationChecker;
 use dialog_ucan_core::{Environment, VerificationContext};
 
@@ -178,11 +179,13 @@ pub enum Answer {
 /// The environment a registration invocation executes against: storage,
 /// email delivery, the service's signing identity, and the request's
 /// origin, clock, and container.
-pub struct Registration<'a, S, E, R> {
+pub struct Registration<'a, S, E, R, V> {
     /// Control-state storage.
     pub store: &'a S,
     /// Activation email delivery.
     pub email: &'a E,
+    /// Where the custody cell is written.
+    pub vault: &'a V,
     /// The service's signing identity, issuer of activation delegations.
     pub service: &'a Ed25519Signer,
     /// The hex seed `service` was built from, which customer spaces
@@ -208,7 +211,9 @@ pub struct Registration<'a, S, E, R> {
     pub revocations: &'a R,
 }
 
-impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registration<'_, S, E, R> {
+impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
+    Registration<'_, S, E, R, V>
+{
     /// Verify the container, decode its capability, and perform it
     /// against this environment.
     pub async fn handle(&self) -> Result<Answer, RegistrationError>
@@ -361,6 +366,19 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
         let material = self.verify_custody(&effect, &customer).await?;
         let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer, &material).await?;
+        // The cell goes in before the customer row. Nothing serves it
+        // yet — the customer is `Registered`, and the gate refuses
+        // everything behind a provider in that state — so this writes
+        // into a space that answers nothing until the emailed link is
+        // clicked. Doing it here rather than queueing it is what stops a
+        // signup finishing with an account no second device can open.
+        self.vault
+            .publish(&material.recovery, &material.sealed)
+            .await
+            .map_err(|error| RegistrationError::Internal {
+                message: error.to_string(),
+            })?;
+
         match self
             .store
             .customer(customer.as_str())
@@ -1098,11 +1116,12 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync> Registrat
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E, R> Provider<Enroll> for Registration<'_, S, E, R>
+impl<S, E, R, V> Provider<Enroll> for Registration<'_, S, E, R, V>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
     R: RevocationChecker + ConditionalSync,
+    V: Vault + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Enroll>) -> Result<Receipt, RegistrationError> {
         self.enroll(input).await
@@ -1111,11 +1130,12 @@ where
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E, R> Provider<Activate> for Registration<'_, S, E, R>
+impl<S, E, R, V> Provider<Activate> for Registration<'_, S, E, R, V>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
     R: RevocationChecker + ConditionalSync,
+    V: Vault + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
         self.activate(input).await
@@ -1124,11 +1144,12 @@ where
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E, R> Provider<Add> for Registration<'_, S, E, R>
+impl<S, E, R, V> Provider<Add> for Registration<'_, S, E, R, V>
 where
     S: Store + ConditionalSync,
     E: EmailSender + ConditionalSync,
     R: RevocationChecker + ConditionalSync,
+    V: Vault + ConditionalSync,
 {
     async fn execute(&self, input: Capability<Add>) -> Result<ConsumerReceipt, RegistrationError> {
         self.add(input).await

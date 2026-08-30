@@ -252,7 +252,7 @@ thread_local! {
 /// an isolate cannot see change — so reading the bindings once and
 /// reusing the result costs nothing in freshness. A failed build is
 /// not cached: the next request tries again.
-fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
+pub(crate) fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
     AUTHORIZER.with(|cached| {
         if let Some(authorizer) = cached.get() {
             return Ok(authorizer.clone());

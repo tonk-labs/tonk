@@ -55,6 +55,7 @@ pub mod revoke;
 pub mod service;
 pub mod shortcut;
 pub mod store;
+pub mod vault;
 
 /// Test helpers for integration testing.
 #[cfg(feature = "helpers")]

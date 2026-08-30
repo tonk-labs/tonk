@@ -79,9 +79,17 @@ async fn handle_inner(
         IndexedRevocations(KvRevocationIndex::new(kv))
     };
 
+    // The same authorizer the presign path runs. Enrollment redeems the
+    // recovery invocation through it, so the custody cell is written to
+    // exactly the object that invocation names.
+    let vault = crate::vault::AuthorizedVault(WorkerRedeemer(
+        super::ucan::create_authorizer(env).map_err(|refusal| internal(format!("{refusal:?}")))?,
+    ));
+
     let registration = Registration {
         store: &store,
         email: &email,
+        vault: &vault,
         service: &service,
         service_seed: &service_seed,
         origin: &origin,
@@ -189,4 +197,23 @@ pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker:
         .map(ToString::to_string)
         .unwrap_or_default();
     Response::from_json(&did_document(&host, &signer))
+}
+
+/// The worker's [`Redeemer`]: its own authorizer, asked directly rather
+/// than over HTTP.
+#[cfg(target_arch = "wasm32")]
+struct WorkerRedeemer(dialog_remote_ucan_s3::UcanAuthorizer);
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait(?Send)]
+impl crate::vault::Redeemer for WorkerRedeemer {
+    async fn redeem(
+        &self,
+        container: &[u8],
+    ) -> Result<dialog_remote_s3::Permit, crate::vault::VaultError> {
+        self.0
+            .authorize(container)
+            .await
+            .map_err(|error| crate::vault::VaultError::Unavailable(error.to_string()))
+    }
 }

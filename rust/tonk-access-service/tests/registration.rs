@@ -32,6 +32,7 @@ use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_access_service::registration::{Answer, Registration, SIGNUP_TERMS};
 use tonk_access_service::store::Store;
 use tonk_access_service::store::sqlite::SqliteStore;
+use tonk_access_service::vault::CapturedVault;
 use tonk_account::customer::{Receipt, RegistrationError, deposit_scopes};
 
 /// Current time as unix seconds.
@@ -56,6 +57,9 @@ struct Fixture {
     /// link, so a revoked delegation cannot enroll or activate.
     revocations: IndexedRevocations<Arc<MemoryRevocationIndex>>,
     emails: CapturedEmail,
+    /// Custody cells this fixture wrote, so a test can see that
+    /// enrolling put the sealed envelope somewhere.
+    vault: CapturedVault,
     service: Ed25519Signer,
     /// The seed `service` was built from: customer spaces derive from
     /// it, and a signer cannot give its seed back.
@@ -67,6 +71,7 @@ impl Fixture {
     async fn new() -> Self {
         Fixture {
             store: SqliteStore::in_memory().expect("in-memory control store"),
+            vault: CapturedVault::default(),
             emails: CapturedEmail::default(),
             service: tonk_access_service::service::signer_from_hex(&"ab".repeat(32))
                 .expect("service signer"),
@@ -79,11 +84,17 @@ impl Fixture {
     fn registration<'a>(
         &'a self,
         container: &'a [u8],
-    ) -> Registration<'a, SqliteStore, CapturedEmail, IndexedRevocations<Arc<MemoryRevocationIndex>>>
-    {
+    ) -> Registration<
+        'a,
+        SqliteStore,
+        CapturedEmail,
+        IndexedRevocations<Arc<MemoryRevocationIndex>>,
+        CapturedVault,
+    > {
         Registration {
             store: &self.store,
             email: &self.emails,
+            vault: &self.vault,
             service: &self.service,
             service_seed: &self.service_seed,
             origin: &self.origin,
@@ -1137,7 +1148,9 @@ async fn it_publishes_and_resolves_the_custody_cell(
         .body(container)
         .send()
         .await?;
-    assert_eq!(response.status(), 200, "enrollment refused");
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(status, 200, "enrollment refused: {body}");
 
     // Confirming the email is what unlocks everything below: an
     // unactivated customer provisions nothing and is served nothing.
@@ -1363,6 +1376,82 @@ mod custody {
         )
         .await;
         fixture.registration(&container).handle().await
+    }
+
+    /// The bug this flow exists to prevent: a signup that finishes with
+    /// the customer registered and no custody cell, so a second device
+    /// has nothing to unlock the account from.
+    ///
+    /// Enrolling writes the cell. Not activation, not a queue the client
+    /// drains later — the same act that records the customer.
+    #[dialog_common::test]
+    async fn it_writes_the_custody_cell_while_enrolling() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let custody = Custody::default();
+        let container = enroll_container_with_custody(
+            &customer,
+            &fixture.service.did(),
+            "alice@example.com",
+            &custody,
+        )
+        .await;
+
+        assert!(
+            fixture.vault.sealed().is_empty(),
+            "nothing is written before enrolling"
+        );
+        fixture
+            .registration(&container)
+            .handle()
+            .await
+            .expect("the enrollment is accepted");
+
+        assert_eq!(
+            fixture.vault.sealed(),
+            vec![custody.sealed.clone()],
+            "the sealed envelope the enrollment carried is what was stored"
+        );
+
+        // And it is there before activation, which is the point: the
+        // cell does not wait on an email nobody may click.
+        assert_eq!(
+            fixture
+                .store
+                .customer(customer.did().as_str())
+                .await?
+                .expect("the customer row exists")
+                .status,
+            tonk_account::customer::CustomerStatus::Registered
+        );
+        Ok(())
+    }
+
+    /// A refused enrollment writes no cell. Everything is verified
+    /// before anything is stored, so a malformed one leaves nothing
+    /// behind — in the vault as much as in the database.
+    #[dialog_common::test]
+    async fn it_writes_no_cell_when_it_refuses() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let container = enroll_container_with_custody(
+            &customer,
+            &fixture.service.did(),
+            "alice@example.com",
+            &Custody {
+                // Signed by a key that is not the custody DID it claims.
+                claimed_did: Some(Ed25519Signer::generate().await?.did()),
+                ..Custody::default()
+            },
+        )
+        .await;
+
+        assert!(fixture.registration(&container).handle().await.is_err());
+        assert!(
+            fixture.vault.sealed().is_empty(),
+            "a refused enrollment stores nothing"
+        );
+        Ok(())
     }
 
     /// The control. Without this every refusal below could be passing
