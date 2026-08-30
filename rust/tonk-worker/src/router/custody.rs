@@ -199,34 +199,219 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
     }
 }
 
-/// Mint the custody material this enrollment needs, then enroll.
+/// Do what the handoff asked for, with the handles it carried.
 ///
 /// What the page used to do and no longer can: generate the account
 /// secret, seal it under the passkey's KEK, mint the custody space's
 /// consent, and pre-sign the cell write. All of it here, so the secret
-/// never exists outside the worker and the four call sites with no
-/// ceremony at hand can enroll like any other.
+/// never exists outside the worker and every call site — including the
+/// four with no ceremony at hand — reaches it the same way.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn perform(
     state: AppState,
     data: &wasm_bindgen::JsValue,
     custodian: tonk_identity::custodian::Custodian,
 ) -> Result<wasm_bindgen::JsValue, String> {
-    use dialog_varsig::Principal as _;
     use wasm_bindgen::JsValue;
 
     let request =
         js_sys::Reflect::get(data, &JsValue::from_str("request")).unwrap_or(JsValue::UNDEFINED);
-    let enrollment: tonk_worker_api::Enrollment = serde_wasm_bindgen::from_value(request)
-        .map_err(|error| format!("the handoff carried an unreadable enrollment: {error}"))?;
-    let email = enrollment.email.filter(|value| !value.trim().is_empty());
+    let intent: tonk_worker_api::CustodyIntent = serde_wasm_bindgen::from_value(request)
+        .map_err(|error| format!("the handoff carried an unreadable request: {error}"))?;
+
+    match intent {
+        tonk_worker_api::CustodyIntent::Enroll(enrollment) => {
+            let account = open(&custodian).await?;
+            enroll(&state, &custodian, &account, enrollment.email).await
+        }
+        tonk_worker_api::CustodyIntent::CreateAccount(creation) => {
+            create(&state, &custodian, creation).await
+        }
+        tonk_worker_api::CustodyIntent::Login(link) => login(&state, &custodian, link).await,
+        tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
+            let holder = custodian_named(data, "holder")
+                .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
+            add_passkey(&state, &custodian, &holder, addition).await
+        }
+    }
+}
+
+/// Seal the account a first passkey holds under a second one.
+///
+/// Both custodians travel in the same handoff, so the secret is opened
+/// and re-sealed inside this call and exists nowhere else. The account
+/// is checked against the one the caller meant to extend: a mismatched
+/// assertion would otherwise seal a different account under the new
+/// passkey and silently strand it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn add_passkey(
+    state: &AppState,
+    added: &tonk_identity::custodian::Custodian,
+    holder: &tonk_identity::custodian::Custodian,
+    addition: tonk_worker_api::PasskeyAddition,
+) -> Result<wasm_bindgen::JsValue, String> {
+    use dialog_varsig::Principal as _;
+
+    let account = holder
+        .account()
+        .load(addition.endpoint.clone())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| format!("the custody cell did not open: {error:#}"))?
+        .ok_or_else(|| "that passkey has published no account".to_string())?;
+
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    if root.did().to_string() != addition.account_did {
+        return Err("the asserted passkey unlocks a different account".to_string());
+    }
+
+    // The same secret, sealed again: either passkey opens the account
+    // from here on.
+    let sealed = added
+        .account()
+        .adopt(account.into_secret())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| format!("the account did not seal under the new passkey: {error:#}"))?;
+
+    enroll(state, added, &sealed, None).await
+}
+
+/// Open the account this passkey holds and link this browser to it.
+///
+/// The account comes back from its custody cell, so a device that has
+/// only ever seen the passkey gets the account: that is what publishing
+/// the cell at enrollment made possible.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn login(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    link: tonk_worker_api::DeviceLink,
+) -> Result<wasm_bindgen::JsValue, String> {
+    use dialog_varsig::Principal as _;
 
     let account = custodian
+        .account()
+        .load(link.endpoint.clone())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| format!("the custody cell did not open: {error:#}"))?
+        .ok_or_else(|| {
+            "this passkey has published no account yet; create one on the browser that holds it"
+                .to_string()
+        })?;
+
+    let root = match account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?
+    {
+        dialog_credentials::Signer::Ed25519(signer) => signer,
+        _ => return Err("the account signer is not Ed25519".to_string()),
+    };
+
+    let device = {
+        let tonk = state.read().await;
+        tonk.profile.signer().signer().clone()
+    };
+    let ceremony =
+        tonk_identity::ceremony::link_device(root, device.did(), link.device_name.clone())
+            .await
+            .map_err(|error| format!("the device link did not sign: {error:#}"))?;
+
+    {
+        let tonk = state.read().await;
+        let root_record = tonk_worker_api::SaveRootRequest {
+            credential_id: custodian
+                .credential_id()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            delegation_hex: ceremony.delegation_hex.clone(),
+            passkey: None,
+            encryption_key: Some(account.secret().did().to_string()),
+        };
+        crate::router::identity::persist_root(&tonk, root_record)
+            .await
+            .map_err(|error| format!("the account root was not recorded: {error}"))?;
+    }
+
+    let response =
+        post_ceremony_at(&link.provider, "/devices/link", &ceremony.invocation_hex).await?;
+    link_account(
+        state,
+        &link.provider,
+        &account
+            .signer()
+            .await
+            .map_err(|error| format!("{error:#}"))?
+            .did()
+            .to_string(),
+        &custodian
+            .credential_id()
+            .map(hex::encode)
+            .unwrap_or_default(),
+        &ceremony.delegation_hex,
+        &response,
+        false,
+    )
+    .await?;
+    Ok(wasm_bindgen::JsValue::UNDEFINED)
+}
+
+/// Seal a fresh account secret under this custodian.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn open(
+    custodian: &tonk_identity::custodian::Custodian,
+) -> Result<tonk_identity::account::Account, String> {
+    custodian
         .account()
         .create()
         .perform(&tonk_identity::account::Crypto)
         .await
-        .map_err(|error| format!("the account did not seal under this passkey: {error:#}"))?;
+        .map_err(|error| format!("the account did not seal under this passkey: {error:#}"))
+}
+
+/// Mint the custody set this account needs and register it as a
+/// customer.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn enroll(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    account: &tonk_identity::account::Account,
+    email: Option<String>,
+) -> Result<wasm_bindgen::JsValue, String> {
+    use wasm_bindgen::JsValue;
+
+    let material = custody_material(custodian, account).await?;
+    let origin = crate::router::customer::service_origin().map_err(|error| format!("{error}"))?;
+    let email = email.filter(|value| !value.trim().is_empty());
+
+    let tonk = state.read().await;
+    let receipt =
+        crate::router::customer::enroll_customer(&tonk, &origin, email, &material.borrow())
+            .await
+            .map_err(|error| format!("{error}"))?;
+
+    let answer = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &answer,
+        &JsValue::from_str("customer"),
+        &JsValue::from_str(&receipt.customer.to_string()),
+    );
+    Ok(answer.into())
+}
+
+/// The custody set every enrollment presents: the space's consent to
+/// being provisioned, and the pre-signed write of its sealed cell.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn custody_material(
+    custodian: &tonk_identity::custodian::Custodian,
+    account: &tonk_identity::account::Account,
+) -> Result<tonk_identity::request::OwnedCustodyMaterial, String> {
+    use dialog_varsig::Principal as _;
 
     let custody = custodian
         .signer()
@@ -246,26 +431,162 @@ async fn perform(
             .await
             .map_err(|error| format!("the cell write did not sign: {error:#}"))?;
 
-    let material = tonk_identity::request::CustodyMaterial {
-        custody: &custody.did(),
-        consent: &consent,
-        recovery: &recovery,
-        sealed: &sealed,
+    Ok(tonk_identity::request::OwnedCustodyMaterial {
+        custody: custody.did(),
+        consent,
+        recovery,
+        sealed,
+    })
+}
+
+/// Create an account this passkey holds, record it, and enroll it.
+///
+/// Everything the page's `createAccount` ceremony did, minus the part
+/// that had to be there: the passkey assertion. The account secret is
+/// generated here and never leaves, so the browser holds no key
+/// material at any point in a signup.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    creation: tonk_worker_api::AccountCreation,
+) -> Result<wasm_bindgen::JsValue, String> {
+    use dialog_varsig::Principal as _;
+
+    let account = open(custodian).await?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    let root = match root {
+        dialog_credentials::Signer::Ed25519(signer) => signer,
+        // The account descriptor's format admits no other algorithm,
+        // and the account secret derives Ed25519, so this is
+        // unreachable rather than a case to handle.
+        _ => return Err("the account signer is not Ed25519".to_string()),
     };
 
-    let origin = crate::router::customer::service_origin().map_err(|error| format!("{error}"))?;
-    let tonk = state.read().await;
-    let receipt = crate::router::customer::enroll_customer(&tonk, &origin, email, &material)
-        .await
-        .map_err(|error| format!("{error}"))?;
+    let device = {
+        let tonk = state.read().await;
+        tonk.profile.signer().signer().clone()
+    };
+    let device_did = device.did();
 
-    let answer = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &answer,
-        &JsValue::from_str("customer"),
-        &JsValue::from_str(&receipt.customer.to_string()),
-    );
-    Ok(answer.into())
+    let ceremony = tonk_identity::ceremony::create_custody_request(
+        root,
+        tonk_identity::ceremony::AccountRequest {
+            credential_id: custodian
+                .credential_id()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            device_did,
+            email: creation.email.clone(),
+            device_name: creation.device_name,
+            remote: creation.remote,
+            created_on: creation.created_on,
+            encryption_key: account.secret().did().to_string(),
+        },
+    )
+    .await
+    .map_err(|error| format!("the account request did not sign: {error:#}"))?;
+
+    // The root record first: it is what every later custody operation
+    // resolves the passkey through, and an account created without one
+    // is unreachable from a second device.
+    {
+        let tonk = state.read().await;
+        let root_record = tonk_worker_api::SaveRootRequest {
+            credential_id: ceremony.root.credential_id.clone(),
+            delegation_hex: ceremony.root.delegation_hex.clone(),
+            passkey: ceremony.root.passkey.as_ref().map(|passkey| {
+                tonk_worker_api::PasskeyMetadata {
+                    created_at: passkey.created_at,
+                    created_on: passkey.created_on.clone(),
+                }
+            }),
+            encryption_key: ceremony.root.encryption_key.clone(),
+        };
+        crate::router::identity::persist_root(&tonk, root_record)
+            .await
+            .map_err(|error| format!("the account root was not recorded: {error}"))?;
+    }
+
+    let response = post_ceremony(&creation.provider, &ceremony.account.invocation_hex).await?;
+
+    // The link, from the descriptor the service selected: until it is
+    // written this profile has no account, and everything downstream —
+    // enrollment included — reports one as missing.
+    link_account(
+        state,
+        &creation.provider,
+        &ceremony.root.root_did,
+        &ceremony.root.credential_id,
+        &ceremony.root.delegation_hex,
+        &response,
+        true,
+    )
+    .await?;
+
+    enroll(state, custodian, &account, Some(creation.email)).await
+}
+
+/// Record the account the service just accepted, so this profile has
+/// one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[allow(clippy::too_many_arguments)]
+async fn link_account(
+    state: &AppState,
+    provider: &str,
+    root_did: &str,
+    credential_id: &str,
+    delegation_hex: &str,
+    response: &[u8],
+    initialize_name: bool,
+) -> Result<(), String> {
+    let response: serde_json::Value = serde_json::from_slice(response)
+        .map_err(|error| format!("the account service answered unreadably: {error}"))?;
+    let descriptor_hex = response
+        .get("descriptorHex")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "the account service omitted descriptorHex".to_string())?
+        .to_string();
+
+    let request = tonk_worker_api::AccountLinkRequest {
+        provider: provider.to_string(),
+        root_did: root_did.to_string(),
+        credential_id: credential_id.to_string(),
+        delegation_hex: delegation_hex.to_string(),
+        descriptor_hex,
+        initialize_name,
+    };
+    let tonk = state.read().await;
+    crate::router::account::persist_link(&tonk, &request)
+        .await
+        .map_err(|error| format!("the account link was not saved: {error}"))
+}
+
+/// Submit a signed account-service request.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn post_ceremony(provider: &str, invocation_hex: &str) -> Result<Vec<u8>, String> {
+    post_ceremony_at(provider, "/accounts", invocation_hex).await
+}
+
+/// Submit a signed request to one of the account service's routes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn post_ceremony_at(
+    provider: &str,
+    path: &str,
+    invocation_hex: &str,
+) -> Result<Vec<u8>, String> {
+    let body = hex::decode(invocation_hex)
+        .map_err(|error| format!("the account request is not hex: {error}"))?;
+    let url: url::Url = format!("{}{path}", provider.trim_end_matches('/'))
+        .parse()
+        .map_err(|error| format!("the account service URL does not parse: {error}"))?;
+    let response = crate::router::http::post_cbor(&url, &body)
+        .await
+        .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
+    Ok(response.body)
 }
 
 /// Rebuild the custodian from the two posted handles.
@@ -273,22 +594,38 @@ async fn perform(
 fn custodian_from(
     data: &wasm_bindgen::JsValue,
 ) -> Result<tonk_identity::custodian::Custodian, String> {
+    custodian_named(data, "").ok_or_else(|| "the handoff carried no derivation handles".to_string())
+}
+
+/// A custodian from one set of posted handles, by field prefix: `""`
+/// for the primary, `"holder"` for the second one an addition carries.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn custodian_named(
+    data: &wasm_bindgen::JsValue,
+    prefix: &str,
+) -> Option<tonk_identity::custodian::Custodian> {
     use wasm_bindgen::{JsCast, JsValue};
 
-    let handle = |name: &str| -> Result<web_sys::CryptoKey, String> {
-        js_sys::Reflect::get(data, &JsValue::from_str(name))
+    // `key` / `kek` / `credentialId` for the primary set; `holderKey`
+    // and friends for the second one an addition carries.
+    let field = |name: &str| -> String {
+        if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}{}{}", &name[..1].to_uppercase(), &name[1..])
+        }
+    };
+    let handle = |name: &str| -> Option<web_sys::CryptoKey> {
+        js_sys::Reflect::get(data, &JsValue::from_str(&field(name)))
             .ok()
             .and_then(|value| value.dyn_into::<web_sys::CryptoKey>().ok())
-            .ok_or_else(|| format!("the handoff carried no {name} handle"))
     };
-    let credential_id = js_sys::Reflect::get(data, &JsValue::from_str("credentialId"))
+    let credential_id = js_sys::Reflect::get(data, &JsValue::from_str(&field("credentialId")))
         .ok()
         .and_then(|value| value.as_string())
-        .ok_or_else(|| "the handoff carried no credential id".to_string())?;
-    let credential_id = hex::decode(&credential_id)
-        .map_err(|error| format!("the credential id is not hex: {error}"))?;
+        .and_then(|value| hex::decode(&value).ok())?;
 
-    Ok(tonk_identity::custodian::Custodian::Passkey(
+    Some(tonk_identity::custodian::Custodian::Passkey(
         tonk_identity::webcrypto_kek::Custodian::new(credential_id, handle("key")?, handle("kek")?),
     ))
 }

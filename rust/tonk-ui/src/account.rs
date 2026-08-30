@@ -13,11 +13,7 @@ use tonk_worker_api::{
     RevokeDeviceAcknowledgement,
 };
 
-use crate::identity_bridge::{
-    CeremonyOutput, CreateAccountInput, EnrollCustodyInput, UnlockWithPasskeyInput,
-    VerifyPasskeyInput, create_account, enroll_custody_passkey, unlock_with_passkey,
-    verify_passkey,
-};
+use crate::identity_bridge::{CeremonyOutput, VerifyPasskeyInput, verify_passkey};
 
 const STYLE_ID: &str = "tonk-account-styles";
 /// Where a pending callback authorization's `(audience, callback)` is parked.
@@ -1703,84 +1699,78 @@ fn deliver_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), St
         .map_err(|_| "could not deliver the authorization".to_owned())
 }
 
-async fn persist(
-    provider: &str,
-    ceremony: &CeremonyOutput,
-    descriptor_hex: String,
-    initialize_name: bool,
-) -> Result<AccountStatus, String> {
-    let root_status = crate::api::root_status()
-        .await
-        .map_err(|error| error.to_string())?;
-    let root = root_for_link(&root_status, ceremony);
-    if root.needs_persist {
-        crate::api::save_root(
-            root.credential_id.to_string(),
-            root.delegation_hex.to_string(),
-            None,
-            ceremony.encryption_key.clone(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    }
-    crate::api::save_account_link(
-        provider.to_string(),
-        root.root_did.to_string(),
-        root.credential_id.to_string(),
-        root.delegation_hex.to_string(),
-        descriptor_hex,
-        initialize_name,
+/// Sign in with an existing passkey, with no panel to report into.
+///
+/// The counterpart to [`run_account_ceremony`], and the reason the
+/// address is looked up before either runs: sending someone who already
+/// has an account through creation leaves an orphan passkey in their
+/// authenticator and fails at the end — which it did, with
+/// `409 a different account is already signed in on this profile`,
+/// because saving a new root over an existing one is what creation does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), String> {
+    narrate("Waiting for your passkey…");
+    // One assertion, and the worker does the rest: it opens the account
+    // from its custody cell, mints this browser's delegation, records
+    // the root and submits the link. The page holds no key material.
+    let provider = crate::deployment::get()
+        .await?
+        .account_service_url
+        .to_string();
+    narrate("Linking this browser…");
+    crate::custody_relay::mediate_now(
+        "usePasskey",
+        tonk_worker_api::CustodyIntent::Login(tonk_worker_api::DeviceLink {
+            device_name: crate::device_name::current(),
+            endpoint: proposed_remote()?,
+            provider,
+        }),
     )
-    .await
-    .map_err(|error| error.to_string())
+    .await?;
+    Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct LinkRoot<'a> {
-    root_did: &'a str,
-    credential_id: &'a str,
-    delegation_hex: &'a str,
-    needs_persist: bool,
-}
-
-/// Select the grant the worker should attach after a remote link succeeds.
+/// Run the account-creation ceremony, with no panel to report into.
 ///
-/// A same-root browser re-login reuses the still-active server generation, so
-/// it must also reuse the local grant that generation records. A missing or
-/// different root continues through the normal root-persistence boundary.
-fn root_for_link<'a>(
-    status: &'a tonk_worker_api::RootStatus,
-    ceremony: &'a CeremonyOutput,
-) -> LinkRoot<'a> {
-    match status {
-        tonk_worker_api::RootStatus::Ready {
-            root_did,
-            credential_id,
-            delegation_hex,
-            ..
-        } if root_did == &ceremony.root_did => LinkRoot {
-            root_did,
-            credential_id,
-            delegation_hex,
-            needs_persist: false,
-        },
-        _ => LinkRoot {
-            root_did: &ceremony.root_did,
-            credential_id: &ceremony.credential_id,
-            delegation_hex: &ceremony.delegation_hex,
-            needs_persist: true,
-        },
-    }
-}
-
-/// What to tell someone whose account predates the repository descriptor.
+/// The same work `/account`'s create button does, lifted out of its
+/// click handler so the registration cluster can run it too. Progress
+/// goes to `narrate` rather than to `set_busy`, and the service is
+/// resolved from the deployment rather than from a host element's
+/// `service` attribute — the two callers differ in nothing else.
 ///
-/// They cannot establish one from here: the setup panel runs against an
-/// existing local link, and this browser has none. An already-linked device can
-/// do it, and afterwards this one signs in normally.
-const UNESTABLISHED_ACCOUNT_GUIDANCE: &str = "This account was created before shared account state existed, so it can't be added to a new \
-     browser yet. Open /settings on a browser that is already signed in to this account and \
-     finish account setup there, then sign in here.";
+/// Extracted rather than duplicated: two copies of a passkey ceremony
+/// would drift, and the half that drifted would leave an orphan
+/// credential in someone's authenticator.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn run_account_ceremony(
+    email: &str,
+    narrate: impl Fn(&str),
+) -> Result<(), String> {
+    prepare_added_profile().await?;
+    narrate("Waiting for your passkey…");
+
+    // The page's whole part: one passkey ceremony. The worker
+    // generates the account secret, seals it under the new passkey's
+    // KEK, records the root, signs the creation request and enrolls, so
+    // no key material exists in this document at any point.
+    let provider = crate::deployment::get()
+        .await?
+        .account_service_url
+        .to_string();
+    narrate("Creating your account…");
+    crate::custody_relay::mediate_now(
+        "createPasskey",
+        tonk_worker_api::CustodyIntent::CreateAccount(tonk_worker_api::AccountCreation {
+            email: email.to_owned(),
+            device_name: crate::device_name::current(),
+            remote: proposed_remote()?,
+            provider,
+            created_on: Some(crate::device_name::current()),
+        }),
+    )
+    .await?;
+    Ok(())
+}
 
 /// Whether this deployment registers accounts with an access service at
 /// all: deployments that publish no service identity have nothing to
@@ -1808,293 +1798,6 @@ pub(crate) fn proposed_remote() -> Result<String, String> {
         .ok_or_else(|| "window origin is unavailable".to_string())
 }
 
-/// Read the exact stored descriptor the account service selected.
-fn descriptor_hex(response: &serde_json::Value) -> Result<String, String> {
-    response
-        .get("descriptorHex")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| "account service omitted descriptorHex".to_string())
-}
-
-/// Whether a link exists but its account repository has no trusted base yet.
-fn is_unhydrated(status: &AccountStatus) -> bool {
-    matches!(
-        status,
-        AccountStatus::Registered {
-            account_state: AccountStateStatus::Unhydrated,
-            ..
-        }
-    )
-}
-
-/// Sign in with an existing passkey, with no panel to report into.
-///
-/// The counterpart to [`run_account_ceremony`], and the reason the
-/// address is looked up before either runs: sending someone who already
-/// has an account through creation leaves an orphan passkey in their
-/// authenticator and fails at the end — which it did, with
-/// `409 a different account is already signed in on this profile`,
-/// because saving a new root over an existing one is what creation does.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), String> {
-    narrate("Waiting for your passkey…");
-    let device_did = crate::api::identify()
-        .await
-        .map_err(|error| error.to_string())?
-        .did;
-
-    // One assertion derives the custody keypair, one presigned GET
-    // fetches the sealed envelope, and the unwrapped secret self-issues
-    // this device's delegation.
-    let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
-        device_did,
-        device_name: crate::device_name::current(),
-        endpoint: proposed_remote()?,
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-
-    narrate("Linking this browser…");
-    let provider = crate::deployment::get()
-        .await?
-        .account_service_url
-        .to_string();
-    let response =
-        crate::api::submit_account_ceremony(&provider, "/devices/link", &ceremony.invocation_hex)
-            .await
-            .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
-    // Through `persist`, not a direct `save_account_link`.
-    //
-    // `persist` reconciles the ceremony against the root already stored
-    // (`root_for_link`): when the DIDs match it keeps the persisted one
-    // and skips re-saving. Sending the ceremony's own values instead
-    // makes `persist_link` compare them with what is stored and refuse —
-    // `403 provider ceremony does not match the persisted local root` —
-    // even when the user presented the very same passkey.
-    persist(&provider, &ceremony, descriptor_hex(&response)?, false).await?;
-    Ok(())
-}
-
-/// Run the account-creation ceremony, with no panel to report into.
-///
-/// The same work `/account`'s create button does, lifted out of its
-/// click handler so the registration cluster can run it too. Progress
-/// goes to `narrate` rather than to `set_busy`, and the service is
-/// resolved from the deployment rather than from a host element's
-/// `service` attribute — the two callers differ in nothing else.
-///
-/// Extracted rather than duplicated: two copies of a passkey ceremony
-/// would drift, and the half that drifted would leave an orphan
-/// credential in someone's authenticator.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn run_account_ceremony(
-    email: &str,
-    narrate: impl Fn(&str),
-) -> Result<(), String> {
-    prepare_added_profile().await?;
-    narrate("Waiting for your passkey…");
-
-    // One ceremony: the secret is generated, sealed under the new
-    // passkey's KEK, published as the custody cell, and the creation
-    // request signed. No key material is ever stored — every later
-    // custody operation derives its keys inside a fresh assertion.
-    let device_did = crate::api::identify()
-        .await
-        .map_err(|error| error.to_string())?
-        .did;
-    let created = create_account(CreateAccountInput {
-        email: email.to_owned(),
-        device_did,
-        device_name: crate::device_name::current(),
-        remote: proposed_remote()?,
-        created_on: Some(crate::device_name::current()),
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-
-    crate::api::save_root(
-        created.credential_id.clone(),
-        created.delegation_hex.clone(),
-        created.passkey.clone(),
-        created.encryption_key.clone(),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-
-    narrate("Creating your account…");
-    let provider = crate::deployment::get()
-        .await?
-        .account_service_url
-        .to_string();
-    let response =
-        crate::api::submit_account_ceremony(&provider, "/accounts", &created.invocation_hex)
-            .await
-            .map_err(|error| format!("the account service refused the ceremony: {error}"))?;
-    let ceremony = CeremonyOutput {
-        root_did: created.root_did.clone(),
-        credential_id: created.credential_id.clone(),
-        delegation_hex: created.delegation_hex.clone(),
-        invocation_hex: created.invocation_hex.clone(),
-        encryption_key: created.encryption_key.clone(),
-    };
-    persist(&provider, &ceremony, descriptor_hex(&response)?, true).await?;
-
-    if wants_enrollment().await {
-        narrate("Registering with the sync service…");
-        if let Err(error) = crate::api::enroll_customer(Some(email)).await {
-            web_sys::console::warn_1(&format!("customer enrollment failed: {error}").into());
-        }
-    }
-
-    // Neither of these can land before the emailed link is clicked: the
-    // service provisions nothing, and serves nothing, for a customer
-    // that has not confirmed its email. Both queue instead, and replay
-    // on activation.
-    if let Err(error) =
-        crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
-    {
-        web_sys::console::warn_1(&format!("custody provisioning deferred: {error}").into());
-    }
-    if let Err(error) = crate::api::queue_custody_publish(
-        &created.custody_did,
-        &created.sealed_hex,
-        &created.publish_invocation_hex,
-    )
-    .await
-    {
-        // The sealed secret is only in this page's memory until it is
-        // recorded, so failing to queue it is the one loss worth
-        // surfacing.
-        return Err(format!("could not record the account secret: {error}"));
-    }
-    Ok(())
-}
-
-/// The custody rows a creation ceremony must record before the panel
-/// settles: the consent that provisions the custody space, and the
-/// sealed cell with its pre-signed publish.
-struct CustodyRecord {
-    custody_did: String,
-    consent_hex: String,
-    sealed_hex: String,
-    publish_invocation_hex: String,
-}
-
-async fn complete_remote(
-    host: &HtmlElement,
-    path: &str,
-    ceremony: CeremonyOutput,
-    initialize_name: bool,
-    enroll_email: Option<&str>,
-    custody: Option<&CustodyRecord>,
-) -> Result<(), String> {
-    let provider = service(host).await?;
-    let response = crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
-        .await
-        .map_err(|error| {
-            let error = error.to_string();
-            if error.contains(tonk_account::UNESTABLISHED_ACCOUNT_CONFLICT) {
-                UNESTABLISHED_ACCOUNT_GUIDANCE.to_string()
-            } else {
-                error
-            }
-        })?;
-    let status = match persist(
-        &provider,
-        &ceremony,
-        descriptor_hex(&response)?,
-        initialize_name,
-    )
-    .await
-    {
-        Ok(status) => status,
-        Err(error) => {
-            web_sys::console::error_1(
-                &format!("failed to save the accepted account link: {error}").into(),
-            );
-            set_mode(host, "choice");
-            return Err(
-                "Your account is ready, but this browser couldn't finish signing in. Log in to continue."
-                    .to_string(),
-            );
-        }
-    };
-    // Registration with the access service, on signup and login alike:
-    // the account exists either way, so a failed enrollment does not
-    // undo the attach. The login path names no email; the
-    // worker resolves the account's recorded address. Deployments that
-    // publish no service identity have no registration to perform.
-    if wants_enrollment().await {
-        set_busy(host, true, "Registering with the sync service…");
-        // Enrollment is a command now, so this catches a dispatch that
-        // never reached the worker, not a service that refused. A
-        // refusal shows up where it belongs: the registration row
-        // follows the fact, so it says what actually happened and keeps
-        // saying it, instead of a one-shot verdict from this moment.
-        if let Err(error) = crate::api::enroll_customer(enroll_email).await {
-            web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
-            show_error(
-                host,
-                "Your account is ready, but registering it with the sync service could not be started. Reload /settings to retry.",
-            );
-        }
-    }
-    // The custody rows are recorded before ANY settled state renders —
-    // success and the handoff panel alike. The sealed secret and its
-    // pre-signed publish exist only in this page's memory until the
-    // worker records them: a caller who navigates away the moment the
-    // panel looks done (the e2e suite does; a person closing the tab
-    // does too) must not lose the account's backup to the two round
-    // trips that used to follow the render. Neither row can land with
-    // the service before the emailed link is clicked; both queue and
-    // the worker replays them on activation.
-    if let Some(custody) = custody {
-        if let Err(error) =
-            crate::api::provision_custody(&custody.custody_did, &custody.consent_hex).await
-        {
-            web_sys::console::warn_1(&format!("custody provisioning deferred: {error}").into());
-        }
-        if let Err(error) = crate::api::queue_custody_publish(
-            &custody.custody_did,
-            &custody.sealed_hex,
-            &custody.publish_invocation_hex,
-        )
-        .await
-        {
-            // The sealed secret is only in this page's memory until it
-            // is recorded, so failing to queue it is the one loss worth
-            // surfacing.
-            return Err(format!("could not record the account secret: {error}"));
-        }
-    }
-    // A pending callback approval takes precedence over settling: the
-    // ceremony ran on the link page precisely to approve a waiting
-    // device, and the account it just made is what the grant issues from.
-    if let Some((audience, callback, name)) = pending_callback_request() {
-        load_callback_request(host.clone(), audience, callback, name);
-        return Ok(());
-    }
-    settle(host);
-    // An unhydrated account right after signup is the expected state
-    // while the email activation is pending — the access service
-    // refuses the pull until the emailed link is opened — so the notice
-    // for that state names the one step that unblocks it, in the
-    // person's terms. Only when activation is NOT what's in the way is
-    // the failure unexpected, and then the notice says so instead.
-    if initialize_name && is_unhydrated(&status) {
-        if activation_pending().await {
-            show_error(host, VERIFY_EMAIL);
-        } else {
-            show_error(
-                host,
-                "Your account was created, but this browser could not finish syncing it. Reload to retry.",
-            );
-        }
-    }
-    Ok(())
-}
-
 /// Marks a load that found the account state unsynchronized, so the
 /// customer probe's answer can say which of the two reasons it was.
 const UNHYDRATED_ON_LOAD: &str = "data-unhydrated-on-load";
@@ -2110,13 +1813,6 @@ const UNSYNCHRONIZED: &str = "Account state is not synchronized yet. Reload /set
 /// for a retry that cannot succeed buries the one step that does.
 const VERIFY_EMAIL: &str =
     "Check your email and open the verification link to verify your email address.";
-
-/// Whether the customer is registered but not yet email-activated.
-async fn activation_pending() -> bool {
-    crate::api::customer_state()
-        .await
-        .is_ok_and(|state| state["status"].as_str() == Some("Registered"))
-}
 
 fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) + 'static) {
     let Ok(Some(element)) = host.query_selector(selector) else {
@@ -2361,55 +2057,26 @@ fn bind(host: &HtmlElement) {
         spawn_local(async move {
             let result = async {
                 prepare_added_profile().await?;
-                // One ceremony: the secret is generated, sealed under
-                // the new passkey's KEK, published as the custody cell,
-                // and the creation request signed. No key material is
-                // ever stored — every later custody operation derives
-                // its keys inside a fresh assertion.
-                let device_did = crate::api::identify()
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .did;
-                let created = create_account(CreateAccountInput {
-                    email: email.clone(),
-                    device_did,
-                    device_name,
-                    remote: proposed_remote()?,
-                    created_on: Some(crate::device_name::current()),
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-                crate::api::save_root(
-                    created.credential_id.clone(),
-                    created.delegation_hex.clone(),
-                    created.passkey.clone(),
-                    created.encryption_key.clone(),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-                let ceremony = CeremonyOutput {
-                    root_did: created.root_did,
-                    credential_id: created.credential_id,
-                    delegation_hex: created.delegation_hex,
-                    invocation_hex: created.invocation_hex,
-                    encryption_key: created.encryption_key,
-                };
-                let custody = CustodyRecord {
-                    custody_did: created.custody_did,
-                    consent_hex: created.consent_hex,
-                    sealed_hex: created.sealed_hex,
-                    publish_invocation_hex: created.publish_invocation_hex,
-                };
-                set_busy(&host, true, "Creating your account…");
-                complete_remote(
-                    &host,
-                    "/accounts",
-                    ceremony,
-                    true,
-                    Some(&email),
-                    Some(&custody),
+                // The page's whole part: one passkey ceremony. The
+                // worker generates the account secret, seals it under
+                // the new passkey's KEK, records the root, signs the
+                // creation request and enrolls — so no key material
+                // exists in this document at any point.
+                let provider = service(&host).await?;
+                crate::custody_relay::mediate_now(
+                    "createPasskey",
+                    tonk_worker_api::CustodyIntent::CreateAccount(
+                        tonk_worker_api::AccountCreation {
+                            email: email.clone(),
+                            device_name,
+                            remote: proposed_remote()?,
+                            provider,
+                            created_on: Some(crate::device_name::current()),
+                        },
+                    ),
                 )
                 .await?;
+                set_busy(&host, true, "Creating your account…");
                 Ok::<(), String>(())
             }
             .await;
@@ -2461,50 +2128,19 @@ fn bind(host: &HtmlElement) {
                     .await
                     .ok()
                     .and_then(|summary| summary.email);
-                let enrolled = enroll_custody_passkey(EnrollCustodyInput {
-                    account_did: root_did,
-                    label,
-                    endpoint: proposed_remote()?,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-                // Provision before publishing: the new custody DID is
-                // nobody's consumer until this deposit lands, and the
-                // service serves no unprovisioned subject.
-                if let Err(error) =
-                    crate::api::provision_custody(&enrolled.custody_did, &enrolled.consent_hex)
-                        .await
-                {
-                    web_sys::console::warn_1(
-                        &format!("custody provisioning deferred: {error}").into(),
-                    );
-                }
-                // The cell is recorded on profile main either way; the
-                // pre-signed invocation rides along when the ceremony's
-                // own publish was refused, and the worker drains it once
-                // the provisioning deposit lands.
-                if let Err(error) = crate::api::queue_custody_publish(
-                    &enrolled.custody_did,
-                    &enrolled.sealed_hex,
-                    enrolled.publish_invocation_hex.as_deref().unwrap_or(""),
-                )
-                .await
-                {
-                    return Err(format!(
-                        "could not record the sealed account secret: {error}"
-                    ));
-                }
-                crate::api::save_root(
-                    enrolled.credential_id,
-                    delegation_hex,
-                    Some(tonk_worker_api::PasskeyMetadata {
-                        created_at: (js_sys::Date::now() / 1000.0) as u64,
-                        created_on: crate::device_name::current(),
+                let _ = &label;
+                // Two ceremonies, one handoff: assert the passkey that
+                // holds the account, create the one being added, and
+                // let the worker open and re-seal. The account secret
+                // never reaches this document.
+                crate::custody_relay::mediate_now(
+                    "addPasskey",
+                    tonk_worker_api::CustodyIntent::AddPasskey(tonk_worker_api::PasskeyAddition {
+                        account_did: root_did,
+                        endpoint: proposed_remote()?,
                     }),
-                    None,
                 )
-                .await
-                .map_err(|error| error.to_string())?;
+                .await?;
                 Ok::<(), String>(())
             }
             .await;
@@ -2528,26 +2164,21 @@ fn bind(host: &HtmlElement) {
         spawn_local(async move {
             let result = async {
                 prepare_added_profile().await?;
-                let device_did = crate::api::identify()
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .did;
-                // One assertion derives the custody keypair, one
-                // presigned GET fetches the sealed envelope, and the
-                // unwrapped secret self-issues this device's delegation.
-                // A cell still queued from before activation is the
-                // worker's to drain — it holds the ceremony's
-                // pre-signed publish and runs it on boot and on
-                // activation.
-                let ceremony = unlock_with_passkey(UnlockWithPasskeyInput {
-                    device_did,
-                    device_name,
-                    endpoint: proposed_remote()?,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
+                // One assertion, and the worker does the rest: it
+                // opens the account from its custody cell, mints this
+                // browser's delegation, records the root and submits
+                // the link.
+                let provider = service(&host).await?;
                 set_busy(&host, true, "Linking this browser…");
-                complete_remote(&host, "/devices/link", ceremony, false, None, None).await
+                crate::custody_relay::mediate_now(
+                    "usePasskey",
+                    tonk_worker_api::CustodyIntent::Login(tonk_worker_api::DeviceLink {
+                        device_name,
+                        endpoint: proposed_remote()?,
+                        provider,
+                    }),
+                )
+                .await
             }
             .await;
             if let Err(error) = result {
@@ -3216,66 +2847,6 @@ mod tests {
         assert_eq!(
             input(&host, "#account-email").as_deref(),
             Ok("person@example.com")
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_selects_the_new_ceremony_when_the_root_differs() {
-        let status = tonk_worker_api::RootStatus::Ready {
-            root_did: "did:key:zOldRoot".into(),
-            device_did: "did:key:zDevice".into(),
-            credential_id: "old-credential".into(),
-            delegation_cid: "bafyold".into(),
-            delegation_hex: "00".into(),
-            passkey: None,
-            encryption_key: None,
-        };
-        let ceremony = CeremonyOutput {
-            root_did: "did:key:zNewRoot".into(),
-            credential_id: "new-credential".into(),
-            delegation_hex: "11".into(),
-            invocation_hex: "22".into(),
-            encryption_key: None,
-        };
-
-        assert_eq!(
-            root_for_link(&status, &ceremony),
-            LinkRoot {
-                root_did: "did:key:zNewRoot",
-                credential_id: "new-credential",
-                delegation_hex: "11",
-                needs_persist: true,
-            }
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_reuses_the_stored_grant_when_the_same_root_links_again() {
-        let status = tonk_worker_api::RootStatus::Ready {
-            root_did: "did:key:zRoot".into(),
-            device_did: "did:key:zDevice".into(),
-            credential_id: "stored-credential".into(),
-            delegation_cid: "bafystored".into(),
-            delegation_hex: "00".into(),
-            passkey: None,
-            encryption_key: None,
-        };
-        let ceremony = CeremonyOutput {
-            root_did: "did:key:zRoot".into(),
-            credential_id: "ceremony-credential".into(),
-            delegation_hex: "11".into(),
-            invocation_hex: "22".into(),
-            encryption_key: None,
-        };
-
-        assert_eq!(
-            root_for_link(&status, &ceremony),
-            LinkRoot {
-                root_did: "did:key:zRoot",
-                credential_id: "stored-credential",
-                delegation_hex: "00",
-                needs_persist: false,
-            }
         );
     }
 

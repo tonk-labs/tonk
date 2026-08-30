@@ -45,6 +45,16 @@ impl Account {
         &self.envelope
     }
 
+    /// Give up the secret, to seal it under another custodian.
+    ///
+    /// Consuming, and the only way out: an account whose secret can be
+    /// borrowed is one a caller can copy. Adding a passkey is the sole
+    /// reason it exists — the same secret is sealed again so either
+    /// credential opens the account.
+    pub fn into_secret(self) -> AccountSecret {
+        self.secret
+    }
+
     /// Seal to and open for this account.
     pub fn secret(&self) -> AccountSecretKey<'_> {
         self.secret.secret()

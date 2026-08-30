@@ -84,13 +84,84 @@ pub struct WebAuthnRequest {
     pub enrollment: Option<Enrollment>,
 }
 
+/// What a custody handoff should do once it holds the handles.
+///
+/// The page runs the assertion and nothing else, so the work it was
+/// asked for travels with the handles rather than being inferred.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CustodyIntent {
+    /// Register an existing account as a customer of the access
+    /// service.
+    Enroll(Enrollment),
+    /// Create an account this passkey holds, and enroll it.
+    CreateAccount(AccountCreation),
+    /// Open the account this passkey holds and link this browser to it.
+    Login(DeviceLink),
+    /// Seal the account a first passkey holds under a second one, so
+    /// either can open it. Needs two ceremonies, so the handoff carries
+    /// two sets of handles.
+    AddPasskey(PasskeyAddition),
+}
+
+impl Default for CustodyIntent {
+    fn default() -> Self {
+        Self::Enroll(Enrollment::default())
+    }
+}
+
 /// The enrollment a custody handoff should perform once it holds the
 /// handles.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Enrollment {
     /// The address to enroll, or `None` for the account's recorded one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+}
+
+/// Adding a second passkey to an account.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAddition {
+    /// The account the existing passkey must open, so a mismatched
+    /// assertion is refused rather than sealing the wrong secret.
+    pub account_did: String,
+    /// The access service's `/ucan/` endpoint the custody cell
+    /// resolves through.
+    pub endpoint: String,
+}
+
+/// The browser a custody handoff should link to the account it opens.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLink {
+    /// What this browser is called in the account's device list.
+    pub device_name: String,
+    /// The access service's `/ucan/` endpoint the custody cell
+    /// resolves through.
+    pub endpoint: String,
+    /// The account service's base URL.
+    pub provider: String,
+}
+
+/// The account a custody handoff should bring into being.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCreation {
+    /// The address the account is created for.
+    pub email: String,
+    /// What this browser is called in the account's device list.
+    pub device_name: String,
+    /// The account repository's remote, so the descriptor names it.
+    pub remote: String,
+    /// The account service's base URL. Travels with the request
+    /// because no account is linked yet, so the worker cannot look it
+    /// up the way every later call does.
+    pub provider: String,
+    /// Browser/OS label recorded with the created passkey.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
 }
 
 /// The ceremonies a page can be asked to run.

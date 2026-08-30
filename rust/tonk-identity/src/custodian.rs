@@ -60,6 +60,17 @@ impl Custodian {
         }
     }
 
+    /// The WebAuthn credential this custodian is reached through, when
+    /// it is a passkey. A native custodian has none: nothing picks it
+    /// from a list.
+    pub fn credential_id(&self) -> Option<&[u8]> {
+        match self {
+            Self::Native(_) => None,
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Self::Passkey(custodian) => Some(&custodian.credential_id),
+        }
+    }
+
     /// The account this custodian holds.
     ///
     /// A builder rather than a value because the ways to reach one are

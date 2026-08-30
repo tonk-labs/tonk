@@ -229,7 +229,9 @@ pub fn install() {
                 // which mints and enrolls. The page builds nothing and
                 // holds nothing; it only supplies the gesture WebAuthn
                 // insists on happening in a window.
-                mediate_custody(message.enrollment.unwrap_or_default());
+                mediate_custody(tonk_worker_api::CustodyIntent::Enroll(
+                    message.enrollment.unwrap_or_default(),
+                ));
             }
         }
     });
@@ -241,62 +243,92 @@ pub fn install() {
 /// Run one custody assertion and hand the worker its derivation
 /// handles.
 ///
-/// `usePasskey` posts them and resolves when the worker is done, so a
-/// failure here is the enrollment's failure and is reported as one.
+/// The page's whole part in any custody work: `usePasskey` posts the
+/// handles and resolves when the worker is done, so a failure here is
+/// the intent's failure and is reported as one.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn mediate_custody(enrollment: tonk_worker_api::Enrollment) {
-    use wasm_bindgen::{JsCast, JsValue};
-
-    wasm_bindgen_futures::spawn_local(async move {
-        let Some(identity) = web_sys::window()
-            .and_then(|window| js_sys::Reflect::get(&window, &"tonkIdentity".into()).ok())
-            .filter(|value| !value.is_undefined())
-        else {
-            web_sys::console::warn_1(&"custody: window.tonkIdentity is not installed".into());
-            return;
-        };
-        let Ok(use_passkey) = js_sys::Reflect::get(&identity, &"usePasskey".into())
-            .and_then(|value| value.dyn_into::<js_sys::Function>())
-        else {
-            web_sys::console::warn_1(&"custody: tonkIdentity.usePasskey is missing".into());
-            return;
-        };
-
-        let input = js_sys::Object::new();
-        match serde_wasm_bindgen::to_value(&enrollment) {
-            Ok(request) => {
-                let _ = js_sys::Reflect::set(&input, &"request".into(), &request);
-            }
-            Err(error) => {
-                web_sys::console::warn_1(
-                    &format!("custody: the enrollment did not serialize: {error}").into(),
-                );
-                return;
-            }
+pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
+    // Which ceremony the intent implies: a new account needs a new
+    // passkey, everything else asserts one that exists.
+    let method = match &intent {
+        tonk_worker_api::CustodyIntent::CreateAccount(_) => "createPasskey",
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        tonk_worker_api::CustodyIntent::Enroll(_) | tonk_worker_api::CustodyIntent::Login(_) => {
+            "usePasskey"
         }
+    };
+    mediate_with(method, intent);
+}
 
-        let answer = match use_passkey.call1(&JsValue::NULL, &input) {
-            Ok(value) => value,
-            Err(error) => {
-                web_sys::console::warn_1(&format!("custody: {error:?}").into());
-                return;
-            }
-        };
-        let Ok(promise) = answer.dyn_into::<js_sys::Promise>() else {
-            return;
-        };
-        if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
-            // A dismissed prompt is a decision, not a fault: someone
-            // declined the passkey, and enrollment simply did not
-            // happen. Anything else is worth a warning.
-            let name = js_sys::Reflect::get(&error, &"name".into())
-                .ok()
-                .and_then(|value| value.as_string());
-            if name.as_deref() == Some("NotAllowedError") {
-                web_sys::console::debug_1(&"custody: the passkey prompt was dismissed".into());
-            } else {
-                web_sys::console::warn_1(&format!("custody: the handoff failed: {error:?}").into());
-            }
+/// [`mediate_custody`], naming the ceremony explicitly.
+pub(crate) fn mediate_with(method: &'static str, intent: tonk_worker_api::CustodyIntent) {
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(error) = run(method, intent).await {
+            report(&error);
         }
     });
+}
+
+/// [`mediate_custody`], awaited: for a caller that has to know whether
+/// the work landed before it moves on.
+pub(crate) async fn mediate_now(
+    method: &'static str,
+    intent: tonk_worker_api::CustodyIntent,
+) -> Result<(), String> {
+    run(method, intent).await
+}
+
+/// Log a mediation failure, keeping a dismissed prompt quiet: declining
+/// the passkey is a decision, not a fault.
+fn report(error: &str) {
+    if error.starts_with("NotAllowedError") {
+        web_sys::console::debug_1(&"custody: the passkey prompt was dismissed".into());
+    } else {
+        web_sys::console::warn_1(&format!("custody: {error}").into());
+    }
+}
+
+async fn run(method: &'static str, intent: tonk_worker_api::CustodyIntent) -> Result<(), String> {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let identity = web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"tonkIdentity".into()).ok())
+        .filter(|value| !value.is_undefined())
+        .ok_or_else(|| "window.tonkIdentity is not installed".to_string())?;
+    let ceremony = js_sys::Reflect::get(&identity, &method.into())
+        .ok()
+        .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+        .ok_or_else(|| format!("tonkIdentity.{method} is missing"))?;
+
+    let request = serde_wasm_bindgen::to_value(&intent)
+        .map_err(|error| format!("the request did not serialize: {error}"))?;
+    let input = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&input, &"request".into(), &request);
+
+    let answer = ceremony
+        .call1(&JsValue::NULL, &input)
+        .map_err(|error| describe(&error))?;
+    let promise = answer
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|_| format!("tonkIdentity.{method} did not return a promise"))?;
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map(|_| ())
+        .map_err(|error| describe(&error))
+}
+
+/// A thrown value as text, keeping the DOM error name in front so a
+/// caller can tell a dismissed prompt from a real failure.
+fn describe(error: &wasm_bindgen::JsValue) -> String {
+    let name = js_sys::Reflect::get(error, &"name".into())
+        .ok()
+        .and_then(|value| value.as_string());
+    let message = js_sys::Reflect::get(error, &"message".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_else(|| format!("{error:?}"));
+    match name {
+        Some(name) => format!("{name}: {message}"),
+        None => message,
+    }
 }
