@@ -40,7 +40,7 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, assign_keys, insert_runs, project, reconcile, split};
+use crate::blocks::{Block, assign_keys, project, reconcile, split};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -844,41 +844,41 @@ impl Notebook {
         for (entity, source) in &edit.changed {
             self.dispatch_edit(entity, source);
         }
-        // A created block is INSERTED, and the element names no entity.
+        // A created block needs an entity before it can be written. Mint one
+        // from the notebook's own entity plus a counter, so re-running an
+        // identical edit does not mint a second entity for the same block.
         //
-        // Identity derives from the command body the way every anchor-less
-        // assertion's does, and `dialog/position` derives the key from the
-        // neighbours. The element used to mint the entity itself, from the
-        // document's block COUNT (`{notebook}/block-{len}-{nth}`) — a
-        // position wearing an identity's clothes. Delete a block and add
-        // another and the count returns to a value it held before, so the
-        // "new" block claimed an entity that already existed: two blocks,
-        // one identity, sharing a source and each other's sequence entries.
-        //
-        // Blocks created ADJACENTLY go in ONE command, carried as a keyed
-        // collection in document order. That is what makes a paste work:
-        // the entry keys hold the order, so no new block has to name
-        // another new block's identity — which it could not, since neither
-        // exists until the rules derive them.
-        let notebook = self.notebook_entity();
-        for (head, tail, sources) in insert_runs(&edit.order, &edit.created) {
-            self.dispatch_insert(&notebook, head.as_deref(), tail.as_deref(), &sources);
+        // NOT from `data-subject`: `dispatch_edit` above repoints that at
+        // whichever block it is currently writing, so reading it here picks
+        // up the LAST block edited and mints the new one as its child —
+        // `…/block-4-0/block-6-1/block-7-0/…`, deeper on every edit.
+        let subject = self.notebook_entity();
+        let mut minted: Vec<String> = Vec::new();
+        for (nth, source) in edit.created.iter().enumerate() {
+            let entity = format!("{subject}/block-{}-{nth}", edit.order.len());
+            self.dispatch_edit(&entity, source);
+            minted.push(entity);
         }
 
-        // Placement is for blocks that MOVED. A created block is placed by
-        // the insert rules, so re-keying it here would place it twice.
+        // Placement is per block: each block that moved, was created, or
+        // never had an entry gets a position between its neighbours, and
+        // each removed block has its entry retracted. Blocks that stayed in
+        // order keep their keys, so a reorder touches only what moved.
         let stored = self.blocks.borrow();
+        let notebook = self.notebook_entity();
+        let mut fresh = minted.iter();
         let order: Vec<(String, Option<String>)> = edit
             .order
             .iter()
-            .filter_map(|slot| {
-                slot.as_ref().map(|entity| {
+            .filter_map(|slot| match slot {
+                Some(entity) => {
                     let key = stored
                         .iter()
                         .find(|block| &block.entity == entity)
                         .and_then(|block| block.key.clone());
-                    (entity.clone(), key)
-                })
+                    Some((entity.clone(), key))
+                }
+                None => fresh.next().map(|entity| (entity.clone(), None)),
             })
             .collect();
         for (entity, key) in assign_keys(&order) {
@@ -930,39 +930,6 @@ impl Notebook {
             .dataset()
             .get("subject")
             .unwrap_or_else(|| "id:notebook/scratch".to_owned())
-    }
-
-    /// Dispatch one `blocks/insert`: a run of new blocks, in order, and the
-    /// existing blocks it landed between.
-    ///
-    /// No entity is named — identity derives from the command body. The
-    /// sources go as a keyed map so their document order rides along, which
-    /// is what lets one command carry a whole paste.
-    fn dispatch_insert(
-        &self,
-        notebook: &str,
-        head: Option<&str>,
-        tail: Option<&str>,
-        sources: &[&str],
-    ) {
-        let detail = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.into());
-        let entries = js_sys::Object::new();
-        for (nth, source) in sources.iter().enumerate() {
-            // Zero-padded so the keys sort in document order as text.
-            let key = format!("{nth:04}");
-            let _ = js_sys::Reflect::set(&entries, &key.as_str().into(), &(*source).into());
-        }
-        let _ = js_sys::Reflect::set(&detail, &"inserted".into(), &entries);
-        // Omitted, not empty, at the document's edges: the field is
-        // `maybe:`, and the rules have a case per edge.
-        if let Some(head) = head {
-            let _ = js_sys::Reflect::set(&detail, &"head".into(), &head.into());
-        }
-        if let Some(tail) = tail {
-            let _ = js_sys::Reflect::set(&detail, &"tail".into(), &tail.into());
-        }
-        self.emit("insert", &detail);
     }
 
     /// Dispatch one `block/place` command: put `entity` into `notebook`'s
