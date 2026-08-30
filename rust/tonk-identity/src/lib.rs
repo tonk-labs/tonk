@@ -11,6 +11,7 @@
 
 pub mod ceremony;
 pub mod clearance;
+pub mod custodian;
 pub mod custody;
 pub mod delegation;
 pub mod envelope;
