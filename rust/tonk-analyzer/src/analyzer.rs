@@ -4823,3 +4823,39 @@ attribute!:
         );
     }
 }
+
+#[cfg(test)]
+mod library_analysis_tests {
+    use super::*;
+
+    /// The shipped notebook library must analyze.
+    ///
+    /// It is fetched and lowered at repository creation, so a rule the
+    /// analyzer rejects does not fail a build — it fails every new space,
+    /// at runtime, with no test having said so.
+    #[test]
+    fn it_analyzes_the_notebook_library() {
+        // Core first: `notebook.yaml` references concepts core declares
+        // (`view`, `route`, `name`), and lowering runs against a branch that
+        // already has them. Analyzing the file alone reports those as unknown
+        // concepts, which says nothing about the file.
+        let source = format!(
+            "{}\n{}",
+            include_str!("../../tonk-core/assets/library/core.yaml"),
+            include_str!("../../tonk-core/assets/library/notebook.yaml"),
+        );
+        let parsed = tonk_notation::parse(&source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "notebook.yaml must parse: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("notebook.yaml yields a syntax tree");
+        let result = analyze_local(&syntax);
+        assert!(
+            result.is_ok(),
+            "notebook.yaml must analyze: {:?}",
+            result.err()
+        );
+    }
+}
