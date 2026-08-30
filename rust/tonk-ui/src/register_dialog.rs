@@ -1091,7 +1091,7 @@ fn copy_the_share_link() {
         let claim = enable_sync_claim(&space, js_sys::Date::now());
         if let Err(error) = crate::api::transact_profile(claim).await {
             tonk_common::log!("register: could not finish the share: {error}");
-            set_status("Could not create the link. Share the spot again.");
+            set_status("Could not create the link. Share the space again.");
             set_action(COPY_LINK, true);
             return;
         }
@@ -1111,7 +1111,7 @@ fn copy_the_share_link() {
                 }
             },
             None => {
-                set_status("The link is taking longer than expected. Share the spot again.");
+                set_status("The link is taking longer than expected. Share the space again.");
                 set_action(COPY_LINK, true);
             }
         }
@@ -1635,7 +1635,7 @@ pub(crate) fn enable_sync_claim(space: &str, time: f64) -> serde_json::Value {
                 "predicate": {
                     "kind": "transient",
                     "concept": {
-                        "description": "Attach a sync remote to a spot, and share it.",
+                        "description": "Attach a sync remote to a space, and share it.",
                         "with": {
                             "time": { "the": "dom.event/time-stamp", "as": "Float" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
@@ -1884,6 +1884,8 @@ mod tests {
         let claim = enable_sync_claim("did:key:z6Mk", 1234.0).to_string();
         assert!(claim.contains("xyz.tonk.enable-sync/space"));
         assert!(claim.contains("did:key:z6Mk"));
+        assert!(claim.contains("Attach a sync remote to a space, and share it."));
+        assert!(!claim.contains("spot"));
         assert!(
             claim.contains("xyz.tonk.enable-sync/share"),
             "the mint is what produces the link the click wanted",

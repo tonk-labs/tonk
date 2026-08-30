@@ -848,7 +848,7 @@ view!:
       value={name}
       data-subject={this}
       onchange=tonk/rename-repository
-      aria-label="Spot name"
+      aria-label="Space name"
     ></tonk-editable>
 
 # ============================================================

@@ -194,7 +194,7 @@ fn fallback(action: AccountAction) -> &'static str {
             "Your account is ready, but we couldn't save that display name. You can change it later in settings."
         }
         AccountAction::CopyInvite => {
-            "The invite link is ready, but this browser couldn't copy it. Share the spot again to retry."
+            "The invite link is ready, but this browser couldn't copy it. Share the space again to retry."
         }
         AccountAction::FinishPreviousAction => {
             "You're signed in, but we couldn't finish what you started. Return to the previous page and try again."
@@ -282,7 +282,7 @@ mod tests {
             (
                 AccountAction::CopyInvite,
                 "NotAllowedError: Write permission denied",
-                "The invite link is ready, but this browser couldn't copy it. Share the spot again to retry.",
+                "The invite link is ready, but this browser couldn't copy it. Share the space again to retry.",
             ),
         ];
 

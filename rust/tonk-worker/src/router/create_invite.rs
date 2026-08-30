@@ -429,13 +429,13 @@ impl RemoteRefusal {
     /// The sentence shown to the user.
     pub(crate) fn detail(self) -> &'static str {
         match self {
-            Self::NotSynced => "This spot only exists on this device.",
+            Self::NotSynced => "This space only exists on this device.",
             Self::NeedsAccount => {
                 "Sharing needs an account, so the people you share with have somewhere to sync from."
             }
             Self::NeedsActivation => "Check your email and confirm your address, then share again.",
             Self::Suspended => "This account's sync service has been suspended.",
-            Self::UnshareableRemote => "This spot's sync server can't be shared.",
+            Self::UnshareableRemote => "This space's sync server can't be shared.",
         }
     }
 }
@@ -672,6 +672,32 @@ where
     }
 }
 
+#[cfg(test)]
+mod refusal_copy_tests {
+    use super::RemoteRefusal;
+
+    #[test]
+    fn it_uses_space_in_user_facing_refusals() {
+        for detail in [
+            RemoteRefusal::NotSynced.detail(),
+            RemoteRefusal::NeedsAccount.detail(),
+            RemoteRefusal::NeedsActivation.detail(),
+            RemoteRefusal::Suspended.detail(),
+            RemoteRefusal::UnshareableRemote.detail(),
+        ] {
+            assert!(!detail.to_ascii_lowercase().contains("spot"), "{detail}");
+        }
+        assert_eq!(
+            RemoteRefusal::NotSynced.detail(),
+            "This space only exists on this device."
+        );
+        assert_eq!(
+            RemoteRefusal::UnshareableRemote.detail(),
+            "This space's sync server can't be shared."
+        );
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -814,11 +840,11 @@ mod tests {
         );
         assert_eq!(
             RemoteRefusal::NotSynced.detail(),
-            "This spot only exists on this device."
+            "This space only exists on this device."
         );
         assert_eq!(
             RemoteRefusal::UnshareableRemote.detail(),
-            "This spot's sync server can't be shared."
+            "This space's sync server can't be shared."
         );
     }
 

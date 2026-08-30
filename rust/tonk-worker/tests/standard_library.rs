@@ -252,12 +252,23 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
+        "you don't have this space",
+        "join a space",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the absent-space markup must preserve `{contract}`"
         );
     }
+    assert!(
+        !PROFILE_LIBRARY.contains("you don't have this spot")
+            && !PROFILE_LIBRARY.contains("join a spot"),
+        "the absent-space panel must use current user-facing terminology"
+    );
+    assert!(
+        STANDARD_LIBRARY.contains("aria-label=\"Space name\""),
+        "the repository-name control must expose the current noun"
+    );
 }
 
 #[test]

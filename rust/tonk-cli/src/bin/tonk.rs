@@ -500,7 +500,7 @@ enum AccountCommand {
         json: bool,
     },
 
-    /// Pull the account so devices, spots, and names read current facts
+    /// Pull the account so devices, spaces, and names read current facts
     ///
     /// Read commands answer instantly from what this device already
     /// knows; this is the one that fetches what other devices changed.
@@ -4444,6 +4444,19 @@ mod account_spaces_parser_tests {
         );
         assert!(!help.contains("arbitrary entity"), "{help}");
         assert!(!help.contains("tonk assert"), "{help}");
+    }
+
+    #[test]
+    fn account_help_uses_space_terminology() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("account")
+            .expect("account command")
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("devices, spaces, and names"), "{help}");
+        assert!(!help.contains("spot"), "{help}");
     }
 
     #[test]

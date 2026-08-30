@@ -1145,6 +1145,7 @@
       ],
       "name": "Account status and devices",
       "source_paths": [
+        "rust/tonk-cli/src/bin/tonk.rs",
         "rust/tonk-cli/src/account.rs",
         "rust/tonk-cli/src/account_state.rs",
         "rust/tonk-cli/src/account_session.rs",
@@ -1999,7 +2000,7 @@
       "result": "—"
     },
     {
-      "claim": "Sharing a spot with no account raises registration in place and finishes the interrupted share (Cross a boundary).",
+      "claim": "Sharing a space with no account raises registration in place and finishes the interrupted share (Cross a boundary).",
       "device": "fresh-browser",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-00",
