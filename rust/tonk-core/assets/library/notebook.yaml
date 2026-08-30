@@ -127,7 +127,6 @@ view!:
       data-notebook={this}
       title={title}
       onblockedit=block/edit
-      oninsert=block/insert
       onplace=block/place
       onremove=block/remove
       style="display: block;"
@@ -230,60 +229,6 @@ command!: &block/edit
 # a position. The element derives the position between the block's
 # neighbours (`dialog_artifacts::position`), so a move re-keys only what
 # moved.
-# Insert a block. The client does NOT name the entity.
-#
-# A block's identity is derived from this command's own body, the way every
-# anchor-less assertion's is — so it falls out of `(source, notebook, after,
-# before)` and the client has nothing to mint. That matters: the client used
-# to build an entity from the document's block COUNT
-# (`{notebook}/block-{len}-{nth}`), which is a position wearing an identity's
-# clothes. Delete a block and add another and the count returns to a value it
-# already had, so the new block minted an entity that already existed: two
-# different blocks, one entity, sharing a source and each other's sequence
-# entries. That is the "same block appears twice, blocks vanish while typing"
-# failure.
-#
-# `after`/`before` are the neighbours the block was typed between. They are
-# `maybe:` because the first and last block of a document have only one, and
-# they are part of the identity so that the same text typed in two places
-# stays two blocks. Identical text between the identical pair IS the same
-# block, which is the one collision worth having.
-command!: &block/insert
-  description: Insert one block into a notebook, deriving its identity.
-  with:
-    # `inserted`, not `source`: an insert must not share its shape with
-    # `block/edit`, or one event decodes as both commands and every edit
-    # would also mint a block. The analyzer rejects the overlap outright
-    # (`OverlappingTransientCommands`), which is how this was caught.
-    source:
-      description: The block's markdown source.
-      the: dom.event.detail/inserted
-      as: text
-    notebook:
-      description: The notebook the block belongs to.
-      the: dom.event.detail/notebook
-      as: entity
-    # The neighbours' POSITIONS, not their entities.
-    #
-    # The element already reads every block's key off its row, so it can say
-    # where the new block landed directly. Sending entities instead would
-    # mean the rule had to look each neighbour's key up — a premise that
-    # cannot match for the first or last block of a document, which have no
-    # neighbour on one side. `coalesce` does not rescue that: it defends
-    # against an absent VALUE, not an unmatched PREMISE.
-    #
-    # `""` is the empty bound, which `dialog/position` reads as "no bound on
-    # this side". That is the formula's own convention, not one invented
-    # here.
-    after:
-      description: The position of the block this one follows, or "".
-      the: dom.event.detail/after
-      as: text
-    before:
-      description: The position of the block this one precedes, or "".
-      the: dom.event.detail/before
-      as: text
-
 command!: &block/place
   description: Place one block in its notebook's sequence.
   with:
@@ -318,50 +263,6 @@ command!: &block/remove
       description: The position the block held.
       the: dom.event.detail/removed
       as: text
-
-# The inserted block IS the command entity: `?this` flows from the command
-# match into the head, exactly as `table/create-sheet` does. Nothing derives a
-# name from the document's shape, so no two blocks can collide by being typed
-# at the same length.
-rule!:
-  description: Persist an inserted block.
-  assert!: notebook/block
-  when:
-    - assert: block/insert
-      where:
-        this: ?this
-        source: ?source
-        notebook: ?notebook
-
-# ...and place it, in the same step.
-#
-# `dialog/position` derives the key from the neighbours' positions, biased by
-# the member entity — so two replicas inserting the same block between the
-# same neighbours converge on one key, and distinct blocks disperse. The
-# element computes no position: it reports the two it landed between and the
-# formula does the rest.
-#
-# ONE rule, because the bounds arrive already resolved. Taking neighbour
-# ENTITIES instead would need a premise to look each one's key up, and that
-# premise cannot match for a block with no neighbour on one side — the first
-# and last of every document — so the block would be asserted and never
-# placed.
-rule!:
-  description: Place an inserted block in its notebook's sequence.
-  assert!: notebook/blocks
-  when:
-    - assert: block/insert
-      where:
-        this: ?block
-        notebook: ?this
-        after: ?after
-        before: ?before
-    - assert: dialog/position
-      where:
-        member: ?block
-        after: ?after
-        before: ?before
-        is: ?block/key
 
 rule!:
   description: Persist a block edit onto its block.

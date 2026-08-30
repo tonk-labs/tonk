@@ -133,31 +133,6 @@ pub fn split(document: &str) -> Vec<String> {
     blocks
 }
 
-/// The bounds an inserted block landed between, as `(after, before)`.
-///
-/// `keys` is the surviving blocks' positions in document order, `None` where
-/// a slot holds a block being created. The bounds are the nearest kept keys
-/// on either side — `""` where there is none, which is what
-/// `dialog/position` reads as "no bound on this side".
-///
-/// This is what replaces minting an entity from the document's block count.
-/// The count was a position wearing an identity's clothes: delete a block and
-/// add another and it repeats, so two blocks collided on one entity.
-pub fn bounds_at(keys: &[Option<String>], index: usize) -> (String, String) {
-    let after = keys[..index]
-        .iter()
-        .rev()
-        .find_map(|key| key.clone())
-        .unwrap_or_default();
-    let before = keys
-        .get(index + 1..)
-        .unwrap_or(&[])
-        .iter()
-        .find_map(|key| key.clone())
-        .unwrap_or_default();
-    (after, before)
-}
-
 /// The chunk range each block covers, as `(first, count)` over the
 /// document's top-level nodes.
 ///
@@ -470,52 +445,6 @@ mod tests {
     /// Spans cover the same grouping `split` does: one entry per block,
     /// each naming the run of top-level nodes it occupies. The highlight
     /// reads these to light a whole block rather than one paragraph of it.
-    /// An inserted block's bounds are its nearest placed neighbours.
-    #[dialog_common::test]
-    fn it_bounds_an_insert_by_its_nearest_neighbours() {
-        let keys = vec![Some("a0".to_owned()), None, Some("a2".to_owned())];
-        assert_eq!(
-            bounds_at(&keys, 1),
-            ("a0".to_owned(), "a2".to_owned()),
-            "a block between two placed blocks is bounded by both"
-        );
-    }
-
-    /// A block at either end has no neighbour on that side, and says so with
-    /// the empty bound rather than omitting it — `dialog/position` reads `""`
-    /// as unbounded. Getting this wrong is what would leave the first and
-    /// last block of a document unplaced.
-    #[dialog_common::test]
-    fn it_bounds_an_end_insert_with_an_empty_string() {
-        let keys = vec![None, Some("a1".to_owned()), None];
-        assert_eq!(
-            bounds_at(&keys, 0),
-            (String::new(), "a1".to_owned()),
-            "the first block has no predecessor"
-        );
-        assert_eq!(
-            bounds_at(&keys, 2),
-            ("a1".to_owned(), String::new()),
-            "the last block has no successor"
-        );
-    }
-
-    /// The first block of an empty notebook is unbounded on both sides.
-    #[dialog_common::test]
-    fn it_bounds_a_lone_insert_on_neither_side() {
-        assert_eq!(bounds_at(&[None], 0), (String::new(), String::new()));
-    }
-
-    /// Consecutive inserts skip each other: an unplaced slot is not a bound,
-    /// so both blocks are keyed against the placed blocks around them and the
-    /// formula's member bias keeps them apart.
-    #[dialog_common::test]
-    fn it_skips_unplaced_slots_when_bounding() {
-        let keys = vec![Some("a0".to_owned()), None, None, Some("a3".to_owned())];
-        assert_eq!(bounds_at(&keys, 1), ("a0".to_owned(), "a3".to_owned()));
-        assert_eq!(bounds_at(&keys, 2), ("a0".to_owned(), "a3".to_owned()));
-    }
-
     #[dialog_common::test]
     fn it_spans_the_nodes_each_block_covers() {
         let doc = "intro\n\n# Heading\n\nunder it\n\ntrailing";

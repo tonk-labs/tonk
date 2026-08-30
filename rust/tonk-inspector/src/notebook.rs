@@ -816,58 +816,42 @@ impl Notebook {
         for (entity, source) in &edit.changed {
             self.dispatch_edit(entity, source);
         }
-        // A created block is INSERTED. The client names no entity.
+        // A created block needs an entity before it can be written. Mint one
+        // from the notebook's own entity plus a counter, so re-running an
+        // identical edit does not mint a second entity for the same block.
         //
-        // `block/insert` carries the source and the positions it landed
-        // between; the block's identity is derived from that body the way
-        // every anchor-less assertion's is, and `dialog/position` derives its
-        // key from the same neighbours.
-        //
-        // The client used to mint the entity itself, from the document's
-        // block COUNT (`{notebook}/block-{len}-{nth}`) — a position wearing
-        // an identity's clothes. Delete a block and add another and the count
-        // returns to a value it held before, so the "new" block claimed an
-        // entity that already existed: two blocks with one identity, sharing
-        // a source and each other's sequence entries. That is the "same block
-        // twice / blocks vanish while typing / wrong one deleted" failure.
-        let stored = self.blocks.borrow();
-        let notebook = self.notebook_entity();
-
-        // The keys of the blocks that survive, in document order. A created
-        // slot has no key yet, so its neighbours are the nearest kept blocks
-        // on either side — which is exactly what the formula needs.
-        let keys: Vec<Option<String>> = edit
-            .order
-            .iter()
-            .map(|slot| {
-                slot.as_ref().and_then(|entity| {
-                    stored
-                        .iter()
-                        .find(|block| &block.entity == entity)
-                        .and_then(|block| block.key.clone())
-                })
-            })
-            .collect();
-
-        let mut created = edit.created.iter();
-        for (index, slot) in edit.order.iter().enumerate() {
-            if slot.is_some() {
-                continue;
-            }
-            let Some(source) = created.next() else {
-                continue;
-            };
-            let (after, before) = crate::blocks::bounds_at(&keys, index);
-            self.dispatch_insert(source, &notebook, &after, &before);
+        // NOT from `data-subject`: `dispatch_edit` above repoints that at
+        // whichever block it is currently writing, so reading it here picks
+        // up the LAST block edited and mints the new one as its child —
+        // `…/block-4-0/block-6-1/block-7-0/…`, deeper on every edit.
+        let subject = self.notebook_entity();
+        let mut minted: Vec<String> = Vec::new();
+        for (nth, source) in edit.created.iter().enumerate() {
+            let entity = format!("{subject}/block-{}-{nth}", edit.order.len());
+            self.dispatch_edit(&entity, source);
+            minted.push(entity);
         }
 
-        // Placement is only for blocks that MOVED. A created block is placed
-        // by the insert rule, so re-keying it here would place it twice.
+        // Placement is per block: each block that moved, was created, or
+        // never had an entry gets a position between its neighbours, and
+        // each removed block has its entry retracted. Blocks that stayed in
+        // order keep their keys, so a reorder touches only what moved.
+        let stored = self.blocks.borrow();
+        let notebook = self.notebook_entity();
+        let mut fresh = minted.iter();
         let order: Vec<(String, Option<String>)> = edit
             .order
             .iter()
-            .zip(keys.iter())
-            .filter_map(|(slot, key)| slot.as_ref().map(|entity| (entity.clone(), key.clone())))
+            .filter_map(|slot| match slot {
+                Some(entity) => {
+                    let key = stored
+                        .iter()
+                        .find(|block| &block.entity == entity)
+                        .and_then(|block| block.key.clone());
+                    Some((entity.clone(), key))
+                }
+                None => fresh.next().map(|entity| (entity.clone(), None)),
+            })
             .collect();
         for (entity, key) in assign_keys(&order) {
             self.dispatch_place(&entity, &notebook, &key);
@@ -918,27 +902,6 @@ impl Notebook {
             .dataset()
             .get("subject")
             .unwrap_or_else(|| "id:notebook/scratch".to_owned())
-    }
-
-    /// Dispatch one `block/insert` command: a new block, its source, and the
-    /// positions it landed between.
-    ///
-    /// No entity: the block's identity is derived from this command's body,
-    /// and `dialog/position` derives its key from the same neighbours. The
-    /// client's job is to say what happened, not to name it.
-    ///
-    /// `after`/`before` are POSITIONS and are always sent — `""` where there
-    /// is no neighbour, which the formula reads as "no bound on this side".
-    fn dispatch_insert(&self, source: &str, notebook: &str, after: &str, before: &str) {
-        let detail = js_sys::Object::new();
-        // `inserted`, not `source`: `block/edit` already carries
-        // `detail/source`, and two commands with one shape both decode from
-        // a single event.
-        let _ = js_sys::Reflect::set(&detail, &"inserted".into(), &source.into());
-        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.into());
-        let _ = js_sys::Reflect::set(&detail, &"after".into(), &after.into());
-        let _ = js_sys::Reflect::set(&detail, &"before".into(), &before.into());
-        self.emit("insert", &detail);
     }
 
     /// Dispatch one `block/place` command: put `entity` into `notebook`'s
