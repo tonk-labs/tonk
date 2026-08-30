@@ -231,7 +231,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
     /// against this environment.
     pub async fn handle(&self) -> Result<Answer, RegistrationError>
     where
-        Self: Provider<Activate> + Provider<Add>,
+        Self: Provider<Activate>,
     {
         match registration_command(self.container) {
             Some(RegistrationCommand::Enroll) => {
@@ -261,12 +261,18 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     .verified_chain(&PROVIDER_ADD_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
                     .await?;
                 let effect: Add = deserialize_arguments(chain.arguments())?;
+                // Called directly, like enrollment: the consent it
+                // carries is a delegation whose revocations are this
+                // service's own, and a `Provider` impl is `async_trait`
+                // — whose future must be `Send`, which the checker's is
+                // not.
                 Ok(Answer::Subscription(
-                    Subject::from(chain.subject().clone())
-                        .attenuate(ProviderRole)
-                        .invoke(effect)
-                        .perform(self)
-                        .await?,
+                    self.add(
+                        Subject::from(chain.subject().clone())
+                            .attenuate(ProviderRole)
+                            .invoke(effect),
+                    )
+                    .await?,
                 ))
             }
             Some(RegistrationCommand::Activate) => {
@@ -434,6 +440,20 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         // of it is recorded: a customer row whose activation link cannot
         // work is an account stranded exactly the way this flow exists
         // to prevent.
+        // One address holds one customer: the lookup that resolves an
+        // email to a `did:key` depends on it, and the column is uniquely
+        // indexed. Asked here so a taken address is a refusal the client
+        // can act on rather than a constraint violation surfacing as an
+        // internal error.
+        if let Some(holder) = self
+            .store
+            .customer_by_email(&address)
+            .await
+            .map_err(internal)?
+            && holder.account != customer.to_string()
+        {
+            return Err(RegistrationError::AddressTaken);
+        }
         let material = self.verify_custody(&effect, &customer).await?;
         let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer).await?;
@@ -676,7 +696,27 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("consent failed to verify: {err}"),
             })?;
-        Ok(())
+        // A consent whose authority was withdrawn is not consent. The
+        // issuer here IS the subject — the checks above refuse anything
+        // else — so one revoker covers both who granted it and what it
+        // was granted over.
+        let revokers = [consent.issuer().clone()];
+        let revoked = self
+            .revocations
+            .query(dialog_ucan_core::revocation::RevocationSelector::new(
+                consent.to_cid(),
+                &revokers,
+            ))
+            .await
+            .map_err(|error| RegistrationError::Unauthorized {
+                message: format!("consent revocations could not be checked: {error}"),
+            })?;
+        match revoked {
+            None => Ok(()),
+            Some(found) => Err(RegistrationError::Unauthorized {
+                message: format!("consent was revoked by {}", found.principal),
+            }),
+        }
     }
 
     /// This service's own address as a provider — the UCAN endpoint its
@@ -1114,20 +1154,6 @@ where
 {
     async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
         self.activate(input).await
-    }
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<S, E, R, V> Provider<Add> for Registration<'_, S, E, R, V>
-where
-    S: Store + ConditionalSync,
-    E: EmailSender + ConditionalSync,
-    R: RevocationChecker + ConditionalSync,
-    V: Vault + ConditionalSync,
-{
-    async fn execute(&self, input: Capability<Add>) -> Result<ConsumerReceipt, RegistrationError> {
-        self.add(input).await
     }
 }
 

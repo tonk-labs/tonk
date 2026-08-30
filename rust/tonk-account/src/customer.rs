@@ -372,6 +372,12 @@ pub enum RegistrationError {
     /// The customer is already active, so enrollment is refused.
     #[error("this customer is already active")]
     CustomerActive,
+    /// The address belongs to another account. One address holds one
+    /// customer — that is what the lookup resolving an email to a
+    /// `did:key` depends on — so this is a refusal the enrolling client
+    /// can act on, not a storage failure.
+    #[error("this email address is registered to another account")]
+    AddressTaken,
     /// The customer enrolled but has not confirmed their email address,
     /// so nothing may be provisioned under them yet. Recoverable by the
     /// customer alone: re-enrolling resends the activation email.
@@ -400,6 +406,7 @@ impl RegistrationError {
             RegistrationError::CustomerActive
             | RegistrationError::CustomerInactive
             | RegistrationError::CustomerSuspended
+            | RegistrationError::AddressTaken
             | RegistrationError::ConsumerProvided => 409,
             RegistrationError::Internal { .. } => 500,
         }

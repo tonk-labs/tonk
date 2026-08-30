@@ -234,7 +234,7 @@ async fn enroll_container_parts(
     customer: &Ed25519Signer,
     email: &str,
     custody: &Custody,
-) -> (Vec<u8>, Option<ipld_core::cid::Cid>) {
+) -> (Vec<u8>, Option<ipld_core::cid::Cid>, ipld_core::cid::Cid) {
     let key = Ed25519Signer::import(&custody.key_seed)
         .await
         .expect("custody signer");
@@ -345,7 +345,11 @@ async fn enroll_container_parts(
     let bytes = Container::new(tokens)
         .to_bytes()
         .expect("container encodes");
-    (bytes, delegation.map(|grant| grant.to_cid()))
+    (
+        bytes,
+        delegation.map(|grant| grant.to_cid()),
+        consent.to_cid(),
+    )
 }
 
 /// A `/customer/resend`, self-issued by the service. The account is an
@@ -1661,7 +1665,7 @@ mod custody {
             ..Default::default()
         };
 
-        let (container, grant) =
+        let (container, grant, _) =
             enroll_container_parts(&customer, "alice@example.com", &custody).await;
         // The exact grant the container carries — a delegation carries a
         // nonce, so a rebuilt one would name a different CID.
@@ -1677,6 +1681,70 @@ mod custody {
             matches!(answer, Err(RegistrationError::Unauthorized { .. })),
             "a revoked proof must refuse the enrollment, got {answer:?}"
         );
+        Ok(())
+    }
+
+    /// A consent whose authority was withdrawn is not consent: the
+    /// delegation is checked against the same revocations the chain is.
+    #[dialog_common::test]
+    async fn it_refuses_a_consent_that_was_revoked() -> anyhow::Result<()> {
+        use tonk_access_service::revocation::index::RevocationIndex as _;
+
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let custody = Custody::default();
+        let (container, _, consent) =
+            enroll_container_parts(&customer, "alice@example.com", &custody).await;
+
+        let key = Ed25519Signer::import(&custody.key_seed).await?;
+        fixture
+            .revocations
+            .0
+            .record(&consent.to_string(), key.did().as_ref())
+            .await?;
+
+        let answer = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(answer, Err(RegistrationError::Unauthorized { .. })),
+            "a revoked consent must refuse the enrollment, got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// One address holds one customer, so a second account cannot claim
+    /// an address the first already registered.
+    #[dialog_common::test]
+    async fn it_refuses_an_address_registered_to_another_account() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let first = Ed25519Signer::generate().await?;
+        let container = enroll_container(&first, &fixture.service.did(), "alice@example.com").await;
+        fixture.registration(&container).handle().await?;
+
+        let second = Ed25519Signer::generate().await?;
+        let container =
+            enroll_container(&second, &fixture.service.did(), "alice@example.com").await;
+        let answer = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(answer, Err(RegistrationError::AddressTaken)),
+            "got {answer:?}"
+        );
+        Ok(())
+    }
+
+    /// The other direction: an account that enrolled once may correct
+    /// the address it named, because the row is keyed on the account.
+    #[dialog_common::test]
+    async fn it_lets_a_registered_account_change_its_address() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let container =
+            enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+        fixture.registration(&container).handle().await?;
+
+        let container =
+            enroll_container(&customer, &fixture.service.did(), "alice2@example.com").await;
+        let answer = fixture.registration(&container).handle().await;
+        assert!(answer.is_ok(), "got {answer:?}");
         Ok(())
     }
 
