@@ -8,7 +8,7 @@
 //! `<tonk-host>` listens for `navigate` messages and assigns
 //! `window.location`. Used by the join handler (redirect into the
 //! joined space) and the create handler (drop the creator into the
-//! fresh spot).
+//! fresh space).
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_common::log;

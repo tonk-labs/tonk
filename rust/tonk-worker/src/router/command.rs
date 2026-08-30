@@ -115,7 +115,7 @@ impl CommandEnv {
 /// ([`tonk_schema::command::EnableSync`]), not a second handler on
 /// `space/enable-sync`: that trigger attribute belongs to `CreateSpace`, and
 /// `CreateSpaceHandler` always mints a fresh identity first, so anything
-/// registered against it would attach the remote to a brand-new spot rather
+/// registered against it would attach the remote to a brand-new space rather
 /// than the existing one the FAB names.
 ///
 /// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler

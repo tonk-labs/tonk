@@ -1,7 +1,7 @@
 //! Setting the host page's tab title on a guest's behalf.
 //!
 //! `document.title` exists only on the top page. The chrome that knows
-//! a spot's name renders inside a sealed guest, which cannot reach the
+//! a space's name renders inside a sealed guest, which cannot reach the
 //! top document, so it posts a `title` message over the portal bridge;
 //! the bridge dispatcher runs in the parent and calls this.
 //!

@@ -268,11 +268,11 @@ async fn it_renders_the_name_from_a_delivered_frame() {
         "chip renders the placeholder before any frame arrives"
     );
 
-    deliver(&el, "reset", &reset_payload("Real Spot"));
+    deliver(&el, "reset", &reset_payload("Real Space"));
 
     assert_eq!(
         editable.text_content().as_deref(),
-        Some("Real Spot"),
+        Some("Real Space"),
         "a delivered reset frame must be consumed and rendered, not ignored"
     );
 

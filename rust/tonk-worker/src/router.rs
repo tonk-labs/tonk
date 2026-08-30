@@ -862,7 +862,7 @@ pub mod tests {
 
     /// The stable code the page routes the account gate off, for both shapes
     /// of "not signed in": no root at all, and a root with no account behind
-    /// it. Neither may create a spot — one that exists without an account is
+    /// it. Neither may create a space — one that exists without an account is
     /// local-only and never backed up, and nothing later would say so.
     /// A space creates before any account exists, delegated to the most
     /// durable key the profile holds (plan/Account model.md §2): the
@@ -945,7 +945,7 @@ pub mod tests {
         );
     }
 
-    /// An attached account is the whole precondition — a spot creates the
+    /// An attached account is the whole precondition — a space creates the
     /// moment one exists.
     ///
     /// Through `PUT /api/repository/{label}` rather than `POST /api/spaces`,
@@ -1453,7 +1453,7 @@ pub mod tests {
     }
 
     /// The FAB dispatches enable-sync through the profile branch even though
-    /// its result is written to the named spot. A standing spot subscription
+    /// its result is written to the named space. A standing space subscription
     /// must receive that link when dispatch drains the command's writes;
     /// otherwise the share control has nothing to settle its clipboard promise
     /// with and times out.
@@ -1477,7 +1477,7 @@ pub mod tests {
         assert_eq!(
             snapshot["conclusions"].as_array().map(Vec::len),
             Some(0),
-            "local-only spot starts without a credential link",
+            "local-only space starts without a credential link",
         );
 
         let command = serde_json::json!({
