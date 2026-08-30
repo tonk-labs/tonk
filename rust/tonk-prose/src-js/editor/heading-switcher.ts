@@ -211,15 +211,34 @@ export function headingSwitcher(options: SwitcherOptions): Plugin[] {
   const driver = new Plugin({
     key: new PluginKey("headingSwitcher"),
     view: (view) => {
-      // Park once, on mount.
-      const first = view.state.doc.firstChild;
-      if (first && first.type === schema.nodes.heading) {
+      // Park once, on mount — but NOT synchronously.
+      //
+      // `view()` runs inside `new EditorView`, before the constructor has
+      // finished. Dispatching there re-enters `dispatchTransaction`, whose
+      // closure refers to the `view` binding still being initialized:
+      // "ReferenceError: Cannot access 'i' before initialization", and the
+      // editor never mounts. A microtask lands after the constructor
+      // returns, when dispatching is safe.
+      let alive = true;
+      queueMicrotask(() => {
+        // The view may be gone by now — a mount that is torn down in the
+        // same tick (a re-render, a test) would otherwise dispatch into a
+        // destroyed view and reject.
+        if (!alive || !view.dom.isConnected) return;
+        const first = view.state.doc.firstChild;
+        if (!first || first.type !== schema.nodes.heading) return;
+        // Only an untouched starting document: if the author already typed
+        // or clicked, their caret is theirs.
+        if (first.textContent.trim() !== "#") return;
         const end = Math.min(1 + first.content.size, view.state.doc.content.size);
         view.dispatch(
           view.state.tr.setSelection(TextSelection.create(view.state.doc, end)),
         );
-      }
+      });
       return {
+        destroy() {
+          alive = false;
+        },
         update(view: EditorView, previous: EditorState) {
           const now = inHeading(view.state);
           const before = inHeading(previous);
