@@ -18,9 +18,9 @@ fn binary() -> std::path::PathBuf {
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into())
 }
 
-fn spawn_link(home: &std::path::Path) -> Child {
-    Command::new(binary())
-        .args(["account", "login", "--no-open"])
+fn isolated_command(home: &std::path::Path) -> Command {
+    let mut command = Command::new(binary());
+    command
         .current_dir(home)
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join("data"))
@@ -32,7 +32,13 @@ fn spawn_link(home: &std::path::Path) -> Child {
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env_remove("TONK_TELEMETRY")
         .env_remove("TONK_SPACE")
-        .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT")
+        .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");
+    command
+}
+
+fn spawn_link(home: &std::path::Path) -> Child {
+    isolated_command(home)
+        .args(["account", "login", "--no-open"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -146,4 +152,175 @@ fn account_link_starts_fresh_after_an_interrupt() {
         first_url, second_url,
         "each attempt binds its own loopback callback"
     );
+}
+
+/// Logout is complete before provider cleanup is attempted. A different CLI
+/// process must therefore be able to retry the signed intent and retire it
+/// without reconstructing authority that logout deliberately cleared.
+#[test]
+fn offline_logout_cleanup_survives_a_process_restart() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+    use dialog_capability::Subject;
+    use dialog_effects::storage::Directory;
+    use dialog_operator::{DeriveOperator as _, Profile};
+    use dialog_storage::provider::storage::{NativeSpace, Storage};
+
+    #[derive(Clone)]
+    struct DetachState {
+        online: Arc<AtomicBool>,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    async fn detach(
+        State(state): State<DetachState>,
+    ) -> Result<Json<serde_json::Value>, StatusCode> {
+        state.attempts.fetch_add(1, Ordering::SeqCst);
+        if !state.online.load(Ordering::SeqCst) {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        Ok(Json(serde_json::json!({ "outcome": "detached" })))
+    }
+
+    fn profile_base(home: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            home.join("Library/Application Support/dialog")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            home.join("data/dialog")
+        }
+    }
+
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().expect("temporary profile");
+        let home = temp.path();
+        let store = tonk_cli::space::SpaceStore::at(home.join("spaces"));
+        std::fs::create_dir_all(store.account_dir()).expect("account state directory");
+        let sentinel = store.root().join("local-space-sentinel");
+        std::fs::write(&sentinel, b"local work").expect("local-space sentinel");
+
+        let online = Arc::new(AtomicBool::new(false));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("detach listener");
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/devices/detach", post(detach))
+            .with_state(DetachState {
+                online: online.clone(),
+                attempts: attempts.clone(),
+            });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("detach server");
+        });
+
+        let storage = Storage::<NativeSpace>::default();
+        let profile = Profile::open(tonk_cli::site::PROFILE_NAME)
+            .at(Directory::At(
+                profile_base(home).to_string_lossy().into_owned(),
+            ))
+            .perform(&storage)
+            .await
+            .expect("isolated CLI profile");
+        let account_dir = store
+            .account_dir()
+            .canonicalize()
+            .expect("canonical account directory");
+        let operator = profile
+            .derive(b"tonk/account-state/v1")
+            .allow(Subject::any())
+            .base(Directory::At(account_dir.to_string_lossy().into_owned()))
+            .build(storage)
+            .await
+            .expect("account operator");
+        let root = dialog_credentials::Ed25519Signer::generate()
+            .await
+            .expect("account root");
+        let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did())
+            .await
+            .expect("account grant");
+        let descriptor =
+            tonk_account::AccountRepositoryDescriptorV1::sign(&root, "http://127.0.0.1:9/ucan/")
+                .await
+                .expect("account descriptor");
+        let attached_at = 1;
+        tonk_cli::account::attach_exact_for_process_test(
+            &profile,
+            &operator,
+            &store,
+            &endpoint,
+            "fixture-credential",
+            link,
+            descriptor.bytes(),
+            "process-restart-generation",
+            attached_at,
+        )
+        .await
+        .expect("activate exact account generation");
+        drop(operator);
+        drop(profile);
+
+        let logout = isolated_command(home)
+            .args(["account", "logout"])
+            .output()
+            .expect("run offline logout");
+        assert!(
+            logout.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&logout.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&logout.stdout);
+        let stderr = String::from_utf8_lossy(&logout.stderr);
+        assert!(
+            stdout.contains("local identity, spaces, and edits remain"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stderr.contains("Provider cleanup is queued"),
+            "stderr: {stderr}"
+        );
+        assert!(stderr.contains("tonk account status"), "stderr: {stderr}");
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"local work");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        // A fresh process reaches the same profile/store after the provider
+        // returns. Its status boundary drains the durable outbox.
+        online.store(true, Ordering::SeqCst);
+        let status = isolated_command(home)
+            .args(["account", "status"])
+            .output()
+            .expect("run restarted status");
+        assert!(
+            status.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        let state_file = std::fs::read_dir(store.account_dir())
+            .expect("account state entries")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(tonk_cli::account::ACCOUNT_SESSION_SITE)
+                            && name.ends_with(".json")
+                    })
+            })
+            .expect("account-session state file");
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state_file).unwrap()).unwrap();
+        assert_eq!(state["version"], 2);
+        assert_eq!(state["pending_detaches"], serde_json::json!([]));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"local work");
+        server.abort();
+    });
 }

@@ -4,7 +4,9 @@ use tonk_identity::revocation::{VerifyError, verify};
 
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
-use crate::store::{Account, DetachStoreOutcome, Device, DeviceStatus, Store, StoreError};
+use crate::store::{
+    Account, DetachStoreOutcome, Device, DeviceStatus, RegisteredDevice, Store, StoreError,
+};
 
 /// A device row as surfaced to API callers.
 pub struct DeviceView {
@@ -53,16 +55,6 @@ pub async fn list_devices<S: Store>(
         .collect())
 }
 
-/// Reuse the active generation after a root-authorized browser re-login.
-fn reuse_linked_device(existing: Device, account: &Account) -> Result<String, CeremonyError> {
-    if existing.account_id != account.id {
-        return Err(CeremonyError::Conflict(
-            "this device is already active on another account".to_string(),
-        ));
-    }
-    Ok(existing.attachment_id)
-}
-
 /// Generate a random 32-byte lowercase hex attachment identifier.
 pub fn random_attachment_id() -> String {
     hex::encode(rand::random::<[u8; 32]>())
@@ -76,25 +68,24 @@ async fn insert_device_registration<S: Store>(
     delegation_cid: String,
     delegation_hex: String,
     now: u64,
-) -> Result<String, StoreError> {
+) -> Result<RegisteredDevice, StoreError> {
     let attachment_id = random_attachment_id();
     store
-        .insert_device(&Device {
+        .register_or_recover_device(&Device {
             id: 0,
             account_id: account.id,
             device_did: device_did.to_string(),
-            attachment_id: attachment_id.clone(),
+            attachment_id,
             delegation_cid,
             delegation_hex,
             name: device_name.to_string(),
             status: DeviceStatus::Active,
             created_at: now,
         })
-        .await?;
-    Ok(attachment_id)
+        .await
 }
 
-/// Register a fresh globally active attachment generation.
+/// Register this device or recover its same-account active generation.
 pub async fn register_device<S: Store>(
     store: &S,
     account: &Account,
@@ -102,7 +93,7 @@ pub async fn register_device<S: Store>(
     device_name: &str,
     delegation_hex: &str,
     now: u64,
-) -> Result<String, CeremonyError> {
+) -> Result<RegisteredDevice, CeremonyError> {
     let delegation_cid =
         check_device_delegation(delegation_hex, &account.root_did, device_did).await?;
     insert_device_registration(
@@ -118,6 +109,26 @@ pub async fn register_device<S: Store>(
     .map_err(Into::into)
 }
 
+/// Return the exact active generation already authenticated by [`authorize`].
+///
+/// The caller must reach this function through device UCAN authorization: the
+/// stored row alone is not recovery authority. Legacy rows without retained
+/// grant bytes cannot be reconstructed from their CID and are deliberately
+/// refused until a root-authorized registration upgrades them.
+pub fn recover_device_attachment(device: &Device) -> Result<RegisteredDevice, CeremonyError> {
+    if device.status != DeviceStatus::Active || device.delegation_hex.is_empty() {
+        return Err(CeremonyError::Conflict(
+            "the active device generation cannot be recovered from this grant".into(),
+        ));
+    }
+    Ok(RegisteredDevice {
+        attachment_id: device.attachment_id.clone(),
+        delegation_cid: device.delegation_cid.clone(),
+        delegation_hex: device.delegation_hex.clone(),
+        reused: true,
+    })
+}
+
 /// Link a browser after a root-authorized passkey ceremony.
 ///
 /// Browser sign-out is intentionally local-only. If the same account root
@@ -131,13 +142,10 @@ pub async fn link_device<S: Store>(
     device_name: &str,
     delegation_hex: &str,
     now: u64,
-) -> Result<String, CeremonyError> {
+) -> Result<RegisteredDevice, CeremonyError> {
     let delegation_cid =
         check_device_delegation(delegation_hex, &account.root_did, device_did).await?;
-    if let Some(existing) = store.active_device_by_did(device_did).await? {
-        return reuse_linked_device(existing, account);
-    }
-    match insert_device_registration(
+    insert_device_registration(
         store,
         account,
         device_did,
@@ -147,18 +155,7 @@ pub async fn link_device<S: Store>(
         now,
     )
     .await
-    {
-        Ok(attachment_id) => Ok(attachment_id),
-        // Close the check-then-insert race for concurrent re-login requests.
-        Err(StoreError::Conflict(detail)) => {
-            if let Some(existing) = store.active_device_by_did(device_did).await? {
-                reuse_linked_device(existing, account)
-            } else {
-                Err(StoreError::Conflict(detail).into())
-            }
-        }
-        Err(error) => Err(error.into()),
-    }
+    .map_err(Into::into)
 }
 
 /// Terminal result of processing a signed generation-bound detach intent.
@@ -437,7 +434,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_detaches_only_the_exact_signed_generation_idempotently() {
         let store = SqliteStore::in_memory().unwrap();
-        let (mut account, device, _, _) = fixture().await;
+        let (mut account, device, root_signer, _) = fixture().await;
         account.id = store
             .create_account(
                 &account.email,
@@ -476,12 +473,36 @@ mod tests {
         );
         assert!(list_devices(&store, &account).await.unwrap().is_empty());
 
-        let mut forged = intent;
+        let mut forged = intent.clone();
         forged.signature[0] ^= 1;
         assert!(matches!(
             detach_device(&store, &forged).await,
             Err(CeremonyError::Forbidden(_))
         ));
+
+        let device_did = device.device_did.parse().unwrap();
+        let replacement =
+            tonk_identity::delegation::mint_device_delegation(root_signer, &device_did)
+                .await
+                .unwrap();
+        let replacement = register_device(
+            &store,
+            &account,
+            &device.device_did,
+            "replacement",
+            &hex::encode(replacement.to_bytes().unwrap()),
+            11,
+        )
+        .await
+        .unwrap();
+        assert_ne!(replacement.attachment_id, device.attachment_id);
+        assert_eq!(
+            detach_device(&store, &intent).await.unwrap(),
+            DetachOutcome::Superseded
+        );
+        let listed = list_devices(&store, &account).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].attachment_id, replacement.attachment_id);
     }
 
     #[dialog_common::test]
@@ -512,6 +533,172 @@ mod tests {
         let listed = list_devices(&store, &account).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].delegation_cid, device.delegation_cid);
+    }
+
+    #[dialog_common::test]
+    async fn it_recovers_the_canonical_generation_when_registration_is_retried() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (mut account, device, root, first_grant) = fixture().await;
+        account.id = store
+            .create_account(
+                &account.email,
+                &account.root_did,
+                &account.credential_id,
+                account.created_at,
+            )
+            .await
+            .unwrap();
+        let first = register_device(
+            &store,
+            &account,
+            &device.device_did,
+            &device.name,
+            &hex::encode(first_grant.to_bytes().unwrap()),
+            device.created_at,
+        )
+        .await
+        .unwrap();
+
+        // A provider response can be lost after the insert commits. Retrying
+        // the ceremony proposes a fresh nonce-bearing grant, but must return
+        // the exact generation already installed by the first request.
+        let device_did = device.device_did.parse().unwrap();
+        let retry_grant = tonk_identity::delegation::mint_device_delegation(root, &device_did)
+            .await
+            .unwrap();
+        let recovered = register_device(
+            &store,
+            &account,
+            &device.device_did,
+            &device.name,
+            &hex::encode(retry_grant.to_bytes().unwrap()),
+            device.created_at + 1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered.attachment_id, first.attachment_id);
+        assert_eq!(recovered.delegation_cid, first.delegation_cid);
+        assert_eq!(recovered.delegation_hex, first.delegation_hex);
+        assert!(recovered.reused);
+        let rows = store.devices(account.id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].delegation_hex,
+            hex::encode(first_grant.to_bytes().unwrap())
+        );
+    }
+
+    #[dialog_common::test]
+    async fn concurrent_same_account_registrations_converge_on_one_generation() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (mut account, device, root, first_grant) = fixture().await;
+        account.id = store
+            .create_account(
+                &account.email,
+                &account.root_did,
+                &account.credential_id,
+                account.created_at,
+            )
+            .await
+            .unwrap();
+        let device_did = device.device_did.parse().unwrap();
+        let second_grant = tonk_identity::delegation::mint_device_delegation(root, &device_did)
+            .await
+            .unwrap();
+        let first_hex = hex::encode(first_grant.to_bytes().unwrap());
+        let second_hex = hex::encode(second_grant.to_bytes().unwrap());
+
+        let (first, second) = tokio::join!(
+            register_device(
+                &store,
+                &account,
+                &device.device_did,
+                &device.name,
+                &first_hex,
+                10,
+            ),
+            register_device(
+                &store,
+                &account,
+                &device.device_did,
+                &device.name,
+                &second_hex,
+                11,
+            )
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.attachment_id, second.attachment_id);
+        assert_eq!(first.delegation_cid, second.delegation_cid);
+        assert_eq!(first.delegation_hex, second.delegation_hex);
+        assert_eq!(store.devices(account.id).await.unwrap().len(), 1);
+    }
+
+    #[dialog_common::test]
+    async fn registration_never_reuses_or_changes_another_accounts_active_device() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (mut first_account, device, _, first_grant) = fixture().await;
+        first_account.id = store
+            .create_account(
+                &first_account.email,
+                &first_account.root_did,
+                &first_account.credential_id,
+                first_account.created_at,
+            )
+            .await
+            .unwrap();
+        let first = register_device(
+            &store,
+            &first_account,
+            &device.device_did,
+            &device.name,
+            &hex::encode(first_grant.to_bytes().unwrap()),
+            10,
+        )
+        .await
+        .unwrap();
+
+        let other_root = Ed25519Signer::import(&[23u8; 32]).await.unwrap();
+        let mut other = Account {
+            id: 0,
+            email: "other@x.com".into(),
+            root_did: other_root.did().to_string(),
+            credential_id: "other-credential".into(),
+            repository_descriptor: None,
+            passkey_created_at: None,
+            passkey_created_on: None,
+            created_at: 11,
+        };
+        other.id = store
+            .create_account(&other.email, &other.root_did, &other.credential_id, 11)
+            .await
+            .unwrap();
+        let did = device.device_did.parse().unwrap();
+        let other_grant = tonk_identity::delegation::mint_device_delegation(other_root, &did)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            register_device(
+                &store,
+                &other,
+                &device.device_did,
+                &device.name,
+                &hex::encode(other_grant.to_bytes().unwrap()),
+                12,
+            )
+            .await,
+            Err(CeremonyError::Conflict(_))
+        ));
+        let active = store
+            .active_device_by_did(&device.device_did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.account_id, first_account.id);
+        assert_eq!(active.attachment_id, first.attachment_id);
+        assert_eq!(store.devices(other.id).await.unwrap().len(), 0);
     }
 
     /// Browser sign-out is local-only, so signing back in with the same
@@ -562,7 +749,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(second, first, "the same active generation is recovered");
+        assert_eq!(
+            second.attachment_id, first.attachment_id,
+            "the same active generation is recovered"
+        );
         let listed = store.devices(account.id).await.unwrap();
         assert_eq!(listed.len(), 1, "re-login adds no device history");
     }

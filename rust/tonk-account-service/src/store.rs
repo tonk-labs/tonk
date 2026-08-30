@@ -78,6 +78,19 @@ pub struct Device {
     pub created_at: u64,
 }
 
+/// Canonical active attachment returned by an idempotent registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredDevice {
+    /// Random identifier for this exact attachment generation.
+    pub attachment_id: String,
+    /// CID of the canonical root to device delegation.
+    pub delegation_cid: String,
+    /// Exact canonical public delegation path bytes, hex-encoded.
+    pub delegation_hex: String,
+    /// Whether an already-active generation won the registration race.
+    pub reused: bool,
+}
+
 /// A device to register as part of atomically creating an account, before
 /// the owning account's row id is known. Used by
 /// [`Store::create_account_with_device`]; the device is always registered
@@ -213,6 +226,14 @@ pub trait Store {
     /// if the device DID is already registered under that account.
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError>;
 
+    /// Atomically install a fresh active device generation, or return the
+    /// canonical generation already active for the same account and DID.
+    /// A generation active under another account is never reused.
+    async fn register_or_recover_device(
+        &self,
+        device: &Device,
+    ) -> Result<RegisteredDevice, StoreError>;
+
     /// List all devices registered under an account.
     async fn devices(&self, account_id: i64) -> Result<Vec<Device>, StoreError>;
 
@@ -282,6 +303,23 @@ pub const SELECT_ACCOUNT_BY_EMAIL: &str = "SELECT id, email, root_did, credentia
 /// SQL: register a device under an account.
 pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+
+/// SQL: atomically install or recover the one globally active generation for
+/// a device DID. Same-account retries return the stored winner. Legacy active
+/// rows without retained grant bytes are upgraded in place from the validated
+/// candidate; detached and revoked history is never rewritten. A cross-account
+/// conflict produces no row and is mapped to a privacy-safe conflict.
+pub const REGISTER_OR_RECOVER_DEVICE: &str = "INSERT INTO devices \
+    (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7) \
+    ON CONFLICT(device_did) WHERE status = 'active' DO UPDATE SET \
+      attachment_id = CASE WHEN devices.account_id = excluded.account_id AND COALESCE(devices.delegation_hex, '') = '' THEN excluded.attachment_id ELSE devices.attachment_id END, \
+      delegation_cid = CASE WHEN devices.account_id = excluded.account_id AND COALESCE(devices.delegation_hex, '') = '' THEN excluded.delegation_cid ELSE devices.delegation_cid END, \
+      delegation_hex = CASE WHEN devices.account_id = excluded.account_id AND COALESCE(devices.delegation_hex, '') = '' THEN excluded.delegation_hex ELSE devices.delegation_hex END, \
+      name = CASE WHEN devices.account_id = excluded.account_id AND COALESCE(devices.delegation_hex, '') = '' THEN excluded.name ELSE devices.name END, \
+      created_at = CASE WHEN devices.account_id = excluded.account_id AND COALESCE(devices.delegation_hex, '') = '' THEN excluded.created_at ELSE devices.created_at END \
+    WHERE devices.account_id = excluded.account_id \
+    RETURNING attachment_id, delegation_cid, delegation_hex";
 
 /// SQL: register a device under the account just created by a preceding
 /// `INSERT_ACCOUNT` statement in the same batch/transaction on this

@@ -4966,8 +4966,13 @@ mod tests {
         // provider needed for a crash-safe CLI activation.
         let decoded = base64::engine::general_purpose::STANDARD.decode(&value)?;
         let payload: serde_json::Value = serde_json::from_slice(&decoded)?;
+        assert_eq!(
+            payload["schemaVersion"], "tonk.cli-authorization.v2",
+            "the callback must name the canonical generation contract: {payload}"
+        );
         for field in [
             "delegationHex",
+            "delegationCid",
             "descriptorHex",
             "attachmentId",
             "serviceUrl",

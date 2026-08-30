@@ -46,6 +46,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/devices/list", handlers::devices::handle_options)
         .post_async("/devices/register", handlers::devices::handle_register)
         .options_async("/devices/register", handlers::devices::handle_options)
+        .post_async("/devices/attachment", handlers::devices::handle_attachment)
+        .options_async("/devices/attachment", handlers::devices::handle_options)
         .post_async("/devices/link", handlers::devices::handle_link)
         .options_async("/devices/link", handlers::devices::handle_options)
         .post_async("/devices/detach", handlers::devices::handle_detach)

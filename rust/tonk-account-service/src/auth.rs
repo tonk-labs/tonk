@@ -427,6 +427,58 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn attachment_recovery_requires_the_exact_active_grant_generation() {
+        let command = vec!["account".into(), "device".into(), "attachment".into()];
+
+        let wrong_cid = SqliteStore::in_memory().unwrap();
+        let (root_did, device_did, bytes) = container(command.clone(), BTreeMap::new()).await;
+        seed_device_with_cid(
+            &wrong_cid,
+            &root_did,
+            &device_did,
+            DeviceStatus::Active,
+            "different-generation".into(),
+        )
+        .await;
+        assert!(matches!(
+            authorize(&wrong_cid, &bytes, &["account", "device", "attachment"]).await,
+            Err(CeremonyError::Forbidden(_))
+        ));
+
+        let detached = SqliteStore::in_memory().unwrap();
+        let (root_did, device_did, bytes) = container(command.clone(), BTreeMap::new()).await;
+        let account_id = seed_device_with_cid(
+            &detached,
+            &root_did,
+            &device_did,
+            DeviceStatus::Detached,
+            invocation_proof_cid(&bytes),
+        )
+        .await;
+        assert!(account_id > 0);
+        assert!(matches!(
+            authorize(&detached, &bytes, &["account", "device", "attachment"]).await,
+            Err(CeremonyError::Forbidden(_))
+        ));
+
+        let unknown_device = SqliteStore::in_memory().unwrap();
+        let (root_did, _, bytes) = container(command, BTreeMap::new()).await;
+        unknown_device
+            .create_account("unknown-device@x.com", &root_did, "cred", 0)
+            .await
+            .unwrap();
+        assert!(matches!(
+            authorize(
+                &unknown_device,
+                &bytes,
+                &["account", "device", "attachment"]
+            )
+            .await,
+            Err(CeremonyError::Forbidden(_))
+        ));
+    }
+
+    #[dialog_common::test]
     async fn it_rejects_an_unknown_root() {
         let store = SqliteStore::in_memory().unwrap();
         let (_, _, bytes) = container(

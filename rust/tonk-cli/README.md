@@ -218,11 +218,17 @@ used, its local bytes). It does not remove signed account directory facts,
 revoke memberships or invitations, deprovision hosting, delete remote objects,
 or erase a peer's replica.
 
-Interrupting `tonk account login` leaves the handoff recorded so the next run
-resumes it. A link token is one-time, so a service that refuses to reissue it
-has ended that handoff and not this profile's ability to link: the next run
-takes the completed grant if the browser approved in the meantime, and
-otherwise prints a fresh URL rather than re-offering a spent token.
+Interrupting `tonk account login` before the callback arrives records no local
+authority. The next run binds a fresh callback and prints a fresh URL. If the
+browser registered the device but its callback response was lost, approving
+again for the same account/device converges on the provider's one active
+generation instead of creating an invisible duplicate.
+
+New approval pages label the callback `tonk.cli-authorization.v2` and carry the
+provider's canonical generation. For an unversioned callback from an older
+page, the CLI treats every attachment field as a hint and asks the provider for
+the exact generation authorized by the callback grant before writing locally.
+An omitted `serviceUrl` still uses the command's configured provider.
 
 `tonk account logout` commits locally first, so it works offline. Existing
 spaces remain readable and editable, while fetch, pull, push, account sync, and
@@ -230,15 +236,19 @@ other access-service requests are denied before HTTP. Logout queues a
 signed, generation-specific detach intent; the device list may remain stale
 until a later account operation reaches the provider and flushes that outbox.
 
-A detach intent is signed once and never edited, so a client-error response
-is a permanent verdict on it: an unknown attachment, a payload the service
-disagrees with, or a service with no detach route can never accept that
-intent, and the CLI drops it rather than retrying forever. Timeouts, rate
-limits, and server errors are retried instead, and while one is still
-queued for a provider, linking to that same provider is refused because its
-one-active-generation rule would reject the activation. `tonk account login
---abandon-detach` drops those undelivered intents and links anyway; the
-earlier device can stay listed until `tonk account revoke` removes it.
+A detach intent is signed once and never edited. `detached`,
+`alreadyDetached`, `superseded`, and `revoked` retire it; timeouts, rate limits,
+server errors, and malformed/refused receipts leave it durable for inspection
+and retry. Old cleanup never blocks login. If the provider reuses that exact
+generation during same-account recovery, the CLI will not deliver its stale
+detach while the generation is locally active; a later logout retries it.
+While browser approval is in flight, a process-held handoff lock also defers
+cleanup from concurrent account commands so an old detach cannot race the
+provider registration before its callback becomes locally active. The lock is
+retained through the command's account-registry and custody settlement, and is
+released automatically if the waiting process exits.
+`tonk account status` and later account commands retry queued cleanup within a
+bounded deadline.
 
 Detach is not revocation. It hides the exact attachment and permits a later
 fresh handoff without publishing an immutable revocation. `tonk account revoke

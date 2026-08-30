@@ -9,10 +9,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{
     Account, DELETE_ACCOUNT, DELETE_ACCOUNT_DEVICES, DetachStoreOutcome, Device, DeviceStatus,
     ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE,
-    NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
-    SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_DEVICE_FOR_ACCOUNT,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
-    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID,
+    NewAccount, NewDevice, REGISTER_OR_RECOVER_DEVICE, RegisteredDevice, SELECT_ACCOUNT_BY_EMAIL,
+    SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT,
+    SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT, SELECT_REPOSITORY_DESCRIPTOR, Store,
+    StoreError, UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -278,6 +278,38 @@ impl Store for SqliteStore {
         Ok(())
     }
 
+    async fn register_or_recover_device(
+        &self,
+        device: &Device,
+    ) -> Result<RegisteredDevice, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let row: Option<(String, String, String)> = conn
+            .query_row(
+                REGISTER_OR_RECOVER_DEVICE,
+                params![
+                    device.account_id,
+                    device.device_did,
+                    device.attachment_id,
+                    device.delegation_cid,
+                    device.delegation_hex,
+                    device.name,
+                    device.created_at as i64,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(map_err)?;
+        let (attachment_id, delegation_cid, delegation_hex) = row.ok_or_else(|| {
+            StoreError::Conflict("this device is already active on another account".into())
+        })?;
+        Ok(RegisteredDevice {
+            reused: attachment_id != device.attachment_id,
+            attachment_id,
+            delegation_cid,
+            delegation_hex,
+        })
+    }
+
     async fn devices(&self, account_id: i64) -> Result<Vec<Device>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(SELECT_DEVICES_BY_ACCOUNT).map_err(map_err)?;
@@ -368,7 +400,21 @@ impl Store for SqliteStore {
                     .map_err(map_err)?;
                     DetachStoreOutcome::Detached
                 }
-                DeviceStatus::Detached => DetachStoreOutcome::AlreadyDetached,
+                DeviceStatus::Detached => {
+                    let active: Option<DeviceRow> = tx
+                        .query_row(
+                            SELECT_ACTIVE_DEVICE_BY_DID,
+                            params![device.device_did],
+                            device_row,
+                        )
+                        .optional()
+                        .map_err(map_err)?;
+                    if active.is_some_and(|row| row.3 != attachment_id) {
+                        DetachStoreOutcome::Superseded
+                    } else {
+                        DetachStoreOutcome::AlreadyDetached
+                    }
+                }
                 DeviceStatus::Revoked => DetachStoreOutcome::Revoked,
             };
             tx.commit().map_err(map_err)?;

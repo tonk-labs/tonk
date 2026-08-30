@@ -3,7 +3,7 @@ window.STORYBOOK_DATA = {
   "bugs": [
     {
       "area": "CLI account login",
-      "decision": "finish recovery contract",
+      "decision": "fixed",
       "id": "B-01",
       "severity": "high",
       "title": "CLI login recovery does not span every account boundary"
@@ -24,7 +24,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "area": "Browser account login",
-      "decision": "generation-binding contract fix",
+      "decision": "fixed",
       "id": "B-06",
       "severity": "high",
       "title": "Same-device browser relink stores a grant the service did not activate"
@@ -237,11 +237,11 @@ window.STORYBOOK_DATA = {
     },
     {
       "evidence": "Partial unit/integration coverage.",
-      "gaps": "Process output/exit/JSON for every state, offline guarantee, unsupported version/corruption.",
+      "gaps": "Process output/exit/JSON for every state, bounded optional-network behavior, unsupported version/corruption.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C01",
       "title": "Run bare tonk account or account status.",
-      "variants": "Root missing, unregistered, unconfigured, unhydrated, ready, malformed state."
+      "variants": "Root missing, unregistered, unconfigured, unhydrated, ready, malformed state; offline with/without queued cleanup."
     },
     {
       "evidence": "Loopback bridge contract tests, whole happy hybrid flows, and integration coverage for repeatable created/legacy space rotation.",
@@ -1528,8 +1528,8 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "CLI status reports every local state without remote dependency (Resolve).",
-      "device": "cli + corrupt",
+      "claim": "CLI status preserves every local state when optional remote work is unavailable (Resolve).",
+      "device": "cli + corrupt + offline",
       "file": "verification/accounts.md",
       "id": "LIFE-22",
       "priority": "P1",
@@ -1600,7 +1600,7 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Crash after browser registration but before callback receipt reconciles one generation (Edge cases, suspected B-01).",
+      "claim": "Crash after browser registration but before callback receipt reconciles one generation (Edge cases).",
       "device": "hybrid + restart",
       "file": "verification/accounts.md",
       "id": "HANDOFF-08",
@@ -1685,6 +1685,54 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "HANDOFF-18",
       "priority": "P2",
+      "result": "—"
+    },
+    {
+      "claim": "A discarded provider registration response converges on one canonical generation (Cross a boundary).",
+      "device": "hybrid + fault + restart",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-19",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Every unversioned attachment shape is recovered only by exact grant authority (Remain in flight).",
+      "device": "hybrid + legacy-worker",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-20",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Terminating after provider registration does not create an invisible duplicate (Settle).",
+      "device": "hybrid + forced-exit",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-21",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Offline logout durably queues exact cleanup while preserving local work (Local durability).",
+      "device": "cli + offline + restart",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-22",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Same-device convergence never crosses account roots (Cross a boundary).",
+      "device": "two-account + fault",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-23",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Queued cleanup and outer registry writes cannot race browser adoption or command settlement (Local durability).",
+      "device": "cli + concurrency",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-24",
+      "priority": "P1",
       "result": "—"
     },
     {
@@ -2237,7 +2285,7 @@ window.STORYBOOK_DATA = {
     "fail": 0,
     "other": 0,
     "pass": 1,
-    "unrun": 114
+    "unrun": 120
   },
   "visualCommit": "49a873a23"
 };

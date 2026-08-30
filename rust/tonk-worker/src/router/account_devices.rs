@@ -3,16 +3,17 @@
 //! A device IS its `account -> profile` delegation. The chain is
 //! retained into profile main at the moment it is minted, a
 //! [`tonk_schema::DeviceLink`] fact carries the label dialog does not,
-//! and the branch every device syncs doubles as the registry. Only the
-//! account summary still proxies the account service.
+//! and the branch every device syncs doubles as the display registry. The
+//! account service still owns the one active provider attachment generation.
 
 use std::collections::BTreeMap;
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::DelegationChain;
+use dialog_ucan_core::promise::Promised;
 use dialog_varsig::Did;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;
@@ -127,6 +128,17 @@ pub struct RegisterDeviceRequest {
     pub delegation_hex: String,
 }
 
+/// Canonical attachment generation chosen by the account service.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderDeviceRegistration {
+    schema_version: String,
+    attachment_id: String,
+    delegation_cid: String,
+    delegation_hex: String,
+    reused: bool,
+}
+
 /// Record a freshly authorized device in the account space itself.
 ///
 /// The grant's chain is retained into profile main — the branch every
@@ -138,10 +150,10 @@ pub struct RegisterDeviceRequest {
 ///
 /// The push is what makes registration visible before the grant is even
 /// delivered: the waiting device's first account pull brings the row
-/// down with the authority it describes. A profile with no provider keeps
-/// the row local. Otherwise, if the one-shot push races the worker's ordinary
-/// account sweep, finish through that serialized sweep before delivering the
-/// grant.
+/// down with the authority it describes. Registration requires the linked
+/// provider because its canonical active generation is what the callback must
+/// deliver. If the one-shot push races the worker's ordinary account sweep,
+/// finish through that serialized sweep before delivering the grant.
 ///
 /// [`DeviceLink`]: tonk_schema::DeviceLink
 #[wasm_compat]
@@ -153,19 +165,78 @@ pub async fn register(
     let bytes = hex::decode(&request.delegation_hex).map_err(|error| {
         TonkWorkerError::Conflict(format!("device delegation is not valid hex: {error}"))
     })?;
-    let chain = DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
+    let proposed = DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
         TonkWorkerError::Conflict(format!(
             "device delegation is not a delegation container: {error:?}"
         ))
     })?;
-    if chain.audience().to_string() != request.did {
+    if proposed.audience().to_string() != request.did {
         return Err(TonkWorkerError::Conflict(format!(
             "the delegation is addressed to {}, not to {}",
-            chain.audience(),
+            proposed.audience(),
             request.did
         )));
     }
-    crate::onboarding::describe_device_link(&state, &chain, request.name)
+
+    // The signed-in browser authorizes registration because the waiting CLI
+    // cannot invoke as an active device until this succeeds. The provider's
+    // atomic winner, not the browser's fresh candidate, is what both the
+    // callback and account-space display facts must retain.
+    let (active_link, service) = linked_service(&state).await?;
+    let body = tonk_identity::request::build_device_invocation(
+        state.profile.signer().signer().clone(),
+        &active_link,
+        vec!["account".into(), "device".into(), "register".into()],
+        BTreeMap::from([
+            ("did".into(), Promised::String(request.did.clone())),
+            ("name".into(), Promised::String(request.name.clone())),
+            (
+                "delegation".into(),
+                Promised::String(request.delegation_hex.clone()),
+            ),
+        ]),
+    )
+    .await
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("authorize device registration: {error}"))
+    })?;
+    let endpoint = url::Url::parse(&format!(
+        "{}/devices/register",
+        service.trim_end_matches('/')
+    ))
+    .map_err(|error| TonkWorkerError::Internal(format!("invalid account provider URL: {error}")))?;
+    let response = super::http::post_cbor(&endpoint, &body).await?;
+    let registered: ProviderDeviceRegistration =
+        serde_json::from_slice(&response.body).map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "account provider returned an unreadable device generation: {error}"
+            ))
+        })?;
+    if registered.schema_version != "tonk.device-registration.v2"
+        || registered.attachment_id.trim().is_empty()
+        || registered.delegation_cid.trim().is_empty()
+    {
+        return Err(TonkWorkerError::Conflict(
+            "account provider returned an incomplete device generation".into(),
+        ));
+    }
+    let canonical_bytes = hex::decode(&registered.delegation_hex).map_err(|error| {
+        TonkWorkerError::Conflict(format!("provider delegation is not valid hex: {error}"))
+    })?;
+    let canonical = DelegationChain::try_from(canonical_bytes.as_slice()).map_err(|error| {
+        TonkWorkerError::Conflict(format!(
+            "provider delegation is not a delegation: {error:?}"
+        ))
+    })?;
+    if canonical.issuer() != proposed.issuer()
+        || canonical.audience() != proposed.audience()
+        || canonical.proof_cids()[0].to_string() != registered.delegation_cid
+    {
+        return Err(TonkWorkerError::Conflict(
+            "account provider returned a different device generation".into(),
+        ));
+    }
+    crate::onboarding::describe_device_link(&state, &canonical, request.name)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("describe the registered device: {error}"))
@@ -188,10 +259,9 @@ pub async fn register(
             })?,
         }
     }
-    // The delegation CID is the attachment id now: it names the exact
-    // grant this registration described, which is what the id was for.
-    let attachment_id = chain.proof_cids()[0].to_string();
-    Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
+    serde_json::to_value(registered)
+        .map(Json)
+        .map_err(|error| TonkWorkerError::Internal(format!("serialize registration: {error}")))
 }
 
 /// The account service's `POST /account/summary` response.
@@ -654,11 +724,10 @@ mod tests {
         assert_eq!(target_cid, link.proof_cids()[0].to_string());
     }
 
-    /// Registering describes the device in the account space, and the
-    /// list serves it back from those facts — the whole loop without an
-    /// account service anywhere.
+    /// A local profile cannot describe a callback device without first
+    /// obtaining the provider's canonical active generation.
     #[dialog_common::test]
-    async fn it_registers_a_device_as_account_space_facts() {
+    async fn it_refuses_device_registration_without_an_account_provider() {
         use dialog_varsig::Principal as _;
 
         let state = Arc::new(RwLock::new(test_state_without_account().await));
@@ -672,7 +741,7 @@ mod tests {
         .unwrap();
         let delegation_hex = hex::encode(chain.to_bytes().unwrap());
 
-        let answer = register(
+        let error = register(
             State(state.clone()),
             Json(RegisterDeviceRequest {
                 did: device.did().to_string(),
@@ -681,20 +750,8 @@ mod tests {
             }),
         )
         .await
-        .unwrap();
-        assert_eq!(
-            answer.0["attachmentId"],
-            chain.proof_cids()[0].to_string(),
-            "the delegation CID stands in for the attachment id"
-        );
-
-        let devices = list(State(state)).await.unwrap();
-        let registered = devices
-            .0
-            .iter()
-            .find(|row| row.did == device.did().to_string())
-            .expect("the registered device is listed");
-        assert_eq!(registered.name, "e2e terminal");
+        .expect_err("registration needs an attached account provider");
+        assert!(matches!(error, TonkWorkerError::NotFound(_)));
     }
 
     /// Revoking another device mints from the target's grant retained in

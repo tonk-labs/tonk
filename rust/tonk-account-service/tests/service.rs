@@ -364,6 +364,32 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert!(created["accountId"].is_i64());
     assert_eq!(created["descriptorHex"], expected_descriptor);
 
+    // A callback page from before attachment IDs were added can recover the
+    // exact active generation only by presenting the already-validated
+    // root-to-device chain. Bare root, DID, or attachment text is not enough.
+    let body = container_with_link(
+        &device,
+        &first_grant,
+        vec!["account".into(), "device".into(), "attachment".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/devices/attachment"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let recovered: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(recovered["schemaVersion"], "tonk.device-registration.v2");
+    assert_eq!(recovered["delegationHex"], ceremony.delegation_hex);
+    assert_eq!(
+        recovered["delegationCid"],
+        first_grant.proof_cids()[0].to_string()
+    );
+    assert!(recovered["attachmentId"].as_str().is_some());
+
     // The account summary reveals verified account facts only to an active
     // device. Passkey facts are the values witnessed at credential creation,
     // not inferred from this account or device registration time.
@@ -595,26 +621,42 @@ async fn it_drives_the_full_ceremony_over_http() {
         "revoked"
     );
 
-    // A command-line profile is registered through the same root ceremony
-    // the browser runs when it approves a `tonk account login` callback.
+    // A signed-in browser registers a command-line profile with its own
+    // active device authority before delivering the grant to the callback.
     let cli = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
     let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
-    let ceremony = tonk_identity::ceremony::link_device(root, cli.did(), "terminal".into())
+    let cli_grant = tonk_identity::delegation::mint_device_delegation(root, &cli.did())
         .await
         .unwrap();
-    let cli_grant_bytes = hex::decode(&ceremony.delegation_hex).unwrap();
-    let cli_grant = DelegationChain::try_from(cli_grant_bytes.as_slice()).unwrap();
+    let cli_grant_hex = hex::encode(cli_grant.to_bytes().unwrap());
+    let body = container_with_link(
+        &device,
+        &first_grant,
+        vec!["account".into(), "device".into(), "register".into()],
+        BTreeMap::from([
+            ("did".into(), Promised::String(cli.did().to_string())),
+            ("name".into(), Promised::String("terminal".into())),
+            ("delegation".into(), Promised::String(cli_grant_hex.clone())),
+        ]),
+    )
+    .await;
     let response = client
-        .post(format!("{base}/devices/link"))
-        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .post(format!("{base}/devices/register"))
+        .body(body)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
     let linked: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(linked["descriptorHex"], expected_descriptor);
+    assert_eq!(linked["schemaVersion"], "tonk.device-registration.v2");
+    assert_eq!(linked["delegationHex"], cli_grant_hex);
+    assert_eq!(
+        linked["delegationCid"],
+        cli_grant.proof_cids()[0].to_string()
+    );
+    assert_eq!(linked["reused"], false);
     let cli_attachment = linked["attachmentId"].as_str().unwrap().to_string();
 
     // Logout detaches the exact generation without presenting the reusable

@@ -158,6 +158,11 @@ pub enum AccountStatus {
     },
 }
 
+#[cfg(feature = "integration-tests")]
+#[doc(hidden)]
+pub use crate::account_session::ACCOUNT_SESSION_SITE;
+/// Bounded provider-cleanup result reported by account command boundaries.
+pub use crate::account_session::FlushSummary;
 /// Local sign-in phase, readable without opening a Dialog profile.
 pub use crate::account_session::LocalPhase as SignInPhase;
 
@@ -199,7 +204,7 @@ pub struct LinkOptions {
 }
 
 /// Successful browser handoff.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct LinkOutcome {
     /// URL printed and optionally opened for the user.
     pub url: String,
@@ -218,6 +223,9 @@ pub struct LinkOutcome {
     /// so a caller matching endpoints against a provider matches the one
     /// this device actually uses.
     pub service_url: String,
+    /// Keep cleanup/logout/another login excluded until the outer command has
+    /// committed its account registry and post-login settlement.
+    _handoff: Option<crate::account_session::AccountHandoffGuard>,
 }
 
 async fn decode_provider(
@@ -292,13 +300,30 @@ pub(crate) async fn require_account_with_operator_in(
 
 /// Disconnect provider services while preserving this profile's root,
 /// delegations, account repository, and spaces.
-pub async fn logout(profile: &Profile) -> Result<()> {
+#[derive(Debug)]
+pub struct LogoutOutcome {
+    /// Durable local transition and newly queued cleanup count.
+    pub transition: crate::account_session::LogoutTransition,
+    /// Provider cleanup completed/retained during this command.
+    pub cleanup: crate::account_session::FlushSummary,
+    /// Local sign-out remains complete if this best-effort flush setup fails.
+    pub cleanup_error: Option<String>,
+    /// Keep browser login excluded until the outer command clears its account
+    /// registry projection and reports the settled local result.
+    _operation: crate::account_session::AccountOperationGuard,
+}
+
+/// Sign out locally, durably queueing provider cleanup before authority clears.
+pub async fn logout(profile: &Profile) -> Result<LogoutOutcome> {
     let operator = crate::account_state::credential_operator(profile).await?;
     logout_with_operator(profile, &operator).await
 }
 
 /// Disconnect only the account session owned by `store`.
-pub async fn logout_in(profile: &Profile, store: &crate::space::SpaceStore) -> Result<()> {
+pub async fn logout_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+) -> Result<LogoutOutcome> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     logout_with_operator_in(profile, &operator, store).await
 }
@@ -306,7 +331,7 @@ pub async fn logout_in(profile: &Profile, store: &crate::space::SpaceStore) -> R
 async fn logout_with_operator(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
-) -> Result<()> {
+) -> Result<LogoutOutcome> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     logout_with_operator_in(profile, operator, &store).await
 }
@@ -315,21 +340,41 @@ async fn logout_with_operator_in(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
-) -> Result<()> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    for account in
-        crate::account_session::logout_transition_for_store(profile, operator, store).await?
+) -> Result<LogoutOutcome> {
+    let operation = crate::account_session::begin_account_operation(store).context(
+        "cannot sign out while another account login is waiting for browser approval; cancel that login, then try again",
+    )?;
+    let transition =
+        crate::account_session::logout_transition_for_store(profile, operator, store).await?;
+    let (cleanup, cleanup_error) = match crate::account_session::flush_pending_detaches_guarded(
+        profile, operator, store,
+    )
+    .await
     {
-        if let Err(error) = crate::account_session::deliver_detach(profile, &account, now).await {
-            eprintln!(
-                "warning: logged out locally; the provider was not notified                  and may list this device until it is revoked: {error:#}"
-            );
-        }
-    }
-    Ok(())
+        Ok(summary) => (summary, None),
+        Err(error) => (
+            crate::account_session::FlushSummary {
+                retryable: transition.queued,
+                ..Default::default()
+            },
+            Some(format!("{error:#}")),
+        ),
+    };
+    Ok(LogoutOutcome {
+        transition,
+        cleanup,
+        cleanup_error,
+        _operation: operation,
+    })
+}
+
+/// Retry durable provider cleanup at a CLI command boundary.
+pub async fn flush_pending_detaches_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+) -> Result<crate::account_session::FlushSummary> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    crate::account_session::flush_pending_detaches(profile, &operator, store).await
 }
 
 fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
@@ -418,17 +463,61 @@ async fn account_from_callback(
     options: &LinkOptions,
     authorization: CallbackAuthorization,
 ) -> Result<crate::account_session::ActiveAccount> {
+    if let Some(version) = authorization.schema_version.as_deref()
+        && version != "tonk.cli-authorization.v2"
+    {
+        bail!("unsupported callback authorization schema {version}");
+    }
+    if authorization.schema_version.is_some()
+        && (authorization.delegation_cid.trim().is_empty()
+            || authorization.attachment_id.trim().is_empty())
+    {
+        bail!(
+            "versioned authorization is missing its provider generation; no local account access was installed, so refresh the approval page and run `tonk account login` again"
+        );
+    }
     let grant_bytes = hex::decode(&authorization.delegation_hex)
         .context("authorization delegation is not hex")?;
     let chain = validate_account_grant(profile, &grant_bytes).await?;
-    let account_did = chain.issuer().clone();
-    let attachment_id = authorization.attachment_id.trim();
-    if attachment_id.is_empty() {
-        bail!("authorization is missing its service attachment generation");
-    }
     let provider_url = Some(authorization.service_url.trim())
         .filter(|value| !value.is_empty())
-        .unwrap_or(&options.service_url);
+        .unwrap_or(&options.service_url)
+        .trim_end_matches('/')
+        .to_string();
+    let expected_cid = chain.proof_cids()[0].to_string();
+    if !authorization.delegation_cid.trim().is_empty()
+        && authorization.delegation_cid.trim() != expected_cid
+    {
+        bail!("authorization delegation CID does not match its grant");
+    }
+    // An unversioned page may carry no attachment, a delegation-CID
+    // placeholder, or even a real attachment paired with the fresh ceremony
+    // grant rather than the provider's reused generation. Treat every legacy
+    // payload as a hint and recover by exact grant authority; bare attachment
+    // text never selects provider state.
+    let registration = if authorization.schema_version.is_none() {
+        recover_callback_attachment(profile, &provider_url, &chain)
+            .await
+            .context(
+                "this device was not linked and no local account access was installed; refresh the approval page, then run `tonk account login` again",
+            )?
+    } else {
+        CallbackRegistration {
+            attachment_id: authorization.attachment_id.trim().to_string(),
+            delegation_cid: expected_cid,
+            delegation_hex: hex::encode(&grant_bytes),
+        }
+    };
+    let canonical_bytes = hex::decode(&registration.delegation_hex)
+        .context("provider attachment delegation is not hex")?;
+    let canonical = validate_account_grant(profile, &canonical_bytes).await?;
+    let account_did = canonical.issuer().clone();
+    if account_did != *chain.issuer()
+        || canonical.proof_cids()[0].to_string() != registration.delegation_cid
+        || canonical.proof_cids()[0] != chain.proof_cids()[0]
+    {
+        bail!("provider attachment does not match the callback grant generation");
+    }
     let descriptor = hex::decode(&authorization.descriptor_hex)
         .context("authorization descriptor is not hex")?;
     let attached_at = std::time::SystemTime::now()
@@ -436,19 +525,72 @@ async fn account_from_callback(
         .unwrap_or_default()
         .as_secs();
     let provider =
-        AccountProviderRecord::attach(provider_url, &descriptor, &account_did, attached_at)
+        AccountProviderRecord::attach(&provider_url, &descriptor, &account_did, attached_at)
             .await
             .context("authorization returned an unusable repository descriptor")?;
     Ok(crate::account_session::ActiveAccount {
         provider: provider.provider().to_owned(),
         credential_id: authorization.credential_id,
         root_did: account_did.to_string(),
-        delegation_cid: chain.proof_cids()[0].to_string(),
-        delegation_hex: hex::encode(grant_bytes),
+        delegation_cid: registration.delegation_cid,
+        delegation_hex: hex::encode(canonical_bytes),
         descriptor_hex: Some(hex::encode(descriptor)),
-        attachment_id: attachment_id.to_owned(),
+        attachment_id: registration.attachment_id,
         attached_at,
     })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CallbackRegistration {
+    attachment_id: String,
+    delegation_cid: String,
+    delegation_hex: String,
+}
+
+/// Recover a legacy callback's omitted attachment using the callback grant
+/// itself as authority. The provider authenticates the exact proof CID; the
+/// returned row is then compared to that same generation before any write.
+async fn recover_callback_attachment(
+    profile: &Profile,
+    provider_url: &str,
+    chain: &DelegationChain,
+) -> Result<CallbackRegistration> {
+    let body = tonk_identity::request::build_device_invocation(
+        profile.signer().signer().clone(),
+        chain,
+        vec!["account".into(), "device".into(), "attachment".into()],
+        Default::default(),
+    )
+    .await
+    .context("failed to sign attachment recovery request")?;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/devices/attachment",
+            provider_url.trim_end_matches('/')
+        ))
+        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+        .body(body)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .context("failed to reach the account provider for attachment recovery")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        bail!("account provider refused attachment recovery ({status}): {detail}");
+    }
+    let registration: CallbackRegistration = response
+        .json()
+        .await
+        .context("account provider returned an unreadable attachment generation")?;
+    if registration.attachment_id.trim().is_empty()
+        || registration.delegation_cid.trim().is_empty()
+        || registration.delegation_hex.trim().is_empty()
+    {
+        bail!("account provider returned an incomplete attachment generation");
+    }
+    Ok(registration)
 }
 
 async fn recorded_account_grant(
@@ -561,6 +703,7 @@ async fn hydrate_activated_account(
         account_state: ensured.status,
         warning: ensured.warning,
         service_url: account.provider.clone(),
+        _handoff: None,
     })
 }
 
@@ -621,6 +764,10 @@ async fn link_via_callback(
         serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
     let account = account_from_callback(profile, options, authorization).await?;
     complete_staged_account(profile, operator, store, &account).await?;
+    // Activation is already durable. Retry older cleanup best-effort; the
+    // outbox refuses to detach this exact active generation if registration
+    // intentionally recovered it.
+    let _ = crate::account_session::flush_pending_detaches_guarded(profile, operator, store).await;
     hydrate_activated_account(profile, operator, store, &account, url).await
 }
 
@@ -632,7 +779,13 @@ async fn link_via_callback(
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CallbackAuthorization {
+    /// Versioned by new pages; absent on legacy callback payloads.
+    #[serde(default)]
+    schema_version: Option<String>,
     delegation_hex: String,
+    /// Provider-confirmed proof CID; absent on legacy callback payloads.
+    #[serde(default)]
+    delegation_cid: String,
     descriptor_hex: String,
     #[serde(default)]
     credential_id: String,
@@ -680,33 +833,46 @@ pub async fn link_with_operator(
         Some(store) => store,
         None => crate::space::SpaceStore::open().context("failed to locate account state")?,
     };
+    // A browser can commit provider registration before its callback reaches
+    // this process. Exclude outbox dispatch and competing login/logout
+    // transitions across that entire window, without persisting a callback
+    // token that could strand the next process after a crash.
+    let handoff = crate::account_session::begin_handoff(&store).await?;
     {
         let guard = crate::account_session::exclusive_transition_guard(&store)?;
         crate::account_session::ensure_initialized(profile, operator, &guard).await?;
     }
+    // A direct library caller may not have passed through the binary's login
+    // boundary. Drain older cleanup before the browser can adopt anything;
+    // the CLI boundary reports its own copy of this best-effort summary.
+    let _ = crate::account_session::flush_pending_detaches_guarded(profile, operator, &store).await;
     let state = {
         let guard = crate::account_session::shared_remote_guard(&store)?;
         crate::account_session::load_guarded(profile, operator, &guard).await?
     };
-    if let Some(account) = state.active {
+    let result = if let Some(account) = state.active {
         recorded_account_grant(profile, &account).await?;
-        return hydrate_activated_account(profile, operator, &store, &account, String::new()).await;
-    }
-    match state.pending_login {
-        Some(crate::account_session::PendingLogin::Activating { account }) => {
-            complete_staged_account(profile, operator, &store, &account).await?;
-            hydrate_activated_account(profile, operator, &store, &account, String::new()).await
+        hydrate_activated_account(profile, operator, &store, &account, String::new()).await
+    } else {
+        match state.pending_login {
+            Some(crate::account_session::PendingLogin::Activating { account }) => {
+                complete_staged_account(profile, operator, &store, &account).await?;
+                hydrate_activated_account(profile, operator, &store, &account, String::new()).await
+            }
+            Some(crate::account_session::PendingLogin::Waiting { .. }) => {
+                bail!(
+                    "an older account login is pending but cannot be resumed; run `tonk account logout` and try again"
+                )
+            }
+            None => {
+                let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
+                link_via_callback(profile, operator, &store, options, page).await
+            }
         }
-        Some(crate::account_session::PendingLogin::Waiting { .. }) => {
-            bail!(
-                "an older account login is pending but cannot be resumed; run `tonk account logout` and try again"
-            )
-        }
-        None => {
-            let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
-            link_via_callback(profile, operator, &store, options, page).await
-        }
-    }
+    };
+    let mut outcome = result?;
+    outcome._handoff = Some(handoff);
+    Ok(outcome)
 }
 
 /// One device row, from the account space's own facts.
@@ -843,7 +1009,7 @@ pub async fn attach_for_integration_test(
         .perform(operator)
         .await?;
     let session = crate::account_session::AccountSessionState {
-        version: 1,
+        version: 2,
         active: Some(crate::account_session::ActiveAccount {
             provider: service_url.trim_end_matches('/').to_string(),
             credential_id: credential_id.to_string(),
@@ -858,6 +1024,7 @@ pub async fn attach_for_integration_test(
                 .as_secs(),
         }),
         pending_login: None,
+        pending_detaches: Vec::new(),
     };
     crate::account_session::install_for_integration_test(profile, operator, &session).await?;
     integration_connections()
@@ -868,6 +1035,34 @@ pub async fn attach_for_integration_test(
             (service_url.to_string(), link, config),
         );
     Ok(())
+}
+
+#[cfg(feature = "integration-tests")]
+/// Install one exact provider generation through the production staged
+/// activation path for an external process test.
+#[doc(hidden)]
+pub async fn attach_exact_for_process_test(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    service_url: &str,
+    credential_id: &str,
+    link: DelegationChain,
+    descriptor: &[u8],
+    attachment_id: &str,
+    attached_at: u64,
+) -> Result<()> {
+    let account = crate::account_session::ActiveAccount {
+        provider: service_url.trim_end_matches('/').to_string(),
+        credential_id: credential_id.to_string(),
+        root_did: link.issuer().to_string(),
+        delegation_cid: link.proof_cids()[0].to_string(),
+        delegation_hex: hex::encode(link.to_bytes()?),
+        descriptor_hex: Some(hex::encode(descriptor)),
+        attachment_id: attachment_id.to_string(),
+        attached_at,
+    };
+    complete_staged_account(profile, operator, store, &account).await
 }
 
 /// List the devices authorized under this profile's account, from the
@@ -1641,10 +1836,11 @@ mod tests {
         );
     }
 
-    /// A modern callback must name the exact service generation. Without it,
-    /// restart recovery and logout would have to guess which row to target.
+    /// A legacy callback can omit the attachment id, but recovery still has
+    /// to prove the exact account, device, and grant generation to the
+    /// provider before any local authority is staged.
     #[dialog_common::test]
-    async fn it_refuses_a_callback_without_an_attachment_generation() {
+    async fn it_recovers_a_callback_without_an_attachment_generation() {
         use dialog_credentials::Ed25519Signer;
         use dialog_effects::storage::Directory;
 
@@ -1657,14 +1853,70 @@ mod tests {
             .perform(&storage)
             .await
             .unwrap();
-        let service_url = "https://accounts.example/ucan/".to_string();
+        let server = tonk_account_service::helpers::AccountServer::start().await;
+        let service_url = server.endpoint.clone();
         let account = Ed25519Signer::generate().await.unwrap();
-        let authorized =
-            tonk_identity::ceremony::authorize_device(account, profile.did(), &service_url)
-                .await
-                .unwrap();
+        let authorized = tonk_identity::ceremony::authorize_device(
+            account.clone(),
+            profile.did(),
+            &format!("{service_url}/ucan/"),
+        )
+        .await
+        .unwrap();
+        let created = tonk_identity::ceremony::create_account(
+            account.clone(),
+            "legacy-callback@example.com".into(),
+            "credential".into(),
+            profile.did(),
+            "terminal".into(),
+            authorized.delegation_hex.clone(),
+            format!("{service_url}/ucan/"),
+            None,
+        )
+        .await
+        .unwrap();
+        let descriptor_hex = created.descriptor_hex.clone().unwrap();
+        reqwest::Client::new()
+            .post(format!("{service_url}/accounts"))
+            .body(hex::decode(created.invocation_hex).unwrap())
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let authorized_bytes = hex::decode(&authorized.delegation_hex).unwrap();
+        let authorized_chain = DelegationChain::try_from(authorized_bytes.as_slice()).unwrap();
+        let authorized_cid = authorized_chain.proof_cids()[0].to_string();
 
-        let error = account_from_callback(
+        let incomplete_v2 = account_from_callback(
+            &profile,
+            &LinkOptions {
+                service_url: service_url.clone(),
+                device_name: "incomplete generation".to_owned(),
+                open_browser: false,
+                store: None,
+                announce: None,
+                via: None,
+            },
+            CallbackAuthorization {
+                schema_version: Some("tonk.cli-authorization.v2".into()),
+                delegation_hex: authorized.delegation_hex.clone(),
+                delegation_cid: authorized_cid.clone(),
+                descriptor_hex: descriptor_hex.clone(),
+                credential_id: authorized.root_did.clone(),
+                attachment_id: String::new(),
+                service_url: service_url.clone(),
+            },
+        )
+        .await
+        .expect_err("callback v2 must never fall back from an omitted generation");
+        assert!(
+            incomplete_v2
+                .to_string()
+                .contains("no local account access was installed")
+        );
+
+        let recovered = account_from_callback(
             &profile,
             &LinkOptions {
                 service_url: service_url.clone(),
@@ -1675,20 +1927,85 @@ mod tests {
                 via: None,
             },
             CallbackAuthorization {
-                delegation_hex: authorized.delegation_hex,
-                descriptor_hex: authorized.descriptor_hex,
-                credential_id: authorized.root_did,
+                schema_version: None,
+                delegation_hex: authorized.delegation_hex.clone(),
+                delegation_cid: String::new(),
+                descriptor_hex: descriptor_hex.clone(),
+                credential_id: authorized.root_did.clone(),
                 attachment_id: "  ".to_owned(),
-                service_url,
+                service_url: String::new(),
             },
         )
         .await
-        .expect_err("a callback without an exact generation must be refused");
+        .expect("the exact active generation should be recovered");
 
+        assert!(!recovered.attachment_id.is_empty());
+        assert!(!recovered.delegation_cid.is_empty());
+
+        let placeholder = account_from_callback(
+            &profile,
+            &LinkOptions {
+                service_url: service_url.clone(),
+                device_name: "generation placeholder".to_owned(),
+                open_browser: false,
+                store: None,
+                announce: None,
+                via: None,
+            },
+            CallbackAuthorization {
+                schema_version: None,
+                delegation_hex: authorized.delegation_hex,
+                delegation_cid: String::new(),
+                descriptor_hex: descriptor_hex.clone(),
+                credential_id: authorized.root_did,
+                attachment_id: authorized_cid,
+                service_url: service_url.clone(),
+            },
+        )
+        .await
+        .expect("an unversioned CID placeholder should recover the exact attachment");
+        assert_eq!(placeholder.attachment_id, recovered.attachment_id);
+        assert_eq!(placeholder.delegation_cid, recovered.delegation_cid);
+
+        let stale = tonk_identity::ceremony::authorize_device(
+            account,
+            profile.did(),
+            &format!("{}/ucan/", server.endpoint),
+        )
+        .await
+        .unwrap();
+        let error = account_from_callback(
+            &profile,
+            &LinkOptions {
+                service_url: server.endpoint.clone(),
+                device_name: "generation mismatch".into(),
+                open_browser: false,
+                store: None,
+                announce: None,
+                via: None,
+            },
+            CallbackAuthorization {
+                schema_version: None,
+                delegation_hex: stale.delegation_hex,
+                delegation_cid: String::new(),
+                descriptor_hex,
+                credential_id: stale.root_did,
+                // An old page can pair the provider's real attachment text
+                // with its fresh, non-canonical ceremony grant. The bare ID
+                // must not bypass exact-grant recovery.
+                attachment_id: recovered.attachment_id,
+                service_url: server.endpoint.clone(),
+            },
+        )
+        .await
+        .expect_err("a different nonce-bearing grant must not recover the active row");
+        let error = format!("{error:#}");
         assert!(
-            error.to_string().contains("attachment generation"),
-            "unexpected missing-generation error: {error:#}"
+            error.contains("no local account access was installed")
+                && error.contains("refused attachment recovery"),
+            "unexpected generation mismatch: {error}"
         );
+        server.stop().await;
     }
 
     struct RecoveryFixture {
@@ -1922,6 +2239,52 @@ mod tests {
             .expect("active recovery must finish the interrupted outer command");
         assert_eq!(outcome.root_did, fixture.account.root_did);
         assert_no_browser_announcement(&mut announced);
+    }
+
+    #[dialog_common::test]
+    async fn link_outcome_retains_handoff_exclusion_through_outer_settlement() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+            .await
+            .unwrap();
+
+        let outcome = link_with_operator(&profile, &operator, &fixture.options(None))
+            .await
+            .expect("active recovery should return its settlement token");
+        crate::account_session::begin_account_operation(&fixture.store)
+            .expect_err("logout must remain excluded while the outer login command settles");
+
+        drop(outcome);
+        let operation = crate::account_session::begin_account_operation(&fixture.store)
+            .expect("dropping the outcome settles and releases the handoff");
+        drop(operation);
+    }
+
+    #[dialog_common::test]
+    async fn logout_outcome_retains_exclusion_through_outer_registry_clear() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+            .await
+            .unwrap();
+
+        let outcome = logout_with_operator_in(&profile, &operator, &fixture.store)
+            .await
+            .expect("local logout should remain durable while cleanup is unavailable");
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                crate::account_session::begin_handoff(&fixture.store),
+            )
+            .await
+            .is_err(),
+            "login must remain excluded while the outer logout command clears its registry"
+        );
+
+        drop(outcome);
+        let handoff = crate::account_session::begin_handoff(&fixture.store)
+            .await
+            .expect("dropping the logout outcome releases its operation guard");
+        drop(handoff);
     }
 
     #[dialog_common::test]

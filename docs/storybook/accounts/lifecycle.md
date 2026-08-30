@@ -10,9 +10,12 @@ provider attachment, account-repository hydration, customer activation, and
 space ownership are separate states throughout.
 
 The lifecycle remains available while provider service is offline wherever the
-operation is local: status, local space reads and writes, and local logout must
-not wait for a remote. Creating, activating, linking a new device, syncing, and
-revoking authority require the relevant browser or service boundary.
+durable result is local. Account status derives its core answer locally, and
+logout commits locally first; either command may make a bounded best-effort
+customer or queued-cleanup request before returning. Local space reads and
+writes remain network-free. Creating, activating, linking a new device,
+syncing, and revoking authority require the relevant browser or service
+boundary.
 
 ## The simple case
 
@@ -223,7 +226,7 @@ not silently reconstructed.
 | Local account state | `I0` creates or logs in; `I1` may create from an existing root or require a fresh profile for another root; `I2`/`I3` recover; `I4` shows dashboard. | A committed root/provider write changes the recovery path; retry must inspect durable state rather than repeat blindly. |
 | Customer state | `C0` enrolls, `C1` waits/resends, `C2` serves, `C3` withholds service, `CX` preserves local behavior. | Activation or suspension can arrive from another device/service; the page must refresh facts and gate remote work. |
 | Space relationship | Local-only spaces stay local through account creation until ownership/service work explicitly attaches them; owned and joined spaces retain their boundaries. | A concurrent space link/delete must not be inferred from account success; refresh the account directory. |
-| Connectivity and actor | Online enables account mutation; offline still permits local status/logout/work. A second actor may change device/account/customer facts. | Timeouts and concurrent changes produce a reconciled state, not an unconditional replay. |
+| Connectivity and actor | Online enables account mutation and lets status/logout retire queued cleanup; offline still preserves their local result and local work after bounded optional requests fail. A second actor may change device/account/customer facts. | Timeouts and concurrent changes produce a reconciled state, not an unconditional replay. |
 | Output mode | Browser exposes busy/error panels; CLI human and JSON status expose equivalent states. | Output mode is fixed per invocation; a broken pipe must not change whether the state commits. |
 
 ## Cancel and interrupt

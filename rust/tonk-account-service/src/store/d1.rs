@@ -15,10 +15,11 @@ use worker::wasm_bindgen::JsValue;
 use crate::store::{
     Account, DELETE_ACCOUNT, DELETE_ACCOUNT_DEVICES, DetachStoreOutcome, Device, DeviceStatus,
     ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE,
-    INSERT_DEVICE_FOR_NEW_ACCOUNT, NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL,
-    SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT,
-    SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT, SELECT_REPOSITORY_DESCRIPTOR, Store,
-    StoreError, UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID,
+    INSERT_DEVICE_FOR_NEW_ACCOUNT, NewAccount, NewDevice, REGISTER_OR_RECOVER_DEVICE,
+    RegisteredDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID,
+    SELECT_ATTACHMENT, SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT,
+    SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
+    UPDATE_DEVICE_REVOKE_BY_CID,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -300,6 +301,44 @@ impl Store for D1Store {
         Ok(())
     }
 
+    async fn register_or_recover_device(
+        &self,
+        device: &Device,
+    ) -> Result<RegisteredDevice, StoreError> {
+        #[derive(Deserialize)]
+        struct RegisteredRow {
+            attachment_id: String,
+            delegation_cid: String,
+            delegation_hex: String,
+        }
+
+        let row: Option<RegisteredRow> = self
+            .0
+            .prepare(REGISTER_OR_RECOVER_DEVICE)
+            .bind(&[
+                JsValue::from_f64(device.account_id as f64),
+                JsValue::from(device.device_did.as_str()),
+                JsValue::from(device.attachment_id.as_str()),
+                JsValue::from(device.delegation_cid.as_str()),
+                JsValue::from(device.delegation_hex.as_str()),
+                JsValue::from(device.name.as_str()),
+                JsValue::from_f64(device.created_at as f64),
+            ])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        let row = row.ok_or_else(|| {
+            StoreError::Conflict("this device is already active on another account".into())
+        })?;
+        Ok(RegisteredDevice {
+            reused: row.attachment_id != device.attachment_id,
+            attachment_id: row.attachment_id,
+            delegation_cid: row.delegation_cid,
+            delegation_hex: row.delegation_hex,
+        })
+    }
+
     async fn devices(&self, account_id: i64) -> Result<Vec<Device>, StoreError> {
         let result = self
             .0
@@ -406,7 +445,14 @@ impl Store for D1Store {
     ) -> Result<DetachStoreOutcome, StoreError> {
         if let Some(device) = self.attachment(attachment_id).await? {
             return match device.status {
-                DeviceStatus::Detached => Ok(DetachStoreOutcome::AlreadyDetached),
+                DeviceStatus::Detached => {
+                    let active = self.active_device_by_did(&device.device_did).await?;
+                    if active.is_some_and(|active| active.attachment_id != attachment_id) {
+                        Ok(DetachStoreOutcome::Superseded)
+                    } else {
+                        Ok(DetachStoreOutcome::AlreadyDetached)
+                    }
+                }
                 DeviceStatus::Revoked => Ok(DetachStoreOutcome::Revoked),
                 DeviceStatus::Active => {
                     self.0

@@ -30,7 +30,8 @@ use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::deletion::delete_account;
 use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
-    DeviceView, detach_device, link_device, list_devices, register_device, revoke_device,
+    DeviceView, detach_device, link_device, list_devices, recover_device_attachment,
+    register_device, revoke_device,
 };
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
@@ -137,6 +138,7 @@ async fn handle_request(
         }
         (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
+        (Method::POST, "/devices/attachment") => devices_attachment_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         (Method::POST, "/devices/detach") => devices_detach_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
@@ -361,7 +363,7 @@ async fn devices_link_route(
     })?;
     let descriptor_hex = hex::encode(descriptor);
 
-    let attachment_id = link_device(
+    let registered = link_device(
         &backends.store,
         &account,
         &device_did,
@@ -375,7 +377,11 @@ async fn devices_link_route(
     Ok(json_response(
         StatusCode::OK,
         &serde_json::json!({
-            "attachmentId": attachment_id,
+            "schemaVersion": "tonk.device-registration.v2",
+            "attachmentId": registered.attachment_id,
+            "delegationCid": registered.delegation_cid,
+            "delegationHex": registered.delegation_hex,
+            "reused": registered.reused,
             "descriptorHex": descriptor_hex,
         }),
     ))
@@ -415,7 +421,7 @@ async fn devices_register_route(
     let device_name = string_argument(&caller, "name").map_err(ceremony_error)?;
     let delegation_hex = string_argument(&caller, "delegation").map_err(ceremony_error)?;
 
-    let attachment_id = register_device(
+    let registered = register_device(
         &backends.store,
         &caller.account,
         &device_did,
@@ -428,7 +434,35 @@ async fn devices_register_route(
 
     Ok(json_response(
         StatusCode::OK,
-        &serde_json::json!({ "attachmentId": attachment_id }),
+        &serde_json::json!({
+            "schemaVersion": "tonk.device-registration.v2",
+            "attachmentId": registered.attachment_id,
+            "delegationCid": registered.delegation_cid,
+            "delegationHex": registered.delegation_hex,
+            "reused": registered.reused,
+        }),
+    ))
+}
+
+/// `POST /devices/attachment` → recover the caller's exact active generation.
+async fn devices_attachment_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize(&backends.store, &body, &["account", "device", "attachment"])
+        .await
+        .map_err(ceremony_error)?;
+    let registered = recover_device_attachment(&caller.device).map_err(ceremony_error)?;
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({
+            "schemaVersion": "tonk.device-registration.v2",
+            "attachmentId": registered.attachment_id,
+            "delegationCid": registered.delegation_cid,
+            "delegationHex": registered.delegation_hex,
+            "reused": registered.reused,
+        }),
     ))
 }
 

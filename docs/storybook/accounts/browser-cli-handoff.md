@@ -22,10 +22,14 @@ DID, loopback callback, and device name and asks the OS to open it unless
 
 An already-linked browser opens an approval panel identifying the requesting
 device. The person approves and completes a passkey assertion. The page
-registers the device, then navigates to the callback with the delegation,
-account repository descriptor, credential ID, attachment ID, and service URL
-in the URL fragment. The local bridge removes the fragment from browser history
-and submits those fields to the CLI listener by same-origin POST.
+registers the device. Provider registration is atomic: a first request installs
+one generation and a repeated or concurrent same-account request receives that
+same canonical attachment and grant; a different account cannot reuse it. The
+page then navigates to the callback with versioned JSON containing that
+canonical delegation, its CID, the account repository descriptor, credential
+ID, attachment ID, and service URL. The local bridge removes the fragment from
+browser history and submits those fields to the CLI listener by same-origin
+POST.
 
 The cross-scheme navigation from the HTTPS account page to the HTTP loopback
 listener is deliberately a bodyless GET. Safari may discard a cross-scheme
@@ -91,7 +95,9 @@ to bind a fresh callback rather than resume the first wait.
 Binding the callback is externally visible but not an account-authority write.
 The browser crosses the authority boundary when passkey approval registers the
 CLI device and mints its grant. The callback payload may therefore represent a
-remote commit even if the CLI disappears before receiving it.
+remote commit even if the CLI disappears before receiving it. A later
+same-account approval recovers the provider's canonical winner rather than
+inserting another active row.
 
 The CLI crosses its local durability boundary after validating the payload. It
 first stages the immutable callback generation as `Activating`, then projects
@@ -110,17 +116,23 @@ and pushes.
 
 While waiting, only the loopback callback and Ctrl-C are selected. The browser
 can be opened, reloaded, closed, or used to complete an account ceremony.
-Nothing in the current CLI wait records a resumable handoff token.
+Nothing in the current CLI wait records a resumable handoff token. A fresh
+process binds a new callback; provider-side idempotence reconciles registration
+that completed before the old process disappeared.
 
 During browser approval, authority registration, WebAuthn, cross-scheme
 callback navigation, bridge execution, and the same-origin callback POST are
-separate failure boundaries. During CLI activation, payload parsing, delegation
-validation, durable staging, credential writes, provider attachment, exact
-promotion, account hydration, authority retention, and push are separate
-boundaries. Onboarding-account rotation and the legacy-space walk are further
-post-approval stages. Focused tests cover the fragment bridge, pending restart,
-projection replay, post-promotion recovery, and repeatable space rotation; a
-real Safari pass and a full process restart at every write are still open.
+separate failure boundaries. For every unversioned legacy payload, the CLI
+first validates its grant, signs `account/device/attachment` with that exact
+chain, and accepts only the matching provider generation before writing
+locally. An omitted, CID-placeholder, or real attachment field is only a hint;
+bare identifier text never selects provider state. During CLI activation,
+durable staging, credential writes, exact promotion, hydration, authority
+retention, and push remain separate
+boundaries. Focused tests cover provider response loss, exact legacy recovery,
+projection replay, durable logout cleanup, post-promotion recovery, and
+repeatable space rotation; a real Safari pass and a full process restart at
+every write are still open.
 
 ### Settle
 
@@ -147,9 +159,9 @@ and light/dark color schemes preserve the account ceremony presentation without
 loading remote assets.
 
 Decline or pre-approval Ctrl-C settles signed out. A post-approval failure must
-not casually claim signed out: the remote device may exist and some local
-credentials may already be durable. Recovery must inspect both sides and either
-finish the same generation or detach/revoke it before starting another.
+not casually claim that nothing happened: the provider may have committed.
+Starting again under the same account/device recovers its canonical generation;
+a different account receives a conflict without changing either account.
 
 ## Modifiers
 
@@ -166,11 +178,11 @@ finish the same generation or detach/revoke it before starting another.
 
 | Event | Before crossing a boundary | After crossing a boundary |
 | --- | --- | --- |
-| Explicit abort: Cancel, Back, declined confirmation, or Ctrl-C. | Browser decline reaches the CLI; Ctrl-C exits signed out. Back/close without decline leaves the CLI waiting until cancel/timeout. | If device registration or local writes occurred, abort must reconcile or report the partial attachment; current coverage does not prove this. |
+| Explicit abort: Cancel, Back, declined confirmation, or Ctrl-C. | Browser decline reaches the CLI; Ctrl-C exits signed out. Back/close without decline leaves the CLI waiting until cancel/timeout. | If device registration occurred, a fresh same-account approval recovers its canonical attachment; staged local activation resumes exactly. |
 | Competing user action: navigate, switch profile or space, or run another command. | Browser navigation retains or loses callback query visibly; another CLI account transition must serialize/reject. | Keep the original audience/account fixed. Profile switch cannot post another account's grant to the old request. |
 | Alternate completion: callback, blur/Enter submit, or another actor completes the target. | Accept only one callback result from the expected origin/shape. | Duplicate callback or approval is idempotent or rejected as already completed; never install two attachments. |
 | Service failure: offline, timeout, non-2xx, malformed response, expired session, or passkey rejection. | Keep CLI waiting only when retry in the same browser is safe; otherwise send a denial/error. | Distinguish remote registration failure, lost callback, invalid grant, local persistence failure, and hydration warning. |
-| Surface termination: reload, tab close, browser crash, terminal close, SIGTERM, or process crash. | A new CLI run currently starts fresh; the old browser callback becomes dead. | Remote registration and partial local writes require restart reconciliation; no current process test covers them. |
+| Surface termination: reload, tab close, browser crash, terminal close, SIGTERM, or process crash. | A new CLI run starts fresh; the old browser callback becomes dead. | Remote registration converges on retry; `Activating`/`Active` local state resumes exactly; durable logout cleanup survives restart. |
 | Concurrent target change: another tab/process/device edits, deletes, revokes, suspends, or replaces the target. | Re-read browser profile/account before minting. | Grant generation validation and later sync must reject revoked/deleted authority and leave local state explicit. |
 | Input or context change: autofill, authenticator change, TTY-to-pipe, stdin close, directory or environment change. | Device name and callback audience are fixed from the original invocation. | Authenticator change may reject; CWD/space changes cannot redirect account state to another profile store. |
 | Local durability failure: state locked, read-only, full, missing, malformed, or partly written. | Fail before opening approval if required account store/lock cannot initialize. | Do not acknowledge success until essential writes survive restart; retain enough generation data to resume or clean up. |
@@ -181,9 +193,14 @@ finish the same generation or detach/revoke it before starting another.
 CLI verifies grant structure, audience, subject scope, proof, and signature.
 The provider-supplied attachment generation must remain bound to that grant.
 
-**Local durability.** Callback wait is not currently durable. Post-callback
-writes are sequential and need explicit crash recovery. Cross-process account
-locks should prevent login/logout/revoke races from committing stale state.
+**Local durability.** Callback wait is intentionally process-local. The first
+post-callback write is a durable `Activating` checkpoint. Account-session v2
+also stores signed detach intents before local logout clears active state;
+cross-process locks protect every state transition and terminal outbox removal.
+An ephemeral handoff lock spans provider registration through callback
+activation and the outer command's registry/custody settlement, so cleanup or
+logout from another process cannot interleave a stale outer projection. A
+crashed waiter releases that lock without leaving durable callback state.
 
 **Remote service and sync.** Browser registration can commit before callback
 delivery. Hydration and push occur after local activation and may time out
@@ -228,8 +245,17 @@ from loopback browser history before the bridge creates or submits form fields.
   signature is invalid.
 - Account service URL from the page differs from the CLI default; the page's
   deployment wins.
-- Attachment ID is absent or blank; the CLI rejects the callback before any
-  local authority write because it cannot safely guess a service generation.
+- An unversioned callback omits the attachment, uses a CID placeholder, or
+  pairs a real attachment with a non-canonical fresh grant; the CLI validates
+  the grant and asks the provider for its exact active generation before any
+  local authority write. A wrong account, DID, or proof CID is refused.
+- An outdated worker returns the delegation CID as an unversioned attachment;
+  the CLI treats it as legacy, verifies it with the provider, and either
+  recovers the canonical row or asks the person to refresh and approve again.
+- Another process runs status/logout while browser approval is in flight;
+  cleanup is deferred and logout asks the person to finish or cancel the
+  waiting login and command settlement rather than racing its provider or
+  outer registry state.
 - Hydration times out after local login succeeds; status must be unhydrated,
   not signed out.
 - Authority retention succeeds but push fails; later sync must finish without
@@ -243,16 +269,14 @@ from loopback browser history before the bridge creates or submits form fields.
 
 ## Open questions and verification
 
-- Define a replay or acknowledgement protocol for the browser registration
-  that can commit before callback delivery; post-callback `Activating` and
-  `Active` recovery are now implemented.
 - Define timeout behavior. Current callback receive has Ctrl-C but no explicit
   user-visible deadline in this path.
 - Verify the fragment bridge and exact loopback-origin constraints in Safari,
   Chrome, and Firefox, including the HTTPS-to-HTTP warning path and reload.
-- Add fault points after every post-approval write and assert restart state.
+- Add process fault points after every post-approval compatibility write; unit
+  coverage already pins exact `Activating`, `Active`, and logout-outbox restart.
 - The fallback confirmation presentation was checked in isolated Chrome at
   Tonk commit `d85cb4234`; the broader handoff audit remains pinned below.
 
-Source audit pinned to Tonk commit `a3f8670b1`.
-Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
+Source audit refreshed with the generation-aware handoff and detach-outbox
+protocol.

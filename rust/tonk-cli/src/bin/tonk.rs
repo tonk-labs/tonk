@@ -1515,11 +1515,42 @@ fn account_login_warning(status: tonk_account::AccountStateStatus, warning: &str
     }
 }
 
-/// Best-effort registration line, quiet about being offline: status
-/// must answer without the network. Registration itself is web-only —
-/// the browser enrolls during its passkey ceremonies, which is where
-/// the account-signed deposits come from — so this only reads state
-/// and points at the account page when something is missing.
+fn report_detach_cleanup(summary: account::FlushSummary, error: Option<&str>, signed_out: bool) {
+    if !summary.has_pending() && error.is_none() {
+        return;
+    }
+    if signed_out && summary.has_pending() {
+        eprintln!(
+            "warning: signed out locally; your identity, spaces, and local edits remain safe. Provider cleanup is queued."
+        );
+    } else if summary.has_pending() {
+        eprintln!(
+            "warning: provider cleanup from an earlier sign-out is still queued; your local identity, spaces, and edits remain safe."
+        );
+    } else {
+        eprintln!(
+            "warning: provider cleanup could not be checked; your local identity, spaces, and edits remain safe."
+        );
+    }
+    eprintln!(
+        "next: run an online `tonk account status` (or another account command) to retry cleanup"
+    );
+    if summary.permanently_malformed > 0 {
+        eprintln!(
+            "warning: {} cleanup item(s) could not be validated; update Tonk and retry, then contact support if they remain",
+            summary.permanently_malformed
+        );
+    }
+    if let Some(error) = error {
+        eprintln!("cleanup detail: {error}");
+    }
+}
+
+/// Best-effort access-service line, quiet about being offline. Account status
+/// may make a bounded detach-cleanup attempt and this customer probe; its core
+/// durable answer remains local when either network call fails. Registration
+/// itself is web-only, so this line only reports state or points at the account
+/// page when something is missing.
 async fn print_customer_line(
     profile: &dialog_operator::Profile,
     store: &tonk_cli::space::SpaceStore,
@@ -1671,6 +1702,14 @@ async fn link_account(
         Ok(profile) => profile,
         Err(error) => return print_failure(error),
     };
+    match account::flush_pending_detaches_in(&profile, store).await {
+        Ok(summary) => report_detach_cleanup(summary, None, false),
+        Err(error) => report_detach_cleanup(
+            account::FlushSummary::default(),
+            Some(&format!("{error:#}")),
+            false,
+        ),
+    }
     let ceremony_page = via
         .clone()
         .unwrap_or_else(|| account::DEFAULT_LINK_PAGE.to_owned());
@@ -1788,65 +1827,80 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
     };
     match command {
         AccountCommand::Login { .. } => unreachable!("handled above"),
-        AccountCommand::Status { json } => match account::status_in(&profile, &store).await {
-            Ok(mut status) => {
-                // An unhydrated account retries its first sync right
-                // here, bounded: the status read is the natural moment
-                // someone notices "waiting for first sync", and leaving
-                // it sticky until the next link would report a state
-                // nothing is working to leave.
-                if matches!(
-                    &status,
-                    account::AccountStatus::Registered {
-                        account_state: tonk_account::AccountStateStatus::Unhydrated,
-                        ..
-                    }
-                ) {
-                    match tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                        let operator =
-                            tonk_cli::account_state::operator_for_store(&profile, &store).await?;
-                        tonk_cli::account_state::ensure_with_operator_and_store(
-                            &profile,
-                            operator,
-                            store.clone(),
-                        )
-                        .await
-                    })
-                    .await
-                    {
-                        Ok(Ok(outcome)) => {
-                            if let Some(warning) = outcome.warning {
-                                eprintln!("warning: account sync attempt: {warning}");
-                            }
-                            if let Ok(fresh) = account::status_in(&profile, &store).await {
-                                status = fresh;
-                            }
-                        }
-                        Ok(Err(error)) => eprintln!("warning: account sync attempt: {error:#}"),
-                        Err(_) => eprintln!("warning: account sync attempt timed out"),
-                    }
-                }
-                if json {
-                    return print_json(&account_status_json(&profile, &store, &status).await);
-                }
-                let linked = matches!(status, account::AccountStatus::Registered { .. });
-                print!("{}", account_context(&status).render());
-                if linked {
-                    print_customer_line(&profile, &store).await;
-                }
-                ExitCode::Success
+        AccountCommand::Status { json } => {
+            match account::flush_pending_detaches_in(&profile, &store).await {
+                Ok(summary) => report_detach_cleanup(summary, None, false),
+                Err(error) => report_detach_cleanup(
+                    account::FlushSummary::default(),
+                    Some(&format!("{error:#}")),
+                    false,
+                ),
             }
-            Err(error) => print_failure(error),
-        },
+            match account::status_in(&profile, &store).await {
+                Ok(mut status) => {
+                    // An unhydrated account retries its first sync right
+                    // here, bounded: the status read is the natural moment
+                    // someone notices "waiting for first sync", and leaving
+                    // it sticky until the next link would report a state
+                    // nothing is working to leave.
+                    if matches!(
+                        &status,
+                        account::AccountStatus::Registered {
+                            account_state: tonk_account::AccountStateStatus::Unhydrated,
+                            ..
+                        }
+                    ) {
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                            let operator =
+                                tonk_cli::account_state::operator_for_store(&profile, &store)
+                                    .await?;
+                            tonk_cli::account_state::ensure_with_operator_and_store(
+                                &profile,
+                                operator,
+                                store.clone(),
+                            )
+                            .await
+                        })
+                        .await
+                        {
+                            Ok(Ok(outcome)) => {
+                                if let Some(warning) = outcome.warning {
+                                    eprintln!("warning: account sync attempt: {warning}");
+                                }
+                                if let Ok(fresh) = account::status_in(&profile, &store).await {
+                                    status = fresh;
+                                }
+                            }
+                            Ok(Err(error)) => eprintln!("warning: account sync attempt: {error:#}"),
+                            Err(_) => eprintln!("warning: account sync attempt timed out"),
+                        }
+                    }
+                    if json {
+                        return print_json(&account_status_json(&profile, &store, &status).await);
+                    }
+                    let linked = matches!(status, account::AccountStatus::Registered { .. });
+                    print!("{}", account_context(&status).render());
+                    if linked {
+                        print_customer_line(&profile, &store).await;
+                    }
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            }
+        }
         AccountCommand::Logout => match account::logout_in(&profile, &store).await {
-            Ok(()) => {
+            Ok(outcome) => {
                 // The spaces themselves keep their account tag: logging out
                 // is not disowning them, and this device stays able to work
                 // on every replica it already holds.
                 if let Err(error) = store.set_account(None) {
                     return print_failure(error);
                 }
-                println!("signed out\ndevice: {}", profile.did());
+                println!(
+                    "signed out\ndevice: {}\nlocal identity, spaces, and edits remain on this device",
+                    profile.did()
+                );
+                report_detach_cleanup(outcome.cleanup, outcome.cleanup_error.as_deref(), true);
                 ExitCode::Success
             }
             Err(error) => print_failure(error),

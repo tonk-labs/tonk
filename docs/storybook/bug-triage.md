@@ -8,8 +8,8 @@ stale design contract before implementation work begins.
 
 ## Summary
 
-Five findings remain after merging related observations: three high and two
-medium; `B-02` is fixed and kept for its history. The high findings share one theme: a user-visible account transition can
+Three findings remain after merging related observations: one high and two
+medium; `B-01`, `B-02`, and `B-06` are fixed and kept for their history. The high finding shows that a user-visible account transition can
 cross an irreversible authority or durability boundary without a tested,
 monotonic recovery state. The medium findings make real service errors or
 duplicate activation results ambiguous. Coverage gaps without a concrete wrong
@@ -17,10 +17,10 @@ behavior remain in the verification backlog rather than this file.
 
 | ID | Title | Severity | Area | Decision needed | Issue |
 | --- | --- | --- | --- | --- | --- |
-| `B-01` | CLI login recovery does not span every account boundary | high | CLI account login | finish recovery contract | — |
+| `B-01` | CLI login recovery does not span every account boundary | high | CLI account login | fixed | — |
 | `B-02` | Duplicate-email account creation leaves an orphaned passkey | high | Browser account creation | fixed | — |
 | `B-04` | Busy account pages leave navigation links operational | high | Browser account lifecycle | fix or require restart reconciliation | — |
-| `B-06` | Same-device browser relink stores a grant the service did not activate | high | Browser account login | generation-binding contract fix | — |
+| `B-06` | Same-device browser relink stores a grant the service did not activate | high | Browser account login | fixed | — |
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
 | `B-05` | Activation accepts concurrent duplicate submissions | medium | Activation page | fix | — |
 
@@ -31,48 +31,39 @@ behavior remain in the verification backlog rather than this file.
 - **Where the user meets it:** `tonk account login`, after the browser has
   registered/authorized the CLI but before the native process has finished
   persisting and hydrating the account.
-- **What happens / what was expected:** The first implementation slice now
-  checkpoints the exact callback generation before writing local grant, root,
-  or provider projections, and retries converge from both `Activating` and
-  `Active`. Two boundaries remain outside that monotonic transition. The
-  browser registers the waiting device before callback delivery, but a dead CLI
-  listener has no replay token or acknowledgement protocol. At the other end,
-  hydration and the CLI's account-registry projection settle after the session
-  lock is released, so concurrent logout can invalidate the generation while
-  stale login work is still finishing.
-- **Reproduce:** Add deterministic fault exits immediately after browser device
-  registration and after each native write. Start login, approve it, terminate
-  at the fault, then run `tonk account status`, `account login`, `account
-  devices`, and `account logout` in fresh processes. Record duplicate/stale
-  attachments, partial local records, and whether any command can safely finish
-  or clean up the original generation.
+- **What happens / what was expected:** Provider registration now atomically
+  returns one canonical generation to first, repeated, and concurrent
+  same-account approvals. The callback carries that exact grant and attachment;
+  legacy callbacks recover it only with a grant-authorized provider request.
+  Native activation checkpoints `Activating` before compatibility writes, and
+  offline logout persists a signed exact-generation detach before clearing
+  local authority. A process-held handoff lock prevents queued cleanup from
+  racing provider adoption before the callback becomes locally active.
+- **Reproduce:** Use `HANDOFF-19` through `HANDOFF-24`: discard a committed
+  registration response, omit legacy callback fields, force-exit the listener,
+  restart after offline logout, cross account roots, and run status/logout while
+  browser registration is paused before callback delivery.
 - **Why (from the code):**
-  [`account_session.rs`](../../rust/tonk-cli/src/account_session.rs) owns exact
-  staging/finalization and cross-process transition locking.
-  [`account.rs`](../../rust/tonk-cli/src/account.rs) deliberately hydrates only
-  after Active so a slow remote cannot hold the exclusive transition lock.
-  [`tonk.rs`](../../rust/tonk-cli/src/bin/tonk.rs) writes the outer account
-  registry only after the library link returns. The browser-side registration
-  and callback form submission remain separate operations in
-  [`account.rs`](../../rust/tonk-ui/src/account.rs). Existing
-  [`account_interrupt.rs`](../../rust/tonk-cli/tests/account_interrupt.rs)
-  correctly pins fresh restart before approval, when nothing is yet durable.
-- **Severity:** `high`. A common account authorization can commit remote or
-  local authority and leave the user without a proved recovery or cleanup path.
-- **Decision needed:** `finish recovery contract`. Add a browser/service
-  acknowledgement or replay protocol for registration-before-callback, and a
-  settlement seam that atomically revalidates the Active generation while
-  committing the outer registry projection. Cover both with deterministic
-  barriers rather than timing-based process kills.
+  [`devices.rs`](../../rust/tonk-account-service/src/core/devices.rs) and the
+  store adapters own atomic provider convergence and exact recovery.
+  [`account_session.rs`](../../rust/tonk-cli/src/account_session.rs) owns staged
+  activation, the durable detach outbox, and transition/handoff locks.
+  [`account.rs`](../../rust/tonk-cli/src/account.rs) validates callback grants
+  before recovery or local writes. The browser callback in
+  [`account.rs`](../../rust/tonk-ui/src/account.rs) delivers provider-canonical
+  generation fields rather than its newly proposed grant.
+- **Severity:** `high` before the fix. A common account authorization could
+  commit remote or local authority without a proved recovery or cleanup path.
+- **Decision needed:** fixed by a generation-aware provider/callback/outbox
+  protocol; no replay bearer or bare-identifier recovery was introduced.
 - **Raised by:** [account lifecycle](accounts/lifecycle.md#open-questions-and-verification),
   [browser/CLI handoff](accounts/browser-cli-handoff.md#open-questions-and-verification),
   [state model](foundations/state-model.md#open-questions-and-verification).
-- **Status:** Partially implemented, not yet verified. The first recovery slice
-  now stages the exact callback generation before compatibility writes, resumes
-  `Activating` and post-promotion `Active` state without another browser
-  ceremony, rejects contradictory active-plus-pending state, and clears legacy
-  `Waiting` state on logout. Pre-callback remote registration, per-write fault
-  injection, and concurrent login/logout settlement remain open.
+- **Status:** Fixed. Focused provider and CLI tests cover response loss,
+  concurrent/cross-account registration, authenticated legacy recovery,
+  version-one state migration, offline/restarted cleanup, and handoff/outbox
+  exclusion. Full real-browser interruption at every compatibility write
+  remains a verification item rather than an unresolved protocol decision.
 
 ### B-02: Duplicate-email account creation leaves an orphaned passkey
 
@@ -151,38 +142,32 @@ behavior remain in the verification backlog rather than this file.
 
 - **Where the user meets it:** Browser Log in after a local browser sign-out,
   when the same browser profile/DID still has an active service attachment.
-- **What happens / what was expected:** The new passkey ceremony mints a fresh
-  nonce-bearing root-to-device grant. The account service deliberately reuses
-  the existing attachment for that DID and leaves its original grant active,
-  but its response returns only the attachment ID. The browser then persists
-  the fresh grant. Subsequent account-service invocations present a proof CID
-  different from the one bound to the reused attachment and are forbidden.
-  Re-login must persist the exact grant that the returned attachment authorizes,
-  or atomically rotate to a fresh attachment/grant generation.
+- **What happens / what was expected:** Same-root browser re-login now reuses
+  the locally persisted root-to-device grant before writing account state, so
+  its proof CID remains the one bound to the provider's reused attachment. The
+  provider's generation-aware link response also returns the canonical grant
+  and CID, keeping the browser/service contract explicit for later callers.
 - **Reproduce:** Sign in a browser, record its device attachment and delegation
   CID, sign out locally, then log in with the same passkey and profile DID.
   Compare the relink response, locally persisted root delegation, and service
   device row. Call an authenticated account endpoint and then log out; record
   the exact-generation authorization and detach results.
 - **Why (from the code):**
-  [`devices.rs:121-139`](../../rust/tonk-account-service/src/core/devices.rs)
-  validates the fresh grant but reuses the old active row. The handler response
-  includes the attachment and descriptor, not the row's active delegation.
-  [`account.rs:2201-2231`](../../rust/tonk-ui/src/account.rs) passes the fresh
-  ceremony to `complete_remote`, whose persistence path saves that ceremony's
-  grant. Provider authorization at
-  [`auth.rs:129-140`](../../rust/tonk-account-service/src/auth.rs) requires the
-  invocation proof CID to equal the active row's stored delegation CID.
-- **Severity:** `high`. Ordinary same-browser re-login can appear successful
-  while leaving every account-service request unauthorized.
-- **Decision needed:** `generation-binding contract fix`. Prefer making the
-  link response carry the exact stored delegation for a reused attachment, or
-  rotate attachment and grant together. Add a service-to-browser regression;
-  testing either half alone cannot prove the pair is coherent.
+  [`account.rs:1885-1912`](../../rust/tonk-ui/src/account.rs) selects the
+  persisted same-root grant and skips replacing it with the ceremony candidate.
+  [`devices.rs:132-158`](../../rust/tonk-account-service/src/core/devices.rs)
+  atomically recovers the same active provider generation, and the handler
+  returns its attachment, CID, and grant. Provider authorization at
+  [`auth.rs:129-140`](../../rust/tonk-account-service/src/auth.rs) still requires
+  that exact proof CID.
+- **Severity:** `high` before the fix. Ordinary same-browser re-login could
+  otherwise appear successful while leaving service requests unauthorized.
+- **Decision needed:** fixed by preserving the same-root browser grant and
+  returning the provider's canonical generation.
 - **Raised by:** [account lifecycle](accounts/lifecycle.md#open-questions-and-verification),
   [verification `LIFE-15`](verification/accounts.md).
-- **Status:** Source-confirmed during the first CLI recovery implementation
-  slice; not fixed or run end to end.
+- **Status:** Fixed. Focused same-root selection and provider convergence tests
+  pin both sides; a real browser relink remains part of `LIFE-15` verification.
 
 ## Medium
 

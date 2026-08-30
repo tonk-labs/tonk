@@ -7,7 +7,8 @@ use crate::auth::{
     authorize, authorize_root, optional_revocation, required_string, string_argument,
 };
 use crate::core::devices::{
-    DeviceView, detach_device, link_device, list_devices, register_device, revoke_device,
+    DeviceView, detach_device, link_device, list_devices, recover_device_attachment,
+    register_device, revoke_device,
 };
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
@@ -122,7 +123,7 @@ async fn handle_link_inner(
     let descriptor_hex = hex::encode(descriptor);
     let now = Date::now().as_millis() / 1000;
 
-    let attachment_id = link_device(
+    let registered = link_device(
         &store,
         &account,
         &device_did,
@@ -134,7 +135,11 @@ async fn handle_link_inner(
     .map_err(ceremony_error)?;
 
     Response::from_json(&serde_json::json!({
-        "attachmentId": attachment_id,
+        "schemaVersion": "tonk.device-registration.v2",
+        "attachmentId": registered.attachment_id,
+        "delegationCid": registered.delegation_cid,
+        "delegationHex": registered.delegation_hex,
+        "reused": registered.reused,
         "descriptorHex": descriptor_hex,
     }))
     .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
@@ -155,7 +160,7 @@ async fn handle_register_inner(
     let delegation_hex = string_argument(&caller, "delegation").map_err(ceremony_error)?;
     let now = Date::now().as_millis() / 1000;
 
-    let attachment_id = register_device(
+    let registered = register_device(
         &store,
         &caller.account,
         &device_did,
@@ -166,9 +171,40 @@ async fn handle_register_inner(
     .await
     .map_err(ceremony_error)?;
 
-    Response::from_json(&serde_json::json!({ "attachmentId": attachment_id })).map_err(|err| {
-        ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
-    })
+    Response::from_json(&serde_json::json!({
+        "schemaVersion": "tonk.device-registration.v2",
+        "attachmentId": registered.attachment_id,
+        "delegationCid": registered.delegation_cid,
+        "delegationHex": registered.delegation_hex,
+        "reused": registered.reused,
+    }))
+    .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
+}
+
+/// `POST /devices/attachment` → recover the caller's exact active generation.
+pub async fn handle_attachment(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match async {
+        let store = build_store(&ctx)?;
+        let body = read_body(&mut req).await?;
+        let caller = authorize(&store, &body, &["account", "device", "attachment"])
+            .await
+            .map_err(ceremony_error)?;
+        let registered = recover_device_attachment(&caller.device).map_err(ceremony_error)?;
+        Response::from_json(&serde_json::json!({
+            "schemaVersion": "tonk.device-registration.v2",
+            "attachmentId": registered.attachment_id,
+            "delegationCid": registered.delegation_cid,
+            "delegationHex": registered.delegation_hex,
+            "reused": registered.reused,
+        }))
+        .map_err(|error| ServiceError::new(ErrorCode::InternalError, error.to_string()))
+    }
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => error.to_response()?,
+    };
+    Ok(with_cors_headers(response))
 }
 
 /// `POST /devices/detach` → detach one exact generation without a UCAN.

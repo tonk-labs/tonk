@@ -1,6 +1,6 @@
 //! Durable native account-session state and cross-process transition locking.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::path::PathBuf;
 
@@ -15,8 +15,10 @@ use crate::space::SpaceStore;
 
 /// Credential site containing the sole native remote-account authority state.
 pub const ACCOUNT_SESSION_SITE: &str = "tonk-account-session-v1";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+const LEGACY_VERSION: u8 = 1;
 const LOCK_FILE: &str = "account-session.lock";
+const HANDOFF_LOCK_FILE: &str = "account-handoff.lock";
 const STATE_FILE_PREFIX: &str = ACCOUNT_SESSION_SITE;
 
 /// One durable account-session transition record.
@@ -28,6 +30,9 @@ pub struct AccountSessionState {
     pub active: Option<ActiveAccount>,
     /// Crash-recoverable activation or a legacy browser handoff.
     pub pending_login: Option<PendingLogin>,
+    /// Signed provider cleanup requests that survive local logout/restart.
+    #[serde(default)]
+    pub pending_detaches: Vec<PendingDetach>,
 }
 
 impl Default for AccountSessionState {
@@ -36,7 +41,53 @@ impl Default for AccountSessionState {
             version: VERSION,
             active: None,
             pending_login: None,
+            pending_detaches: Vec::new(),
         }
+    }
+}
+
+/// One durable, generation-bound provider cleanup request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDetach {
+    /// Provider base URL that owns the attachment.
+    pub provider: String,
+    /// Device-signed exact-generation detach intent.
+    pub signed_intent: SignedDetachIntent,
+    /// Unix time when local logout queued this item.
+    pub queued_at: u64,
+}
+
+/// Result of atomically signing out locally and queueing provider cleanup.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogoutTransition {
+    /// Whether active or pending local login state was cleared.
+    pub signed_out: bool,
+    /// Number of newly queued detach intents.
+    pub queued: usize,
+}
+
+/// Bounded best-effort cleanup result.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FlushSummary {
+    /// Terminal provider acknowledgements removed from the outbox.
+    pub retired: usize,
+    /// Items retained because delivery was unavailable or timed out.
+    pub retryable: usize,
+    /// Items retained because their local/provider representation is invalid.
+    pub permanently_malformed: usize,
+}
+
+impl FlushSummary {
+    /// Combine two flushes performed at one command boundary.
+    pub fn merge(&mut self, other: Self) {
+        self.retired += other.retired;
+        self.retryable += other.retryable;
+        self.permanently_malformed += other.permanently_malformed;
+    }
+
+    /// Whether any cleanup still needs attention.
+    pub fn has_pending(self) -> bool {
+        self.retryable > 0 || self.permanently_malformed > 0
     }
 }
 
@@ -51,6 +102,23 @@ fn validate_state(state: &AccountSessionState) -> Result<()> {
         anyhow::bail!("account-session state cannot be active and pending simultaneously");
     }
     Ok(())
+}
+
+fn decode_state(bytes: &[u8]) -> Result<AccountSessionState> {
+    let mut state: AccountSessionState =
+        serde_json::from_slice(bytes).context("stored account-session state is malformed")?;
+    match state.version {
+        LEGACY_VERSION => {
+            // Version 1 had no outbox. Ignore any injected field while
+            // migrating in memory; the source file is not rewritten by a read.
+            state.version = VERSION;
+            state.pending_detaches.clear();
+        }
+        VERSION => {}
+        version => anyhow::bail!("unsupported account-session state version {version}"),
+    }
+    validate_state(&state)?;
+    Ok(state)
 }
 
 /// Provider sign-in phase visible without opening a Dialog profile.
@@ -86,9 +154,7 @@ pub fn inspect_local(store: &SpaceStore) -> Result<LocalPhase> {
             continue;
         }
         let bytes = std::fs::read(entry.path())?;
-        let state: AccountSessionState =
-            serde_json::from_slice(&bytes).context("stored account-session state is malformed")?;
-        validate_state(&state)?;
+        let state = decode_state(&bytes)?;
         return Ok(if state.active.is_some() {
             LocalPhase::Active
         } else if state.pending_login.is_some() {
@@ -162,6 +228,20 @@ pub struct AccountActivationGuard {
     pending: PendingLogin,
 }
 
+/// Cross-process exclusion held while a browser may adopt a provider
+/// generation that has not reached the local callback yet.
+#[derive(Debug)]
+pub struct AccountHandoffGuard {
+    _file: File,
+}
+
+/// Shared exclusion for a local transition that must not race browser
+/// registration.
+#[derive(Debug)]
+pub struct AccountOperationGuard {
+    _file: File,
+}
+
 fn lock_file(store: &SpaceStore) -> Result<File> {
     let dir = store.account_dir();
     std::fs::create_dir_all(&dir)
@@ -173,6 +253,56 @@ fn lock_file(store: &SpaceStore) -> Result<File> {
         .write(true)
         .open(dir.join(LOCK_FILE))
         .context("failed to open the account-session lock")
+}
+
+fn handoff_lock_file(store: &SpaceStore) -> Result<File> {
+    let dir = store.account_dir();
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create account state at {}", dir.display()))?;
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join(HANDOFF_LOCK_FILE))
+        .context("failed to open the account-handoff lock")
+}
+
+/// Wait for bounded cleanup already in flight, then exclude cleanup and other
+/// login processes while browser registration can precede its callback.
+pub async fn begin_handoff(store: &SpaceStore) -> Result<AccountHandoffGuard> {
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(11);
+    let file = handoff_lock_file(store)?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(AccountHandoffGuard { _file: file }),
+            Err(TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(TryLockError::WouldBlock) => {
+                anyhow::bail!(
+                    "another account login is waiting for browser approval; finish or cancel it, then try again"
+                );
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(error).context("failed to lock the account handoff");
+            }
+        }
+    }
+}
+
+/// Refuse a local transition while another process is between browser
+/// registration and callback activation.
+pub fn begin_account_operation(store: &SpaceStore) -> Result<AccountOperationGuard> {
+    let file = handoff_lock_file(store)?;
+    match file.try_lock_shared() {
+        Ok(()) => Ok(AccountOperationGuard { _file: file }),
+        Err(TryLockError::WouldBlock) => {
+            anyhow::bail!("another account login is waiting for browser approval")
+        }
+        Err(TryLockError::Error(error)) => Err(error).context("failed to lock the account handoff"),
+    }
 }
 
 /// Acquire the cross-process shared remote-dispatch guard.
@@ -228,9 +358,7 @@ async fn load_raw(
                 .with_context(|| format!("failed to load account session at {}", path.display()));
         }
     };
-    let state: AccountSessionState =
-        serde_json::from_slice(&bytes).context("stored account-session state is malformed")?;
-    validate_state(&state)?;
+    let state = decode_state(&bytes)?;
     Ok(Some(state))
 }
 
@@ -427,20 +555,66 @@ pub async fn logout_transition_for_store(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     store: &SpaceStore,
-) -> Result<Vec<ActiveAccount>> {
+) -> Result<LogoutTransition> {
     let guard = exclusive_transition_guard(store)?;
     ensure_initialized(profile, operator, &guard).await?;
     let mut state = load_raw(profile, operator, store)
         .await?
         .unwrap_or_default();
     let existed = state.active.is_some() || state.pending_login.is_some();
-    let mut detached = Vec::new();
-    if let Some(active) = state.active.take() {
-        detached.push(active);
+    let mut accounts = Vec::new();
+    if let Some(active) = state.active.as_ref() {
+        accounts.push(active.clone());
     }
-    if let Some(PendingLogin::Activating { account, .. }) = state.pending_login.take() {
-        detached.push(account);
+    if let Some(PendingLogin::Activating { account, .. }) = state.pending_login.as_ref() {
+        accounts.push(account.clone());
     }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut queued = 0;
+    for account in accounts {
+        let mut already_queued = false;
+        for pending in &state.pending_detaches {
+            if pending.provider.trim_end_matches('/') == account.provider.trim_end_matches('/')
+                && pending
+                    .signed_intent
+                    .validate()
+                    .await
+                    .map(|payload| payload.attachment_id == account.attachment_id)
+                    .unwrap_or(false)
+            {
+                already_queued = true;
+                break;
+            }
+        }
+        if already_queued {
+            continue;
+        }
+        let root: Did = account
+            .root_did
+            .parse()
+            .context("active root DID is invalid")?;
+        let signed_intent = SignedDetachIntent::sign(
+            profile.signer(),
+            &root,
+            &account.attachment_id,
+            &account.delegation_cid,
+            now,
+        )
+        .await
+        .context("failed to sign account detach intent")?;
+        state.pending_detaches.push(PendingDetach {
+            provider: account.provider.trim_end_matches('/').to_string(),
+            signed_intent,
+            queued_at: now,
+        });
+        queued += 1;
+    }
+    // Signing every required intent succeeded. Persist queue + local sign-out
+    // together so neither can become durable without the other.
+    state.active = None;
     state.pending_login = None;
     if existed {
         save_raw(profile, operator, store, &state).await?;
@@ -452,39 +626,199 @@ pub async fn logout_transition_for_store(
             .perform(operator)
             .await;
     }
-    Ok(detached)
+    Ok(LogoutTransition {
+        signed_out: existed,
+        queued,
+    })
 }
 
-/// Tell `account`'s provider this attachment ended: one signed POST,
-/// no retry. See [`logout_transition_for_store`] for why failure is tolerable.
-pub async fn deliver_detach(profile: &Profile, account: &ActiveAccount, now: u64) -> Result<()> {
-    let root: Did = account
-        .root_did
-        .parse()
-        .context("active root DID is invalid")?;
-    let intent = SignedDetachIntent::sign(
-        profile.signer(),
-        &root,
-        &account.attachment_id,
-        &account.delegation_cid,
-        now,
-    )
-    .await
-    .context("failed to sign account detach intent")?;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivery {
+    Terminal,
+    Retryable,
+    Malformed,
+}
+
+async fn deliver_detach(pending: &PendingDetach, active: Option<&ActiveAccount>) -> Delivery {
+    let payload = match pending.signed_intent.validate().await {
+        Ok(payload) => payload,
+        Err(_) => return Delivery::Malformed,
+    };
+    // A same-account retry may intentionally recover the still-active
+    // generation whose earlier logout could not deliver. Never let that stale
+    // queued intent detach the newly re-adopted local session; it remains
+    // queued until a later logout clears active state again.
+    if active.is_some_and(|active| {
+        active.provider.trim_end_matches('/') == pending.provider.trim_end_matches('/')
+            && active.attachment_id == payload.attachment_id
+            && active.delegation_cid == payload.delegation_cid
+    }) {
+        return Delivery::Retryable;
+    }
+    let endpoint = match reqwest::Url::parse(&format!(
+        "{}/devices/detach",
+        pending.provider.trim_end_matches('/')
+    )) {
+        Ok(endpoint)
+            if matches!(endpoint.scheme(), "https" | "http")
+                && endpoint.host_str().is_some()
+                && endpoint.username().is_empty()
+                && endpoint.password().is_none() =>
+        {
+            endpoint
+        }
+        _ => return Delivery::Malformed,
+    };
     let response = reqwest::Client::new()
-        .post(format!(
-            "{}/devices/detach",
-            account.provider.trim_end_matches('/')
-        ))
-        .json(&intent)
+        .post(endpoint)
+        .json(&pending.signed_intent)
         .timeout(std::time::Duration::from_secs(10))
         .send()
-        .await
-        .context("failed to reach the account provider")?;
-    if !response.status().is_success() {
-        anyhow::bail!("provider answered {}", response.status());
+        .await;
+    let Ok(response) = response else {
+        return Delivery::Retryable;
+    };
+    if response.status().is_server_error()
+        || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        return Delivery::Retryable;
     }
-    Ok(())
+    if !response.status().is_success() {
+        return Delivery::Malformed;
+    }
+    let Ok(receipt) = response.json::<serde_json::Value>().await else {
+        return Delivery::Malformed;
+    };
+    match receipt.get("outcome").and_then(serde_json::Value::as_str) {
+        Some("detached" | "alreadyDetached" | "superseded" | "revoked") => Delivery::Terminal,
+        _ => Delivery::Malformed,
+    }
+}
+
+/// Deliver a bounded batch of durable detach intents. Only exact terminal
+/// provider acknowledgements remove an item; every other outcome remains for
+/// a later command/restart.
+pub async fn flush_pending_detaches(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpaceStore,
+) -> Result<FlushSummary> {
+    flush_pending_detaches_inner(profile, operator, store, false).await
+}
+
+/// Flush while the caller already holds either the exclusive browser-handoff
+/// guard or a shared account-operation guard.
+pub(crate) async fn flush_pending_detaches_guarded(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpaceStore,
+) -> Result<FlushSummary> {
+    flush_pending_detaches_inner(profile, operator, store, true).await
+}
+
+async fn flush_pending_detaches_inner(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpaceStore,
+    handoff_guarded: bool,
+) -> Result<FlushSummary> {
+    const MAX_BATCH: usize = 8;
+    const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    // Browser registration happens outside this process and may commit before
+    // the callback makes its adopted generation locally visible. Holding this
+    // shared lock through dispatch closes that window; a login holds the
+    // exclusive side from preflight through callback activation. Callers that
+    // already hold one side must not lock a second file descriptor.
+    let _handoff_guard = if handoff_guarded {
+        None
+    } else {
+        let file = handoff_lock_file(store)?;
+        match file.try_lock_shared() {
+            Ok(()) => Some(file),
+            Err(TryLockError::WouldBlock) => {
+                let guard = exclusive_transition_guard(store)?;
+                ensure_initialized(profile, operator, &guard).await?;
+                let pending = load_raw(profile, operator, store)
+                    .await?
+                    .unwrap_or_default()
+                    .pending_detaches
+                    .len();
+                return Ok(FlushSummary {
+                    retryable: pending,
+                    ..Default::default()
+                });
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(error).context("failed to lock provider cleanup against login");
+            }
+        }
+    };
+
+    let (pending, active) = {
+        let guard = exclusive_transition_guard(store)?;
+        ensure_initialized(profile, operator, &guard).await?;
+        let state = load_raw(profile, operator, store)
+            .await?
+            .unwrap_or_default();
+        (state.pending_detaches, state.active)
+    };
+    if pending.is_empty() {
+        return Ok(FlushSummary::default());
+    }
+    let attempted: Vec<PendingDetach> = pending.iter().take(MAX_BATCH).cloned().collect();
+    let deliveries = tokio::time::timeout(TOTAL_TIMEOUT, async {
+        let mut results = Vec::with_capacity(attempted.len());
+        for item in &attempted {
+            results.push((item.clone(), deliver_detach(item, active.as_ref()).await));
+        }
+        results
+    })
+    .await;
+    let Ok(deliveries) = deliveries else {
+        return Ok(FlushSummary {
+            retryable: pending.len(),
+            ..Default::default()
+        });
+    };
+
+    let terminal: Vec<PendingDetach> = deliveries
+        .iter()
+        .filter(|(_, delivery)| *delivery == Delivery::Terminal)
+        .map(|(pending, _)| pending.clone())
+        .collect();
+    let mut summary = FlushSummary {
+        retired: terminal.len(),
+        retryable: pending.len().saturating_sub(attempted.len())
+            + deliveries
+                .iter()
+                .filter(|(_, delivery)| *delivery == Delivery::Retryable)
+                .count(),
+        permanently_malformed: deliveries
+            .iter()
+            .filter(|(_, delivery)| *delivery == Delivery::Malformed)
+            .count(),
+    };
+    if terminal.is_empty() {
+        return Ok(summary);
+    }
+    let guard = exclusive_transition_guard(store)?;
+    ensure_initialized(profile, operator, &guard).await?;
+    let mut state = load_raw(profile, operator, store)
+        .await?
+        .unwrap_or_default();
+    let before = state.pending_detaches.len();
+    state
+        .pending_detaches
+        .retain(|pending| !terminal.contains(pending));
+    let removed = before - state.pending_detaches.len();
+    if removed > 0 {
+        save_raw(profile, operator, store, &state).await?;
+    }
+    // Another process may already have removed an exact item while this one
+    // delivered it. Report only what this transition retired locally.
+    summary.retired = removed;
+    Ok(summary)
 }
 
 #[cfg(feature = "integration-tests")]
@@ -620,6 +954,30 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn version_one_state_loads_as_version_two_without_rewriting_the_file() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let path = state_path(&profile, &store).unwrap();
+        let legacy = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "active": null,
+            "pending_login": null,
+        }))
+        .unwrap();
+        std::fs::write(&path, &legacy).unwrap();
+
+        let loaded = load_raw(&profile, &operator, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.version, 2);
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap()["pending_detaches"],
+            serde_json::json!([])
+        );
+        assert_eq!(std::fs::read(path).unwrap(), legacy);
+    }
+
+    #[dialog_common::test]
     async fn active_and_pending_authority_fails_closed() {
         let (_temp, store, profile, operator) = isolated_session().await;
         let state = AccountSessionState {
@@ -657,6 +1015,7 @@ mod tests {
                 version: VERSION,
                 active: None,
                 pending_login: Some(PendingLogin::Activating { account }),
+                pending_detaches: Vec::new(),
             })
         );
         drop(guard);
@@ -693,6 +1052,7 @@ mod tests {
                 version: VERSION,
                 active: None,
                 pending_login: Some(PendingLogin::Activating { account }),
+                pending_detaches: Vec::new(),
             })
         );
     }
@@ -719,6 +1079,7 @@ mod tests {
                 pending_login: Some(PendingLogin::Activating {
                     account: account.clone(),
                 }),
+                pending_detaches: Vec::new(),
             })
         );
 
@@ -734,6 +1095,7 @@ mod tests {
                 version: VERSION,
                 active: Some(account),
                 pending_login: None,
+                pending_detaches: Vec::new(),
             })
         );
     }
@@ -765,6 +1127,7 @@ mod tests {
                 version: VERSION,
                 active: None,
                 pending_login: Some(PendingLogin::Activating { account }),
+                pending_detaches: Vec::new(),
             })
         );
     }
@@ -801,11 +1164,17 @@ mod tests {
         save_raw(&profile, &operator, &store, &state).await.unwrap();
         assert_eq!(inspect_local(&store).unwrap(), LocalPhase::Pending);
 
-        let detached = logout_transition_for_store(&profile, &operator, &store)
+        let transition = logout_transition_for_store(&profile, &operator, &store)
             .await
             .unwrap();
 
-        assert!(detached.is_empty());
+        assert_eq!(
+            transition,
+            LogoutTransition {
+                signed_out: true,
+                queued: 0,
+            }
+        );
         assert_eq!(inspect_local(&store).unwrap(), LocalPhase::SignedOut);
         assert_eq!(
             load_raw(&profile, &operator, &store)
@@ -833,14 +1202,281 @@ mod tests {
             logout_transition_for_store(&profile, &operator, &store)
                 .await
                 .unwrap(),
-            vec![pending_account]
+            LogoutTransition {
+                signed_out: true,
+                queued: 1,
+            }
         );
         assert_eq!(inspect_local(&store).unwrap(), LocalPhase::SignedOut);
-        assert!(
+        assert_eq!(
             logout_transition_for_store(&profile, &operator, &store)
                 .await
+                .unwrap(),
+            LogoutTransition::default()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn offline_logout_persists_a_signed_detach_before_clearing_active_state() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("offline-generation");
+        save_raw(
+            &profile,
+            &operator,
+            &store,
+            &AccountSessionState {
+                active: Some(account.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        logout_transition_for_store(&profile, &operator, &store)
+            .await
+            .unwrap();
+
+        let bytes = std::fs::read(state_path(&profile, &store).unwrap()).unwrap();
+        let persisted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(persisted["version"], 2);
+        assert!(persisted["active"].is_null());
+        let queued = persisted["pending_detaches"].as_array().unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0]["provider"], account.provider);
+        let intent: SignedDetachIntent =
+            serde_json::from_value(queued[0]["signed_intent"].clone()).unwrap();
+        let payload = intent.validate().await.unwrap();
+        assert_eq!(payload.attachment_id, account.attachment_id);
+        assert_eq!(payload.delegation_cid, account.delegation_cid);
+
+        // Reloading from disk represents a fresh process; the queued cleanup
+        // remains while the local session is already signed out.
+        let restarted = load_raw(&profile, &operator, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(restarted.active.is_none());
+        assert_eq!(
+            serde_json::to_value(restarted).unwrap()["pending_detaches"]
+                .as_array()
                 .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    async fn detach_receipt_server(outcome: &'static str) -> (String, tokio::task::JoinHandle<()>) {
+        use axum::{Json, Router, routing::post};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/devices/detach",
+            post(move || async move { Json(serde_json::json!({ "outcome": outcome })) }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}"), task)
+    }
+
+    #[dialog_common::test]
+    async fn terminal_provider_receipt_drains_the_restarted_outbox() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let (provider, server) = detach_receipt_server("alreadyDetached").await;
+        let mut account = active_account("restart-generation");
+        account.provider = provider;
+        save_raw(
+            &profile,
+            &operator,
+            &store,
+            &AccountSessionState {
+                active: Some(account),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        logout_transition_for_store(&profile, &operator, &store)
+            .await
+            .unwrap();
+
+        let summary = flush_pending_detaches(&profile, &operator, &store)
+            .await
+            .unwrap();
+        assert_eq!(summary.retired, 1);
+        assert_eq!(summary.retryable, 0);
+        assert!(
+            load_raw(&profile, &operator, &store)
+                .await
+                .unwrap()
+                .unwrap()
+                .pending_detaches
                 .is_empty()
         );
+        server.abort();
+    }
+
+    #[dialog_common::test]
+    async fn browser_handoff_defers_cleanup_until_callback_activation_can_settle() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let (provider, server) = detach_receipt_server("detached").await;
+        let mut account = active_account("handoff-generation");
+        account.provider = provider;
+        save_raw(
+            &profile,
+            &operator,
+            &store,
+            &AccountSessionState {
+                active: Some(account),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        logout_transition_for_store(&profile, &operator, &store)
+            .await
+            .unwrap();
+
+        // The browser can now re-adopt this provider generation before its
+        // callback makes that fact visible in local session state. The handoff
+        // guard prevents an unrelated status process from detaching it in that
+        // gap.
+        let handoff = begin_handoff(&store).await.unwrap();
+        let deferred = flush_pending_detaches(&profile, &operator, &store)
+            .await
+            .unwrap();
+        assert_eq!(deferred.retryable, 1);
+        assert_eq!(deferred.retired, 0);
+        assert_eq!(
+            load_raw(&profile, &operator, &store)
+                .await
+                .unwrap()
+                .unwrap()
+                .pending_detaches
+                .len(),
+            1
+        );
+
+        drop(handoff);
+        let settled = flush_pending_detaches(&profile, &operator, &store)
+            .await
+            .unwrap();
+        assert_eq!(settled.retired, 1);
+        server.abort();
+    }
+
+    #[dialog_common::test]
+    async fn unavailable_provider_keeps_cleanup_for_a_later_process() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let mut account = active_account("retry-generation");
+        account.provider = "http://127.0.0.1:9".into();
+        save_raw(
+            &profile,
+            &operator,
+            &store,
+            &AccountSessionState {
+                active: Some(account),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        logout_transition_for_store(&profile, &operator, &store)
+            .await
+            .unwrap();
+
+        let summary = flush_pending_detaches(&profile, &operator, &store)
+            .await
+            .unwrap();
+        assert_eq!(summary.retryable, 1);
+        assert_eq!(
+            load_raw(&profile, &operator, &store)
+                .await
+                .unwrap()
+                .unwrap()
+                .pending_detaches
+                .len(),
+            1
+        );
+    }
+
+    #[dialog_common::test]
+    async fn malformed_provider_keeps_cleanup_with_a_permanent_diagnostic() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        save_raw(
+            &profile,
+            &operator,
+            &store,
+            &AccountSessionState {
+                active: Some(active_account("malformed-provider-generation")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        logout_transition_for_store(&profile, &operator, &store)
+            .await
+            .unwrap();
+        let mut state = load_raw(&profile, &operator, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        state.pending_detaches[0].provider = "not a provider URL".into();
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+
+        let summary = flush_pending_detaches(&profile, &operator, &store)
+            .await
+            .unwrap();
+        assert_eq!(summary.retryable, 0);
+        assert_eq!(summary.permanently_malformed, 1);
+        assert_eq!(
+            load_raw(&profile, &operator, &store)
+                .await
+                .unwrap()
+                .unwrap()
+                .pending_detaches
+                .len(),
+            1
+        );
+    }
+
+    #[dialog_common::test]
+    async fn stale_cleanup_cannot_detach_a_generation_recovered_by_new_login() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("recovered-generation");
+        save_raw(
+            &profile,
+            &operator,
+            &store,
+            &AccountSessionState {
+                active: Some(account.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        logout_transition_for_store(&profile, &operator, &store)
+            .await
+            .unwrap();
+        let mut state = load_raw(&profile, &operator, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        state.active = Some(account);
+        save_raw(&profile, &operator, &store, &state).await.unwrap();
+
+        let summary = flush_pending_detaches(&profile, &operator, &store)
+            .await
+            .unwrap();
+        assert_eq!(summary.retryable, 1);
+        let state = load_raw(&profile, &operator, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.active.is_some());
+        assert_eq!(state.pending_detaches.len(), 1);
     }
 }

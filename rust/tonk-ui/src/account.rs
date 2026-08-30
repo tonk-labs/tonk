@@ -2778,7 +2778,27 @@ fn bind(host: &HtmlElement) {
                     let attachment_id = registered
                         .get("attachmentId")
                         .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default();
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| {
+                            "This device was not linked because the page did not receive the provider's active attachment. Refresh this page and approve again."
+                                .to_string()
+                        })?;
+                    let delegation_hex = registered
+                        .get("delegationHex")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| {
+                            "This device was not linked because the page did not receive the provider's active grant. Refresh this page and approve again."
+                                .to_string()
+                        })?;
+                    let delegation_cid = registered
+                        .get("delegationCid")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| {
+                            "This device was not linked because the page did not receive the provider's active generation. Refresh this page and approve again."
+                                .to_string()
+                        })?;
                     // The delegation alone would leave the device authorized
                     // but unable to find the account repository, so the
                     // descriptor rides along.
@@ -2786,7 +2806,9 @@ fn bind(host: &HtmlElement) {
                     // uses; the CLI records it rather than guessing from a
                     // flag default.
                     let payload = serde_json::json!({
-                        "delegationHex": authorized.delegation_hex,
+                        "schemaVersion": "tonk.cli-authorization.v2",
+                        "delegationHex": delegation_hex,
+                        "delegationCid": delegation_cid,
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
                         "attachmentId": attachment_id,

@@ -80,7 +80,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
 | `identity [--reset]` | `CLI-04` | Missing/existing profile; reset with account/spaces; durability and recovery guidance. |
-| `account`, `account --json`, `account status [--json]` | `ACCT-C01` | Every local account/session state, offline, malformed/versioned state, human/JSON. |
+| `account`, `account --json`, `account status [--json]` | `ACCT-C01` | Every local account/session state, offline with/without queued cleanup, bounded customer/cleanup probes, malformed/versioned state, human/JSON. |
 | `account sync` | `ACCT-C09` | Unconfigured/unhydrated/ready, offline/timeout/revoked/diverged. |
 | `account login [--name] [--no-open] [--via]` | `ACCT-C02`–`ACCT-C07` | Default/direct page, TTY/pipe, browser states, approve/decline/cancel, no/pre-account onboarding state, created/claimed/legacy spaces, per-subject rotation warning, every crash stage. |
 | `account logout` | `ACCT-C08` | Active/pending/signed out, provider online/offline, lock/concurrency/crash. |
