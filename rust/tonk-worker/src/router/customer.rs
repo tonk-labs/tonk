@@ -600,7 +600,7 @@ pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
 }
 
 /// The same-origin `/ucan/` endpoint.
-fn ucan_endpoint(origin: &Url) -> Result<Url, TonkWorkerError> {
+pub(crate) fn ucan_endpoint(origin: &Url) -> Result<Url, TonkWorkerError> {
     origin
         .join("ucan/")
         .map_err(|error| TonkWorkerError::Internal(format!("ucan endpoint url: {error}")))

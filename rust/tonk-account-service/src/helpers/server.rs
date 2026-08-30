@@ -22,9 +22,8 @@ use hyper_util::rt::TokioIo;
 use serde::Serialize;
 use tokio::net::TcpListener;
 
-use crate::auth::{authorize, authorize_root, optional_passkey_metadata, required_string};
+use crate::auth::{authorize_root, optional_passkey_metadata, required_string};
 use crate::core::accounts::{CreateAccount, create_account};
-use crate::core::deletion::delete_account;
 use crate::core::devices::link_device;
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
@@ -124,7 +123,6 @@ async fn handle_request(
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
-        (Method::POST, "/account/delete") => account_delete_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         _ => Err(ServiceError::new(
             ErrorCode::NotFound,
@@ -136,23 +134,6 @@ async fn handle_request(
         Ok(response) => response,
         Err(err) => error_response(err),
     }))
-}
-
-/// `POST /account/delete` → root-authorized permanent account removal.
-async fn account_delete_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(&backends.store, &body, &["account", "delete"])
-        .await
-        .map_err(ceremony_error)?;
-    let confirmed_email =
-        required_string(&caller.arguments, "confirmedEmail").map_err(ceremony_error)?;
-    let receipt = delete_account(&backends.store, &caller.account.root_did, &confirmed_email)
-        .await
-        .map_err(ceremony_error)?;
-    Ok(json_response(StatusCode::OK, &receipt))
 }
 
 /// `GET /` → service info. Not CORS-wrapped, matching the worker.

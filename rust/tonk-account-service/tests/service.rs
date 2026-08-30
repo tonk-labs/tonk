@@ -7,8 +7,6 @@ use std::collections::BTreeMap;
 
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
-use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
-use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
 use tonk_account_service::helpers::AccountServer;
 
@@ -40,124 +38,6 @@ async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Ve
     container_for(ROOT_PRF, DEVICE_SEED, command, args).await
 }
 
-async fn container_with_link(
-    device: &Ed25519Signer,
-    link: &DelegationChain,
-    command: Vec<String>,
-    args: BTreeMap<String, Promised>,
-) -> Vec<u8> {
-    tonk_identity::request::build_device_invocation(device.clone(), link, command, args)
-        .await
-        .unwrap()
-}
-
-async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) -> Vec<u8> {
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
-    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
-    let root_did = root.did();
-    let chain = tonk_identity::delegation::mint_device_delegation(root, &device.did())
-        .await
-        .unwrap();
-    let delegation = chain.proofs().last().unwrap().clone();
-    let cid = delegation.to_cid();
-    let invocation = InvocationBuilder::new()
-        .issuer(dialog_credentials::Signer::from(device))
-        .audience(&root_did)
-        .subject(&root_did)
-        .command(command)
-        .arguments(BTreeMap::new())
-        .proofs(vec![cid])
-        .expiration(expiration)
-        .try_build()
-        .await
-        .unwrap();
-    let proofs = [(cid, std::sync::Arc::new(delegation))]
-        .into_iter()
-        .collect();
-    InvocationChain::new(invocation, proofs).to_bytes().unwrap()
-}
-
-async fn account_registration(email: &str) -> (Vec<u8>, Ed25519Signer, DelegationChain) {
-    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
-        .await
-        .unwrap();
-    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
-    let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
-        .await
-        .unwrap();
-    let ceremony = tonk_identity::ceremony::create_account(
-        root,
-        email.to_string(),
-        "credential".to_string(),
-        device.did(),
-        "laptop".to_string(),
-        hex::encode(grant.to_bytes().unwrap()),
-        "http://127.0.0.1:8080/ucan/".to_string(),
-        None,
-    )
-    .await
-    .unwrap();
-    (hex::decode(ceremony.invocation_hex).unwrap(), device, grant)
-}
-
-async fn account_creation(email: &str) -> Vec<u8> {
-    account_registration(email).await.0
-}
-
-/// Deletion finalizes with the device's delegated authority — the
-/// exact `root → device` grant registered at creation — not a
-/// root-signed passkey ceremony.
-async fn account_deletion(device: &Ed25519Signer, link: &DelegationChain, email: &str) -> Vec<u8> {
-    container_with_link(
-        device,
-        link,
-        vec!["account".into(), "delete".into()],
-        BTreeMap::from([(
-            "confirmedEmail".to_string(),
-            Promised::String(email.to_string()),
-        )]),
-    )
-    .await
-}
-
-#[dialog_common::test]
-async fn it_deletes_account_state_and_releases_the_email_over_http() {
-    let server = AccountServer::start().await;
-    let client = reqwest::Client::new();
-    let email = "delete-me@example.com";
-
-    let (creation, device, link) = account_registration(email).await;
-    client
-        .post(format!("{}/accounts", server.endpoint))
-        .body(creation)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap();
-    let deleted = client
-        .post(format!("{}/account/delete", server.endpoint))
-        .body(account_deletion(&device, &link, email).await)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(deleted.status(), 200);
-    let receipt: serde_json::Value = deleted.json().await.unwrap();
-    assert_eq!(receipt["email"], email);
-
-    let recreated = client
-        .post(format!("{}/accounts", server.endpoint))
-        .body(account_creation(email).await)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(recreated.status(), 201);
-
-    server.stop().await;
-}
-
 #[dialog_common::test]
 async fn it_rejects_a_mismatched_command() {
     let server = AccountServer::start().await;
@@ -176,55 +56,6 @@ async fn it_rejects_a_mismatched_command() {
     assert_eq!(response.status(), 403);
     let error: serde_json::Value = response.json().await.unwrap();
     assert_eq!(error["error"]["code"], "FORBIDDEN");
-
-    server.stop().await;
-}
-
-#[dialog_common::test]
-async fn it_rejects_an_expired_invocation() {
-    let server = AccountServer::start().await;
-    let expiration =
-        Timestamp::new(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
-    let body = container_with_expiration(vec!["account".into(), "delete".into()], expiration).await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/account/delete", server.endpoint))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 401);
-    let error: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(error["error"]["code"], "UNAUTHORIZED");
-    // Expiry is dialog's finding now, judged against the verification
-    // context's clock rather than a bound compared here, so the wording is
-    // theirs. The refusal and its code are what this pins.
-    let message = error["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        message.to_lowercase().contains("expired"),
-        "expected an expiry refusal, got: {message}"
-    );
-
-    server.stop().await;
-}
-
-#[dialog_common::test]
-async fn it_rejects_an_over_long_expiration_window() {
-    let server = AccountServer::start().await;
-    let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(10 * 60)).unwrap();
-    let body = container_with_expiration(vec!["account".into(), "delete".into()], expiration).await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/account/delete", server.endpoint))
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 401);
-    let error: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(error["error"]["code"], "UNAUTHORIZED");
-    assert_eq!(
-        error["error"]["message"],
-        "invocation expiration exceeds the five-minute ceremony window plus skew allowance"
-    );
 
     server.stop().await;
 }

@@ -24,11 +24,6 @@ use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
-/// The linked account provider's base URL, when an account is attached.
-pub(crate) async fn account_service_url(tonk: &TonkState) -> Option<String> {
-    crate::router::account::provider(tonk).await
-}
-
 /// This account's device links and their audiences, from local facts.
 ///
 /// The query itself is [`tonk_schema::device_link::device_links`],

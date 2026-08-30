@@ -247,29 +247,10 @@ pub async fn delete(
         Err(error) => return Err(error.into()),
     }
 
-    let account_service = {
-        let state = state.read().await;
-        super::account_devices::account_service_url(&state)
-            .await
-            .ok_or_else(|| TonkWorkerError::Conflict("no account service is attached".into()))?
-    };
-    let account_endpoint = Url::parse(&format!(
-        "{}/account/delete",
-        account_service.trim_end_matches('/')
-    ))
-    .map_err(|error| TonkWorkerError::Internal(format!("account deletion endpoint: {error}")))?;
-    let account = tonk_identity::request::build_device_invocation(
-        device,
-        &link,
-        vec!["account".into(), "delete".into()],
-        BTreeMap::from([(
-            "confirmedEmail".to_string(),
-            dialog_ucan_core::promise::Promised::String(request.confirmed_email.clone()),
-        )]),
-    )
-    .await
-    .map_err(|error| TonkWorkerError::Internal(format!("build account deletion: {error}")))?;
-    super::http::post_cbor(&account_endpoint, &account).await?;
+    // The access service's customer row is keyed on the account and
+    // its email is unique, so leaving it behind keeps the address taken
+    // after the account that held it is gone.
+    delete_customer(&state).await?;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     for space in &request.spaces {
@@ -293,4 +274,27 @@ pub async fn delete(
         deleted_spaces: request.spaces.len(),
         retained_joined_spaces: current.joined_spaces,
     }))
+}
+
+/// Tell the access service to drop the customer row, releasing the
+/// address it holds.
+async fn delete_customer(state: &AppState) -> Result<(), TonkWorkerError> {
+    let (device, link) = {
+        let tonk = state.read().await;
+        let link = super::account::account_link(&tonk).await.ok_or_else(|| {
+            TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
+        })?;
+        (tonk.profile.signer().signer().clone(), link)
+    };
+    let body = tonk_identity::request::build_device_invocation(
+        device,
+        &link,
+        vec!["customer".to_string(), "delete".to_string()],
+        BTreeMap::new(),
+    )
+    .await
+    .map_err(|error| TonkWorkerError::Internal(format!("build customer deletion: {error}")))?;
+    let endpoint = super::customer::ucan_endpoint(&super::customer::service_origin()?)?;
+    super::http::post_cbor(&endpoint, &body).await?;
+    Ok(())
 }

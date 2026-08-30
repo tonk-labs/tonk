@@ -14,39 +14,6 @@ pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Res
     Ok(with_cors_headers(Response::empty()?.with_status(204)))
 }
 
-/// `POST /account/delete` → permanently remove account-service state.
-pub async fn handle_delete(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let response = match handle_delete_inner(&mut req, &ctx).await {
-        Ok(response) => response,
-        Err(err) => err.to_response()?,
-    };
-    Ok(with_cors_headers(response))
-}
-
-async fn handle_delete_inner(
-    req: &mut Request,
-    ctx: &RouteContext<()>,
-) -> std::result::Result<Response, ServiceError> {
-    let body = read_body(req).await?;
-    // Device-authorized: the account's chain delegated to this device
-    // IS the deletion authority (possession is policy). The typed
-    // email confirmation and the passkey user-verification gesture are
-    // client-side safeguards; the argument check here is what binds
-    // the reviewed email to the signed request.
-    let store = build_store(ctx)?;
-    let caller = authorize(&store, &body, &["account", "delete"])
-        .await
-        .map_err(ceremony_error)?;
-    let confirmed_email =
-        required_string(&caller.arguments, "confirmedEmail").map_err(ceremony_error)?;
-    let receipt = delete_account(&store, &caller.account.root_did, &confirmed_email)
-        .await
-        .map_err(ceremony_error)?;
-    Response::from_json(&receipt).map_err(|error| {
-        ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
-    })
-}
-
 /// `POST /accounts` → create a new account.
 pub async fn handle(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match handle_inner(&mut req, &ctx).await {
