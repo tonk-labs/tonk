@@ -84,6 +84,54 @@ pub struct CustodyMaterial<'a> {
     pub sealed: &'a [u8],
 }
 
+/// Decode a custody set from the hex a ceremony hands back.
+///
+/// The one place hex is understood. It arrives that way because the
+/// ceremony's outputs cross into JavaScript, and it stops here: the
+/// enrollment builder takes values, so nothing downstream re-parses.
+pub fn decode_custody_material(
+    custody: &str,
+    consent: &str,
+    recovery: &str,
+    sealed: &str,
+) -> Result<OwnedCustodyMaterial> {
+    let consent = hex::decode(consent).context("the custody consent is not hex")?;
+    let recovery = hex::decode(recovery).context("the publish invocation is not hex")?;
+    Ok(OwnedCustodyMaterial {
+        custody: custody
+            .parse()
+            .map_err(|error| anyhow::anyhow!("the custody DID does not parse: {error:?}"))?,
+        consent: only_delegation(&consent)?,
+        recovery: only_invocation(&recovery)?,
+        sealed: hex::decode(sealed).context("the sealed envelope is not hex")?,
+    })
+}
+
+/// The single token inside a one-token container.
+///
+/// The ceremony builds containers, and a carried block is a bare token —
+/// the same unit the enclosing container holds. Unwrapping here keeps
+/// the ceremony's outputs as they are for every other consumer.
+fn only_token(bytes: &[u8], what: &str) -> Result<Vec<u8>> {
+    let mut tokens = Container::from_bytes(bytes)
+        .with_context(|| format!("{what} is not a container"))?
+        .into_tokens();
+    if tokens.len() != 1 {
+        anyhow::bail!("{what} carries {} tokens, expected one", tokens.len());
+    }
+    Ok(tokens.remove(0))
+}
+
+fn only_delegation(bytes: &[u8]) -> Result<Delegation<AnySignature>> {
+    let token = only_token(bytes, "the custody consent")?;
+    serde_ipld_dagcbor::from_slice(&token).context("the custody consent does not decode")
+}
+
+fn only_invocation(bytes: &[u8]) -> Result<Invocation<AnySignature>> {
+    let token = only_token(bytes, "the publish invocation")?;
+    serde_ipld_dagcbor::from_slice(&token).context("the publish invocation does not decode")
+}
+
 /// An owned custody set, for a caller that holds the material rather
 /// than borrowing it from a ceremony's output.
 pub struct OwnedCustodyMaterial {
