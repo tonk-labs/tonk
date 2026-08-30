@@ -302,6 +302,59 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
+    /// The handoff is recognised before anything parses it, because
+    /// the handles it carries are `CryptoKey`s and reading the envelope
+    /// through `serde_wasm_bindgen` would drop them silently.
+    #[dialog_common::test]
+    fn it_recognises_a_custody_handoff_on_the_raw_value() {
+        use wasm_bindgen::JsValue;
+
+        let envelope = js_sys::Object::new();
+        js_sys::Reflect::set(&envelope, &"type".into(), &"custody".into()).unwrap();
+        assert!(is_custody_envelope(&envelope.into()));
+
+        let other = js_sys::Object::new();
+        js_sys::Reflect::set(&other, &"type".into(), &"hello".into()).unwrap();
+        assert!(!is_custody_envelope(&other.into()));
+
+        assert!(!is_custody_envelope(&JsValue::UNDEFINED));
+    }
+
+    /// The two posted handles rebuild the custodian, and a handoff
+    /// missing either is refused rather than half-built.
+    #[dialog_common::test]
+    async fn it_rebuilds_the_custodian_from_the_posted_handles() {
+        let custodian =
+            tonk_identity::webcrypto_kek::Custodian::adopt(vec![7], &[11u8; 32], &[22u8; 32])
+                .await
+                .expect("handles import");
+        let (key, kek) = custodian.handles();
+
+        let envelope = js_sys::Object::new();
+        js_sys::Reflect::set(&envelope, &"type".into(), &"custody".into()).unwrap();
+        js_sys::Reflect::set(&envelope, &"credentialId".into(), &"07".into()).unwrap();
+        js_sys::Reflect::set(&envelope, &"key".into(), key).unwrap();
+        js_sys::Reflect::set(&envelope, &"kek".into(), kek).unwrap();
+        let envelope: wasm_bindgen::JsValue = envelope.into();
+
+        let rebuilt = custodian_from(&envelope).expect("the handoff rebuilds a custodian");
+        // The custody space it names is what a recovering device
+        // resolves against, so a drift here strands the account.
+        use dialog_varsig::Principal as _;
+        assert_eq!(
+            rebuilt.signer().await.unwrap().did(),
+            custodian.signer().await.unwrap().did(),
+        );
+
+        let partial = js_sys::Object::new();
+        js_sys::Reflect::set(&partial, &"credentialId".into(), &"07".into()).unwrap();
+        js_sys::Reflect::set(&partial, &"key".into(), key).unwrap();
+        assert!(
+            custodian_from(&partial.into()).is_err(),
+            "a handoff missing the KEK handle is refused"
+        );
+    }
+
     /// An onboarding device derives its recipient locally: nothing to ask.
     #[dialog_common::test]
     async fn it_needs_no_assertion_without_a_passkey_root() {
