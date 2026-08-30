@@ -3521,6 +3521,7 @@ mod tests {
         name: &str,
         expect_remote: bool,
     ) -> Result<String> {
+        wait_for_service_worker(driver).await?;
         let before = space_keys(driver).await?;
         // `name` alone: where a space syncs is the worker's to resolve
         // from the account's registration, and template seeding went
