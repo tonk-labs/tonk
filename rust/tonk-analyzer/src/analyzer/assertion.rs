@@ -10,7 +10,7 @@ use tonk_notation::{
     Anchor, Application as SyntaxApplication, Field, FieldValue, HeadName, Scalar,
 };
 
-use super::error::{AnalyzeError, AnalyzeErrorKind};
+use super::error::{AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind};
 use super::field::{
     collection_entry_terms, field_value_to_term, is_meta_field, untyped_descriptor,
     validate_claim_attribute,
@@ -22,6 +22,38 @@ use tonk_core::claim::ValueMap;
 use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent, derive_this};
+
+/// The `as:` spelling of a value type, for diagnostics.
+fn type_spelling(ty: dialog_query::artifact::Type) -> String {
+    use dialog_query::artifact::Type;
+    match ty {
+        Type::String => "text".into(),
+        Type::UnsignedInt => "unsigned-integer".into(),
+        Type::SignedInt => "signed-integer".into(),
+        Type::Float => "float".into(),
+        Type::Boolean => "boolean".into(),
+        Type::Entity => "entity".into(),
+        Type::Symbol => "symbol".into(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// How to spell a literal so it carries the declared type.
+fn divergence_hint(expected: dialog_query::artifact::Type, value: &Value) -> String {
+    use dialog_query::artifact::Type;
+    match (expected, value) {
+        (Type::UnsignedInt, Value::SignedInt(i)) if *i >= 0 => {
+            format!("write bare digits ({i}) for an unsigned integer")
+        }
+        (Type::SignedInt, Value::UnsignedInt(u)) => {
+            format!("write +{u} for a signed integer")
+        }
+        (Type::Float, Value::SignedInt(i)) => format!("write {i}.0 for a float"),
+        (Type::Float, Value::UnsignedInt(u)) => format!("write {u}.0 for a float"),
+        (Type::String, _) => "quote the value for text".into(),
+        _ => "spell the literal for that type, or align the attribute's `as:`".into(),
+    }
+}
 
 /// Output of analyzing a single `head!:` expression. An
 /// expression can produce up to two statements:
@@ -380,10 +412,28 @@ pub(crate) fn build_assertion_application(
                     analysis,
                     None,
                 )?;
-                parameters.insert(field.name.clone(), term);
                 if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
+                    // The declaration never blocks a raw write, but a
+                    // literal whose spelled type diverges from it is
+                    // worth a heads-up: the declaring concept will
+                    // not see this fact.
+                    if let (Some(expected), Term::Constant(value)) =
+                        (declared.descriptor.content_type(), &term)
+                        && value.data_type() != expected
+                    {
+                        analysis.warnings.push(AnalyzeDiagnostic::warning(
+                            AnalyzeDiagnosticKind::DeclaredTypeDivergence {
+                                attribute: format!("{domain}/{}", field.name),
+                                declared: type_spelling(expected),
+                                found: type_spelling(value.data_type()),
+                                hint: divergence_hint(expected, value),
+                            },
+                            field.value_range,
+                        ));
+                    }
                     attributes.insert(field.name.clone(), untyped_descriptor(&declared.descriptor));
                 }
+                parameters.insert(field.name.clone(), term);
             }
             Ok(AssertionPlan {
                 assert: Some(Application::Domain {

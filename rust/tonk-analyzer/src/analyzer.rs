@@ -100,6 +100,10 @@ pub(crate) struct Working {
     /// query pass, in document order. Read by the mutation pass
     /// to decide which `?var` references a preceding query binds.
     pub queries: Vec<Application>,
+    /// Non-fatal findings the lowering passes accumulate (e.g. a
+    /// domain literal diverging from a declared attribute's type).
+    /// Merged into the document's diagnostics at assembly.
+    pub warnings: Vec<error::AnalyzeDiagnostic>,
 }
 
 impl Working {
@@ -252,7 +256,7 @@ fn expand(
     resolved: graph::Resolved,
 ) -> Result<Tree<Syntax>, AnalyzeError> {
     let graph::Resolved { mut declared } = resolved;
-    let diagnostics = scan::scan_variables(syntax);
+    let mut diagnostics = scan::scan_variables(syntax);
 
     // The `Working` scratch carries the cross-pass accumulator
     // state: the query and mutation passes read it as they build
@@ -266,6 +270,7 @@ fn expand(
         declarations: scope.declarations.lock().clone(),
         variables: scope.variables.lock().clone(),
         queries: Vec::new(),
+        warnings: Vec::new(),
     };
 
     // Per-expression tree node, by source-expression index.
@@ -524,6 +529,7 @@ fn expand(
             analysis,
         });
     }
+    diagnostics.extend(std::mem::take(&mut working.warnings));
     let mut document = DocumentAnalysis {
         expressions,
         synthesized: Vec::new(),
@@ -2339,6 +2345,49 @@ xyz.tonk.person!:
         assert!(
             matches!(term, Some(Term::Constant(Value::UnsignedInt(3)))),
             "a bare integer on an untyped claim field is unsigned by spelling, got {term:?}"
+        );
+    }
+
+    /// A raw domain write whose literal diverges from a declared
+    /// attribute's type still analyzes — raw domains are open-ended —
+    /// but carries a warning-severity diagnostic with the spelling
+    /// that would match the declaration.
+    #[dialog_common::test]
+    async fn it_warns_when_a_domain_literal_diverges_from_a_declaration() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: signed-integer
+
+io.test.person!:
+  this: test:1
+  age: 41
+"#,
+        );
+        let tree = analyze_empty(&syntax).await.unwrap();
+        let warnings: Vec<_> = tree
+            .analysis
+            .diagnostics
+            .iter()
+            .filter(|d| d.code() == "W_DECLARED_TYPE_DIVERGENCE")
+            .collect();
+        assert_eq!(warnings.len(), 1, "one divergence warning: {warnings:?}");
+        let message = warnings[0].message();
+        assert!(
+            message.contains("signed-integer") && message.contains("+41"),
+            "the warning names the declared type and the spelling: {message}"
+        );
+        assert!(
+            matches!(
+                warnings[0].severity,
+                crate::analyzer::error::DiagnosticSeverity::Warning
+            ),
+            "advisory, not an error",
         );
     }
 

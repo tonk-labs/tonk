@@ -445,6 +445,7 @@ pub fn set_no_entity_diagnostic(
     entity: &str,
     present: &[(String, String)],
     missing: &[(String, String)],
+    mistyped: &[(String, String, String)],
 ) {
     let _ = host.set_attribute("data-state", State::NoEntity.as_str());
     remove_error_callout(host);
@@ -489,6 +490,15 @@ pub fn set_no_entity_diagnostic(
         line += 1;
     }
     let mut error_lines: Vec<(usize, String)> = Vec::new();
+    // A field whose value EXISTS but under a different value type than
+    // the concept declares: show the value, squiggle it with the type
+    // story — "missing" would send the author hunting a fact that is
+    // right there.
+    for (field, value, message) in mistyped {
+        source.push_str(&format!("  {field}: {value}\n"));
+        error_lines.push((line, message.clone()));
+        line += 1;
+    }
     for (field, uri) in missing {
         source.push_str(&format!("  {field}: _\n"));
         error_lines.push((line, format!("Attribute {uri} is missing")));

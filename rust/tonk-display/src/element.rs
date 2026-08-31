@@ -1951,22 +1951,9 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
     // carry the attribute URI (`the:`) so the diagnostic can name it.
     let mut present: Vec<(String, String)> = Vec::new();
     let mut missing: Vec<(String, String)> = Vec::new();
+    let mut mistyped: Vec<(String, String, String)> = Vec::new();
     for (field, spec) in with {
-        let one = serde_json::json!({
-            "terms": { "this": entity, field: { "?": { "name": field } } },
-            "predicate": { "with": { field: spec } },
-        });
-        let value = match serde_json::from_value::<Query>(one).ok().as_ref() {
-            Some(query) => match to_body(query) {
-                Ok(body) => host_consumer::query(host, &body)
-                    .await
-                    .ok()
-                    .and_then(|result| first_field(&result, field).ok().flatten()),
-                Err(_) => None,
-            },
-            None => None,
-        };
-        match value {
+        match probe_field(host, &entity, field, spec).await {
             Some(value) => present.push((field.clone(), value)),
             None => {
                 // The dialog attribute key (`the:`), so the tooltip can name
@@ -1977,12 +1964,85 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
                     .and_then(|t| t.as_str())
                     .unwrap_or(field)
                     .to_owned();
-                missing.push((field.clone(), uri));
+                // The typed probe missed. An UNTYPED re-probe tells a
+                // mistyped fact (present under another value type — a
+                // raw write with a different spelling) from a truly
+                // absent one.
+                let mut loose = spec.clone();
+                let declared = loose
+                    .as_object_mut()
+                    .and_then(|spec| spec.remove("as"))
+                    .and_then(|declared| declared.as_str().map(type_spelling));
+                let refound = match declared {
+                    Some(_) => probe_field(host, &entity, field, &loose).await,
+                    // No declared type: the loose probe is the same
+                    // probe; nothing new to learn.
+                    None => None,
+                };
+                match (refound, declared) {
+                    (Some(value), Some(declared)) => {
+                        let message = format!(
+                            "Attribute {uri} holds this value with a different value \
+                             type than the declared {declared} — e.g. bare digits are \
+                             unsigned, +N signed, N.0 float"
+                        );
+                        mistyped.push((field.clone(), value, message));
+                    }
+                    _ => missing.push((field.clone(), uri)),
+                }
             }
         }
     }
 
-    state::set_no_entity_diagnostic(host, &model, &entity, &present, &missing);
+    state::set_no_entity_diagnostic(host, &model, &entity, &present, &missing, &mistyped);
+}
+
+/// One single-field probe of `entity`: a one-field predicate built
+/// from `spec`, read back as display text whatever the value type.
+async fn probe_field(
+    host: &Element,
+    entity: &str,
+    field: &str,
+    spec: &serde_json::Value,
+) -> Option<String> {
+    let one = serde_json::json!({
+        "terms": { "this": entity, field: { "?": { "name": field } } },
+        "predicate": { "with": { field: spec } },
+    });
+    let query = serde_json::from_value::<Query>(one).ok()?;
+    let body = to_body(&query).ok()?;
+    let result = host_consumer::query(host, &body).await.ok()?;
+    first_field_text(&result, field)
+}
+
+/// Read the first conclusion's `field` as display text, whatever its
+/// value type — the diagnosis needs numbers and booleans too, not
+/// just strings.
+fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
+    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(value.clone()).ok()?;
+    let first = conclusions.into_iter().next()?;
+    match first.fields.get(field)? {
+        Ipld::String(s) => Some(s.clone()),
+        Ipld::Integer(i) => Some(i.to_string()),
+        Ipld::Float(f) => Some(format!("{f:?}")),
+        Ipld::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// The `as:` spelling of a wire descriptor type, for the diagnosis
+/// message.
+fn type_spelling(ty: &str) -> String {
+    match ty {
+        "Text" => "text".into(),
+        "UnsignedInteger" => "unsigned-integer".into(),
+        "SignedInteger" => "signed-integer".into(),
+        "Float" => "float".into(),
+        "Boolean" => "boolean".into(),
+        "Entity" => "entity".into(),
+        "Symbol" => "symbol".into(),
+        other => other.to_owned(),
+    }
 }
 
 /// Refresh the trailing notation slide's source `<script>` with
@@ -4066,6 +4126,60 @@ mod tests {
             assert!(
                 await_selector(&display, "tonk-notation").await.is_some(),
                 "late-matching data mounts the notation fallback in place",
+            );
+        }
+
+        // A concept mismatch caused by a TYPE divergence names the
+        // stored value instead of claiming the field is missing: the
+        // typed probe misses, the untyped re-probe finds the fact.
+        #[dialog_common::test]
+        async fn it_diagnoses_a_mistyped_field_instead_of_missing() {
+            let host = FakeHost::install_with_model(
+                vec![
+                    // model name lookup
+                    name_row("did:key:zModel"),
+                    // `tonk:_` default view query (no view anywhere)
+                    rows(&[]),
+                    // TYPED probe of `count`: no unsigned value
+                    rows(&[]),
+                    // UNTYPED re-probe: the fact exists, other type
+                    rows(&[("id:demo-counter", &[("count", "41")])]),
+                ],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &rows(&[]));
+            // The entity does not match the concept: empty frame.
+            host.push_frame("entity", &rows(&[]));
+
+            let query = await_selector(&display, ".tonk-display-query")
+                .await
+                .expect("the mismatch diagnosis renders");
+            for _ in 0..200 {
+                if (query.text_content().unwrap_or_default()).contains("41") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            let text = query.text_content().unwrap_or_default();
+            assert!(
+                text.contains("count") && text.contains("41"),
+                "the stored value shows instead of a blank: {text}"
+            );
+            let notation = display
+                .query_selector("[data-error-2]")
+                .unwrap()
+                .expect("the mistyped line carries its story");
+            let message = notation.get_attribute("data-error-2").unwrap_or_default();
+            assert!(
+                message.contains("different value type"),
+                "the squiggle explains the divergence: {message}"
             );
         }
 
