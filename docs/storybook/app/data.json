@@ -23,13 +23,6 @@
       "title": "Busy account pages leave navigation links operational"
     },
     {
-      "area": "Browser account login",
-      "decision": "generation-binding contract fix",
-      "id": "B-06",
-      "severity": "high",
-      "title": "Same-device browser relink stores a grant the service did not activate"
-    },
-    {
       "area": "Browser API/error UX",
       "decision": "fix",
       "id": "B-03",

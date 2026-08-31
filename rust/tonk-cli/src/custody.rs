@@ -76,7 +76,7 @@ pub async fn custody_space_seed(
         .map_err(|error| anyhow::anyhow!("failed to seal the space seed: {error}"))?
         .encode();
     // Two rows: the envelope, and the principal whose seed it carries.
-    let message = SecretMessage::new(&recipient, sealed);
+    let message = SecretMessage::new(recipient, sealed);
     account
         .transaction()
         .assert(message.clone())

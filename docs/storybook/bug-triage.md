@@ -8,10 +8,11 @@ stale design contract before implementation work begins.
 
 ## Summary
 
-Five findings remain after merging related observations: three high and two
-medium; `B-02` is fixed and kept for its history. The high findings share one theme: a user-visible account transition can
-cross an irreversible authority or durability boundary without a tested,
-monotonic recovery state. The medium findings make real service errors or
+Four findings remain after merging related observations: two high and two
+medium; `B-02` is fixed and kept for its history. `B-06` is gone with the
+account service it described. The high findings share one theme: a
+user-visible account transition can cross an irreversible authority or
+durability boundary without a tested, monotonic recovery state. The medium findings make real service errors or
 duplicate activation results ambiguous. Coverage gaps without a concrete wrong
 behavior remain in the verification backlog rather than this file.
 
@@ -20,7 +21,6 @@ behavior remain in the verification backlog rather than this file.
 | `B-01` | CLI login recovery does not span every account boundary | high | CLI account login | finish recovery contract | — |
 | `B-02` | Duplicate-email account creation leaves an orphaned passkey | high | Browser account creation | fixed | — |
 | `B-04` | Busy account pages leave navigation links operational | high | Browser account lifecycle | fix or require restart reconciliation | — |
-| `B-06` | Same-device browser relink stores a grant the service did not activate | high | Browser account login | generation-binding contract fix | — |
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
 | `B-05` | Activation accepts concurrent duplicate submissions | medium | Activation page | fix | — |
 
@@ -146,43 +146,6 @@ behavior remain in the verification backlog rather than this file.
 - **Raised by:** [account lifecycle](accounts/lifecycle.md#cancel-and-interrupt),
   [failure checkpoints](cross-cutting/failure-and-recovery.md#account-fault-checkpoints).
 - **Status:** Not run. Source-audit finding at `a3f8670b1`.
-
-### B-06: Same-device browser relink stores a grant the service did not activate
-
-- **Where the user meets it:** Browser Log in after a local browser sign-out,
-  when the same browser profile/DID still has an active service attachment.
-- **What happens / what was expected:** The new passkey ceremony mints a fresh
-  nonce-bearing root-to-device grant. The account service deliberately reuses
-  the existing attachment for that DID and leaves its original grant active,
-  but its response returns only the attachment ID. The browser then persists
-  the fresh grant. Subsequent account-service invocations present a proof CID
-  different from the one bound to the reused attachment and are forbidden.
-  Re-login must persist the exact grant that the returned attachment authorizes,
-  or atomically rotate to a fresh attachment/grant generation.
-- **Reproduce:** Sign in a browser, record its device attachment and delegation
-  CID, sign out locally, then log in with the same passkey and profile DID.
-  Compare the relink response, locally persisted root delegation, and service
-  device row. Call an authenticated account endpoint and then log out; record
-  the exact-generation authorization and detach results.
-- **Why (from the code):**
-  [`devices.rs:121-139`](../../rust/tonk-account-service/src/core/devices.rs)
-  validates the fresh grant but reuses the old active row. The handler response
-  includes the attachment and descriptor, not the row's active delegation.
-  [`account.rs:2201-2231`](../../rust/tonk-ui/src/account.rs) passes the fresh
-  ceremony to `complete_remote`, whose persistence path saves that ceremony's
-  grant. Provider authorization at
-  [`auth.rs:129-140`](../../rust/tonk-account-service/src/auth.rs) requires the
-  invocation proof CID to equal the active row's stored delegation CID.
-- **Severity:** `high`. Ordinary same-browser re-login can appear successful
-  while leaving every account-service request unauthorized.
-- **Decision needed:** `generation-binding contract fix`. Prefer making the
-  link response carry the exact stored delegation for a reused attachment, or
-  rotate attachment and grant together. Add a service-to-browser regression;
-  testing either half alone cannot prove the pair is coherent.
-- **Raised by:** [account lifecycle](accounts/lifecycle.md#open-questions-and-verification),
-  [verification `LIFE-15`](verification/accounts.md).
-- **Status:** Source-confirmed during the first CLI recovery implementation
-  slice; not fixed or run end to end.
 
 ## Medium
 
