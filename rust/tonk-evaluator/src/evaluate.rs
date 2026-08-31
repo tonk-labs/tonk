@@ -1354,6 +1354,105 @@ attribute!: &foo/title
         Ok(())
     }
 
+    /// The read side of the open-ended ruling: a domain query's `_`
+    /// matches a value of ANY type — a branch-declared attribute
+    /// imposes nothing on reads — and a literal matches by its own
+    /// spelling (`+41` finds the signed fact, bare `41` does not).
+    #[dialog_common::test]
+    async fn it_reads_raw_domains_untyped() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // A concept DECLARES age as unsigned; the raw write stores a
+        // deliberately signed value anyway (allowed, with a warning).
+        let docs = [
+            r#"concept!: &person
+  description: "A person"
+  with:
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: unsigned-integer
+"#,
+            r#"io.test.person!:
+  this: test:q
+  age: +41
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+        }
+
+        let query = |doc: &str| {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed.syntax.expect("syntax")
+        };
+        let ask = |syntax: tonk_notation::Syntax| {
+            let branch = &branch;
+            let operator = &operator;
+            async move {
+                let evaluated = syntax
+                    .evaluate(branch.transaction())
+                    .perform(operator)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("query evaluate failed: {e}"))?;
+                let results: usize = evaluated
+                    .matches
+                    .iter()
+                    .map(|block| block.results.len())
+                    .sum();
+                let age = evaluated
+                    .matches
+                    .first()
+                    .and_then(|block| block.results.first())
+                    .and_then(|result| result.fields.get("age").cloned());
+                Ok::<_, anyhow::Error>((results, age))
+            }
+        };
+
+        // `_` matches the signed value despite the unsigned
+        // declaration — and it comes back spelled.
+        let (blank_matches, age) =
+            ask(query("io.test.person:\n  this: test:q\n  age: _\n")).await?;
+        assert_eq!(blank_matches, 1, "a blank matches any value type");
+        assert_eq!(
+            age,
+            Some(serde_json::json!("+41")),
+            "and the value rides out in its spelling",
+        );
+
+        // A literal matches by its own spelling.
+        let (signed_matches, _) =
+            ask(query("io.test.person:\n  this: test:q\n  age: +41\n")).await?;
+        assert_eq!(signed_matches, 1, "+41 finds the signed fact");
+        let (unsigned_matches, _) =
+            ask(query("io.test.person:\n  this: test:q\n  age: 41\n")).await?;
+        assert_eq!(unsigned_matches, 0, "bare 41 (unsigned) does not");
+        Ok(())
+    }
+
     /// Match JSON spells signed integers explicitly, so notation
     /// printers can tell +41 from 41 (JSON numbers cannot).
     #[dialog_common::test]
