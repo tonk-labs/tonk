@@ -136,12 +136,19 @@ not mix incompatible shell, Wasm, and guest bundles.
 
 `UI-03` uses immediate load-time alignment: every online load asks the current
 registration to update before mounting the UI. When a replacement activates,
-the document performs one guarded reload so the mounted shell and active worker
-come from the same generation. A failed update check keeps an existing active
-worker usable offline, and neither path clears IndexedDB or CacheStorage. The
-real-browser regressions in `rust/tonk-ui/src/service_worker_upgrade.rs` cover
-the online replacement and offline-return cases; full checklist execution still
-requires a compatible ChromeDriver.
+the update-aware document explicitly asks that successor to claim it, then
+performs one guarded reload so the mounted shell and active worker come from the
+same generation. Activation alone never claims an already-open older document;
+that page keeps its compatible controller until navigation. A failed update
+check keeps an existing active worker usable offline, and neither path clears
+IndexedDB or CacheStorage. The real-browser regressions in
+`rust/tonk-ui/src/service_worker_upgrade.rs` cover the online replacement and
+offline-return cases; full checklist execution still requires a compatible
+ChromeDriver. The real-source Node contract in
+`rust/tonk-ui/tests/service-worker-claim.test.mjs` separately pins the rollout
+boundary: activation does not claim an older page, an explicit cold-start claim
+does take control, and an update-aware page claims its activated successor
+before exactly one guarded reload.
 
 ### Remain in flight
 

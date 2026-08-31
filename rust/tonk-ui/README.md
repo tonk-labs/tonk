@@ -69,15 +69,20 @@ that job on every user-initiated warm load.
 
 The load lifecycle has four cases:
 
-- A first install waits until the worker claims the current document, then
-  continues without reloading.
+- A first install explicitly asks the activated worker to claim the current
+  document, then continues without reloading.
 - An online warm load checks for a newer worker behind the boot overlay.
-- A real warm replacement activates through the worker's existing
-  `skipWaiting()` and `clients.claim()` path, then reloads once before the
-  application root mounts so the document, shell, and controller agree.
+- A real warm replacement activates through `skipWaiting()`. The update-aware
+  page then explicitly asks that successor to claim it and reloads once before
+  the application root mounts so the document, shell, and controller agree.
 - An offline warm load keeps its existing controller and cached shell. A failed
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
+
+Activation alone does not claim already-open documents. Pages cached before
+this update protocol therefore remain on their compatible existing controller
+until navigation; an update-aware page opts into the new controller only when
+it can perform the guarded alignment reload.
 
 The one-shot alignment reload is guarded in `sessionStorage`; a stable load
 clears the guard. There is one rollout boundary: a shell cached before this

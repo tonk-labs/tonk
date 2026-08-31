@@ -1767,6 +1767,59 @@ mod tests {
         FromThePage,
     }
 
+    const LINK_ERROR_DIAGNOSTIC: &str = "tonk:test:link-error";
+
+    /// Preserve the account panel's exact LinkCli diagnostic across the
+    /// activation detour. The visible copy is deliberately safe/generic; this
+    /// test-only probe makes a failed real-browser run identify which async
+    /// boundary failed without changing production UI or logging broadly.
+    async fn install_link_error_probe(driver: &WebDriver) -> Result<()> {
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({
+                    "source": r#"
+                        (() => {
+                            if (globalThis.__tonkLinkErrorProbe) return;
+                            globalThis.__tonkLinkErrorProbe = true;
+                            const original = console.error.bind(console);
+                            console.error = (...args) => {
+                                try {
+                                    const message = args[0];
+                                    if (
+                                        typeof message === "string" &&
+                                        message.startsWith("account LinkCli failed:")
+                                    ) {
+                                        const scrubbed = message
+                                            .replace(/\b[A-Za-z0-9+/_=-]{48,}\b/g, "[redacted]")
+                                            .slice(0, 1000);
+                                        sessionStorage.setItem("tonk:test:link-error", scrubbed);
+                                    }
+                                } catch {}
+                                original(...args);
+                            };
+                        })();
+                    "#,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn link_error_diagnostic(driver: &WebDriver) -> Option<String> {
+        driver
+            .execute(
+                "return sessionStorage.getItem(arguments[0]);",
+                vec![serde_json::json!(LINK_ERROR_DIAGNOSTIC)],
+            )
+            .await
+            .ok()?
+            .json()
+            .as_str()
+            .map(str::to_owned)
+    }
+
     async fn link_cli(driver: &WebDriver, env: &TestEnvironment) -> Result<LinkedCli> {
         link_cli_with(driver, env, false).await
     }
@@ -1833,6 +1886,10 @@ mod tests {
             "approval URL must carry the loopback callback"
         );
 
+        if register_first {
+            install_link_error_probe(driver).await?;
+        }
+
         goto(driver, approval_url.as_str()).await?;
         if register_first {
             // A browser with no account yet registers before approving:
@@ -1882,8 +1939,10 @@ mod tests {
                 Err(_) => String::new(),
             };
             let url = driver.current_url().await?;
+            let diagnostic = link_error_diagnostic(driver).await.unwrap_or_default();
             return Err(wait_error).context(format!(
-                "approval stopped in mode {mode:?} at {url}; error={error:?}; status={working:?}"
+                "approval stopped in mode {mode:?} at {url}; error={error:?}; \
+                 status={working:?}; diagnostic={diagnostic:?}"
             ));
         }
         wait_for_text(

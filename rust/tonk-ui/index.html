@@ -337,6 +337,7 @@
                 }
 
                 let incoming = null;
+                let claimRequested = null;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -351,6 +352,20 @@
                 const onWorkerState = () => {
                     noteLife();
                     if (incoming?.state === "redundant") finish("failed");
+                    // Activation alone deliberately leaves older, unaware
+                    // pages on their existing controller. This document owns
+                    // the update protocol, so once its observed successor is
+                    // ready it explicitly asks that worker to take control;
+                    // the resulting controllerchange drives the guarded
+                    // alignment reload below.
+                    if (
+                        incoming?.state === "activated" &&
+                        navigator.serviceWorker.controller === priorController &&
+                        claimRequested !== incoming
+                    ) {
+                        claimRequested = incoming;
+                        incoming.postMessage({ type: "claim" });
+                    }
                     if (
                         navigator.serviceWorker.controller &&
                         navigator.serviceWorker.controller !== priorController
