@@ -3,8 +3,13 @@
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct CrossWorkerGuard(Option<tokio::sync::oneshot::Sender<()>>);
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(not(all(target_arch = "wasm32", target_os = "unknown")), not(test)))]
 pub(crate) struct CrossWorkerGuard;
+
+#[cfg(all(not(all(target_arch = "wasm32", target_os = "unknown")), test))]
+pub(crate) struct CrossWorkerGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl Drop for CrossWorkerGuard {
@@ -53,7 +58,33 @@ pub(crate) async fn acquire(lock_name: &str) -> Result<CrossWorkerGuard, ()> {
     Ok(CrossWorkerGuard(Some(release_tx)))
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(not(all(target_arch = "wasm32", target_os = "unknown")), not(test)))]
 pub(crate) async fn acquire(_lock_name: &str) -> Result<CrossWorkerGuard, ()> {
     Ok(CrossWorkerGuard)
+}
+
+/// Native unit tests model the browser's named-lock registry so tests can use
+/// the exact production acquisition wrapper with distinct per-worker mutexes.
+#[cfg(all(not(all(target_arch = "wasm32", target_os = "unknown")), test))]
+pub(crate) async fn acquire(lock_name: &str) -> Result<CrossWorkerGuard, ()> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock, Weak};
+
+    static LOCKS: OnceLock<Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let lock = {
+        let mut locks = LOCKS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| ())?;
+        if let Some(lock) = locks.get(lock_name).and_then(Weak::upgrade) {
+            lock
+        } else {
+            let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(lock_name.to_owned(), std::sync::Arc::downgrade(&lock));
+            lock
+        }
+    };
+    Ok(CrossWorkerGuard {
+        _guard: lock.lock_owned().await,
+    })
 }

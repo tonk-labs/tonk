@@ -1436,6 +1436,7 @@ trait SetupEffects {
     async fn enroll_customer(
         &self,
         origin: &Url,
+        expected_root: &str,
         email: String,
         deposits: &[String],
     ) -> Result<(), ()>;
@@ -1446,6 +1447,22 @@ trait SetupEffects {
         sealed_hex: &str,
         invocation_hex: &str,
     ) -> Result<(), ()>;
+    async fn observe_custody_setup(
+        &self,
+        custody: &str,
+        consent_hex: &str,
+        sealed_hex: &str,
+        invocation_hex: &str,
+    ) -> Result<super::customer::CustodySetupObservation, ()>;
+    async fn replace_custody_publish(
+        &self,
+        custody: &str,
+        consent_hex: &str,
+        sealed_hex: &str,
+        previous_invocation_hex: &str,
+        replacement_invocation_hex: &str,
+    ) -> Result<super::customer::CustodySetupObservation, ()>;
+    async fn drain_pending_custody(&self);
 }
 
 struct WorkerSetupEffects<'a> {
@@ -1533,13 +1550,16 @@ impl SetupEffects for WorkerSetupEffects<'_> {
     async fn enroll_customer(
         &self,
         origin: &Url,
+        expected_root: &str,
         email: String,
         deposits: &[String],
     ) -> Result<(), ()> {
-        super::customer::enroll_customer(self.state, origin, Some(email), deposits)
+        let receipt = super::customer::enroll_customer(self.state, origin, Some(email), deposits)
             .await
-            .map(|_| ())
-            .map_err(|_| ())
+            .map_err(|_| ())?;
+        (receipt.customer.to_string() == expected_root)
+            .then_some(())
+            .ok_or(())
     }
 
     async fn persist_custody_setup(
@@ -1558,6 +1578,48 @@ impl SetupEffects for WorkerSetupEffects<'_> {
         )
         .await
         .map_err(|_| ())
+    }
+
+    async fn observe_custody_setup(
+        &self,
+        custody: &str,
+        consent_hex: &str,
+        sealed_hex: &str,
+        invocation_hex: &str,
+    ) -> Result<super::customer::CustodySetupObservation, ()> {
+        super::customer::observe_custody_setup(
+            self.state,
+            custody,
+            consent_hex,
+            sealed_hex,
+            invocation_hex,
+        )
+        .await
+        .map_err(|_| ())
+    }
+
+    async fn replace_custody_publish(
+        &self,
+        custody: &str,
+        consent_hex: &str,
+        sealed_hex: &str,
+        previous_invocation_hex: &str,
+        replacement_invocation_hex: &str,
+    ) -> Result<super::customer::CustodySetupObservation, ()> {
+        super::customer::replace_custody_publish(
+            self.state,
+            custody,
+            consent_hex,
+            sealed_hex,
+            previous_invocation_hex,
+            replacement_invocation_hex,
+        )
+        .await
+        .map_err(|_| ())
+    }
+
+    async fn drain_pending_custody(&self) {
+        super::customer::drain_pending(self.state).await;
     }
 }
 
@@ -3489,6 +3551,7 @@ async fn reconcile_with_provider(
                         if effects
                             .enroll_customer(
                                 &context.service_origin,
+                                &recovery.stored.root_did,
                                 recovery.stored.normalized_email.clone(),
                                 &recovery.stored.deposits_hex,
                             )
@@ -3576,6 +3639,62 @@ async fn reconcile_with_provider(
                 .await?;
             }
             StoredPhaseV2::CustodyQueued => {
+                let publish_invocation_hex = recovery
+                    .publish_invocation_hex()
+                    .map_err(|_| SetupStoreError::Read)?;
+                let observe = || {
+                    effects.observe_custody_setup(
+                        &recovery.stored.custody_did,
+                        &recovery.stored.consent_hex,
+                        &recovery.stored.sealed_hex,
+                        &publish_invocation_hex,
+                    )
+                };
+                let mut observation = observe().await.map_err(|_| SetupStoreError::Read)?;
+                if observation == super::customer::CustodySetupObservation::Mismatch {
+                    return persist_conflict(
+                        store,
+                        checkpoint,
+                        mutation,
+                        StoredConflictCodeV2::Recovery,
+                    )
+                    .await;
+                }
+                if observation == super::customer::CustodySetupObservation::Pending {
+                    if recovery.publish_freshness() == RecoveryFreshness::NeedsRefresh {
+                        if !effects.client_is_live(client_id).await {
+                            return Ok(AccountSetupResponse::View(checkpoint_view(
+                                &checkpoint,
+                                false,
+                            )));
+                        }
+                        let mut view = checkpoint_view(&checkpoint, true);
+                        view.disposition = AccountSetupDisposition::NeedsPasskey;
+                        view.next_action = AccountSetupNextAction::ResumeWithPasskey;
+                        return Ok(needs_passkey_response(
+                            &recovery,
+                            view,
+                            PasskeyRefresh::Publish,
+                        ));
+                    }
+                    effects.drain_pending_custody().await;
+                    observation = observe().await.map_err(|_| SetupStoreError::Read)?;
+                    match observation {
+                        super::customer::CustodySetupObservation::Pending => {
+                            return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
+                        }
+                        super::customer::CustodySetupObservation::Mismatch => {
+                            return persist_conflict(
+                                store,
+                                checkpoint,
+                                mutation,
+                                StoredConflictCodeV2::Recovery,
+                            )
+                            .await;
+                        }
+                        super::customer::CustodySetupObservation::Complete => {}
+                    }
+                }
                 checkpoint = persist_reduction(
                     store,
                     reduce(
@@ -3780,12 +3899,40 @@ async fn handle_locked(
             ))
         }
         AccountSetupRequest::Inspect(inspect) => {
-            inspect_response(
+            let response = inspect_response(
                 effects,
                 store,
                 contexts,
                 trusted_origin,
                 inspect.owner_token.as_deref(),
+                client_id,
+            )
+            .await?;
+            if !matches!(response, AccountSetupResponse::View(_)) {
+                return Ok(response);
+            }
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return Ok(response);
+            };
+            if checkpoint.as_stored().phase != StoredPhaseV2::CustodyQueued
+                || !owns_checkpoint(&checkpoint, inspect.owner_token.as_deref(), client_id)
+                || !effects.client_is_live(client_id).await
+            {
+                return Ok(response);
+            }
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
+                return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
+            };
+            let Some(owner_hash) = checkpoint.as_stored().owner_hash.clone() else {
+                return Ok(response);
+            };
+            reconcile_with_provider(
+                effects,
+                store,
+                provider,
+                &context,
+                *checkpoint,
+                owner_hash,
                 client_id,
             )
             .await
@@ -4112,8 +4259,12 @@ async fn handle_locked(
             let RecoveryLoad::Bundle(mut bundle) = load_recovery(store).await? else {
                 return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
             };
-            bundle.replacement_invocation_created_at = Some(now);
-            bundle.replacement_invocation_hex = Some(replacement.invocation_hex);
+            if bundle.replacement_invocation_hex.as_deref()
+                != Some(replacement.invocation_hex.as_str())
+            {
+                bundle.replacement_invocation_created_at = Some(now);
+                bundle.replacement_invocation_hex = Some(replacement.invocation_hex);
+            }
             let validated = match validate_recovery_for_checkpoint(
                 *bundle,
                 &checkpoint,
@@ -4162,7 +4313,10 @@ async fn handle_locked(
                     false,
                 )));
             }
-            if checkpoint.as_stored().phase != StoredPhaseV2::CustomerEnrolled {
+            if !matches!(
+                checkpoint.as_stored().phase,
+                StoredPhaseV2::CustomerEnrolled | StoredPhaseV2::CustodyQueued
+            ) {
                 return Ok(AccountSetupResponse::View(checkpoint_view(
                     &checkpoint,
                     true,
@@ -4174,8 +4328,14 @@ async fn handle_locked(
             let RecoveryLoad::Bundle(mut bundle) = load_recovery(store).await? else {
                 return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
             };
-            bundle.replacement_publish_invocation_created_at = Some(now);
-            bundle.replacement_publish_invocation_hex = Some(replacement.invocation_hex);
+            let previous_invocation_hex = bundle
+                .replacement_publish_invocation_hex
+                .clone()
+                .unwrap_or_else(|| bundle.publish_invocation_hex.clone());
+            if previous_invocation_hex != replacement.invocation_hex {
+                bundle.replacement_publish_invocation_created_at = Some(now);
+                bundle.replacement_publish_invocation_hex = Some(replacement.invocation_hex);
+            }
             let validated = match validate_recovery_for_checkpoint(
                 *bundle,
                 &checkpoint,
@@ -4188,6 +4348,27 @@ async fn handle_locked(
                 Ok(validated) => validated,
                 Err(_) => return Ok(AccountSetupResponse::View(retry_view(&checkpoint))),
             };
+            let replacement_invocation_hex = validated
+                .publish_invocation_hex()
+                .map_err(|_| SetupStoreError::Read)?;
+            if checkpoint.as_stored().phase == StoredPhaseV2::CustodyQueued {
+                match effects
+                    .replace_custody_publish(
+                        &validated.stored.custody_did,
+                        &validated.stored.consent_hex,
+                        &validated.stored.sealed_hex,
+                        &previous_invocation_hex,
+                        &replacement_invocation_hex,
+                    )
+                    .await
+                {
+                    Ok(super::customer::CustodySetupObservation::Pending)
+                    | Ok(super::customer::CustodySetupObservation::Complete) => {}
+                    Ok(super::customer::CustodySetupObservation::Mismatch) | Err(()) => {
+                        return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
+                    }
+                }
+            }
             save_recovery(
                 store,
                 &StoredRecoveryRecord::Bundle(Box::new(validated.stored.clone())),
@@ -4463,6 +4644,7 @@ mod tests {
     use async_trait::async_trait;
     use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
+    use dialog_ucan_core::{InvocationBuilder, InvocationChain};
     use dialog_varsig::Principal as _;
     use tonk_account::creation::{AccountCreationFingerprintInput, AccountCreationPasskey};
     use tonk_account::{AccountSetupRecoveryManifestInput, AccountSetupRecoveryManifestV1};
@@ -4632,18 +4814,75 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MemoryCustomerProjectionPort {
+        local: Mutex<Option<super::super::customer::CustomerRecord>>,
+        account: Mutex<Option<super::super::customer::AccountCustomerProjection>>,
+        fail_account_save: AtomicBool,
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    impl super::super::customer::CustomerProjectionPort for MemoryCustomerProjectionPort {
+        async fn load_customer_record(
+            &self,
+        ) -> Result<super::super::customer::CustomerRecordProjection, crate::TonkWorkerError>
+        {
+            Ok(self.local.lock().unwrap().clone().map_or(
+                super::super::customer::CustomerRecordProjection::Missing,
+                super::super::customer::CustomerRecordProjection::Present,
+            ))
+        }
+
+        async fn load_account_customer(
+            &self,
+        ) -> Result<Option<super::super::customer::AccountCustomerProjection>, crate::TonkWorkerError>
+        {
+            Ok(self.account.lock().unwrap().clone())
+        }
+
+        async fn save_customer_record(
+            &self,
+            record: &super::super::customer::CustomerRecord,
+        ) -> Result<(), crate::TonkWorkerError> {
+            *self.local.lock().unwrap() = Some(record.clone());
+            Ok(())
+        }
+
+        async fn save_account_customer(
+            &self,
+            status: tonk_account::customer::CustomerStatus,
+            email: &str,
+            _provider: Option<&str>,
+        ) -> Result<(), crate::TonkWorkerError> {
+            if self.fail_account_save.load(Ordering::SeqCst) {
+                return Err(crate::TonkWorkerError::Internal(
+                    "injected profile-main projection failure".to_string(),
+                ));
+            }
+            *self.account.lock().unwrap() =
+                Some(super::super::customer::AccountCustomerProjection {
+                    status: status.as_str().to_string(),
+                    email: email.to_string(),
+                });
+            Ok(())
+        }
+    }
+
     struct TestEffects {
         device_did: dialog_varsig::Did,
         now: AtomicU64,
         live_clients: Mutex<BTreeSet<String>>,
         root: Mutex<super::super::identity::LocalRootObservation>,
         attachment: Mutex<super::super::account::AttachmentObservation>,
-        customer: Mutex<super::super::customer::CustomerObservation>,
+        customer_projections: MemoryCustomerProjectionPort,
         account_state_ready: AtomicBool,
         fail_root_persist: AtomicBool,
         fail_attachment_persist: AtomicBool,
-        fail_enroll: AtomicBool,
         fail_custody: AtomicBool,
+        complete_custody_on_drain: AtomicBool,
+        replace_custody_calls: AtomicUsize,
+        custody: Mutex<super::super::customer::CustodySetupObservation>,
         events: Mutex<Vec<&'static str>>,
     }
 
@@ -4655,12 +4894,14 @@ mod tests {
                 live_clients: Mutex::new(BTreeSet::new()),
                 root: Mutex::new(super::super::identity::LocalRootObservation::Missing),
                 attachment: Mutex::new(super::super::account::AttachmentObservation::Missing),
-                customer: Mutex::new(super::super::customer::CustomerObservation::Missing),
+                customer_projections: MemoryCustomerProjectionPort::default(),
                 account_state_ready: AtomicBool::new(true),
                 fail_root_persist: AtomicBool::new(false),
                 fail_attachment_persist: AtomicBool::new(false),
-                fail_enroll: AtomicBool::new(false),
                 fail_custody: AtomicBool::new(false),
+                complete_custody_on_drain: AtomicBool::new(true),
+                replace_custody_calls: AtomicUsize::new(0),
+                custody: Mutex::new(super::super::customer::CustodySetupObservation::Pending),
                 events: Mutex::new(Vec::new()),
             }
         }
@@ -4730,24 +4971,38 @@ mod tests {
 
         async fn observe_customer(
             &self,
-            _expected_root: &str,
-            _expected_email: &str,
+            expected_root: &str,
+            expected_email: &str,
         ) -> Result<super::super::customer::CustomerObservation, ()> {
-            Ok(*self.customer.lock().unwrap())
+            super::super::customer::observe_customer_projections(
+                &self.customer_projections,
+                expected_root,
+                expected_email,
+            )
+            .await
+            .map_err(|_| ())
         }
 
         async fn enroll_customer(
             &self,
             _origin: &url::Url,
-            _email: String,
+            expected_root: &str,
+            email: String,
             _deposits: &[String],
         ) -> Result<(), ()> {
             self.events.lock().unwrap().push("customer");
-            if self.fail_enroll.load(Ordering::SeqCst) {
-                return Err(());
-            }
-            *self.customer.lock().unwrap() = super::super::customer::CustomerObservation::Exact;
-            Ok(())
+            super::super::customer::persist_customer_projections(
+                &self.customer_projections,
+                &super::super::customer::CustomerRecord {
+                    customer: expected_root.to_string(),
+                    email,
+                    status: tonk_account::customer::CustomerStatus::Registered,
+                    enrolled_at: self.now_seconds(),
+                },
+                None,
+            )
+            .await
+            .map_err(|_| ())
         }
 
         async fn persist_custody_setup(
@@ -4761,7 +5016,38 @@ mod tests {
             if self.fail_custody.load(Ordering::SeqCst) {
                 Err(())
             } else {
+                *self.custody.lock().unwrap() =
+                    super::super::customer::CustodySetupObservation::Pending;
                 Ok(())
+            }
+        }
+
+        async fn observe_custody_setup(
+            &self,
+            _custody: &str,
+            _consent_hex: &str,
+            _sealed_hex: &str,
+            _invocation_hex: &str,
+        ) -> Result<super::super::customer::CustodySetupObservation, ()> {
+            Ok(*self.custody.lock().unwrap())
+        }
+
+        async fn replace_custody_publish(
+            &self,
+            _custody: &str,
+            _consent_hex: &str,
+            _sealed_hex: &str,
+            _previous_invocation_hex: &str,
+            _replacement_invocation_hex: &str,
+        ) -> Result<super::super::customer::CustodySetupObservation, ()> {
+            self.replace_custody_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(*self.custody.lock().unwrap())
+        }
+
+        async fn drain_pending_custody(&self) {
+            if self.complete_custody_on_drain.load(Ordering::SeqCst) {
+                *self.custody.lock().unwrap() =
+                    super::super::customer::CustodySetupObservation::Complete;
             }
         }
     }
@@ -5397,6 +5683,46 @@ mod tests {
         hex::encode(invocation)
     }
 
+    async fn fresh_create_invocation(
+        seed: u8,
+        bundle: &StoredRecoveryBundleV1,
+        created_at: u64,
+    ) -> String {
+        let sealed =
+            tonk_identity::envelope::Envelope::<tonk_identity::clearance::Recovery>::decode(
+                &hex::decode(&bundle.sealed_hex).unwrap(),
+            )
+            .unwrap();
+        let secret = custody_kek(&[seed.wrapping_add(2); 32])
+            .open(&sealed)
+            .unwrap();
+        let root = secret.signer().await.unwrap();
+        let original = InvocationChain::<dialog_varsig::AnySignature>::try_from(
+            hex::decode(&bundle.invocation_hex).unwrap().as_slice(),
+        )
+        .unwrap();
+        let issued_at = Timestamp::new(UNIX_EPOCH + Duration::from_secs(created_at)).unwrap();
+        let expiration =
+            Timestamp::new(UNIX_EPOCH + Duration::from_secs(created_at + 5 * 60)).unwrap();
+        let invocation = InvocationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root))
+            .audience(original.invocation.audience())
+            .subject(original.invocation.subject())
+            .command(original.invocation.command().segments().clone())
+            .arguments(original.invocation.arguments().clone())
+            .proofs(original.invocation.proofs().clone())
+            .issued_at(issued_at)
+            .expiration(expiration)
+            .try_build()
+            .await
+            .unwrap();
+        hex::encode(
+            InvocationChain::new(invocation, std::collections::HashMap::new())
+                .to_bytes()
+                .unwrap(),
+        )
+    }
+
     async fn completed_recovery_fixture(
         seed: u8,
     ) -> (
@@ -5484,7 +5810,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert("client-1".to_string());
-        effects.fail_enroll.store(true, Ordering::SeqCst);
+        effects
+            .customer_projections
+            .fail_account_save
+            .store(true, Ordering::SeqCst);
         let provider = ScriptedProvider::new(
             std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
             std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
@@ -5509,8 +5838,20 @@ mod tests {
             panic!("checkpoint must survive a projection failure");
         };
         assert_eq!(still_attached.as_stored().phase, StoredPhaseV2::Attached);
+        assert!(effects.customer_projections.local.lock().unwrap().is_some());
+        assert!(
+            effects
+                .customer_projections
+                .account
+                .lock()
+                .unwrap()
+                .is_none()
+        );
 
-        effects.fail_enroll.store(false, Ordering::SeqCst);
+        effects
+            .customer_projections
+            .fail_account_save
+            .store(false, Ordering::SeqCst);
         let response = reconcile_with_provider(
             &effects,
             &store,
@@ -5530,6 +5871,457 @@ mod tests {
         assert_eq!(
             effects.events.lock().unwrap().as_slice(),
             ["customer", "customer", "custody"]
+        );
+        assert!(
+            effects
+                .customer_projections
+                .account
+                .lock()
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_retains_recovery_while_custody_publish_is_only_queued() {
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(70, StoredPhaseV2::CustomerEnrolled).await;
+        let effects = TestEffects::new(device_did);
+        effects
+            .complete_custody_on_drain
+            .store(false, Ordering::SeqCst);
+        effects.now.store(
+            checkpoint.as_stored().last_transition_at + 1,
+            Ordering::SeqCst,
+        );
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+
+        let response = reconcile_with_provider(
+            &effects,
+            &store,
+            &provider,
+            &context,
+            checkpoint,
+            hash("11"),
+            "client-1",
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            response,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::RetryLater
+        ));
+        let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await.unwrap() else {
+            panic!("queued custody must retain a recoverable checkpoint");
+        };
+        assert_eq!(checkpoint.as_stored().phase, StoredPhaseV2::CustodyQueued);
+        assert!(matches!(
+            store.recovery_record(),
+            StoredRecoveryRecord::Bundle(_)
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_refreshes_a_deferred_publish_then_completes_after_activation_drain() {
+        let seed = 71;
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(seed, StoredPhaseV2::CustomerEnrolled).await;
+        let owner_token = "owner-token".repeat(4);
+        let mut stored = checkpoint.into_stored();
+        stored.owner_hash = Some(
+            token_hash(
+                b"tonk-account-setup-owner-v1",
+                &stored.operation_id,
+                &owner_token,
+            )
+            .unwrap(),
+        );
+        let checkpoint = ValidatedCheckpoint::new(stored).unwrap();
+        *store.checkpoint.lock().unwrap() = Some(encode_checkpoint(&checkpoint).unwrap());
+        let StoredRecoveryRecord::Bundle(bundle) = store.recovery_record() else {
+            panic!("fixture must retain protected recovery");
+        };
+        let effects = TestEffects::new(device_did);
+        effects
+            .complete_custody_on_drain
+            .store(false, Ordering::SeqCst);
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        effects.now.store(
+            checkpoint.as_stored().last_transition_at + 1,
+            Ordering::SeqCst,
+        );
+        let contexts = FixedContextSource::new(context);
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+
+        let queued = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Continue(AccountSetupMutation {
+                operation_id: checkpoint.as_stored().operation_id.clone(),
+                owner_token: owner_token.clone(),
+                expected_revision: checkpoint.as_stored().revision,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            queued,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::RetryLater
+        ));
+        let CheckpointLoad::Ready(queued_checkpoint) = load_checkpoint(&store).await.unwrap()
+        else {
+            panic!("queued custody checkpoint must be durable");
+        };
+        assert_eq!(
+            queued_checkpoint.as_stored().phase,
+            StoredPhaseV2::CustodyQueued
+        );
+
+        let refresh_time = bundle.ceremony_created_at + DEFERRED_PUBLISH_TTL_SECONDS + 1;
+        effects.now.store(refresh_time, Ordering::SeqCst);
+        let inspected = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Inspect(AccountSetupInspect {
+                owner_token: Some(owner_token.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            inspected,
+            AccountSetupResponse::Protected(boxed)
+                if matches!(
+                    boxed.as_ref(),
+                    AccountSetupProtectedResponse::NeedsPasskey {
+                        resume: AccountSetupResumeInput::Publish { .. },
+                        ..
+                    }
+                )
+        ));
+
+        let replacement = fresh_publish_invocation(seed, &bundle, refresh_time).await;
+        let resumed = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::ReplacePublishInvocation(AccountSetupInvocation {
+                mutation: AccountSetupMutation {
+                    operation_id: queued_checkpoint.as_stored().operation_id.clone(),
+                    owner_token: owner_token.clone(),
+                    expected_revision: queued_checkpoint.as_stored().revision,
+                },
+                invocation_hex: replacement,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            resumed,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::RetryLater
+        ));
+        assert!(matches!(
+            store.recovery_record(),
+            StoredRecoveryRecord::Bundle(_)
+        ));
+
+        effects
+            .complete_custody_on_drain
+            .store(true, Ordering::SeqCst);
+        let completed = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Inspect(AccountSetupInspect {
+                owner_token: Some(owner_token),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            completed,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::Complete
+        ));
+        let CheckpointLoad::Ready(completed_checkpoint) = load_checkpoint(&store).await.unwrap()
+        else {
+            panic!("completed custody checkpoint must be durable");
+        };
+        assert_eq!(
+            completed_checkpoint.as_stored().phase,
+            StoredPhaseV2::Complete
+        );
+        assert!(matches!(
+            store.recovery_record(),
+            StoredRecoveryRecord::Tombstone(_)
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_create_replacement_receipt_on_identical_lost_response_retry() {
+        let seed = 72;
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(seed, StoredPhaseV2::RootSaved).await;
+        let owner_token = "owner-token".repeat(4);
+        let mut stored = checkpoint.into_stored();
+        stored.owner_hash = Some(
+            token_hash(
+                b"tonk-account-setup-owner-v1",
+                &stored.operation_id,
+                &owner_token,
+            )
+            .unwrap(),
+        );
+        let checkpoint = ValidatedCheckpoint::new(stored).unwrap();
+        *store.checkpoint.lock().unwrap() = Some(encode_checkpoint(&checkpoint).unwrap());
+        let StoredRecoveryRecord::Bundle(bundle) = store.recovery_record() else {
+            panic!("fixture must retain protected recovery");
+        };
+        let receipt_time = checkpoint.as_stored().last_transition_at + 1;
+        let first = fresh_create_invocation(seed, &bundle, receipt_time).await;
+        let effects = TestEffects::new(device_did);
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        effects.now.store(receipt_time, Ordering::SeqCst);
+        let contexts = FixedContextSource::new(context);
+        let provider = ScriptedProvider::new(
+            [
+                Err(ProviderPortError::Retry),
+                Err(ProviderPortError::Retry),
+                Err(ProviderPortError::Retry),
+            ],
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+        let request = |invocation_hex: String| {
+            AccountSetupRequest::ReplaceInvocation(AccountSetupInvocation {
+                mutation: AccountSetupMutation {
+                    operation_id: checkpoint.as_stored().operation_id.clone(),
+                    owner_token: owner_token.clone(),
+                    expected_revision: checkpoint.as_stored().revision,
+                },
+                invocation_hex,
+            })
+        };
+
+        handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            request(first.clone()),
+        )
+        .await
+        .unwrap();
+        let StoredRecoveryRecord::Bundle(saved) = store.recovery_record() else {
+            panic!("replacement retry must retain protected recovery");
+        };
+        assert_eq!(saved.replacement_invocation_created_at, Some(receipt_time));
+
+        effects.now.store(receipt_time + 61, Ordering::SeqCst);
+        handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            request(first.clone()),
+        )
+        .await
+        .unwrap();
+        let StoredRecoveryRecord::Bundle(retried) = store.recovery_record() else {
+            panic!("identical retry must retain protected recovery");
+        };
+        assert_eq!(
+            retried.replacement_invocation_hex.as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            retried.replacement_invocation_created_at,
+            Some(receipt_time),
+            "an identical artifact must not acquire a sliding receipt time"
+        );
+        assert_eq!(
+            provider.calls().len(),
+            2,
+            "the identical retry must be accepted and reconciled, not rejected before provider status"
+        );
+
+        let next_time = receipt_time + 62;
+        let differing = fresh_create_invocation(seed, &bundle, next_time).await;
+        assert_ne!(differing, first);
+        effects.now.store(next_time, Ordering::SeqCst);
+        handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            request(differing.clone()),
+        )
+        .await
+        .unwrap();
+        let StoredRecoveryRecord::Bundle(replaced) = store.recovery_record() else {
+            panic!("new replacement must retain protected recovery");
+        };
+        assert_eq!(replaced.replacement_invocation_hex, Some(differing));
+        assert_eq!(replaced.replacement_invocation_created_at, Some(next_time));
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_publish_replacement_receipt_on_identical_lost_response_retry() {
+        let seed = 73;
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(seed, StoredPhaseV2::CustomerEnrolled).await;
+        let owner_token = "owner-token".repeat(4);
+        let mut stored = checkpoint.into_stored();
+        stored.owner_hash = Some(
+            token_hash(
+                b"tonk-account-setup-owner-v1",
+                &stored.operation_id,
+                &owner_token,
+            )
+            .unwrap(),
+        );
+        let checkpoint = ValidatedCheckpoint::new(stored).unwrap();
+        *store.checkpoint.lock().unwrap() = Some(encode_checkpoint(&checkpoint).unwrap());
+        let StoredRecoveryRecord::Bundle(bundle) = store.recovery_record() else {
+            panic!("fixture must retain protected recovery");
+        };
+        let receipt_time = checkpoint.as_stored().last_transition_at + 1;
+        let first = fresh_publish_invocation(seed, &bundle, receipt_time).await;
+        let effects = TestEffects::new(device_did);
+        effects
+            .complete_custody_on_drain
+            .store(false, Ordering::SeqCst);
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        effects.now.store(receipt_time, Ordering::SeqCst);
+        let contexts = FixedContextSource::new(context);
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+        let first_response = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::ReplacePublishInvocation(AccountSetupInvocation {
+                mutation: AccountSetupMutation {
+                    operation_id: checkpoint.as_stored().operation_id.clone(),
+                    owner_token: owner_token.clone(),
+                    expected_revision: checkpoint.as_stored().revision,
+                },
+                invocation_hex: first.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            first_response,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::RetryLater
+        ));
+        let CheckpointLoad::Ready(queued) = load_checkpoint(&store).await.unwrap() else {
+            panic!("first publish replacement must queue custody");
+        };
+        let request = |invocation_hex: String| {
+            AccountSetupRequest::ReplacePublishInvocation(AccountSetupInvocation {
+                mutation: AccountSetupMutation {
+                    operation_id: queued.as_stored().operation_id.clone(),
+                    owner_token: owner_token.clone(),
+                    expected_revision: queued.as_stored().revision,
+                },
+                invocation_hex,
+            })
+        };
+
+        effects.now.store(receipt_time + 61, Ordering::SeqCst);
+        handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            request(first.clone()),
+        )
+        .await
+        .unwrap();
+        let StoredRecoveryRecord::Bundle(retried) = store.recovery_record() else {
+            panic!("identical retry must retain protected recovery");
+        };
+        assert_eq!(
+            retried.replacement_publish_invocation_created_at,
+            Some(receipt_time),
+            "an identical artifact must not acquire a sliding receipt time"
+        );
+        assert_eq!(
+            effects.replace_custody_calls.load(Ordering::SeqCst),
+            1,
+            "the identical retry must reach the idempotent production queue replacement seam"
+        );
+
+        let next_time = receipt_time + 62;
+        let differing = fresh_publish_invocation(seed, &bundle, next_time).await;
+        assert_ne!(differing, first);
+        effects.now.store(next_time, Ordering::SeqCst);
+        handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            request(differing.clone()),
+        )
+        .await
+        .unwrap();
+        let StoredRecoveryRecord::Bundle(replaced) = store.recovery_record() else {
+            panic!("new publish replacement must retain protected recovery");
+        };
+        assert_eq!(replaced.replacement_publish_invocation_hex, Some(differing));
+        assert_eq!(
+            replaced.replacement_publish_invocation_created_at,
+            Some(next_time)
         );
     }
 

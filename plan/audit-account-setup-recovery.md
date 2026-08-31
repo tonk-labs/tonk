@@ -60,6 +60,71 @@ Focused review-remediation evidence:
 - `CARGO_INCREMENTAL=0 cargo clippy -p tonk-account -p tonk-worker-api -p tonk-identity -p tonk-worker --all-targets -- -D warnings`: passed. `AccountSetupResponse::Protected` is boxed to keep the wire JSON unchanged while satisfying the all-target enum-size lint.
 - `CARGO_INCREMENTAL=0 cargo check -p tonk-worker --target wasm32-unknown-unknown`: passed, including the shared Web Lock adapter.
 
+## Second production-saga re-review remediation (2026-08-31)
+
+A second independent review held the follow-up because queue durability was
+being mistaken for custody execution, replacement receipt times were not
+explicitly idempotent, and two claimed production fault tests still exercised
+test-only shortcuts. This follow-up tightens those boundaries:
+
+- `CustodyQueued` remains a protected, owner-recoverable phase. Saving the
+  ordered pending pair no longer records `Complete` or tombstones recovery.
+  `Continue` and an authenticated `Inspect` inspect the exact serialized pair;
+  only absence after the durable queued checkpoint (the state produced when a
+  successful drain removes the pair) may advance to `Complete` and then the
+  tombstone. Unreadable queue bytes fail closed rather than being replaced by
+  an empty queue.
+- If a deferred publish expires, the queued pair stays in place and the saga
+  returns the phase-minimal `ReplacePublishInvocation` input. The replacement
+  atomically substitutes only the matching publish entry in its existing
+  position behind Provision. If activation already drained the pair, it is not
+  re-queued. Recovery is retained until the refreshed publish actually drains.
+- Exact lost-response retries of create and publish replacements compare the
+  already accepted artifact before assigning a receipt time. Identical bytes
+  keep the original immutable receipt and continue idempotent reconciliation;
+  only a distinct, independently validated artifact receives the new worker
+  receipt time.
+- Customer enrollment ordering and exact observation now live behind the same
+  production projection port used by `enroll_customer` and the setup saga.
+  The fault test lets `CustomerRecord` succeed, fails the profile-main
+  `AccountCustomer` write, proves the checkpoint remains `Attached`, and then
+  proves the idempotent retry converges both projections before advancing.
+- Native concurrency coverage now calls the production pending-queue append
+  wrapper with two distinct per-worker mutexes and the same canonical named
+  lock. The native test adapter models the browser named-lock registry; no
+  test-only external mutex hides a missing or mismatched production lock.
+
+The production assumptions remain narrow: the `CustodyQueued` checkpoint is
+proof that the exact pair was saved once; thereafter an absent exact subject is
+treated as successful idempotent drain removal. A conflicting same-subject
+entry is not absence and fails closed. Browser Web Locks remain mandatory in
+production; a real two-service-worker browser race is still deferred to Task 6.
+
+Focused second-review evidence:
+
+- RED: the custody-only-queued reconciliation test observed `Complete` before
+  execution; the corrected test retains `CustodyQueued` and the bundle.
+- RED: temporarily restoring sliding receipt assignment made the identical
+  create retry stop before provider reconciliation and the identical publish
+  retry stop before the queue replacement seam.
+- RED: treating a surviving device-local customer projection as exact after the
+  profile-main projection failed skipped the production retry; the final effect
+  order was `customer, custody` rather than `customer, customer, custody`.
+- RED: changing the production pending-work lock name to include each worker's
+  local mutex identity allowed two concurrent appends to overwrite one ordered
+  pair. Restoring the canonical profile-derived name retained both pairs.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker --lib
+  router::account_setup::tests -- --nocapture`: 32 passed, 92 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker --lib
+  router::customer::tests::production_ -- --nocapture`: 2 passed, 122 filtered;
+  these execute the production projection and shared pending-queue mutation
+  seams, including the partial-projection fault and two-worker lock race.
+- `CARGO_INCREMENTAL=0 cargo clippy -p tonk-worker --all-targets -- -D
+  warnings`: passed.
+- `CARGO_INCREMENTAL=0 cargo check -p tonk-worker --target
+  wasm32-unknown-unknown`: passed in 1m 08s.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+
 **Constraints:**
 
 - Do not persist or log an account secret, PRF result, passkey-derived KEK, root private key, owner token, or attempt token. A recovery record may contain the already passkey-sealed envelope and narrowly scoped signed artifacts already held by the pending-custody queue.
