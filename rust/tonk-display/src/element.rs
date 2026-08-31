@@ -222,6 +222,11 @@ struct Inner {
     /// unbound) and the frame is grouped by `this` (`select_rows`)
     /// rather than folded to one conclusion.
     directory: bool,
+    /// This display renders its model inside that model's own view (the
+    /// default carousel's per-instance card is the common case). The
+    /// view flow is skipped — resolving it would re-enter the same view
+    /// forever — and entity frames render as the notation dump instead.
+    self_render: bool,
 }
 
 impl Inner {
@@ -251,6 +256,7 @@ impl Inner {
             model_entity: None,
             default_slide: false,
             directory: false,
+            self_render: false,
         }
     }
 
@@ -900,11 +906,11 @@ async fn start_downstream(
     //
     // Fall back to the notation dump rather than rendering nothing: the
     // entity's data is still worth showing, and a card that silently
-    // disappears is worse than one that shows what it holds.
-    if renders_itself(host, &model_entity) {
-        state::set(host, State::NoView);
-        return Ok(());
-    }
+    // disappears is worse than one that shows what it holds. So a
+    // self-rendering display skips only the VIEW flow (no view
+    // subscription, no facet fallback) and keeps the entity
+    // subscription; `handle_entity_frame` mounts the notation dump.
+    let self_render = renders_itself(host, &model_entity);
 
     let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
     let directory = entity.is_none();
@@ -953,8 +959,12 @@ async fn start_downstream(
     // Open the view subscription via the host. Frames arrive through
     // our `__tonkReset` delegate, which routes to `handle_view_frame`
     // (or `handle_entity_frame`) by `opts.tag`.
-    let view_tag = JsValue::from_str("view");
-    let view_sub = host_consumer::subscribe(host, &view_body, Some(&view_tag))?;
+    let view_sub = if self_render {
+        None
+    } else {
+        let view_tag = JsValue::from_str("view");
+        Some(host_consumer::subscribe(host, &view_body, Some(&view_tag))?)
+    };
     check_downstream(&state, downstream_generation)?;
 
     let entity_tag = JsValue::from_str("entity");
@@ -968,9 +978,10 @@ async fn start_downstream(
         if s.downstream_generation != downstream_generation {
             return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
         }
-        s.view_sub = Some(view_sub);
+        s.view_sub = view_sub;
         s.entity_sub = Some(entity_sub);
         s.directory = directory;
+        s.self_render = self_render;
         // The explicit facet (if any) and the model entity, retained
         // for the facet pick on each view frame and the `tonk:_`
         // default fallback.
@@ -1838,6 +1849,15 @@ fn handle_entity_frame(
         call_render(&slide.view_el, &detail);
     }
     update_notation(host, &s, &first);
+    // A self-rendering display has no view flow to mount a slide; its
+    // data still shows — as the notation dump, mounted on the first
+    // non-empty frame and updated in place from then on.
+    if s.self_render && s.slides.is_empty() && s.notation_source.is_none() {
+        drop(s);
+        mount_notation_fallback(host, state, &first);
+        dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
+        return;
+    }
     if !s.slides.is_empty() || s.notation_source.is_some() {
         // A default (`_:_`) slide renders through the generic fallback,
         // so the display is `default-view`, not `ready`. A frame with a
@@ -3808,6 +3828,111 @@ mod tests {
                 .await
                 .expect("the fallback chrome should render on an empty collection at mount");
             assert_eq!(fallback.text_content().as_deref(), Some("Nothing yet"));
+        }
+
+        // With no view for the model at all, directory mode falls back
+        // to the `tonk:_` default dictionary's `directory` facet and
+        // renders the instances through it. This is the live `/{model}`
+        // route for a model that never declared views.
+        #[dialog_common::test]
+        async fn it_renders_a_directory_through_the_default_dictionary() {
+            let host = FakeHost::install_with_model(
+                vec![
+                    name_row("did:key:zModel"),
+                    // The `tonk:_` fallback one-shot: the default dictionary.
+                    show_rows(
+                        "tonk:_",
+                        &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                    ),
+                ],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // No view facts for `item` at all.
+            host.push_frame("view", &rows(&[]));
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            let row = await_selector(&display, "li[data-id]")
+                .await
+                .expect("the default directory template renders the instances");
+            assert_eq!(row.text_content().as_deref(), Some("Hello"));
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("default-view") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("default-view"),
+                "rendering through the fallback dictionary reports default-view",
+            );
+        }
+
+        // With no view AND no `tonk:_` entry for the facet, an entity
+        // with data still shows as a notation dump — the ultimate
+        // fallback that keeps every entity inspectable.
+        #[dialog_common::test]
+        async fn it_falls_back_to_notation_when_nothing_carries_the_facet() {
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), rows(&[])],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            host.push_frame("view", &rows(&[]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "an entity with data but no view anywhere dumps notation",
+            );
+        }
+
+        // A model rendered inside its own view (the default carousel's
+        // per-instance card) must not vanish into a blank `no-view`: the
+        // view flow is skipped, and the entity's data dumps as notation.
+        #[dialog_common::test]
+        async fn it_dumps_notation_when_a_model_renders_inside_itself() {
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            register();
+            let outer = document().create_element("div").unwrap();
+            outer.set_attribute(MODEL_CHAIN, "did:key:zModel").unwrap();
+            host.container.append_child(&outer).unwrap();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("model", "counter").unwrap();
+            display.set_attribute("entity", "id:demo-counter").unwrap();
+            outer.append_child(&display).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "a self-rendered model shows its data as notation, not a blank",
+            );
+            assert!(
+                !host.subscribe_tags().contains(&"view".to_owned()),
+                "the view flow is skipped — it would re-enter the same view",
+            );
         }
 
         // A static element that is a direct *sibling* of the repeat root
