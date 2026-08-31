@@ -6,12 +6,3 @@ serial-integration = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'test(/^.*integration_tests::/)'
 test-group = 'serial-integration'
-
-# NOTE: Browser-hosted tests each launch their own chromedriver + headless
-# Chrome, and under the parallel start-up burst the driver is occasionally
-# SIGKILLed before any test logic runs (the runner then reports http 404).
-# One retry heals that infra death; a genuinely failing test still fails,
-# and a retried pass is reported as FLAKY so it stays visible in the log.
-[[profile.default.overrides]]
-platform = 'cfg(target_arch = "wasm32")'
-retries = 1

@@ -133,8 +133,19 @@ let
     {
       package,
       runner ? null,
+      clearPoolEnv ? false,
     }:
     ''
+        ${pkgs.lib.optionalString clearPoolEnv ''
+          unset \
+            WBG_POOL_BROWSER \
+            WBG_POOL_BROWSER_ARGS \
+            WBG_POOL_DIR \
+            WBG_POOL_FALLBACK_RUNNER \
+            WBG_POOL_NO_SANDBOX \
+            WBG_POOL_URL
+        ''}
+
           ${pkgs.lib.optionalString (runner != null) ''
             export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=${pkgs.lib.escapeShellArg runner}
           ''}
@@ -164,10 +175,11 @@ let
       description,
       package,
       runner ? null,
+      clearPoolEnv ? false,
     }:
     {
       inherit description;
-      command = makeMenuTestCommand { inherit package runner; };
+      command = makeMenuTestCommand { inherit package runner clearPoolEnv; };
       env = menuTestEnv;
     };
 in

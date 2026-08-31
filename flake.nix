@@ -386,25 +386,29 @@
           };
 
           "test:web:debug" = menuTestCommand {
-            description = "Unit tests (wasm32-unknown-unknown, debug)";
-            package = "tests-web-debug";
-          };
-
-          "test:web:debug:pooled" = menuTestCommand {
             description = "Unit tests (wasm32-unknown-unknown, debug, pooled runner)";
             package = "tests-web-debug";
             runner = "${wbg-pool}/bin/wbg-pool";
           };
 
-          "test:web:release" = menuTestCommand {
-            description = "Unit tests (wasm32-unknown-unknown, release)";
-            package = "tests-web-release";
+          "test:web:debug:stock" = menuTestCommand {
+            description = "Unit tests (wasm32-unknown-unknown, debug, stock runner)";
+            package = "tests-web-debug";
+            runner = "${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner";
+            clearPoolEnv = true;
           };
 
-          "test:web:release:pooled" = menuTestCommand {
+          "test:web:release" = menuTestCommand {
             description = "Unit tests (wasm32-unknown-unknown, release, pooled runner)";
             package = "tests-web-release";
             runner = "${wbg-pool}/bin/wbg-pool";
+          };
+
+          "test:web:release:stock" = menuTestCommand {
+            description = "Unit tests (wasm32-unknown-unknown, release, stock runner)";
+            package = "tests-web-release";
+            runner = "${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner";
+            clearPoolEnv = true;
           };
 
           "menu" = {
@@ -432,6 +436,16 @@
         menuArgsFakeCargo = pkgs.writeShellScriptBin "cargo" ''
           printf '%s\n' "$@" > "$MENU_ARGS_CAPTURE"
           printf '%s\n' "''${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER:-}" > "$MENU_RUNNER_CAPTURE"
+          if [ -n "''${MENU_POOL_ENV_CAPTURE:-}" ]; then
+            printf '%s\n' \
+              "WBG_POOL_BROWSER=''${WBG_POOL_BROWSER:-}" \
+              "WBG_POOL_BROWSER_ARGS=''${WBG_POOL_BROWSER_ARGS:-}" \
+              "WBG_POOL_DIR=''${WBG_POOL_DIR:-}" \
+              "WBG_POOL_FALLBACK_RUNNER=''${WBG_POOL_FALLBACK_RUNNER:-}" \
+              "WBG_POOL_NO_SANDBOX=''${WBG_POOL_NO_SANDBOX:-}" \
+              "WBG_POOL_URL=''${WBG_POOL_URL:-}" \
+              > "$MENU_POOL_ENV_CAPTURE"
+          fi
         '';
       in
       {
@@ -471,6 +485,72 @@
                   diff -u "$out/expected-args" "$out/actual-args"
                   printf '%s\n' /nix/store/exact-wbg-pool/bin/wbg-pool > "$out/expected-runner"
                   diff -u "$out/expected-runner" "$out/actual-runner"
+                '';
+
+            wasm-runner-command-selection =
+              runCommand "wasm-runner-command-selection"
+                {
+                  nativeBuildInputs = menu.commands;
+                }
+                ''
+                  mkdir -p "$out"
+                  export PATH="${menuArgsFakeNix}/bin:${menuArgsFakeCargo}/bin:$PATH"
+
+                  check_runner() {
+                    command="$1"
+                    expected_runner="$2"
+                    capture_name="$3"
+                    export MENU_ARGS_CAPTURE="$out/$capture_name-args"
+                    export MENU_RUNNER_CAPTURE="$out/$capture_name-runner"
+                    unset MENU_POOL_ENV_CAPTURE
+
+                    "$command"
+
+                    printf '%s\n' "$expected_runner" > "$out/$capture_name-expected-runner"
+                    diff -u "$out/$capture_name-expected-runner" "$MENU_RUNNER_CAPTURE"
+                  }
+
+                  check_runner \
+                    test:web:debug \
+                    ${wbg-pool}/bin/wbg-pool \
+                    pooled-debug
+                  check_runner \
+                    test:web:release \
+                    ${wbg-pool}/bin/wbg-pool \
+                    pooled-release
+
+                  check_stock_runner() {
+                    command="$1"
+                    capture_name="$2"
+                    export WBG_POOL_BROWSER=/tmp/unrelated-browser
+                    export WBG_POOL_BROWSER_ARGS=--unrelated-flag
+                    export WBG_POOL_DIR=/tmp/unrelated-pool
+                    export WBG_POOL_FALLBACK_RUNNER=/tmp/unrelated-fallback
+                    export WBG_POOL_NO_SANDBOX=1
+                    export WBG_POOL_URL=http://127.0.0.1:1
+                    export MENU_ARGS_CAPTURE="$out/$capture_name-args"
+                    export MENU_RUNNER_CAPTURE="$out/$capture_name-runner"
+                    export MENU_POOL_ENV_CAPTURE="$out/$capture_name-pool-env"
+
+                    "$command"
+
+                    printf '%s\n' \
+                      ${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner \
+                      > "$out/$capture_name-expected-runner"
+                    diff -u "$out/$capture_name-expected-runner" "$MENU_RUNNER_CAPTURE"
+                    printf '%s\n' \
+                      WBG_POOL_BROWSER= \
+                      WBG_POOL_BROWSER_ARGS= \
+                      WBG_POOL_DIR= \
+                      WBG_POOL_FALLBACK_RUNNER= \
+                      WBG_POOL_NO_SANDBOX= \
+                      WBG_POOL_URL= \
+                      > "$out/$capture_name-expected-pool-env"
+                    diff -u "$out/$capture_name-expected-pool-env" "$MENU_POOL_ENV_CAPTURE"
+                  }
+
+                  check_stock_runner test:web:debug:stock stock-debug
+                  check_stock_runner test:web:release:stock stock-release
                 '';
 
             wbg-pool-unit = wbg-pool.passthru.tests.unit;

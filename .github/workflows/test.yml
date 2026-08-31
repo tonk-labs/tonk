@@ -103,13 +103,9 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Run tests'
         shell: bash
-        env:
-          # Pilot the pooled browser runner in CI without changing the local
-          # default until the complete debug and release legs prove parity.
-          RUNNER_SUFFIX: ${{ matrix.platform == 'web' && ':pooled' || '' }}
         run: |
           nix develop \
             --accept-flake-config \
             --set-env-var TMPDIR $RUNNER_TEMP \
             .#ci \
-            --command test:${{matrix.platform}}:${{matrix.profile}}${RUNNER_SUFFIX}
+            --command test:${{matrix.platform}}:${{matrix.profile}}

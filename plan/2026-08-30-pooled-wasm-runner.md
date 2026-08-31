@@ -45,15 +45,23 @@ the flake check now runs all seven `wbg-pool` unit tests.
 
 A complete pooled debug attempt still stopped at 144 of 1,438 tests after
 three 60-second timeouts while unrelated builds heavily loaded the host. The
-same adjacent `tonk-analyzer` tests pass in the focused green run above. To
-measure reliability and wall time on an isolated host, the PR web CI legs now
-select the opt-in pooled commands while native CI and canonical local commands
-remain unchanged. The completed stock CI run on commit `237de191c` is the
-baseline: 38m55s for debug and 33m44s for release. A passing pooled debug and
-release CI run remains required before changing the default runner.
+same adjacent `tonk-analyzer` tests pass in the focused green run above.
 
-Tasks 3 and 4 are intentionally not started. They remain conditional on a
-complete passing parity and performance result for both profiles.
+The CI pilot on commit `531d8cdd5` supplied the missing isolated-host evidence.
+Both pooled profiles passed the same 1,438-test inventory as stock, skipped the
+same one test, and used no retries. Debug nextest execution fell from
+1,985.738 seconds to 205.790 seconds (9.65x); release fell from 1,774.489
+seconds to 117.998 seconds (15.04x). Complete job wall time, including common
+setup and Nix archive work, fell from 38m55s to 7m20s for debug and from 33m44s
+to 4m17s for release.
+
+Task 3 is implemented from that evidence. `wbg-pool` is now the checked-in
+Cargo default, canonical web commands select the exact Nix package, explicit
+stock commands scrub pool-only configuration, and the obsolete Wasm-wide retry
+is removed. The same focused 44-test `tonk-ui` filter passed through both final
+command names with zero retries: pooled in 18.173 seconds and stock in 16.972
+seconds. Task 4's repeated observations and scheduled stock-parity workflow
+remain outstanding.
 
 Fresh checks after the lifecycle fixes passed the benchmark's seven CLI
 regressions, all seven patched-runner unit tests, `cargo fmt --all -- --check`,
@@ -250,22 +258,22 @@ command afterward.
 - Produces: pooled `test:web:debug` and `test:web:release`, plus explicit
   `test:web:debug:stock` and `test:web:release:stock` escape hatches.
 
-- [ ] Change `.cargo/config.toml` from `wasm-bindgen-test-runner` to
+- [x] Change `.cargo/config.toml` from `wasm-bindgen-test-runner` to
       `wbg-pool`. Leave `WASM_BINDGEN_TEST_TIMEOUT=60` and the existing
       `rustflags` unchanged.
-- [ ] Delete the `cfg(target_arch = "wasm32")` `retries = 1` override and its
+- [x] Delete the `cfg(target_arch = "wasm32")` `retries = 1` override and its
       Chrome-startup comment from `.config/nextest.toml`. Pooled PR tests must
       be single-attempt evidence; if a product test now needs a retry, diagnose
       and scope that test explicitly instead of restoring a platform-wide
       retry.
-- [ ] Rename the opt-in pooled commands back to the canonical
+- [x] Rename the opt-in pooled commands back to the canonical
       `test:web:debug` and `test:web:release` behavior. Add stock commands that
       override the target runner with the exact
       `${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner` path.
-- [ ] Ensure the stock commands also clear pool-only variables that could
+- [x] Ensure the stock commands also clear pool-only variables that could
       affect diagnosis. They may retain `CHROME` and `CHROMEDRIVER` because the
       stock runner requires them.
-- [ ] Document in `docs/wasm-testing.md`:
+- [x] Document in `docs/wasm-testing.md`:
       pooled versus stock commands; fresh-origin isolation; Linux and Darwin
       browser discovery; the exact version-coupling rule; `WBG_POOL_DIR` and
       daemon shutdown; lack of Windows, bench, and coverage support; and the
@@ -275,10 +283,10 @@ command afterward.
       archive to pass through `wbg-pool`.
 - [ ] Run `nix develop path:. -c test:web:release`; expect the complete release
       archive to pass through `wbg-pool`.
-- [ ] Run
+- [x] Run
       `nix develop path:. -c test:web:debug:stock -E 'package(tonk-ui)'`;
       expect the same focused tests to pass through ChromeDriver.
-- [ ] Run `cargo fmt --all -- --check`, `nix fmt -- --check`, and
+- [x] Run `cargo fmt --all -- --check`, `nix fmt -- --check`, and
       `git diff --check`; expect no changes or formatting errors.
 
 ### Task 4: Add ongoing parity and evaluate the CI result
