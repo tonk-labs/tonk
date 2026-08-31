@@ -274,7 +274,7 @@ view!:
     <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
       <tonk-notebook
         draft
-        data-repo={repo}
+        with="{branch}@{repo}"
         onblockedit=block/edit
         onplace=block/place
         onremove=block/remove

@@ -203,7 +203,7 @@ impl CustomElement for TonkNotebookIndexElement {
             let _ = panel.set_attribute("hidden", "");
             // After the draft editor, above the rows it matches against.
             let after = this
-                .query_selector("tonk-notebook")
+                .query_selector("tonk-notebook[draft]")
                 .ok()
                 .flatten()
                 .and_then(|el| el.next_sibling());

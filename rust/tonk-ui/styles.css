@@ -2558,13 +2558,15 @@ tonk-code:focus-within {
    what the page falls back to if the script never loads. Once the switcher
    is running they must not also render as a list above the input, which is
    the "why am I looking at Scratch" of it. */
-tonk-notebook-index:has(.notebook-switcher__input) .notebook-index,
-tonk-notebook-index:has(.notebook-switcher__input) .notebook-index__item {
+/* The rows are the switcher's DATA, not a list to read: they feed the
+   suggestions and are the no-script fallback. Hidden once the draft
+   notebook mounts — keyed on the notebook, since that is what the view
+   renders. */
+tonk-notebook-index:has(tonk-notebook[draft]) .notebook-index,
+tonk-notebook-index:has(tonk-notebook[draft]) .notebook-index__item {
   display: none;
 }
-/* The switcher's own box: the index's page padding belongs to the list,
-   not to a one-line title field. */
-tonk-notebook-index:has(.notebook-switcher__input) {
+tonk-notebook-index {
   display: block;
   max-width: 48rem;
   margin: 0 auto;
