@@ -1011,27 +1011,41 @@ fn render_one_result(
         })
         .unwrap_or_default();
 
-    let mut fields = BTreeMap::new();
-    for (field_name, _attr) in descriptor.with().iter() {
-        let Some(term) = terms.get(field_name) else {
-            continue;
-        };
-        let value = match term {
-            Term::Constant(value) => value_to_json(value),
-            // Named variables — user `?var` and analyzer-minted
-            // `__N` from `_` blanks both land here. The frame
-            // binds them either way, so the same lookup works
-            // for both. The auto name leaks into nothing
-            // user-visible because we project under
-            // `field_name`, not the variable name.
+    // Resolve one term to its bound JSON value. Named variables —
+    // user `?var` and analyzer-minted `__N` from `_` blanks — both
+    // land in the frame; the auto name leaks into nothing
+    // user-visible because projection is under the field name.
+    let resolve = |term: Option<&Term<dialog_query::Any>>| -> Option<serde_json::Value> {
+        match term? {
+            Term::Constant(value) => Some(value_to_json(value)),
             Term::Variable {
                 name: Some(name), ..
             } => match frame.get(name) {
-                Some(Term::Constant(value)) => value_to_json(value),
-                _ => continue,
+                Some(Term::Constant(value)) => Some(value_to_json(value)),
+                _ => None,
             },
-            _ => continue,
+            _ => None,
+        }
+    };
+
+    let mut fields = BTreeMap::new();
+    for (field_name, attr) in descriptor.with().iter() {
+        let Some(value) = resolve(terms.get(field_name)) else {
+            continue;
         };
+        // A collection field's entry key rides its own operand
+        // (`show/key`); fold the pair into the entry form, so the
+        // match reads — and re-evaluates — as `show: {ui: <template>}`
+        // rather than leaking the flat wire shape.
+        if attr.the().attribute().is_none() {
+            let key_operand = dialog_query::attribute::Relation::key_operand(field_name);
+            if let Some(serde_json::Value::String(key)) = resolve(terms.get(&key_operand)) {
+                let mut entry = serde_json::Map::new();
+                entry.insert(key, value);
+                fields.insert(field_name.to_owned(), serde_json::Value::Object(entry));
+            }
+            continue;
+        }
         fields.insert(field_name.to_owned(), value);
     }
 
@@ -1350,6 +1364,77 @@ attribute!: &foo/title
             claims.len(),
             2,
             "a cardinality-many attribute accumulates through a domain head; stored: {edges:?}"
+        );
+        Ok(())
+    }
+
+    /// A collection field's match folds the entry back together: the
+    /// key operand never leaks as a sibling field, and the value sits
+    /// under its key — the form you would evaluate to get it.
+    #[dialog_common::test]
+    async fn it_folds_collection_entries_in_match_json() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        for doc in [
+            r#"concept!: &deck
+  description: "A deck of named cards"
+  with:
+    card:
+      description: "Cards by facet"
+      the: io.test.deck
+      cardinality: one
+      as: {[symbol]: text}
+"#,
+            r#"deck!:
+  this: id:deck/1
+  card: {alpha: "A"}
+"#,
+        ] {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+        }
+
+        let parsed = parse("deck:\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("query failed: {e}"))?;
+        let result = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .next()
+            .expect("one deck row");
+        assert_eq!(
+            result.fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A"})),
+            "the entry folds under its key: {:?}",
+            result.fields,
+        );
+        assert!(
+            !result.fields.contains_key("card/key"),
+            "the key operand does not leak as a field",
         );
         Ok(())
     }
