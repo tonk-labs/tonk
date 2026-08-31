@@ -2371,11 +2371,9 @@ tonk-code:focus-within {
 [data-tonk-display-default-notice]::part(icon) {
   font-size: var(--wa-font-size-xs, 0.75rem);
 }
-/* Cell output: drop it entirely. */
-.evaluate-result [data-tonk-display-default-notice],
-.evaluate-results [data-tonk-display-default-notice] {
-  display: none;
-}
+/* Cell output drops it entirely — but that rule lives with the notebook's
+   own injected styles, since this stylesheet does not cross into the
+   editor's shadow root where cells render. */
 
 /* Result-view switcher — a `<wa-tab-group>` with the tab strip
    on the inline-end side. The active-tab indicator and the

@@ -90,6 +90,89 @@ const OUTPUT_CSS: &str = r#"
   --tonk-code-bg: rgba(127, 127, 127, 0.11);
   --tonk-code-bg: color-mix(in srgb, currentColor 11%, transparent);
 }
+/* Callouts in a cell's output.
+ *
+ * A full callout is right on a page, where landing on a raw default or an
+ * empty result is a surprise worth explaining. In cell output it is noise:
+ * you ran a query to see data, and it dwarfs the result it labels — a
+ * sentence in a padded box above two lines of notation.
+ *
+ * The "no view for this model" notice goes entirely: seeing the default
+ * rendering IS the expected outcome here. The rest shrink to a thin bar.
+ */
+.notebook-cell-result [data-tonk-display-default-notice] {
+  display: none;
+}
+.notebook-cell-result wa-callout {
+  --wa-callout-padding: var(--wa-space-2xs, 0.25rem) var(--wa-space-xs, 0.5rem);
+  font-size: var(--wa-font-size-xs, 0.75rem);
+  line-height: 1.35;
+  margin-block: var(--wa-space-2xs, 0.25rem);
+}
+.notebook-cell-result wa-callout::part(icon) {
+  font-size: var(--wa-font-size-s, 0.875rem);
+}
+
+/* `<tonk-notation>`'s palette.
+ *
+ * The element renders into the light DOM and takes its colours from the
+ * app stylesheet — which does not cross into this shadow root, so a cell's
+ * notation output arrived correctly tokenized and entirely grey. The
+ * classes come from the same table `styles.css` uses; the colours come
+ * from `<tonk-code>`'s variables, which ARE in scope here, so editor and
+ * output stay in step.
+ */
+/* The palette itself, ON the element.
+ *
+ * `styles.css` declares these roles on `.query-notation` — a container the
+ * inspector provides and a cell's output does not — so every
+ * `var(--tonk-code-*)` here resolved to nothing and fell back to inherited
+ * grey. Declaring them on `tonk-notation` makes the element carry its own
+ * colours wherever it is mounted, which is what a passive renderer should
+ * do.
+ *
+ * Values track the Bauhaus roles in `styles.css`: yellow/structural for
+ * keys, alarm for effects, and so on.
+ */
+tonk-notation {
+  --tonk-code-fg: var(--wa-color-text-normal);
+  --tonk-code-key: var(--tonk-bauhaus-yellow, #c89a2b);
+  --tonk-code-effect: var(--tonk-bauhaus-alarm, #d05a4a);
+  --tonk-code-name-sigil: var(--wa-color-text-quiet);
+  --tonk-code-name: var(--tonk-bauhaus-blue, #5a7fb8);
+  --tonk-code-entity: var(--tonk-bauhaus-blue, #5a7fb8);
+  --tonk-code-variable: var(--tonk-bauhaus-grey, #8a8a8a);
+  --tonk-code-font: var(--wa-font-family-code, ui-monospace, monospace);
+  --tonk-code-font-size: var(--wa-font-size-s, 0.875rem);
+}
+tonk-notation .tonk-notation-pre {
+  margin: 0;
+  background: transparent;
+  color: var(--tonk-code-fg);
+  font-family: var(--tonk-code-font);
+  font-size: var(--tonk-code-font-size);
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+tonk-notation .tonk-cm-key { color: var(--tonk-code-key); }
+tonk-notation .tonk-cm-effect {
+  color: var(--tonk-code-effect);
+  font-weight: bold;
+}
+tonk-notation .tonk-cm-name-sigil { color: var(--tonk-code-name-sigil); }
+tonk-notation .tonk-cm-name { color: var(--tonk-code-name); }
+tonk-notation .tonk-cm-entity {
+  color: var(--tonk-code-entity);
+  text-decoration: underline;
+  text-decoration-color: var(--tonk-code-entity);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+tonk-notation .tonk-cm-variable {
+  color: var(--tonk-code-variable);
+  font-style: italic;
+}
 .md-code-block {
   margin: 0.5rem 0;
   /* The positioning context the zap anchors to. Without it the button's
