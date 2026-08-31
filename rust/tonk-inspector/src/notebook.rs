@@ -90,7 +90,27 @@ const OUTPUT_CSS: &str = r#"
   --tonk-code-bg: rgba(127, 127, 127, 0.11);
   --tonk-code-bg: color-mix(in srgb, currentColor 11%, transparent);
 }
-.md-code-block { margin: 0.5rem 0; }
+.md-code-block {
+  margin: 0.5rem 0;
+  /* The positioning context the zap anchors to. Without it the button's
+     `position: absolute` resolves against some ancestor further up and it
+     lands under the cell instead of on it. */
+  position: relative;
+}
+/* The zap floats over the cell's bottom-right corner, half-overlapping its
+   edge — the placement the inspector uses. Its own container must not
+   reserve space, or the button pushes the output down and stops looking
+   like it belongs to the code above it. */
+.notebook-cell-held {
+  position: static;
+  height: 0;
+}
+.notebook-cell-held .evaluate-play {
+  position: absolute;
+  bottom: calc(-1 * var(--wa-space-m, 1rem));
+  right: var(--wa-space-s, 0.75rem);
+  z-index: 1;
+}
 
 /* The block the caret is in — the unit a commit writes.
    A block can span several nodes (a heading and the content under it), so
