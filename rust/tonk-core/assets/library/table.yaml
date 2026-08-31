@@ -401,37 +401,37 @@ rule!:
 # wrapper in the main view keeps them unpainted. `subject={this}`
 # carries each claim's entity id.
 
-view/directory!:
-  this: tonk:table/sheet-rows
-  model: tonk:table/sheet
-  display: |
-    <div class="table-sheet-rows">
-      <div class="table-sheet-row" subject={this} data-table={table} data-name={name} data-order={order}></div>
-    </div>
+view!:
+  this: tonk:table/sheet
+  show:
+    directory: |
+      <div class="table-sheet-rows">
+        <div class="table-sheet-row" subject={this} data-table={table} data-name={name} data-order={order}></div>
+      </div>
 
-view/directory!:
-  this: tonk:table/cell-rows
-  model: tonk:table/cell
-  display: |
-    <div class="table-cell-rows">
-      <div class="table-cell-row" subject={this} data-sheet={sheet} data-at={at} data-content={content} data-style={style}></div>
-    </div>
+view!:
+  this: tonk:table/cell
+  show:
+    directory: |
+      <div class="table-cell-rows">
+        <div class="table-cell-row" subject={this} data-sheet={sheet} data-at={at} data-content={content} data-style={style}></div>
+      </div>
 
-view/directory!:
-  this: tonk:table/column-rows
-  model: tonk:table/column
-  display: |
-    <div class="table-column-rows">
-      <div class="table-column-row" subject={this} data-sheet={sheet} data-at={at} data-width={width}></div>
-    </div>
+view!:
+  this: tonk:table/column
+  show:
+    directory: |
+      <div class="table-column-rows">
+        <div class="table-column-row" subject={this} data-sheet={sheet} data-at={at} data-width={width}></div>
+      </div>
 
-view/directory!:
-  this: tonk:table/rowsize-rows
-  model: tonk:table/row
-  display: |
-    <div class="table-rowsize-rows">
-      <div class="table-rowsize-row" subject={this} data-sheet={sheet} data-at={at} data-height={height}></div>
-    </div>
+view!:
+  this: tonk:table/row
+  show:
+    directory: |
+      <div class="table-rowsize-rows">
+        <div class="table-rowsize-row" subject={this} data-sheet={sheet} data-at={at} data-height={height}></div>
+      </div>
 
 # ---------------------------------------------------------------------------
 # Views — the live grid. `subject={this}` selects the element's claims
@@ -441,36 +441,36 @@ view/directory!:
 # ---------------------------------------------------------------------------
 
 view!:
-  this: id:table/view
-  model: table
-  display: |
-    <tonk-table subject={this}
-      oncreatesheet=table/create-sheet
-      onrenamesheet=table/rename-sheet
-      oncreatecell=table/create-cell
-      oneditcell=table/edit-cell
-      onclearcell=table/clear-cell
-      oncreatecolumn=table/create-column
-      onresizecolumn=table/resize-column
-      oncreaterow=table/create-row
-      onresizerow=table/resize-row
-    >
-      <div hidden>
-        <tonk-display model=tonk:table/sheet></tonk-display>
-        <tonk-display model=tonk:table/cell></tonk-display>
-        <tonk-display model=tonk:table/column></tonk-display>
-        <tonk-display model=tonk:table/row></tonk-display>
-      </div>
-    </tonk-table>
+  this: table
+  show:
+    ui: |
+      <tonk-table subject={this}
+        oncreatesheet=table/create-sheet
+        onrenamesheet=table/rename-sheet
+        oncreatecell=table/create-cell
+        oneditcell=table/edit-cell
+        onclearcell=table/clear-cell
+        oncreatecolumn=table/create-column
+        onresizecolumn=table/resize-column
+        oncreaterow=table/create-row
+        onresizerow=table/resize-row
+      >
+        <div hidden>
+          <tonk-display model=tonk:table/sheet></tonk-display>
+          <tonk-display model=tonk:table/cell></tonk-display>
+          <tonk-display model=tonk:table/column></tonk-display>
+          <tonk-display model=tonk:table/row></tonk-display>
+        </div>
+      </tonk-table>
 
 # A directory view so `tonk render table` (list of workbooks) resolves.
-view/directory!:
-  this: id:table/directory
-  model: table
-  display: |
-    <div class="table-directory">
-      <tonk-display entity={this} model={dom.host/model}></tonk-display>
-    </div>
+view!:
+  this: table
+  show:
+    directory: |
+      <div class="table-directory">
+        <tonk-display entity={this} model={dom.host/model}></tonk-display>
+      </div>
 
 # ---------------------------------------------------------------------------
 # Starter content: one workbook, one sheet, and the demo cells — each

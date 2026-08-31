@@ -4,19 +4,19 @@
 //! component runs, against a [`QueryBackend`], then feeds the result
 //! through the shared `tonk-template` planner and this crate's pure
 //! headless renderer ([`crate::render`]). Nested `<tonk-display>`
-//! elements inside a view are rendered recursively; a view whose
-//! `type` is `text/html` (portal mode) is emitted as an isolated
-//! `<iframe srcdoc>`.
+//! elements inside a view are rendered recursively; a model whose
+//! `show` dictionary carries `type: text/html` (portal mode) is
+//! emitted as an isolated `<iframe srcdoc>`.
 
 use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
-use tonk_template::fold::select_rows;
+use tonk_template::fold::{select_rows, show_template};
 use tonk_template::resolve::scalar_field_names;
 use tonk_template::resolve::{
-    directory_view_predicate, entity_query, instances_query, looks_like_uri, name_query,
-    parse_source, phase1_query, view_by_model_query, view_predicate,
+    DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
+    name_query, parse_source, phase1_query, view_query,
 };
 use tonk_template::{split_plan_with_scalars, this_repeat_root};
 
@@ -75,27 +75,20 @@ async fn render_at_depth<B: QueryBackend>(
         None => None,
     };
 
-    // 3. Resolve the view: pick the view predicate (explicit concept,
-    //    or built-in detail/directory), query it by model, and read
-    //    the `display` template + optional `type`.
-    let view_descriptor = match &route.view {
-        Some(view_name) => {
-            let (_, view_desc_json) = resolve_model(backend, view_name).await?;
-            serde_json::from_str(&view_desc_json).map_err(|e| {
-                RenderError::Descriptor(format!(
-                    "view concept `{view_name}` descriptor invalid: {e}"
-                ))
-            })?
-        }
-        None if entity_uri.is_some() => view_predicate(),
-        None => directory_view_predicate(),
+    // 3. Pick the facet — the explicit route facet, else `ui` (entity
+    //    set) or `directory` (directory mode) — and resolve its
+    //    template from the model's `show` dictionary.
+    let facet = match &route.view {
+        Some(facet) => facet.as_str(),
+        None if entity_uri.is_some() => DETAIL_FACET,
+        None => DIRECTORY_FACET,
     };
-    let view = resolve_view(backend, &view_descriptor, &model_entity).await?;
+    let view = resolve_view(backend, facet, &model_entity).await?;
     let Some(view) = view else {
         return Err(RenderError::NoView(route.model.clone()));
     };
 
-    // 4. Portal views (type=text/html) render as an isolated iframe.
+    // 4. Portal views (a `type: text/html` entry) render as an isolated iframe.
     if view.is_portal {
         return Ok(render_portal(&view.display));
     }
@@ -151,8 +144,8 @@ fn host_fields(route: &RenderRoute) -> BTreeMap<String, Ipld> {
     fields
 }
 
-/// View resolution result: the `display` template and whether the
-/// view is a portal (`type == "text/html"`).
+/// View resolution result: the facet's template and whether the
+/// model's views are portals (a `type: text/html` entry).
 struct ResolvedView {
     display: String,
     is_portal: bool,
@@ -211,38 +204,45 @@ async fn resolve_name<B: QueryBackend>(backend: &B, name: &str) -> Result<String
 /// is the wildcard-model entity seeded by core.yaml.
 const DEFAULT_MODEL: &str = "tonk:_";
 
-/// Resolve the view template by querying the view concept constrained
-/// to the model. Falls back to the `tonk:_` default-model view when
-/// the model has no specific one, matching the browser's
-/// `spawn_default_view`. Returns `None` only when neither exists.
+/// Resolve one facet's template from the model's `show` dictionary.
+/// Falls back to the `tonk:_` default-model dictionary when the model
+/// has no entry for the facet, matching the browser's
+/// `spawn_default_view`. Returns `None` only when neither carries it.
 async fn resolve_view<B: QueryBackend>(
     backend: &B,
-    view_descriptor: &serde_json::Value,
+    facet: &str,
     model_entity: &str,
 ) -> Result<Option<ResolvedView>, RenderError> {
-    if let Some(view) = query_view(backend, view_descriptor, model_entity).await? {
+    if let Some(view) = query_view(backend, facet, model_entity).await? {
         return Ok(Some(view));
     }
-    // No model-specific view: try the `tonk:_` default.
-    query_view(backend, view_descriptor, DEFAULT_MODEL).await
+    // No model-specific entry: try the `tonk:_` default.
+    query_view(backend, facet, DEFAULT_MODEL).await
 }
 
-/// Run the view-by-model query for one model value and read the first
-/// row's `display` + `type`.
+/// Run the view query for one model entity, fold the entry rows into
+/// the `show` dictionary, and read the facet's template (plus the
+/// portal marker).
 async fn query_view<B: QueryBackend>(
     backend: &B,
-    view_descriptor: &serde_json::Value,
+    facet: &str,
     model_entity: &str,
 ) -> Result<Option<ResolvedView>, RenderError> {
-    let query = view_by_model_query(view_descriptor, model_entity)
+    let query = view_query(model_entity)
         .map_err(|e| RenderError::QueryConstruction(format!("view query: {e}")))?;
     let rows = run_query(backend, query).await?;
-    let Some(row) = rows.into_iter().next() else {
+    let folded = select_rows(rows);
+    let Some(row) = folded.first() else {
         return Ok(None);
     };
-    let display = ipld_string(row.fields.get("display")).unwrap_or_default();
-    let is_portal = ipld_string(row.fields.get("type")).as_deref() == Some("text/html");
-    Ok(Some(ResolvedView { display, is_portal }))
+    let Some(display) = show_template(row, facet) else {
+        return Ok(None);
+    };
+    let is_portal = show_template(row, TYPE_FACET) == Some("text/html");
+    Ok(Some(ResolvedView {
+        display: display.to_owned(),
+        is_portal,
+    }))
 }
 
 /// Lower a `tonk_schema::query::Query` to a concept query and run it

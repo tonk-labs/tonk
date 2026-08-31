@@ -78,29 +78,29 @@ rule!:
 # ---------------------------------------------------------------------------
 
 view!:
-  this: id:prose/view
-  model: prose
-  display: |
-    <tonk-prose
-      onchange=prose/edit
-      data-subject={this}
-      placeholder="Write something…"
-      auto-focus
-      style="display: block; min-height: 12rem;"
-    >{content}</tonk-prose>
+  this: prose
+  show:
+    ui: |
+      <tonk-prose
+        onchange=prose/edit
+        data-subject={this}
+        placeholder="Write something…"
+        auto-focus
+        style="display: block; min-height: 12rem;"
+      >{content}</tonk-prose>
 
 # ---------------------------------------------------------------------------
 # A directory view so `tonk render prose` (list of documents) resolves. One
 # <tonk-display> per instance — the single-display directory pattern.
 # ---------------------------------------------------------------------------
 
-view/directory!:
-  this: id:prose/directory
-  model: prose
-  display: |
-    <div class="prose-directory">
-      <tonk-display entity={this} model={dom.host/model}></tonk-display>
-    </div>
+view!:
+  this: prose
+  show:
+    directory: |
+      <div class="prose-directory">
+        <tonk-display entity={this} model={dom.host/model}></tonk-display>
+      </div>
 
 # ---------------------------------------------------------------------------
 # Seed one document so the model resolves on first render. The seed stores a

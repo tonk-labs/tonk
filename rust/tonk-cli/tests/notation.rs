@@ -655,11 +655,11 @@ mod eval_home {
 
     use crate::common;
 
-    const TODO_DIRECTORY_VIEW: &str = r#"view/directory!: &todo-directory
-  this: id:todo-directory
-  model: todo
-  display: |
-    <li>{title}</li>
+    const TODO_DIRECTORY_VIEW: &str = r#"view!:
+  this: todo
+  show:
+    directory: |
+      <li>{title}</li>
 "#;
 
     async fn seed_todo(test: &common::TestSite) -> Result<()> {

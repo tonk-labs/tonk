@@ -13,7 +13,7 @@ you render ultimately hangs off a `<tonk-display>`.
 <tonk-display model="task"></tonk-display>
 
 <!-- one entity through the built-in label-view concept -->
-<tonk-display model="person" entity="did:key:z6Mk…" view="tonk:view/label"></tonk-display>
+<tonk-display model="person" entity="did:key:z6Mk…" view="label"></tonk-display>
 ```
 
 ## Attributes
@@ -36,7 +36,7 @@ reference, `model` the referenced concept, `view` the view you want:
 
 ```html
 <strong>
-  <tonk-display entity={author} model=person view=tonk:view/label></tonk-display>
+  <tonk-display entity={author} model=person view=label></tonk-display>
 </strong>
 ```
 

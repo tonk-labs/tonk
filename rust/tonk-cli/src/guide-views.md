@@ -1,40 +1,43 @@
 # Views: rendering data
 
-A **view** is an HTML template bound to a concept. The tonk-ui host
-renders live branch data through `<tonk-display>` and `<tonk-view>`;
-neither needs a framework or a `<script>`. `tonk view add` is the
-convenient authoring path and expands to an assertion of the `view`
-concept; use `--notation` to inspect that document.
+A **view** is a model's set of HTML templates, keyed by *facet*. The
+tonk-ui host renders live branch data through `<tonk-display>` and
+`<tonk-view>`; neither needs a framework or a `<script>`. `tonk view
+add` is the convenient authoring path and expands to an assertion of
+the `view` concept; use `--notation` to inspect that document.
 
 ## The `view` concept
 
-`view` is `{model, display}`: the concept it renders and the HTML
-template. Assert one per presentation:
+A `view` instance's `this` IS the model — the concept being rendered —
+and its one field `show` is a dictionary of templates keyed by facet:
+`ui` (the detail presentation), `directory` (every instance), `label`,
+`title`, or any facet name you pick. Assert entries together or one at
+a time:
 
 ```yaml tonk=parse
-view!: &person-card
-  this: id:person-card
-  model: person
-  display: !text/html |
-    <article>
-      <h2>{name}</h2>
-      <p>{age}</p>
-    </article>
+view!:
+  this: person
+  show:
+    ui: |
+      <article>
+        <h2>{name}</h2>
+        <p>{age}</p>
+      </article>
+    title: Person {name}
 ```
 
 `{field}` placeholders interpolate the rendered entity's fields, drawn
-from the `model` concept's shape. `&person-card` publishes the anchor
-name; the explicit `this: id:person-card` pins the view entity so a
-later assertion supersedes its cardinality-one `display` instead of
-leaving the old view entity queryable. `tonk view add --name person-card`
-adds this stable `this:` automatically.
+from the model concept's shape. Each entry lands as its own fact
+(`<model> xyz.tonk.view/<facet> <template>`) with cardinality one, so
+re-asserting a facet supersedes that template — there is no separate
+view entity to name or pin. The `view` concept itself is seeded by the
+standard library, pinned to `tonk:view`.
 
-## Authoring detail, directory, label, and title views
+## Authoring ui, directory, label, and title facets
 
-`tonk view add` authors a detail view by default. Select any standard view
-concept explicitly with `--kind detail|directory|label|title`; each kind gets a
-stable default anchor (`<model>-view`, `<model>-directory`, `<model>-label`, or
-`<model>-title`). A supplied `--name` is preserved unchanged.
+`tonk view add` authors the `ui` facet by default. Select a facet with
+`--kind detail|directory|label|title` (writing `ui`, `directory`,
+`label`, `title` respectively):
 
 ```text
 tonk view add todo --kind directory --template-file todo.html --home
@@ -47,7 +50,7 @@ change atomically. Without it, an existing home is always preserved.
 
 ## `<tonk-display>` — one entity through a view
 
-`<tonk-display entity=<uri> model=<concept> view=<view-concept>>`
+`<tonk-display entity=<uri> model=<concept> view=<facet>>`
 renders a single entity. The resolution that trips people up:
 
 - `entity` must be an entity **URI** — something containing `:`
@@ -56,34 +59,22 @@ renders a single entity. The resolution that trips people up:
   "`entity` must be an entity URI"; headless `tonk render` is more
   lenient, so a template that SSRs fine can still break live. Always
   write `{this}` or a URI.
-- `model` is the entity's concept; it projects the entity's fields.
-- `view` is a **view concept** (e.g. the built-in `tonk:view`), NOT a
-  specific view instance. `<tonk-display>` resolves the view concept,
-  then runs a **model-constrained query** to find the view instance
-  whose `model` equals the resolved model.
-
-So you author the instance with a `model` (above) and point callers at
-the concept:
-
-```yaml tonk=illustrative-view-config
-# Correct: the sheet/host references the view CONCEPT.
-view: tonk:view
-# Wrong: referencing a view instance (id:person-card) makes the
-# concept-of-concepts lookup miss → "Not found / no concept matched".
-```
-
-Omit `view` to fall back to the built-in detail view for the model. A
-`<tonk-display>` with a `model` but no `entity` renders a **directory
-view** — every instance of the model — using the model's
-`view/directory`, or a default carousel.
+- `model` is the entity's concept; it projects the entity's fields
+  AND names the view instance — the model entity's `show` dictionary
+  is where templates come from.
+- `view` is a **facet name** (`label`, `title`, …), NOT a concept or
+  an entity. Omit it for the mode default: `ui` when `entity` is set,
+  `directory` when it is not (a `<tonk-display>` with a `model` but
+  no `entity` renders every instance of the model through the
+  `directory` facet, or a default carousel).
 
 Three routes reach a view in the shell, and `tonk render` (next
 section) takes the same three:
 
 - `/space/<space>/<model>` — the model's directory.
-- `/space/<space>/<entity>@<model>` — one entity, model's own view.
-- `/space/<space>/<entity>@<model>!<view>` — one entity through an
-  explicit view concept.
+- `/space/<space>/<entity>@<model>` — one entity, the `ui` facet.
+- `/space/<space>/<entity>@<model>!<facet>` — one entity through an
+  explicit facet.
 
 Handing the repo to someone else is a separate act: `tonk invite`.
 
@@ -95,12 +86,13 @@ browser, no service worker. The route is the shorthand:
 
 - `tonk render person` — directory: every instance of `person`.
 - `tonk render alice@person` — one entity (`{entity}@{model}`).
-- `tonk render alice@person!tonk:view/label` — one entity through an
-  explicit view concept (`{entity}@{model}!{view}`).
+- `tonk render alice@person!label` — one entity through an explicit
+  facet (`{entity}@{model}!{facet}`).
 
 It writes HTML to stdout, or to a file with `--out`. It resolves
-`{dom.host/model}`, falls back to the `_:_` default view when a model
-has no specific one, and renders nested `<tonk-display>` recursively.
+`{dom.host/model}`, falls back to the `tonk:_` default dictionary when
+a model's own lacks the facet, and renders nested `<tonk-display>`
+recursively.
 
 Headless rendering resolves templates and nested `<tonk-display>` elements,
 but it does not run custom elements or their JavaScript. In particular, the
@@ -116,37 +108,34 @@ placeholder interpolates the field's **raw value** — the target's URI
 **nest a `<tonk-display>`** over the reference field; interpolating the
 field alone never resolves it.
 
-Render the reference through a small **label view** — a `view/label`
-instance. It lives under the built-in `tonk:view/label` concept, so it
-doesn't collide with the model's default `tonk:view`:
+Render the reference through a small **label facet** on the referenced
+model — a distinct entry, so it never collides with the model's `ui`:
 
 ```yaml tonk=parse
 # A comment points at its author (a person).
-view!: &comment-card
-  this: id:comment-card
-  model: comment
-  display: !text/html |
-    <article>
-      <strong><tonk-display entity={author} model=person view=tonk:view/label></tonk-display></strong>
-      <p>{body}</p>
-    </article>
+view!:
+  this: comment
+  show:
+    ui: |
+      <article>
+        <strong><tonk-display entity={author} model=person view=label></tonk-display></strong>
+        <p>{body}</p>
+      </article>
 
-# The label view the line above resolves: just the person's name.
-view/label!: &person-label
-  this: id:person-label
-  model: person
-  display: !text/html |
-    {name}
+# The label facet the line above resolves: just the person's name.
+view!:
+  this: person
+  show:
+    label: |
+      {name}
 ```
 
 `<tonk-display entity={author} …>` follows the `author` reference to the
-person entity and renders it through the `tonk:view/label` view
-constrained to `model: person`, so the card shows the name, not
-`did:key:…`. Writing `{author}` directly would print the URI. The same
-nesting renders any reference: `entity` is the reference field, `model`
-the referenced concept, and `view` the view concept you want
-(`tonk:view/label` for just a name, `tonk:view` for the full detail
-card).
+person entity and renders it through `person`'s `label` facet, so the
+card shows the name, not `did:key:…`. Writing `{author}` directly would
+print the URI. The same nesting renders any reference: `entity` is the
+reference field, `model` the referenced concept, and `view` the facet
+you want (`label` for just a name, none for the full `ui` card).
 
 ## Built-in view elements
 
@@ -177,8 +166,8 @@ these.
 Views can freely use any custom element already registered in the
 rendering realm — the built-in `<tonk-*>` elements above and the Web
 Awesome `<wa-*>` set (`<wa-icon>`, `<wa-carousel>`, …) — with no
-script. A `<script>` written directly in a `display:` template never
-executes (templates render through inert fragments), so behaviour the
+script. A `<script>` written directly in a template never executes
+(templates render through inert fragments), so behaviour the
 template language can't express (rich editing, canvas, drag
 interactions) is packaged as a **web component** instead.
 
@@ -219,7 +208,7 @@ view renders it. Rules of the road:
   `dom.event.detail/amount` fields on the command (see `tonk help
   events`). The built-in `<tonk-sheet-binder>` works this way; your
   components are peers of it.
-- **One-off inline form**: inside a view's `display`, a
+- **One-off inline form**: inside a view template, a
   `<tonk-component>` wrapping an inert holder
   `<script type="tonk/module">…</script>` executes that source the
   same way — handy while prototyping, before promoting the source to
@@ -249,10 +238,10 @@ the outer declarative markup, but cannot execute `<tonk-portal>` or the script.
 The live element prepends the bridge bootstrap and mounts the document in an
 opaque-origin sandboxed iframe.
 
-`tonk view` is a lower-level, claim-driven inventory: it lists entities carrying
-one of the four view-template attributes, plus legacy bare `text/html` claims
-served by the worker's guest-host endpoint. A bare `text/html` claim is not a
-`tonk render` route and is distinct from the seeded `portal` concept above.
+`tonk view` is a lower-level, claim-driven inventory: it lists every model
+carrying `show` entries, plus legacy bare `text/html` claims served by the
+worker's guest-host endpoint. A bare `text/html` claim is not a `tonk render`
+route and is distinct from the seeded `portal` concept above.
 
 ---
 

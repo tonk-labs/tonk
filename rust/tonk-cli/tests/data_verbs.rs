@@ -670,7 +670,6 @@ mod when_previewing_a_write {
             &test.site,
             "habit",
             tonk_cli::authoring::ViewKind::Detail,
-            None,
             "<b>{name}</b>",
             false,
             preview(),
@@ -812,13 +811,12 @@ mod when_printing_notation_for_a_write {
             &test.site,
             "habit",
             tonk_cli::authoring::ViewKind::Detail,
-            None,
             "<b>{name}</b>",
             false,
             notation(),
         )
         .await?;
-        assert!(view.contains("view!: &habit-view"), "{view}");
+        assert!(view.contains("view!:\n  this: habit"), "{view}");
         assert_eq!(revision(&test).await?, before);
 
         let home = tonk_cli::data_ops::home(&test.site, &["habit".into()], notation()).await?;

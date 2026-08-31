@@ -34,9 +34,10 @@ async fn seeded() -> Result<TestSite> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     test.eval_inline(
-        r#"view!: &person-card
-  model: person
-  display: "<article><h2>{name}</h2></article>"
+        r#"view!:
+  this: person
+  show:
+    ui: "<article><h2>{name}</h2></article>"
 "#,
     )
     .await?;
@@ -80,9 +81,10 @@ async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
     test.eval_inline(PERSON_CONCEPT).await?;
     // A view that reads {dom.host/model} into an attribute.
     test.eval_inline(
-        r#"view!: &person-card
-  model: person
-  display: "<article data-model=\"{dom.host/model}\"><h2>{name}</h2></article>"
+        r#"view!:
+  this: person
+  show:
+    ui: "<article data-model=\"{dom.host/model}\"><h2>{name}</h2></article>"
 "#,
     )
     .await?;
@@ -102,13 +104,13 @@ async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
 async fn it_renders_a_directory_of_every_instance() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
-    // A person-specific directory view (the built-in `view/directory`
-    // concept, keyed to `model: person`). Overrides the stdlib's
+    // A person-specific `directory` facet. Overrides the stdlib's
     // `tonk:_` default carousel so the test asserts this exact template.
     test.eval_inline(
-        r#"view/directory!: &people
-  model: person
-  display: "<ul><li data-id=\"{this}\">{name}</li></ul>"
+        r#"view!:
+  this: person
+  show:
+    directory: "<ul><li data-id=\"{this}\">{name}</li></ul>"
 "#,
     )
     .await?;
@@ -154,9 +156,10 @@ async fn it_falls_back_to_the_default_model_view() -> Result<()> {
     test.eval_inline(PERSON_CONCEPT).await?;
     // A view keyed to the `tonk:_` default model rather than `person`.
     test.eval_inline(
-        r#"view!: &fallback
-  model: tonk:_
-  display: "<div class=\"default\">{name}</div>"
+        r#"view!:
+  this: tonk:_
+  show:
+    ui: "<div class=\"default\">{name}</div>"
 "#,
     )
     .await?;

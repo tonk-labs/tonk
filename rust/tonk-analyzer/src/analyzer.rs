@@ -4828,34 +4828,54 @@ attribute!:
 mod library_analysis_tests {
     use super::*;
 
-    /// The shipped notebook library must analyze.
+    /// Every shipped library file must analyze.
     ///
-    /// It is fetched and lowered at repository creation, so a rule the
+    /// They are fetched and lowered at repository creation, so a rule the
     /// analyzer rejects does not fail a build — it fails every new space,
     /// at runtime, with no test having said so.
     #[test]
-    fn it_analyzes_the_notebook_library() {
-        // Core first: `notebook.yaml` references concepts core declares
+    fn it_analyzes_the_shipped_libraries() {
+        // Core first: the other files reference concepts core declares
         // (`view`, `route`, `name`), and lowering runs against a branch that
-        // already has them. Analyzing the file alone reports those as unknown
-        // concepts, which says nothing about the file.
-        let source = format!(
-            "{}\n{}",
-            include_str!("../../tonk-core/assets/library/core.yaml"),
-            include_str!("../../tonk-core/assets/library/notebook.yaml"),
+        // already has them. Analyzing a file alone reports those as unknown
+        // concepts, which says nothing about the file. `profile.yaml`
+        // declares its own copies of the shared concepts, so it analyzes
+        // standalone.
+        let chained: [(&str, &str); 3] = [
+            (
+                "notebook.yaml",
+                include_str!("../../tonk-core/assets/library/notebook.yaml"),
+            ),
+            (
+                "prose.yaml",
+                include_str!("../../tonk-core/assets/library/prose.yaml"),
+            ),
+            (
+                "table.yaml",
+                include_str!("../../tonk-core/assets/library/table.yaml"),
+            ),
+        ];
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        for (name, body) in chained {
+            assert_analyzes(name, &format!("{core}\n{body}"));
+        }
+        assert_analyzes(
+            "profile.yaml",
+            include_str!("../../tonk-core/assets/library/profile.yaml"),
         );
-        let parsed = tonk_notation::parse(&source);
+    }
+
+    fn assert_analyzes(name: &str, source: &str) {
+        let parsed = tonk_notation::parse(source);
         assert!(
             parsed.diagnostics.is_empty(),
-            "notebook.yaml must parse: {:#?}",
+            "{name} must parse: {:#?}",
             parsed.diagnostics
         );
-        let syntax = parsed.syntax.expect("notebook.yaml yields a syntax tree");
+        let syntax = parsed
+            .syntax
+            .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
         let result = analyze_local(&syntax);
-        assert!(
-            result.is_ok(),
-            "notebook.yaml must analyze: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "{name} must analyze: {:?}", result.err());
     }
 }

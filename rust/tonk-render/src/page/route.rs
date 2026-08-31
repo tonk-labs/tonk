@@ -8,8 +8,8 @@ use crate::page::RenderError;
 /// Grammar (mirrors the SW/display route shorthand):
 /// - `/{model}` — directory: every instance of the model.
 /// - `/{entity}@{model}` — a single entity of the model.
-/// - `/{entity}@{model}!{view}` — a single entity, explicit view.
-/// - `/{model}!{view}` — directory with an explicit view concept.
+/// - `/{entity}@{model}!{view}` — a single entity, explicit facet.
+/// - `/{model}!{view}` — directory through an explicit facet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderRoute {
     /// The model concept name or URI.
@@ -17,8 +17,8 @@ pub struct RenderRoute {
     /// The target entity (bookmark name or URI). `None` => directory
     /// mode (render every instance).
     pub entity: Option<String>,
-    /// The view *concept* name. `None` => the built-in view (detail)
-    /// or directory view.
+    /// The `show` facet to render (`label`, `title`, …). `None` =>
+    /// the mode default: `ui` (entity set) or `directory`.
     pub view: Option<String>,
 }
 
