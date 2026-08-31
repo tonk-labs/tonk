@@ -10,8 +10,16 @@ mod main {
     use wasm_bindgen::prelude::*;
 
     /// Activates and initializes the Tonk service worker.
+    ///
+    /// `build_id` is the identity `scripts/hash-guest.sh` stamps into
+    /// `service_worker.js`. It names the per-build caches, and the JS
+    /// shim passes it in rather than the two sides hardcoding the same
+    /// literal — a name kept in step by hand across two languages is
+    /// drift waiting to happen, and the drift is silent (one side
+    /// purges caches the other is still writing).
     #[wasm_bindgen]
-    pub async fn activate() -> Result<TonkServiceWorker, JsError> {
+    pub async fn activate(build_id: String) -> Result<TonkServiceWorker, JsError> {
+        tonk_worker::set_build_id(build_id);
         TonkServiceWorker::new().await
     }
 }

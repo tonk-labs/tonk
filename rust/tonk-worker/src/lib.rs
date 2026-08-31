@@ -174,6 +174,8 @@ pub mod session;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod cache;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use cache::set_build_id;
 
 mod r#async;
 pub use r#async::*;
