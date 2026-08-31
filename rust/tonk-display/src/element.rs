@@ -1307,7 +1307,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         {
             let _: Result<Node, _> = parent.remove_child(&slide.item);
         }
-        if let Some(new_slide) = mount_view_slide(host, &mut s, &display) {
+        if let Some(new_slide) = mount_view_slide(host, &mut s, &display, &name) {
             call_render(&new_slide.view_el, &cached_detail);
             s.slides.insert(name, new_slide);
         }
@@ -1419,7 +1419,7 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
                 let _: Result<Node, _> = parent.remove_child(&slide.item);
             }
         }
-        if let Some(slide) = mount_view_slide(&host, &mut s, &display) {
+        if let Some(slide) = mount_view_slide(&host, &mut s, &display, DEFAULT_MODEL) {
             // Replay the whole cached frame (directory mode has one
             // conclusion per instance; a single replay would drop all
             // but the first).
@@ -2108,7 +2108,12 @@ fn forward_with(host: &Element, view_el: &Element) {
     }
 }
 
-fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<Slide> {
+fn mount_view_slide(
+    host: &Element,
+    inner: &mut Inner,
+    display: &str,
+    owner: &str,
+) -> Option<Slide> {
     let document = window()?.document()?;
 
     let view_el = document.create_element("tonk-view").ok()?;
@@ -2127,11 +2132,14 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
     }
     view_el.set_inner_html(display);
     forward_with(host, &view_el);
-    // Record what is being rendered here, so a display mounted inside this
-    // view can tell whether it would be re-entering its own model.
-    if let Some(model) = inner.model_entity.as_deref() {
-        stamp_model_chain(host, &view_el, model);
-    }
+    // Record whose template is being rendered here, so a display mounted
+    // inside this view can tell whether it would be re-entering its own
+    // view. The owner is the view instance the template came from — the
+    // model entity for a specific view, `tonk:_` for the default — NOT
+    // the model being rendered: a counter card inside the DEFAULT
+    // carousel must still resolve counter's own view, while a counter
+    // display inside counter's OWN template must not.
+    stamp_model_chain(host, &view_el, owner);
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -2835,7 +2843,8 @@ mod tests {
             }"#
             .to_owned(),
         );
-        mount_view_slide(&host, &mut inner, "<a path=\"{rest}\">x</a>").expect("slide mounts");
+        mount_view_slide(&host, &mut inner, "<a path=\"{rest}\">x</a>", "tonk:test")
+            .expect("slide mounts");
         let view = host
             .query_selector("tonk-view")
             .unwrap()
@@ -3875,6 +3884,19 @@ mod tests {
                 Some("default-view"),
                 "rendering through the fallback dictionary reports default-view",
             );
+            // The default slide is stamped with the WILDCARD owner, not the
+            // model — a per-instance card of the same model inside it must
+            // still resolve that model's own view.
+            let chain = display
+                .query_selector("tonk-view")
+                .unwrap()
+                .and_then(|v| v.get_attribute(MODEL_CHAIN))
+                .unwrap_or_default();
+            assert!(chain.contains("tonk:_"), "chain: {chain}");
+            assert!(
+                !chain.contains("did:key:zModel"),
+                "the default slide must not claim the model itself: {chain}",
+            );
         }
 
         // With no view AND no `tonk:_` entry for the facet, an entity
@@ -3898,6 +3920,45 @@ mod tests {
             assert!(
                 await_selector(&display, "tonk-notation").await.is_some(),
                 "an entity with data but no view anywhere dumps notation",
+            );
+        }
+
+        // A model nested under the DEFAULT template (a carousel card) is
+        // NOT self-rendering: it runs the full view flow and resolves the
+        // model's own `ui` facet — including one authored after mount,
+        // since the view subscription stays live.
+        #[dialog_common::test]
+        async fn it_resolves_a_view_for_a_model_nested_under_the_default() {
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            register();
+            let outer = document().create_element("div").unwrap();
+            outer.set_attribute(MODEL_CHAIN, "tonk:_").unwrap();
+            host.container.append_child(&outer).unwrap();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("model", "counter").unwrap();
+            display.set_attribute("entity", "id:demo-counter").unwrap();
+            outer.append_child(&display).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(
+                host.subscribe_tags().contains(&"view".to_owned()),
+                "under the default template the view flow must run",
+            );
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            let view = await_selector(&display, "tonk-view")
+                .await
+                .expect("the model's own ui facet mounts inside the default card");
+            let chain = view.get_attribute(MODEL_CHAIN).unwrap_or_default();
+            assert!(
+                chain.contains("did:key:zModel"),
+                "the specific slide claims its model: {chain}",
             );
         }
 
