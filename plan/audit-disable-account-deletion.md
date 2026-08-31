@@ -52,4 +52,6 @@
 - [x] Update Storybook source documentation and verification coverage.
 - [x] Regenerate and validate Storybook data and links.
 - [x] Run formatting, diff/static checks, and the committed base-aware Storybook impact check.
-- [ ] Commit reviewed files, push the branch, and open an unmerged PR against `staging`.
+- [x] Commit reviewed files, push the branch, and open unmerged PR #834 against `staging`.
+- [x] Record the complete fail-closed follow-up protocol in
+  `plan/account-deletion-saga-v1.md`; do not re-enable the route in this PR.
