@@ -788,10 +788,41 @@ fn count_emitted_claims(plan: &tonk_schema::transact::ConceptPlan) -> usize {
 }
 
 /// Run a single expression's [`Application`] against the branch
-/// and collect every match frame as a [`Parameters`] by
-/// extracting every bound variable from each
-/// [`ConceptConclusion`].
+/// and collect every match frame as a [`Parameters`].
+///
+/// A multi-entry dictionary query (`show: {ui: ?ui, directory:
+/// ?d}`) arrives as a primary query plus satellite `join` queries
+/// — one per extra entry, sharing the primary's `this` term. Each
+/// evaluates on its own and their frames natural-join, so one
+/// frame carries every entry's binding.
 async fn collect_matches<Env: EvaluateEnv>(
+    application: Application,
+    txn: &Transaction<'_>,
+    env: &Env,
+) -> Result<Vec<Parameters>, EvaluateError> {
+    if let Application::Concept {
+        query, join, this, ..
+    } = &application
+        && !join.is_empty()
+    {
+        let mut relations = Vec::with_capacity(1 + join.len());
+        for q in std::iter::once(query).chain(join.iter()) {
+            let single = Application::Concept {
+                query: q.clone(),
+                join: Vec::new(),
+                this: this.clone(),
+                name: None,
+            };
+            relations.push(collect_single_matches(single, txn, env).await?);
+        }
+        return Ok(natural_join(&relations));
+    }
+    collect_single_matches(application, txn, env).await
+}
+
+/// [`collect_matches`] for one [`ConceptQuery`]-shaped application:
+/// extracts every bound variable from each [`ConceptConclusion`].
+async fn collect_single_matches<Env: EvaluateEnv>(
     application: Application,
     txn: &Transaction<'_>,
     env: &Env,
@@ -951,13 +982,21 @@ fn render_block(
             unreachable!("filtered above")
         }
     };
-    for (_, term) in terms.iter() {
-        if let Term::Variable {
-            name: Some(name), ..
-        } = term
-            && !my_vars.contains(name)
-        {
-            my_vars.push(name.clone());
+    // Satellite `join` queries bind extra dictionary entries;
+    // their variables distinguish rows too.
+    let satellite_terms = match application {
+        Application::Concept { join, .. } => join.iter().map(|q| &q.terms).collect(),
+        _ => Vec::new(),
+    };
+    for terms in std::iter::once(terms).chain(satellite_terms) {
+        for (_, term) in terms.iter() {
+            if let Term::Variable {
+                name: Some(name), ..
+            } = term
+                && !my_vars.contains(name)
+            {
+                my_vars.push(name.clone());
+            }
         }
     }
 
@@ -978,8 +1017,77 @@ fn render_block(
     }
     QueryMatchBlock {
         label,
-        results: block_results,
+        results: fold_dictionary_rows(&descriptor, block_results),
     }
+}
+
+/// Fold per-entry rows of an open dictionary query back into one
+/// row per entity.
+///
+/// A keyed collection stores one fact per entry, so a query that
+/// leaves the key open (`view:`) matches once per entry — the raw
+/// rows read as three views when one view carries three facets.
+/// Rows that agree on `this` and every non-collection field merge,
+/// unioning their entry objects, so the match reads
+/// `show: {ui: …, directory: …}` — the shape you would write to
+/// assert it.
+fn fold_dictionary_rows(
+    descriptor: &ConceptDescriptor,
+    results: Vec<QueryResult>,
+) -> Vec<QueryResult> {
+    let collection_fields: Vec<&str> = descriptor
+        .with()
+        .iter()
+        .filter(|(_, attr)| attr.the().attribute().is_none())
+        .map(|(name, _)| name)
+        .collect();
+    if collection_fields.is_empty() {
+        return results;
+    }
+    let mut folded: Vec<QueryResult> = Vec::new();
+    let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for result in results {
+        // An entity-less row has nothing sound to group on.
+        if result.this.is_empty() {
+            folded.push(result);
+            continue;
+        }
+        let mut key = result.this.clone();
+        for (name, value) in &result.fields {
+            if collection_fields.contains(&name.as_str()) {
+                continue;
+            }
+            key.push_str(&format!("\u{0}{name}\u{0}{value}"));
+        }
+        match by_key.get(&key) {
+            Some(&index) => {
+                let target = &mut folded[index];
+                for field in &collection_fields {
+                    let Some(serde_json::Value::Object(incoming)) = result.fields.get(*field)
+                    else {
+                        continue;
+                    };
+                    match target.fields.get_mut(*field) {
+                        Some(serde_json::Value::Object(existing)) => {
+                            for (k, v) in incoming {
+                                existing.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
+                        _ => {
+                            target
+                                .fields
+                                .insert((*field).to_owned(), result.fields[*field].clone());
+                        }
+                    }
+                }
+            }
+            None => {
+                by_key.insert(key, folded.len());
+                folded.push(result);
+            }
+        }
+    }
+    folded
 }
 
 fn render_one_result(
@@ -1028,24 +1136,38 @@ fn render_one_result(
         }
     };
 
+    let satellite_terms: Vec<&Parameters> = match application {
+        Application::Concept { join, .. } => join.iter().map(|q| &q.terms).collect(),
+        _ => Vec::new(),
+    };
+
     let mut fields = BTreeMap::new();
     for (field_name, attr) in descriptor.with().iter() {
-        let Some(value) = resolve(terms.get(field_name)) else {
-            continue;
-        };
         // A collection field's entry key rides its own operand
         // (`show/key`); fold the pair into the entry form, so the
         // match reads — and re-evaluates — as `show: {ui: <template>}`
-        // rather than leaking the flat wire shape.
+        // rather than leaking the flat wire shape. Extra entries of
+        // a multi-entry query ride satellite `join` terms — fold
+        // them into the same object.
         if attr.the().attribute().is_none() {
             let key_operand = dialog_query::attribute::Relation::key_operand(field_name);
-            if let Some(serde_json::Value::String(key)) = resolve(terms.get(&key_operand)) {
-                let mut entry = serde_json::Map::new();
-                entry.insert(key, value);
+            let mut entry = serde_json::Map::new();
+            for terms in std::iter::once(terms).chain(satellite_terms.iter().copied()) {
+                let Some(value) = resolve(terms.get(field_name)) else {
+                    continue;
+                };
+                if let Some(serde_json::Value::String(key)) = resolve(terms.get(&key_operand)) {
+                    entry.insert(key, value);
+                }
+            }
+            if !entry.is_empty() {
                 fields.insert(field_name.to_owned(), serde_json::Value::Object(entry));
             }
             continue;
         }
+        let Some(value) = resolve(terms.get(field_name)) else {
+            continue;
+        };
         fields.insert(field_name.to_owned(), value);
     }
 
@@ -1460,6 +1582,192 @@ attribute!: &foo/title
             Some(&serde_json::json!({"alpha": "A"})),
             "the blank value projects back under its key: {:?}",
             result.fields,
+        );
+        Ok(())
+    }
+
+    /// A dictionary literal binds several entries at once, on both
+    /// sides: `card: {alpha: "A", beta: "B"}` asserts two entries
+    /// in one statement, and the matching query joins per entry —
+    /// one match row carries every requested entry, and an entity
+    /// missing any requested key does not match at all.
+    #[dialog_common::test]
+    async fn it_binds_several_dictionary_entries_at_once() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        for doc in [
+            r#"concept!: &deck
+  description: "A deck of named cards"
+  with:
+    card:
+      description: "Cards by facet"
+      the: io.test.deck
+      cardinality: one
+      as: {[symbol]: text}
+"#,
+            // Two entries in ONE assertion.
+            r#"deck!:
+  this: id:deck/1
+  card: {alpha: "A", beta: "B"}
+"#,
+            // A second deck carrying only one of the keys.
+            r#"deck!:
+  this: id:deck/2
+  card: {alpha: "A2"}
+"#,
+        ] {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+        }
+
+        // Blank form: both entries requested — only deck/1 has
+        // both, and its row folds them into one object.
+        let parsed = parse("deck:\n  card:\n    alpha: _\n    beta: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("multi-entry query failed: {e}"))?;
+        let results: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .collect();
+        assert_eq!(
+            results.len(),
+            1,
+            "only the deck carrying BOTH keys matches: {results:?}"
+        );
+        assert_eq!(
+            results[0].fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A", "beta": "B"})),
+            "both entries fold into one object: {:?}",
+            results[0].fields,
+        );
+
+        // Named-variable form binds each entry's value.
+        let parsed = parse("deck:\n  card:\n    alpha: ?a\n    beta: ?b\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("named multi-entry query failed: {e}"))?;
+        let results: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .collect();
+        assert_eq!(results.len(), 1, "one joined row: {results:?}");
+        assert_eq!(
+            results[0].fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A", "beta": "B"})),
+            "named variables bind per entry: {:?}",
+            results[0].fields,
+        );
+
+        // An OPEN query (key unconstrained) folds per-entry rows
+        // back to one row per entity: deck/1's two entries land
+        // under one `card`, deck/2 keeps its single entry.
+        let parsed = parse("deck:\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("open query failed: {e}"))?;
+        let mut cards: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .map(|r| r.fields.get("card").cloned())
+            .collect();
+        cards.sort_by_key(|c| format!("{c:?}"));
+        assert_eq!(
+            cards,
+            vec![
+                Some(serde_json::json!({"alpha": "A", "beta": "B"})),
+                Some(serde_json::json!({"alpha": "A2"})),
+            ],
+            "open rows fold per entity, not per entry"
+        );
+
+        // Mixed mutation: one statement asserts `alpha` anew and
+        // retracts `beta`.
+        let parsed = parse("deck!:\n  this: id:deck/1\n  card:\n    alpha: \"A1\"\n    beta: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("mixed mutation failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("mixed commit failed: {e}"))?;
+
+        let parsed = parse("deck:\n  card:\n    beta: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("post-retract query failed: {e}"))?;
+        assert!(
+            evaluated
+                .matches
+                .iter()
+                .flat_map(|block| block.results.iter())
+                .next()
+                .is_none(),
+            "the `beta` entry was retracted by the mixed statement"
+        );
+        let parsed = parse("deck:\n  card:\n    alpha: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("post-assert query failed: {e}"))?;
+        let alphas: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .map(|r| r.fields.get("card").cloned())
+            .collect();
+        assert!(
+            alphas.contains(&Some(serde_json::json!({"alpha": "A1"}))),
+            "the mixed statement's assert half landed: {alphas:?}"
         );
         Ok(())
     }

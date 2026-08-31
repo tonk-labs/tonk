@@ -66,16 +66,17 @@ fn divergence_hint(expected: dialog_query::artifact::Type, value: &Value) -> Str
 ///   explicitly. No `name` here — naming is an additive
 ///   operation, only the assert side carries it.
 ///
-/// `None` for either side means "no work on this side." A
-/// simple `person!: &alice\n  name: "Alice"` produces
-/// `(Some(assert), None)`. A `person!:\n  this: ?p\n  ..: _`
-/// produces `(None, Some(retract))`. The mixed form
-/// `person!:\n  this: ?p\n  name: ?name\n  ..: _` produces
-/// `(Some(assert), Some(retract))`.
+/// An empty side means "no work on this side." A simple
+/// `person!: &alice\n  name: "Alice"` produces one assert and no
+/// retracts; `person!:\n  this: ?p\n  ..: _` the reverse. Each
+/// side is a list because a multi-entry dictionary literal
+/// (`show: {ui: A, directory: B}`) needs one application per
+/// entry beyond the first — the primary rides the statement's
+/// own term map, satellites follow.
 #[derive(Debug, Clone)]
 pub(crate) struct AssertionPlan {
-    pub assert: Option<Application>,
-    pub retract: Option<Application>,
+    pub assert: Vec<Application>,
+    pub retract: Vec<Application>,
     /// `true` when the head concept is marked transient. Phase 3
     /// records the concept entity on `AssertionAnalysis::transient`
     /// and tags `AssertionAnalysis::predicate` `Transient`, so the
@@ -194,17 +195,25 @@ pub(crate) fn build_assertion_application(
             retract_terms.insert("this".into(), this_term.clone());
             let mut any_assert = false;
             let mut any_retract = false;
+            // Dictionary entries beyond the first per side — a
+            // `Parameters` map holds one `(key, value)` slot pair
+            // per field, so each extra entry becomes its own
+            // satellite application after the main pair is built.
+            let mut extra_asserts: Vec<(String, Term<dialog_query::Any>, Term<dialog_query::Any>)> =
+                Vec::new();
+            let mut extra_retracts: Vec<(String, Term<dialog_query::Any>)> = Vec::new();
 
             for (field_name, attr) in descriptor.with().iter() {
-                // A keyed collection is written one entry at a time:
+                // A keyed collection is written entry-wise:
                 // `{key: value}` asserts the entry, `{key: _}`
-                // retracts it. The key must be literal — it is the
-                // name half of the fact's attribute.
+                // retracts it, and a map may carry several of each.
+                // The key must be literal — it is the name half of
+                // the fact's attribute.
                 if attr.the().attribute().is_none() {
                     let Some((value, value_range)) = user_fields.remove(field_name) else {
                         continue;
                     };
-                    let (key, value) = collection_entry_terms(
+                    let entries = collection_entry_terms(
                         field_name,
                         value,
                         value_range,
@@ -212,30 +221,62 @@ pub(crate) fn build_assertion_application(
                         analysis,
                         attr.content_type(),
                     )?;
-                    if !matches!(key, Term::Constant(_)) {
-                        return Err(AnalyzeError::at(
-                            AnalyzeErrorKind::UnsupportedFieldValue {
-                                field: field_name.into(),
-                                form: "a collection entry is written under a literal \
-                                       key: `{key: value}` asserts it, `{key: _}` \
-                                       retracts it",
-                            },
-                            value_range,
-                        ));
+                    let mut assert_entries = Vec::new();
+                    let mut retract_keys = Vec::new();
+                    for (key, value) in entries {
+                        if !matches!(key, Term::Constant(_)) {
+                            return Err(AnalyzeError::at(
+                                AnalyzeErrorKind::UnsupportedFieldValue {
+                                    field: field_name.into(),
+                                    form: "a collection entry is written under a literal \
+                                           key: `{key: value}` asserts it, `{key: _}` \
+                                           retracts it",
+                                },
+                                value_range,
+                            ));
+                        }
+                        if value.is_blank() {
+                            retract_keys.push(key);
+                        } else {
+                            assert_entries.push((key, value));
+                        }
                     }
                     let key_operand = Relation::key_operand(field_name);
-                    if value.is_blank() {
-                        retract_terms.insert(key_operand.clone(), key);
-                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
-                        assert_terms.insert(key_operand, Term::<dialog_query::Any>::blank());
-                        assert_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
-                        any_retract = true;
-                    } else {
-                        assert_terms.insert(key_operand.clone(), key);
-                        assert_terms.insert(field_name.into(), value);
-                        retract_terms.insert(key_operand, Term::<dialog_query::Any>::blank());
-                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
-                        any_assert = true;
+                    match assert_entries.split_first() {
+                        Some(((key, value), rest)) => {
+                            assert_terms.insert(key_operand.clone(), key.clone());
+                            assert_terms.insert(field_name.into(), value.clone());
+                            any_assert = true;
+                            for (key, value) in rest {
+                                extra_asserts.push((
+                                    field_name.to_owned(),
+                                    key.clone(),
+                                    value.clone(),
+                                ));
+                            }
+                        }
+                        None => {
+                            assert_terms
+                                .insert(key_operand.clone(), Term::<dialog_query::Any>::blank());
+                            assert_terms
+                                .insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                        }
+                    }
+                    match retract_keys.split_first() {
+                        Some((key, rest)) => {
+                            retract_terms.insert(key_operand.clone(), key.clone());
+                            retract_terms
+                                .insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                            any_retract = true;
+                            for key in rest {
+                                extra_retracts.push((field_name.to_owned(), key.clone()));
+                            }
+                        }
+                        None => {
+                            retract_terms.insert(key_operand, Term::<dialog_query::Any>::blank());
+                            retract_terms
+                                .insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                        }
                     }
                     continue;
                 }
@@ -323,6 +364,7 @@ pub(crate) fn build_assertion_application(
                         terms: assert_terms,
                         predicate: descriptor.clone(),
                     },
+                    join: Vec::new(),
                     this: this.clone(),
                     name: name.clone(),
                 })
@@ -342,6 +384,7 @@ pub(crate) fn build_assertion_application(
                         },
                         predicate: descriptor.clone(),
                     },
+                    join: Vec::new(),
                     this: this.clone(),
                     name: name.clone(),
                 })
@@ -352,17 +395,54 @@ pub(crate) fn build_assertion_application(
                 Some(Application::Concept {
                     query: ConceptQuery {
                         terms: retract_terms,
-                        predicate: descriptor,
+                        predicate: descriptor.clone(),
                     },
-                    this,
+                    join: Vec::new(),
+                    this: this.clone(),
                     name: None,
                 })
             } else {
                 None
             };
+            // Extra dictionary entries become satellite
+            // applications: `this` plus the one entry pair, so the
+            // emitter touches only that fact. No `name` — the main
+            // assert already publishes it.
+            let mut asserts: Vec<Application> = assert_app.into_iter().collect();
+            for (field_name, key, value) in extra_asserts {
+                let mut t = Parameters::new();
+                t.insert("this".into(), this_term.clone());
+                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(field_name, value);
+                asserts.push(Application::Concept {
+                    query: ConceptQuery {
+                        terms: t,
+                        predicate: descriptor.clone(),
+                    },
+                    join: Vec::new(),
+                    this: this.clone(),
+                    name: None,
+                });
+            }
+            let mut retracts: Vec<Application> = retract_app.into_iter().collect();
+            for (field_name, key) in extra_retracts {
+                let mut t = Parameters::new();
+                t.insert("this".into(), this_term.clone());
+                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(field_name, Term::<dialog_query::Any>::blank());
+                retracts.push(Application::Concept {
+                    query: ConceptQuery {
+                        terms: t,
+                        predicate: descriptor.clone(),
+                    },
+                    join: Vec::new(),
+                    this: this.clone(),
+                    name: None,
+                });
+            }
             Ok(AssertionPlan {
-                assert: assert_app,
-                retract: retract_app,
+                assert: asserts,
+                retract: retracts,
                 transient,
             })
         }
@@ -436,7 +516,7 @@ pub(crate) fn build_assertion_application(
                 parameters.insert(field.name.clone(), term);
             }
             Ok(AssertionPlan {
-                assert: Some(Application::Domain {
+                assert: vec![Application::Domain {
                     application: DomainApplication {
                         domain: domain.clone(),
                         parameters,
@@ -444,8 +524,8 @@ pub(crate) fn build_assertion_application(
                     },
                     this,
                     name,
-                }),
-                retract: None,
+                }],
+                retract: Vec::new(),
                 // Domain (`xyz.tonk …:`) heads name no concept,
                 // so there's no transient marker to consult.
                 transient: false,

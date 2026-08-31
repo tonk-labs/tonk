@@ -450,7 +450,7 @@ fn expand(
                     // affects naming downstream.
                     let plan =
                         build_assertion_application(a, anchor_node.as_ref(), scope, &mut working)?;
-                    let probe = plan.assert.as_ref().or(plan.retract.as_ref());
+                    let probe = plan.assert.first().or(plan.retract.first());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
                         .unwrap_or(Predicate::Domain(a.predicate.source.clone()));
@@ -458,12 +458,12 @@ fn expand(
                         .map(|app| app.this().clone())
                         .unwrap_or(ThisIntent::Derived);
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
-                    if let Some(retract_app) = plan.retract {
+                    for retract_app in plan.retract {
                         collect_unbound_variables(&retract_app, &working, &mut requires);
                         claims.push(Statement::Retract(retract_app));
                         claim_labels.push(Some(a.predicate.source.clone()));
                     }
-                    if let Some(assert_app) = plan.assert {
+                    for assert_app in plan.assert {
                         collect_unbound_variables(&assert_app, &working, &mut requires);
                         // A transient-concept assertion: record the
                         // concept entity so the evaluator buckets
@@ -691,6 +691,7 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
                         terms,
                         predicate: query.predicate.clone(),
                     },
+                    join: Vec::new(),
                     this: ThisIntent::Uri(entity),
                     name: None,
                 }
@@ -2632,8 +2633,9 @@ person!: &alice
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
-        let Statement::Assert(Application::Concept { name, this, query }) =
-            &analysis.mutate.statements[0]
+        let Statement::Assert(Application::Concept {
+            name, this, query, ..
+        }) = &analysis.mutate.statements[0]
         else {
             panic!("expected Assert(Concept)");
         };

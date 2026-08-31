@@ -49,17 +49,19 @@ pub(crate) fn build_query_application(
             // dialog descriptor from the durability-tagged
             // [`ConceptDefinition`].
             let descriptor = resolved.descriptor.concept().clone();
+            let this_term = this_term_for_query(&this);
             let mut terms = Parameters::new();
-            terms.insert("this".into(), this_term_for_query(&this));
+            let mut join: Vec<ConceptQuery> = Vec::new();
+            terms.insert("this".into(), this_term.clone());
             for (field_name, attr) in descriptor.with().iter() {
                 let user_field = query.fields.iter().find(|f| f.name == *field_name);
-                // A keyed collection binds an entry: the value under
+                // A keyed collection binds entries: the value under
                 // the field, the key under the field's key operand.
                 // A key the user left blank (or a field they omitted)
                 // still surfaces, under an auto-named variable, the
                 // same way `_` does for a value.
                 if attr.the().attribute().is_none() {
-                    let (key, value) = match user_field {
+                    let entries = match user_field {
                         Some(field) => collection_entry_terms(
                             field_name,
                             &field.value,
@@ -68,30 +70,52 @@ pub(crate) fn build_query_application(
                             analysis,
                             attr.content_type(),
                         )?,
-                        None => (
+                        None => vec![(
                             Term::<dialog_query::Any>::blank(),
                             Term::<dialog_query::Any>::var(field_name),
-                        ),
+                        )],
                     };
-                    let key = if key.is_blank() {
-                        Term::<dialog_query::Any>::unique()
-                    } else {
-                        key
-                    };
-                    // A `_` entry VALUE means "match anything and
-                    // project it back", like every other query blank.
-                    // (`collection_entry_terms` keeps it a true blank
-                    // for the assert path, where `{key: _}` retracts.)
-                    // Left anonymous it would match but surface
-                    // nothing — the match row's field drops and a
-                    // `show: {directory: _}` query reads as empty.
-                    let value = if value.is_blank() {
-                        Term::<dialog_query::Any>::unique()
-                    } else {
-                        value
-                    };
+                    // A `_` entry KEY or VALUE means "match anything
+                    // and project it back", like every other query
+                    // blank. (`collection_entry_terms` keeps blanks
+                    // true blanks for the assert path, where
+                    // `{key: _}` retracts.) Left anonymous it would
+                    // match but surface nothing — the match row's
+                    // field drops and a `show: {directory: _}` query
+                    // reads as empty.
+                    let mut entries = entries.into_iter().map(|(key, value)| {
+                        let key = if key.is_blank() {
+                            Term::<dialog_query::Any>::unique()
+                        } else {
+                            key
+                        };
+                        let value = if value.is_blank() {
+                            Term::<dialog_query::Any>::unique()
+                        } else {
+                            value
+                        };
+                        (key, value)
+                    });
+                    let (key, value) = entries
+                        .next()
+                        .expect("collection_entry_terms yields at least one entry");
                     terms.insert(Relation::key_operand(field_name), key);
                     terms.insert(field_name.into(), value);
+                    // A `Parameters` map holds one `(key, value)`
+                    // slot pair per field, so every further entry
+                    // rides a satellite query sharing the primary's
+                    // `this` term; the evaluator equi-joins their
+                    // frames, restoring "all entries on one match".
+                    for (key, value) in entries {
+                        let mut satellite = Parameters::new();
+                        satellite.insert("this".into(), this_term.clone());
+                        satellite.insert(Relation::key_operand(field_name), key);
+                        satellite.insert(field_name.into(), value);
+                        join.push(ConceptQuery {
+                            terms: satellite,
+                            predicate: descriptor.clone(),
+                        });
+                    }
                     continue;
                 }
                 // Fields the user mentioned use whatever they
@@ -136,6 +160,7 @@ pub(crate) fn build_query_application(
                     terms,
                     predicate: descriptor,
                 },
+                join,
                 this,
                 name: None,
             })
