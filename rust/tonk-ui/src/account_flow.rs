@@ -50,6 +50,17 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let found = element(driver, selector).await?;
+            let interactable = found.is_displayed().await.unwrap_or(false)
+                && found.is_enabled().await.unwrap_or(false);
+            if !interactable {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(anyhow!(
+                        "timed out waiting for `{selector}` to be displayed and enabled"
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
             match found.click().await {
                 Ok(()) => return Ok(()),
                 Err(error) if tokio::time::Instant::now() < deadline => {
@@ -1366,7 +1377,8 @@ mod tests {
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         click(&driver, "#account-unlink").await?;
-        element(&driver, "[role=alertdialog]").await?;
+        wait_for_displayed(&driver, "[role=alertdialog]").await?;
+        wait_for_text(&driver, "#account-confirm-title", "sign out on this device").await?;
         click(&driver, "#account-delete-submit").await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
 
