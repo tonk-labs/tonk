@@ -205,7 +205,12 @@ view/directory!:
   model: tonk:notebook
   display: |
     <div class="notebook-index">
-      <a class="notebook-index__item" href="notebook/{this}">
+      <!-- ABSOLUTE, like every other link in the library. The guest
+           believes it is at a fake origin (`https://{label}.tonk.network/`),
+           so a relative `notebook/{this}` resolves against that origin's
+           ROOT rather than the current path: picking a notebook took you
+           somewhere that does not exist. -->
+      <a class="notebook-index__item" href="/notebook/{this}">
         <span class="notebook-index__title">{title}</span>
       </a>
     </div>

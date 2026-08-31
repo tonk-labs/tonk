@@ -274,8 +274,8 @@ impl CustomElement for TonkNotebookIndexElement {
                 .and_then(|v| v.as_string())
                 .unwrap_or_default();
             let detail = js_sys::Object::new();
-            let _ = js_sys::Reflect::set(&detail, &"created-title".into(), &title.into());
-            let _ = js_sys::Reflect::set(&detail, &"created-body".into(), &document.into());
+            let _ = js_sys::Reflect::set(&detail, &"createdTitle".into(), &title.into());
+            let _ = js_sys::Reflect::set(&detail, &"createdBody".into(), &document.into());
             let init = web_sys::CustomEventInit::new();
             init.set_detail(&detail);
             init.set_bubbles(true);

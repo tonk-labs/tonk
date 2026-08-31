@@ -310,6 +310,11 @@ pub mod command {
         use super::Attribute;
 
         /// The title a create carries.
+        ///
+        /// The event detail key is `createdTitle`: every path segment is
+        /// kebab→camel-cased at read time, so the hyphen here becomes a
+        /// capital there. A detail key written `created-title` never
+        /// matches, and the command silently fails to decode.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.detail")]
         pub struct CreatedTitle(pub String);

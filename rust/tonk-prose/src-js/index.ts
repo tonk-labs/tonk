@@ -336,7 +336,19 @@ class TonkProseElement extends HTMLElement {
     // the same tick can't clobber the focus (mirrors `<tonk-code>`).
     if (!this.hasAttribute("readonly") && this.hasAttribute("auto-focus")) {
       setTimeout(() => {
-        if (this.#editor === editor) editor.focus();
+        if (this.#editor !== editor) return;
+        // Claim the FRAME first. In a sealed guest this editor lives two
+        // iframes deep, and focusing an element inside a frame the browser
+        // has not focused leaves the caret invisible and the keyboard
+        // pointed at the top document — the page looks ready to type in
+        // and silently is not.
+        try {
+          window.focus();
+        } catch {
+          // A cross-origin parent can refuse; the element focus below
+          // still works once the user clicks in.
+        }
+        editor.focus();
       }, 0);
     }
   }
