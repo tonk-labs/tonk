@@ -1230,6 +1230,17 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // it, replacing the default. Skip if we're already showing the
     // default (avoid re-querying every empty frame).
     let Some(display) = resolved else {
+        // The frame is authoritative: the facet is absent — never
+        // authored, or just RETRACTED. A mounted specific slide is
+        // stale; drop it so the fallback can take its place (the
+        // notation path refuses to mount over an existing slide).
+        if !s.default_slide {
+            for (_, slide) in std::mem::take(&mut s.slides) {
+                if let Some(parent) = slide.item.parent_node() {
+                    let _: Result<Node, _> = parent.remove_child(&slide.item);
+                }
+            }
+        }
         let need_default = !s.default_slide;
         drop(s);
         if need_default {
@@ -3959,6 +3970,43 @@ mod tests {
             assert!(
                 chain.contains("did:key:zModel"),
                 "the specific slide claims its model: {chain}",
+            );
+        }
+
+        // Retracting a facet (`show: {ui: _}`) drops the display back
+        // down the fallback chain: the stale template is unmounted and
+        // the notation dump takes its place, live.
+        #[dialog_common::test]
+        async fn it_returns_to_notation_when_the_facet_is_retracted() {
+            let host = FakeHost::install_with_model(
+                // One-shots: the model name lookup, then the `tonk:_`
+                // default query the retraction triggers (a miss).
+                vec![name_row("did:key:zModel"), rows(&[])],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the authored facet renders first",
+            );
+
+            // The facet is retracted: the next frame carries no entry.
+            host.push_frame("view", &rows(&[]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "a retracted facet falls back to the notation dump",
+            );
+            assert!(
+                display.query_selector("tonk-view").unwrap().is_none(),
+                "the stale template is unmounted",
             );
         }
 
