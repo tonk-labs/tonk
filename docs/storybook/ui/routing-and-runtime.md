@@ -150,6 +150,32 @@ boundary: activation does not claim an older page, an explicit cold-start claim
 does take control, and an update-aware page claims its activated successor
 before exactly one guarded reload.
 
+The load-time alignment also has a write barrier for the overlap window. Every
+top-document `/api` request carries the page build through the same request
+context used by the host, including account, profile, site-registration, and
+background-sync mutations. A worker from another valid build keeps ordinary
+GET/HEAD reads, exact query/subscription POSTs, and an evaluate POST with one
+canonical `transact=false` parameter available, but refuses every other POST
+and every PUT/PATCH/DELETE with a typed `409 stale-build`. Its response marker
+lets both host and direct UI transports dispatch the static shell's existing
+update-ready prompt without consuming the normal error body, so reload is the
+next action and no local data is cleared. `GET /api/migrate/repo-vs-profile` is an
+explicit write exception because it commits a backfill; future mutating
+GET/HEAD routes must be declared in the same contract. Unknown non-read routes
+default to writes rather than relying on route suffixes.
+
+An actually missing build header remains compatible for an older page or
+sealed context that cannot stamp one. A present empty, malformed, non-text, or
+duplicate header on a write instead fails closed with typed `400
+invalid-build-header`; it cannot masquerade as missing and does not raise an
+update prompt. Mismatched or malformed
+metadata never tears down reads or live subscriptions, so a stale page remains
+responsive enough to show the update and preserve local continuity. The exact
+route-effect inventory and header parser are covered at the worker boundary;
+the UI request-construction tests enumerate its direct mutation paths. The
+real-browser two-generation and malformed-header matrix in `UI-03` remains an
+open verification item.
+
 An explicit readiness rejection is a terminal boot result, not an unobserved
 stall. Before returning without an application root, the UI asks the static
 shell to show “Tonk couldn’t start. Check your connection, then reload. Your
@@ -260,6 +286,8 @@ avoid recording credential/passkey inputs.
   already used, or returns non-JSON error.
 - Service worker is installed but does not yet control the first page.
 - New service worker activates while old Wasm or guest assets are loading.
+- An old page sends a matching, mismatched, missing, malformed, or duplicate
+  build header while reading, subscribing, dry-running, migrating, or writing.
 - Offline first visit versus offline returning visit with a coherent cache.
 - Deployment config names the wrong account/access origin or service DID.
 - Custom element connects twice or disconnects while an async task is pending.

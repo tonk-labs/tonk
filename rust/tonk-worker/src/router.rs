@@ -200,16 +200,150 @@ fn current_build_id() -> Option<String> {
     None
 }
 
-/// Whether this request changes state, and so must be refused when the
-/// page is from another build.
+/// The side-effect contract the stale-build guard needs from a request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequestEffect {
+    /// Safe to continue across a worker/page build mismatch.
+    ReadOnly,
+    /// Must run only when a stamped page and worker agree on their build.
+    StateChanging,
+}
+
+/// Classify one worker request for stale-build handling.
 ///
-/// Deliberately NOT "is it a POST": the data plane posts to read as
-/// well (a `query` carries its body, and a subscription is a `POST`
-/// that streams), so method alone would refuse every read too. Match
-/// the write routes by path instead.
-fn is_mutating(request: &axum::extract::Request) -> bool {
+/// This is deliberately default-safe for methods that normally carry state
+/// changes. Tonk has two genuine read-like POST route shapes because queries
+/// carry a body and may remain open as SSE subscriptions. Evaluate is also
+/// read-like only when its query string contains one unambiguous
+/// canonical `transact=false` value. Everything else that is not an ordinary
+/// read method is state-changing, including new or unknown POST routes.
+fn request_effect(request: &axum::extract::Request) -> RequestEffect {
+    use axum::http::Method;
+
+    let method = request.method();
     let path = request.uri().path();
-    path.ends_with("/transact") || path.ends_with("/evaluate")
+
+    // This legacy migration is intentionally visitable as a GET but commits a
+    // backfill. HEAD may dispatch through the same GET handler in axum.
+    if matches!(method, &Method::GET | &Method::HEAD) && path == "/api/migrate/repo-vs-profile" {
+        return RequestEffect::StateChanging;
+    }
+
+    if matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS) {
+        return RequestEffect::ReadOnly;
+    }
+
+    if method == Method::POST {
+        let segments = path.strip_prefix('/').map(|path| path.split('/'));
+        let read_like_path = segments.is_some_and(|segments| {
+            let segments: Vec<_> = segments.collect();
+            match segments.as_slice() {
+                ["api", "profile", "branch", branch, "query"] => !branch.is_empty(),
+                ["api", "repository", repo, "branch", branch, "query"] => {
+                    !repo.is_empty() && !branch.is_empty()
+                }
+                _ => false,
+            }
+        });
+        if read_like_path {
+            return RequestEffect::ReadOnly;
+        }
+
+        let evaluate_path = path
+            .strip_prefix('/')
+            .map(|path| path.split('/').collect::<Vec<_>>())
+            .is_some_and(|segments| match segments.as_slice() {
+                ["api", "profile", "branch", branch, "evaluate"] => !branch.is_empty(),
+                ["api", "repository", repo, "branch", branch, "evaluate"] => {
+                    !repo.is_empty() && !branch.is_empty()
+                }
+                _ => false,
+            });
+        if evaluate_path && evaluate::is_unambiguous_dry_run(request.uri().query()) {
+            return RequestEffect::ReadOnly;
+        }
+    }
+
+    RequestEffect::StateChanging
+}
+
+fn is_mutating(request: &axum::extract::Request) -> bool {
+    request_effect(request) == RequestEffect::StateChanging
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum BuildDecision {
+    Allow,
+    InvalidHeader,
+    Stale { worker: String, page: String },
+}
+
+fn page_build_header(headers: &axum::http::HeaderMap) -> Result<Option<String>, BuildDecision> {
+    let mut values = headers.get_all(BUILD_HEADER).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(BuildDecision::InvalidHeader);
+    }
+    let value = value.to_str().map_err(|_| BuildDecision::InvalidHeader)?;
+    let valid = value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+    if !valid {
+        return Err(BuildDecision::InvalidHeader);
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn build_decision(ours: Option<&str>, request: &axum::extract::Request) -> BuildDecision {
+    if !is_mutating(request) {
+        return BuildDecision::Allow;
+    }
+    let theirs = match page_build_header(request.headers()) {
+        Ok(theirs) => theirs,
+        Err(decision) => return decision,
+    };
+    match stale_build(ours, theirs.as_deref()) {
+        Some((worker, page)) => BuildDecision::Stale { worker, page },
+        None => BuildDecision::Allow,
+    }
+}
+
+fn build_rejection(decision: BuildDecision) -> axum::response::Response {
+    match decision {
+        BuildDecision::Allow => unreachable!("allowed requests are passed to the next handler"),
+        BuildDecision::InvalidHeader => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "kind": "invalid-build-header",
+                    "message": "this write carried an invalid page build identifier",
+                }
+            })),
+        )
+            .into_response(),
+        BuildDecision::Stale { worker, page } => {
+            let mut response = (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": {
+                        "kind": "stale-build",
+                        "message": "this page was built against a different worker version",
+                        "page": page,
+                        "worker": worker,
+                    }
+                })),
+            )
+                .into_response();
+            response.headers_mut().insert(
+                tonk_worker_api::ERROR_KIND_HEADER,
+                axum::http::HeaderValue::from_static(tonk_worker_api::STALE_BUILD_ERROR_KIND),
+            );
+            response
+        }
+    }
 }
 
 /// Whether a request should be refused as coming from a stale page,
@@ -235,20 +369,15 @@ fn stale_build(ours: Option<&str>, theirs: Option<&str>) -> Option<(String, Stri
 /// renamed route or a changed DTO shows up as a confusing 404 or parse
 /// error in a page that has no idea it is stale.
 ///
-/// A structured `409` turns that mystery into a reload prompt. Absent
-/// or unknown build ids pass through untouched — the header is a hint,
-/// and a request that cannot be classified must not be blocked (a
-/// sealed guest, an older page, or a context with no stamp at all).
+/// A structured `409` turns that mystery into a reload prompt. An absent build
+/// id passes through untouched for a sealed guest, an older page, or another
+/// context with no stamp at all. A present malformed or duplicate id is a
+/// classified write with invalid provenance, so it fails closed with a typed
+/// `400` instead of being downgraded to "missing".
 async fn reject_stale_build(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let theirs = request
-        .headers()
-        .get(BUILD_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-
     // Only ever refuse a WRITE. A stale page reading is harmless — it
     // gets data it can render — but a stale page that cannot write is
     // also a page that cannot subscribe, and killing its subscriptions
@@ -259,26 +388,11 @@ async fn reject_stale_build(
     // The point of the handshake is to explain a confusing failure, not
     // to manufacture one. Reads pass; the prompt still reaches the user
     // on their next write.
-    if !is_mutating(&request) {
-        return next.run(request).await;
+    let ours = current_build_id();
+    match build_decision(ours.as_deref(), &request) {
+        BuildDecision::Allow => next.run(request).await,
+        decision => build_rejection(decision),
     }
-
-    let Some((ours, theirs)) = stale_build(current_build_id().as_deref(), theirs.as_deref()) else {
-        return next.run(request).await;
-    };
-
-    (
-        StatusCode::CONFLICT,
-        Json(serde_json::json!({
-            "error": {
-                "kind": "stale-build",
-                "message": "this page was built against a different worker version",
-                "page": theirs,
-                "worker": ours,
-            }
-        })),
-    )
-        .into_response()
 }
 
 /// Variant of [`api_router`] that also surfaces the wrapped
@@ -4955,7 +5069,9 @@ person!:
 
 #[cfg(test)]
 mod handshake_tests {
-    use super::{is_mutating, stale_build};
+    use super::{
+        BUILD_HEADER, BuildDecision, build_decision, build_rejection, is_mutating, stale_build,
+    };
 
     /// The whole point: a page and a worker from different builds must
     /// be caught, because `skipWaiting` + `claim` swap the worker
@@ -4999,6 +5115,7 @@ mod handshake_tests {
             "/api/profile/branch/main/evaluate",
         ] {
             let request = Request::builder()
+                .method("POST")
                 .uri(write)
                 .body(axum::body::Body::empty())
                 .unwrap();
@@ -5009,7 +5126,7 @@ mod handshake_tests {
         }
     }
 
-    /// A request that cannot be classified must never be blocked.
+    /// A request with no build identity must never be blocked.
     /// Blocking on a missing header would break every context that
     /// does not send one — a sealed guest, an older page still in a
     /// tab — turning a diagnostic into an outage.
@@ -5026,5 +5143,140 @@ mod handshake_tests {
             "an unstamped worker has no identity to compare against"
         );
         assert_eq!(stale_build(None, None), None);
+    }
+
+    #[dialog_common::test]
+    fn it_applies_the_build_header_only_to_classified_writes() {
+        use axum::body::Body;
+        use axum::extract::Request;
+
+        let write = |header: Option<&str>| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/account/attach")
+                .body(Body::empty())
+                .unwrap();
+            if let Some(header) = header {
+                request
+                    .headers_mut()
+                    .insert(BUILD_HEADER, header.parse().unwrap());
+            }
+            request
+        };
+
+        assert_eq!(
+            build_decision(Some("aaaaaaaaaaaaaaaa"), &write(None)),
+            BuildDecision::Allow,
+            "an actually missing header preserves older/sealed contexts"
+        );
+        assert_eq!(
+            build_decision(Some("aaaaaaaaaaaaaaaa"), &write(Some("aaaaaaaaaaaaaaaa"))),
+            BuildDecision::Allow
+        );
+        assert_eq!(
+            build_decision(Some("aaaaaaaaaaaaaaaa"), &write(Some("bbbbbbbbbbbbbbbb"))),
+            BuildDecision::Stale {
+                worker: "aaaaaaaaaaaaaaaa".to_owned(),
+                page: "bbbbbbbbbbbbbbbb".to_owned(),
+            }
+        );
+
+        let mut read = Request::builder()
+            .method("POST")
+            .uri("/api/profile/branch/main/query")
+            .body(Body::empty())
+            .unwrap();
+        read.headers_mut()
+            .insert(BUILD_HEADER, "not-a-build".parse().unwrap());
+        assert_eq!(
+            build_decision(Some("aaaaaaaaaaaaaaaa"), &read),
+            BuildDecision::Allow,
+            "bad metadata must not kill a read or subscription"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_fails_closed_on_present_invalid_build_headers() {
+        use axum::body::Body;
+        use axum::extract::Request;
+        use axum::http::HeaderValue;
+
+        let invalid_values = [
+            HeaderValue::from_static(""),
+            HeaderValue::from_static("dev"),
+            HeaderValue::from_static("AAAAAAAAAAAAAAAA"),
+            HeaderValue::from_bytes(&[0x80]).expect("opaque header bytes are representable"),
+        ];
+        for header in invalid_values {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/account/attach")
+                .body(Body::empty())
+                .unwrap();
+            request.headers_mut().insert(BUILD_HEADER, header);
+            assert_eq!(
+                build_decision(Some("aaaaaaaaaaaaaaaa"), &request),
+                BuildDecision::InvalidHeader,
+                "a present malformed build must not become missing"
+            );
+        }
+
+        let mut duplicate = Request::builder()
+            .method("DELETE")
+            .uri("/api/account")
+            .body(Body::empty())
+            .unwrap();
+        duplicate
+            .headers_mut()
+            .append(BUILD_HEADER, HeaderValue::from_static("aaaaaaaaaaaaaaaa"));
+        duplicate
+            .headers_mut()
+            .append(BUILD_HEADER, HeaderValue::from_static("aaaaaaaaaaaaaaaa"));
+        assert_eq!(
+            build_decision(Some("aaaaaaaaaaaaaaaa"), &duplicate),
+            BuildDecision::InvalidHeader,
+            "even identical duplicate build values are ambiguous"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_typed_build_rejections() {
+        use axum::http::StatusCode;
+
+        let invalid = build_rejection(BuildDecision::InvalidHeader);
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            invalid
+                .headers()
+                .get(tonk_worker_api::ERROR_KIND_HEADER)
+                .is_none(),
+            "invalid metadata is not a stale-build update signal"
+        );
+        let body = axum::body::to_bytes(invalid.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["kind"], "invalid-build-header");
+
+        let stale = build_rejection(BuildDecision::Stale {
+            worker: "aaaaaaaaaaaaaaaa".to_owned(),
+            page: "bbbbbbbbbbbbbbbb".to_owned(),
+        });
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            stale
+                .headers()
+                .get(tonk_worker_api::ERROR_KIND_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(tonk_worker_api::STALE_BUILD_ERROR_KIND),
+            "a direct client needs an unambiguous marker without consuming the typed body"
+        );
+        let body = axum::body::to_bytes(stale.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["kind"], "stale-build");
+        assert_eq!(body["error"]["page"], "bbbbbbbbbbbbbbbb");
+        assert_eq!(body["error"]["worker"], "aaaaaaaaaaaaaaaa");
     }
 }

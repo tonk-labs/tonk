@@ -1149,13 +1149,10 @@ async fn read_invite_link(space: &str) -> Option<String> {
             "url": { "?": { "name": "url" } }
         }
     });
-    let endpoint = format!(
-        "{}/api/repository/{}/branch/main/query",
-        crate::api::origin(),
-        space
-    );
-    let response = reqwest::Client::new()
-        .post(endpoint)
+    let endpoint = format!("/api/repository/{space}/branch/main/query");
+    let response = crate::worker_client::request(reqwest::Method::POST, endpoint)
+        .await
+        .ok()?
         .json(&body)
         .send()
         .await

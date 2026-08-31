@@ -151,8 +151,12 @@ fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
             if update_pending().await {
                 continue;
             }
+            let Ok(headers) = crate::http::request_context_headers() else {
+                continue;
+            };
             let init = web_sys::RequestInit::new();
             init.set_method("POST");
+            init.set_headers(&headers);
             // Awaiting consumes the rejection: a beat that loses the race
             // with a navigation or a worker swap fails quietly, and the
             // next beat covers.
