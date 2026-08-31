@@ -4,8 +4,10 @@ use worker::*;
 
 use serde::Deserialize;
 
-use crate::auth::{authorize, authorize_root, optional_passkey_metadata, required_string};
-use crate::core::accounts::{CreateAccount, create_account};
+use crate::auth::{
+    authorize, authorize_root, authorize_setup_device, optional_passkey_metadata, required_string,
+};
+use crate::core::accounts::{CreateAccount, account_setup_status, create_account};
 use crate::core::deletion::delete_account;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
@@ -88,6 +90,40 @@ pub async fn handle(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
     Ok(with_cors_headers(response))
 }
 
+/// `POST /accounts/setup-status` → proof-bound account-creation state.
+pub async fn handle_setup_status(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match handle_setup_status_inner(&mut req, &ctx).await {
+        Ok(response) => response,
+        Err(err) => err.to_response()?,
+    };
+    Ok(with_cors_headers(response))
+}
+
+async fn handle_setup_status_inner(
+    req: &mut Request,
+    ctx: &RouteContext<()>,
+) -> std::result::Result<Response, ServiceError> {
+    let body = read_body(req).await?;
+    let caller = authorize_setup_device(&body, &["account", "setup", "status"])
+        .await
+        .map_err(ceremony_error)?;
+    let expected =
+        required_string(&caller.arguments, "createFingerprint").map_err(ceremony_error)?;
+    let store = build_store(ctx)?;
+    let status = account_setup_status(
+        &store,
+        &caller.root_did,
+        &caller.device_did,
+        &caller.delegation_cid,
+        &expected,
+    )
+    .await
+    .map_err(ceremony_error)?;
+    Response::from_json(&status).map_err(|error| {
+        ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
+    })
+}
+
 async fn handle_inner(
     req: &mut Request,
     ctx: &RouteContext<()>,
@@ -111,25 +147,16 @@ async fn handle_inner(
         passkey,
     };
     let store = build_store(ctx)?;
-    let account_id = create_account(&store, &request, now)
+    let outcome = create_account(&store, &request, now)
         .await
         .map_err(ceremony_error)?;
-    let account = store
-        .account_by_root(&request.root_did)
-        .await
-        .map_err(|error| ceremony_error(error.into()))?
-        .ok_or_else(|| {
-            ServiceError::new(ErrorCode::InternalError, "created account was not found")
-        })?;
-    let descriptor_hex = account
-        .repository_descriptor
-        .map(hex::encode)
-        .ok_or_else(|| ServiceError::new(ErrorCode::InternalError, "descriptor was not stored"))?;
 
     Response::from_json(&serde_json::json!({
-        "accountId": account_id,
-        "descriptorHex": descriptor_hex,
+        "accountId": outcome.account_id,
+        "descriptorHex": hex::encode(outcome.descriptor),
+        "createFingerprint": outcome.create_fingerprint,
+        "reused": outcome.reused,
     }))
-    .map(|response| response.with_status(201))
+    .map(|response| response.with_status(if outcome.reused { 200 } else { 201 }))
     .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
 }

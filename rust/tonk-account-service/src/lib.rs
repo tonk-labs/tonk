@@ -30,6 +30,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/health", handlers::health::handle)
         .post_async("/accounts", handlers::accounts::handle)
         .options_async("/accounts", handlers::accounts::handle_options)
+        .post_async(
+            "/accounts/setup-status",
+            handlers::accounts::handle_setup_status,
+        )
+        .options_async("/accounts/setup-status", handlers::accounts::handle_options)
         .post_async("/account/summary", handlers::accounts::handle_summary)
         .options_async("/account/summary", handlers::accounts::handle_options)
         .post_async("/account/delete", handlers::accounts::handle_delete)

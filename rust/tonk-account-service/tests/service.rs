@@ -7,9 +7,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::subject::Subject;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
-use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
+use tonk_account::creation::AccountCreationFingerprintInput;
 use tonk_account_service::helpers::AccountServer;
 
 const ROOT_PRF: [u8; 32] = [7u8; 32];
@@ -79,7 +81,9 @@ async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) 
     InvocationChain::new(invocation, proofs).to_bytes().unwrap()
 }
 
-async fn account_registration(email: &str) -> (Vec<u8>, Ed25519Signer, DelegationChain) {
+async fn account_registration_with_fingerprint(
+    email: &str,
+) -> (Vec<u8>, Ed25519Signer, DelegationChain, String) {
     let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
@@ -99,7 +103,33 @@ async fn account_registration(email: &str) -> (Vec<u8>, Ed25519Signer, Delegatio
     )
     .await
     .unwrap();
-    (hex::decode(ceremony.invocation_hex).unwrap(), device, grant)
+    let delegation = grant.to_bytes().unwrap();
+    let delegation_cid = grant.proof_cids()[0].to_string();
+    let descriptor = hex::decode(ceremony.descriptor_hex.as_ref().unwrap()).unwrap();
+    let fingerprint = AccountCreationFingerprintInput {
+        email,
+        root_did: &ceremony.root_did,
+        credential_id: "credential",
+        passkey: None,
+        descriptor: &descriptor,
+        device_did: &ceremony.device_did,
+        device_name: "laptop",
+        delegation_cid: &delegation_cid,
+        delegation: &delegation,
+    }
+    .fingerprint()
+    .to_hex();
+    (
+        hex::decode(ceremony.invocation_hex).unwrap(),
+        device,
+        grant,
+        fingerprint,
+    )
+}
+
+async fn account_registration(email: &str) -> (Vec<u8>, Ed25519Signer, DelegationChain) {
+    let (invocation, device, grant, _) = account_registration_with_fingerprint(email).await;
+    (invocation, device, grant)
 }
 
 async fn account_creation(email: &str) -> Vec<u8> {
@@ -120,6 +150,240 @@ async fn account_deletion(device: &Ed25519Signer, link: &DelegationChain, email:
         )]),
     )
     .await
+}
+
+async fn account_setup_status_invocation(
+    device: &Ed25519Signer,
+    link: &DelegationChain,
+    fingerprint: &str,
+) -> Vec<u8> {
+    container_with_link(
+        device,
+        link,
+        vec!["account".into(), "setup".into(), "status".into()],
+        BTreeMap::from([(
+            "createFingerprint".to_string(),
+            Promised::String(fingerprint.to_string()),
+        )]),
+    )
+    .await
+}
+
+#[dialog_common::test]
+async fn it_recovers_a_lost_creation_response_and_reports_setup_status() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let (creation, device, link, expected_fingerprint) =
+        account_registration_with_fingerprint("recover@example.com").await;
+
+    // The provider commits, but the caller loses this response body.
+    let first = client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(creation.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 201);
+    drop(first);
+
+    // The caller retained the shared-contract fingerprint before sending the
+    // request, so it can authenticate and recover the committed winner without
+    // first needing any provider response.
+    let status = account_setup_status_invocation(&device, &link, &expected_fingerprint).await;
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(status)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let accepted: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(accepted["status"], "accepted");
+    assert!(accepted["accountId"].is_i64());
+    assert!(accepted["descriptorHex"].is_string());
+    assert_eq!(accepted["createFingerprint"], expected_fingerprint);
+
+    let replayed = client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(creation)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replayed.status(), 200);
+    let replayed: serde_json::Value = replayed.json().await.unwrap();
+    assert_eq!(replayed["reused"], true);
+    let fingerprint = replayed["createFingerprint"]
+        .as_str()
+        .expect("replay carries its creation fingerprint")
+        .to_string();
+    assert_eq!(fingerprint, expected_fingerprint);
+    assert_eq!(accepted["accountId"], replayed["accountId"]);
+    assert_eq!(accepted["descriptorHex"], replayed["descriptorHex"]);
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_keeps_setup_status_private_and_structured() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+
+    // A valid proof for a root with no provider row receives Absent. There is
+    // no root or email argument with which to probe somebody else's account.
+    let absent_root = dialog_credentials::Ed25519Signer::import(&[20u8; 32])
+        .await
+        .unwrap();
+    let absent_device = Ed25519Signer::import(&[21u8; 32]).await.unwrap();
+    let absent_link =
+        tonk_identity::delegation::mint_device_delegation(absent_root, &absent_device.did())
+            .await
+            .unwrap();
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(account_setup_status_invocation(&absent_device, &absent_link, &"ab".repeat(32)).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let absent: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(absent, serde_json::json!({ "status": "absent" }));
+
+    let (creation, device, link) = account_registration("private@example.com").await;
+    let created = client
+        .post(format!("{}/accounts", server.endpoint))
+        .body(creation)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created: serde_json::Value = created.json().await.unwrap();
+    let fingerprint = created["createFingerprint"].as_str().unwrap();
+
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(account_setup_status_invocation(&device, &link, &"cd".repeat(32)).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let mismatch: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(mismatch, serde_json::json!({ "status": "mismatch" }));
+
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(account_setup_status_invocation(&device, &link, &fingerprint.to_uppercase()).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let malformed: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(malformed["error"]["code"], "INVALID_ARGUMENT");
+    assert_eq!(
+        malformed["error"]["message"],
+        "createFingerprint must be 32 bytes of lowercase hex"
+    );
+
+    // Another valid device proof under this root is still not the account's
+    // first-device proof and cannot retrieve accepted setup details.
+    let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
+        .await
+        .unwrap();
+    let other_device = Ed25519Signer::import(&[22u8; 32]).await.unwrap();
+    let other_link =
+        tonk_identity::delegation::mint_device_delegation(root.clone(), &other_device.did())
+            .await
+            .unwrap();
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(account_setup_status_invocation(&other_device, &other_link, fingerprint).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+
+    // Nor can the first device substitute a newly issued delegation CID.
+    let alternate = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(root.clone()))
+        .audience(&device.did())
+        .subject(Subject::Any)
+        .command(vec![])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .unwrap();
+    let alternate = DelegationChain::new(alternate);
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(account_setup_status_invocation(&device, &alternate, fingerprint).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+
+    // Direct root proof and a valid device invocation for another command are
+    // both refused at the authentication boundary.
+    let root_did = root.did();
+    let direct = InvocationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(root))
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(vec!["account".into(), "setup".into(), "status".into()])
+        .arguments(BTreeMap::from([(
+            "createFingerprint".to_string(),
+            Promised::String(fingerprint.to_string()),
+        )]))
+        .proofs(vec![])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .unwrap();
+    let direct = InvocationChain::new(direct, HashMap::new())
+        .to_bytes()
+        .unwrap();
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(direct)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+
+    let wrong_command = container_with_link(
+        &device,
+        &link,
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(wrong_command)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let wrong_command: serde_json::Value = response.json().await.unwrap();
+
+    for body in [malformed, wrong_command] {
+        let rendered = body.to_string();
+        for leak in [
+            "UNIQUE constraint",
+            "accounts.",
+            "devices.",
+            "SQLITE_",
+            "D1Error",
+            "private@example.com",
+            "accountId",
+            "descriptorHex",
+        ] {
+            assert!(
+                !rendered.contains(leak),
+                "setup refusal leaked {leak:?}: {rendered}"
+            );
+        }
+    }
+
+    server.stop().await;
 }
 
 #[dialog_common::test]
@@ -240,20 +504,22 @@ async fn it_rejects_an_over_long_expiration_window() {
 #[dialog_common::test]
 async fn it_answers_preflight_with_cors_headers() {
     let server = AccountServer::start().await;
-    let response = reqwest::Client::new()
-        .request(
-            reqwest::Method::OPTIONS,
-            format!("{}/accounts", server.endpoint),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 204);
-    let headers = response.headers();
-    assert_eq!(headers["access-control-allow-origin"], "*");
-    assert_eq!(headers["access-control-allow-methods"], "POST, OPTIONS");
-    assert_eq!(headers["access-control-allow-headers"], "Content-Type");
-    assert_eq!(headers["access-control-expose-headers"], "Content-Type");
+    for path in ["/accounts", "/accounts/setup-status"] {
+        let response = reqwest::Client::new()
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("{}{path}", server.endpoint),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 204, "wrong preflight status for {path}");
+        let headers = response.headers();
+        assert_eq!(headers["access-control-allow-origin"], "*");
+        assert_eq!(headers["access-control-allow-methods"], "POST, OPTIONS");
+        assert_eq!(headers["access-control-allow-headers"], "Content-Type");
+        assert_eq!(headers["access-control-expose-headers"], "Content-Type");
+    }
 
     server.stop().await;
 }

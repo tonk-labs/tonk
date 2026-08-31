@@ -13,6 +13,7 @@ use dialog_credentials::DidKeyResolver;
 use dialog_ucan_core::InvocationChain;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::revocation::UnverifiedRevocations;
+use dialog_ucan_core::subject::Subject;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
 use dialog_ucan_core::verification::{Environment, VerificationContext};
 use dialog_varsig::AnySignature;
@@ -36,6 +37,23 @@ pub struct RootCaller {
     /// The root DID that signed and subjects the invocation.
     pub root_did: String,
     /// The invocation's signed arguments.
+    pub arguments: BTreeMap<String, Promised>,
+}
+
+/// A device whose attached one-hop proof cryptographically binds it to a root.
+///
+/// Unlike [`Caller`], this does not imply the root or device is registered.
+/// It exists only for account-setup recovery, where an absent account is a
+/// legitimate result and the service must not accept an arbitrary root query.
+pub struct SetupCaller {
+    /// Root DID issued by the attached delegation and named as the invocation
+    /// subject.
+    pub root_did: String,
+    /// Device DID that signed the invocation and received the delegation.
+    pub device_did: String,
+    /// CID of the exact root-to-device proof carried by the invocation.
+    pub delegation_cid: String,
+    /// Signed invocation arguments.
     pub arguments: BTreeMap<String, Promised>,
 }
 
@@ -171,6 +189,57 @@ pub async fn authorize_root(
     })
 }
 
+/// Verify a narrowly scoped setup request through a root-to-device proof,
+/// without consulting account storage.
+///
+/// This requires the same one-hop, subject-open, command-open delegation Tonk
+/// persists for a device. The verified invocation subject is the only root a
+/// caller can subsequently look up, so this helper cannot become an arbitrary
+/// root or email existence oracle.
+pub async fn authorize_setup_device(
+    body: &[u8],
+    expected_command: &[&str],
+) -> Result<SetupCaller, CeremonyError> {
+    let chain = verified_chain(body, expected_command).await?;
+    require_ceremony_expiration(&chain)?;
+
+    let [proof_cid] = chain.proofs().as_slice() else {
+        return Err(CeremonyError::Unauthorized(
+            "setup invocation must carry exactly one root to device proof".to_string(),
+        ));
+    };
+    let delegation = chain.delegation(proof_cid).ok_or_else(|| {
+        CeremonyError::Unauthorized("setup invocation proof is missing".to_string())
+    })?;
+    if delegation.issuer() != chain.subject() {
+        return Err(CeremonyError::Forbidden(
+            "setup proof issuer does not match the invocation root".to_string(),
+        ));
+    }
+    if delegation.audience() != chain.issuer() {
+        return Err(CeremonyError::Forbidden(
+            "setup proof audience does not match the invoking device".to_string(),
+        ));
+    }
+    if delegation.subject() != &Subject::Any {
+        return Err(CeremonyError::Forbidden(
+            "setup proof must be subject-open".to_string(),
+        ));
+    }
+    if !delegation.command().0.is_empty() {
+        return Err(CeremonyError::Forbidden(
+            "setup proof must be command-open".to_string(),
+        ));
+    }
+
+    Ok(SetupCaller {
+        root_did: chain.subject().to_string(),
+        device_did: chain.issuer().to_string(),
+        delegation_cid: proof_cid.to_string(),
+        arguments: chain.arguments().clone(),
+    })
+}
+
 /// Extract a required string from an invocation argument map.
 pub fn required_string(
     arguments: &BTreeMap<String, Promised>,
@@ -253,7 +322,7 @@ mod tests {
     use crate::store::DeviceStatus;
     use crate::store::sqlite::SqliteStore;
     use dialog_credentials::Ed25519Signer;
-    use dialog_ucan_core::InvocationBuilder;
+    use dialog_ucan_core::{Delegation, DelegationBuilder, InvocationBuilder};
     use dialog_varsig::Principal;
 
     #[dialog_common::test]
@@ -337,6 +406,33 @@ mod tests {
         container_with_expiration(command, args, Some(Timestamp::five_minutes_from_now())).await
     }
 
+    async fn setup_container_with_delegation(
+        root_did: &dialog_varsig::Did,
+        device: Ed25519Signer,
+        delegation: Delegation<AnySignature>,
+    ) -> Vec<u8> {
+        let cid = delegation.to_cid();
+        let invocation = InvocationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(device))
+            .audience(root_did)
+            .subject(root_did)
+            .command(vec!["account".into(), "setup".into(), "status".into()])
+            .arguments(BTreeMap::new())
+            .proofs(vec![cid])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await
+            .unwrap();
+        InvocationChain::new(
+            invocation,
+            [(cid, std::sync::Arc::new(delegation))]
+                .into_iter()
+                .collect(),
+        )
+        .to_bytes()
+        .unwrap()
+    }
+
     async fn seed_device_with_cid(
         store: &SqliteStore,
         root_did: &str,
@@ -400,6 +496,111 @@ mod tests {
             .unwrap()
             .proofs()[0]
             .to_string()
+    }
+
+    #[dialog_common::test]
+    async fn it_authorizes_setup_status_without_an_account_lookup() {
+        let arguments = BTreeMap::from([(
+            "createFingerprint".to_string(),
+            Promised::String("ab".repeat(32)),
+        )]);
+        let (root_did, device_did, bytes) = container(
+            vec!["account".into(), "setup".into(), "status".into()],
+            arguments,
+        )
+        .await;
+
+        let caller = authorize_setup_device(&bytes, &["account", "setup", "status"])
+            .await
+            .expect("a valid root to device proof does not need an account row");
+        assert_eq!(caller.root_did, root_did);
+        assert_eq!(caller.device_did, device_did);
+        assert_eq!(caller.delegation_cid, invocation_proof_cid(&bytes));
+        assert_eq!(
+            required_string(&caller.arguments, "createFingerprint").unwrap(),
+            "ab".repeat(32)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_noncanonical_setup_device_proofs() {
+        let command = vec!["account".into(), "setup".into(), "status".into()];
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
+            .await
+            .unwrap();
+        let root_did = root.did();
+        let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+
+        // A root-signed invocation proves the root but is not the required
+        // device-authenticated request with a root-to-device proof.
+        let no_proof = InvocationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root.clone()))
+            .audience(&root_did)
+            .subject(&root_did)
+            .command(command.clone())
+            .arguments(BTreeMap::new())
+            .proofs(vec![])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await
+            .unwrap();
+        let no_proof = InvocationChain::new(no_proof, std::collections::HashMap::new())
+            .to_bytes()
+            .unwrap();
+        assert!(matches!(
+            authorize_setup_device(&no_proof, &["account", "setup", "status"]).await,
+            Err(CeremonyError::Unauthorized(message))
+                if message.contains("exactly one root to device proof")
+        ));
+
+        // A valid grant addressed to one device cannot authenticate a
+        // different device's invocation.
+        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
+        let other_device = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
+        let wrong_device = setup_container_with_delegation(
+            &root_did,
+            other_device,
+            grant.proofs().next().unwrap().clone(),
+        )
+        .await;
+        assert!(matches!(
+            authorize_setup_device(&wrong_device, &["account", "setup", "status"]).await,
+            Err(CeremonyError::Unauthorized(_))
+        ));
+
+        // Even cryptographically valid attenuated delegations are rejected:
+        // the durable device grant is specifically subject- and command-open.
+        let subject_specific = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root.clone()))
+            .audience(&device.did())
+            .subject(Subject::Specific(root_did.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let subject_specific =
+            setup_container_with_delegation(&root_did, device.clone(), subject_specific).await;
+        assert!(matches!(
+            authorize_setup_device(&subject_specific, &["account", "setup", "status"]).await,
+            Err(CeremonyError::Forbidden(message)) if message.contains("subject-open")
+        ));
+
+        let command_scoped = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root))
+            .audience(&device.did())
+            .subject(Subject::Any)
+            .command(command)
+            .try_build()
+            .await
+            .unwrap();
+        let command_scoped =
+            setup_container_with_delegation(&root_did, device, command_scoped).await;
+        assert!(matches!(
+            authorize_setup_device(&command_scoped, &["account", "setup", "status"]).await,
+            Err(CeremonyError::Forbidden(message)) if message.contains("command-open")
+        ));
     }
 
     #[dialog_common::test]

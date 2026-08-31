@@ -4,6 +4,8 @@
 //! lifecycle outcomes, and remote initialization primitive. Higher-level
 //! mounting and projection policy remains with the worker and CLI adapters.
 
+/// Canonical account-creation recovery contracts.
+pub mod creation;
 /// Customer registration contracts for the access service.
 pub mod customer;
 /// Retaining space authority into the account repository.

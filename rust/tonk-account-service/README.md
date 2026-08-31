@@ -22,11 +22,12 @@ CID equals the active attachment's grant, then resolves its subject and issuer
 to that account and device. Account creation and browser self-link are
 instead signed directly by the passkey-derived root: successful verification,
 with issuer equal to subject, proves root-key control before the service writes
-the first account or another device. Account creation additionally consumes an
-email verification code. `POST /codes` and creation of a pending CLI handoff
-are unauthenticated and edge-rate-limited. Account preflight is authenticated
-by the submitted email code and edge-rate-limited; resolving and consuming a
-handoff requires its 256-bit bearer secret.
+the first account or another device. Account creation records the submitted
+address but does not itself prove address control; the access-service
+activation flow confirms it afterwards. `POST /codes` and creation of a
+pending CLI handoff are unauthenticated and edge-rate-limited. Account
+preflight is authenticated by the submitted email code and edge-rate-limited;
+resolving and consuming a handoff requires its 256-bit bearer secret.
 
 ## RP ID invariants
 
@@ -58,12 +59,26 @@ permissive CORS headers).
 - `POST /accounts/preflight`: verify a submitted `{ "email", "code" }` and
   reject an already-registered address before WebAuthn. A successful check
   does not consume the code; `POST /accounts` remains authoritative.
-- `POST /accounts`: create an account and register its first device, consuming
-  a verification code. Body: a root-signed UCAN invocation container with
-  command `["account", "create"]` and arguments `email`, `code`,
+- `POST /accounts`: create an account and register its first device. Body: a
+  root-signed UCAN invocation container with command `["account", "create"]`
+  and arguments `email`,
   `credentialId`, `deviceDid`, `deviceName`, `delegation` (the hex-encoded
   `root → device` delegation), and `repositoryDescriptor`.
-  Returns `201` with `{ "accountId": number, "descriptorHex": string }`.
+  A new account returns `201`; an exact retry of an already-committed creation
+  returns `200`. Both return `{ "accountId": number, "descriptorHex": string,
+  "createFingerprint": string, "reused": boolean }`, with `reused: false` for
+  the initial insert and `true` only for an exact retry. Any semantic mismatch
+  remains a conflict.
+- `POST /accounts/setup-status`: recover after losing an account-creation
+  response. Body: a device-signed UCAN invocation container with command
+  `["account", "setup", "status"]`, argument `createFingerprint`, subject and
+  audience equal to the account root, and exactly one unexpired, subject-open,
+  command-open `root → device` proof. Returns one of
+  `{ "status": "absent" }`, `{ "status": "accepted", "accountId": number,
+  "descriptorHex": string, "createFingerprint": string }`, or
+  `{ "status": "mismatch" }`. The verified invocation root is the only root
+  queried: the endpoint accepts no email or arbitrary root argument, and
+  `absent` is never available to an unauthenticated caller.
 - `POST /account/repository/establish`: root-authorized set-if-absent
   descriptor establishment for an existing account. Returns the exact stored
   winner as `{ "descriptorHex": string, "created": boolean }`.
@@ -115,6 +130,23 @@ UCAN invocation containers and raw signed revocation artifacts are posted as
 `application/cbor`. JSON is reserved for the unauthenticated code/link request
 envelopes and JSON responses.
 
+### Account-creation recovery fingerprint
+
+Clients compute and retain `createFingerprint` before sending `POST /accounts`
+using `tonk_account::creation::AccountCreationFingerprintInput`. The version-1
+algorithm uses a domain-separated BLAKE3 digest with an explicit length frame
+around each semantic field: normalized lowercase email, root DID, credential
+ID, optional passkey `createdAt` and trimmed `createdOn`, canonical descriptor
+bytes, first-device DID and name, and the first delegation's CID and decoded
+bytes. Provider-selected attachment IDs and provider timestamps are excluded.
+The wire form is exactly 64 lowercase hexadecimal characters.
+
+The account provider revalidates the descriptor and delegation before its
+atomic insert. Only after a uniqueness conflict does it compare the persisted
+account and earliest active device against all of those normalized facts. This
+makes a lost response recoverable without treating a different ceremony as an
+idempotent retry.
+
 ## Deploying
 
 Config lives in `wrangler.account.toml` at the repo root, alongside the
@@ -131,6 +163,12 @@ The preflight route is a hard dependency of this account UI: deploy the account
 worker containing `/accounts/preflight` before the UI that calls it. The UI
 fails closed if the route is absent rather than creating a passkey before email
 availability has been verified.
+
+Account-setup recovery has the same provider-first rollout requirement: deploy
+the account worker containing `/accounts/setup-status` and exact-retry support
+before a UI or CLI starts the recovery saga. Older clients can ignore the new
+fields on the initial `201`; recovery-aware clients must not assume the status
+route exists until that provider deployment is complete.
 
 Releases are not manual. `.github/workflows/publish.yml` applies this
 crate's migrations and deploys the worker on every push to `staging` and

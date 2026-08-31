@@ -23,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::auth::{
-    authorize, authorize_root, optional_passkey_metadata, optional_revocation, required_string,
-    string_argument,
+    authorize, authorize_root, authorize_setup_device, optional_passkey_metadata,
+    optional_revocation, required_string, string_argument,
 };
-use crate::core::accounts::{CreateAccount, create_account};
+use crate::core::accounts::{CreateAccount, account_setup_status, create_account};
 use crate::core::deletion::delete_account;
 use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
@@ -130,6 +130,9 @@ async fn handle_request(
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
+        (Method::POST, "/accounts/setup-status") => {
+            account_setup_status_route(req, &backends).await
+        }
         (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
         (Method::POST, "/account/delete") => account_delete_route(req, &backends).await,
         (Method::POST, "/account/repository/establish") => {
@@ -275,27 +278,46 @@ async fn accounts_route(
         root_did: caller.root_did,
         passkey,
     };
-    let account_id = create_account(&backends.store, &request, now)
+    let outcome = create_account(&backends.store, &request, now)
         .await
         .map_err(ceremony_error)?;
-    let account = backends
-        .store
-        .account_by_root(&request.root_did)
-        .await
-        .map_err(|error| ceremony_error(error.into()))?
-        .ok_or_else(|| ServiceError::new(ErrorCode::InternalError, "created account missing"))?;
-    let descriptor_hex = account
-        .repository_descriptor
-        .map(hex::encode)
-        .ok_or_else(|| ServiceError::new(ErrorCode::InternalError, "descriptor missing"))?;
 
     Ok(json_response(
-        StatusCode::CREATED,
+        if outcome.reused {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
         &serde_json::json!({
-            "accountId": account_id,
-            "descriptorHex": descriptor_hex,
+            "accountId": outcome.account_id,
+            "descriptorHex": hex::encode(outcome.descriptor),
+            "createFingerprint": outcome.create_fingerprint,
+            "reused": outcome.reused,
         }),
     ))
+}
+
+/// `POST /accounts/setup-status` → proof-bound creation recovery state.
+async fn account_setup_status_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize_setup_device(&body, &["account", "setup", "status"])
+        .await
+        .map_err(ceremony_error)?;
+    let expected =
+        required_string(&caller.arguments, "createFingerprint").map_err(ceremony_error)?;
+    let status = account_setup_status(
+        &backends.store,
+        &caller.root_did,
+        &caller.device_did,
+        &caller.delegation_cid,
+        &expected,
+    )
+    .await
+    .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::OK, &status))
 }
 
 /// `POST /account/repository/establish` → establish one descriptor winner.
