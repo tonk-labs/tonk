@@ -95,7 +95,14 @@ export function suggestions(
   const found = rank(candidates, query);
   const typed = query.trim();
   if (typed === "" || exact(candidates, query)) return found;
-  return [...found, { title: typed, href: "", spans: [], create: true }];
+  // What you typed comes FIRST, as an ordinary row.
+  //
+  // Every row is the same shape — a name, and a small verb saying what
+  // Enter will do with it — so creating is one more thing to pick rather
+  // than a differently-shaped afterthought at the bottom. First, because
+  // it is the thing you just wrote: the list grows underneath what you
+  // are typing instead of pushing it around.
+  return [{ title: typed, href: "", spans: [], create: true }, ...found];
 }
 
 /** The heading's TITLE: its text without the `# ` marker.

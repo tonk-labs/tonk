@@ -122,42 +122,55 @@ impl TonkNotebookIndexElement {
             let _ = item.set_attribute("class", &class);
             let _ = item.set_attribute("data-index", &index.to_string());
 
-            if create {
-                // Say what will happen, in the words the author typed.
-                item.set_text_content(Some(&format!("Create \u{201c}{title}\u{201d}")));
-            } else {
-                // Mark the characters the query matched, so the reason a row
-                // is here is visible.
-                let spans = js_sys::Reflect::get(&row, &"spans".into())
-                    .ok()
-                    .and_then(|v| v.dyn_into::<js_sys::Array>().ok());
-                let marked: Vec<usize> = spans
-                    .map(|arr| {
-                        (0..arr.length())
-                            .filter_map(|i| arr.get(i).as_f64().map(|n| n as usize))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                // Runs, not characters: a `<mark>` (or plain `<span>`) per
-                // contiguous stretch, so "Weekly" matched at 0..2 is one
-                // element rather than two, and the text stays selectable as
-                // ordinary words.
-                let mut at = 0usize;
-                let chars: Vec<char> = title.chars().collect();
-                while at < chars.len() {
-                    let hit = marked.contains(&at);
-                    let mut end = at;
-                    while end < chars.len() && marked.contains(&end) == hit {
-                        end += 1;
+            // The NAME, then a small verb saying what Enter does with it.
+            //
+            // Every row is the same shape, so creating is one more thing to
+            // pick rather than a differently-worded afterthought. The name
+            // is what you read; the verb only tells you which of the two
+            // things is about to happen.
+            if let Ok(name) = document.create_element("span") {
+                let _ = name.set_attribute("class", "notebook-switcher__name");
+                if create {
+                    // Nothing to highlight: this row IS what was typed.
+                    name.set_text_content(Some(&title));
+                } else {
+                    // Mark the characters the query matched, so the reason a
+                    // row is here is visible.
+                    let spans = js_sys::Reflect::get(&row, &"spans".into())
+                        .ok()
+                        .and_then(|v| v.dyn_into::<js_sys::Array>().ok());
+                    let marked: Vec<usize> = spans
+                        .map(|arr| {
+                            (0..arr.length())
+                                .filter_map(|i| arr.get(i).as_f64().map(|n| n as usize))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    // Runs, not characters: a `<mark>` per contiguous
+                    // stretch, so the text stays selectable as words.
+                    let mut at = 0usize;
+                    let chars: Vec<char> = title.chars().collect();
+                    while at < chars.len() {
+                        let hit = marked.contains(&at);
+                        let mut end = at;
+                        while end < chars.len() && marked.contains(&end) == hit {
+                            end += 1;
+                        }
+                        let run: String = chars[at..end].iter().collect();
+                        let tag = if hit { "mark" } else { "span" };
+                        if let Ok(part) = document.create_element(tag) {
+                            part.set_text_content(Some(&run));
+                            let _ = name.append_child(&part);
+                        }
+                        at = end;
                     }
-                    let run: String = chars[at..end].iter().collect();
-                    let tag = if hit { "mark" } else { "span" };
-                    if let Ok(part) = document.create_element(tag) {
-                        part.set_text_content(Some(&run));
-                        let _ = item.append_child(&part);
-                    }
-                    at = end;
                 }
+                let _ = item.append_child(&name);
+            }
+            if let Ok(verb) = document.create_element("span") {
+                let _ = verb.set_attribute("class", "notebook-switcher__verb");
+                verb.set_text_content(Some(if create { "create" } else { "open" }));
+                let _ = item.append_child(&verb);
             }
             let _ = panel.append_child(&item);
         }

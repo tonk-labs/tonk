@@ -2585,8 +2585,25 @@ tonk-notebook-index {
   overflow: hidden;
 }
 .notebook-switcher__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--wa-space-m, 1rem);
   padding: var(--wa-space-s, 0.75rem) var(--wa-space-m, 1rem);
   cursor: pointer;
+}
+.notebook-switcher__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* What Enter will do, quiet and out of the way: the name is what you
+   read, the verb only says which of the two things happens. */
+.notebook-switcher__verb {
+  flex: 0 0 auto;
+  color: var(--wa-color-text-quiet);
+  font-size: var(--wa-font-size-xs, 0.75rem);
 }
 .notebook-switcher__row--active {
   background: var(--wa-color-neutral-fill-quiet);
@@ -2597,12 +2614,9 @@ tonk-notebook-index {
   color: var(--wa-color-brand-fill-loud, currentColor);
   font-weight: 600;
 }
-/* The create row is an action, not a document: quieter, and set apart. */
-.notebook-switcher__row--create {
-  border-top: 1px solid var(--wa-color-surface-border);
-  color: var(--wa-color-text-quiet);
-  font-size: var(--wa-font-size-s, 0.875rem);
-}
+/* The create row is an ordinary row: same shape, same weight. Only its
+   verb differs, which is the point — creating is a pick, not a special
+   case parked at the bottom. */
 
 /* Rows read as a list, separated rather than boxed: the index is a way
    through to a notebook, not a place to linger. */

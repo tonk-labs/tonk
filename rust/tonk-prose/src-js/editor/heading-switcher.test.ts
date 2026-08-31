@@ -29,11 +29,20 @@ test("a prefix is not an exact match", () => {
   assert.equal(exact(library, "Not"), null);
 });
 
-test("the create row is offered last for an unmatched name", () => {
+test("what you typed is the first row", () => {
   const rows = suggestions(library, "Groceries");
-  const last = rows[rows.length - 1];
-  assert.equal(last.create, true);
-  assert.equal(last.title, "Groceries");
+  assert.equal(rows[0].create, true);
+  assert.equal(rows[0].title, "Groceries");
+});
+
+test("the typed row leads even when matches follow", () => {
+  const rows = suggestions(library, "Not");
+  assert.equal(rows[0].title, "Not", "the typed text is first");
+  assert.equal(rows[0].create, true);
+  assert.ok(
+    rows.slice(1).some((r) => r.title === "Notes" && !r.create),
+    "and the matches follow it",
+  );
 });
 
 test("the create row is offered even when something matches", () => {
@@ -54,8 +63,7 @@ test("no create row for a blank query", () => {
 });
 
 test("the create row carries the trimmed title", () => {
-  const rows = suggestions(library, "  Groceries  ");
-  assert.equal(rows[rows.length - 1].title, "Groceries");
+  assert.equal(suggestions(library, "  Groceries  ")[0].title, "Groceries");
 });
 
 test("matched spans are returned for highlighting", () => {
